@@ -1,0 +1,28 @@
+//! rust-dicom-viewer — a fast, robust DICOM / RT DICOM viewer in pure Rust.
+//!
+//! Usage: `rust-dicom-viewer [DICOM_DIRECTORY]`
+
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use rust_dicom_viewer::app;
+
+use std::path::PathBuf;
+
+fn main() -> eframe::Result<()> {
+    let initial_path: Option<PathBuf> = std::env::args().nth(1).map(PathBuf::from);
+
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("Rust DICOM / RT Viewer")
+            .with_inner_size([1680.0, 940.0])
+            .with_min_inner_size([900.0, 520.0]),
+        renderer: eframe::Renderer::Wgpu,
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "rust-dicom-viewer",
+        options,
+        Box::new(move |cc| Ok(Box::new(app::ViewerApp::new(cc, initial_path)))),
+    )
+}

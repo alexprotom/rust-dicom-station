@@ -1,0 +1,30 @@
+[package]
+name = "rust-dicom-viewer"
+version = "0.1.0"
+edition = "2021"
+description = "Fast, robust DICOM / RT DICOM viewer in pure Rust (CT/MR volumes, RTSTRUCT, RTDOSE, RTPLAN) with a three-view MPR layout"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0"
+dicom-core = "0.10"
+dicom-dictionary-std = "0.10"
+dicom-object = "0.10"
+dicom-pixeldata = { version = "0.10", features = ["native", "rayon"] }
+eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "wayland", "x11"] }
+egui = "0.36"
+rayon = "1.12"
+rfd = "0.17"
+walkdir = "2.5"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+panic = "unwind"
+
+# Fast enough for interactive use even in debug builds
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

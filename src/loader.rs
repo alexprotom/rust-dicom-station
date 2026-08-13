@@ -1,0 +1,497 @@
+//! Directory scanning, DICOM classification and volume reconstruction.
+//!
+//! The loader makes two passes: a fast header-only scan (stops before Pixel
+//! Data) to classify every file, then a parallel full read of the selected
+//! image series. RT objects (RTSTRUCT / RTDOSE / RTPLAN) are parsed by their
+//! dedicated modules.
+
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use anyhow::{bail, Context, Result};
+use dicom_dictionary_std::tags;
+use dicom_object::{InMemDicomObject, OpenFileOptions};
+use dicom_pixeldata::{ConvertOptions, ModalityLutOption, PixelDecoder};
+use rayon::prelude::*;
+
+use crate::geometry::Vec3;
+use crate::rtdose::{self, DoseGrid};
+use crate::rtplan::{self, PlanInfo};
+use crate::rtstruct::{self, StructureSet};
+use crate::volume::Volume;
+
+/// Shared progress indicator for the background loading thread.
+#[derive(Default)]
+pub struct Progress {
+    msg: Mutex<String>,
+}
+
+impl Progress {
+    pub fn set(&self, s: impl Into<String>) {
+        *self.msg.lock().unwrap() = s.into();
+    }
+    pub fn get(&self) -> String {
+        self.msg.lock().unwrap().clone()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Safe element extraction helpers (missing/malformed tags never panic).
+// ---------------------------------------------------------------------------
+
+pub fn str_of(obj: &InMemDicomObject, tag: dicom_core::Tag) -> Option<String> {
+    obj.element(tag)
+        .ok()
+        .and_then(|e| e.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+pub fn f64_of(obj: &InMemDicomObject, tag: dicom_core::Tag) -> Option<f64> {
+    obj.element(tag).ok().and_then(|e| e.to_float64().ok())
+}
+
+pub fn f64s_of(obj: &InMemDicomObject, tag: dicom_core::Tag) -> Option<Vec<f64>> {
+    obj.element(tag)
+        .ok()
+        .and_then(|e| e.to_multi_float64().ok())
+}
+
+pub fn i32_of(obj: &InMemDicomObject, tag: dicom_core::Tag) -> Option<i32> {
+    obj.element(tag).ok().and_then(|e| e.to_int::<i32>().ok())
+}
+
+pub fn items_of<'a>(
+    obj: &'a InMemDicomObject,
+    tag: dicom_core::Tag,
+) -> Option<&'a [InMemDicomObject]> {
+    obj.element(tag).ok().and_then(|e| e.items()).map(|v| &v[..])
+}
+
+// ---------------------------------------------------------------------------
+// Scan results
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+pub struct SeriesInfo {
+    pub uid: String,
+    pub modality: String,
+    pub description: String,
+    pub files: Vec<PathBuf>,
+}
+
+#[derive(Default, Clone)]
+pub struct PatientMeta {
+    pub patient_name: String,
+    pub patient_id: String,
+    pub study_date: String,
+    pub study_description: String,
+}
+
+/// Everything found in a directory, with the primary series volume loaded.
+pub struct LoadedStudy {
+    pub meta: PatientMeta,
+    pub series: Vec<SeriesInfo>,
+    pub active_series: usize,
+    pub volume: Volume,
+    pub structures: Option<StructureSet>,
+    pub doses: Vec<DoseGrid>,
+    pub plans: Vec<PlanInfo>,
+    pub warnings: Vec<String>,
+    pub default_window: (f32, f32),
+}
+
+const IMAGE_MODALITIES: &[&str] = &["CT", "MR", "PT", "NM", "US", "CR", "DX", "OT"];
+
+/// SOP Class UID fallbacks for RT objects (when Modality is absent).
+const SOP_RTSTRUCT: &str = "1.2.840.10008.5.1.4.1.1.481.3";
+const SOP_RTDOSE: &str = "1.2.840.10008.5.1.4.1.1.481.2";
+const SOP_RTPLAN: &str = "1.2.840.10008.5.1.4.1.1.481.5";
+const SOP_RTIONPLAN: &str = "1.2.840.10008.5.1.4.1.1.481.8";
+
+pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
+    progress.set("Scanning directory…");
+
+    let files: Vec<PathBuf> = walkdir::WalkDir::new(dir)
+        .follow_links(true)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.into_path())
+        .collect();
+
+    if files.is_empty() {
+        bail!("No files found in {}", dir.display());
+    }
+    progress.set(format!("Reading headers of {} files…", files.len()));
+
+    // Parallel header-only scan.
+    struct Scanned {
+        path: PathBuf,
+        modality: String,
+        sop_class: String,
+        series_uid: String,
+        series_desc: String,
+        has_geometry: bool,
+        meta: PatientMeta,
+    }
+
+    let scanned: Vec<Scanned> = files
+        .par_iter()
+        .filter_map(|path| {
+            let obj = OpenFileOptions::new()
+                .read_until(tags::PIXEL_DATA)
+                .open_file(path)
+                .ok()?;
+            let modality = str_of(&obj, tags::MODALITY).unwrap_or_default();
+            let sop_class = str_of(&obj, tags::SOP_CLASS_UID).unwrap_or_default();
+            let series_uid = str_of(&obj, tags::SERIES_INSTANCE_UID).unwrap_or_default();
+            let series_desc = str_of(&obj, tags::SERIES_DESCRIPTION).unwrap_or_default();
+            let has_geometry = obj.element(tags::IMAGE_POSITION_PATIENT).is_ok()
+                && obj.element(tags::ROWS).is_ok();
+            let meta = PatientMeta {
+                patient_name: str_of(&obj, tags::PATIENT_NAME).unwrap_or_default(),
+                patient_id: str_of(&obj, tags::PATIENT_ID).unwrap_or_default(),
+                study_date: str_of(&obj, tags::STUDY_DATE).unwrap_or_default(),
+                study_description: str_of(&obj, tags::STUDY_DESCRIPTION).unwrap_or_default(),
+            };
+            Some(Scanned {
+                path: path.clone(),
+                modality,
+                sop_class,
+                series_uid,
+                series_desc,
+                has_geometry,
+                meta,
+            })
+        })
+        .collect();
+
+    let mut warnings = Vec::new();
+    let unreadable = files.len() - scanned.len();
+    if unreadable > 0 {
+        warnings.push(format!("{unreadable} file(s) were not readable as DICOM and were skipped"));
+    }
+    if scanned.is_empty() {
+        bail!("No DICOM files found in {}", dir.display());
+    }
+
+    // Classify.
+    let mut image_series: Vec<SeriesInfo> = Vec::new();
+    let mut rtstruct_files = Vec::new();
+    let mut rtdose_files = Vec::new();
+    let mut rtplan_files = Vec::new();
+    let mut meta = PatientMeta::default();
+
+    for s in &scanned {
+        if meta.patient_id.is_empty() && !s.meta.patient_id.is_empty() {
+            meta = s.meta.clone();
+        }
+        let is_rt_struct = s.modality == "RTSTRUCT" || s.sop_class == SOP_RTSTRUCT;
+        let is_rt_dose = s.modality == "RTDOSE" || s.sop_class == SOP_RTDOSE;
+        let is_rt_plan = s.modality == "RTPLAN"
+            || s.modality == "RTIONPLAN"
+            || s.sop_class == SOP_RTPLAN
+            || s.sop_class == SOP_RTIONPLAN;
+
+        if is_rt_struct {
+            rtstruct_files.push(s.path.clone());
+        } else if is_rt_dose {
+            rtdose_files.push(s.path.clone());
+        } else if is_rt_plan {
+            rtplan_files.push(s.path.clone());
+        } else if s.has_geometry
+            && (IMAGE_MODALITIES.contains(&s.modality.as_str()) || s.modality.is_empty())
+        {
+            match image_series.iter_mut().find(|se| se.uid == s.series_uid) {
+                Some(se) => se.files.push(s.path.clone()),
+                None => image_series.push(SeriesInfo {
+                    uid: s.series_uid.clone(),
+                    modality: s.modality.clone(),
+                    description: s.series_desc.clone(),
+                    files: vec![s.path.clone()],
+                }),
+            }
+        }
+    }
+
+    if image_series.is_empty() {
+        bail!("No image series (CT/MR/…) with geometry found — cannot build a volume");
+    }
+
+    // Default to the series with the most slices (typically the planning CT).
+    image_series.sort_by_key(|s| std::cmp::Reverse(s.files.len()));
+    let active_series = 0;
+
+    let (volume, default_window, mut vol_warnings) =
+        load_series_volume(&image_series[active_series], progress)?;
+    warnings.append(&mut vol_warnings);
+
+    // RT objects.
+    let structures = if let Some(p) = rtstruct_files.first() {
+        progress.set("Parsing RT Structure Set…");
+        if rtstruct_files.len() > 1 {
+            warnings.push(format!(
+                "{} RTSTRUCT files found; using {}",
+                rtstruct_files.len(),
+                p.file_name().unwrap_or_default().to_string_lossy()
+            ));
+        }
+        match rtstruct::load(p) {
+            Ok(ss) => Some(ss),
+            Err(e) => {
+                warnings.push(format!("RTSTRUCT load failed: {e:#}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let mut doses = Vec::new();
+    for p in &rtdose_files {
+        progress.set("Parsing RT Dose…");
+        match rtdose::load(p) {
+            Ok(d) => doses.push(d),
+            Err(e) => warnings.push(format!(
+                "RTDOSE {} load failed: {e:#}",
+                p.file_name().unwrap_or_default().to_string_lossy()
+            )),
+        }
+    }
+
+    let mut plans = Vec::new();
+    for p in &rtplan_files {
+        progress.set("Parsing RT Plan…");
+        match rtplan::load(p) {
+            Ok(pl) => plans.push(pl),
+            Err(e) => warnings.push(format!(
+                "RTPLAN {} load failed: {e:#}",
+                p.file_name().unwrap_or_default().to_string_lossy()
+            )),
+        }
+    }
+
+    // Frame-of-reference sanity checks.
+    if let Some(ss) = &structures {
+        if !ss.frame_of_reference_uid.is_empty()
+            && !volume.frame_of_reference_uid.is_empty()
+            && ss.frame_of_reference_uid != volume.frame_of_reference_uid
+        {
+            warnings.push(
+                "RTSTRUCT frame of reference differs from the image volume — contours may be misaligned"
+                    .into(),
+            );
+        }
+    }
+    for d in &doses {
+        if !d.frame_of_reference_uid.is_empty()
+            && !volume.frame_of_reference_uid.is_empty()
+            && d.frame_of_reference_uid != volume.frame_of_reference_uid
+        {
+            warnings.push(
+                "RTDOSE frame of reference differs from the image volume — overlay may be misaligned"
+                    .into(),
+            );
+        }
+    }
+
+    Ok(LoadedStudy {
+        meta,
+        series: image_series,
+        active_series,
+        volume,
+        structures,
+        doses,
+        plans,
+        warnings,
+        default_window,
+    })
+}
+
+/// Fully load one image series into a `Volume` (parallel decode).
+pub fn load_series_volume(
+    series: &SeriesInfo,
+    progress: &Progress,
+) -> Result<(Volume, (f32, f32), Vec<String>)> {
+    progress.set(format!(
+        "Loading {} slice(s) of series {}…",
+        series.files.len(),
+        if series.description.is_empty() { &series.modality } else { &series.description }
+    ));
+
+    struct SliceRec {
+        pos: Vec3,
+        proj: f64,
+        rows: usize,
+        cols: usize,
+        row_dir: Vec3,
+        col_dir: Vec3,
+        spacing: [f64; 2],
+        for_uid: String,
+        window: Option<(f32, f32)>,
+        thickness: Option<f64>,
+        data: Vec<i16>,
+    }
+
+    let opts = ConvertOptions::new().with_modality_lut(ModalityLutOption::Default);
+
+    let results: Vec<Result<SliceRec>> = series
+        .files
+        .par_iter()
+        .map(|path| -> Result<SliceRec> {
+            let obj = dicom_object::open_file(path)
+                .with_context(|| format!("open {}", path.display()))?;
+
+            let ipp = f64s_of(&obj, tags::IMAGE_POSITION_PATIENT)
+                .filter(|v| v.len() >= 3)
+                .with_context(|| format!("missing ImagePositionPatient in {}", path.display()))?;
+            let iop = f64s_of(&obj, tags::IMAGE_ORIENTATION_PATIENT)
+                .filter(|v| v.len() >= 6)
+                .unwrap_or_else(|| vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+            let ps = f64s_of(&obj, tags::PIXEL_SPACING)
+                .filter(|v| v.len() >= 2)
+                .unwrap_or_else(|| vec![1.0, 1.0]);
+
+            let row_dir = Vec3::from_slice(&iop[0..3]).normalized();
+            let col_dir = Vec3::from_slice(&iop[3..6]).normalized();
+            let normal = row_dir.cross(col_dir).normalized();
+            let pos = Vec3::from_slice(&ipp);
+
+            let window = match (
+                f64s_of(&obj, tags::WINDOW_CENTER).and_then(|v| v.first().copied()),
+                f64s_of(&obj, tags::WINDOW_WIDTH).and_then(|v| v.first().copied()),
+            ) {
+                (Some(c), Some(w)) if w > 1.0 => Some((c as f32, w as f32)),
+                _ => None,
+            };
+
+            let decoded = obj
+                .decode_pixel_data()
+                .with_context(|| format!("decode pixel data of {}", path.display()))?;
+            let rows = decoded.rows() as usize;
+            let cols = decoded.columns() as usize;
+            if decoded.number_of_frames() > 1 {
+                bail!(
+                    "multi-frame image {} not supported as part of a series",
+                    path.display()
+                );
+            }
+            let f: Vec<f32> = decoded
+                .to_vec_with_options(&opts)
+                .with_context(|| format!("convert pixels of {}", path.display()))?;
+            if f.len() < rows * cols {
+                bail!("pixel buffer smaller than Rows×Columns in {}", path.display());
+            }
+            let data: Vec<i16> = f[..rows * cols]
+                .iter()
+                .map(|&v| v.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16)
+                .collect();
+
+            Ok(SliceRec {
+                pos,
+                proj: pos.dot(normal),
+                rows,
+                cols,
+                row_dir,
+                col_dir,
+                spacing: [ps[1], ps[0]], // [along i (columns), along j (rows)]
+                for_uid: str_of(&obj, tags::FRAME_OF_REFERENCE_UID).unwrap_or_default(),
+                window,
+                thickness: f64_of(&obj, tags::SLICE_THICKNESS),
+                data,
+            })
+        })
+        .collect();
+
+    let mut warnings = Vec::new();
+    let mut slices: Vec<SliceRec> = Vec::with_capacity(results.len());
+    for r in results {
+        match r {
+            Ok(s) => slices.push(s),
+            Err(e) => warnings.push(format!("slice skipped: {e:#}")),
+        }
+    }
+    if slices.is_empty() {
+        bail!("No slices of the series could be decoded");
+    }
+
+    // Consistent in-plane dimensions.
+    let (rows, cols) = (slices[0].rows, slices[0].cols);
+    let before = slices.len();
+    slices.retain(|s| s.rows == rows && s.cols == cols);
+    if slices.len() != before {
+        warnings.push(format!(
+            "{} slice(s) with mismatched dimensions were dropped",
+            before - slices.len()
+        ));
+    }
+
+    // Sort along the slice normal and drop duplicates.
+    slices.sort_by(|a, b| a.proj.partial_cmp(&b.proj).unwrap_or(std::cmp::Ordering::Equal));
+    slices.dedup_by(|a, b| (a.proj - b.proj).abs() < 0.01);
+
+    let nz = slices.len();
+    let slice_spacing = if nz > 1 {
+        let mut diffs: Vec<f64> = slices.windows(2).map(|w| w[1].proj - w[0].proj).collect();
+        diffs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median = diffs[diffs.len() / 2];
+        let max_dev = diffs
+            .iter()
+            .map(|d| (d - median).abs())
+            .fold(0.0_f64, f64::max);
+        if median > 1e-6 && max_dev / median > 0.01 {
+            warnings.push(format!(
+                "Non-uniform slice spacing (median {:.3} mm, max deviation {:.3} mm) — using median",
+                median, max_dev
+            ));
+        }
+        median.max(1e-6)
+    } else {
+        slices[0].thickness.unwrap_or(1.0).max(1e-6)
+    };
+
+    let nx = cols;
+    let ny = rows;
+    let mut data = Vec::with_capacity(nx * ny * nz);
+    let mut min_v = i16::MAX;
+    let mut max_v = i16::MIN;
+    for s in &slices {
+        for &v in &s.data {
+            min_v = min_v.min(v);
+            max_v = max_v.max(v);
+        }
+        data.extend_from_slice(&s.data);
+    }
+
+    let first = &slices[0];
+    let volume = Volume {
+        data,
+        dims: [nx, ny, nz],
+        spacing: [first.spacing[0], first.spacing[1], slice_spacing],
+        origin: first.pos,
+        row_dir: first.row_dir,
+        col_dir: first.col_dir,
+        normal: first.row_dir.cross(first.col_dir).normalized(),
+        frame_of_reference_uid: first.for_uid.clone(),
+        min_value: min_v,
+        max_value: max_v,
+    };
+
+    let default_window = first
+        .window
+        .unwrap_or_else(|| default_window_for(&series.modality, min_v, max_v));
+
+    Ok((volume, default_window, warnings))
+}
+
+fn default_window_for(modality: &str, min_v: i16, max_v: i16) -> (f32, f32) {
+    match modality {
+        "CT" => (40.0, 400.0),
+        _ => {
+            let c = (min_v as f32 + max_v as f32) * 0.5;
+            let w = (max_v as f32 - min_v as f32).max(1.0);
+            (c, w)
+        }
+    }
+}
