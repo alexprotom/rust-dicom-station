@@ -12,6 +12,7 @@ Creates in test_data/:
 Requires: pydicom >= 2.4
 """
 
+import argparse
 import os
 import datetime
 
@@ -20,8 +21,17 @@ import pydicom
 from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 from pydicom.uid import generate_uid, ExplicitVRLittleEndian
 
-OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "test_data")
+ap = argparse.ArgumentParser(description=__doc__)
+ap.add_argument("--out", default="test_data", help="output directory (relative to repo root)")
+ap.add_argument("--target-shift-y", type=float, default=0.0, help="target/dose Y shift in mm")
+ap.add_argument("--peak", type=float, default=60.0, help="dose peak in Gy")
+ap.add_argument("--plan-label", default="SynthProton")
+args = ap.parse_args()
+
+OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), args.out)
 os.makedirs(OUT, exist_ok=True)
+
+SHIFT_Y = args.target_shift_y
 
 # --- shared identifiers -----------------------------------------------------
 study_uid = generate_uid()
@@ -76,7 +86,7 @@ for k in range(NZ):
     hu = np.full((NY, NX), -1000.0, dtype=np.float64)
     body = XX**2 + YY**2 <= 70.0**2
     hu[body] = 0.0
-    target = XX**2 + YY**2 + z**2 <= 25.0**2
+    target = XX**2 + (YY - SHIFT_Y) ** 2 + z**2 <= 25.0**2
     hu[target] = 100.0
     cord = XX**2 + (YY - 60.0) ** 2 <= 8.0**2
     hu[cord] = 40.0
@@ -181,7 +191,7 @@ for num, name, typ, color in rois:
             r = float(np.sqrt(r2))
         c = Dataset()
         c.ContourGeometricType = "CLOSED_PLANAR"
-        cy = 60.0 if name == "CORD" else 0.0
+        cy = 60.0 if name == "CORD" else (SHIFT_Y if name == "TARGET" else 0.0)
         pts = circle_points(0.0, cy, r, z)
         c.NumberOfContourPoints = len(pts) // 3
         c.ContourData = pts
@@ -212,7 +222,7 @@ ds = base_dataset("1.2.840.10008.5.1.4.1.1.481.8", plan_uid, "RTPLAN")
 ds.SeriesInstanceUID = generate_uid()
 ds.SeriesNumber = 3
 ds.FrameOfReferenceUID = for_uid
-ds.RTPlanLabel = "SynthProton"
+ds.RTPlanLabel = args.plan_label
 ds.RTPlanName = "Synthetic proton plan"
 ds.RTPlanDate = DATE
 ds.RTPlanTime = TIME
@@ -223,7 +233,7 @@ dr.DoseReferenceNumber = 1
 dr.DoseReferenceStructureType = "SITE"
 dr.DoseReferenceDescription = "TARGET"
 dr.DoseReferenceType = "TARGET"
-dr.TargetPrescriptionDose = "60.0"
+dr.TargetPrescriptionDose = f"{args.peak:.1f}"
 ds.DoseReferenceSequence = [dr]
 
 fg = Dataset()
@@ -272,7 +282,7 @@ for num, name, gantry in [(1, "G000", 0.0), (2, "G090", 90.0)]:
             cp.GantryRotationDirection = "NONE"
             cp.PatientSupportAngle = "0"
             cp.PatientSupportRotationDirection = "NONE"
-            cp.IsocenterPosition = ["0.0", "0.0", "0.0"]
+            cp.IsocenterPosition = ["0.0", f"{SHIFT_Y:.1f}", "0.0"]
         cps.append(cp)
     b.IonControlPointSequence = cps
     beams.append(b)
@@ -295,10 +305,10 @@ dzs = DZ0 + np.arange(DNZ) * SPACING
 DXX, DYY = np.meshgrid(dxs, dys)
 
 SIGMA = 20.0
-PEAK = 60.0
+PEAK = args.peak
 frames = []
 for z in dzs:
-    r2 = DXX**2 + DYY**2 + z**2
+    r2 = DXX**2 + (DYY - SHIFT_Y) ** 2 + z**2
     dose = PEAK * np.exp(-r2 / (2.0 * SIGMA**2))
     frames.append(dose)
 dose3d = np.stack(frames, axis=0)  # [frame, row, col]

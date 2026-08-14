@@ -1,6 +1,9 @@
 //! rust-dicom-viewer — a fast, robust DICOM / RT DICOM viewer in pure Rust.
 //!
-//! Usage: `rust-dicom-viewer [DICOM_DIRECTORY]`
+//! Usage: `rust-dicom-viewer [DICOM_DIRECTORY] [COMPARISON_DIRECTORY]`
+//!
+//! With two directories, comparison mode starts automatically (study A on
+//! top, study B below — six views total).
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -10,6 +13,7 @@ use std::path::PathBuf;
 
 fn main() -> eframe::Result<()> {
     let initial_path: Option<PathBuf> = std::env::args().nth(1).map(PathBuf::from);
+    let initial_path_b: Option<PathBuf> = std::env::args().nth(2).map(PathBuf::from);
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -23,6 +27,8 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "rust-dicom-viewer",
         options,
-        Box::new(move |cc| Ok(Box::new(app::ViewerApp::new(cc, initial_path)))),
+        Box::new(move |cc| {
+            Ok(Box::new(app::ViewerApp::new(cc, initial_path, initial_path_b)))
+        }),
     )
 }

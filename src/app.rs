@@ -1,5 +1,5 @@
-//! The egui application: three linked MPR views in a row, structure/dose/plan
-//! panels, and all interaction logic.
+//! The egui application: menu bar, toolbar, side panel, and one or two rows
+//! (comparison mode) of three linked MPR views.
 
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -13,6 +13,8 @@ use egui::{
 use crate::loader::{self, LoadedStudy, Progress};
 use crate::render;
 use crate::volume::{ViewPlane, Volume};
+
+const SLOT_NAMES: [&str; 2] = ["A", "B"];
 
 // ---------------------------------------------------------------------------
 // Dose display settings
@@ -124,13 +126,48 @@ impl ViewState {
     }
 }
 
+fn fresh_views() -> [ViewState; 3] {
+    [
+        ViewState::new(ViewPlane::Axial),
+        ViewState::new(ViewPlane::Sagittal),
+        ViewState::new(ViewPlane::Coronal),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// A loaded study with its own display state ("A" = primary, "B" = comparison)
+// ---------------------------------------------------------------------------
+
+struct StudySlot {
+    study: Option<LoadedStudy>,
+    views: [ViewState; 3],
+    /// Fractional voxel coords of the linked crosshair (in this slot's volume).
+    cursor: [f64; 3],
+    roi_visible: Vec<bool>,
+    active_dose: usize,
+    dose_reference: f32,
+}
+
+impl StudySlot {
+    fn empty() -> Self {
+        StudySlot {
+            study: None,
+            views: fresh_views(),
+            cursor: [0.0; 3],
+            roi_visible: Vec::new(),
+            active_dose: 0,
+            dose_reference: 1.0,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Background loading
 // ---------------------------------------------------------------------------
 
 enum LoadResult {
-    Study(Box<anyhow::Result<LoadedStudy>>),
-    Volume(Box<anyhow::Result<(Volume, (f32, f32), Vec<String>)>>, usize),
+    Study(Box<anyhow::Result<LoadedStudy>>, usize),
+    Volume(Box<anyhow::Result<(Volume, (f32, f32), Vec<String>)>>, usize, usize),
 }
 
 struct LoadJob {
@@ -143,27 +180,30 @@ struct LoadJob {
 // ---------------------------------------------------------------------------
 
 pub struct ViewerApp {
-    study: Option<LoadedStudy>,
-    loading: Option<LoadJob>,
-    error: Option<String>,
+    slots: [StudySlot; 2],
+    /// Comparison mode: study B shown in a second row of three views.
+    comparison: bool,
+    /// Propagate the crosshair between studies via patient coordinates.
+    link_studies: bool,
+    /// Slot whose readout is expanded in the status bar.
+    hovered_slot: usize,
 
-    views: [ViewState; 3],
-    cursor: [f64; 3], // fractional voxel coords of the linked crosshair
+    loading: Option<LoadJob>,
+    /// A load queued behind the one in flight (slot, directory).
+    pending_load: Option<(usize, PathBuf)>,
+    error: Option<String>,
 
     window_center: f32,
     window_width: f32,
 
-    roi_visible: Vec<bool>,
     show_contours: bool,
     show_crosshair: bool,
     show_labels: bool,
     show_isocenters: bool,
 
-    active_dose: usize,
     dose_mode: DoseMode,
     dose_opacity: f32,
     dose_threshold_pct: f32,
-    dose_reference: f32,
     iso_levels: Vec<IsoLevel>,
 
     /// Bumped whenever ROI visibility / dose settings change → cache rebuild.
@@ -171,74 +211,90 @@ pub struct ViewerApp {
 }
 
 impl ViewerApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, initial_path: Option<PathBuf>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        initial_a: Option<PathBuf>,
+        initial_b: Option<PathBuf>,
+    ) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         let mut app = ViewerApp {
-            study: None,
+            slots: [StudySlot::empty(), StudySlot::empty()],
+            comparison: initial_b.is_some(),
+            link_studies: true,
+            hovered_slot: 0,
             loading: None,
+            pending_load: None,
             error: None,
-            views: [
-                ViewState::new(ViewPlane::Axial),
-                ViewState::new(ViewPlane::Sagittal),
-                ViewState::new(ViewPlane::Coronal),
-            ],
-            cursor: [0.0; 3],
             window_center: 40.0,
             window_width: 400.0,
-            roi_visible: Vec::new(),
             show_contours: true,
             show_crosshair: true,
             show_labels: true,
             show_isocenters: true,
-            active_dose: 0,
             dose_mode: DoseMode::Off,
             dose_opacity: 0.45,
             dose_threshold_pct: 15.0,
-            dose_reference: 1.0,
             iso_levels: default_iso_levels(),
             settings_gen: 0,
         };
-        if let Some(p) = initial_path {
-            app.start_load(p);
+        if let Some(p) = initial_a {
+            app.start_load(0, p);
+        }
+        if let Some(p) = initial_b {
+            app.pending_load = Some((1, p));
         }
         app
     }
 
-    fn start_load(&mut self, path: PathBuf) {
+    fn start_load(&mut self, slot: usize, path: PathBuf) {
+        if self.loading.is_some() {
+            self.pending_load = Some((slot, path));
+            return;
+        }
         let progress = Arc::new(Progress::default());
         let (tx, rx) = mpsc::channel();
         let p2 = progress.clone();
         std::thread::spawn(move || {
             let res = loader::load_directory(&path, &p2);
-            let _ = tx.send(LoadResult::Study(Box::new(res)));
+            let _ = tx.send(LoadResult::Study(Box::new(res), slot));
         });
         self.loading = Some(LoadJob { progress, rx });
     }
 
-    fn start_series_switch(&mut self, idx: usize) {
-        let Some(study) = &self.study else { return };
+    fn start_series_switch(&mut self, slot: usize, idx: usize) {
+        if self.loading.is_some() {
+            return;
+        }
+        let Some(study) = &self.slots[slot].study else { return };
         let series = study.series[idx].clone();
         let progress = Arc::new(Progress::default());
         let (tx, rx) = mpsc::channel();
         let p2 = progress.clone();
         std::thread::spawn(move || {
             let res = loader::load_series_volume(&series, &p2);
-            let _ = tx.send(LoadResult::Volume(Box::new(res), idx));
+            let _ = tx.send(LoadResult::Volume(Box::new(res), slot, idx));
         });
         self.loading = Some(LoadJob { progress, rx });
     }
 
-    fn on_study_loaded(&mut self, study: LoadedStudy) {
-        self.window_center = study.default_window.0;
-        self.window_width = study.default_window.1;
-        self.roi_visible = study
+    fn on_study_loaded(&mut self, slot: usize, study: LoadedStudy) {
+        let other_loaded = self.slots[1 - slot].study.is_some();
+        // Shared W/L: adopt the study default unless another study is already up.
+        if !other_loaded {
+            self.window_center = study.default_window.0;
+            self.window_width = study.default_window.1;
+        }
+        if !study.doses.is_empty() && self.dose_mode == DoseMode::Off {
+            self.dose_mode = DoseMode::Both;
+        }
+        let s = &mut self.slots[slot];
+        s.roi_visible = study
             .structures
             .as_ref()
-            .map(|s| vec![true; s.rois.len()])
+            .map(|ss| vec![true; ss.rois.len()])
             .unwrap_or_default();
-        self.active_dose = 0;
-        self.dose_mode = if study.doses.is_empty() { DoseMode::Off } else { DoseMode::Both };
-        self.dose_reference = study
+        s.active_dose = 0;
+        s.dose_reference = study
             .plans
             .iter()
             .find_map(|p| p.target_prescription_dose)
@@ -246,12 +302,12 @@ impl ViewerApp {
             .or_else(|| study.doses.first().map(|d| d.max_dose))
             .unwrap_or(1.0);
         let dims = study.volume.dims;
-        self.cursor = [
+        s.cursor = [
             dims[0] as f64 * 0.5,
             dims[1] as f64 * 0.5,
             dims[2] as f64 * 0.5,
         ];
-        for v in &mut self.views {
+        for v in &mut s.views {
             v.slice = match v.plane {
                 ViewPlane::Axial => dims[2] / 2,
                 ViewPlane::Sagittal => dims[0] / 2,
@@ -261,24 +317,35 @@ impl ViewerApp {
             v.pan = Vec2::ZERO;
             v.invalidate();
         }
-        self.study = Some(study);
+        s.study = Some(study);
+        if slot == 1 {
+            self.comparison = true;
+        }
         self.settings_gen += 1;
     }
 
-    fn apply_new_volume(&mut self, vol: Volume, window: (f32, f32), idx: usize) {
-        if let Some(study) = &mut self.study {
-            study.volume = vol;
-            study.active_series = idx;
+    fn apply_new_volume(&mut self, slot: usize, vol: Volume, window: (f32, f32), idx: usize) {
+        let other_loaded = self.slots[1 - slot].study.is_some();
+        if !other_loaded {
             self.window_center = window.0;
             self.window_width = window.1;
+        }
+        let s = &mut self.slots[slot];
+        if let Some(study) = &mut s.study {
+            study.volume = vol;
+            study.active_series = idx;
             let dims = study.volume.dims;
-            self.cursor = [
+            s.cursor = [
                 dims[0] as f64 * 0.5,
                 dims[1] as f64 * 0.5,
                 dims[2] as f64 * 0.5,
             ];
-            for v in &mut self.views {
-                v.slice = study.volume.plane_slice_count(v.plane) / 2;
+            for v in &mut s.views {
+                v.slice = match v.plane {
+                    ViewPlane::Axial => dims[2] / 2,
+                    ViewPlane::Sagittal => dims[0] / 2,
+                    ViewPlane::Coronal => dims[1] / 2,
+                };
                 v.zoom = 0.0;
                 v.pan = Vec2::ZERO;
                 v.invalidate();
@@ -287,18 +354,34 @@ impl ViewerApp {
         }
     }
 
-    /// Combined hash of everything that affects dose overlays.
-    fn dose_settings_hash(&self) -> u64 {
+    fn close_comparison(&mut self) {
+        self.slots[1] = StudySlot::empty();
+        self.comparison = false;
+        self.hovered_slot = 0;
+    }
+
+    fn reset_all_views(&mut self) {
+        for s in &mut self.slots {
+            for v in &mut s.views {
+                v.zoom = 0.0;
+                v.pan = Vec2::ZERO;
+            }
+        }
+    }
+
+    /// Combined hash of everything that affects dose overlays of a slot.
+    fn dose_settings_hash(&self, slot: usize) -> u64 {
         let mut h: u64 = 0xcbf29ce484222325;
         let mut mix = |v: u64| {
             h ^= v;
             h = h.wrapping_mul(0x100000001b3);
         };
-        mix(self.active_dose as u64);
+        mix(slot as u64 + 1);
+        mix(self.slots[slot].active_dose as u64);
         mix(self.dose_mode as u64);
         mix(self.dose_opacity.to_bits() as u64);
         mix(self.dose_threshold_pct.to_bits() as u64);
-        mix(self.dose_reference.to_bits() as u64);
+        mix(self.slots[slot].dose_reference.to_bits() as u64);
         for l in &self.iso_levels {
             mix(l.pct.to_bits() as u64 | ((l.on as u64) << 40));
         }
@@ -306,14 +389,18 @@ impl ViewerApp {
         h
     }
 
-    fn contour_settings_hash(&self) -> u64 {
-        let mut h: u64 = 0x9e3779b97f4a7c15;
-        for (i, v) in self.roi_visible.iter().enumerate() {
+    fn contour_settings_hash(&self, slot: usize) -> u64 {
+        let mut h: u64 = 0x9e3779b97f4a7c15 ^ (slot as u64).wrapping_mul(0xff51afd7ed558ccd);
+        for (i, v) in self.slots[slot].roi_visible.iter().enumerate() {
             if *v {
                 h = h.rotate_left(7) ^ (i as u64 + 1);
             }
         }
         h ^ self.settings_gen.wrapping_mul(0x2545F4914F6CDD1D)
+    }
+
+    fn pick_folder(title: &str) -> Option<PathBuf> {
+        rfd::FileDialog::new().set_title(title).pick_folder()
     }
 }
 
@@ -327,19 +414,19 @@ impl eframe::App for ViewerApp {
         // Poll background loading.
         if let Some(job) = &self.loading {
             match job.rx.try_recv() {
-                Ok(LoadResult::Study(res)) => {
+                Ok(LoadResult::Study(res, slot)) => {
                     self.loading = None;
                     match *res {
-                        Ok(study) => self.on_study_loaded(study),
+                        Ok(study) => self.on_study_loaded(slot, study),
                         Err(e) => self.error = Some(format!("{e:#}")),
                     }
                 }
-                Ok(LoadResult::Volume(res, idx)) => {
+                Ok(LoadResult::Volume(res, slot, idx)) => {
                     self.loading = None;
                     match *res {
                         Ok((vol, window, warnings)) => {
-                            self.apply_new_volume(vol, window, idx);
-                            if let Some(study) = &mut self.study {
+                            self.apply_new_volume(slot, vol, window, idx);
+                            if let Some(study) = &mut self.slots[slot].study {
                                 study.warnings.extend(warnings);
                             }
                         }
@@ -355,7 +442,14 @@ impl eframe::App for ViewerApp {
                 }
             }
         }
+        // Kick a queued load once the current one finished.
+        if self.loading.is_none() {
+            if let Some((slot, path)) = self.pending_load.take() {
+                self.start_load(slot, path);
+            }
+        }
 
+        self.menu_bar(ui, &ctx);
         self.top_bar(ui);
         self.side_panel(ui);
         self.status_bar(ui);
@@ -365,64 +459,114 @@ impl eframe::App for ViewerApp {
 }
 
 impl ViewerApp {
-    // -- Top bar ----------------------------------------------------------
+    // -- Menu bar ---------------------------------------------------------
+
+    fn menu_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let mut open_a = false;
+        let mut open_b = false;
+        let mut close_b = false;
+        let mut reset_views = false;
+
+        egui::Panel::top(egui::Id::new("menu_bar")).show(ui, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("📂 Open study…").clicked() {
+                        open_a = true;
+                        ui.close();
+                    }
+                    if ui.button("📂 Open comparison study (B)…").clicked() {
+                        open_b = true;
+                        ui.close();
+                    }
+                    let has_b = self.slots[1].study.is_some();
+                    if ui
+                        .add_enabled(has_b, egui::Button::new("Close comparison study"))
+                        .clicked()
+                    {
+                        close_b = true;
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("Quit").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+                ui.menu_button("View", |ui| {
+                    if ui
+                        .checkbox(&mut self.comparison, "Comparison mode (2 × 3 views)")
+                        .clicked()
+                    {
+                        ui.close();
+                    }
+                    ui.checkbox(&mut self.link_studies, "Link crosshairs between studies");
+                    ui.separator();
+                    ui.checkbox(&mut self.show_contours, "Contours");
+                    ui.checkbox(&mut self.show_crosshair, "Crosshair");
+                    ui.checkbox(&mut self.show_labels, "Orientation labels");
+                    ui.checkbox(&mut self.show_isocenters, "Isocenters");
+                    ui.separator();
+                    if ui.button("Reset all views").clicked() {
+                        reset_views = true;
+                        ui.close();
+                    }
+                });
+                ui.menu_button("Help", |ui| {
+                    ui.label("Mouse bindings:");
+                    ui.weak("Left click / drag — move linked crosshair");
+                    ui.weak("Mouse wheel — scroll slices");
+                    ui.weak("Ctrl + wheel — zoom at cursor");
+                    ui.weak("Middle drag — pan");
+                    ui.weak("Right drag — window / level");
+                    ui.weak("Double click — reset view");
+                });
+            });
+        });
+
+        if open_a {
+            if let Some(dir) = Self::pick_folder("Select DICOM directory (study A)") {
+                self.start_load(0, dir);
+            }
+        }
+        if open_b {
+            if let Some(dir) = Self::pick_folder("Select DICOM directory (study B)") {
+                self.comparison = true;
+                self.start_load(1, dir);
+            }
+        }
+        if close_b {
+            self.close_comparison();
+        }
+        if reset_views {
+            self.reset_all_views();
+        }
+    }
+
+    // -- Toolbar ----------------------------------------------------------
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
-        let mut switch_to: Option<usize> = None;
         egui::Panel::top(egui::Id::new("top_bar")).show(ui, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("📂 Open folder…").clicked() {
-                    if let Some(dir) = rfd::FileDialog::new()
-                        .set_title("Select a DICOM directory")
-                        .pick_folder()
-                    {
-                        self.start_load(dir);
+                    if let Some(dir) = Self::pick_folder("Select a DICOM directory") {
+                        self.start_load(0, dir);
                     }
                 }
 
-                if let Some(study) = &self.study {
-                    ui.separator();
-                    // Series selector.
-                    let active = study.active_series;
-                    let mut selected = active;
-                    let label = |s: &loader::SeriesInfo| {
-                        format!(
-                            "{} {} ({} sl.)",
-                            s.modality,
-                            if s.description.is_empty() { "series" } else { &s.description },
-                            s.files.len()
-                        )
-                    };
-                    egui::ComboBox::from_id_salt("series_sel")
-                        .width(220.0)
-                        .selected_text(label(&study.series[active]))
-                        .show_ui(ui, |ui| {
-                            for (i, s) in study.series.iter().enumerate() {
-                                ui.selectable_value(&mut selected, i, label(s));
-                            }
-                        });
-                    if selected != active {
-                        switch_to = Some(selected);
-                    }
-
+                if self.slots[0].study.is_some() || self.slots[1].study.is_some() {
                     ui.separator();
                     ui.label("W/L:");
-                    let mut changed = false;
-                    changed |= ui
-                        .add(
-                            egui::DragValue::new(&mut self.window_center)
-                                .speed(2.0)
-                                .prefix("C "),
-                        )
-                        .changed();
-                    changed |= ui
-                        .add(
-                            egui::DragValue::new(&mut self.window_width)
-                                .speed(4.0)
-                                .range(1.0..=20000.0)
-                                .prefix("W "),
-                        )
-                        .changed();
+                    ui.add(
+                        egui::DragValue::new(&mut self.window_center)
+                            .speed(2.0)
+                            .prefix("C "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.window_width)
+                            .speed(4.0)
+                            .range(1.0..=20000.0)
+                            .prefix("W "),
+                    );
+                    let mut full_range = false;
                     egui::ComboBox::from_id_salt("wl_preset")
                         .selected_text("Presets")
                         .width(90.0)
@@ -431,19 +575,19 @@ impl ViewerApp {
                                 if ui.button(*name).clicked() {
                                     self.window_center = *c;
                                     self.window_width = *w;
-                                    changed = true;
                                 }
                             }
                             if ui.button("Full range").clicked() {
-                                let v = &self.study.as_ref().unwrap().volume;
-                                self.window_center =
-                                    (v.min_value as f32 + v.max_value as f32) * 0.5;
-                                self.window_width =
-                                    (v.max_value as f32 - v.min_value as f32).max(1.0);
-                                changed = true;
+                                full_range = true;
                             }
                         });
-                    let _ = changed;
+                    if full_range {
+                        if let Some(study) = &self.slots[self.hovered_slot.min(1)].study {
+                            let v = &study.volume;
+                            self.window_center = (v.min_value as f32 + v.max_value as f32) * 0.5;
+                            self.window_width = (v.max_value as f32 - v.min_value as f32).max(1.0);
+                        }
+                    }
 
                     ui.separator();
                     ui.checkbox(&mut self.show_contours, "Contours");
@@ -451,195 +595,296 @@ impl ViewerApp {
                     ui.checkbox(&mut self.show_labels, "Labels");
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let m = &study.meta;
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{}  {}  {}",
-                                m.patient_name.replace('^', " "),
-                                m.patient_id,
-                                m.study_date
-                            ))
-                            .weak(),
-                        )
-                        .on_hover_text(if m.study_description.is_empty() {
-                            "No study description".to_string()
-                        } else {
-                            m.study_description.clone()
-                        });
+                        let mut parts = Vec::new();
+                        for (i, s) in self.slots.iter().enumerate() {
+                            if let Some(study) = &s.study {
+                                let m = &study.meta;
+                                parts.push(format!(
+                                    "{}: {} {}",
+                                    SLOT_NAMES[i],
+                                    m.patient_name.replace('^', " "),
+                                    m.study_date
+                                ));
+                            }
+                        }
+                        ui.label(egui::RichText::new(parts.join("   ")).weak());
                     });
                 }
             });
         });
-        if let Some(i) = switch_to {
-            if self.loading.is_none() {
-                self.start_series_switch(i);
-            }
-        }
     }
 
     // -- Side panel -------------------------------------------------------
 
     fn side_panel(&mut self, ui: &mut egui::Ui) {
-        if self.study.is_none() {
+        if self.slots[0].study.is_none() && self.slots[1].study.is_none() {
             return;
         }
         egui::Panel::left(egui::Id::new("side"))
             .resizable(true)
-            .default_size(270.0)
+            .default_size(280.0)
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    self.structures_section(ui);
-                    self.dose_section(ui);
-                    self.plan_section(ui);
-                    self.warnings_section(ui);
+                    for slot in 0..2 {
+                        if self.slots[slot].study.is_none() {
+                            continue;
+                        }
+                        self.study_section(ui, slot);
+                    }
                 });
             });
     }
 
-    fn structures_section(&mut self, ui: &mut egui::Ui) {
-        let Some(study) = &self.study else { return };
-        let Some(ss) = &study.structures else {
-            ui.collapsing("Structures", |ui| {
-                ui.weak("No RTSTRUCT loaded");
-            });
-            return;
+    fn study_section(&mut self, ui: &mut egui::Ui, slot: usize) {
+        let header = {
+            let study = self.slots[slot].study.as_ref().unwrap();
+            let m = &study.meta;
+            let both = self.slots[0].study.is_some() && self.slots[1].study.is_some();
+            if both || slot == 1 {
+                format!(
+                    "Study {} — {} {}",
+                    SLOT_NAMES[slot],
+                    m.patient_name.replace('^', " "),
+                    m.study_date
+                )
+            } else {
+                format!("{} {}", m.patient_name.replace('^', " "), m.study_date)
+            }
         };
-        let n_vis = self.roi_visible.iter().filter(|v| **v).count();
-        let mut changed = false;
-        egui::CollapsingHeader::new(format!("Structures ({}/{})", n_vis, ss.rois.len()))
+        egui::CollapsingHeader::new(egui::RichText::new(header).strong())
+            .id_salt(("study_hdr", slot))
             .default_open(true)
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    if ui.small_button("All").clicked() {
-                        self.roi_visible.iter_mut().for_each(|v| *v = true);
-                        changed = true;
-                    }
-                    if ui.small_button("None").clicked() {
-                        self.roi_visible.iter_mut().for_each(|v| *v = false);
-                        changed = true;
-                    }
-                    ui.weak(&ss.label);
+                self.series_selector(ui, slot);
+                self.structures_section(ui, slot);
+                self.dose_section(ui, slot);
+                self.plan_section(ui, slot);
+                self.warnings_section(ui, slot);
+            });
+        ui.separator();
+    }
+
+    fn series_selector(&mut self, ui: &mut egui::Ui, slot: usize) {
+        let mut switch_to = None;
+        {
+            let study = self.slots[slot].study.as_ref().unwrap();
+            if study.series.len() > 1 {
+                let active = study.active_series;
+                let mut selected = active;
+                let label = |s: &loader::SeriesInfo| {
+                    format!(
+                        "{} {} ({} sl.)",
+                        s.modality,
+                        if s.description.is_empty() { "series" } else { &s.description },
+                        s.files.len()
+                    )
+                };
+                egui::ComboBox::from_id_salt(("series_sel", slot))
+                    .width(230.0)
+                    .selected_text(label(&study.series[active]))
+                    .show_ui(ui, |ui| {
+                        for (i, s) in study.series.iter().enumerate() {
+                            ui.selectable_value(&mut selected, i, label(s));
+                        }
+                    });
+                if selected != active {
+                    switch_to = Some(selected);
+                }
+            } else {
+                let s = &study.series[study.active_series];
+                ui.weak(format!(
+                    "{} {} ({} sl.)",
+                    s.modality,
+                    if s.description.is_empty() { "series" } else { &s.description },
+                    s.files.len()
+                ));
+            }
+        }
+        if let Some(i) = switch_to {
+            self.start_series_switch(slot, i);
+        }
+    }
+
+    fn structures_section(&mut self, ui: &mut egui::Ui, slot: usize) {
+        let has = self.slots[slot]
+            .study
+            .as_ref()
+            .is_some_and(|s| s.structures.is_some());
+        if !has {
+            egui::CollapsingHeader::new("Structures")
+                .id_salt(("structs_hdr", slot))
+                .show(ui, |ui| {
+                    ui.weak("No RTSTRUCT loaded");
                 });
-                for (i, roi) in ss.rois.iter().enumerate() {
+            return;
+        }
+        let mut changed = false;
+        {
+            let StudySlot { study, roi_visible, .. } = &mut self.slots[slot];
+            let ss = study.as_ref().unwrap().structures.as_ref().unwrap();
+            let n_vis = roi_visible.iter().filter(|v| **v).count();
+            egui::CollapsingHeader::new(format!("Structures ({}/{})", n_vis, ss.rois.len()))
+                .id_salt(("structs", slot))
+                .default_open(true)
+                .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let (rect, _) =
-                            ui.allocate_exact_size(egui::vec2(12.0, 12.0), Sense::hover());
-                        ui.painter().rect_filled(
-                            rect,
-                            2.0,
-                            Color32::from_rgb(roi.color[0], roi.color[1], roi.color[2]),
-                        );
-                        let resp = ui.checkbox(
-                            &mut self.roi_visible[i],
-                            format!(
-                                "{}{}",
-                                roi.name,
-                                if roi.roi_type.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!("  [{}]", roi.roi_type)
-                                }
-                            ),
-                        );
-                        if resp.changed() {
+                        if ui.small_button("All").clicked() {
+                            roi_visible.iter_mut().for_each(|v| *v = true);
                             changed = true;
                         }
-                        resp.on_hover_text(format!(
-                            "ROI {} · {} contour(s)",
-                            roi.number,
-                            roi.contours.len()
-                        ));
+                        if ui.small_button("None").clicked() {
+                            roi_visible.iter_mut().for_each(|v| *v = false);
+                            changed = true;
+                        }
+                        ui.weak(&ss.label);
                     });
-                }
-            });
+                    for (i, roi) in ss.rois.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            let (rect, _) =
+                                ui.allocate_exact_size(egui::vec2(12.0, 12.0), Sense::hover());
+                            ui.painter().rect_filled(
+                                rect,
+                                2.0,
+                                Color32::from_rgb(roi.color[0], roi.color[1], roi.color[2]),
+                            );
+                            let resp = ui.checkbox(
+                                &mut roi_visible[i],
+                                format!(
+                                    "{}{}",
+                                    roi.name,
+                                    if roi.roi_type.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!("  [{}]", roi.roi_type)
+                                    }
+                                ),
+                            );
+                            if resp.changed() {
+                                changed = true;
+                            }
+                            resp.on_hover_text(format!(
+                                "ROI {} · {} contour(s)",
+                                roi.number,
+                                roi.contours.len()
+                            ));
+                        });
+                    }
+                });
+        }
         if changed {
             self.settings_gen += 1;
         }
     }
 
-    fn dose_section(&mut self, ui: &mut egui::Ui) {
-        let Some(study) = &self.study else { return };
-        if study.doses.is_empty() {
-            ui.collapsing("Dose", |ui| {
-                ui.weak("No RTDOSE loaded");
-            });
+    fn dose_section(&mut self, ui: &mut egui::Ui, slot: usize) {
+        let n_doses = self.slots[slot]
+            .study
+            .as_ref()
+            .map(|s| s.doses.len())
+            .unwrap_or(0);
+        if n_doses == 0 {
+            egui::CollapsingHeader::new("Dose")
+                .id_salt(("dose_hdr", slot))
+                .show(ui, |ui| {
+                    ui.weak("No RTDOSE loaded");
+                });
             return;
         }
-        let doses = &study.doses;
-        egui::CollapsingHeader::new("Dose")
-            .default_open(true)
-            .show(ui, |ui| {
-                if doses.len() > 1 {
-                    let mut sel = self.active_dose;
-                    egui::ComboBox::from_id_salt("dose_sel")
-                        .width(230.0)
-                        .selected_text(&doses[sel.min(doses.len() - 1)].label)
+        let mut mode = self.dose_mode;
+        let mut opacity = self.dose_opacity;
+        let mut threshold = self.dose_threshold_pct;
+        {
+            let StudySlot { study, active_dose, dose_reference, .. } = &mut self.slots[slot];
+            let doses = &study.as_ref().unwrap().doses;
+            egui::CollapsingHeader::new("Dose")
+                .id_salt(("dose", slot))
+                .default_open(true)
+                .show(ui, |ui| {
+                    if doses.len() > 1 {
+                        let mut sel = (*active_dose).min(doses.len() - 1);
+                        egui::ComboBox::from_id_salt(("dose_sel", slot))
+                            .width(230.0)
+                            .selected_text(&doses[sel].label)
+                            .show_ui(ui, |ui| {
+                                for (i, d) in doses.iter().enumerate() {
+                                    ui.selectable_value(&mut sel, i, &d.label);
+                                }
+                            });
+                        *active_dose = sel;
+                    }
+                    let d = &doses[(*active_dose).min(doses.len() - 1)];
+                    ui.weak(format!(
+                        "{}  max {:.2} {}",
+                        d.summation_type,
+                        d.max_dose,
+                        d.units.to_lowercase()
+                    ));
+
+                    egui::ComboBox::from_id_salt(("dose_mode", slot))
+                        .selected_text(mode.label())
                         .show_ui(ui, |ui| {
-                            for (i, d) in doses.iter().enumerate() {
-                                ui.selectable_value(&mut sel, i, &d.label);
+                            for m in
+                                [DoseMode::Off, DoseMode::Colorwash, DoseMode::Isodose, DoseMode::Both]
+                            {
+                                ui.selectable_value(&mut mode, m, m.label());
                             }
                         });
-                    if sel != self.active_dose {
-                        self.active_dose = sel;
-                    }
-                }
-                let d = &doses[self.active_dose.min(doses.len() - 1)];
-                ui.weak(format!(
-                    "{}  max {:.2} {}",
-                    d.summation_type,
-                    d.max_dose,
-                    d.units.to_lowercase()
-                ));
 
-                let mut mode = self.dose_mode;
-                egui::ComboBox::from_id_salt("dose_mode")
-                    .selected_text(mode.label())
-                    .show_ui(ui, |ui| {
-                        for m in [DoseMode::Off, DoseMode::Colorwash, DoseMode::Isodose, DoseMode::Both]
-                        {
-                            ui.selectable_value(&mut mode, m, m.label());
+                    ui.horizontal(|ui| {
+                        ui.label("Reference");
+                        ui.add(
+                            egui::DragValue::new(dose_reference)
+                                .speed(0.05)
+                                .range(0.01..=1000.0)
+                                .suffix(" Gy"),
+                        );
+                        if ui.small_button("max").clicked() {
+                            *dose_reference = d.max_dose;
                         }
                     });
-                self.dose_mode = mode;
-
-                ui.horizontal(|ui| {
-                    ui.label("Reference");
+                    ui.add(egui::Slider::new(&mut opacity, 0.0..=1.0).text("Opacity"));
                     ui.add(
-                        egui::DragValue::new(&mut self.dose_reference)
-                            .speed(0.05)
-                            .range(0.01..=1000.0)
-                            .suffix(" Gy"),
+                        egui::Slider::new(&mut threshold, 0.0..=100.0).text("Threshold %"),
                     );
-                    if ui.small_button("max").clicked() {
-                        self.dose_reference = d.max_dose;
+                });
+        }
+        self.dose_mode = mode;
+        self.dose_opacity = opacity;
+        self.dose_threshold_pct = threshold;
+
+        // Isodose levels are shared; show them once (under the first slot
+        // that has dose).
+        let first_dose_slot = (0..2).find(|&s| {
+            self.slots[s]
+                .study
+                .as_ref()
+                .is_some_and(|st| !st.doses.is_empty())
+        });
+        if first_dose_slot == Some(slot) {
+            egui::CollapsingHeader::new("Isodose levels (% of reference)")
+                .id_salt("iso_levels")
+                .default_open(true)
+                .show(ui, |ui| {
+                    for l in &mut self.iso_levels {
+                        ui.horizontal(|ui| {
+                            let (rect, _) =
+                                ui.allocate_exact_size(egui::vec2(12.0, 12.0), Sense::hover());
+                            ui.painter().rect_filled(rect, 2.0, l.color);
+                            ui.checkbox(&mut l.on, format!("{:.0}%", l.pct));
+                        });
                     }
                 });
-                ui.add(
-                    egui::Slider::new(&mut self.dose_opacity, 0.0..=1.0).text("Opacity"),
-                );
-                ui.add(
-                    egui::Slider::new(&mut self.dose_threshold_pct, 0.0..=100.0)
-                        .text("Threshold %"),
-                );
-
-                ui.label("Isodose levels (% of reference):");
-                for l in &mut self.iso_levels {
-                    ui.horizontal(|ui| {
-                        let (rect, _) =
-                            ui.allocate_exact_size(egui::vec2(12.0, 12.0), Sense::hover());
-                        ui.painter().rect_filled(rect, 2.0, l.color);
-                        ui.checkbox(&mut l.on, format!("{:.0}%", l.pct));
-                    });
-                }
-            });
+        }
     }
 
-    fn plan_section(&mut self, ui: &mut egui::Ui) {
-        let Some(study) = &self.study else { return };
+    fn plan_section(&mut self, ui: &mut egui::Ui, slot: usize) {
+        let Some(study) = &self.slots[slot].study else { return };
         if study.plans.is_empty() {
-            ui.collapsing("Plan", |ui| {
-                ui.weak("No RTPLAN loaded");
-            });
+            egui::CollapsingHeader::new("Plan")
+                .id_salt(("plan_hdr", slot))
+                .show(ui, |ui| {
+                    ui.weak("No RTPLAN loaded");
+                });
             return;
         }
         for (pi, plan) in study.plans.iter().enumerate() {
@@ -647,7 +892,7 @@ impl ViewerApp {
                 "Plan: {}",
                 if plan.label.is_empty() { "unnamed" } else { &plan.label }
             ))
-            .id_salt(("plan", pi))
+            .id_salt(("plan", slot, pi))
             .default_open(pi == 0)
             .show(ui, |ui| {
                 if !plan.name.is_empty() && plan.name != plan.label {
@@ -665,9 +910,8 @@ impl ViewerApp {
                 if !plan.date.is_empty() {
                     ui.weak(format!("Date: {}", plan.date));
                 }
-                ui.checkbox(&mut self.show_isocenters, "Show isocenters");
                 if !plan.beams.is_empty() {
-                    egui::Grid::new(("beam_grid", pi))
+                    egui::Grid::new(("beam_grid", slot, pi))
                         .striped(true)
                         .min_col_width(10.0)
                         .show(ui, |ui| {
@@ -732,8 +976,8 @@ impl ViewerApp {
         }
     }
 
-    fn warnings_section(&mut self, ui: &mut egui::Ui) {
-        let Some(study) = &self.study else { return };
+    fn warnings_section(&mut self, ui: &mut egui::Ui, slot: usize) {
+        let Some(study) = &self.slots[slot].study else { return };
         if study.warnings.is_empty() {
             return;
         }
@@ -741,6 +985,7 @@ impl ViewerApp {
             egui::RichText::new(format!("⚠ Warnings ({})", study.warnings.len()))
                 .color(Color32::from_rgb(240, 190, 60)),
         )
+        .id_salt(("warn", slot))
         .show(ui, |ui| {
             for w in &study.warnings {
                 ui.label(egui::RichText::new(w).small());
@@ -753,90 +998,171 @@ impl ViewerApp {
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::bottom(egui::Id::new("status")).show(ui, |ui| {
             ui.horizontal(|ui| {
-                if let Some(study) = &self.study {
+                let any = self.slots.iter().any(|s| s.study.is_some());
+                if !any {
+                    ui.weak("No data loaded");
+                    return;
+                }
+                for slot in 0..2 {
+                    if slot == 1 && !self.comparison {
+                        // Study B is hidden while comparison mode is off.
+                        continue;
+                    }
+                    let s = &self.slots[slot];
+                    let Some(study) = &s.study else { continue };
                     let v = &study.volume;
-                    let c = self.cursor;
+                    let c = s.cursor;
                     let p = v.voxel_to_patient(c[0], c[1], c[2]);
-                    ui.monospace(format!(
-                        "xyz: ({:7.1}, {:7.1}, {:7.1}) mm   ijk: ({:4}, {:4}, {:4})",
-                        p.x,
-                        p.y,
-                        p.z,
-                        c[0].round() as i64,
-                        c[1].round() as i64,
-                        c[2].round() as i64
-                    ));
+                    let both = self.comparison && self.slots[1].study.is_some();
+                    let prefix = if both {
+                        format!("{}: ", SLOT_NAMES[slot])
+                    } else {
+                        String::new()
+                    };
+                    if slot == self.hovered_slot || !both {
+                        ui.monospace(format!(
+                            "{}({:6.1},{:6.1},{:6.1})mm ijk({:3},{:3},{:3})",
+                            prefix,
+                            p.x,
+                            p.y,
+                            p.z,
+                            c[0].round() as i64,
+                            c[1].round() as i64,
+                            c[2].round() as i64
+                        ));
+                    } else {
+                        ui.monospace(prefix.trim_end().to_string());
+                    }
                     if let Some(hu) =
                         v.get(c[0].round() as i64, c[1].round() as i64, c[2].round() as i64)
                     {
-                        ui.monospace(format!("value: {hu:5}"));
+                        ui.monospace(format!("{hu:5} HU"));
                     }
                     if let Some(d) = study
                         .doses
-                        .get(self.active_dose)
+                        .get(s.active_dose)
                         .and_then(|d| d.sample(p))
                     {
                         ui.monospace(format!(
-                            "dose: {:.2} Gy ({:.0}%)",
+                            "{:.2} Gy ({:.0}%)",
                             d,
-                            100.0 * d / self.dose_reference.max(1e-6)
+                            100.0 * d / s.dose_reference.max(1e-6)
                         ));
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.weak("LMB crosshair · RMB W/L · MMB pan · wheel slice · Ctrl+wheel zoom · double-click reset");
-                    });
-                } else {
-                    ui.weak("No data loaded");
+                    if both && slot == 0 {
+                        ui.separator();
+                    }
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.weak("LMB crosshair · RMB W/L · MMB pan · wheel slice · Ctrl+wheel zoom · double-click reset");
+                });
             });
         });
     }
 
-    // -- Central: three views in a row ------------------------------------
+    // -- Central: one or two rows of three views --------------------------
 
     fn central_views(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default_margins()
             .frame(egui::Frame::NONE.fill(Color32::from_gray(10)))
             .show(ui, |ui| {
-                if self.study.is_none() {
+                if self.slots[0].study.is_none() && self.slots[1].study.is_none() {
                     self.empty_state(ui);
                     return;
                 }
+                let two_rows = self.comparison;
                 let full = ui.available_rect_before_wrap();
-                let gap = 4.0;
-                let slider_h = 26.0;
-                let col_w = (full.width() - 2.0 * gap) / 3.0;
-                for idx in 0..3 {
-                    let x0 = full.left() + idx as f32 * (col_w + gap);
-                    let col =
-                        Rect::from_min_size(Pos2::new(x0, full.top()), Vec2::new(col_w, full.height()));
-                    let view_rect = Rect::from_min_max(
-                        col.min,
-                        Pos2::new(col.max.x, col.max.y - slider_h),
+                let row_gap = 6.0;
+                let n_rows = if two_rows { 2.0 } else { 1.0 };
+                let row_h = (full.height() - (n_rows - 1.0) * row_gap) / n_rows;
+
+                for row in 0..(n_rows as usize) {
+                    let y0 = full.top() + row as f32 * (row_h + row_gap);
+                    let row_rect = Rect::from_min_size(
+                        Pos2::new(full.left(), y0),
+                        Vec2::new(full.width(), row_h),
                     );
-                    let slider_rect = Rect::from_min_max(
-                        Pos2::new(col.min.x + 6.0, col.max.y - slider_h + 2.0),
-                        Pos2::new(col.max.x - 6.0, col.max.y - 2.0),
-                    );
-                    self.one_view(ui, idx, view_rect);
-                    // Slice slider under the view.
-                    let max_slice = self
-                        .study
-                        .as_ref()
-                        .map(|s| s.volume.plane_slice_count(self.views[idx].plane).saturating_sub(1))
-                        .unwrap_or(0);
-                    if max_slice > 0 {
-                        let mut slice = self.views[idx].slice.min(max_slice);
-                        let resp = ui.put(
-                            slider_rect,
-                            egui::Slider::new(&mut slice, 0..=max_slice).show_value(false),
-                        );
-                        if resp.changed() {
-                            self.views[idx].slice = slice;
-                        }
+                    if self.slots[row].study.is_some() {
+                        self.study_row(ui, row, row_rect);
+                    } else {
+                        self.empty_row(ui, row, row_rect);
                     }
                 }
             });
+    }
+
+    fn study_row(&mut self, ui: &mut egui::Ui, slot: usize, row_rect: Rect) {
+        let gap = 4.0;
+        let slider_h = 26.0;
+        let col_w = (row_rect.width() - 2.0 * gap) / 3.0;
+        for idx in 0..3 {
+            let x0 = row_rect.left() + idx as f32 * (col_w + gap);
+            let col = Rect::from_min_size(
+                Pos2::new(x0, row_rect.top()),
+                Vec2::new(col_w, row_rect.height()),
+            );
+            let view_rect =
+                Rect::from_min_max(col.min, Pos2::new(col.max.x, col.max.y - slider_h));
+            let slider_rect = Rect::from_min_max(
+                Pos2::new(col.min.x + 6.0, col.max.y - slider_h + 2.0),
+                Pos2::new(col.max.x - 6.0, col.max.y - 2.0),
+            );
+            self.one_view(ui, slot, idx, view_rect);
+            let max_slice = self.slots[slot]
+                .study
+                .as_ref()
+                .map(|s| {
+                    s.volume
+                        .plane_slice_count(self.slots[slot].views[idx].plane)
+                        .saturating_sub(1)
+                })
+                .unwrap_or(0);
+            if max_slice > 0 {
+                let mut slice = self.slots[slot].views[idx].slice.min(max_slice);
+                let resp = ui.put(
+                    slider_rect,
+                    egui::Slider::new(&mut slice, 0..=max_slice).show_value(false),
+                );
+                if resp.changed() {
+                    self.slots[slot].views[idx].slice = slice;
+                }
+            }
+        }
+    }
+
+    fn empty_row(&mut self, ui: &mut egui::Ui, slot: usize, rect: Rect) {
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 0.0, Color32::from_gray(14));
+        painter.text(
+            rect.center() - Vec2::new(0.0, 24.0),
+            Align2::CENTER_CENTER,
+            format!("No comparison study ({})", SLOT_NAMES[slot]),
+            FontId::proportional(15.0),
+            Color32::GRAY,
+        );
+        let btn_rect = Rect::from_center_size(
+            rect.center() + Vec2::new(0.0, 10.0),
+            Vec2::new(220.0, 28.0),
+        );
+        if ui
+            .put(btn_rect, egui::Button::new("📂 Open comparison study…"))
+            .clicked()
+        {
+            if let Some(dir) = Self::pick_folder("Select DICOM directory (study B)") {
+                self.start_load(slot, dir);
+            }
+        }
+        if self.loading.is_some() {
+            if let Some(job) = &self.loading {
+                painter.text(
+                    rect.center() + Vec2::new(0.0, 44.0),
+                    Align2::CENTER_CENTER,
+                    format!("⏳ {}", job.progress.get()),
+                    FontId::proportional(13.0),
+                    Color32::WHITE,
+                );
+            }
+        }
     }
 
     fn empty_state(&mut self, ui: &mut egui::Ui) {
@@ -854,8 +1180,8 @@ impl ViewerApp {
                     ui.label("Open a folder containing a DICOM study");
                     ui.add_space(8.0);
                     if ui.button("📂 Open folder…").clicked() {
-                        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                            self.start_load(dir);
+                        if let Some(dir) = Self::pick_folder("Select a DICOM directory") {
+                            self.start_load(0, dir);
                         }
                     }
                 }
@@ -865,16 +1191,17 @@ impl ViewerApp {
 
     // -- One viewport -----------------------------------------------------
 
-    fn one_view(&mut self, ui: &mut egui::Ui, idx: usize, rect: Rect) {
+    fn one_view(&mut self, ui: &mut egui::Ui, slot: usize, idx: usize, rect: Rect) {
         let ctx = ui.ctx().clone();
-        let plane = self.views[idx].plane;
+        let plane = self.slots[slot].views[idx].plane;
 
         // ---- cache refresh (image, dose, contours) ----
-        self.refresh_view_caches(&ctx, idx);
+        self.refresh_view_caches(&ctx, slot, idx);
 
-        let Some(study) = &self.study else { return };
+        let slot_state = &self.slots[slot];
+        let Some(study) = &slot_state.study else { return };
         let vol = &study.volume;
-        let view = &self.views[idx];
+        let view = &slot_state.views[idx];
 
         let [w_px, h_px] = vol.plane_dims(plane);
         let [sx, sy] = vol.plane_spacing(plane);
@@ -995,7 +1322,7 @@ impl ViewerApp {
 
         // Crosshair.
         if self.show_crosshair {
-            let cp = vol.voxel_to_plane_pixel(plane, self.cursor);
+            let cp = vol.voxel_to_plane_pixel(plane, slot_state.cursor);
             let c = px_to_screen([cp[0] as f32, cp[1] as f32]);
             let col = Color32::from_rgba_unmultiplied(120, 255, 120, 110);
             let s = Stroke::new(1.0, col);
@@ -1016,12 +1343,22 @@ impl ViewerApp {
         // Annotations.
         if self.show_labels {
             let n_slices = vol.plane_slice_count(plane);
+            let both = self.comparison;
+            let title = if both {
+                format!("{} · {}", plane.title(), SLOT_NAMES[slot])
+            } else {
+                plane.title().to_string()
+            };
             painter.text(
                 rect.left_top() + Vec2::new(6.0, 4.0),
                 Align2::LEFT_TOP,
-                plane.title(),
+                title,
                 FontId::proportional(14.0),
-                Color32::from_rgb(255, 170, 60),
+                if slot == 0 {
+                    Color32::from_rgb(255, 170, 60)
+                } else {
+                    Color32::from_rgb(120, 200, 255)
+                },
             );
             painter.text(
                 rect.right_top() + Vec2::new(-6.0, 4.0),
@@ -1068,7 +1405,7 @@ impl ViewerApp {
         // Loading overlay.
         if self.loading.is_some() {
             painter.rect_filled(rect, 0.0, Color32::from_rgba_unmultiplied(0, 0, 0, 140));
-            if idx == 1 {
+            if idx == 1 && slot == 0 {
                 if let Some(job) = &self.loading {
                     painter.text(
                         rect.center(),
@@ -1082,7 +1419,11 @@ impl ViewerApp {
         }
 
         // ---- interaction ----
-        let resp = ui.interact(rect, egui::Id::new(("viewport", idx)), Sense::click_and_drag());
+        let resp = ui.interact(
+            rect,
+            egui::Id::new(("viewport", slot, idx)),
+            Sense::click_and_drag(),
+        );
         let n_slices = vol.plane_slice_count(plane);
 
         let mut new_slice = None;
@@ -1091,8 +1432,8 @@ impl ViewerApp {
         let mut new_cursor = None;
         let mut wl_delta = None;
         let mut reset_view = false;
-
         let mut new_accum = None;
+
         if resp.hovered() {
             let (wheel_lines, zoom_delta, pointer) = ui.input(|i| {
                 let mut lines = 0.0f32;
@@ -1149,88 +1490,133 @@ impl ViewerApp {
         if resp.double_clicked() {
             reset_view = true;
         }
+        let hovered = resp.hovered();
 
         // Apply interactions (mutable phase).
+        if hovered {
+            self.hovered_slot = slot;
+        }
         if let Some(a) = new_accum {
-            self.views[idx].scroll_accum = a;
+            self.slots[slot].views[idx].scroll_accum = a;
         }
         if let Some(s) = new_slice {
-            self.views[idx].slice = s;
+            self.slots[slot].views[idx].slice = s;
         }
         if let Some(z) = new_zoom {
-            self.views[idx].zoom = z;
+            self.slots[slot].views[idx].zoom = z;
         }
         if let Some(p) = new_pan {
-            self.views[idx].pan = p;
+            self.slots[slot].views[idx].pan = p;
         }
         if reset_view {
-            self.views[idx].zoom = 0.0;
-            self.views[idx].pan = Vec2::ZERO;
+            self.slots[slot].views[idx].zoom = 0.0;
+            self.slots[slot].views[idx].pan = Vec2::ZERO;
         }
         if let Some((dx, dy)) = wl_delta {
             self.window_width = (self.window_width * (1.0 + dx * 0.005)).clamp(1.0, 30000.0);
             self.window_center += dy * self.window_width * 0.002;
         }
         if let Some(c) = new_cursor {
-            let dims = self.study.as_ref().unwrap().volume.dims;
-            self.cursor = [
-                c[0].clamp(0.0, dims[0] as f64 - 1.0),
-                c[1].clamp(0.0, dims[1] as f64 - 1.0),
-                c[2].clamp(0.0, dims[2] as f64 - 1.0),
+            self.set_cursor(slot, c, idx);
+        }
+    }
+
+    /// Set the crosshair of `slot` (voxel coords), sync its other two views,
+    /// and — when study linking is on — propagate the same patient-space
+    /// point to the other study.
+    fn set_cursor(&mut self, slot: usize, c: [f64; 3], source_view: usize) {
+        let Some(study) = &self.slots[slot].study else { return };
+        let dims = study.volume.dims;
+        let clamped = [
+            c[0].clamp(0.0, dims[0] as f64 - 1.0),
+            c[1].clamp(0.0, dims[1] as f64 - 1.0),
+            c[2].clamp(0.0, dims[2] as f64 - 1.0),
+        ];
+        let patient = study
+            .volume
+            .voxel_to_patient(clamped[0], clamped[1], clamped[2]);
+        self.slots[slot].cursor = clamped;
+        self.sync_views_to_cursor(slot, Some(source_view));
+
+        if self.link_studies {
+            let other = 1 - slot;
+            let Some(ostudy) = &self.slots[other].study else { return };
+            let odims = ostudy.volume.dims;
+            let oc = ostudy.volume.patient_to_voxel(patient);
+            self.slots[other].cursor = [
+                oc[0].clamp(0.0, odims[0] as f64 - 1.0),
+                oc[1].clamp(0.0, odims[1] as f64 - 1.0),
+                oc[2].clamp(0.0, odims[2] as f64 - 1.0),
             ];
-            // Link the other two views to the crosshair.
-            for i in 0..3 {
-                if i == idx {
-                    continue;
-                }
-                let pl = self.views[i].plane;
-                let sc = match pl {
-                    ViewPlane::Axial => self.cursor[2],
-                    ViewPlane::Sagittal => self.cursor[0],
-                    ViewPlane::Coronal => self.cursor[1],
-                };
-                let max = self
-                    .study
-                    .as_ref()
-                    .unwrap()
-                    .volume
-                    .plane_slice_count(pl)
-                    .saturating_sub(1);
-                self.views[i].slice = (sc.round().max(0.0) as usize).min(max);
+            self.sync_views_to_cursor(other, None);
+        }
+    }
+
+    /// Update slice indices of a slot's views to follow its cursor
+    /// (skipping the view the user is interacting with, if any).
+    fn sync_views_to_cursor(&mut self, slot: usize, skip_view: Option<usize>) {
+        let Some(study) = &self.slots[slot].study else { return };
+        let cursor = self.slots[slot].cursor;
+        let mut new_slices = [None; 3];
+        for i in 0..3 {
+            if skip_view == Some(i) {
+                continue;
+            }
+            let pl = self.slots[slot].views[i].plane;
+            let sc = match pl {
+                ViewPlane::Axial => cursor[2],
+                ViewPlane::Sagittal => cursor[0],
+                ViewPlane::Coronal => cursor[1],
+            };
+            let max = study.volume.plane_slice_count(pl).saturating_sub(1);
+            new_slices[i] = Some((sc.round().max(0.0) as usize).min(max));
+        }
+        for i in 0..3 {
+            if let Some(s) = new_slices[i] {
+                self.slots[slot].views[i].slice = s;
             }
         }
     }
 
     /// Rebuild per-view textures & cached geometry when their inputs changed.
-    fn refresh_view_caches(&mut self, ctx: &egui::Context, idx: usize) {
-        let Some(study) = &self.study else { return };
-        let vol = &study.volume;
-        let plane = self.views[idx].plane;
-        let n_slices = vol.plane_slice_count(plane);
-        if self.views[idx].slice >= n_slices {
-            self.views[idx].slice = n_slices.saturating_sub(1);
+    fn refresh_view_caches(&mut self, ctx: &egui::Context, slot: usize, idx: usize) {
+        if self.slots[slot].study.is_none() {
+            return;
         }
-        let slice = self.views[idx].slice;
+        // Pre-compute hashes that need `&self` before borrowing mutably.
+        let dose_hash = self.dose_settings_hash(slot);
+        let contour_hash = self.contour_settings_hash(slot);
+        let wc = self.window_center;
+        let ww = self.window_width;
+        let dose_on = self.dose_mode != DoseMode::Off;
+        let contours_on = self.show_contours;
+
+        let StudySlot { study, views, roi_visible, active_dose, dose_reference, .. } =
+            &mut self.slots[slot];
+        let study = study.as_ref().unwrap();
+        let vol = &study.volume;
+        let plane = views[idx].plane;
+        let n_slices = vol.plane_slice_count(plane);
+        if views[idx].slice >= n_slices {
+            views[idx].slice = n_slices.saturating_sub(1);
+        }
+        let slice = views[idx].slice;
         let [w, h] = vol.plane_dims(plane);
 
         // Grayscale image.
-        let img_key = (
-            slice,
-            self.window_center.to_bits(),
-            self.window_width.to_bits(),
-        );
-        if self.views[idx].img_key != Some(img_key) {
-            let view = &mut self.views[idx];
+        let img_key = (slice, wc.to_bits(), ww.to_bits());
+        if views[idx].img_key != Some(img_key) {
+            let view = &mut views[idx];
             let mut slice_buf = std::mem::take(&mut view.slice_buf);
             let mut gray_buf = std::mem::take(&mut view.gray_buf);
             vol.extract_slice(plane, slice, &mut slice_buf);
-            render::slice_to_gray(&slice_buf, self.window_center, self.window_width, &mut gray_buf);
+            render::slice_to_gray(&slice_buf, wc, ww, &mut gray_buf);
             let img = ColorImage::new([w, h], gray_buf.clone());
             match &mut view.tex {
                 Some(t) => t.set(img, TextureOptions::LINEAR),
                 None => {
                     view.tex = Some(ctx.load_texture(
-                        format!("img{idx}"),
+                        format!("img{slot}_{idx}"),
                         img,
                         TextureOptions::LINEAR,
                     ))
@@ -1242,19 +1628,19 @@ impl ViewerApp {
         }
 
         // Dose overlay + isodose segments.
-        if self.dose_mode != DoseMode::Off && !study.doses.is_empty() {
-            let dose_key = self
-                .dose_settings_hash()
-                .wrapping_add((slice as u64).wrapping_mul(0x9E3779B97F4A7C15));
-            if self.views[idx].dose_key != Some(dose_key) {
-                let dose = &study.doses[self.active_dose.min(study.doses.len() - 1)];
-                let view = &mut self.views[idx];
+        if dose_on && !study.doses.is_empty() {
+            let dose_key =
+                dose_hash.wrapping_add((slice as u64).wrapping_mul(0x9E3779B97F4A7C15));
+            if views[idx].dose_key != Some(dose_key) {
+                let dose = &study.doses[(*active_dose).min(study.doses.len() - 1)];
+                let reference = *dose_reference;
+                let view = &mut views[idx];
                 let mut dose_plane = std::mem::take(&mut view.dose_plane);
                 let mut dose_rgba = std::mem::take(&mut view.dose_rgba);
                 render::sample_dose_plane(vol, dose, plane, slice, &mut dose_plane);
                 render::dose_colorwash(
                     &dose_plane,
-                    self.dose_reference,
+                    reference,
                     self.dose_threshold_pct / 100.0,
                     self.dose_opacity,
                     &mut dose_rgba,
@@ -1264,7 +1650,7 @@ impl ViewerApp {
                     Some(t) => t.set(img, TextureOptions::LINEAR),
                     None => {
                         view.dose_tex = Some(ctx.load_texture(
-                            format!("dose{idx}"),
+                            format!("dose{slot}_{idx}"),
                             img,
                             TextureOptions::LINEAR,
                         ))
@@ -1276,7 +1662,7 @@ impl ViewerApp {
                     if !level.on {
                         continue;
                     }
-                    let abs = level.pct / 100.0 * self.dose_reference;
+                    let abs = level.pct / 100.0 * reference;
                     if abs <= 0.0 {
                         continue;
                     }
@@ -1291,15 +1677,14 @@ impl ViewerApp {
         }
 
         // Contours.
-        if self.show_contours {
+        if contours_on {
             if let Some(ss) = &study.structures {
-                let ckey = self
-                    .contour_settings_hash()
-                    .wrapping_add((slice as u64).wrapping_mul(0x517CC1B727220A95));
-                if self.views[idx].contour_key != Some(ckey) {
+                let ckey =
+                    contour_hash.wrapping_add((slice as u64).wrapping_mul(0x517CC1B727220A95));
+                if views[idx].contour_key != Some(ckey) {
                     let mut contours = Vec::new();
                     for (ri, roi) in ss.rois.iter().enumerate() {
-                        if !self.roi_visible.get(ri).copied().unwrap_or(false) {
+                        if !roi_visible.get(ri).copied().unwrap_or(false) {
                             continue;
                         }
                         let gfx = render::roi_on_plane(vol, roi, plane, slice);
@@ -1310,9 +1695,8 @@ impl ViewerApp {
                             contours.push((ri, gfx));
                         }
                     }
-                    let view = &mut self.views[idx];
-                    view.contours = contours;
-                    view.contour_key = Some(ckey);
+                    views[idx].contours = contours;
+                    views[idx].contour_key = Some(ckey);
                 }
             }
         }

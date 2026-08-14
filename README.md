@@ -4,9 +4,12 @@ A fast, robust DICOM / RT DICOM viewer written entirely in Rust. It loads a
 full radiotherapy study — image series (CT/MR/PT), RT Structure Set, RT Dose
 and RT Plan (photon and ion/proton) — and displays it in the classic
 three-view MPR layout: **axial, sagittal and coronal side by side** with
-linked crosshairs.
+linked crosshairs. A **comparison mode** stacks a second study below the
+first for six views total.
 
 ![screenshot](docs/screenshot.png)
+
+![comparison mode](docs/screenshot_comparison.png)
 
 ## Features
 
@@ -29,6 +32,19 @@ patient-space sampling, translucent colorwash and marching-squares isodose
 lines at configurable percentages of a reference dose (prescription dose is
 picked up from the plan automatically). Multiple dose files (plan/beam doses)
 are selectable.
+
+**Comparison mode.** Load a second study (menu *File → Open comparison
+study (B)…* or *View → Comparison mode*, or pass two directories on the
+command line) and the window splits into two rows of three views — study A
+on top, study B below, six panels total. Each study keeps its own structures,
+dose and plan panels in the sidebar; window/level and dose display settings
+are shared so both CTs are windowed identically. The crosshair is linked
+between the studies through **patient coordinates** (toggleable via *View →
+Link crosshairs between studies*): clicking a point in one study moves the
+other study's crosshair and slices to the same anatomical position — the
+status bar then shows HU and dose readouts for A and B side by side. Study B
+can be closed again from the File menu, and comparison mode can be switched
+on/off at any time without unloading anything.
 
 **RTPLAN.** Photon (`BeamSequence`) and ion/proton (`IonBeamSequence`) plans:
 prescription, fractionation, and a per-beam table with radiation type, scan
@@ -69,14 +85,17 @@ Requires a Rust toolchain (<https://rustup.rs>). Then:
 cargo build --release
 ```
 
-Run with an optional directory argument to load a study immediately:
+Run with optional directory arguments — one study, or two to start straight
+in comparison mode:
 
 ```
-cargo run --release -- "D:\path\to\dicom\study"
+cargo run --release -- "D:\path\to\study_A"
+cargo run --release -- "D:\path\to\study_A" "D:\path\to\study_B"
 ```
 
-or start it empty and use *Open folder…*. Windows, Linux and macOS are
-supported; rendering uses `wgpu` (DX12/Vulkan/Metal, with fallbacks).
+or start it empty and use *Open folder…* / the *File* menu. Windows, Linux
+and macOS are supported; rendering uses `wgpu` (DX12/Vulkan/Metal, with
+fallbacks).
 
 ## Tests & synthetic data
 
@@ -91,6 +110,13 @@ the closed-form expectations:
 ```
 python3 tools/generate_test_data.py
 cargo test --release
+```
+
+A second, shifted study for trying comparison mode:
+
+```
+python3 tools/generate_test_data.py --out test_data2 --target-shift-y 15 --peak 66
+cargo run --release -- test_data test_data2
 ```
 
 ## Structure
