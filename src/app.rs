@@ -69,11 +69,20 @@ fn default_iso_levels() -> Vec<IsoLevel> {
     ]
 }
 
+/// Common CT window presets: (name, center, width) in HU.
 const WL_PRESETS: &[(&str, f32, f32)] = &[
-    ("Soft tissue", 40.0, 400.0),
-    ("Lung", -600.0, 1500.0),
-    ("Bone", 300.0, 1500.0),
     ("Brain", 40.0, 80.0),
+    ("Subdural", 75.0, 215.0),
+    ("Stroke", 32.0, 8.0),
+    ("Head/Neck soft tissue", 50.0, 350.0),
+    ("Temporal bone", 600.0, 2800.0),
+    ("Lungs", -600.0, 1500.0),
+    ("Mediastinum", 50.0, 350.0),
+    ("Abdomen", 50.0, 400.0),
+    ("Liver", 30.0, 150.0),
+    ("Spine soft tissue", 50.0, 250.0),
+    ("Bone", 400.0, 1800.0),
+    ("Angio (CTA)", 170.0, 600.0),
 ];
 
 // ---------------------------------------------------------------------------
@@ -780,15 +789,19 @@ impl ViewerApp {
                     );
                     let mut full_range = false;
                     egui::ComboBox::from_id_salt("wl_preset")
-                        .selected_text("Presets")
-                        .width(90.0)
+                        .selected_text("CT presets")
+                        .width(110.0)
                         .show_ui(ui, |ui| {
                             for (name, c, w) in WL_PRESETS {
-                                if ui.button(*name).clicked() {
+                                if ui
+                                    .button(format!("{name}  (C {c:.0} / W {w:.0})"))
+                                    .clicked()
+                                {
                                     self.window_center = *c;
                                     self.window_width = *w;
                                 }
                             }
+                            ui.separator();
                             if ui.button("Full range").clicked() {
                                 full_range = true;
                             }
@@ -1046,11 +1059,7 @@ impl ViewerApp {
             .as_ref()
             .is_some_and(|s| s.structures.is_some());
         if !has {
-            egui::CollapsingHeader::new("Structures")
-                .id_salt(("structs_hdr", slot))
-                .show(ui, |ui| {
-                    ui.weak("No RTSTRUCT loaded");
-                });
+            // No RTSTRUCT in this study — show nothing.
             return;
         }
         let mut changed = false;

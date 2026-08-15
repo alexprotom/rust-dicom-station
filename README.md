@@ -101,7 +101,9 @@ Beam isocenters are marked in all three views.
 | Right drag | Window/level (x = width, y = center) |
 | Double click | Reset zoom & pan |
 
-Window/level presets (soft tissue, lung, bone, brain, full range), anatomical
+Common CT window presets (brain, subdural, stroke, head/neck soft tissue,
+temporal bone, lungs, mediastinum, abdomen, liver, spine, bone, CT angio,
+full range), anatomical
 edge labels (L/R/A/P/S/I) derived from the actual patient orientation, and a
 status bar with patient coordinates, voxel indices, HU and dose (Gy and % of
 reference) at the crosshair.
