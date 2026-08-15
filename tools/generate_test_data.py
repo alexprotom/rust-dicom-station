@@ -24,6 +24,8 @@ from pydicom.uid import generate_uid, ExplicitVRLittleEndian
 ap = argparse.ArgumentParser(description=__doc__)
 ap.add_argument("--out", default="test_data", help="output directory (relative to repo root)")
 ap.add_argument("--target-shift-y", type=float, default=0.0, help="target/dose Y shift in mm")
+ap.add_argument("--shift-x", type=float, default=0.0, help="whole-phantom X shift in mm (for registration tests)")
+ap.add_argument("--shift-y", type=float, default=0.0, help="whole-phantom Y shift in mm (for registration tests)")
 ap.add_argument("--peak", type=float, default=60.0, help="dose peak in Gy")
 ap.add_argument("--plan-label", default="SynthProton")
 args = ap.parse_args()
@@ -32,6 +34,8 @@ OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
 os.makedirs(OUT, exist_ok=True)
 
 SHIFT_Y = args.target_shift_y
+SX = args.shift_x
+SY = args.shift_y
 
 # --- shared identifiers -----------------------------------------------------
 study_uid = generate_uid()
@@ -84,11 +88,11 @@ XX, YY = np.meshgrid(xs, ys)  # [row=y, col=x]
 for k in range(NZ):
     z = Z0 + k * SPACING
     hu = np.full((NY, NX), -1000.0, dtype=np.float64)
-    body = XX**2 + YY**2 <= 70.0**2
+    body = (XX - SX) ** 2 + (YY - SY) ** 2 <= 70.0**2
     hu[body] = 0.0
-    target = XX**2 + (YY - SHIFT_Y) ** 2 + z**2 <= 25.0**2
+    target = (XX - SX) ** 2 + (YY - SHIFT_Y - SY) ** 2 + z**2 <= 25.0**2
     hu[target] = 100.0
-    cord = XX**2 + (YY - 60.0) ** 2 <= 8.0**2
+    cord = (XX - SX) ** 2 + (YY - 60.0 - SY) ** 2 <= 8.0**2
     hu[cord] = 40.0
 
     sop_uid = generate_uid()
@@ -192,7 +196,7 @@ for num, name, typ, color in rois:
         c = Dataset()
         c.ContourGeometricType = "CLOSED_PLANAR"
         cy = 60.0 if name == "CORD" else (SHIFT_Y if name == "TARGET" else 0.0)
-        pts = circle_points(0.0, cy, r, z)
+        pts = circle_points(SX, cy + SY, r, z)
         c.NumberOfContourPoints = len(pts) // 3
         c.ContourData = pts
         ci = Dataset()
@@ -282,7 +286,7 @@ for num, name, gantry in [(1, "G000", 0.0), (2, "G090", 90.0)]:
             cp.GantryRotationDirection = "NONE"
             cp.PatientSupportAngle = "0"
             cp.PatientSupportRotationDirection = "NONE"
-            cp.IsocenterPosition = ["0.0", f"{SHIFT_Y:.1f}", "0.0"]
+            cp.IsocenterPosition = [f"{SX:.1f}", f"{SHIFT_Y + SY:.1f}", "0.0"]
         cps.append(cp)
     b.IonControlPointSequence = cps
     beams.append(b)
@@ -308,7 +312,7 @@ SIGMA = 20.0
 PEAK = args.peak
 frames = []
 for z in dzs:
-    r2 = DXX**2 + (DYY - SHIFT_Y) ** 2 + z**2
+    r2 = (DXX - SX) ** 2 + (DYY - SHIFT_Y - SY) ** 2 + z**2
     dose = PEAK * np.exp(-r2 / (2.0 * SIGMA**2))
     frames.append(dose)
 dose3d = np.stack(frames, axis=0)  # [frame, row, col]

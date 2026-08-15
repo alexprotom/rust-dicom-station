@@ -10,7 +10,12 @@ use egui::{
     TextureOptions, Vec2,
 };
 
+use rayon::prelude::*;
+
 use crate::loader::{self, LoadedStudy, Progress};
+use crate::registration::{
+    self, RegKind, RegParams, RegProgress, RegistrationResult, Transform3,
+};
 use crate::render;
 use crate::volume::{ViewPlane, Volume};
 
@@ -95,6 +100,8 @@ struct ViewState {
     dose_rgba: Vec<Color32>,
     iso_segs: Vec<(usize, render::Segment)>,
     contours: Vec<(usize, render::RoiPlaneGraphics)>,
+    fusion_tex: Option<TextureHandle>,
+    fusion_key: Option<u64>,
 }
 
 impl ViewState {
@@ -116,6 +123,8 @@ impl ViewState {
             dose_rgba: Vec::new(),
             iso_segs: Vec::new(),
             contours: Vec::new(),
+            fusion_tex: None,
+            fusion_key: None,
         }
     }
 
@@ -123,6 +132,7 @@ impl ViewState {
         self.img_key = None;
         self.dose_key = None;
         self.contour_key = None;
+        self.fusion_key = None;
     }
 }
 
@@ -175,6 +185,11 @@ struct LoadJob {
     rx: mpsc::Receiver<LoadResult>,
 }
 
+struct RegJob {
+    progress: Arc<RegProgress>,
+    rx: mpsc::Receiver<anyhow::Result<RegistrationResult>>,
+}
+
 // ---------------------------------------------------------------------------
 // Application
 // ---------------------------------------------------------------------------
@@ -192,6 +207,17 @@ pub struct ViewerApp {
     /// A load queued behind the one in flight (slot, directory).
     pending_load: Option<(usize, PathBuf)>,
     error: Option<String>,
+
+    // Registration (B = moving → A = fixed).
+    registration: Option<RegistrationResult>,
+    reg_job: Option<RegJob>,
+    fusion_on: bool,
+    fusion_weight: f32,
+    /// Bumped when the registration result changes → fusion cache rebuild.
+    reg_gen: u64,
+    reg_iterations: usize,
+    reg_samples: usize,
+    reg_grid_mm: f64,
 
     window_center: f32,
     window_width: f32,
@@ -225,6 +251,14 @@ impl ViewerApp {
             loading: None,
             pending_load: None,
             error: None,
+            registration: None,
+            reg_job: None,
+            fusion_on: false,
+            fusion_weight: 1.0,
+            reg_gen: 0,
+            reg_iterations: 300,
+            reg_samples: 3000,
+            reg_grid_mm: 32.0,
             window_center: 40.0,
             window_width: 400.0,
             show_contours: true,
@@ -321,6 +355,8 @@ impl ViewerApp {
         if slot == 1 {
             self.comparison = true;
         }
+        // Any previous registration no longer matches the loaded volumes.
+        self.clear_registration();
         self.settings_gen += 1;
     }
 
@@ -350,6 +386,7 @@ impl ViewerApp {
                 v.pan = Vec2::ZERO;
                 v.invalidate();
             }
+            self.clear_registration();
             self.settings_gen += 1;
         }
     }
@@ -358,6 +395,46 @@ impl ViewerApp {
         self.slots[1] = StudySlot::empty();
         self.comparison = false;
         self.hovered_slot = 0;
+        self.clear_registration();
+    }
+
+    fn clear_registration(&mut self) {
+        if let Some(job) = &self.reg_job {
+            job.progress.cancel();
+        }
+        self.registration = None;
+        self.fusion_on = false;
+        self.reg_gen += 1;
+    }
+
+    fn start_registration(&mut self, kind: RegKind) {
+        if self.reg_job.is_some() {
+            return;
+        }
+        let (Some(a), Some(b)) = (&self.slots[0].study, &self.slots[1].study) else {
+            self.error =
+                Some("Registration needs two loaded studies (comparison mode)".into());
+            return;
+        };
+        let fixed = a.volume.clone();
+        let moving = b.volume.clone();
+        let params = RegParams {
+            kind,
+            levels: 3,
+            iterations: self.reg_iterations,
+            samples: self.reg_samples,
+            grid_spacing_mm: self.reg_grid_mm,
+            fixed_threshold: -500.0,
+        };
+        let progress = Arc::new(RegProgress::default());
+        progress.set("starting…");
+        let p2 = progress.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let res = registration::register(&fixed, &moving, &params, &p2);
+            let _ = tx.send(res);
+        });
+        self.reg_job = Some(RegJob { progress, rx });
     }
 
     fn reset_all_views(&mut self) {
@@ -449,6 +526,35 @@ impl eframe::App for ViewerApp {
             }
         }
 
+        // Poll background registration.
+        if let Some(job) = &self.reg_job {
+            match job.rx.try_recv() {
+                Ok(Ok(result)) => {
+                    self.reg_job = None;
+                    self.registration = Some(result);
+                    self.fusion_on = true;
+                    self.reg_gen += 1;
+                    // Re-propagate the crosshair through the new transform.
+                    let cursor = self.slots[0].cursor;
+                    self.set_cursor(0, cursor, usize::MAX);
+                }
+                Ok(Err(e)) => {
+                    self.reg_job = None;
+                    let msg = format!("{e:#}");
+                    if !msg.contains("cancelled") {
+                        self.error = Some(format!("Registration failed: {msg}"));
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.reg_job = None;
+                    self.error = Some("Registration thread terminated unexpectedly".into());
+                }
+            }
+        }
+
         self.menu_bar(ui, &ctx);
         self.top_bar(ui);
         self.side_panel(ui);
@@ -466,6 +572,9 @@ impl ViewerApp {
         let mut open_b = false;
         let mut close_b = false;
         let mut reset_views = false;
+        let mut do_reg: Option<RegKind> = None;
+        let mut cancel_reg = false;
+        let mut clear_reg = false;
 
         egui::Panel::top(egui::Id::new("menu_bar")).show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -510,6 +619,64 @@ impl ViewerApp {
                         ui.close();
                     }
                 });
+                ui.menu_button("Registration", |ui| {
+                    let both =
+                        self.slots[0].study.is_some() && self.slots[1].study.is_some();
+                    let running = self.reg_job.is_some();
+                    if ui
+                        .add_enabled(
+                            both && !running,
+                            egui::Button::new("Rigid: register B ▶ A"),
+                        )
+                        .on_hover_text(
+                            "6-DOF Euler transform, ASGD optimizer (elastix-style), \
+                             3 resolution levels",
+                        )
+                        .clicked()
+                    {
+                        do_reg = Some(RegKind::Rigid);
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            both && !running,
+                            egui::Button::new("Deformable: register B ▶ A (B-spline)"),
+                        )
+                        .on_hover_text(
+                            "Rigid pre-alignment + cubic B-spline free-form deformation, \
+                             ASGD optimizer (elastix-style)",
+                        )
+                        .clicked()
+                    {
+                        do_reg = Some(RegKind::Deformable);
+                        ui.close();
+                    }
+                    ui.separator();
+                    ui.add_enabled(
+                        self.registration.is_some(),
+                        egui::Checkbox::new(&mut self.fusion_on, "Fusion overlay on A"),
+                    );
+                    if ui
+                        .add_enabled(running, egui::Button::new("Cancel registration"))
+                        .clicked()
+                    {
+                        cancel_reg = true;
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            self.registration.is_some(),
+                            egui::Button::new("Clear registration"),
+                        )
+                        .clicked()
+                    {
+                        clear_reg = true;
+                        ui.close();
+                    }
+                    if !both {
+                        ui.weak("Load two studies (comparison mode) first");
+                    }
+                });
                 ui.menu_button("Help", |ui| {
                     ui.label("Mouse bindings:");
                     ui.weak("Left click / drag — move linked crosshair");
@@ -538,6 +705,17 @@ impl ViewerApp {
         }
         if reset_views {
             self.reset_all_views();
+        }
+        if let Some(kind) = do_reg {
+            self.start_registration(kind);
+        }
+        if cancel_reg {
+            if let Some(job) = &self.reg_job {
+                job.progress.cancel();
+            }
+        }
+        if clear_reg {
+            self.clear_registration();
         }
     }
 
@@ -625,6 +803,7 @@ impl ViewerApp {
             .default_size(280.0)
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
+                    self.registration_section(ui);
                     for slot in 0..2 {
                         if self.slots[slot].study.is_none() {
                             continue;
@@ -633,6 +812,114 @@ impl ViewerApp {
                     }
                 });
             });
+    }
+
+    fn registration_section(&mut self, ui: &mut egui::Ui) {
+        let both = self.slots[0].study.is_some() && self.slots[1].study.is_some();
+        if !both && self.registration.is_none() && self.reg_job.is_none() {
+            return;
+        }
+        let mut do_reg: Option<RegKind> = None;
+        let mut cancel_reg = false;
+        let mut clear_reg = false;
+        egui::CollapsingHeader::new(egui::RichText::new("Registration (B ▶ A)").strong())
+            .default_open(true)
+            .show(ui, |ui| {
+                if let Some(job) = &self.reg_job {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(job.progress.get());
+                    });
+                    if ui.button("Cancel").clicked() {
+                        cancel_reg = true;
+                    }
+                    return;
+                }
+
+                ui.horizontal(|ui| {
+                    ui.label("Iterations/level");
+                    ui.add(
+                        egui::DragValue::new(&mut self.reg_iterations)
+                            .speed(10)
+                            .range(50..=5000),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Samples/iter");
+                    ui.add(
+                        egui::DragValue::new(&mut self.reg_samples)
+                            .speed(100)
+                            .range(500..=50000),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("B-spline grid");
+                    ui.add(
+                        egui::DragValue::new(&mut self.reg_grid_mm)
+                            .speed(1.0)
+                            .range(8.0..=128.0)
+                            .suffix(" mm"),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(both, egui::Button::new("▶ Rigid")).clicked() {
+                        do_reg = Some(RegKind::Rigid);
+                    }
+                    if ui
+                        .add_enabled(both, egui::Button::new("▶ Deformable"))
+                        .clicked()
+                    {
+                        do_reg = Some(RegKind::Deformable);
+                    }
+                });
+
+                if let Some(reg) = &self.registration {
+                    ui.separator();
+                    let kind = match reg.kind {
+                        RegKind::Rigid => "Rigid (Euler 6-DOF)",
+                        RegKind::Deformable => "Rigid + B-spline FFD",
+                    };
+                    ui.label(format!("✔ {kind}"));
+                    ui.weak(format!(
+                        "MSD {:.1} ▶ {:.1}  ({} iters, {:.1} s)",
+                        reg.initial_metric,
+                        reg.final_metric,
+                        reg.iterations_run,
+                        reg.elapsed_secs
+                    ));
+                    let t = &reg.transform.rigid;
+                    ui.weak(format!(
+                        "t = ({:.1}, {:.1}, {:.1}) mm  r = ({:.2}, {:.2}, {:.2})°",
+                        t.params[3],
+                        t.params[4],
+                        t.params[5],
+                        t.params[0].to_degrees(),
+                        t.params[1].to_degrees(),
+                        t.params[2].to_degrees()
+                    ));
+                    ui.checkbox(&mut self.fusion_on, "Fusion overlay on A");
+                    let resp = ui.add(
+                        egui::Slider::new(&mut self.fusion_weight, 0.0..=1.0)
+                            .text("Fusion blend"),
+                    );
+                    let _ = resp;
+                    if ui.button("Clear registration").clicked() {
+                        clear_reg = true;
+                    }
+                }
+            });
+        ui.separator();
+        if let Some(kind) = do_reg {
+            self.start_registration(kind);
+        }
+        if cancel_reg {
+            if let Some(job) = &self.reg_job {
+                job.progress.cancel();
+            }
+        }
+        if clear_reg {
+            self.clear_registration();
+        }
     }
 
     fn study_section(&mut self, ui: &mut egui::Ui, slot: usize) {
@@ -1229,7 +1516,20 @@ impl ViewerApp {
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, Color32::BLACK);
 
-        if let Some(tex) = &view.tex {
+        let fusion_active = slot == 0
+            && self.fusion_on
+            && self.registration.is_some()
+            && view.fusion_tex.is_some();
+        if fusion_active {
+            if let Some(tex) = &view.fusion_tex {
+                painter.image(
+                    tex.id(),
+                    img_rect,
+                    Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+        } else if let Some(tex) = &view.tex {
             painter.image(
                 tex.id(),
                 img_rect,
@@ -1541,8 +1841,16 @@ impl ViewerApp {
         if self.link_studies {
             let other = 1 - slot;
             let Some(ostudy) = &self.slots[other].study else { return };
+            // Map through the registration transform when one exists
+            // (A = fixed → B = moving; the reverse direction uses the
+            // inverse).
+            let target = match &self.registration {
+                Some(reg) if slot == 0 => reg.transform.map(patient),
+                Some(reg) => reg.transform.unmap(patient),
+                None => patient,
+            };
             let odims = ostudy.volume.dims;
-            let oc = ostudy.volume.patient_to_voxel(patient);
+            let oc = ostudy.volume.patient_to_voxel(target);
             self.slots[other].cursor = [
                 oc[0].clamp(0.0, odims[0] as f64 - 1.0),
                 oc[1].clamp(0.0, odims[1] as f64 - 1.0),
@@ -1700,6 +2008,82 @@ impl ViewerApp {
                 }
             }
         }
+
+        self.refresh_fusion_cache(ctx, slot, idx);
+    }
+
+    /// Rebuild the magenta/green fusion texture of a study-A view: A stays
+    /// gray in R/B, the transformed study-B image is blended into the green
+    /// channel. Aligned anatomy therefore reads gray, mismatches magenta/green.
+    fn refresh_fusion_cache(&mut self, ctx: &egui::Context, slot: usize, idx: usize) {
+        if slot != 0 || !self.fusion_on {
+            return;
+        }
+        let Some(reg) = &self.registration else { return };
+        if self.slots[0].study.is_none() || self.slots[1].study.is_none() {
+            return;
+        }
+        let transform: Arc<Transform3> = reg.transform.clone();
+        let wc = self.window_center;
+        let ww = self.window_width.max(1.0);
+        let weight = self.fusion_weight.clamp(0.0, 1.0);
+
+        let (a_half, b_half) = self.slots.split_at_mut(1);
+        let a = &mut a_half[0];
+        let bvol = &b_half[0].study.as_ref().unwrap().volume;
+        let avol = &a.study.as_ref().unwrap().volume;
+        let view = &mut a.views[idx];
+        let plane = view.plane;
+        let slice = view.slice;
+        let [w, h] = avol.plane_dims(plane);
+
+        let mut key: u64 = 0x243F6A8885A308D3 ^ self.reg_gen.wrapping_mul(0x9E3779B97F4A7C15);
+        for v in [
+            slice as u64,
+            wc.to_bits() as u64,
+            ww.to_bits() as u64,
+            weight.to_bits() as u64,
+            self.settings_gen,
+        ] {
+            key ^= v;
+            key = key.wrapping_mul(0x100000001b3);
+        }
+        if view.fusion_key == Some(key) {
+            return;
+        }
+
+        // Ensure the A slice buffer matches the current slice.
+        if view.slice_buf.len() != w * h {
+            avol.extract_slice(plane, slice, &mut view.slice_buf);
+        }
+        let slice_buf = &view.slice_buf;
+
+        let lo = wc - ww * 0.5;
+        let scale = 255.0 / ww;
+        let wl = |v: f32| -> f32 { ((v - lo) * scale).clamp(0.0, 255.0) };
+
+        let mut pixels = vec![Color32::BLACK; w * h];
+        pixels.par_chunks_mut(w).enumerate().for_each(|(py, row)| {
+            for (px, out) in row.iter_mut().enumerate() {
+                let a_gray = wl(slice_buf[py * w + px] as f32);
+                let vxl = avol.plane_pixel_to_voxel(plane, slice, px as f64, py as f64);
+                let p_fixed = avol.voxel_to_patient(vxl[0], vxl[1], vxl[2]);
+                let q = transform.map(p_fixed);
+                let b_gray = bvol.sample_patient(q).map(&wl).unwrap_or(0.0);
+                let g = a_gray + (b_gray - a_gray) * weight;
+                *out = Color32::from_rgb(a_gray as u8, g as u8, a_gray as u8);
+            }
+        });
+
+        let img = ColorImage::new([w, h], pixels);
+        match &mut view.fusion_tex {
+            Some(t) => t.set(img, TextureOptions::LINEAR),
+            None => {
+                view.fusion_tex =
+                    Some(ctx.load_texture(format!("fusion{idx}"), img, TextureOptions::LINEAR))
+            }
+        }
+        view.fusion_key = Some(key);
     }
 
     // -- Modals -----------------------------------------------------------

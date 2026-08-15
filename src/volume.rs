@@ -31,6 +31,7 @@ impl ViewPlane {
 }
 
 /// A scalar image volume in HU (or raw modality units), i16 storage.
+#[derive(Clone)]
 pub struct Volume {
     /// Voxel data, index order: `data[k * nx * ny + j * nx + i]`
     /// (i = column, j = row, k = slice).
@@ -186,6 +187,34 @@ impl Volume {
             ViewPlane::Sagittal => [v[1], (nz - 1.0) - v[2], v[0]],
             ViewPlane::Coronal => [v[0], (nz - 1.0) - v[2], v[1]],
         }
+    }
+
+    /// Trilinear interpolation of the volume at a patient-space point.
+    /// Returns `None` outside the volume.
+    pub fn sample_patient(&self, p: Vec3) -> Option<f32> {
+        let [u, v, w] = self.patient_to_voxel(p);
+        let [nx, ny, nz] = self.dims;
+        if u < 0.0 || v < 0.0 || w < 0.0 {
+            return None;
+        }
+        let i0 = u.floor() as usize;
+        let j0 = v.floor() as usize;
+        let k0 = w.floor() as usize;
+        if i0 + 1 >= nx || j0 + 1 >= ny || k0 + 1 >= nz {
+            return None;
+        }
+        let fu = (u - i0 as f64) as f32;
+        let fv = (v - j0 as f64) as f32;
+        let fw = (w - k0 as f64) as f32;
+        let at = |i: usize, j: usize, k: usize| self.index(i, j, k) as f32;
+        let c00 = at(i0, j0, k0) + (at(i0 + 1, j0, k0) - at(i0, j0, k0)) * fu;
+        let c10 = at(i0, j0 + 1, k0) + (at(i0 + 1, j0 + 1, k0) - at(i0, j0 + 1, k0)) * fu;
+        let c01 = at(i0, j0, k0 + 1) + (at(i0 + 1, j0, k0 + 1) - at(i0, j0, k0 + 1)) * fu;
+        let c11 =
+            at(i0, j0 + 1, k0 + 1) + (at(i0 + 1, j0 + 1, k0 + 1) - at(i0, j0 + 1, k0 + 1)) * fu;
+        let c0 = c00 + (c10 - c00) * fv;
+        let c1 = c01 + (c11 - c01) * fv;
+        Some(c0 + (c1 - c0) * fw)
     }
 
     /// Patient-space direction vectors of the displayed +x and +y screen axes

@@ -5,11 +5,15 @@ full radiotherapy study — image series (CT/MR/PT), RT Structure Set, RT Dose
 and RT Plan (photon and ion/proton) — and displays it in the classic
 three-view MPR layout: **axial, sagittal and coronal side by side** with
 linked crosshairs. A **comparison mode** stacks a second study below the
-first for six views total.
+first for six views total, and built-in **rigid and deformable (B-spline)
+image registration** — elastix-style algorithms implemented natively in
+Rust — aligns the two studies with a fusion overlay.
 
 ![screenshot](docs/screenshot.png)
 
 ![comparison mode](docs/screenshot_comparison.png)
+
+![registration](docs/screenshot_registration.png)
 
 ## Features
 
@@ -45,6 +49,39 @@ other study's crosshair and slices to the same anatomical position — the
 status bar then shows HU and dose readouts for A and B side by side. Study B
 can be closed again from the File menu, and comparison mode can be switched
 on/off at any time without unloading anything.
+
+**Image registration (rigid & non-rigid).** With two studies loaded, the
+*Registration* menu (or the sidebar section) registers study B onto study A.
+The engine follows the [elastix](https://elastix.dev) framework —
+[SuperElastix/elastix](https://github.com/SuperElastix/elastix) is a C++/ITK
+toolbox, so its core algorithms are **re-implemented natively in Rust** to
+keep the application single-language:
+
+* multi-resolution Gaussian pyramids (`NumberOfResolutions`, default 3);
+* random-coordinate sampling with fresh samples every iteration
+  (`NumberOfSpatialSamples`, default 3000), restricted to a body threshold
+  mask;
+* mean-squared-difference metric with analytic gradients;
+* **Adaptive Stochastic Gradient Descent** (Klein et al., IJCV 2009 —
+  elastix's default optimizer) with automatic gain estimation, the
+  sigmoid time-adaptation rule and a trust-region step cap;
+* **rigid**: 6-DOF Euler transform about the fixed-image center with
+  automatic rotation/translation parameter scaling;
+* **deformable**: rigid pre-alignment composed with a cubic B-spline
+  free-form deformation on a regular grid
+  (`FinalGridSpacingInPhysicalUnits`, default 32 mm).
+
+Registration runs on a background thread (progress + cancel in the sidebar)
+and typically takes seconds thanks to stochastic sampling. The result panel
+reports the metric before/after, the recovered translation/rotation, and
+enables a **magenta/green fusion overlay** on study A (A in magenta, the
+transformed B in green — aligned anatomy reads gray) with a blend slider.
+The cross-study crosshair link maps through the recovered transform (inverse
+included), so clicking a point in either study lands on the same anatomy in
+the other. Iterations, samples and grid spacing are adjustable in the
+sidebar. Accuracy is verified in `tests/registration.rs` against analytically
+known transforms: sub-millimeter recovery for both a rigid rotation +
+translation and a 7 mm Gaussian-bump deformation.
 
 **RTPLAN.** Photon (`BeamSequence`) and ion/proton (`IonBeamSequence`) plans:
 prescription, fractionation, and a per-beam table with radiation type, scan
@@ -112,12 +149,19 @@ python3 tools/generate_test_data.py
 cargo test --release
 ```
 
-A second, shifted study for trying comparison mode:
+A second, shifted study for trying comparison mode and registration:
 
 ```
+# deformable scenario: same body, target displaced 15 mm
 python3 tools/generate_test_data.py --out test_data2 --target-shift-y 15 --peak 66
-cargo run --release -- test_data test_data2
+# rigid scenario: whole phantom translated (12, -9) mm
+python3 tools/generate_test_data.py --out test_data3 --shift-x 12 --shift-y -9
+cargo run --release -- test_data test_data3
 ```
+
+Then *Registration ▶ Rigid* should recover the (12, −9, 0) mm shift to within
+a fraction of a millimeter, and *Registration ▶ Deformable* on
+`test_data2` warps the displaced target back onto study A.
 
 ## Structure
 
@@ -126,6 +170,8 @@ src/
   main.rs      entry point (eframe/wgpu window)
   app.rs       egui application: three-view layout, panels, interaction
   loader.rs    directory scan, classification, parallel volume loading
+  registration.rs  elastix-style rigid + B-spline registration (ASGD,
+               multi-resolution, random sampling) in pure Rust
   volume.rs    3D volume, patient-space geometry, orthogonal slice extraction
   rtstruct.rs  RT Structure Set parsing
   rtdose.rs    RT Dose parsing + trilinear patient-space sampling
@@ -143,6 +189,10 @@ oblique acquisitions display consistently but the plane names are nominal
 (edge labels always reflect the true patient directions). Enhanced
 multi-frame image series are not yet supported (classic single-frame series
 only). Non-uniform slice spacing is detected and reported as a warning, with
-the median spacing used for display. This software is a viewer for research
-and QA convenience — not a medical device, and not for clinical
-decision-making.
+the median spacing used for display. The registration metric is
+mean-squared-difference, appropriate for mono-modal (CT–CT) alignment;
+mutual information for CT–MR is a natural extension. Deformable results are
+intensity-driven: displacements inside large uniform regions are
+interpolated from the B-spline grid rather than measured. This software is a
+viewer for research and QA convenience — not a medical device, and not for
+clinical decision-making.

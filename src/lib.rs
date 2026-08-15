@@ -4,6 +4,7 @@
 pub mod app;
 pub mod geometry;
 pub mod loader;
+pub mod registration;
 pub mod render;
 pub mod rtdose;
 pub mod rtplan;
