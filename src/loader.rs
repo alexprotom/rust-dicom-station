@@ -89,6 +89,7 @@ pub struct PatientMeta {
 }
 
 /// Everything found in a directory, with the primary series volume loaded.
+#[derive(Clone)]
 pub struct LoadedStudy {
     pub meta: PatientMeta,
     pub series: Vec<SeriesInfo>,

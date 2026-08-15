@@ -8,6 +8,7 @@ use dicom_dictionary_std::tags;
 use crate::geometry::Vec3;
 use crate::loader::{f64s_of, i32_of, items_of, str_of};
 
+#[derive(Clone)]
 pub struct Contour {
     /// Points in patient coordinates (mm). Closed planar contours are not
     /// explicitly closed (last point != first); rendering closes them.
@@ -16,6 +17,7 @@ pub struct Contour {
     pub geometric_type: String,
 }
 
+#[derive(Clone)]
 pub struct Roi {
     pub number: i32,
     pub name: String,
@@ -25,6 +27,7 @@ pub struct Roi {
     pub contours: Vec<Contour>,
 }
 
+#[derive(Clone)]
 pub struct StructureSet {
     pub label: String,
     pub frame_of_reference_uid: String,

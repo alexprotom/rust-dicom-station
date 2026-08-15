@@ -14,6 +14,7 @@ use dicom_dictionary_std::tags;
 use crate::geometry::Vec3;
 use crate::loader::{f64_of, f64s_of, i32_of, str_of};
 
+#[derive(Clone)]
 pub struct DoseGrid {
     /// Dose in `units`, frame-major: `data[f * nx * ny + j * nx + i]`.
     pub data: Vec<f32>,

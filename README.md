@@ -85,6 +85,23 @@ sidebar. Accuracy is verified in `tests/registration.rs` against analytically
 known transforms: sub-millimeter recovery for both a rigid rotation +
 translation and a 7 mm Gaussian-bump deformation.
 
+**Transform simulator & DICOM export (registration QA).** The *Simulation*
+sidebar section applies an exactly-known transform to a loaded study — rigid
+motion (translation + Euler rotation about the volume center) plus an
+optional local Gaussian deformation (amplitude vector + σ, centered at the
+crosshair) — and generates the result into the other study slot: the CT is
+resampled through the inverse transform, and structure contours, dose grids
+and plan isocenters are carried along. The applied parameters stay displayed
+as the ground truth, so you can immediately run the built-in registration and
+compare the recovered transform against it (on the synthetic phantom the
+rigid recovery matches to sub-millimeter/sub-degree). Any loaded study —
+original or simulated — can be exported as a set of DICOM files (*Export
+A/B…*): one CT Image Storage file per slice plus RTSTRUCT, RTDOSE (16-bit
+with `DoseGridScaling`) and an RTPLAN skeleton (photon or ion), written with
+`dicom-rs` in Explicit VR Little Endian, sharing the source frame of
+reference. The exports round-trip through this viewer and pydicom; they are
+QA/research objects, not guaranteed-complete clinical IODs.
+
 **RTPLAN.** Photon (`BeamSequence`) and ion/proton (`IonBeamSequence`) plans:
 prescription, fractionation, and a per-beam table with radiation type, scan
 mode, gantry/couch angles, energy range, meterset and control-point count.
@@ -176,6 +193,8 @@ src/
   loader.rs    directory scan, classification, parallel volume loading
   registration.rs  elastix-style rigid + B-spline registration (ASGD,
                multi-resolution, random sampling) in pure Rust
+  simulate.rs  known-transform study generator for registration QA
+  dicom_export.rs  DICOM writer (CT series, RTSTRUCT, RTDOSE, RTPLAN)
   volume.rs    3D volume, patient-space geometry, orthogonal slice extraction
   rtstruct.rs  RT Structure Set parsing
   rtdose.rs    RT Dose parsing + trilinear patient-space sampling

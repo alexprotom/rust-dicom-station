@@ -2,6 +2,7 @@
 //! rendering primitives, plus the egui application.
 
 pub mod app;
+pub mod dicom_export;
 pub mod geometry;
 pub mod loader;
 pub mod registration;
@@ -9,4 +10,5 @@ pub mod render;
 pub mod rtdose;
 pub mod rtplan;
 pub mod rtstruct;
+pub mod simulate;
 pub mod volume;

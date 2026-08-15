@@ -12,11 +12,13 @@ use egui::{
 
 use rayon::prelude::*;
 
+use crate::dicom_export;
 use crate::loader::{self, LoadedStudy, Progress};
 use crate::registration::{
     self, RegKind, RegParams, RegProgress, RegistrationResult, Transform3,
 };
 use crate::render;
+use crate::simulate::{self, SimParams};
 use crate::volume::{ViewPlane, Volume};
 
 const SLOT_NAMES: [&str; 2] = ["A", "B"];
@@ -201,6 +203,16 @@ struct RegJob {
     fixed_slot: usize,
 }
 
+struct SimJob {
+    progress: Arc<Progress>,
+    rx: mpsc::Receiver<(usize, LoadedStudy)>,
+}
+
+struct ExportJob {
+    progress: Arc<Progress>,
+    rx: mpsc::Receiver<anyhow::Result<(usize, String)>>,
+}
+
 /// A completed registration plus the direction it was run in.
 struct ActiveRegistration {
     result: RegistrationResult,
@@ -240,6 +252,14 @@ pub struct ViewerApp {
     reg_iterations: usize,
     reg_samples: usize,
     reg_grid_mm: f64,
+
+    // Study transform simulator (registration QA).
+    sim_source: usize,
+    sim_params: SimParams,
+    sim_job: Option<SimJob>,
+    last_sim: Option<String>,
+    export_job: Option<ExportJob>,
+    export_result: Option<String>,
 
     window_center: f32,
     window_width: f32,
@@ -282,6 +302,12 @@ impl ViewerApp {
             reg_iterations: 300,
             reg_samples: 3000,
             reg_grid_mm: 32.0,
+            sim_source: 0,
+            sim_params: SimParams::default(),
+            sim_job: None,
+            last_sim: None,
+            export_job: None,
+            export_result: None,
             window_center: 40.0,
             window_width: 400.0,
             show_contours: true,
@@ -465,6 +491,71 @@ impl ViewerApp {
         self.reg_job = Some(RegJob { progress, rx, fixed_slot });
     }
 
+    /// Generate a transformed copy of the source study into the other slot
+    /// (background thread; the applied parameters are the ground truth).
+    fn start_simulation(&mut self) {
+        if self.sim_job.is_some() || self.loading.is_some() {
+            return;
+        }
+        let source = self.sim_source.min(1);
+        let target = 1 - source;
+        let Some(study) = &self.slots[source].study else {
+            self.error = Some(format!(
+                "Load a study into slot {} first",
+                SLOT_NAMES[source]
+            ));
+            return;
+        };
+        // Bump centered at the source study's crosshair.
+        let c = self.slots[source].cursor;
+        let p = study.volume.voxel_to_patient(c[0], c[1], c[2]);
+        let mut params = self.sim_params;
+        params.bump_center = [p.x, p.y, p.z];
+
+        self.last_sim = Some(format!(
+            "{} ▶ {}: {}",
+            SLOT_NAMES[source],
+            SLOT_NAMES[target],
+            params.describe()
+        ));
+
+        let src = study.clone();
+        let progress = Arc::new(Progress::default());
+        progress.set("starting…");
+        let p2 = progress.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let out = simulate::generate_transformed_study(&src, &params, &p2);
+            let _ = tx.send((target, out));
+        });
+        self.sim_job = Some(SimJob { progress, rx });
+    }
+
+    /// Export a loaded study as DICOM files into a user-chosen folder.
+    fn start_export(&mut self, slot: usize) {
+        if self.export_job.is_some() {
+            return;
+        }
+        let Some(study) = &self.slots[slot].study else { return };
+        let Some(dir) = rfd::FileDialog::new()
+            .set_title(&format!("Export study {} as DICOM — choose folder", SLOT_NAMES[slot]))
+            .pick_folder()
+        else {
+            return;
+        };
+        let src = study.clone();
+        let progress = Arc::new(Progress::default());
+        progress.set("starting…");
+        let p2 = progress.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let res = dicom_export::export_study(&src, &dir, &p2)
+                .map(|n| (n, dir.display().to_string()));
+            let _ = tx.send(res);
+        });
+        self.export_job = Some(ExportJob { progress, rx });
+    }
+
     fn reset_all_views(&mut self) {
         for s in &mut self.slots {
             for v in &mut s.views {
@@ -551,6 +642,45 @@ impl eframe::App for ViewerApp {
         if self.loading.is_none() {
             if let Some((slot, path)) = self.pending_load.take() {
                 self.start_load(slot, path);
+            }
+        }
+
+        // Poll background simulation.
+        if let Some(job) = &self.sim_job {
+            match job.rx.try_recv() {
+                Ok((target, study)) => {
+                    self.sim_job = None;
+                    self.on_study_loaded(target, study);
+                    self.comparison = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.sim_job = None;
+                    self.error = Some("Simulation thread terminated unexpectedly".into());
+                }
+            }
+        }
+
+        // Poll background export.
+        if let Some(job) = &self.export_job {
+            match job.rx.try_recv() {
+                Ok(Ok((n, dir))) => {
+                    self.export_job = None;
+                    self.export_result = Some(format!("✔ {n} DICOM file(s) written to {dir}"));
+                }
+                Ok(Err(e)) => {
+                    self.export_job = None;
+                    self.error = Some(format!("Export failed: {e:#}"));
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.export_job = None;
+                    self.error = Some("Export thread terminated unexpectedly".into());
+                }
             }
         }
 
@@ -851,6 +981,7 @@ impl ViewerApp {
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     self.registration_section(ui);
+                    self.simulation_section(ui);
                     for slot in 0..2 {
                         if self.slots[slot].study.is_none() {
                             continue;
@@ -980,6 +1111,123 @@ impl ViewerApp {
         }
         if clear_reg {
             self.clear_registration();
+        }
+    }
+
+    /// Study transform simulator: apply a known rigid motion + optional
+    /// Gaussian deformation to a study, generate the result into the other
+    /// slot, and export any study as DICOM files.
+    fn simulation_section(&mut self, ui: &mut egui::Ui) {
+        if self.slots[0].study.is_none() && self.slots[1].study.is_none() {
+            return;
+        }
+        let mut do_generate = false;
+        let mut do_export: Option<usize> = None;
+        egui::CollapsingHeader::new(egui::RichText::new("Simulation (registration QA)").strong())
+            .default_open(false)
+            .show(ui, |ui| {
+                if let Some(job) = &self.sim_job {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(job.progress.get());
+                    });
+                    return;
+                }
+
+                ui.horizontal(|ui| {
+                    ui.label("Source");
+                    ui.selectable_value(&mut self.sim_source, 0, "A");
+                    ui.selectable_value(&mut self.sim_source, 1, "B");
+                    ui.weak(format!(
+                        "▶ generates study {}",
+                        SLOT_NAMES[1 - self.sim_source.min(1)]
+                    ));
+                });
+
+                ui.label("Rigid motion:");
+                ui.horizontal(|ui| {
+                    ui.label("t (mm)");
+                    for v in &mut self.sim_params.translation {
+                        ui.add(egui::DragValue::new(v).speed(0.5).range(-200.0..=200.0));
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("r (°)");
+                    for v in &mut self.sim_params.rotation_deg {
+                        ui.add(egui::DragValue::new(v).speed(0.2).range(-45.0..=45.0));
+                    }
+                });
+
+                ui.label("Gaussian deformation (0 = off):");
+                ui.horizontal(|ui| {
+                    ui.label("amp (mm)");
+                    for v in &mut self.sim_params.bump_amp {
+                        ui.add(egui::DragValue::new(v).speed(0.5).range(-40.0..=40.0));
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("σ (mm)");
+                    ui.add(
+                        egui::DragValue::new(&mut self.sim_params.bump_sigma)
+                            .speed(1.0)
+                            .range(5.0..=200.0),
+                    );
+                    ui.weak("centered at the crosshair");
+                });
+
+                let src_ok = self.slots[self.sim_source.min(1)].study.is_some();
+                if ui
+                    .add_enabled(
+                        src_ok && self.loading.is_none(),
+                        egui::Button::new(format!(
+                            "⚙ Generate transformed study ▶ {}",
+                            SLOT_NAMES[1 - self.sim_source.min(1)]
+                        )),
+                    )
+                    .clicked()
+                {
+                    do_generate = true;
+                }
+                if let Some(s) = &self.last_sim {
+                    ui.weak(format!("Ground truth {s}"));
+                }
+
+                ui.separator();
+                ui.label("Export as DICOM files:");
+                if let Some(job) = &self.export_job {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(job.progress.get());
+                    });
+                } else {
+                    ui.horizontal(|ui| {
+                        for slot in 0..2 {
+                            if ui
+                                .add_enabled(
+                                    self.slots[slot].study.is_some(),
+                                    egui::Button::new(format!(
+                                        "💾 Export {}…",
+                                        SLOT_NAMES[slot]
+                                    )),
+                                )
+                                .clicked()
+                            {
+                                do_export = Some(slot);
+                            }
+                        }
+                    });
+                }
+                if let Some(msg) = &self.export_result {
+                    ui.weak(msg);
+                }
+            });
+        ui.separator();
+        if do_generate {
+            self.start_simulation();
+        }
+        if let Some(slot) = do_export {
+            self.export_result = None;
+            self.start_export(slot);
         }
     }
 
