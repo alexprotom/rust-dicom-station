@@ -51,8 +51,10 @@ can be closed again from the File menu, and comparison mode can be switched
 on/off at any time without unloading anything.
 
 **Image registration (rigid & non-rigid).** With two studies loaded, the
-*Registration* menu (or the sidebar section) registers study B onto study A.
-The engine follows the [elastix](https://elastix.dev) framework —
+*Registration* menu (or the sidebar section) registers one study onto the
+other — the direction is selectable (**B ▶ A** or **A ▶ B**; the second
+study named is the fixed image, and the fusion overlay is drawn on its
+views). The engine follows the [elastix](https://elastix.dev) framework —
 [SuperElastix/elastix](https://github.com/SuperElastix/elastix) is a C++/ITK
 toolbox, so its core algorithms are **re-implemented natively in Rust** to
 keep the application single-language:
@@ -73,12 +75,12 @@ keep the application single-language:
 
 Registration runs on a background thread (progress + cancel in the sidebar)
 and typically takes seconds thanks to stochastic sampling. The result panel
-reports the metric before/after, the recovered translation/rotation, and
-enables a **magenta/green fusion overlay** on study A (A in magenta, the
-transformed B in green — aligned anatomy reads gray) with a blend slider.
-The cross-study crosshair link maps through the recovered transform (inverse
-included), so clicking a point in either study lands on the same anatomy in
-the other. Iterations, samples and grid spacing are adjustable in the
+reports the direction, the metric before/after, the recovered
+translation/rotation, and enables a **magenta/green fusion overlay** on the
+fixed study (fixed image in magenta, the transformed moving image in green —
+aligned anatomy reads gray) with a blend slider. The cross-study crosshair
+link maps through the recovered transform (inverse included), so clicking a
+point in either study lands on the same anatomy in the other. Iterations, samples and grid spacing are adjustable in the
 sidebar. Accuracy is verified in `tests/registration.rs` against analytically
 known transforms: sub-millimeter recovery for both a rigid rotation +
 translation and a 7 mm Gaussian-bump deformation.

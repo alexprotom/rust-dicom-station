@@ -188,6 +188,17 @@ struct LoadJob {
 struct RegJob {
     progress: Arc<RegProgress>,
     rx: mpsc::Receiver<anyhow::Result<RegistrationResult>>,
+    /// Slot used as the fixed image for this run.
+    fixed_slot: usize,
+}
+
+/// A completed registration plus the direction it was run in.
+struct ActiveRegistration {
+    result: RegistrationResult,
+    /// The fixed image's slot; the transform maps this slot's patient
+    /// coordinates into the other (moving) slot's. The fusion overlay is
+    /// drawn on this slot's views.
+    fixed_slot: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -208,9 +219,11 @@ pub struct ViewerApp {
     pending_load: Option<(usize, PathBuf)>,
     error: Option<String>,
 
-    // Registration (B = moving → A = fixed).
-    registration: Option<RegistrationResult>,
+    // Registration (direction selectable: either study can be the fixed one).
+    registration: Option<ActiveRegistration>,
     reg_job: Option<RegJob>,
+    /// Fixed-image slot for the *next* registration run (0 = A, 1 = B).
+    reg_fixed_slot: usize,
     fusion_on: bool,
     fusion_weight: f32,
     /// Bumped when the registration result changes → fusion cache rebuild.
@@ -253,6 +266,7 @@ impl ViewerApp {
             error: None,
             registration: None,
             reg_job: None,
+            reg_fixed_slot: 0,
             fusion_on: false,
             fusion_weight: 1.0,
             reg_gen: 0,
@@ -411,13 +425,18 @@ impl ViewerApp {
         if self.reg_job.is_some() {
             return;
         }
-        let (Some(a), Some(b)) = (&self.slots[0].study, &self.slots[1].study) else {
+        let fixed_slot = self.reg_fixed_slot.min(1);
+        let moving_slot = 1 - fixed_slot;
+        let (Some(f), Some(m)) = (
+            &self.slots[fixed_slot].study,
+            &self.slots[moving_slot].study,
+        ) else {
             self.error =
                 Some("Registration needs two loaded studies (comparison mode)".into());
             return;
         };
-        let fixed = a.volume.clone();
-        let moving = b.volume.clone();
+        let fixed = f.volume.clone();
+        let moving = m.volume.clone();
         let params = RegParams {
             kind,
             levels: 3,
@@ -434,7 +453,7 @@ impl ViewerApp {
             let res = registration::register(&fixed, &moving, &params, &p2);
             let _ = tx.send(res);
         });
-        self.reg_job = Some(RegJob { progress, rx });
+        self.reg_job = Some(RegJob { progress, rx, fixed_slot });
     }
 
     fn reset_all_views(&mut self) {
@@ -530,13 +549,14 @@ impl eframe::App for ViewerApp {
         if let Some(job) = &self.reg_job {
             match job.rx.try_recv() {
                 Ok(Ok(result)) => {
+                    let fixed_slot = self.reg_job.as_ref().map(|j| j.fixed_slot).unwrap_or(0);
                     self.reg_job = None;
-                    self.registration = Some(result);
+                    self.registration = Some(ActiveRegistration { result, fixed_slot });
                     self.fusion_on = true;
                     self.reg_gen += 1;
                     // Re-propagate the crosshair through the new transform.
-                    let cursor = self.slots[0].cursor;
-                    self.set_cursor(0, cursor, usize::MAX);
+                    let cursor = self.slots[fixed_slot].cursor;
+                    self.set_cursor(fixed_slot, cursor, usize::MAX);
                 }
                 Ok(Err(e)) => {
                     self.reg_job = None;
@@ -623,10 +643,18 @@ impl ViewerApp {
                     let both =
                         self.slots[0].study.is_some() && self.slots[1].study.is_some();
                     let running = self.reg_job.is_some();
+                    ui.label("Direction (moving ▶ fixed):");
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.reg_fixed_slot, 0, "B ▶ A");
+                        ui.selectable_value(&mut self.reg_fixed_slot, 1, "A ▶ B");
+                    });
+                    ui.separator();
+                    let moving = SLOT_NAMES[1 - self.reg_fixed_slot.min(1)];
+                    let fixed = SLOT_NAMES[self.reg_fixed_slot.min(1)];
                     if ui
                         .add_enabled(
                             both && !running,
-                            egui::Button::new("Rigid: register B ▶ A"),
+                            egui::Button::new(format!("Rigid: register {moving} ▶ {fixed}")),
                         )
                         .on_hover_text(
                             "6-DOF Euler transform, ASGD optimizer (elastix-style), \
@@ -640,7 +668,9 @@ impl ViewerApp {
                     if ui
                         .add_enabled(
                             both && !running,
-                            egui::Button::new("Deformable: register B ▶ A (B-spline)"),
+                            egui::Button::new(format!(
+                                "Deformable: register {moving} ▶ {fixed} (B-spline)"
+                            )),
                         )
                         .on_hover_text(
                             "Rigid pre-alignment + cubic B-spline free-form deformation, \
@@ -652,9 +682,13 @@ impl ViewerApp {
                         ui.close();
                     }
                     ui.separator();
+                    let fusion_label = match &self.registration {
+                        Some(reg) => format!("Fusion overlay on {}", SLOT_NAMES[reg.fixed_slot]),
+                        None => "Fusion overlay".to_string(),
+                    };
                     ui.add_enabled(
                         self.registration.is_some(),
-                        egui::Checkbox::new(&mut self.fusion_on, "Fusion overlay on A"),
+                        egui::Checkbox::new(&mut self.fusion_on, fusion_label),
                     );
                     if ui
                         .add_enabled(running, egui::Button::new("Cancel registration"))
@@ -822,7 +856,7 @@ impl ViewerApp {
         let mut do_reg: Option<RegKind> = None;
         let mut cancel_reg = false;
         let mut clear_reg = false;
-        egui::CollapsingHeader::new(egui::RichText::new("Registration (B ▶ A)").strong())
+        egui::CollapsingHeader::new(egui::RichText::new("Registration").strong())
             .default_open(true)
             .show(ui, |ui| {
                 if let Some(job) = &self.reg_job {
@@ -835,6 +869,14 @@ impl ViewerApp {
                     }
                     return;
                 }
+
+                ui.horizontal(|ui| {
+                    ui.label("Direction");
+                    ui.selectable_value(&mut self.reg_fixed_slot, 0, "B ▶ A")
+                        .on_hover_text("B is deformed/moved onto A; fusion shown on A");
+                    ui.selectable_value(&mut self.reg_fixed_slot, 1, "A ▶ B")
+                        .on_hover_text("A is deformed/moved onto B; fusion shown on B");
+                });
 
                 ui.horizontal(|ui| {
                     ui.label("Iterations/level");
@@ -875,19 +917,22 @@ impl ViewerApp {
 
                 if let Some(reg) = &self.registration {
                     ui.separator();
-                    let kind = match reg.kind {
+                    let res = &reg.result;
+                    let kind = match res.kind {
                         RegKind::Rigid => "Rigid (Euler 6-DOF)",
                         RegKind::Deformable => "Rigid + B-spline FFD",
                     };
-                    ui.label(format!("✔ {kind}"));
+                    let moving = SLOT_NAMES[1 - reg.fixed_slot];
+                    let fixed = SLOT_NAMES[reg.fixed_slot];
+                    ui.label(format!("✔ {kind}  ({moving} ▶ {fixed})"));
                     ui.weak(format!(
                         "MSD {:.1} ▶ {:.1}  ({} iters, {:.1} s)",
-                        reg.initial_metric,
-                        reg.final_metric,
-                        reg.iterations_run,
-                        reg.elapsed_secs
+                        res.initial_metric,
+                        res.final_metric,
+                        res.iterations_run,
+                        res.elapsed_secs
                     ));
-                    let t = &reg.transform.rigid;
+                    let t = &res.transform.rigid;
                     ui.weak(format!(
                         "t = ({:.1}, {:.1}, {:.1}) mm  r = ({:.2}, {:.2}, {:.2})°",
                         t.params[3],
@@ -897,7 +942,10 @@ impl ViewerApp {
                         t.params[1].to_degrees(),
                         t.params[2].to_degrees()
                     ));
-                    ui.checkbox(&mut self.fusion_on, "Fusion overlay on A");
+                    ui.checkbox(
+                        &mut self.fusion_on,
+                        format!("Fusion overlay on {fixed}"),
+                    );
                     let resp = ui.add(
                         egui::Slider::new(&mut self.fusion_weight, 0.0..=1.0)
                             .text("Fusion blend"),
@@ -1516,9 +1564,11 @@ impl ViewerApp {
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, Color32::BLACK);
 
-        let fusion_active = slot == 0
-            && self.fusion_on
-            && self.registration.is_some()
+        let fusion_active = self.fusion_on
+            && self
+                .registration
+                .as_ref()
+                .is_some_and(|r| r.fixed_slot == slot)
             && view.fusion_tex.is_some();
         if fusion_active {
             if let Some(tex) = &view.fusion_tex {
@@ -1841,12 +1891,12 @@ impl ViewerApp {
         if self.link_studies {
             let other = 1 - slot;
             let Some(ostudy) = &self.slots[other].study else { return };
-            // Map through the registration transform when one exists
-            // (A = fixed → B = moving; the reverse direction uses the
-            // inverse).
+            // Map through the registration transform when one exists.
+            // The transform maps fixed-slot patient coordinates into the
+            // moving slot; clicks on the moving study use the inverse.
             let target = match &self.registration {
-                Some(reg) if slot == 0 => reg.transform.map(patient),
-                Some(reg) => reg.transform.unmap(patient),
+                Some(reg) if slot == reg.fixed_slot => reg.result.transform.map(patient),
+                Some(reg) => reg.result.transform.unmap(patient),
                 None => patient,
             };
             let odims = ostudy.volume.dims;
@@ -2012,25 +2062,36 @@ impl ViewerApp {
         self.refresh_fusion_cache(ctx, slot, idx);
     }
 
-    /// Rebuild the magenta/green fusion texture of a study-A view: A stays
-    /// gray in R/B, the transformed study-B image is blended into the green
-    /// channel. Aligned anatomy therefore reads gray, mismatches magenta/green.
+    /// Rebuild the magenta/green fusion texture of a fixed-study view: the
+    /// fixed image stays gray in R/B, the transformed moving image is blended
+    /// into the green channel. Aligned anatomy therefore reads gray,
+    /// mismatches magenta/green. Drawn on whichever slot was the fixed image
+    /// of the active registration.
     fn refresh_fusion_cache(&mut self, ctx: &egui::Context, slot: usize, idx: usize) {
-        if slot != 0 || !self.fusion_on {
+        if !self.fusion_on {
             return;
         }
         let Some(reg) = &self.registration else { return };
+        if reg.fixed_slot != slot {
+            return;
+        }
         if self.slots[0].study.is_none() || self.slots[1].study.is_none() {
             return;
         }
-        let transform: Arc<Transform3> = reg.transform.clone();
+        let transform: Arc<Transform3> = reg.result.transform.clone();
+        let fixed_slot = reg.fixed_slot;
         let wc = self.window_center;
         let ww = self.window_width.max(1.0);
         let weight = self.fusion_weight.clamp(0.0, 1.0);
 
-        let (a_half, b_half) = self.slots.split_at_mut(1);
-        let a = &mut a_half[0];
-        let bvol = &b_half[0].study.as_ref().unwrap().volume;
+        let (left, right) = self.slots.split_at_mut(1);
+        let (a, bvol) = if fixed_slot == 0 {
+            let bvol = &right[0].study.as_ref().unwrap().volume;
+            (&mut left[0], bvol)
+        } else {
+            let bvol = &left[0].study.as_ref().unwrap().volume;
+            (&mut right[0], bvol)
+        };
         let avol = &a.study.as_ref().unwrap().volume;
         let view = &mut a.views[idx];
         let plane = view.plane;
@@ -2079,8 +2140,11 @@ impl ViewerApp {
         match &mut view.fusion_tex {
             Some(t) => t.set(img, TextureOptions::LINEAR),
             None => {
-                view.fusion_tex =
-                    Some(ctx.load_texture(format!("fusion{idx}"), img, TextureOptions::LINEAR))
+                view.fusion_tex = Some(ctx.load_texture(
+                    format!("fusion{fixed_slot}_{idx}"),
+                    img,
+                    TextureOptions::LINEAR,
+                ))
             }
         }
         view.fusion_key = Some(key);
