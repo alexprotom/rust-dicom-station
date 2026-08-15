@@ -1118,11 +1118,7 @@ impl ViewerApp {
             .map(|s| s.doses.len())
             .unwrap_or(0);
         if n_doses == 0 {
-            egui::CollapsingHeader::new("Dose")
-                .id_salt(("dose_hdr", slot))
-                .show(ui, |ui| {
-                    ui.weak("No RTDOSE loaded");
-                });
+            // No RTDOSE in this study — show nothing.
             return;
         }
         let mut mode = self.dose_mode;
@@ -1215,11 +1211,7 @@ impl ViewerApp {
     fn plan_section(&mut self, ui: &mut egui::Ui, slot: usize) {
         let Some(study) = &self.slots[slot].study else { return };
         if study.plans.is_empty() {
-            egui::CollapsingHeader::new("Plan")
-                .id_salt(("plan_hdr", slot))
-                .show(ui, |ui| {
-                    ui.weak("No RTPLAN loaded");
-                });
+            // No RTPLAN in this study — show nothing.
             return;
         }
         for (pi, plan) in study.plans.iter().enumerate() {
