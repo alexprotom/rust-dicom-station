@@ -14,6 +14,7 @@ use dicom_object::{InMemDicomObject, OpenFileOptions};
 use dicom_pixeldata::{ConvertOptions, ModalityLutOption, PixelDecoder};
 use rayon::prelude::*;
 
+use crate::extras::{self, PlanarImage, SpatialReg, TreatRecord};
 use crate::geometry::Vec3;
 use crate::rtdose::{self, DoseGrid};
 use crate::rtplan::{self, PlanInfo};
@@ -98,11 +99,22 @@ pub struct LoadedStudy {
     pub structures: Option<StructureSet>,
     pub doses: Vec<DoseGrid>,
     pub plans: Vec<PlanInfo>,
+    /// DX / CR radiographs and RTIMAGE (DRR / portal) planar images.
+    pub planar_images: Vec<PlanarImage>,
+    /// REG spatial registration objects found in the folder.
+    pub registrations: Vec<SpatialReg>,
+    /// RT (Ion) Beams Treatment Records.
+    pub treat_records: Vec<TreatRecord>,
     pub warnings: Vec<String>,
     pub default_window: (f32, f32),
 }
 
-const IMAGE_MODALITIES: &[&str] = &["CT", "MR", "PT", "NM", "US", "CR", "DX", "OT"];
+const IMAGE_MODALITIES: &[&str] = &["CT", "MR", "PT", "NM", "US", "OT"];
+/// Modalities treated as 2D projection images (no volume reconstruction).
+const PLANAR_MODALITIES: &[&str] = &["DX", "CR", "RTIMAGE", "MG", "XA", "RF", "PX"];
+const SOP_RTIMAGE: &str = "1.2.840.10008.5.1.4.1.1.481.1";
+const SOP_DX_PRESENTATION: &str = "1.2.840.10008.5.1.4.1.1.1.1";
+const SOP_DX_PROCESSING: &str = "1.2.840.10008.5.1.4.1.1.1.1.1";
 
 /// SOP Class UID fallbacks for RT objects (when Modality is absent).
 const SOP_RTSTRUCT: &str = "1.2.840.10008.5.1.4.1.1.481.3";
@@ -182,6 +194,9 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
     let mut rtstruct_files = Vec::new();
     let mut rtdose_files = Vec::new();
     let mut rtplan_files = Vec::new();
+    let mut planar_files = Vec::new();
+    let mut reg_files = Vec::new();
+    let mut record_files = Vec::new();
     let mut meta = PatientMeta::default();
 
     for s in &scanned {
@@ -194,6 +209,12 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
             || s.modality == "RTIONPLAN"
             || s.sop_class == SOP_RTPLAN
             || s.sop_class == SOP_RTIONPLAN;
+        let is_reg = s.modality == "REG" || extras::is_reg_sop(&s.sop_class);
+        let is_record = s.modality == "RTRECORD" || extras::is_record_sop(&s.sop_class);
+        let is_planar = PLANAR_MODALITIES.contains(&s.modality.as_str())
+            || s.sop_class == SOP_RTIMAGE
+            || s.sop_class == SOP_DX_PRESENTATION
+            || s.sop_class == SOP_DX_PROCESSING;
 
         if is_rt_struct {
             rtstruct_files.push(s.path.clone());
@@ -201,8 +222,16 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
             rtdose_files.push(s.path.clone());
         } else if is_rt_plan {
             rtplan_files.push(s.path.clone());
+        } else if is_reg {
+            reg_files.push(s.path.clone());
+        } else if is_record {
+            record_files.push(s.path.clone());
+        } else if is_planar && !s.has_geometry {
+            planar_files.push(s.path.clone());
         } else if s.has_geometry
-            && (IMAGE_MODALITIES.contains(&s.modality.as_str()) || s.modality.is_empty())
+            && (IMAGE_MODALITIES.contains(&s.modality.as_str())
+                || PLANAR_MODALITIES.contains(&s.modality.as_str())
+                || s.modality.is_empty())
         {
             match image_series.iter_mut().find(|se| se.uid == s.series_uid) {
                 Some(se) => se.files.push(s.path.clone()),
@@ -273,6 +302,50 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
         }
     }
 
+    let mut planar_images = Vec::new();
+    for p in &planar_files {
+        progress.set("Loading planar images (DX/RTIMAGE)…");
+        match extras::load_planar(p) {
+            Ok(img) => planar_images.push(img),
+            Err(e) => warnings.push(format!(
+                "planar image {} load failed: {e:#}",
+                p.file_name().unwrap_or_default().to_string_lossy()
+            )),
+        }
+    }
+
+    let mut registrations = Vec::new();
+    for p in &reg_files {
+        progress.set("Parsing spatial registrations (REG)…");
+        match extras::load_reg(p) {
+            Ok(r) => {
+                if r.deformable {
+                    warnings.push(format!(
+                        "REG {} is a deformable registration — only its rigid matrices are read",
+                        p.file_name().unwrap_or_default().to_string_lossy()
+                    ));
+                }
+                registrations.push(r);
+            }
+            Err(e) => warnings.push(format!(
+                "REG {} load failed: {e:#}",
+                p.file_name().unwrap_or_default().to_string_lossy()
+            )),
+        }
+    }
+
+    let mut treat_records = Vec::new();
+    for p in &record_files {
+        progress.set("Parsing treatment records…");
+        match extras::load_record(p) {
+            Ok(r) => treat_records.push(r),
+            Err(e) => warnings.push(format!(
+                "RTRECORD {} load failed: {e:#}",
+                p.file_name().unwrap_or_default().to_string_lossy()
+            )),
+        }
+    }
+
     // Frame-of-reference sanity checks.
     if let Some(ss) = &structures {
         if !ss.frame_of_reference_uid.is_empty()
@@ -305,6 +378,9 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
         structures,
         doses,
         plans,
+        planar_images,
+        registrations,
+        treat_records,
         warnings,
         default_window,
     })

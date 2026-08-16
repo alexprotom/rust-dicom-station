@@ -3,6 +3,7 @@
 
 pub mod app;
 pub mod dicom_export;
+pub mod extras;
 pub mod geometry;
 pub mod loader;
 pub mod registration;

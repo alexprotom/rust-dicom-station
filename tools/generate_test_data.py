@@ -28,6 +28,10 @@ ap.add_argument("--shift-x", type=float, default=0.0, help="whole-phantom X shif
 ap.add_argument("--shift-y", type=float, default=0.0, help="whole-phantom Y shift in mm (for registration tests)")
 ap.add_argument("--peak", type=float, default=60.0, help="dose peak in Gy")
 ap.add_argument("--plan-label", default="SynthProton")
+ap.add_argument("--reg-shift", default="12,-9,0",
+                help="translation (mm) written into the REG object's matrix")
+ap.add_argument("--no-extras", action="store_true",
+                help="skip DX / RTIMAGE / REG / RTRECORD generation")
 args = ap.parse_args()
 
 OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), args.out)
@@ -351,5 +355,119 @@ ds.ReferencedRTPlanSequence = [rp]
 ds.PixelData = stored.tobytes()
 ds.save_as(os.path.join(OUT, "RD_synth.dcm"), enforce_file_format=True)
 print(f"RTDOSE written (max {dose3d.max():.2f} Gy)")
+
+# --- Extras: DX, RTIMAGE, REG, RTRECORD --------------------------------------
+if not args.no_extras:
+    # Synthetic AP radiograph: chord lengths through the phantom projected
+    # along Y onto an (x, z) detector.
+    PX_COLS, PX_ROWS = 512, 400
+    dxs_ = np.linspace(-95, 95, PX_COLS)
+    dzs_ = np.linspace(-40, 40, PX_ROWS)
+    PXX, PZZ = np.meshgrid(dxs_, dzs_)
+
+    def chord(r2):
+        return 2.0 * np.sqrt(np.maximum(r2, 0.0))
+
+    proj = 0.02 * chord(70.0**2 - (PXX - SX) ** 2)
+    tr2 = 25.0**2 - (PXX - SX) ** 2 - PZZ**2
+    proj += 0.05 * chord(tr2)
+    proj += 0.08 * chord(8.0**2 - (PXX - SX) ** 2)  # cord (runs full height)
+    raw = np.round(proj / proj.max() * 3000.0).astype(np.uint16)
+
+    def planar_common(ds, rows, cols):
+        ds.Rows = rows
+        ds.Columns = cols
+        ds.BitsAllocated = 16
+        ds.BitsStored = 16
+        ds.HighBit = 15
+        ds.PixelRepresentation = 0
+        ds.SamplesPerPixel = 1
+        ds.PhotometricInterpretation = "MONOCHROME2"
+        ds.WindowCenter = "1500"
+        ds.WindowWidth = "3000"
+        ds.PixelData = raw.tobytes()
+
+    # DX radiograph
+    ds = base_dataset("1.2.840.10008.5.1.4.1.1.1.1", generate_uid(), "DX")
+    ds.SeriesInstanceUID = generate_uid()
+    ds.SeriesNumber = 20
+    ds.SeriesDescription = "Synthetic DX AP"
+    ds.ImagerPixelSpacing = [f"{80.0/PX_ROWS:.4f}", f"{190.0/PX_COLS:.4f}"]
+    ds.BodyPartExamined = "ABDOMEN"
+    ds.ViewPosition = "AP"
+    ds.KVP = "120"
+    planar_common(ds, PX_ROWS, PX_COLS)
+    ds.save_as(os.path.join(OUT, "DX_synth.dcm"), enforce_file_format=True)
+    print("DX written")
+
+    # RTIMAGE (DRR-like)
+    ds = base_dataset("1.2.840.10008.5.1.4.1.1.481.1", generate_uid(), "RTIMAGE")
+    ds.SeriesInstanceUID = generate_uid()
+    ds.SeriesNumber = 21
+    ds.RTImageLabel = "DRR_G000"
+    ds.RTImageDescription = "Synthetic DRR, gantry 0"
+    ds.RadiationMachineName = "SYNTH-PBS"
+    ds.RadiationMachineSAD = "2000.0"
+    ds.RTImageSID = "1500.0"
+    ds.GantryAngle = "0.0"
+    ds.ImagePlanePixelSpacing = [f"{80.0/PX_ROWS:.4f}", f"{190.0/PX_COLS:.4f}"]
+    ds.RTImagePlane = "NORMAL"
+    planar_common(ds, PX_ROWS, PX_COLS)
+    ds.save_as(os.path.join(OUT, "RI_synth.dcm"), enforce_file_format=True)
+    print("RTIMAGE written")
+
+    # REG — Spatial Registration: identity for this frame + a rigid
+    # translation matrix for an external frame.
+    tx, ty, tz = (float(v) for v in args.reg_shift.split(","))
+    ds = base_dataset("1.2.840.10008.5.1.4.1.1.66.1", generate_uid(), "REG")
+    ds.SeriesInstanceUID = generate_uid()
+    ds.SeriesNumber = 22
+    ds.ContentDescription = "Synthetic spatial registration"
+    ds.FrameOfReferenceUID = for_uid
+    ds.ContentDate = DATE
+    ds.ContentTime = TIME
+
+    def reg_item(item_for, matrix):
+        it = Dataset()
+        it.FrameOfReferenceUID = item_for
+        mr = Dataset()
+        ms = Dataset()
+        ms.FrameOfReferenceTransformationMatrixType = "RIGID"
+        ms.FrameOfReferenceTransformationMatrix = [f"{v:.6f}" for v in matrix]
+        mr.MatrixSequence = [ms]
+        it.MatrixRegistrationSequence = [mr]
+        return it
+
+    ident = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+    shifted = [1, 0, 0, tx, 0, 1, 0, ty, 0, 0, 1, tz, 0, 0, 0, 1]
+    ds.RegistrationSequence = [reg_item(for_uid, ident), reg_item(generate_uid(), shifted)]
+    ds.save_as(os.path.join(OUT, "REG_synth.dcm"), enforce_file_format=True)
+    print(f"REG written (t=({tx},{ty},{tz}))")
+
+    # RTRECORD — RT Ion Beams Treatment Record
+    ds = base_dataset("1.2.840.10008.5.1.4.1.1.481.9", generate_uid(), "RTRECORD")
+    ds.SeriesInstanceUID = generate_uid()
+    ds.SeriesNumber = 23
+    ds.TreatmentDate = DATE
+    ds.TreatmentTime = TIME
+    ds.TreatmentMachineName = "SYNTH-PBS"
+    recs = []
+    for num, name, spec, deliv, term in [
+        (1, "G000", 120.5, 120.3, "NORMAL"),
+        (2, "G090", 98.3, 98.3, "NORMAL"),
+    ]:
+        it = Dataset()
+        it.ReferencedBeamNumber = num
+        it.BeamName = name
+        it.CurrentFractionNumber = 5
+        it.TreatmentTerminationStatus = term
+        it.TreatmentVerificationStatus = "VERIFIED"
+        it.SpecifiedPrimaryMeterset = f"{spec}"
+        it.DeliveredPrimaryMeterset = f"{deliv}"
+        it.TreatmentDeliveryType = "TREATMENT"
+        recs.append(it)
+    ds.TreatmentSessionIonBeamSequence = recs
+    ds.save_as(os.path.join(OUT, "RT_record_synth.dcm"), enforce_file_format=True)
+    print("RTRECORD written")
 
 print(f"\nDone. Study in {OUT}")

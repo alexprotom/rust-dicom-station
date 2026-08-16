@@ -85,6 +85,29 @@ sidebar. Accuracy is verified in `tests/registration.rs` against analytically
 known transforms: sub-millimeter recovery for both a rigid rotation +
 translation and a 7 mm Gaussian-bump deformation.
 
+**Planar images (DX / CR / RTIMAGE).** Digital radiographs and RT images
+(DRRs, portal / setup images) found in the study folder are listed in the
+sidebar and open in floating viewer windows with their own window/level
+(DICOM default, auto, or manual), correct physical aspect ratio
+(imager / image-plane pixel spacing), MONOCHROME1 inversion, and the
+relevant metadata — body part, view and kVp for DX; machine, gantry angle,
+SAD and SID for RTIMAGE.
+
+**REG — Spatial Registration objects.** Rigid Spatial Registration files are
+parsed into their 4×4 frame-of-reference transformation matrices, shown with
+the decomposed translation/rotation and frame-of-reference hints (matched
+against the loaded studies' FoR UIDs). A matrix can be **applied as the
+active registration** in either direction (with an optional inversion), so a
+TPS-exported registration immediately drives the fusion overlay and the
+cross-study crosshair link without running the optimizer. Deformable REG
+objects are recognized and their rigid matrices read; deformation grids are
+not applied.
+
+**RTRECORD — treatment records.** RT (Ion) Beams Treatment Records are
+summarized per session: fraction number, date, machine, and a per-beam table
+of specified vs delivered meterset with the percentage difference and the
+termination status (non-NORMAL terminations highlighted).
+
 **Transform simulator & DICOM export (registration QA).** The *Simulation*
 sidebar section applies an exactly-known transform to a loaded study — rigid
 motion (translation + Euler rotation about the volume center) plus an
@@ -191,6 +214,8 @@ src/
   main.rs      entry point (eframe/wgpu window)
   app.rs       egui application: three-view layout, panels, interaction
   loader.rs    directory scan, classification, parallel volume loading
+  extras.rs    DX/CR/RTIMAGE planar images, REG spatial registrations,
+               RTRECORD treatment records
   registration.rs  elastix-style rigid + B-spline registration (ASGD,
                multi-resolution, random sampling) in pure Rust
   simulate.rs  known-transform study generator for registration QA

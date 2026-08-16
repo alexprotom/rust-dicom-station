@@ -297,6 +297,11 @@ pub fn generate_transformed_study(
         structures,
         doses,
         plans,
+        // Planar images / registrations / records are carried over unchanged
+        // (2D projections and metadata objects are not resampled).
+        planar_images: src.planar_images.clone(),
+        registrations: src.registrations.clone(),
+        treat_records: src.treat_records.clone(),
         warnings: vec![format!("Simulated dataset — ground truth: {}", params.describe())],
         default_window: src.default_window,
     }

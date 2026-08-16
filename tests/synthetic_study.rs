@@ -125,6 +125,56 @@ fn load_synthetic_study() {
     let b2 = &plan.beams[1];
     assert!((b2.gantry_angle.unwrap() - 90.0).abs() < 1e-6);
 
+    // ---- Planar images (DX + RTIMAGE) ----
+    assert_eq!(study.planar_images.len(), 2, "DX + RTIMAGE expected");
+    let dx = study
+        .planar_images
+        .iter()
+        .find(|p| p.modality == "DX")
+        .expect("DX image");
+    assert_eq!((dx.rows, dx.cols), (400, 512));
+    assert!(dx.max_value > dx.min_value);
+    let rti = study
+        .planar_images
+        .iter()
+        .find(|p| p.modality == "RTIMAGE")
+        .expect("RTIMAGE");
+    assert_eq!(rti.label, "DRR_G000");
+    assert!(rti.info.iter().any(|(k, v)| k == "Machine" && v == "SYNTH-PBS"));
+    assert!(rti.info.iter().any(|(k, _)| k == "SAD"));
+
+    // ---- REG spatial registration ----
+    assert_eq!(study.registrations.len(), 1);
+    let reg = &study.registrations[0];
+    assert!(!reg.deformable);
+    assert_eq!(reg.items.len(), 2);
+    assert!(reg.items[0].is_identity);
+    let item = &reg.items[1];
+    assert!(!item.is_identity);
+    assert_eq!(item.matrix_type, "RIGID");
+    let rigid = rust_dicom_viewer::extras::matrix_to_rigid(&item.matrix, false)
+        .expect("rigid conversion");
+    let mapped = rigid.map(Vec3::new(1.0, 2.0, 3.0));
+    assert!(
+        (mapped - Vec3::new(13.0, -7.0, 3.0)).length() < 1e-6,
+        "REG matrix maps by (12,-9,0): got {mapped:?}"
+    );
+    let inv = rust_dicom_viewer::extras::matrix_to_rigid(&item.matrix, true).unwrap();
+    assert!((inv.map(mapped) - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-6, "inverted REG");
+
+    // ---- RTRECORD ----
+    assert_eq!(study.treat_records.len(), 1);
+    let rec = &study.treat_records[0];
+    assert!(rec.ion);
+    assert_eq!(rec.fraction, Some(5));
+    assert_eq!(rec.machine, "SYNTH-PBS");
+    assert_eq!(rec.beams.len(), 2);
+    let rb = &rec.beams[0];
+    assert_eq!(rb.name, "G000");
+    assert!((rb.specified_meterset.unwrap() - 120.5).abs() < 1e-6);
+    assert!((rb.delivered_meterset.unwrap() - 120.3).abs() < 1e-6);
+    assert_eq!(rb.termination_status, "NORMAL");
+
     // ---- Slice extraction sanity ----
     let mut buf = Vec::new();
     v.extract_slice(ViewPlane::Axial, 20, &mut buf);

@@ -13,6 +13,7 @@ use egui::{
 use rayon::prelude::*;
 
 use crate::dicom_export;
+use crate::extras;
 use crate::loader::{self, LoadedStudy, Progress};
 use crate::registration::{
     self, RegKind, RegParams, RegProgress, RegistrationResult, Transform3,
@@ -208,6 +209,16 @@ struct SimJob {
     rx: mpsc::Receiver<(usize, LoadedStudy)>,
 }
 
+/// A floating viewer window for a planar image (DX / CR / RTIMAGE).
+struct PlanarWindow {
+    slot: usize,
+    idx: usize,
+    open: bool,
+    wl: (f32, f32),
+    tex: Option<TextureHandle>,
+    tex_wl: (f32, f32),
+}
+
 struct ExportJob {
     progress: Arc<Progress>,
     rx: mpsc::Receiver<anyhow::Result<(usize, String)>>,
@@ -261,6 +272,11 @@ pub struct ViewerApp {
     export_job: Option<ExportJob>,
     export_result: Option<String>,
 
+    /// Open floating viewers for planar images.
+    planar_windows: Vec<PlanarWindow>,
+    /// Invert REG matrices before applying them as the active registration.
+    reg_apply_invert: bool,
+
     window_center: f32,
     window_width: f32,
 
@@ -308,6 +324,8 @@ impl ViewerApp {
             last_sim: None,
             export_job: None,
             export_result: None,
+            planar_windows: Vec::new(),
+            reg_apply_invert: false,
             window_center: 40.0,
             window_width: 400.0,
             show_contours: true,
@@ -404,7 +422,9 @@ impl ViewerApp {
         if slot == 1 {
             self.comparison = true;
         }
-        // Any previous registration no longer matches the loaded volumes.
+        // Any previous registration no longer matches the loaded volumes,
+        // and open planar viewers for this slot reference stale data.
+        self.planar_windows.retain(|w| w.slot != slot);
         self.clear_registration();
         self.settings_gen += 1;
     }
@@ -444,7 +464,28 @@ impl ViewerApp {
         self.slots[1] = StudySlot::empty();
         self.comparison = false;
         self.hovered_slot = 0;
+        self.planar_windows.retain(|w| w.slot != 1);
         self.clear_registration();
+    }
+
+    /// Install a rigid transform (e.g. from a DICOM REG object) as the
+    /// active registration, exactly as if it had been computed.
+    fn apply_external_rigid(&mut self, rigid: registration::RigidTransform, fixed_slot: usize) {
+        self.registration = Some(ActiveRegistration {
+            result: RegistrationResult {
+                transform: Arc::new(Transform3 { rigid, bspline: None }),
+                kind: RegKind::Rigid,
+                initial_metric: 0.0,
+                final_metric: 0.0,
+                iterations_run: 0,
+                elapsed_secs: 0.0,
+            },
+            fixed_slot,
+        });
+        self.fusion_on = self.slots[0].study.is_some() && self.slots[1].study.is_some();
+        self.reg_gen += 1;
+        let cursor = self.slots[fixed_slot].cursor;
+        self.set_cursor(fixed_slot, cursor, usize::MAX);
     }
 
     fn clear_registration(&mut self) {
@@ -600,6 +641,16 @@ impl ViewerApp {
     }
 }
 
+/// Last few characters of a UID for compact display.
+fn tail(uid: &str) -> String {
+    let n = uid.chars().count();
+    if n <= 10 {
+        uid.to_string()
+    } else {
+        uid.chars().skip(n - 10).collect()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // eframe::App
 // ---------------------------------------------------------------------------
@@ -719,6 +770,7 @@ impl eframe::App for ViewerApp {
         self.side_panel(ui);
         self.status_bar(ui);
         self.central_views(ui);
+        self.planar_windows_ui(&ctx);
         self.modals(&ctx);
     }
 }
@@ -1255,6 +1307,9 @@ impl ViewerApp {
                 self.structures_section(ui, slot);
                 self.dose_section(ui, slot);
                 self.plan_section(ui, slot);
+                self.planar_section(ui, slot);
+                self.reg_objects_section(ui, slot);
+                self.records_section(ui, slot);
                 self.warnings_section(ui, slot);
             });
         ui.separator();
@@ -1558,6 +1613,291 @@ impl ViewerApp {
                 }
             });
         }
+    }
+
+    /// DX / CR / RTIMAGE planar images: list with per-image viewer windows.
+    fn planar_section(&mut self, ui: &mut egui::Ui, slot: usize) {
+        let n = self.slots[slot]
+            .study
+            .as_ref()
+            .map(|s| s.planar_images.len())
+            .unwrap_or(0);
+        if n == 0 {
+            return;
+        }
+        let mut open_idx = None;
+        {
+            let study = self.slots[slot].study.as_ref().unwrap();
+            egui::CollapsingHeader::new(format!("Planar images ({n})"))
+                .id_salt(("planar", slot))
+                .default_open(false)
+                .show(ui, |ui| {
+                    for (i, img) in study.planar_images.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("[{}]", img.modality)).weak(),
+                            );
+                            ui.label(&img.label);
+                            if ui.small_button("View").clicked() {
+                                open_idx = Some(i);
+                            }
+                        });
+                    }
+                });
+        }
+        if let Some(i) = open_idx {
+            if let Some(w) = self
+                .planar_windows
+                .iter_mut()
+                .find(|w| w.slot == slot && w.idx == i)
+            {
+                w.open = true;
+            } else {
+                let wl = self.slots[slot].study.as_ref().unwrap().planar_images[i].window;
+                self.planar_windows.push(PlanarWindow {
+                    slot,
+                    idx: i,
+                    open: true,
+                    wl,
+                    tex: None,
+                    tex_wl: (f32::NAN, f32::NAN),
+                });
+            }
+        }
+    }
+
+    /// REG spatial registration objects: matrices + apply as active
+    /// registration.
+    fn reg_objects_section(&mut self, ui: &mut egui::Ui, slot: usize) {
+        let n = self.slots[slot]
+            .study
+            .as_ref()
+            .map(|s| s.registrations.len())
+            .unwrap_or(0);
+        if n == 0 {
+            return;
+        }
+        let both = self.slots[0].study.is_some() && self.slots[1].study.is_some();
+        let mut apply: Option<(registration::RigidTransform, usize)> = None;
+        {
+            let study = self.slots[slot].study.as_ref().unwrap();
+            // Frame-of-reference UIDs of the loaded volumes for hints.
+            let for_a = self.slots[0]
+                .study
+                .as_ref()
+                .map(|s| s.volume.frame_of_reference_uid.clone())
+                .unwrap_or_default();
+            let for_b = self.slots[1]
+                .study
+                .as_ref()
+                .map(|s| s.volume.frame_of_reference_uid.clone())
+                .unwrap_or_default();
+            let mut invert = self.reg_apply_invert;
+            egui::CollapsingHeader::new(format!("Spatial registrations ({n})"))
+                .id_salt(("regobj", slot))
+                .default_open(false)
+                .show(ui, |ui| {
+                    for (ri, reg) in study.registrations.iter().enumerate() {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{}{}",
+                                reg.label,
+                                if reg.deformable { "  [deformable: matrices only]" } else { "" }
+                            ))
+                            .strong(),
+                        );
+                        for (ii, item) in reg.items.iter().enumerate() {
+                            if item.is_identity {
+                                ui.weak(format!("· item {}: identity ({})", ii + 1, item.matrix_type));
+                                continue;
+                            }
+                            let m = &item.matrix;
+                            ui.weak(format!("· item {}: {}", ii + 1, item.matrix_type));
+                            for r in 0..3 {
+                                ui.monospace(format!(
+                                    "  [{:7.3} {:7.3} {:7.3} {:8.2}]",
+                                    m[r * 4],
+                                    m[r * 4 + 1],
+                                    m[r * 4 + 2],
+                                    m[r * 4 + 3]
+                                ));
+                            }
+                            // FoR hints against loaded studies.
+                            let src_hint = if !for_a.is_empty() && item.for_uid == for_a {
+                                " (= A)"
+                            } else if !for_b.is_empty() && item.for_uid == for_b {
+                                " (= B)"
+                            } else {
+                                ""
+                            };
+                            let dst_hint = if !for_a.is_empty()
+                                && reg.frame_of_reference_uid == for_a
+                            {
+                                " (= A)"
+                            } else if !for_b.is_empty() && reg.frame_of_reference_uid == for_b {
+                                " (= B)"
+                            } else {
+                                ""
+                            };
+                            ui.weak(format!(
+                                "  maps FoR …{}{} ▶ …{}{}",
+                                tail(&item.for_uid),
+                                src_hint,
+                                tail(&reg.frame_of_reference_uid),
+                                dst_hint
+                            ));
+                            match extras::matrix_to_rigid(m, invert) {
+                                Some(rigid) => {
+                                    ui.weak(format!(
+                                        "  t = ({:.1}, {:.1}, {:.1}) mm  r = ({:.2}, {:.2}, {:.2})°{}",
+                                        rigid.params[3],
+                                        rigid.params[4],
+                                        rigid.params[5],
+                                        rigid.params[0].to_degrees(),
+                                        rigid.params[1].to_degrees(),
+                                        rigid.params[2].to_degrees(),
+                                        if invert { "  (inverted)" } else { "" }
+                                    ));
+                                    ui.horizontal(|ui| {
+                                        ui.checkbox(&mut invert, "Invert")
+                                            .on_hover_text(
+                                                "Invert the matrix before applying (flip the mapping direction)",
+                                            );
+                                        if ui
+                                            .add_enabled(
+                                                both,
+                                                egui::Button::new("Apply as B ▶ A"),
+                                            )
+                                            .on_hover_text(
+                                                "Use this matrix as the transform mapping A (fixed) coordinates into B (moving)",
+                                            )
+                                            .clicked()
+                                        {
+                                            if let Some(r2) =
+                                                extras::matrix_to_rigid(m, invert)
+                                            {
+                                                apply = Some((r2, 0));
+                                            }
+                                        }
+                                        if ui
+                                            .add_enabled(
+                                                both,
+                                                egui::Button::new("Apply as A ▶ B"),
+                                            )
+                                            .on_hover_text(
+                                                "Use this matrix as the transform mapping B (fixed) coordinates into A (moving)",
+                                            )
+                                            .clicked()
+                                        {
+                                            if let Some(r2) =
+                                                extras::matrix_to_rigid(m, invert)
+                                            {
+                                                apply = Some((r2, 1));
+                                            }
+                                        }
+                                    });
+                                }
+                                None => {
+                                    ui.weak("  (matrix is not a pure rigid transform — cannot apply)");
+                                }
+                            }
+                        }
+                        if ri + 1 < study.registrations.len() {
+                            ui.separator();
+                        }
+                    }
+                });
+            self.reg_apply_invert = invert;
+        }
+        if let Some((rigid, fixed_slot)) = apply {
+            self.apply_external_rigid(rigid, fixed_slot);
+        }
+    }
+
+    /// RT (Ion) Beams Treatment Records: per-beam delivered metersets.
+    fn records_section(&mut self, ui: &mut egui::Ui, slot: usize) {
+        let Some(study) = &self.slots[slot].study else { return };
+        if study.treat_records.is_empty() {
+            return;
+        }
+        egui::CollapsingHeader::new(format!("Treatment records ({})", study.treat_records.len()))
+            .id_salt(("records", slot))
+            .default_open(false)
+            .show(ui, |ui| {
+                for (ri, rec) in study.treat_records.iter().enumerate() {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{}{}{}{}",
+                            rec.label,
+                            if rec.ion { "  [ion]" } else { "" },
+                            rec.fraction
+                                .map(|f| format!("  fx {f}"))
+                                .unwrap_or_default(),
+                            if rec.date.is_empty() {
+                                String::new()
+                            } else {
+                                format!("  {}", rec.date)
+                            }
+                        ))
+                        .strong(),
+                    );
+                    if !rec.machine.is_empty() {
+                        ui.weak(format!("Machine: {}", rec.machine));
+                    }
+                    egui::Grid::new(("rec_grid", slot, ri))
+                        .striped(true)
+                        .min_col_width(10.0)
+                        .show(ui, |ui| {
+                            ui.strong("Beam");
+                            ui.strong("MU spec");
+                            ui.strong("MU del");
+                            ui.strong("Δ%");
+                            ui.strong("Status");
+                            ui.end_row();
+                            for b in &rec.beams {
+                                ui.label(&b.name).on_hover_text(format!(
+                                    "Beam {} · verification: {}",
+                                    b.number,
+                                    if b.verification_status.is_empty() {
+                                        "n/a"
+                                    } else {
+                                        &b.verification_status
+                                    }
+                                ));
+                                ui.label(
+                                    b.specified_meterset
+                                        .map(|m| format!("{m:.1}"))
+                                        .unwrap_or_else(|| "–".into()),
+                                );
+                                ui.label(
+                                    b.delivered_meterset
+                                        .map(|m| format!("{m:.1}"))
+                                        .unwrap_or_else(|| "–".into()),
+                                );
+                                ui.label(match (b.specified_meterset, b.delivered_meterset) {
+                                    (Some(s), Some(d)) if s > 1e-9 => {
+                                        format!("{:+.1}", 100.0 * (d - s) / s)
+                                    }
+                                    _ => "–".into(),
+                                });
+                                let status = if b.termination_status.is_empty() {
+                                    "–"
+                                } else {
+                                    &b.termination_status
+                                };
+                                if status == "NORMAL" || status == "–" {
+                                    ui.label(status);
+                                } else {
+                                    ui.label(
+                                        egui::RichText::new(status)
+                                            .color(Color32::from_rgb(240, 120, 60)),
+                                    );
+                                }
+                                ui.end_row();
+                            }
+                        });
+                }
+            });
     }
 
     fn warnings_section(&mut self, ui: &mut egui::Ui, slot: usize) {
@@ -2397,6 +2737,102 @@ impl ViewerApp {
             }
         }
         view.fusion_key = Some(key);
+    }
+
+    // -- Floating planar image viewers -------------------------------------
+
+    fn planar_windows_ui(&mut self, ctx: &egui::Context) {
+        let mut windows = std::mem::take(&mut self.planar_windows);
+        for w in &mut windows {
+            let Some(study) = &self.slots[w.slot].study else {
+                w.open = false;
+                continue;
+            };
+            let Some(img) = study.planar_images.get(w.idx) else {
+                w.open = false;
+                continue;
+            };
+            if !w.open {
+                continue;
+            }
+
+            // Rebuild the texture when W/L changed.
+            if w.tex.is_none() || w.tex_wl != w.wl {
+                let lo = w.wl.0 - w.wl.1.max(1.0) * 0.5;
+                let scale = 255.0 / w.wl.1.max(1.0);
+                let pixels: Vec<Color32> = img
+                    .data
+                    .iter()
+                    .map(|&v| {
+                        let g = ((v - lo) * scale).clamp(0.0, 255.0) as u8;
+                        Color32::from_gray(g)
+                    })
+                    .collect();
+                let ci = ColorImage::new([img.cols, img.rows], pixels);
+                match &mut w.tex {
+                    Some(t) => t.set(ci, TextureOptions::LINEAR),
+                    None => {
+                        w.tex = Some(ctx.load_texture(
+                            format!("planar{}_{}", w.slot, w.idx),
+                            ci,
+                            TextureOptions::LINEAR,
+                        ))
+                    }
+                }
+                w.tex_wl = w.wl;
+            }
+
+            let title = format!(
+                "{}: {} [{}]",
+                SLOT_NAMES[w.slot], img.label, img.modality
+            );
+            let mut open = w.open;
+            egui::Window::new(title)
+                .id(egui::Id::new(("planar_win", w.slot, w.idx)))
+                .open(&mut open)
+                .default_size([560.0, 640.0])
+                .resizable(true)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("W/L:");
+                        ui.add(
+                            egui::DragValue::new(&mut w.wl.0).speed(4.0).prefix("C "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut w.wl.1)
+                                .speed(8.0)
+                                .range(1.0..=1.0e6)
+                                .prefix("W "),
+                        );
+                        if ui.small_button("Auto").clicked() {
+                            w.wl = (
+                                (img.min_value + img.max_value) * 0.5,
+                                (img.max_value - img.min_value).max(1.0),
+                            );
+                        }
+                        if ui.small_button("DICOM").clicked() {
+                            w.wl = img.window;
+                        }
+                    });
+                    // Physical aspect ratio, fitted to the available width.
+                    let w_mm = (img.cols as f64 * img.spacing[0]) as f32;
+                    let h_mm = (img.rows as f64 * img.spacing[1]) as f32;
+                    let avail = ui.available_width().max(64.0);
+                    let scale = (avail / w_mm).min(520.0 / h_mm.max(1.0));
+                    if let Some(tex) = &w.tex {
+                        ui.image(egui::load::SizedTexture::new(
+                            tex.id(),
+                            egui::vec2(w_mm * scale, h_mm * scale),
+                        ));
+                    }
+                    for (k, v) in &img.info {
+                        ui.weak(format!("{k}: {v}"));
+                    }
+                });
+            w.open = open;
+        }
+        windows.retain(|w| w.open);
+        self.planar_windows = windows;
     }
 
     // -- Modals -----------------------------------------------------------
