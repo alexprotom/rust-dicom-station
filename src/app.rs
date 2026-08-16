@@ -2820,14 +2820,26 @@ impl ViewerApp {
                     let avail = ui.available_width().max(64.0);
                     let scale = (avail / w_mm).min(520.0 / h_mm.max(1.0));
                     if let Some(tex) = &w.tex {
-                        ui.image(egui::load::SizedTexture::new(
-                            tex.id(),
-                            egui::vec2(w_mm * scale, h_mm * scale),
-                        ));
+                        // Same interactive window/level as the CT views:
+                        // right-drag, x = width, y = center.
+                        let resp = ui.add(
+                            egui::Image::new(egui::load::SizedTexture::new(
+                                tex.id(),
+                                egui::vec2(w_mm * scale, h_mm * scale),
+                            ))
+                            .sense(Sense::click_and_drag()),
+                        );
+                        if resp.dragged_by(egui::PointerButton::Secondary) {
+                            let d = resp.drag_delta();
+                            w.wl.1 = (w.wl.1 * (1.0 + d.x * 0.005)).clamp(1.0, 1.0e6);
+                            w.wl.0 += d.y * w.wl.1 * 0.002;
+                        }
+                        resp.on_hover_text("Right-drag: window/level (x = width, y = center)");
                     }
                     for (k, v) in &img.info {
                         ui.weak(format!("{k}: {v}"));
                     }
+                    ui.weak("RMB drag on the image: window/level");
                 });
             w.open = open;
         }

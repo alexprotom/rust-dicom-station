@@ -88,7 +88,8 @@ translation and a 7 mm Gaussian-bump deformation.
 **Planar images (DX / CR / RTIMAGE).** Digital radiographs and RT images
 (DRRs, portal / setup images) found in the study folder are listed in the
 sidebar and open in floating viewer windows with their own window/level
-(DICOM default, auto, or manual), correct physical aspect ratio
+(DICOM default, auto, manual, or interactive right-drag on the image —
+x = width, y = center, exactly like the CT views), correct physical aspect ratio
 (imager / image-plane pixel spacing), MONOCHROME1 inversion, and the
 relevant metadata — body part, view and kVp for DX; machine, gantry angle,
 SAD and SID for RTIMAGE.
