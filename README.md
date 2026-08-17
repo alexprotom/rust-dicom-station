@@ -166,6 +166,10 @@ Beam isocenters are marked in all three views.
 | Right drag | Window/level (x = width, y = center) |
 | Double click | Reset zoom & pan |
 
+Each viewport also carries two corner buttons: **⟲** resets that view's zoom
+and pan, and **⛶ / ❐** maximizes the view to fill the whole window and
+restores the multi-view layout again.
+
 Common CT window presets (brain, subdural, stroke, head/neck soft tissue,
 temporal bone, lungs, mediastinum, abdomen, liver, spine, bone, CT angio,
 full range), anatomical

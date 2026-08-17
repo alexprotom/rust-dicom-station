@@ -352,6 +352,8 @@ pub struct ViewerApp {
 
     /// Open floating viewers for planar images.
     planar_windows: Vec<PlanarWindow>,
+    /// When set, this single (slot, view) fills the whole central area.
+    maximized: Option<(usize, usize)>,
     /// Invert REG matrices before applying them as the active registration.
     reg_apply_invert: bool,
 
@@ -416,6 +418,7 @@ impl ViewerApp {
             gen_result: None,
             gen_load_after: true,
             planar_windows: Vec::new(),
+            maximized: None,
             reg_apply_invert: false,
             window_center: 40.0,
             window_width: 400.0,
@@ -530,6 +533,9 @@ impl ViewerApp {
         // Any previous registration no longer matches the loaded volumes,
         // and open planar viewers for this slot reference stale data.
         self.planar_windows.retain(|w| w.slot != slot);
+        if self.maximized.map(|(s, _)| s == slot).unwrap_or(false) {
+            self.maximized = None;
+        }
         self.clear_registration();
         self.settings_gen += 1;
     }
@@ -585,6 +591,9 @@ impl ViewerApp {
         self.comparison = false;
         self.hovered_slot = 0;
         self.planar_windows.retain(|w| w.slot != 1);
+        if self.maximized.map(|(s, _)| s == 1).unwrap_or(false) {
+            self.maximized = None;
+        }
         self.clear_registration();
     }
 
@@ -2267,6 +2276,15 @@ impl ViewerApp {
                     self.empty_state(ui);
                     return;
                 }
+                // Maximized single-view layout: one view fills the window.
+                if let Some((mslot, midx)) = self.maximized {
+                    if self.slots[mslot.min(1)].study.is_some() && midx < 3 {
+                        let full = ui.available_rect_before_wrap();
+                        self.view_cell(ui, mslot.min(1), midx, full);
+                        return;
+                    }
+                    self.maximized = None;
+                }
                 let two_rows = self.comparison;
                 let full = ui.available_rect_before_wrap();
                 let row_gap = 6.0;
@@ -2290,7 +2308,6 @@ impl ViewerApp {
 
     fn study_row(&mut self, ui: &mut egui::Ui, slot: usize, row_rect: Rect) {
         let gap = 4.0;
-        let slider_h = 26.0;
         let col_w = (row_rect.width() - 2.0 * gap) / 3.0;
         for idx in 0..3 {
             let x0 = row_rect.left() + idx as f32 * (col_w + gap);
@@ -2298,31 +2315,38 @@ impl ViewerApp {
                 Pos2::new(x0, row_rect.top()),
                 Vec2::new(col_w, row_rect.height()),
             );
-            let view_rect =
-                Rect::from_min_max(col.min, Pos2::new(col.max.x, col.max.y - slider_h));
-            let slider_rect = Rect::from_min_max(
-                Pos2::new(col.min.x + 6.0, col.max.y - slider_h + 2.0),
-                Pos2::new(col.max.x - 6.0, col.max.y - 2.0),
+            self.view_cell(ui, slot, idx, col);
+        }
+    }
+
+    /// One viewport plus its slice slider inside `cell` (used both by the
+    /// three-in-a-row layout and by the maximized single-view layout).
+    fn view_cell(&mut self, ui: &mut egui::Ui, slot: usize, idx: usize, cell: Rect) {
+        let slider_h = 26.0;
+        let view_rect =
+            Rect::from_min_max(cell.min, Pos2::new(cell.max.x, cell.max.y - slider_h));
+        let slider_rect = Rect::from_min_max(
+            Pos2::new(cell.min.x + 6.0, cell.max.y - slider_h + 2.0),
+            Pos2::new(cell.max.x - 6.0, cell.max.y - 2.0),
+        );
+        self.one_view(ui, slot, idx, view_rect);
+        let max_slice = self.slots[slot]
+            .study
+            .as_ref()
+            .map(|s| {
+                s.volume
+                    .plane_slice_count(self.slots[slot].views[idx].plane)
+                    .saturating_sub(1)
+            })
+            .unwrap_or(0);
+        if max_slice > 0 {
+            let mut slice = self.slots[slot].views[idx].slice.min(max_slice);
+            let resp = ui.put(
+                slider_rect,
+                egui::Slider::new(&mut slice, 0..=max_slice).show_value(false),
             );
-            self.one_view(ui, slot, idx, view_rect);
-            let max_slice = self.slots[slot]
-                .study
-                .as_ref()
-                .map(|s| {
-                    s.volume
-                        .plane_slice_count(self.slots[slot].views[idx].plane)
-                        .saturating_sub(1)
-                })
-                .unwrap_or(0);
-            if max_slice > 0 {
-                let mut slice = self.slots[slot].views[idx].slice.min(max_slice);
-                let resp = ui.put(
-                    slider_rect,
-                    egui::Slider::new(&mut slice, 0..=max_slice).show_value(false),
-                );
-                if resp.changed() {
-                    self.slots[slot].views[idx].slice = slice;
-                }
+            if resp.changed() {
+                self.slots[slot].views[idx].slice = slice;
             }
         }
     }
@@ -2652,6 +2676,39 @@ impl ViewerApp {
             }
         }
 
+        // ---- corner buttons: reset view & maximize / restore layout ----
+        // Registered before the viewport interaction; the viewport handlers
+        // below additionally ignore any pointer activity over the buttons.
+        let is_max = self.maximized == Some((slot, idx));
+        let bsize = egui::vec2(24.0, 20.0);
+        let by = rect.top() + 22.0; // below the slice counter
+        let max_rect =
+            Rect::from_min_size(Pos2::new(rect.right() - bsize.x - 4.0, by), bsize);
+        let fit_rect =
+            Rect::from_min_size(Pos2::new(max_rect.left() - bsize.x - 4.0, by), bsize);
+        let max_resp = ui
+            .put(
+                max_rect,
+                egui::Button::new(if is_max { "❐" } else { "⛶" }).small(),
+            )
+            .on_hover_text(if is_max {
+                "Restore the view layout"
+            } else {
+                "Maximize this view (whole window)"
+            });
+        let fit_resp = ui
+            .put(fit_rect, egui::Button::new("⟲").small())
+            .on_hover_text("Reset view (fit zoom, center)");
+        let (pointer_pos, any_click) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_click()));
+        let over_buttons = pointer_pos
+            .map(|p| max_rect.contains(p) || fit_rect.contains(p))
+            .unwrap_or(false);
+        let clicked_max = max_resp.clicked()
+            || (any_click && pointer_pos.map(|p| max_rect.contains(p)).unwrap_or(false));
+        let clicked_fit = fit_resp.clicked()
+            || (any_click && pointer_pos.map(|p| fit_rect.contains(p)).unwrap_or(false));
+        // (applied below, in the mutable phase)
+
         // ---- interaction ----
         let resp = ui.interact(
             rect,
@@ -2706,7 +2763,7 @@ impl ViewerApp {
             }
         }
 
-        if resp.dragged_by(egui::PointerButton::Primary) || resp.clicked() {
+        if (resp.dragged_by(egui::PointerButton::Primary) || resp.clicked()) && !over_buttons {
             if let Some(mp) = resp.interact_pointer_pos() {
                 let px = screen_to_px(mp);
                 let vxl = vol.plane_pixel_to_voxel(plane, view.slice, px[0] as f64, px[1] as f64);
@@ -2721,12 +2778,18 @@ impl ViewerApp {
             let d = resp.drag_delta();
             new_pan = Some(view.pan + d / zoom);
         }
-        if resp.double_clicked() {
+        if resp.double_clicked() && !over_buttons {
             reset_view = true;
         }
         let hovered = resp.hovered();
 
         // Apply interactions (mutable phase).
+        if clicked_max {
+            self.maximized = if is_max { None } else { Some((slot, idx)) };
+        }
+        if clicked_fit {
+            reset_view = true;
+        }
         if hovered {
             self.hovered_slot = slot;
         }
