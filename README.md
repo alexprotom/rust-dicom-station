@@ -28,7 +28,20 @@ Rust decoders.
 **RTSTRUCT.** ROI names, display colors, interpreted types (PTV, ORGAN,
 EXTERNAL, …) and all planar contours. Axial views draw the native closed
 contours; sagittal/coronal views show the reconstructed cross-section
-silhouette. Per-ROI visibility toggles.
+silhouette. Per-ROI visibility toggles. **Every** structure set in the folder
+is loaded (e.g. one per 4DCT phase) and selectable in the sidebar; the set
+that references the active image series is chosen automatically and follows
+series switches.
+
+**Patient data tree & DICOM cross-references.** The sidebar shows the DICOM
+hierarchy: all image series of the patient are listed at once (grouped by
+study when several StudyInstanceUIDs are present), with the displayed series
+marked — clicking another series loads it. The standard reference chain is
+parsed and shown as links: each structure set displays the image series its
+contours were drawn on (RTReferencedSeriesSequence), each dose the plan it
+was computed for (ReferencedRTPlanSequence), and each plan the structure set
+it was created on (ReferencedStructureSetSequence). Exported studies keep
+this chain intact.
 
 **RTDOSE.** 16/32-bit dose grids with `DoseGridScaling`,
 `GridFrameOffsetVector` (uniform or not, ascending or descending), trilinear

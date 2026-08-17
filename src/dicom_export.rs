@@ -177,6 +177,11 @@ pub fn export_study(study: &LoadedStudy, dir: &Path, progress: &Progress) -> Res
     };
     let mut n_files = 0usize;
 
+    // Stable SOP Instance UIDs so the exported objects keep their DICOM
+    // cross-references (dose â¶ plan â¶ structure set).
+    let rs_uids: Vec<String> = study.structure_sets.iter().map(|_| new_uid()).collect();
+    let plan_uids: Vec<String> = study.plans.iter().map(|_| new_uid()).collect();
+
     // ---- CT series -------------------------------------------------------
     let series_uid = new_uid();
     let [nx, ny, nz] = vol.dims;
@@ -259,15 +264,19 @@ pub fn export_study(study: &LoadedStudy, dir: &Path, progress: &Progress) -> Res
         n_files += 1;
     }
 
-    // ---- RTSTRUCT ---------------------------------------------------------
-    if let Some(ss) = &study.structures {
-        progress.set("Writing RTSTRUCT…");
+    // ---- RTSTRUCT (one file per structure set) ----------------------------
+    for (si, ss) in study.structure_sets.iter().enumerate() {
+        progress.set(format!(
+            "Writing RTSTRUCT {}/{}…",
+            si + 1,
+            study.structure_sets.len()
+        ));
         let mut o = InMemDicomObject::new_empty();
         common_elements(&mut o, study, &ctx, "RTSTRUCT");
         put_str(&mut o, tags::SOP_CLASS_UID, VR::UI, SOP_RTSTRUCT);
-        put_str(&mut o, tags::SOP_INSTANCE_UID, VR::UI, new_uid());
+        put_str(&mut o, tags::SOP_INSTANCE_UID, VR::UI, rs_uids[si].clone());
         put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, new_uid());
-        put_is(&mut o, tags::SERIES_NUMBER, 2);
+        put_is(&mut o, tags::SERIES_NUMBER, 2 + si as i64);
         put_str(&mut o, tags::STRUCTURE_SET_LABEL, VR::SH, truncate(&ss.label, 16));
         put_str(&mut o, tags::STRUCTURE_SET_DATE, VR::DA, ctx.date.clone());
         put_str(&mut o, tags::STRUCTURE_SET_TIME, VR::TM, ctx.time.clone());
@@ -337,7 +346,7 @@ pub fn export_study(study: &LoadedStudy, dir: &Path, progress: &Progress) -> Res
         put_seq(&mut o, tags::ROI_CONTOUR_SEQUENCE, rcs);
         put_seq(&mut o, tags::RTROI_OBSERVATIONS_SEQUENCE, obs);
 
-        write_object(o, SOP_RTSTRUCT, &dir.join("RS_export.dcm"))?;
+        write_object(o, SOP_RTSTRUCT, &dir.join(format!("RS_export_{si}.dcm")))?;
         n_files += 1;
     }
 
@@ -391,6 +400,17 @@ pub fn export_study(study: &LoadedStudy, dir: &Path, progress: &Progress) -> Res
             if d.summation_type.is_empty() { "PLAN" } else { &d.summation_type },
         );
         put_ds(&mut o, tags::DOSE_GRID_SCALING, &[scaling]);
+        if !plan_uids.is_empty() {
+            let pidx = study
+                .plans
+                .iter()
+                .position(|p| p.sop_instance_uid == d.referenced_plan_uid)
+                .unwrap_or(0);
+            let mut rp = InMemDicomObject::new_empty();
+            put_str(&mut rp, tags::REFERENCED_SOP_CLASS_UID, VR::UI, SOP_RTIONPLAN);
+            put_str(&mut rp, tags::REFERENCED_SOP_INSTANCE_UID, VR::UI, plan_uids[pidx].clone());
+            put_seq(&mut o, tags::REFERENCED_RT_PLAN_SEQUENCE, vec![rp]);
+        }
         let words: Vec<u16> = d
             .data
             .iter()
@@ -418,7 +438,7 @@ pub fn export_study(study: &LoadedStudy, dir: &Path, progress: &Progress) -> Res
         let mut o = InMemDicomObject::new_empty();
         common_elements(&mut o, study, &ctx, "RTPLAN");
         put_str(&mut o, tags::SOP_CLASS_UID, VR::UI, sop_class);
-        put_str(&mut o, tags::SOP_INSTANCE_UID, VR::UI, new_uid());
+        put_str(&mut o, tags::SOP_INSTANCE_UID, VR::UI, plan_uids[pi].clone());
         put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, new_uid());
         put_is(&mut o, tags::SERIES_NUMBER, 10 + pi as i64);
         put_str(&mut o, tags::FRAME_OF_REFERENCE_UID, VR::UI, ctx.for_uid.clone());
@@ -427,6 +447,17 @@ pub fn export_study(study: &LoadedStudy, dir: &Path, progress: &Progress) -> Res
         put_str(&mut o, tags::RT_PLAN_DATE, VR::DA, ctx.date.clone());
         put_str(&mut o, tags::RT_PLAN_TIME, VR::TM, ctx.time.clone());
         put_str(&mut o, tags::RT_PLAN_GEOMETRY, VR::CS, "PATIENT");
+        if !rs_uids.is_empty() {
+            let sidx = study
+                .structure_sets
+                .iter()
+                .position(|ss| ss.sop_instance_uid == plan.referenced_structset_uid)
+                .unwrap_or(0);
+            let mut rs = InMemDicomObject::new_empty();
+            put_str(&mut rs, tags::REFERENCED_SOP_CLASS_UID, VR::UI, SOP_RTSTRUCT);
+            put_str(&mut rs, tags::REFERENCED_SOP_INSTANCE_UID, VR::UI, rs_uids[sidx].clone());
+            put_seq(&mut o, tags::REFERENCED_STRUCTURE_SET_SEQUENCE, vec![rs]);
+        }
 
         if let Some(rx) = plan.target_prescription_dose {
             let mut dr = InMemDicomObject::new_empty();

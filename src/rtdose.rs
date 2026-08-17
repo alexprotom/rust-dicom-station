@@ -33,6 +33,10 @@ pub struct DoseGrid {
     pub summation_type: String,
     pub max_dose: f32,
     pub frame_of_reference_uid: String,
+    /// Study this dose belongs to.
+    pub study_uid: String,
+    /// SOP Instance UID of the RTPLAN this dose was computed for.
+    pub referenced_plan_uid: String,
     pub label: String,
 }
 
@@ -235,6 +239,11 @@ pub fn load(path: &Path) -> Result<DoseGrid> {
         summation_type,
         max_dose,
         frame_of_reference_uid: str_of(&obj, tags::FRAME_OF_REFERENCE_UID).unwrap_or_default(),
+        study_uid: str_of(&obj, tags::STUDY_INSTANCE_UID).unwrap_or_default(),
+        referenced_plan_uid: crate::loader::items_of(&obj, tags::REFERENCED_RT_PLAN_SEQUENCE)
+            .and_then(|items| items.first())
+            .and_then(|it| str_of(it, tags::REFERENCED_SOP_INSTANCE_UID))
+            .unwrap_or_default(),
         label,
     })
 }

@@ -35,6 +35,12 @@ pub struct PlanInfo {
     pub plan_kind: String, // "Photon/Electron" or "Ion"
     pub n_fractions: Option<i32>,
     pub target_prescription_dose: Option<f64>,
+    /// SOP Instance UID of this plan (referenced by RTDOSE objects).
+    pub sop_instance_uid: String,
+    /// Study this plan belongs to.
+    pub study_uid: String,
+    /// SOP Instance UID of the structure set the plan was made on.
+    pub referenced_structset_uid: String,
     pub beams: Vec<BeamInfo>,
 }
 
@@ -46,6 +52,12 @@ pub fn load(path: &Path) -> Result<PlanInfo> {
         label: str_of(&obj, tags::RT_PLAN_LABEL).unwrap_or_default(),
         name: str_of(&obj, tags::RT_PLAN_NAME).unwrap_or_default(),
         date: str_of(&obj, tags::RT_PLAN_DATE).unwrap_or_default(),
+        sop_instance_uid: str_of(&obj, tags::SOP_INSTANCE_UID).unwrap_or_default(),
+        study_uid: str_of(&obj, tags::STUDY_INSTANCE_UID).unwrap_or_default(),
+        referenced_structset_uid: items_of(&obj, tags::REFERENCED_STRUCTURE_SET_SEQUENCE)
+            .and_then(|items| items.first())
+            .and_then(|it| str_of(it, tags::REFERENCED_SOP_INSTANCE_UID))
+            .unwrap_or_default(),
         ..Default::default()
     };
     if plan.label.is_empty() {

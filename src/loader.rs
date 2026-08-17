@@ -78,6 +78,10 @@ pub struct SeriesInfo {
     pub uid: String,
     pub modality: String,
     pub description: String,
+    /// Study this series belongs to (for the study/series tree).
+    pub study_uid: String,
+    pub study_date: String,
+    pub study_description: String,
     pub files: Vec<PathBuf>,
 }
 
@@ -96,7 +100,9 @@ pub struct LoadedStudy {
     pub series: Vec<SeriesInfo>,
     pub active_series: usize,
     pub volume: Volume,
-    pub structures: Option<StructureSet>,
+    /// All RT Structure Sets found in the folder (e.g. one per 4DCT phase).
+    /// The application selects the active one per study slot.
+    pub structure_sets: Vec<StructureSet>,
     pub doses: Vec<DoseGrid>,
     pub plans: Vec<PlanInfo>,
     /// DX / CR radiographs and RTIMAGE (DRR / portal) planar images.
@@ -145,6 +151,7 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
         sop_class: String,
         series_uid: String,
         series_desc: String,
+        study_uid: String,
         has_geometry: bool,
         meta: PatientMeta,
     }
@@ -160,6 +167,7 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
             let sop_class = str_of(&obj, tags::SOP_CLASS_UID).unwrap_or_default();
             let series_uid = str_of(&obj, tags::SERIES_INSTANCE_UID).unwrap_or_default();
             let series_desc = str_of(&obj, tags::SERIES_DESCRIPTION).unwrap_or_default();
+            let study_uid = str_of(&obj, tags::STUDY_INSTANCE_UID).unwrap_or_default();
             let has_geometry = obj.element(tags::IMAGE_POSITION_PATIENT).is_ok()
                 && obj.element(tags::ROWS).is_ok();
             let meta = PatientMeta {
@@ -174,6 +182,7 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
                 sop_class,
                 series_uid,
                 series_desc,
+                study_uid,
                 has_geometry,
                 meta,
             })
@@ -239,6 +248,9 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
                     uid: s.series_uid.clone(),
                     modality: s.modality.clone(),
                     description: s.series_desc.clone(),
+                    study_uid: s.study_uid.clone(),
+                    study_date: s.meta.study_date.clone(),
+                    study_description: s.meta.study_description.clone(),
                     files: vec![s.path.clone()],
                 }),
             }
@@ -257,26 +269,19 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
         load_series_volume(&image_series[active_series], progress)?;
     warnings.append(&mut vol_warnings);
 
-    // RT objects.
-    let structures = if let Some(p) = rtstruct_files.first() {
-        progress.set("Parsing RT Structure Set…");
-        if rtstruct_files.len() > 1 {
-            warnings.push(format!(
-                "{} RTSTRUCT files found; using {}",
-                rtstruct_files.len(),
-                p.file_name().unwrap_or_default().to_string_lossy()
-            ));
-        }
+    // RT objects — every structure set is loaded (e.g. one per 4DCT phase);
+    // the application chooses which one is active.
+    let mut structure_sets = Vec::new();
+    for p in &rtstruct_files {
+        progress.set("Parsing RT Structure Sets…");
         match rtstruct::load(p) {
-            Ok(ss) => Some(ss),
-            Err(e) => {
-                warnings.push(format!("RTSTRUCT load failed: {e:#}"));
-                None
-            }
+            Ok(ss) => structure_sets.push(ss),
+            Err(e) => warnings.push(format!(
+                "RTSTRUCT {} load failed: {e:#}",
+                p.file_name().unwrap_or_default().to_string_lossy()
+            )),
         }
-    } else {
-        None
-    };
+    }
 
     let mut doses = Vec::new();
     for p in &rtdose_files {
@@ -347,15 +352,15 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
     }
 
     // Frame-of-reference sanity checks.
-    if let Some(ss) = &structures {
+    for ss in &structure_sets {
         if !ss.frame_of_reference_uid.is_empty()
             && !volume.frame_of_reference_uid.is_empty()
             && ss.frame_of_reference_uid != volume.frame_of_reference_uid
         {
-            warnings.push(
-                "RTSTRUCT frame of reference differs from the image volume — contours may be misaligned"
-                    .into(),
-            );
+            warnings.push(format!(
+                "RTSTRUCT {} frame of reference differs from the image volume — contours may be misaligned",
+                ss.file_name
+            ));
         }
     }
     for d in &doses {
@@ -375,7 +380,7 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
         series: image_series,
         active_series,
         volume,
-        structures,
+        structure_sets,
         doses,
         plans,
         planar_images,

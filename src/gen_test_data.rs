@@ -159,6 +159,7 @@ struct Ids {
     for_uid: String,
     ct_series_uid: String,
     ct_sop_uids: Vec<String>,
+    struct_uid: String,
     plan_uid: String,
     date: String,
     time: String,
@@ -216,6 +217,7 @@ pub fn generate(dir: &Path, params: &GenParams, progress: &Progress) -> Result<u
         for_uid: new_uid(),
         ct_series_uid: new_uid(),
         ct_sop_uids: Vec::with_capacity(NZ),
+        struct_uid: new_uid(),
         plan_uid: new_uid(),
         date,
         time,
@@ -336,7 +338,7 @@ fn write_rtstruct(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> 
     let z0 = axis_origin(NZ, SPACING);
     let (sx, sy) = (p.shift_x, p.shift_y);
 
-    let mut o = base_dataset(ids, SOP_RTSTRUCT, &new_uid(), "RTSTRUCT");
+    let mut o = base_dataset(ids, SOP_RTSTRUCT, &ids.struct_uid.clone(), "RTSTRUCT");
     put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, new_uid());
     put_is(&mut o, tags::SERIES_NUMBER, 2);
     put_str(&mut o, tags::STRUCTURE_SET_LABEL, VR::SH, "SynthStructs");
@@ -469,6 +471,11 @@ fn write_rtplan(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> Re
     put_str(&mut o, tags::RT_PLAN_DATE, VR::DA, ids.date.clone());
     put_str(&mut o, tags::RT_PLAN_TIME, VR::TM, ids.time.clone());
     put_str(&mut o, tags::RT_PLAN_GEOMETRY, VR::CS, "PATIENT");
+    put_seq(
+        &mut o,
+        tags::REFERENCED_STRUCTURE_SET_SEQUENCE,
+        vec![ref_item(SOP_RTSTRUCT, &ids.struct_uid)],
+    );
 
     let mut dr = InMemDicomObject::new_empty();
     put_is(&mut dr, tags::DOSE_REFERENCE_NUMBER, 1);

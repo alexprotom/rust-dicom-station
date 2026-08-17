@@ -193,30 +193,38 @@ pub fn generate_transformed_study(
         max_value: max_v,
     };
 
-    // ---- Structures: contour points mapped forward ---------------------
+    // ---- Structures: contour points mapped forward (every set) ---------
     progress.set("Transforming structures…");
-    let structures = src.structures.as_ref().map(|ss| StructureSet {
-        label: format!("{} (sim)", ss.label),
-        frame_of_reference_uid: ss.frame_of_reference_uid.clone(),
-        rois: ss
-            .rois
-            .iter()
-            .map(|roi| Roi {
-                number: roi.number,
-                name: roi.name.clone(),
-                color: roi.color,
-                roi_type: roi.roi_type.clone(),
-                contours: roi
-                    .contours
-                    .iter()
-                    .map(|c| Contour {
-                        points: c.points.iter().map(|&p| t.map(p)).collect(),
-                        geometric_type: c.geometric_type.clone(),
-                    })
-                    .collect(),
-            })
-            .collect(),
-    });
+    let structure_sets = src
+        .structure_sets
+        .iter()
+        .map(|ss| StructureSet {
+            label: format!("{} (sim)", ss.label),
+            frame_of_reference_uid: ss.frame_of_reference_uid.clone(),
+            sop_instance_uid: ss.sop_instance_uid.clone(),
+            study_uid: ss.study_uid.clone(),
+            referenced_series_uid: ss.referenced_series_uid.clone(),
+            file_name: ss.file_name.clone(),
+            rois: ss
+                .rois
+                .iter()
+                .map(|roi| Roi {
+                    number: roi.number,
+                    name: roi.name.clone(),
+                    color: roi.color,
+                    roi_type: roi.roi_type.clone(),
+                    contours: roi
+                        .contours
+                        .iter()
+                        .map(|c| Contour {
+                            points: c.points.iter().map(|&p| t.map(p)).collect(),
+                            geometric_type: c.geometric_type.clone(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
+        .collect();
 
     // ---- Dose grids: resampled on their own geometry -------------------
     let mut doses = Vec::with_capacity(src.doses.len());
@@ -252,6 +260,8 @@ pub fn generate_transformed_study(
             summation_type: d.summation_type.clone(),
             max_dose,
             frame_of_reference_uid: d.frame_of_reference_uid.clone(),
+            study_uid: d.study_uid.clone(),
+            referenced_plan_uid: d.referenced_plan_uid.clone(),
             label: format!("{} (sim)", d.label),
         });
     }
@@ -290,11 +300,22 @@ pub fn generate_transformed_study(
                 .map(|s| s.modality.clone())
                 .unwrap_or_else(|| "CT".into()),
             description: format!("Simulated [{}]", params.describe()),
+            study_uid: src
+                .series
+                .first()
+                .map(|s| s.study_uid.clone())
+                .unwrap_or_default(),
+            study_date: src
+                .series
+                .first()
+                .map(|s| s.study_date.clone())
+                .unwrap_or_default(),
+            study_description: "Simulated".into(),
             files: Vec::new(),
         }],
         active_series: 0,
         volume,
-        structures,
+        structure_sets,
         doses,
         plans,
         // Planar images / registrations / records are carried over unchanged

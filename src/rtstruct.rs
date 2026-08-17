@@ -31,6 +31,15 @@ pub struct Roi {
 pub struct StructureSet {
     pub label: String,
     pub frame_of_reference_uid: String,
+    /// SOP Instance UID of this structure set (referenced by RTPLANs).
+    pub sop_instance_uid: String,
+    /// Study this structure set belongs to.
+    pub study_uid: String,
+    /// Image series the contours were drawn on
+    /// (ReferencedFrameOfReference ▶ RTReferencedStudy ▶ RTReferencedSeries).
+    pub referenced_series_uid: String,
+    /// Source file name (disambiguates multiple sets with equal labels).
+    pub file_name: String,
     pub rois: Vec<Roi>,
 }
 
@@ -61,6 +70,16 @@ pub fn load(path: &Path) -> Result<StructureSet> {
     let frame_of_reference_uid = items_of(&obj, tags::REFERENCED_FRAME_OF_REFERENCE_SEQUENCE)
         .and_then(|items| items.first())
         .and_then(|it| str_of(it, tags::FRAME_OF_REFERENCE_UID))
+        .unwrap_or_default();
+
+    // Which image series the contours reference (for study-tree links).
+    let referenced_series_uid = items_of(&obj, tags::REFERENCED_FRAME_OF_REFERENCE_SEQUENCE)
+        .and_then(|items| items.first())
+        .and_then(|it| items_of(it, tags::RT_REFERENCED_STUDY_SEQUENCE))
+        .and_then(|items| items.first())
+        .and_then(|it| items_of(it, tags::RT_REFERENCED_SERIES_SEQUENCE))
+        .and_then(|items| items.first())
+        .and_then(|it| str_of(it, tags::SERIES_INSTANCE_UID))
         .unwrap_or_default();
 
     // ROI number -> (name)
@@ -143,5 +162,16 @@ pub fn load(path: &Path) -> Result<StructureSet> {
         rank(a).cmp(&rank(b)).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
 
-    Ok(StructureSet { label, frame_of_reference_uid, rois })
+    Ok(StructureSet {
+        label,
+        frame_of_reference_uid,
+        sop_instance_uid: str_of(&obj, tags::SOP_INSTANCE_UID).unwrap_or_default(),
+        study_uid: str_of(&obj, tags::STUDY_INSTANCE_UID).unwrap_or_default(),
+        referenced_series_uid,
+        file_name: path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        rois,
+    })
 }

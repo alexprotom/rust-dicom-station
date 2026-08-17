@@ -53,8 +53,8 @@ fn simulate_and_export_roundtrip() {
     assert!((hu - 100.0).abs() < 2.0, "HU at mapped target center: {hu}");
 
     // Contours were mapped exactly.
-    let ss_src = src.structures.as_ref().unwrap();
-    let ss_sim = sim.structures.as_ref().unwrap();
+    let ss_src = src.structure_sets.first().unwrap();
+    let ss_sim = sim.structure_sets.first().unwrap();
     assert_eq!(ss_src.rois.len(), ss_sim.rois.len());
     let p_src = ss_src.rois[0].contours[0].points[0];
     let p_sim = ss_sim.rois[0].contours[0].points[0];
@@ -86,7 +86,7 @@ fn simulate_and_export_roundtrip() {
     assert!((hu_re - 100.0).abs() < 2.0, "reloaded HU at mapped target: {hu_re}");
 
     // Structures round-trip: same count, contour points within DS precision.
-    let ss_re = re.structures.as_ref().expect("RTSTRUCT reloads");
+    let ss_re = re.structure_sets.first().expect("RTSTRUCT reloads");
     assert_eq!(ss_re.rois.len(), ss_sim.rois.len());
     let target_roi_sim = ss_sim.rois.iter().find(|r| r.name == "TARGET").unwrap();
     let target_roi_re = ss_re.rois.iter().find(|r| r.name == "TARGET").unwrap();

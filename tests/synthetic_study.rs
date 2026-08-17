@@ -57,7 +57,7 @@ fn load_synthetic_study() {
     assert!((back[0] - 10.0).abs() < 1e-9 && (back[1] - 20.0).abs() < 1e-9 && (back[2] - 30.0).abs() < 1e-9);
 
     // ---- Structures ----
-    let ss = study.structures.as_ref().expect("RTSTRUCT present");
+    let ss = study.structure_sets.first().expect("RTSTRUCT present");
     assert_eq!(ss.rois.len(), 3);
     let target = ss.rois.iter().find(|r| r.name == "TARGET").expect("TARGET roi");
     assert_eq!(target.roi_type, "PTV");
@@ -267,8 +267,8 @@ fn generator_parameters_shift_the_phantom() {
     assert_eq!(plan.beams[0].isocenter.unwrap(), center);
 
     let target = study
-        .structures
-        .as_ref()
+        .structure_sets
+        .first()
         .unwrap()
         .rois
         .iter()
@@ -285,4 +285,56 @@ fn generator_parameters_shift_the_phantom() {
     assert!(study.treat_records.is_empty(), "no RTRECORD");
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A patient folder with several RTSTRUCT files (e.g. one per 4DCT phase)
+/// must load *all* of them, each with its referenced-series link intact.
+#[test]
+fn multiple_structure_sets_are_all_loaded() {
+    let dir = test_data_dir();
+    // Duplicate the structure set to imitate a second per-phase RTSTRUCT.
+    let multi = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test_data_multi_rs");
+    let _ = std::fs::remove_dir_all(&multi);
+    std::fs::create_dir_all(&multi).unwrap();
+    for e in std::fs::read_dir(dir).unwrap() {
+        let e = e.unwrap();
+        std::fs::copy(e.path(), multi.join(e.file_name())).unwrap();
+    }
+    std::fs::copy(multi.join("RS_synth.dcm"), multi.join("RS_synth_phase2.dcm")).unwrap();
+
+    let study = loader::load_directory(&multi, &Progress::default()).expect("loads");
+    assert_eq!(study.structure_sets.len(), 2, "both RTSTRUCTs loaded");
+    for ss in &study.structure_sets {
+        assert_eq!(ss.rois.len(), 3);
+        assert!(!ss.sop_instance_uid.is_empty());
+        assert!(!ss.referenced_series_uid.is_empty());
+        // The reference must point at the CT series that exists in the tree.
+        assert!(
+            study.series.iter().any(|se| se.uid == ss.referenced_series_uid),
+            "referenced series present in the study tree"
+        );
+    }
+    // No "using first file" warning anymore.
+    assert!(
+        !study.warnings.iter().any(|w| w.contains("RTSTRUCT files found")),
+        "no discard warning: {:?}",
+        study.warnings
+    );
+    // Dose ▶ plan and plan ▶ structures links resolve.
+    let d = &study.doses[0];
+    assert!(!d.referenced_plan_uid.is_empty());
+    let plan = study
+        .plans
+        .iter()
+        .find(|p| p.sop_instance_uid == d.referenced_plan_uid)
+        .expect("dose references the plan");
+    assert!(!plan.referenced_structset_uid.is_empty());
+    assert!(
+        study
+            .structure_sets
+            .iter()
+            .any(|ss| ss.sop_instance_uid == plan.referenced_structset_uid),
+        "plan references a loaded structure set"
+    );
+    let _ = std::fs::remove_dir_all(&multi);
 }

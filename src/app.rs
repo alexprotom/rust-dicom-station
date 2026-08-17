@@ -215,8 +215,19 @@ struct StudySlot {
     /// Fractional voxel coords of the linked crosshair (in this slot's volume).
     cursor: [f64; 3],
     roi_visible: Vec<bool>,
+    /// Index of the active structure set within `study.structure_sets`.
+    active_structs: usize,
     active_dose: usize,
     dose_reference: f32,
+}
+
+impl StudySlot {
+    /// The currently selected structure set of this slot, if any.
+    fn active_structures(&self) -> Option<&crate::rtstruct::StructureSet> {
+        self.study
+            .as_ref()
+            .and_then(|s| s.structure_sets.get(self.active_structs))
+    }
 }
 
 impl StudySlot {
@@ -226,6 +237,7 @@ impl StudySlot {
             views: fresh_views(),
             cursor: [0.0; 3],
             roi_visible: Vec::new(),
+            active_structs: 0,
             active_dose: 0,
             dose_reference: 1.0,
         }
@@ -470,9 +482,21 @@ impl ViewerApp {
             self.dose_mode = DoseMode::Both;
         }
         let s = &mut self.slots[slot];
+        // Default to the structure set drawn on the active image series
+        // (matters for e.g. 4DCT patients with one RTSTRUCT per phase).
+        let active_uid = study.series.get(study.active_series).map(|se| se.uid.clone());
+        s.active_structs = active_uid
+            .as_deref()
+            .and_then(|uid| {
+                study
+                    .structure_sets
+                    .iter()
+                    .position(|ss| ss.referenced_series_uid == uid)
+            })
+            .unwrap_or(0);
         s.roi_visible = study
-            .structures
-            .as_ref()
+            .structure_sets
+            .get(s.active_structs)
             .map(|ss| vec![true; ss.rois.len()])
             .unwrap_or_default();
         s.active_dose = 0;
@@ -520,6 +544,21 @@ impl ViewerApp {
         if let Some(study) = &mut s.study {
             study.volume = vol;
             study.active_series = idx;
+            // Follow the series switch with the matching structure set,
+            // if one references the newly active series.
+            if let Some(uid) = study.series.get(idx).map(|se| se.uid.clone()) {
+                if let Some(i) = study
+                    .structure_sets
+                    .iter()
+                    .position(|ss| ss.referenced_series_uid == uid)
+                {
+                    if i != s.active_structs {
+                        s.active_structs = i;
+                        s.roi_visible =
+                            vec![true; study.structure_sets[i].rois.len()];
+                    }
+                }
+            }
             let dims = study.volume.dims;
             s.cursor = [
                 dims[0] as f64 * 0.5,
@@ -745,6 +784,7 @@ impl ViewerApp {
 
     fn contour_settings_hash(&self, slot: usize) -> u64 {
         let mut h: u64 = 0x9e3779b97f4a7c15 ^ (slot as u64).wrapping_mul(0xff51afd7ed558ccd);
+        h = h.rotate_left(11) ^ (self.slots[slot].active_structs as u64 + 1);
         for (i, v) in self.slots[slot].roi_visible.iter().enumerate() {
             if *v {
                 h = h.rotate_left(7) ^ (i as u64 + 1);
@@ -1445,41 +1485,67 @@ impl ViewerApp {
         ui.separator();
     }
 
+    /// DICOM data tree: studies of this patient with all their image series
+    /// visible at once. The active series (the displayed volume) is marked;
+    /// clicking another series loads it.
     fn series_selector(&mut self, ui: &mut egui::Ui, slot: usize) {
         let mut switch_to = None;
         {
             let study = self.slots[slot].study.as_ref().unwrap();
-            if study.series.len() > 1 {
-                let active = study.active_series;
-                let mut selected = active;
-                let label = |s: &loader::SeriesInfo| {
-                    format!(
-                        "{} {} ({} sl.)",
-                        s.modality,
-                        if s.description.is_empty() { "series" } else { &s.description },
-                        s.files.len()
-                    )
-                };
-                egui::ComboBox::from_id_salt(("series_sel", slot))
-                    .width(230.0)
-                    .selected_text(label(&study.series[active]))
-                    .show_ui(ui, |ui| {
-                        for (i, s) in study.series.iter().enumerate() {
-                            ui.selectable_value(&mut selected, i, label(s));
-                        }
-                    });
-                if selected != active {
-                    switch_to = Some(selected);
-                }
-            } else {
-                let s = &study.series[study.active_series];
-                ui.weak(format!(
+            let active = study.active_series;
+            let label = |s: &loader::SeriesInfo| {
+                format!(
                     "{} {} ({} sl.)",
                     s.modality,
                     if s.description.is_empty() { "series" } else { &s.description },
                     s.files.len()
-                ));
+                )
+            };
+            // Distinct studies, in first-seen order.
+            let mut studies: Vec<&str> = Vec::new();
+            for s in &study.series {
+                if !studies.contains(&s.study_uid.as_str()) {
+                    studies.push(&s.study_uid);
+                }
             }
+            let n_rt = study.structure_sets.len() + study.doses.len() + study.plans.len();
+            let mut series_rows = |ui: &mut egui::Ui, study_uid: &str| {
+                for (i, s) in study.series.iter().enumerate() {
+                    if s.study_uid != study_uid {
+                        continue;
+                    }
+                    let resp = ui.selectable_label(i == active, label(s));
+                    if resp.clicked() && i != active {
+                        switch_to = Some(i);
+                    }
+                    resp.on_hover_text(format!("Series UID …{}", tail(&s.uid)));
+                }
+            };
+            if studies.len() <= 1 {
+                series_rows(ui, studies.first().copied().unwrap_or(""));
+            } else {
+                for (si, study_uid) in studies.iter().enumerate() {
+                    let info = study
+                        .series
+                        .iter()
+                        .find(|s| s.study_uid == *study_uid)
+                        .unwrap();
+                    let title = format!(
+                        "Study {}{}",
+                        if info.study_date.is_empty() { format!("{}", si + 1) } else { info.study_date.clone() },
+                        if info.study_description.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" — {}", info.study_description)
+                        }
+                    );
+                    egui::CollapsingHeader::new(title)
+                        .id_salt(("study_tree", slot, si))
+                        .default_open(true)
+                        .show(ui, |ui| series_rows(ui, study_uid));
+                }
+            }
+            let _ = n_rt;
         }
         if let Some(i) = switch_to {
             self.start_series_switch(slot, i);
@@ -1487,23 +1553,63 @@ impl ViewerApp {
     }
 
     fn structures_section(&mut self, ui: &mut egui::Ui, slot: usize) {
-        let has = self.slots[slot]
+        let n_sets = self.slots[slot]
             .study
             .as_ref()
-            .is_some_and(|s| s.structures.is_some());
-        if !has {
+            .map(|s| s.structure_sets.len())
+            .unwrap_or(0);
+        if n_sets == 0 {
             // No RTSTRUCT in this study — show nothing.
             return;
         }
         let mut changed = false;
+        let mut new_active: Option<usize> = None;
         {
-            let StudySlot { study, roi_visible, .. } = &mut self.slots[slot];
-            let ss = study.as_ref().unwrap().structures.as_ref().unwrap();
+            let StudySlot { study, roi_visible, active_structs, .. } = &mut self.slots[slot];
+            let study = study.as_ref().unwrap();
+            let active_set = (*active_structs).min(n_sets - 1);
+            let ss = &study.structure_sets[active_set];
             let n_vis = roi_visible.iter().filter(|v| **v).count();
             egui::CollapsingHeader::new(format!("Structures ({}/{})", n_vis, ss.rois.len()))
                 .id_salt(("structs", slot))
                 .default_open(true)
                 .show(ui, |ui| {
+                    // Structure-set selector with links to the referenced
+                    // image series (one set per 4DCT phase, replans, …).
+                    if n_sets > 1 {
+                        for (i, set) in study.structure_sets.iter().enumerate() {
+                            let series_ref = study
+                                .series
+                                .iter()
+                                .find(|se| se.uid == set.referenced_series_uid)
+                                .map(|se| {
+                                    format!(
+                                        " ▶ {} {}",
+                                        se.modality,
+                                        if se.description.is_empty() { "series" } else { &se.description }
+                                    )
+                                })
+                                .unwrap_or_default();
+                            let resp = ui.selectable_label(
+                                i == active_set,
+                                format!(
+                                    "{} ({} ROIs){}",
+                                    if set.label.is_empty() { &set.file_name } else { &set.label },
+                                    set.rois.len(),
+                                    series_ref
+                                ),
+                            );
+                            if resp.clicked() && i != active_set {
+                                new_active = Some(i);
+                            }
+                            resp.on_hover_text(format!(
+                                "{}\nreferences series …{}",
+                                set.file_name,
+                                tail(&set.referenced_series_uid)
+                            ));
+                        }
+                        ui.separator();
+                    }
                     ui.horizontal(|ui| {
                         if ui.small_button("All").clicked() {
                             roi_visible.iter_mut().for_each(|v| *v = true);
@@ -1548,6 +1654,17 @@ impl ViewerApp {
                     }
                 });
         }
+        if let Some(i) = new_active {
+            let s = &mut self.slots[slot];
+            s.active_structs = i;
+            let n = s
+                .study
+                .as_ref()
+                .map(|st| st.structure_sets[i].rois.len())
+                .unwrap_or(0);
+            s.roi_visible = vec![true; n];
+            changed = true;
+        }
         if changed {
             self.settings_gen += 1;
         }
@@ -1569,6 +1686,7 @@ impl ViewerApp {
         {
             let StudySlot { study, active_dose, dose_reference, .. } = &mut self.slots[slot];
             let doses = &study.as_ref().unwrap().doses;
+            let plans = &study.as_ref().unwrap().plans;
             egui::CollapsingHeader::new("Dose")
                 .id_salt(("dose", slot))
                 .default_open(true)
@@ -1592,6 +1710,18 @@ impl ViewerApp {
                         d.max_dose,
                         d.units.to_lowercase()
                     ));
+                    // DICOM cross-reference: which plan this dose belongs to.
+                    if !d.referenced_plan_uid.is_empty() {
+                        if let Some(p) = plans
+                            .iter()
+                            .find(|p| p.sop_instance_uid == d.referenced_plan_uid)
+                        {
+                            ui.weak(format!(
+                                "▶ plan {}",
+                                if p.label.is_empty() { "unnamed" } else { &p.label }
+                            ));
+                        }
+                    }
 
                     egui::ComboBox::from_id_salt(("dose_mode", slot))
                         .selected_text(mode.label())
@@ -1678,6 +1808,20 @@ impl ViewerApp {
                 }
                 if !plan.date.is_empty() {
                     ui.weak(format!("Date: {}", plan.date));
+                }
+                // DICOM cross-reference: the structure set the plan was
+                // created on.
+                if !plan.referenced_structset_uid.is_empty() {
+                    if let Some(ss) = study
+                        .structure_sets
+                        .iter()
+                        .find(|s| s.sop_instance_uid == plan.referenced_structset_uid)
+                    {
+                        ui.weak(format!(
+                            "▶ structures {}",
+                            if ss.label.is_empty() { &ss.file_name } else { &ss.label }
+                        ));
+                    }
                 }
                 if !plan.beams.is_empty() {
                     egui::Grid::new(("beam_grid", slot, pi))
@@ -2352,7 +2496,7 @@ impl ViewerApp {
 
         // Contours.
         if self.show_contours {
-            if let Some(ss) = &study.structures {
+            if let Some(ss) = slot_state.active_structures() {
                 for (ri, gfx) in &view.contours {
                     let Some(roi) = ss.rois.get(*ri) else { continue };
                     let color = Color32::from_rgb(roi.color[0], roi.color[1], roi.color[2]);
@@ -2689,8 +2833,15 @@ impl ViewerApp {
         let dose_on = self.dose_mode != DoseMode::Off;
         let contours_on = self.show_contours;
 
-        let StudySlot { study, views, roi_visible, active_dose, dose_reference, .. } =
-            &mut self.slots[slot];
+        let StudySlot {
+            study,
+            views,
+            roi_visible,
+            active_structs,
+            active_dose,
+            dose_reference,
+            ..
+        } = &mut self.slots[slot];
         let study = study.as_ref().unwrap();
         let vol = &study.volume;
         let plane = views[idx].plane;
@@ -2776,7 +2927,7 @@ impl ViewerApp {
 
         // Contours.
         if contours_on {
-            if let Some(ss) = &study.structures {
+            if let Some(ss) = study.structure_sets.get(*active_structs) {
                 let ckey =
                     contour_hash.wrapping_add((slice as u64).wrapping_mul(0x517CC1B727220A95));
                 if views[idx].contour_key != Some(ckey) {
