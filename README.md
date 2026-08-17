@@ -19,7 +19,7 @@ Rust — aligns the two studies with a fusion overlay.
 
 **Image volumes.** A directory scan classifies every DICOM file (parallel
 header-only pass), groups image series, and reconstructs a 3D volume from the
-largest series by default (switchable in the toolbar). Slices are decoded in
+largest series by default (switchable in the sidebar). Slices are decoded in
 parallel with `rayon`, sorted along the true slice normal, checked for
 uniform spacing and consistent dimensions, and rescaled to HU. Compressed
 transfer syntaxes (JPEG lossless, RLE, …) are handled by `dicom-rs`'s pure
@@ -88,8 +88,8 @@ translation and a 7 mm Gaussian-bump deformation.
 **Planar images (DX / CR / RTIMAGE).** Digital radiographs and RT images
 (DRRs, portal / setup images) found in the study folder are listed in the
 sidebar and open in floating viewer windows with their own window/level
-(DICOM default, auto, manual, or interactive right-drag on the image —
-x = width, y = center, exactly like the CT views), correct physical aspect ratio
+(opens at the DICOM default; auto, manual, or interactive right-drag on the
+image — x = width, y = center, exactly like the CT views), correct physical aspect ratio
 (imager / image-plane pixel spacing), MONOCHROME1 inversion, and the
 relevant metadata — body part, view and kVp for DX; machine, gantry angle,
 SAD and SID for RTIMAGE.
@@ -162,8 +162,7 @@ reference) at the crosshair.
 
 **Dark / light appearance.** *View ▶ Appearance* switches between **🌙 Dark**,
 **☀ Light** and **💻 System** (follows the OS setting and updates live when it
-changes); the ☀/🌙 button at the right end of the toolbar flips between dark
-and light in one click. The choice is remembered in `viewer_settings.txt` next
+changes). The choice is remembered in `viewer_settings.txt` next
 to the executable — a two-line text file, safe to edit or delete. The image
 viewports themselves stay black in both themes, as in clinical viewers, so
 grayscale windowing, the dose colorwash and the overlay annotations keep a

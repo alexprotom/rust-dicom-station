@@ -930,8 +930,6 @@ impl ViewerApp {
         let mut close_b = false;
         let mut reset_views = false;
         let mut do_reg: Option<RegKind> = None;
-        let mut cancel_reg = false;
-        let mut clear_reg = false;
         let mut open_gen = false;
         let mut new_theme: Option<egui::ThemePreference> = None;
 
@@ -1001,15 +999,11 @@ impl ViewerApp {
                     }
                 });
                 ui.menu_button("Registration", |ui| {
+                    // Quick actions only — direction, parameters, fusion and
+                    // cancel/clear live in the sidebar Registration section.
                     let both =
                         self.slots[0].study.is_some() && self.slots[1].study.is_some();
                     let running = self.reg_job.is_some();
-                    ui.label("Direction (moving ▶ fixed):");
-                    ui.horizontal(|ui| {
-                        ui.selectable_value(&mut self.reg_fixed_slot, 0, "B ▶ A");
-                        ui.selectable_value(&mut self.reg_fixed_slot, 1, "A ▶ B");
-                    });
-                    ui.separator();
                     let moving = SLOT_NAMES[1 - self.reg_fixed_slot.min(1)];
                     let fixed = SLOT_NAMES[self.reg_fixed_slot.min(1)];
                     if ui
@@ -1040,32 +1034,6 @@ impl ViewerApp {
                         .clicked()
                     {
                         do_reg = Some(RegKind::Deformable);
-                        ui.close();
-                    }
-                    ui.separator();
-                    let fusion_label = match &self.registration {
-                        Some(reg) => format!("Fusion overlay on {}", SLOT_NAMES[reg.fixed_slot]),
-                        None => "Fusion overlay".to_string(),
-                    };
-                    ui.add_enabled(
-                        self.registration.is_some(),
-                        egui::Checkbox::new(&mut self.fusion_on, fusion_label),
-                    );
-                    if ui
-                        .add_enabled(running, egui::Button::new("Cancel registration"))
-                        .clicked()
-                    {
-                        cancel_reg = true;
-                        ui.close();
-                    }
-                    if ui
-                        .add_enabled(
-                            self.registration.is_some(),
-                            egui::Button::new("Clear registration"),
-                        )
-                        .clicked()
-                    {
-                        clear_reg = true;
                         ui.close();
                     }
                     if !both {
@@ -1104,14 +1072,6 @@ impl ViewerApp {
         if let Some(kind) = do_reg {
             self.start_registration(kind);
         }
-        if cancel_reg {
-            if let Some(job) = &self.reg_job {
-                job.progress.cancel();
-            }
-        }
-        if clear_reg {
-            self.clear_registration();
-        }
         if open_gen {
             self.gen_open = true;
         }
@@ -1123,18 +1083,15 @@ impl ViewerApp {
     // -- Toolbar ----------------------------------------------------------
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
-        let mut new_theme: Option<egui::ThemePreference> = None;
+        // Only the primary reading controls live here (window/level);
+        // file actions, display toggles and appearance are in the menus.
+        let any_study = self.slots[0].study.is_some() || self.slots[1].study.is_some();
+        if !any_study {
+            return;
+        }
         egui::Panel::top(egui::Id::new("top_bar")).show(ui, |ui| {
             ui.horizontal(|ui| {
-                if ui.button("📂 Open folder…").clicked() {
-                    if let Some(dir) = Self::pick_folder("Select a DICOM directory") {
-                        self.start_load(0, dir);
-                    }
-                }
-
-                let any_study = self.slots[0].study.is_some() || self.slots[1].study.is_some();
-                if any_study {
-                    ui.separator();
+                {
                     ui.label("W/L:");
                     ui.add(
                         egui::DragValue::new(&mut self.window_center)
@@ -1173,48 +1130,25 @@ impl ViewerApp {
                             self.window_width = (v.max_value as f32 - v.min_value as f32).max(1.0);
                         }
                     }
-
-                    ui.separator();
-                    ui.checkbox(&mut self.show_contours, "Contours");
-                    ui.checkbox(&mut self.show_crosshair, "Crosshair");
-                    ui.checkbox(&mut self.show_labels, "Labels");
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Quick light/dark flip; View ▶ Appearance also offers
-                    // "follow system". Flip against the *resolved* theme so the
-                    // button does the visually obvious thing under "System".
-                    let (icon, hint, next) = if ui.visuals().dark_mode {
-                        ("☀", "Switch to light mode", egui::ThemePreference::Light)
-                    } else {
-                        ("🌙", "Switch to dark mode", egui::ThemePreference::Dark)
-                    };
-                    if ui.button(icon).on_hover_text(hint).clicked() {
-                        new_theme = Some(next);
-                    }
-                    if any_study {
-                        ui.separator();
-                        let mut parts = Vec::new();
-                        for (i, s) in self.slots.iter().enumerate() {
-                            if let Some(study) = &s.study {
-                                let m = &study.meta;
-                                parts.push(format!(
-                                    "{}: {} {}",
-                                    SLOT_NAMES[i],
-                                    m.patient_name.replace('^', " "),
-                                    m.study_date
-                                ));
-                            }
+                    let mut parts = Vec::new();
+                    for (i, s) in self.slots.iter().enumerate() {
+                        if let Some(study) = &s.study {
+                            let m = &study.meta;
+                            parts.push(format!(
+                                "{}: {} {}",
+                                SLOT_NAMES[i],
+                                m.patient_name.replace('^', " "),
+                                m.study_date
+                            ));
                         }
-                        ui.label(egui::RichText::new(parts.join("   ")).weak());
                     }
+                    ui.label(egui::RichText::new(parts.join("   ")).weak());
                 });
             });
         });
-        if let Some(theme) = new_theme {
-            let ctx = ui.ctx().clone();
-            self.set_theme(&ctx, theme);
-        }
     }
 
     // -- Side panel -------------------------------------------------------
@@ -3027,9 +2961,6 @@ impl ViewerApp {
                                 (img.max_value - img.min_value).max(1.0),
                             );
                         }
-                        if ui.small_button("DICOM").clicked() {
-                            w.wl = img.window;
-                        }
                     });
                     // Physical aspect ratio, fitted to the available width.
                     let w_mm = (img.cols as f64 * img.spacing[0]) as f32;
@@ -3056,7 +2987,6 @@ impl ViewerApp {
                     for (k, v) in &img.info {
                         ui.weak(format!("{k}: {v}"));
                     }
-                    ui.weak("RMB drag on the image: window/level");
                 });
             w.open = open;
         }
