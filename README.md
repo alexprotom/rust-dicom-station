@@ -160,6 +160,17 @@ edge labels (L/R/A/P/S/I) derived from the actual patient orientation, and a
 status bar with patient coordinates, voxel indices, HU and dose (Gy and % of
 reference) at the crosshair.
 
+**Dark / light appearance.** *View ▶ Appearance* switches between **🌙 Dark**,
+**☀ Light** and **💻 System** (follows the OS setting and updates live when it
+changes); the ☀/🌙 button at the right end of the toolbar flips between dark
+and light in one click. The choice is remembered in `viewer_settings.txt` next
+to the executable — a two-line text file, safe to edit or delete. The image
+viewports themselves stay black in both themes, as in clinical viewers, so
+grayscale windowing, the dose colorwash and the overlay annotations keep a
+single calibrated appearance; the surrounding chrome and the hand-painted
+accents follow the theme (unit tests assert the accent colors clear WCAG AA
+contrast against both backgrounds).
+
 ## Performance
 
 Everything is CPU-side Rust + GPU texture blitting via `wgpu`; the hot paths
@@ -248,6 +259,8 @@ src/
   dicom_export.rs  DICOM writer (CT series, RTSTRUCT, RTDOSE, RTPLAN)
   gen_test_data.rs synthetic RT phantom study generator (CT/RTSTRUCT/RTPLAN/
                RTDOSE + DX/RTIMAGE/REG/RTRECORD), driven from the GUI
+  settings.rs  persisted preferences (theme) in a plain text file next to
+               the executable
   volume.rs    3D volume, patient-space geometry, orthogonal slice extraction
   rtstruct.rs  RT Structure Set parsing
   rtdose.rs    RT Dose parsing + trilinear patient-space sampling

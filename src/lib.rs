@@ -12,5 +12,6 @@ pub mod render;
 pub mod rtdose;
 pub mod rtplan;
 pub mod rtstruct;
+pub mod settings;
 pub mod simulate;
 pub mod volume;

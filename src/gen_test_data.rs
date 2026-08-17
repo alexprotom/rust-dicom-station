@@ -28,6 +28,7 @@ use crate::dicom_export::{
     fmt_ds, new_uid, put_ds, put_is, put_seq, put_str, put_strs, put_us, today, write_object,
 };
 use crate::loader::Progress;
+use crate::settings;
 
 // ---------------------------------------------------------------------------
 // SOP Class UIDs
@@ -135,14 +136,9 @@ impl GenParams {
     }
 }
 
-/// Default output directory: `test_data/` next to the running executable
-/// ("the main app folder"), falling back to the current working directory.
+/// Default output directory: `test_data/` inside the application folder.
 pub fn default_output_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf))
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-        .join("test_data")
+    settings::app_dir().join("test_data")
 }
 
 /// Names of the files this generator writes (for UI hints and cleanup).

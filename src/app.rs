@@ -20,10 +20,58 @@ use crate::registration::{
     self, RegKind, RegParams, RegProgress, RegistrationResult, Transform3,
 };
 use crate::render;
+use crate::settings::{self, Settings};
 use crate::simulate::{self, SimParams};
 use crate::volume::{ViewPlane, Volume};
 
 const SLOT_NAMES: [&str; 2] = ["A", "B"];
+
+// ---------------------------------------------------------------------------
+// Theme-dependent colors
+//
+// The image viewports stay black in both themes — that is the convention in
+// clinical viewers, keeps grayscale windowing and the dose colorwash reading
+// correctly, and lets the overlay annotations use one fixed palette. Only the
+// surrounding chrome and the few hand-painted accents follow the theme.
+// ---------------------------------------------------------------------------
+
+/// Fill of the area around and between the viewports.
+fn backdrop_color(visuals: &egui::Visuals) -> Color32 {
+    if visuals.dark_mode {
+        Color32::from_gray(10)
+    } else {
+        Color32::from_gray(190)
+    }
+}
+
+/// Fill of an empty study row (slightly lifted off the backdrop).
+fn empty_row_color(visuals: &egui::Visuals) -> Color32 {
+    if visuals.dark_mode {
+        Color32::from_gray(14)
+    } else {
+        Color32::from_gray(205)
+    }
+}
+
+/// Amber accent for warnings — darkened in light mode, where pale yellow on
+/// white is unreadable.
+fn warn_color(visuals: &egui::Visuals) -> Color32 {
+    if visuals.dark_mode {
+        Color32::from_rgb(240, 190, 60)
+    } else {
+        Color32::from_rgb(146, 98, 0)
+    }
+}
+
+/// Red-orange accent for values needing attention (e.g. an abnormal
+/// treatment termination status).
+fn alert_color(visuals: &egui::Visuals) -> Color32 {
+    if visuals.dark_mode {
+        Color32::from_rgb(240, 120, 60)
+    } else {
+        Color32::from_rgb(176, 56, 8)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Dose display settings
@@ -310,6 +358,12 @@ pub struct ViewerApp {
 
     /// Bumped whenever ROI visibility / dose settings change → cache rebuild.
     settings_gen: u64,
+
+    /// Light / dark / follow-the-system appearance, persisted between runs.
+    theme: egui::ThemePreference,
+    /// Non-fatal note shown in the View menu if the settings file could not
+    /// be written (e.g. a read-only installation folder).
+    settings_error: Option<String>,
 }
 
 impl ViewerApp {
@@ -318,7 +372,8 @@ impl ViewerApp {
         initial_a: Option<PathBuf>,
         initial_b: Option<PathBuf>,
     ) -> Self {
-        cc.egui_ctx.set_visuals(egui::Visuals::dark());
+        let prefs = settings::load();
+        cc.egui_ctx.set_theme(prefs.theme);
         let mut app = ViewerApp {
             slots: [StudySlot::empty(), StudySlot::empty()],
             comparison: initial_b.is_some(),
@@ -361,6 +416,8 @@ impl ViewerApp {
             dose_threshold_pct: 15.0,
             iso_levels: default_iso_levels(),
             settings_gen: 0,
+            theme: prefs.theme,
+            settings_error: None,
         };
         if let Some(p) = initial_a {
             app.start_load(0, p);
@@ -621,6 +678,18 @@ impl ViewerApp {
         self.export_job = Some(ExportJob { progress, rx });
     }
 
+    /// Apply an appearance preference and remember it for the next run.
+    fn set_theme(&mut self, ctx: &egui::Context, theme: egui::ThemePreference) {
+        self.theme = theme;
+        ctx.set_theme(theme);
+        match settings::save(&Settings { theme }) {
+            Ok(()) => self.settings_error = None,
+            Err(e) => {
+                self.settings_error = Some(format!("⚠ settings not saved: {e:#}"));
+            }
+        }
+    }
+
     /// Write the built-in synthetic RT test study into the configured folder
     /// (background thread; the folder is created if it does not exist).
     fn start_generate(&mut self) {
@@ -864,6 +933,7 @@ impl ViewerApp {
         let mut cancel_reg = false;
         let mut clear_reg = false;
         let mut open_gen = false;
+        let mut new_theme: Option<egui::ThemePreference> = None;
 
         egui::Panel::top(egui::Id::new("menu_bar")).show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -914,6 +984,16 @@ impl ViewerApp {
                     ui.checkbox(&mut self.show_crosshair, "Crosshair");
                     ui.checkbox(&mut self.show_labels, "Orientation labels");
                     ui.checkbox(&mut self.show_isocenters, "Isocenters");
+                    ui.separator();
+                    ui.label("Appearance:");
+                    let before = self.theme;
+                    self.theme.radio_buttons(ui);
+                    if self.theme != before {
+                        new_theme = Some(self.theme);
+                    }
+                    if let Some(msg) = &self.settings_error {
+                        ui.weak(msg);
+                    }
                     ui.separator();
                     if ui.button("Reset all views").clicked() {
                         reset_views = true;
@@ -1035,11 +1115,15 @@ impl ViewerApp {
         if open_gen {
             self.gen_open = true;
         }
+        if let Some(theme) = new_theme {
+            self.set_theme(ctx, theme);
+        }
     }
 
     // -- Toolbar ----------------------------------------------------------
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
+        let mut new_theme: Option<egui::ThemePreference> = None;
         egui::Panel::top(egui::Id::new("top_bar")).show(ui, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("📂 Open folder…").clicked() {
@@ -1048,7 +1132,8 @@ impl ViewerApp {
                     }
                 }
 
-                if self.slots[0].study.is_some() || self.slots[1].study.is_some() {
+                let any_study = self.slots[0].study.is_some() || self.slots[1].study.is_some();
+                if any_study {
                     ui.separator();
                     ui.label("W/L:");
                     ui.add(
@@ -1093,8 +1178,22 @@ impl ViewerApp {
                     ui.checkbox(&mut self.show_contours, "Contours");
                     ui.checkbox(&mut self.show_crosshair, "Crosshair");
                     ui.checkbox(&mut self.show_labels, "Labels");
+                }
 
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Quick light/dark flip; View ▶ Appearance also offers
+                    // "follow system". Flip against the *resolved* theme so the
+                    // button does the visually obvious thing under "System".
+                    let (icon, hint, next) = if ui.visuals().dark_mode {
+                        ("☀", "Switch to light mode", egui::ThemePreference::Light)
+                    } else {
+                        ("🌙", "Switch to dark mode", egui::ThemePreference::Dark)
+                    };
+                    if ui.button(icon).on_hover_text(hint).clicked() {
+                        new_theme = Some(next);
+                    }
+                    if any_study {
+                        ui.separator();
                         let mut parts = Vec::new();
                         for (i, s) in self.slots.iter().enumerate() {
                             if let Some(study) = &s.study {
@@ -1108,10 +1207,14 @@ impl ViewerApp {
                             }
                         }
                         ui.label(egui::RichText::new(parts.join("   ")).weak());
-                    });
-                }
+                    }
+                });
             });
         });
+        if let Some(theme) = new_theme {
+            let ctx = ui.ctx().clone();
+            self.set_theme(&ctx, theme);
+        }
     }
 
     // -- Side panel -------------------------------------------------------
@@ -1981,10 +2084,8 @@ impl ViewerApp {
                                 if status == "NORMAL" || status == "–" {
                                     ui.label(status);
                                 } else {
-                                    ui.label(
-                                        egui::RichText::new(status)
-                                            .color(Color32::from_rgb(240, 120, 60)),
-                                    );
+                                    let c = alert_color(ui.visuals());
+                                    ui.label(egui::RichText::new(status).color(c));
                                 }
                                 ui.end_row();
                             }
@@ -2000,7 +2101,7 @@ impl ViewerApp {
         }
         egui::CollapsingHeader::new(
             egui::RichText::new(format!("⚠ Warnings ({})", study.warnings.len()))
-                .color(Color32::from_rgb(240, 190, 60)),
+                .color(warn_color(ui.visuals())),
         )
         .id_salt(("warn", slot))
         .show(ui, |ui| {
@@ -2080,8 +2181,9 @@ impl ViewerApp {
     // -- Central: one or two rows of three views --------------------------
 
     fn central_views(&mut self, ui: &mut egui::Ui) {
+        let backdrop = backdrop_color(ui.visuals());
         egui::CentralPanel::default_margins()
-            .frame(egui::Frame::NONE.fill(Color32::from_gray(10)))
+            .frame(egui::Frame::NONE.fill(backdrop))
             .show(ui, |ui| {
                 if self.slots[0].study.is_none() && self.slots[1].study.is_none() {
                     self.empty_state(ui);
@@ -2148,14 +2250,20 @@ impl ViewerApp {
     }
 
     fn empty_row(&mut self, ui: &mut egui::Ui, slot: usize, rect: Rect) {
+        // `text_color`, not `weak_text_color`: the dimmed variant drops below a
+        // readable contrast on the dark row fill (see `theme_tests`).
+        let (fill, hint, strong) = {
+            let v = ui.visuals();
+            (empty_row_color(v), v.text_color(), v.strong_text_color())
+        };
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0.0, Color32::from_gray(14));
+        painter.rect_filled(rect, 0.0, fill);
         painter.text(
             rect.center() - Vec2::new(0.0, 24.0),
             Align2::CENTER_CENTER,
             format!("No comparison study ({})", SLOT_NAMES[slot]),
             FontId::proportional(15.0),
-            Color32::GRAY,
+            hint,
         );
         let btn_rect = Rect::from_center_size(
             rect.center() + Vec2::new(0.0, 10.0),
@@ -2176,7 +2284,7 @@ impl ViewerApp {
                     Align2::CENTER_CENTER,
                     format!("⏳ {}", job.progress.get()),
                     FontId::proportional(13.0),
-                    Color32::WHITE,
+                    strong,
                 );
             }
         }
@@ -3130,6 +3238,73 @@ impl ViewerApp {
         }
         if do_generate {
             self.start_generate();
+        }
+    }
+}
+
+#[cfg(test)]
+mod theme_tests {
+    use super::*;
+
+    /// Relative luminance per WCAG 2.1.
+    fn luminance(c: Color32) -> f64 {
+        let ch = |v: u8| {
+            let s = v as f64 / 255.0;
+            if s <= 0.03928 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b())
+    }
+
+    /// WCAG contrast ratio between two opaque colors (1.0 … 21.0).
+    fn contrast(a: Color32, b: Color32) -> f64 {
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    /// The hand-picked accents must stay legible on the panel background of
+    /// *both* themes — a pale amber that works on near-black is unreadable on
+    /// egui's light `panel_fill` (gray 248), which is exactly the regression
+    /// this guards against. 4.5 is the WCAG AA threshold for body text.
+    #[test]
+    fn accent_colors_are_legible_in_both_themes() {
+        for visuals in [egui::Visuals::dark(), egui::Visuals::light()] {
+            let bg = visuals.panel_fill;
+            let name = if visuals.dark_mode { "dark" } else { "light" };
+            for (label, color) in [
+                ("warn", warn_color(&visuals)),
+                ("alert", alert_color(&visuals)),
+            ] {
+                let ratio = contrast(color, bg);
+                assert!(
+                    ratio >= 4.5,
+                    "{name} theme: {label} accent {color:?} on {bg:?} has contrast {ratio:.2}"
+                );
+            }
+        }
+    }
+
+    /// The viewport gutter and an empty study row must be distinguishable from
+    /// each other and from the panels, in both themes.
+    #[test]
+    fn backdrops_stay_distinguishable() {
+        for visuals in [egui::Visuals::dark(), egui::Visuals::light()] {
+            let name = if visuals.dark_mode { "dark" } else { "light" };
+            let (backdrop, row) = (backdrop_color(&visuals), empty_row_color(&visuals));
+            assert_ne!(backdrop, row, "{name} theme: gutter equals empty row");
+            // An empty row shows hint text; it needs real contrast against it.
+            let ratio = contrast(visuals.text_color(), row);
+            assert!(
+                ratio >= 3.0,
+                "{name} theme: hint text on an empty row has contrast {ratio:.2}"
+            );
+            // The gutter must read as a frame around the black viewports, not
+            // blend into them.
+            if !visuals.dark_mode {
+                assert!(
+                    contrast(backdrop, Color32::BLACK) >= 4.5,
+                    "{name} theme: gutter is too dark to frame the viewports"
+                );
+            }
         }
     }
 }
