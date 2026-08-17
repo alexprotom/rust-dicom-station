@@ -126,6 +126,17 @@ with `DoseGridScaling`) and an RTPLAN skeleton (photon or ion), written with
 reference. The exports round-trip through this viewer and pydicom; they are
 QA/research objects, not guaranteed-complete clinical IODs.
 
+**Built-in test-data generator.** *File ▶ 🧪 Generate test data…* writes a
+complete synthetic RT study — CT water phantom with a spherical target and a
+cord, matching RTSTRUCT contours, a Gaussian RTDOSE, a two-beam proton
+RTPLAN, and optionally DX / RTIMAGE / REG / RTRECORD objects — into
+`test_data/` next to the executable, then loads it. Dose peak, target shift,
+whole-phantom shift, plan label and REG translation are adjustable in the
+dialog, so a deliberately misaligned second study for registration testing is
+one more click. Generation runs on a background thread with progress, and the
+whole phantom is analytically known, which is what the integration tests
+assert against (see [Synthetic test data](#synthetic-test-data)).
+
 **RTPLAN.** Photon (`BeamSequence`) and ion/proton (`IonBeamSequence`) plans:
 prescription, fractionation, and a per-beam table with radiation type, scan
 mode, gantry/couch angles, energy range, meterset and control-point count.
@@ -179,34 +190,48 @@ or start it empty and use *Open folder…* / the *File* menu. Windows, Linux
 and macOS are supported; rendering uses `wgpu` (DX12/Vulkan/Metal, with
 fallbacks).
 
-## Tests & synthetic data
+## Synthetic test data
 
-`tools/generate_test_data.py` (needs Python + `pydicom`, only for test-data
-generation — the viewer itself is pure Rust) writes a synthetic study to
-`test_data/`: a cylindrical water phantom with a spherical target, three
-ROIs, a 3D Gaussian 60 Gy dose and a two-beam proton plan with analytically
-known values. The integration tests verify geometry round-trips, HU values,
-contour radii, trilinear dose values, isodose radii and plan fields against
-the closed-form expectations:
+The viewer generates its own test study — no Python, no external tooling.
+*File ▶ 🧪 Generate test data…* (also offered on the empty start screen)
+opens a dialog that writes a complete, analytically known RT study into
+`test_data/` **next to the executable** and loads it straight away:
+
+* CT — 40 slices, 96 × 96, 2 mm isotropic; water cylinder (r = 70 mm),
+  spherical target (r = 25 mm, HU 100) at the origin, cord (r = 8 mm, HU 40);
+* RTSTRUCT — BODY (EXTERNAL), TARGET (PTV), CORD (ORGAN);
+* RTDOSE — 3D Gaussian, 60 Gy at the isocenter, σ = 20 mm, 32-bit, 4 mm grid;
+* RTPLAN — ion (proton) plan, 2 beams, 60 Gy / 30 fx;
+* DX radiograph, RTIMAGE (DRR), REG spatial registration and an RT Ion Beams
+  Treatment Record (optional).
+
+The dialog exposes the dose peak, the target Y shift, a whole-phantom X/Y
+shift, the plan label and the REG translation, so a second, deliberately
+misaligned study for comparison mode and registration is a matter of
+generating once more into another folder:
 
 ```
-python3 tools/generate_test_data.py
-cargo test --release
-```
-
-A second, shifted study for trying comparison mode and registration:
-
-```
-# deformable scenario: same body, target displaced 15 mm
-python3 tools/generate_test_data.py --out test_data2 --target-shift-y 15 --peak 66
 # rigid scenario: whole phantom translated (12, -9) mm
-python3 tools/generate_test_data.py --out test_data3 --shift-x 12 --shift-y -9
-cargo run --release -- test_data test_data3
+#   → generate into test_data_shifted with shift X = 12, shift Y = -9
+# deformable scenario: same body, target displaced 15 mm
+#   → generate into test_data_target15 with target Y shift = 15, peak = 66
+cargo run --release -- test_data test_data_shifted
 ```
 
 Then *Registration ▶ Rigid* should recover the (12, −9, 0) mm shift to within
-a fraction of a millimeter, and *Registration ▶ Deformable* on
-`test_data2` warps the displaced target back onto study A.
+a fraction of a millimeter, and *Registration ▶ Deformable* on the
+target-displaced study warps it back onto study A.
+
+## Tests
+
+The integration tests generate the study through the same code path and
+verify geometry round-trips, HU values, contour radii, trilinear dose values,
+isodose radii and plan fields against the closed-form expectations, plus a
+simulate → export → reload round trip. Nothing external is needed:
+
+```
+cargo test --release
+```
 
 ## Structure
 
@@ -221,6 +246,8 @@ src/
                multi-resolution, random sampling) in pure Rust
   simulate.rs  known-transform study generator for registration QA
   dicom_export.rs  DICOM writer (CT series, RTSTRUCT, RTDOSE, RTPLAN)
+  gen_test_data.rs synthetic RT phantom study generator (CT/RTSTRUCT/RTPLAN/
+               RTDOSE + DX/RTIMAGE/REG/RTRECORD), driven from the GUI
   volume.rs    3D volume, patient-space geometry, orthogonal slice extraction
   rtstruct.rs  RT Structure Set parsing
   rtdose.rs    RT Dose parsing + trilinear patient-space sampling

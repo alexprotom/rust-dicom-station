@@ -31,7 +31,7 @@ const EXPLICIT_VR_LE: &str = "1.2.840.10008.1.2.1";
 static UID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Generate a unique UID under the UUID-derived `2.25.` root.
-fn new_uid() -> String {
+pub(crate) fn new_uid() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -41,14 +41,14 @@ fn new_uid() -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Small element helpers
+// Small element helpers (shared with `gen_test_data`)
 // ---------------------------------------------------------------------------
 
-fn put_str(o: &mut InMemDicomObject, tag: Tag, vr: VR, v: impl Into<String>) {
+pub(crate) fn put_str(o: &mut InMemDicomObject, tag: Tag, vr: VR, v: impl Into<String>) {
     o.put(DataElement::new(tag, vr, PrimitiveValue::Str(v.into())));
 }
 
-fn put_strs(o: &mut InMemDicomObject, tag: Tag, vr: VR, vals: &[String]) {
+pub(crate) fn put_strs(o: &mut InMemDicomObject, tag: Tag, vr: VR, vals: &[String]) {
     o.put(DataElement::new(
         tag,
         vr,
@@ -56,20 +56,20 @@ fn put_strs(o: &mut InMemDicomObject, tag: Tag, vr: VR, vals: &[String]) {
     ));
 }
 
-fn put_us(o: &mut InMemDicomObject, tag: Tag, v: u16) {
+pub(crate) fn put_us(o: &mut InMemDicomObject, tag: Tag, v: u16) {
     o.put(DataElement::new(tag, VR::US, PrimitiveValue::from(v)));
 }
 
-fn put_ds(o: &mut InMemDicomObject, tag: Tag, vals: &[f64]) {
+pub(crate) fn put_ds(o: &mut InMemDicomObject, tag: Tag, vals: &[f64]) {
     let s: Vec<String> = vals.iter().map(|v| fmt_ds(*v)).collect();
     put_strs(o, tag, VR::DS, &s);
 }
 
-fn put_is(o: &mut InMemDicomObject, tag: Tag, v: i64) {
+pub(crate) fn put_is(o: &mut InMemDicomObject, tag: Tag, v: i64) {
     put_str(o, tag, VR::IS, v.to_string());
 }
 
-fn put_seq(o: &mut InMemDicomObject, tag: Tag, items: Vec<InMemDicomObject>) {
+pub(crate) fn put_seq(o: &mut InMemDicomObject, tag: Tag, items: Vec<InMemDicomObject>) {
     o.put(DataElement::new(
         tag,
         VR::SQ,
@@ -78,13 +78,13 @@ fn put_seq(o: &mut InMemDicomObject, tag: Tag, items: Vec<InMemDicomObject>) {
 }
 
 /// DICOM DS: max 16 bytes; use a compact fixed-point representation.
-fn fmt_ds(v: f64) -> String {
+pub(crate) fn fmt_ds(v: f64) -> String {
     let s = format!("{v:.6}");
     let s = s.trim_end_matches('0').trim_end_matches('.').to_string();
     if s.is_empty() || s == "-" { "0".into() } else { s }
 }
 
-fn today() -> (String, String) {
+pub(crate) fn today() -> (String, String) {
     // Days since epoch → Y/M/D (proleptic Gregorian, civil algorithm).
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -140,7 +140,7 @@ fn common_elements(o: &mut InMemDicomObject, study: &LoadedStudy, ctx: &Ctx, mod
     put_str(o, tags::MANUFACTURER, VR::LO, "rust-dicom-viewer export");
 }
 
-fn write_object(
+pub(crate) fn write_object(
     obj: InMemDicomObject,
     sop_class: &str,
     path: &Path,

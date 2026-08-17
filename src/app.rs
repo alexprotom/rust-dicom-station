@@ -14,6 +14,7 @@ use rayon::prelude::*;
 
 use crate::dicom_export;
 use crate::extras;
+use crate::gen_test_data::{self, GenParams};
 use crate::loader::{self, LoadedStudy, Progress};
 use crate::registration::{
     self, RegKind, RegParams, RegProgress, RegistrationResult, Transform3,
@@ -224,6 +225,12 @@ struct ExportJob {
     rx: mpsc::Receiver<anyhow::Result<(usize, String)>>,
 }
 
+/// Background run of the built-in synthetic test-data generator.
+struct GenJob {
+    progress: Arc<Progress>,
+    rx: mpsc::Receiver<anyhow::Result<(usize, PathBuf)>>,
+}
+
 /// A completed registration plus the direction it was run in.
 struct ActiveRegistration {
     result: RegistrationResult,
@@ -271,6 +278,17 @@ pub struct ViewerApp {
     last_sim: Option<String>,
     export_job: Option<ExportJob>,
     export_result: Option<String>,
+
+    // Built-in synthetic test-data generator.
+    /// Dialog visibility.
+    gen_open: bool,
+    gen_params: GenParams,
+    /// Output folder as edited in the dialog (defaults to the app folder).
+    gen_dir: String,
+    gen_job: Option<GenJob>,
+    gen_result: Option<String>,
+    /// Load the generated study into slot A once it has been written.
+    gen_load_after: bool,
 
     /// Open floating viewers for planar images.
     planar_windows: Vec<PlanarWindow>,
@@ -324,6 +342,12 @@ impl ViewerApp {
             last_sim: None,
             export_job: None,
             export_result: None,
+            gen_open: false,
+            gen_params: GenParams::default(),
+            gen_dir: gen_test_data::default_output_dir().display().to_string(),
+            gen_job: None,
+            gen_result: None,
+            gen_load_after: true,
             planar_windows: Vec::new(),
             reg_apply_invert: false,
             window_center: 40.0,
@@ -597,6 +621,30 @@ impl ViewerApp {
         self.export_job = Some(ExportJob { progress, rx });
     }
 
+    /// Write the built-in synthetic RT test study into the configured folder
+    /// (background thread; the folder is created if it does not exist).
+    fn start_generate(&mut self) {
+        if self.gen_job.is_some() {
+            return;
+        }
+        let dir = PathBuf::from(self.gen_dir.trim());
+        if dir.as_os_str().is_empty() {
+            self.error = Some("Choose an output folder for the test data".into());
+            return;
+        }
+        let params = self.gen_params.clone();
+        let progress = Arc::new(Progress::default());
+        progress.set("starting…");
+        let p2 = progress.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let res = gen_test_data::generate(&dir, &params, &p2).map(|n| (n, dir));
+            let _ = tx.send(res);
+        });
+        self.gen_result = None;
+        self.gen_job = Some(GenJob { progress, rx });
+    }
+
     fn reset_all_views(&mut self) {
         for s in &mut self.slots {
             for v in &mut s.views {
@@ -735,6 +783,35 @@ impl eframe::App for ViewerApp {
             }
         }
 
+        // Poll background test-data generation.
+        if let Some(job) = &self.gen_job {
+            match job.rx.try_recv() {
+                Ok(Ok((n, dir))) => {
+                    self.gen_job = None;
+                    self.gen_result = Some(format!(
+                        "✔ {n} DICOM file(s) written to {}",
+                        dir.display()
+                    ));
+                    if self.gen_load_after {
+                        self.gen_open = false;
+                        self.start_load(0, dir);
+                    }
+                }
+                Ok(Err(e)) => {
+                    self.gen_job = None;
+                    self.error = Some(format!("Test data generation failed: {e:#}"));
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.gen_job = None;
+                    self.error =
+                        Some("Test data generation thread terminated unexpectedly".into());
+                }
+            }
+        }
+
         // Poll background registration.
         if let Some(job) = &self.reg_job {
             match job.rx.try_recv() {
@@ -786,6 +863,7 @@ impl ViewerApp {
         let mut do_reg: Option<RegKind> = None;
         let mut cancel_reg = false;
         let mut clear_reg = false;
+        let mut open_gen = false;
 
         egui::Panel::top(egui::Id::new("menu_bar")).show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -804,6 +882,18 @@ impl ViewerApp {
                         .clicked()
                     {
                         close_b = true;
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui
+                        .button("🧪 Generate test data…")
+                        .on_hover_text(
+                            "Write a complete synthetic RT study (CT, RTSTRUCT, RTPLAN, \
+                             RTDOSE, DX, RTIMAGE, REG, RTRECORD) into the application folder",
+                        )
+                        .clicked()
+                    {
+                        open_gen = true;
                         ui.close();
                     }
                     ui.separator();
@@ -941,6 +1031,9 @@ impl ViewerApp {
         }
         if clear_reg {
             self.clear_registration();
+        }
+        if open_gen {
+            self.gen_open = true;
         }
     }
 
@@ -2100,6 +2193,9 @@ impl ViewerApp {
                     if let Some(job) = &self.loading {
                         ui.label(job.progress.get());
                     }
+                } else if let Some(job) = &self.gen_job {
+                    ui.spinner();
+                    ui.label(format!("Generating test data — {}", job.progress.get()));
                 } else {
                     ui.label("Open a folder containing a DICOM study");
                     ui.add_space(8.0);
@@ -2107,6 +2203,19 @@ impl ViewerApp {
                         if let Some(dir) = Self::pick_folder("Select a DICOM directory") {
                             self.start_load(0, dir);
                         }
+                    }
+                    ui.add_space(12.0);
+                    ui.weak("…or create a synthetic RT study to try the viewer on");
+                    ui.add_space(4.0);
+                    if ui
+                        .button("🧪 Generate test data…")
+                        .on_hover_text(
+                            "Writes a synthetic CT + RTSTRUCT + RTPLAN + RTDOSE study \
+                             into the application folder",
+                        )
+                        .clicked()
+                    {
+                        self.gen_open = true;
                     }
                 }
             });
@@ -2850,6 +2959,7 @@ impl ViewerApp {
     // -- Modals -----------------------------------------------------------
 
     fn modals(&mut self, ctx: &egui::Context) {
+        self.generator_window(ctx);
         if let Some(err) = self.error.clone() {
             egui::Window::new("Error")
                 .collapsible(false)
@@ -2862,6 +2972,164 @@ impl ViewerApp {
                         self.error = None;
                     }
                 });
+        }
+    }
+
+    /// Built-in synthetic test-data generator (the Rust replacement for the
+    /// old `tools/generate_test_data.py`): pick an output folder, tweak the
+    /// phantom parameters and write a complete RT study.
+    fn generator_window(&mut self, ctx: &egui::Context) {
+        if !self.gen_open {
+            return;
+        }
+        let running = self.gen_job.is_some();
+        let mut open = true;
+        let mut do_generate = false;
+        let mut browse = false;
+        let mut reset_dir = false;
+        let mut reset_params = false;
+
+        egui::Window::new("🧪 Generate synthetic RT test study")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_max_width(560.0);
+                ui.label(
+                    "Writes a self-contained test study: 40-slice CT water phantom with a \
+                     spherical target and a cord, matching RTSTRUCT contours, a Gaussian \
+                     RTDOSE and a two-beam proton RTPLAN.",
+                );
+                ui.add_space(6.0);
+
+                ui.label(egui::RichText::new("Output folder").strong());
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.gen_dir)
+                            .desired_width(360.0)
+                            .hint_text("folder to write the DICOM files into"),
+                    );
+                    if ui.button("📂 Browse…").clicked() {
+                        browse = true;
+                    }
+                    if ui
+                        .button("↺")
+                        .on_hover_text("Reset to the application folder")
+                        .clicked()
+                    {
+                        reset_dir = true;
+                    }
+                });
+                ui.weak(format!("Files: {}", gen_test_data::output_summary(&self.gen_params)));
+
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new("Phantom").strong());
+                egui::Grid::new("gen_params_grid")
+                    .num_columns(2)
+                    .spacing([8.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label("Dose peak (Gy)")
+                            .on_hover_text("Also written as the plan's prescription dose");
+                        ui.add(
+                            egui::DragValue::new(&mut self.gen_params.peak)
+                                .speed(0.5)
+                                .range(0.1..=200.0),
+                        );
+                        ui.end_row();
+
+                        ui.label("Target Y shift (mm)").on_hover_text(
+                            "Moves the target sphere and the dose peak inside the phantom",
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.gen_params.target_shift_y)
+                                .speed(0.5)
+                                .range(-60.0..=60.0),
+                        );
+                        ui.end_row();
+
+                        ui.label("Phantom shift X / Y (mm)")
+                            .on_hover_text("Shifts the whole phantom — for registration tests");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut self.gen_params.shift_x)
+                                    .speed(0.5)
+                                    .range(-60.0..=60.0),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut self.gen_params.shift_y)
+                                    .speed(0.5)
+                                    .range(-60.0..=60.0),
+                            );
+                        });
+                        ui.end_row();
+
+                        ui.label("Plan label");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.gen_params.plan_label)
+                                .desired_width(160.0)
+                                .char_limit(16),
+                        );
+                        ui.end_row();
+
+                        ui.label("REG translation (mm)").on_hover_text(
+                            "Translation written into the REG object's second matrix",
+                        );
+                        ui.horizontal(|ui| {
+                            for v in &mut self.gen_params.reg_shift {
+                                ui.add(
+                                    egui::DragValue::new(v).speed(0.5).range(-100.0..=100.0),
+                                );
+                            }
+                        });
+                        ui.end_row();
+                    });
+                ui.checkbox(
+                    &mut self.gen_params.extras,
+                    "Also write DX, RTIMAGE, REG and RTRECORD objects",
+                );
+                ui.checkbox(&mut self.gen_load_after, "Load the study into slot A when done");
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if running {
+                        ui.spinner();
+                        if let Some(job) = &self.gen_job {
+                            ui.label(job.progress.get());
+                        }
+                    } else {
+                        if ui
+                            .add(egui::Button::new("⚙ Generate"))
+                            .on_hover_text("Existing files with the same names are overwritten")
+                            .clicked()
+                        {
+                            do_generate = true;
+                        }
+                        if ui.button("Defaults").clicked() {
+                            reset_params = true;
+                        }
+                    }
+                });
+                if let Some(msg) = &self.gen_result {
+                    ui.add_space(4.0);
+                    ui.label(msg);
+                }
+            });
+
+        self.gen_open = open;
+        if browse {
+            if let Some(dir) = Self::pick_folder("Select an output folder for the test data") {
+                self.gen_dir = dir.display().to_string();
+            }
+        }
+        if reset_dir {
+            self.gen_dir = gen_test_data::default_output_dir().display().to_string();
+        }
+        if reset_params {
+            self.gen_params = GenParams::default();
+        }
+        if do_generate {
+            self.start_generate();
         }
     }
 }

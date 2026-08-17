@@ -3,21 +3,23 @@
 //! export as DICOM → reload with the normal loader → verify again.
 
 use rust_dicom_viewer::dicom_export;
+use rust_dicom_viewer::gen_test_data::{self, GenParams};
 use rust_dicom_viewer::geometry::Vec3;
 use rust_dicom_viewer::loader::{self, Progress};
 use rust_dicom_viewer::simulate::{generate_transformed_study, SimParams, SimTransform};
 
-fn test_data_dir() -> Option<std::path::PathBuf> {
-    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test_data");
-    if p.join("RS_synth.dcm").exists() { Some(p) } else { None }
+/// Source study for this test, written by the built-in generator.
+fn test_data_dir() -> std::path::PathBuf {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test_data_sim");
+    let _ = std::fs::remove_dir_all(&dir);
+    gen_test_data::generate(&dir, &GenParams::default(), &Progress::default())
+        .expect("test data generation succeeds");
+    dir
 }
 
 #[test]
 fn simulate_and_export_roundtrip() {
-    let Some(dir) = test_data_dir() else {
-        eprintln!("test_data/ not found — run tools/generate_test_data.py first; skipping");
-        return;
-    };
+    let dir = test_data_dir();
     let progress = Progress::default();
     let src = loader::load_directory(&dir, &progress).expect("source study loads");
 
@@ -115,4 +117,5 @@ fn simulate_and_export_roundtrip() {
         "round-trip OK: {n} files, HU {hu_re:.1}, dose {d_re:.2} Gy at mapped target"
     );
     let _ = std::fs::remove_dir_all(&out);
+    let _ = std::fs::remove_dir_all(&dir);
 }
