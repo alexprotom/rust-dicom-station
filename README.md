@@ -11,9 +11,25 @@ Rust — aligns the two datasets with a fusion overlay.
 
 ![screenshot](docs/screenshot.png)
 
+*Single dataset: a lung 4DCT phase with its RT Structure Set (lungs, heart,
+tumor, cord, markers). The crosshair sits in the tumor; the axial view draws
+the native RTSTRUCT contours, sagittal/coronal show reconstructed
+cross-sections of the same ROIs.*
+
 ![comparison mode](docs/screenshot_comparison.png)
 
+*Comparison mode: two opposite breathing phases of the same 4DCT
+(dataset A = phase 0 %, dataset B = phase 50 %), each with its own
+phase-specific structure set. The linked crosshair pins all six views to the
+same patient-space point inside the tumor, so the respiratory shift of the
+diaphragm and tumor is read directly by comparing the rows.*
+
 ![registration](docs/screenshot_registration.png)
+
+*Deformable registration B ▶ A on the two phases: the sidebar reports the
+recovered transform and metric improvement, and the top row now shows the
+magenta/green fusion — aligned anatomy reads gray, residual mismatch shows
+as color fringes.*
 
 ## Features
 
@@ -80,6 +96,19 @@ for A and B side by side. Dataset B can be closed again from the File menu,
 and comparison mode can be switched on/off at any time without unloading
 anything.
 
+A concrete example, shown in the screenshot above with the bundled patient
+data: load `example_data/` and both 4DCT phases appear as two series of one
+study. Right-click *CT 4DCT_phase_050* ▶ *Copy series to dataset B* — the
+phase moves into the lower row together with its own phase-specific
+RTSTRUCT (the reference chain picks the correct one automatically), and
+comparison mode switches on. Click the tumor in any view: because the
+crosshairs are linked through patient coordinates, all six panels jump to
+that point, and the differences between the phases — diaphragm position,
+tumor displacement, chest-wall shape — are read directly by comparing the
+two rows slice by slice. The two phases share one frame of reference, so
+before any registration this is a pure anatomical comparison of the same
+coordinates at two moments of the breathing cycle.
+
 **Image registration (rigid & non-rigid).** With two datasets loaded, the
 *Registration* menu (or the sidebar section) registers one dataset onto the
 other — the direction is selectable (**B ▶ A** or **A ▶ B**; the second
@@ -110,10 +139,24 @@ translation/rotation, and enables a **magenta/green fusion overlay** on the
 fixed study (fixed image in magenta, the transformed moving image in green —
 aligned anatomy reads gray) with a blend slider. The cross-study crosshair
 link maps through the recovered transform (inverse included), so clicking a
-point in either study lands on the same anatomy in the other. Iterations, samples and grid spacing are adjustable in the
-sidebar. Accuracy is verified in `tests/registration.rs` against analytically
-known transforms: sub-millimeter recovery for both a rigid rotation +
-translation and a 7 mm Gaussian-bump deformation.
+point in either study lands on the same anatomy in the other. Iterations,
+samples and grid spacing are adjustable in the sidebar.
+
+On the bundled patient data (registration screenshot above) the workflow
+is: two breathing phases loaded as datasets A and B, direction left at
+**B ▶ A**, one click on *▶ Deformable*. On this 512 × 512 × 133 CT the
+whole run — rigid pre-alignment plus three B-spline resolution levels,
+1800 iterations total — takes about 20 s on a desktop CPU and drives the
+mean-squared HU difference from ≈ 9700 down to ≈ 1800. The recovered rigid
+part is sub-millimeter (the phases share one frame of reference, so almost
+all real motion is breathing deformation, which the B-spline absorbs), and
+the fusion overlay turns mostly gray: the remaining magenta/green fringes
+at the diaphragm and chest wall mark exactly the residual respiratory
+motion the 32 mm grid cannot fully model — tightening the grid spacing
+refines it further at the cost of runtime. Accuracy is verified in
+`tests/registration.rs` against analytically known transforms:
+sub-millimeter recovery for both a rigid rotation + translation and a 7 mm
+Gaussian-bump deformation.
 
 **Planar images (DX / CR / RTIMAGE).** Digital radiographs and RT images
 (DRRs, portal / setup images) found in the study folder are listed in the
@@ -197,8 +240,12 @@ reopening the window is instant.
 Each viewport also carries two corner buttons: **⟲** resets that view's zoom,
 pan **and slice** (back to the volume's central slice), and **⛶ / ❐**
 maximizes the view to fill the whole window and restores the multi-view
-layout again. The **⌖** toggle in the toolbar shows/hides the slice
-intersection lines (crosshair) in all views.
+layout again. The toolbar holds the **3D A / 3D B** buttons, the **⌖**
+toggle and a global **⟲** that resets every view of both datasets at once.
+**⌖** shows/hides the slice intersection lines (crosshair) — and while the
+crosshair is hidden, left-click navigation is disabled entirely: clicking a
+view no longer moves the other views' slices, and slices change only by
+scrolling each view individually.
 
 Common CT window presets (brain, subdural, stroke, head/neck soft tissue,
 temporal bone, lungs, mediastinum, abdomen, liver, spine, bone, CT angio,
@@ -273,7 +320,11 @@ That is a ready-made comparison-mode and registration test case with real
 respiratory motion: the tumor and the markers move visibly between the two
 phases, and *Registration ▶ Deformable* has something anatomically real to
 recover — unlike the synthetic phantom below, where the ground truth is known
-but the deformation is analytic.
+but the deformation is analytic. All three screenshots at the top of this
+README are made from this dataset. Equivalently, load the whole
+`example_data/` folder as dataset A (both phases appear as two series of one
+study) and right-click one phase ▶ *Copy series to dataset B* — same result
+without a second command-line argument.
 
 ### Source and citation
 

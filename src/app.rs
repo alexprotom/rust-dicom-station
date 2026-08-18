@@ -862,11 +862,21 @@ impl ViewerApp {
         self.gen_job = Some(GenJob { progress, rx });
     }
 
+    /// Reset zoom, pan and slice (back to the volume center) of every view.
     fn reset_all_views(&mut self) {
         for s in &mut self.slots {
+            let dims = s.study.as_ref().map(|st| st.volume.dims);
             for v in &mut s.views {
                 v.zoom = 0.0;
                 v.pan = Vec2::ZERO;
+                if let Some(dims) = dims {
+                    v.slice = match v.plane {
+                        ViewPlane::Axial => dims[2] / 2,
+                        ViewPlane::Sagittal => dims[0] / 2,
+                        ViewPlane::Coronal => dims[1] / 2,
+                    };
+                    v.invalidate();
+                }
             }
         }
     }
@@ -1686,15 +1696,6 @@ impl ViewerApp {
                     }
 
                     ui.separator();
-                    // Slice-intersection (crosshair) toggle.
-                    if ui
-                        .selectable_label(self.show_crosshair, "⌖")
-                        .on_hover_text("Show / hide the slice intersection (crosshair)")
-                        .clicked()
-                    {
-                        self.show_crosshair = !self.show_crosshair;
-                    }
-
                     // 3D structure rendering windows.
                     for slot in 0..2 {
                         let has_structs = self.slots[slot]
@@ -1718,6 +1719,29 @@ impl ViewerApp {
                         {
                             self.open_d3_window(slot);
                         }
+                    }
+
+                    // Slice-intersection (crosshair) toggle. With the
+                    // crosshair hidden, left-click navigation is disabled.
+                    if ui
+                        .selectable_label(self.show_crosshair, "⌖")
+                        .on_hover_text(
+                            "Show / hide the slice intersection (crosshair).\n\
+                             Hidden: left click does not navigate — slices change \
+                             only by scrolling each view",
+                        )
+                        .clicked()
+                    {
+                        self.show_crosshair = !self.show_crosshair;
+                    }
+
+                    // Reset every view of both datasets.
+                    if ui
+                        .button("⟲")
+                        .on_hover_text("Reset all views (zoom, pan and slice)")
+                        .clicked()
+                    {
+                        self.reset_all_views();
                     }
                 }
 
@@ -2003,28 +2027,8 @@ impl ViewerApp {
     }
 
     fn study_section(&mut self, ui: &mut egui::Ui, slot: usize) {
-        let header = {
-            let study = self.slots[slot].study.as_ref().unwrap();
-            // Distinct patients in this dataset.
-            let mut pats: Vec<&str> = Vec::new();
-            for s in &study.series {
-                let k = s.patient_key();
-                if !pats.contains(&k) {
-                    pats.push(k);
-                }
-            }
-            if pats.len() > 1 {
-                format!("Dataset {} — {} patients", SLOT_NAMES[slot], pats.len())
-            } else {
-                let m = &study.meta;
-                format!(
-                    "Dataset {} — {} {}",
-                    SLOT_NAMES[slot],
-                    m.patient_name.replace('^', " "),
-                    m.study_date
-                )
-            }
-        };
+        // Plain header — the patient(s) always appear as tree nodes below.
+        let header = format!("Dataset {}", SLOT_NAMES[slot]);
         let ch = egui::CollapsingHeader::new(egui::RichText::new(header).strong())
             .id_salt(("study_hdr", slot))
             .default_open(true)
@@ -3477,7 +3481,12 @@ impl ViewerApp {
             }
         }
 
-        if (resp.dragged_by(egui::PointerButton::Primary) || resp.clicked()) && !over_buttons {
+        // Left-click crosshair navigation only while the crosshair is shown;
+        // with ⌖ off, slices change only by scrolling the hovered view.
+        if self.show_crosshair
+            && (resp.dragged_by(egui::PointerButton::Primary) || resp.clicked())
+            && !over_buttons
+        {
             if let Some(mp) = resp.interact_pointer_pos() {
                 let px = screen_to_px(mp);
                 let vxl = vol.plane_pixel_to_voxel(plane, view.slice, px[0] as f64, px[1] as f64);
