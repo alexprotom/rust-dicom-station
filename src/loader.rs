@@ -78,11 +78,27 @@ pub struct SeriesInfo {
     pub uid: String,
     pub modality: String,
     pub description: String,
+    /// Patient this series belongs to (for the patient ▶ study ▶ series tree).
+    pub patient_id: String,
+    pub patient_name: String,
     /// Study this series belongs to (for the study/series tree).
     pub study_uid: String,
     pub study_date: String,
     pub study_description: String,
     pub files: Vec<PathBuf>,
+}
+
+impl SeriesInfo {
+    /// Grouping key for the patient level of the data tree.
+    pub fn patient_key(&self) -> &str {
+        if !self.patient_id.is_empty() {
+            &self.patient_id
+        } else if !self.patient_name.is_empty() {
+            &self.patient_name
+        } else {
+            "?"
+        }
+    }
 }
 
 #[derive(Default, Clone)]
@@ -248,6 +264,8 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
                     uid: s.series_uid.clone(),
                     modality: s.modality.clone(),
                     description: s.series_desc.clone(),
+                    patient_id: s.meta.patient_id.clone(),
+                    patient_name: s.meta.patient_name.clone(),
                     study_uid: s.study_uid.clone(),
                     study_date: s.meta.study_date.clone(),
                     study_description: s.meta.study_description.clone(),
@@ -565,6 +583,83 @@ pub fn load_series_volume(
         .unwrap_or_else(|| default_window_for(&series.modality, min_v, max_v));
 
     Ok((volume, default_window, warnings))
+}
+
+/// Merge `src` into `dest` (used by *File ▶ Add folder* and the tree
+/// copy/move actions). Series and RT objects already present in `dest`
+/// (same UID) are skipped; the displayed volume and all active selections
+/// of `dest` are left untouched. Returns human-readable notes about
+/// anything that was skipped.
+pub fn merge_study(dest: &mut LoadedStudy, src: LoadedStudy) -> Vec<String> {
+    let mut notes = Vec::new();
+
+    let mut skipped = 0usize;
+    for s in src.series {
+        if dest.series.iter().any(|d| d.uid == s.uid) {
+            skipped += 1;
+        } else {
+            dest.series.push(s);
+        }
+    }
+    if skipped > 0 {
+        notes.push(format!("{skipped} series were already present and were not added again"));
+    }
+
+    for ss in src.structure_sets {
+        let dup = dest.structure_sets.iter().any(|d| {
+            (!ss.sop_instance_uid.is_empty() && d.sop_instance_uid == ss.sop_instance_uid)
+                || (ss.sop_instance_uid.is_empty()
+                    && !ss.file_name.is_empty()
+                    && d.file_name == ss.file_name)
+        });
+        if !dup {
+            dest.structure_sets.push(ss);
+        }
+    }
+    for p in src.plans {
+        let dup = !p.sop_instance_uid.is_empty()
+            && dest.plans.iter().any(|d| d.sop_instance_uid == p.sop_instance_uid);
+        if !dup {
+            dest.plans.push(p);
+        }
+    }
+    for d in src.doses {
+        let dup = dest.doses.iter().any(|e| {
+            e.dims == d.dims
+                && e.referenced_plan_uid == d.referenced_plan_uid
+                && e.study_uid == d.study_uid
+                && e.label == d.label
+                && e.max_dose == d.max_dose
+        });
+        if !dup {
+            dest.doses.push(d);
+        }
+    }
+    for img in src.planar_images {
+        let dup = dest
+            .planar_images
+            .iter()
+            .any(|e| e.label == img.label && e.rows == img.rows && e.cols == img.cols);
+        if !dup {
+            dest.planar_images.push(img);
+        }
+    }
+    for r in src.registrations {
+        if !dest.registrations.iter().any(|e| e.label == r.label) {
+            dest.registrations.push(r);
+        }
+    }
+    for r in src.treat_records {
+        if !dest
+            .treat_records
+            .iter()
+            .any(|e| e.label == r.label && e.date == r.date)
+        {
+            dest.treat_records.push(r);
+        }
+    }
+    dest.warnings.extend(src.warnings);
+    notes
 }
 
 fn default_window_for(modality: &str, min_v: i16, max_v: i16) -> (f32, f32) {

@@ -1,0 +1,337 @@
+//! 3D surface meshing of RT structure sets for the 3D view windows.
+//!
+//! Pipeline per ROI (pure Rust, background thread):
+//! 1. rasterize the planar contours into a patient-axis-aligned binary mask
+//!    (even–odd scanline fill, contours extruded to the nearest mask layers);
+//! 2. extract the boundary surface with the **surface nets** algorithm
+//!    (one vertex per mixed cell, quads across sign-changing grid edges);
+//! 3. Laplacian smoothing (3 iterations) to remove voxel staircase artifacts;
+//! 4. area-weighted per-vertex normals for Gouraud shading.
+//!
+//! The result is comparable to the segmentation surfaces shown by tools like
+//! 3D Slicer (which use flying edges + windowed-sinc smoothing).
+
+use rayon::prelude::*;
+
+use crate::loader::Progress;
+use crate::rtstruct::{Roi, StructureSet};
+
+pub struct RoiMesh {
+    /// Index of the ROI within the structure set (drives visibility).
+    pub roi_index: usize,
+    pub name: String,
+    pub color: [u8; 3],
+    /// EXTERNAL / body contour — drawn translucent so interior structures
+    /// stay visible (as in 3D Slicer).
+    pub external: bool,
+    /// Vertex positions in patient coordinates (mm).
+    pub verts: Vec<[f32; 3]>,
+    /// Unit vertex normals.
+    pub normals: Vec<[f32; 3]>,
+    /// Triangle indices.
+    pub tris: Vec<[u32; 3]>,
+}
+
+/// Build surface meshes for every ROI of a structure set (parallel).
+pub fn build_meshes(ss: &StructureSet, progress: &Progress) -> Vec<RoiMesh> {
+    let n = ss.rois.len();
+    let done = std::sync::atomic::AtomicUsize::new(0);
+    let mut meshes: Vec<RoiMesh> = ss
+        .rois
+        .par_iter()
+        .enumerate()
+        .filter_map(|(i, roi)| {
+            let m = build_roi_mesh(i, roi);
+            let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            progress.set(format!("Meshing structures… {d}/{n}"));
+            m
+        })
+        .collect();
+    // Large, opaque structures first is a nicer default draw order.
+    meshes.sort_by(|a, b| b.tris.len().cmp(&a.tris.len()));
+    progress.set("done");
+    meshes
+}
+
+fn build_roi_mesh(roi_index: usize, roi: &Roi) -> Option<RoiMesh> {
+    // Collect usable planar contours.
+    let contours: Vec<&crate::rtstruct::Contour> = roi
+        .contours
+        .iter()
+        .filter(|c| c.geometric_type != "POINT" && c.points.len() >= 3)
+        .collect();
+    if contours.is_empty() {
+        return None;
+    }
+
+    // Patient-space bounding box.
+    let (mut min, mut max) = ([f64::MAX; 3], [f64::MIN; 3]);
+    for c in &contours {
+        for p in &c.points {
+            for (a, v) in [(0, p.x), (1, p.y), (2, p.z)] {
+                min[a] = min[a].min(v);
+                max[a] = max[a].max(v);
+            }
+        }
+    }
+    let extent = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+    let max_extent = extent.iter().cloned().fold(0.0f64, f64::max).max(1.0);
+    // Grid resolution: fine enough for small organs, capped for large ones.
+    let h = (max_extent / 110.0).clamp(0.8, 4.0);
+    let margin = 2.0 * h;
+    let origin = [min[0] - margin, min[1] - margin, min[2] - margin];
+    let dims = [
+        ((extent[0] + 2.0 * margin) / h).ceil() as usize + 2,
+        ((extent[1] + 2.0 * margin) / h).ceil() as usize + 2,
+        ((extent[2] + 2.0 * margin) / h).ceil() as usize + 2,
+    ];
+    let (gx, gy, gz) = (dims[0], dims[1], dims[2]);
+    if gx < 3 || gy < 3 || gz < 3 {
+        return None;
+    }
+
+    // ---- 1. binary mask -----------------------------------------------
+    // Group contours by their plane z.
+    let mut groups: Vec<(f64, Vec<usize>)> = Vec::new();
+    for (ci, c) in contours.iter().enumerate() {
+        let z = c.points.iter().map(|p| p.z).sum::<f64>() / c.points.len() as f64;
+        match groups.iter_mut().find(|(gzv, _)| (*gzv - z).abs() < 0.1) {
+            Some((_, v)) => v.push(ci),
+            None => groups.push((z, vec![ci])),
+        }
+    }
+    groups.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    // Half-slab thickness: half the typical contour spacing (≥ half a cell).
+    let dz_typ = if groups.len() > 1 {
+        let mut ds: Vec<f64> = groups.windows(2).map(|w| w[1].0 - w[0].0).collect();
+        ds.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        ds[ds.len() / 2]
+    } else {
+        2.0 * h
+    };
+    let half_slab = (dz_typ * 0.5).max(h * 0.5) + 1e-6;
+
+    let mut inside = vec![false; gx * gy * gz];
+    for k in 0..gz {
+        let z = origin[2] + k as f64 * h;
+        // Nearest contour plane.
+        let Some((gzv, idxs)) = groups
+            .iter()
+            .min_by(|a, b| {
+                (a.0 - z)
+                    .abs()
+                    .partial_cmp(&(b.0 - z).abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+        else {
+            continue;
+        };
+        if (gzv - z).abs() > half_slab {
+            continue;
+        }
+        // Even–odd scanline fill across all contours of this plane.
+        for j in 0..gy {
+            let y = origin[1] + j as f64 * h;
+            let mut xs: Vec<f64> = Vec::new();
+            for &ci in idxs {
+                let pts = &contours[ci].points;
+                let n = pts.len();
+                for e in 0..n {
+                    let (p, q) = (pts[e], pts[(e + 1) % n]);
+                    if (p.y - y) * (q.y - y) <= 0.0 && p.y != q.y {
+                        xs.push(p.x + (y - p.y) / (q.y - p.y) * (q.x - p.x));
+                    }
+                }
+            }
+            if xs.len() < 2 {
+                continue;
+            }
+            xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let row = k * gx * gy + j * gx;
+            for pair in xs.chunks_exact(2) {
+                let i0 = ((pair[0] - origin[0]) / h).ceil().max(0.0) as usize;
+                let i1_f = (pair[1] - origin[0]) / h;
+                if i1_f < 0.0 {
+                    continue;
+                }
+                let i1 = (i1_f.floor() as usize).min(gx - 1);
+                for i in i0..=i1 {
+                    inside[row + i] = true;
+                }
+            }
+        }
+    }
+
+    // ---- 2. surface nets -------------------------------------------------
+    let (cx, cy, cz) = (gx - 1, gy - 1, gz - 1);
+    let cell_at = |i: usize, j: usize, k: usize| k * cx * cy + j * cx + i;
+    let corner = |i: usize, j: usize, k: usize| inside[k * gx * gy + j * gx + i];
+
+    let mut cell_vert = vec![-1i64; cx * cy * cz];
+    let mut verts: Vec<[f32; 3]> = Vec::new();
+    // Cell-local corner offsets and the 12 cell edges (corner index pairs).
+    const CORNERS: [[usize; 3]; 8] = [
+        [0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0],
+        [0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1],
+    ];
+    const EDGES: [[usize; 2]; 12] = [
+        [0, 1], [2, 3], [4, 5], [6, 7],
+        [0, 2], [1, 3], [4, 6], [5, 7],
+        [0, 4], [1, 5], [2, 6], [3, 7],
+    ];
+    for k in 0..cz {
+        for j in 0..cy {
+            for i in 0..cx {
+                let mut vals = [false; 8];
+                for (ci, o) in CORNERS.iter().enumerate() {
+                    vals[ci] = corner(i + o[0], j + o[1], k + o[2]);
+                }
+                if vals.iter().all(|&v| v) || vals.iter().all(|&v| !v) {
+                    continue;
+                }
+                // Vertex = mean of crossing-edge midpoints.
+                let mut acc = [0.0f64; 3];
+                let mut cnt = 0.0;
+                for e in &EDGES {
+                    if vals[e[0]] != vals[e[1]] {
+                        let a = CORNERS[e[0]];
+                        let b = CORNERS[e[1]];
+                        for ax in 0..3 {
+                            acc[ax] += (a[ax] as f64 + b[ax] as f64) * 0.5;
+                        }
+                        cnt += 1.0;
+                    }
+                }
+                let p = [
+                    (origin[0] + (i as f64 + acc[0] / cnt) * h) as f32,
+                    (origin[1] + (j as f64 + acc[1] / cnt) * h) as f32,
+                    (origin[2] + (k as f64 + acc[2] / cnt) * h) as f32,
+                ];
+                cell_vert[cell_at(i, j, k)] = verts.len() as i64;
+                verts.push(p);
+            }
+        }
+    }
+    if verts.is_empty() {
+        return None;
+    }
+
+    // Quads across sign-changing grid edges (two-sided shading downstream,
+    // so winding does not need to be globally consistent).
+    let mut tris: Vec<[u32; 3]> = Vec::new();
+    let mut quad = |c: [i64; 4]| {
+        if c.iter().all(|&v| v >= 0) {
+            let v = [c[0] as u32, c[1] as u32, c[2] as u32, c[3] as u32];
+            tris.push([v[0], v[1], v[2]]);
+            tris.push([v[0], v[2], v[3]]);
+        }
+    };
+    for k in 1..gz - 1 {
+        for j in 1..gy - 1 {
+            for i in 1..gx - 1 {
+                // x-edge
+                if i + 1 < gx && corner(i, j, k) != corner(i + 1, j, k) {
+                    quad([
+                        cell_vert[cell_at(i, j - 1, k - 1)],
+                        cell_vert[cell_at(i, j, k - 1)],
+                        cell_vert[cell_at(i, j, k)],
+                        cell_vert[cell_at(i, j - 1, k)],
+                    ]);
+                }
+                // y-edge
+                if j + 1 < gy && corner(i, j, k) != corner(i, j + 1, k) {
+                    quad([
+                        cell_vert[cell_at(i - 1, j, k - 1)],
+                        cell_vert[cell_at(i, j, k - 1)],
+                        cell_vert[cell_at(i, j, k)],
+                        cell_vert[cell_at(i - 1, j, k)],
+                    ]);
+                }
+                // z-edge
+                if k + 1 < gz && corner(i, j, k) != corner(i, j, k + 1) {
+                    quad([
+                        cell_vert[cell_at(i - 1, j - 1, k)],
+                        cell_vert[cell_at(i, j - 1, k)],
+                        cell_vert[cell_at(i, j, k)],
+                        cell_vert[cell_at(i - 1, j, k)],
+                    ]);
+                }
+            }
+        }
+    }
+    if tris.is_empty() {
+        return None;
+    }
+
+    // ---- 3. Laplacian smoothing ----------------------------------------
+    let mut adj: Vec<Vec<u32>> = vec![Vec::new(); verts.len()];
+    for t in &tris {
+        for e in [[t[0], t[1]], [t[1], t[2]], [t[2], t[0]]] {
+            if !adj[e[0] as usize].contains(&e[1]) {
+                adj[e[0] as usize].push(e[1]);
+            }
+            if !adj[e[1] as usize].contains(&e[0]) {
+                adj[e[1] as usize].push(e[0]);
+            }
+        }
+    }
+    for _ in 0..3 {
+        let prev = verts.clone();
+        for (vi, v) in verts.iter_mut().enumerate() {
+            let nb = &adj[vi];
+            if nb.is_empty() {
+                continue;
+            }
+            let mut m = [0.0f32; 3];
+            for &o in nb {
+                for ax in 0..3 {
+                    m[ax] += prev[o as usize][ax];
+                }
+            }
+            for ax in 0..3 {
+                let mean = m[ax] / nb.len() as f32;
+                v[ax] = prev[vi][ax] + 0.5 * (mean - prev[vi][ax]);
+            }
+        }
+    }
+
+    // ---- 4. per-vertex normals ------------------------------------------
+    let mut normals = vec![[0.0f32; 3]; verts.len()];
+    for t in &tris {
+        let a = verts[t[0] as usize];
+        let b = verts[t[1] as usize];
+        let c = verts[t[2] as usize];
+        let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let n = [
+            u[1] * w[2] - u[2] * w[1],
+            u[2] * w[0] - u[0] * w[2],
+            u[0] * w[1] - u[1] * w[0],
+        ];
+        for &vi in t {
+            for ax in 0..3 {
+                normals[vi as usize][ax] += n[ax];
+            }
+        }
+    }
+    for n in &mut normals {
+        let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-12);
+        for ax in 0..3 {
+            n[ax] /= l;
+        }
+    }
+
+    let lname = roi.name.to_lowercase();
+    Some(RoiMesh {
+        roi_index,
+        name: roi.name.clone(),
+        color: roi.color,
+        external: roi.roi_type == "EXTERNAL"
+            || lname.contains("body")
+            || lname.contains("external")
+            || lname.contains("outer"),
+        verts,
+        normals,
+        tris,
+    })
+}

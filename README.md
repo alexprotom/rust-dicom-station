@@ -4,10 +4,10 @@ A fast, robust DICOM / RT DICOM viewer written entirely in Rust. It loads a
 full radiotherapy study — image series (CT/MR/PT), RT Structure Set, RT Dose
 and RT Plan (photon and ion/proton) — and displays it in the classic
 three-view MPR layout: **axial, sagittal and coronal side by side** with
-linked crosshairs. A **comparison mode** stacks a second study below the
+linked crosshairs. A **comparison mode** stacks a second dataset below the
 first for six views total, and built-in **rigid and deformable (B-spline)
 image registration** — elastix-style algorithms implemented natively in
-Rust — aligns the two studies with a fusion overlay.
+Rust — aligns the two datasets with a fusion overlay.
 
 ![screenshot](docs/screenshot.png)
 
@@ -33,15 +33,31 @@ is loaded (e.g. one per 4DCT phase) and selectable in the sidebar; the set
 that references the active image series is chosen automatically and follows
 series switches.
 
-**Patient data tree & DICOM cross-references.** The sidebar shows the DICOM
-hierarchy: all image series of the patient are listed at once (grouped by
-study when several StudyInstanceUIDs are present), with the displayed series
-marked — clicking another series loads it. The standard reference chain is
-parsed and shown as links: each structure set displays the image series its
-contours were drawn on (RTReferencedSeriesSequence), each dose the plan it
-was computed for (ReferencedRTPlanSequence), and each plan the structure set
-it was created on (ReferencedStructureSetSequence). Exported studies keep
-this chain intact.
+**Datasets & the patient ▶ study ▶ series tree.** The two viewer slots are
+called **dataset A** and **dataset B** — each is a working set that can hold
+any number of patients, studies and series accumulated from any number of
+folders (*File ▶ Add DICOM folder to A/B…* merges a scanned folder into the
+slot without unloading what is already there; duplicates, by UID, are
+skipped and reported). The sidebar shows each dataset as a full DICOM
+hierarchy — patient (PatientName/PatientID) ▶ study (StudyInstanceUID, with
+date and description) ▶ image series — all visible at once, with the
+displayed series marked; clicking another series loads it. The standard
+reference chain is parsed and shown as links: each structure set displays
+the image series its contours were drawn on (RTReferencedSeriesSequence),
+each dose the plan it was computed for (ReferencedRTPlanSequence), and each
+plan the structure set it was created on (ReferencedStructureSetSequence).
+Exported datasets keep this chain intact.
+
+**Right-clicking** any level of the tree — patient, study or series — opens
+a context menu to **copy**, **move** or **remove** it. Copy/move transfer
+the selection into the other dataset (A ▶ B or B ▶ A), *merging* it with
+whatever is already loaded there and switching comparison mode on; move and
+remove then delete the selection from its source. A single series carries
+exactly its DICOM reference chain: the structure sets drawn on it, the
+plans made on those structure sets, and the doses computed for those plans
+— nothing else. Study and patient selections additionally take the RT
+objects filed under the same studies. Right-clicking a dataset header
+offers *Clear dataset*.
 
 **RTDOSE.** 16/32-bit dose grids with `DoseGridScaling`,
 `GridFrameOffsetVector` (uniform or not, ascending or descending), trilinear
@@ -50,23 +66,24 @@ lines at configurable percentages of a reference dose (prescription dose is
 picked up from the plan automatically). Multiple dose files (plan/beam doses)
 are selectable.
 
-**Comparison mode.** Load a second study (menu *File → Open comparison
-study (B)…* or *View → Comparison mode*, or pass two directories on the
-command line) and the window splits into two rows of three views — study A
-on top, study B below, six panels total. Each study keeps its own structures,
-dose and plan panels in the sidebar; window/level and dose display settings
-are shared so both CTs are windowed identically. The crosshair is linked
-between the studies through **patient coordinates** (toggleable via *View →
-Link crosshairs between studies*): clicking a point in one study moves the
-other study's crosshair and slices to the same anatomical position — the
-status bar then shows HU and dose readouts for A and B side by side. Study B
-can be closed again from the File menu, and comparison mode can be switched
-on/off at any time without unloading anything.
+**Comparison mode.** Load a second dataset (menu *File ▶ Add DICOM folder
+to B…* or *View ▶ Comparison mode*, or pass two directories on the command
+line) and the window splits into two rows of three views — dataset A on
+top, dataset B below, six panels total. Each dataset keeps its own
+structures, dose and plan panels in the sidebar; window/level and dose
+display settings are shared so both CTs are windowed identically. The
+crosshair is linked between the datasets through **patient coordinates**
+(toggleable via *View ▶ Link crosshairs between datasets*): clicking a
+point in one dataset moves the other dataset's crosshair and slices to the
+same anatomical position — the status bar then shows HU and dose readouts
+for A and B side by side. Dataset B can be closed again from the File menu,
+and comparison mode can be switched on/off at any time without unloading
+anything.
 
-**Image registration (rigid & non-rigid).** With two studies loaded, the
-*Registration* menu (or the sidebar section) registers one study onto the
+**Image registration (rigid & non-rigid).** With two datasets loaded, the
+*Registration* menu (or the sidebar section) registers one dataset onto the
 other — the direction is selectable (**B ▶ A** or **A ▶ B**; the second
-study named is the fixed image, and the fusion overlay is drawn on its
+dataset named is the fixed image, and the fusion overlay is drawn on its
 views). The engine follows the [elastix](https://elastix.dev) framework —
 [SuperElastix/elastix](https://github.com/SuperElastix/elastix) is a C++/ITK
 toolbox, so its core algorithms are **re-implemented natively in Rust** to
@@ -123,15 +140,15 @@ of specified vs delivered meterset with the percentage difference and the
 termination status (non-NORMAL terminations highlighted).
 
 **Transform simulator & DICOM export (registration QA).** The *Simulation*
-sidebar section applies an exactly-known transform to a loaded study — rigid
-motion (translation + Euler rotation about the volume center) plus an
+sidebar section applies an exactly-known transform to a loaded dataset —
+rigid motion (translation + Euler rotation about the volume center) plus an
 optional local Gaussian deformation (amplitude vector + σ, centered at the
-crosshair) — and generates the result into the other study slot: the CT is
+crosshair) — and generates the result into the other dataset slot: the CT is
 resampled through the inverse transform, and structure contours, dose grids
 and plan isocenters are carried along. The applied parameters stay displayed
 as the ground truth, so you can immediately run the built-in registration and
 compare the recovered transform against it (on the synthetic phantom the
-rigid recovery matches to sub-millimeter/sub-degree). Any loaded study —
+rigid recovery matches to sub-millimeter/sub-degree). Any loaded dataset —
 original or simulated — can be exported as a set of DICOM files (*Export
 A/B…*): one CT Image Storage file per slice plus RTSTRUCT, RTDOSE (16-bit
 with `DoseGridScaling`) and an RTPLAN skeleton (photon or ion), written with
@@ -155,6 +172,17 @@ prescription, fractionation, and a per-beam table with radiation type, scan
 mode, gantry/couch angles, energy range, meterset and control-point count.
 Beam isocenters are marked in all three views.
 
+**3D structure view.** The **3D A** / **3D B** toolbar buttons open a
+floating window with a Slicer-style 3D surface rendering of the active
+structure set. Surfaces are reconstructed from the RTSTRUCT contours on a
+background thread (scanline rasterization into a binary volume, a
+surface-nets mesher, Laplacian smoothing, area-weighted vertex normals —
+`rayon`-parallel per ROI) and drawn in the ROI display colors with headlight
+shading; EXTERNAL/body ROIs are rendered translucent so the internal anatomy
+stays visible. Drag rotates, the wheel zooms, middle-drag pans, and a slider
+controls global opacity. The meshes are cached per structure set, so
+reopening the window is instant.
+
 **Interaction** (shown in the status bar):
 
 | Input | Action |
@@ -166,9 +194,11 @@ Beam isocenters are marked in all three views.
 | Right drag | Window/level (x = width, y = center) |
 | Double click | Reset zoom & pan |
 
-Each viewport also carries two corner buttons: **⟲** resets that view's zoom
-and pan, and **⛶ / ❐** maximizes the view to fill the whole window and
-restores the multi-view layout again.
+Each viewport also carries two corner buttons: **⟲** resets that view's zoom,
+pan **and slice** (back to the volume's central slice), and **⛶ / ❐**
+maximizes the view to fill the whole window and restores the multi-view
+layout again. The **⌖** toggle in the toolbar shows/hides the slice
+intersection lines (crosshair) in all views.
 
 Common CT window presets (brain, subdural, stroke, head/neck soft tissue,
 temporal bone, lungs, mediastinum, abdomen, liver, spine, bone, CT angio,
@@ -209,11 +239,11 @@ Run with optional directory arguments — one study, or two to start straight
 in comparison mode:
 
 ```
-cargo run --release -- "D:\path\to\study_A"
-cargo run --release -- "D:\path\to\study_A" "D:\path\to\study_B"
+cargo run --release -- "D:\path\to\dataset_A"
+cargo run --release -- "D:\path\to\dataset_A" "D:\path\to\dataset_B"
 ```
 
-or start it empty and use *Open folder…* / the *File* menu. Windows, Linux
+or start it empty and use *Add DICOM folder…* / the *File* menu. Windows, Linux
 and macOS are supported; rendering uses `wgpu` (DX12/Vulkan/Metal, with
 fallbacks).
 
@@ -327,7 +357,7 @@ cargo run --release -- test_data test_data_shifted
 
 Then *Registration ▶ Rigid* should recover the (12, −9, 0) mm shift to within
 a fraction of a millimeter, and *Registration ▶ Deformable* on the
-target-displaced study warps it back onto study A.
+target-displaced study warps it back onto dataset A.
 
 ## Tests
 
@@ -346,7 +376,8 @@ cargo test --release
 src/
   main.rs      entry point (eframe/wgpu window)
   app.rs       egui application: three-view layout, panels, interaction
-  loader.rs    directory scan, classification, parallel volume loading
+  loader.rs    directory scan, classification, parallel volume loading,
+               dataset merging (Add folder / tree copy-move)
   extras.rs    DX/CR/RTIMAGE planar images, REG spatial registrations,
                RTRECORD treatment records
   registration.rs  elastix-style rigid + B-spline registration (ASGD,
@@ -358,6 +389,8 @@ src/
   settings.rs  persisted preferences (theme) in a plain text file next to
                the executable
   volume.rs    3D volume, patient-space geometry, orthogonal slice extraction
+  mesh3d.rs    contour ▶ surface reconstruction (scanline fill, surface nets,
+               Laplacian smoothing) for the 3D structure windows
   rtstruct.rs  RT Structure Set parsing
   rtdose.rs    RT Dose parsing + trilinear patient-space sampling
   rtplan.rs    RT Plan / RT Ion Plan parsing

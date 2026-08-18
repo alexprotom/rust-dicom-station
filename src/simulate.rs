@@ -300,6 +300,8 @@ pub fn generate_transformed_study(
                 .map(|s| s.modality.clone())
                 .unwrap_or_else(|| "CT".into()),
             description: format!("Simulated [{}]", params.describe()),
+            patient_id: src.meta.patient_id.clone(),
+            patient_name: src.meta.patient_name.clone(),
             study_uid: src
                 .series
                 .first()
