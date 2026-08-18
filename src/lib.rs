@@ -1,6 +1,7 @@
 //! rust-dicom-viewer library: DICOM / RT DICOM loading, geometry and
 //! rendering primitives, plus the egui application.
 
+pub mod anonymize;
 pub mod app;
 pub mod dicom_export;
 pub mod extras;

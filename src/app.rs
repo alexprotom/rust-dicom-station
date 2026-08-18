@@ -12,6 +12,7 @@ use egui::{
 
 use rayon::prelude::*;
 
+use crate::anonymize;
 use crate::dicom_export;
 use crate::extras;
 use crate::gen_test_data::{self, GenParams};
@@ -356,6 +357,18 @@ struct GenJob {
     rx: mpsc::Receiver<anyhow::Result<(usize, PathBuf)>>,
 }
 
+/// Background folder scan of the anonymizer tool.
+struct AnonScanJob {
+    progress: Arc<Progress>,
+    rx: mpsc::Receiver<anyhow::Result<anonymize::ScanResult>>,
+}
+
+/// Background rewrite pass of the anonymizer tool.
+struct AnonApplyJob {
+    progress: Arc<Progress>,
+    rx: mpsc::Receiver<anyhow::Result<usize>>,
+}
+
 /// A completed registration plus the direction it was run in.
 struct ActiveRegistration {
     result: RegistrationResult,
@@ -414,6 +427,22 @@ pub struct ViewerApp {
     gen_result: Option<String>,
     /// Load the generated study into slot A once it has been written.
     gen_load_after: bool,
+
+    // Tools ▶ Anonymize DICOM folder.
+    anon_open: bool,
+    /// Input folder as edited in the dialog.
+    anon_dir: String,
+    /// Output folder (ignored when `anon_in_place`).
+    anon_out: String,
+    anon_in_place: bool,
+    anon_remove_private: bool,
+    anon_remap_uids: bool,
+    anon_mark: bool,
+    /// Last scan result; findings are edited in place by the table.
+    anon_scan: Option<anonymize::ScanResult>,
+    anon_scan_job: Option<AnonScanJob>,
+    anon_apply_job: Option<AnonApplyJob>,
+    anon_result: Option<String>,
 
     /// Open floating viewers for planar images.
     planar_windows: Vec<PlanarWindow>,
@@ -486,6 +515,17 @@ impl ViewerApp {
             gen_job: None,
             gen_result: None,
             gen_load_after: true,
+            anon_open: false,
+            anon_dir: String::new(),
+            anon_out: String::new(),
+            anon_in_place: false,
+            anon_remove_private: true,
+            anon_remap_uids: true,
+            anon_mark: true,
+            anon_scan: None,
+            anon_scan_job: None,
+            anon_apply_job: None,
+            anon_result: None,
             planar_windows: Vec::new(),
             d3_windows: Vec::new(),
             tree_action: None,
@@ -1602,6 +1642,20 @@ impl ViewerApp {
                     }
                     if !both {
                         ui.weak("Load two datasets (comparison mode) first");
+                    }
+                });
+                ui.menu_button("Tools", |ui| {
+                    if ui
+                        .button("🔏 Anonymize DICOM folder…")
+                        .on_hover_text(
+                            "Scan a folder, review every identifying tag with its current \
+                             and proposed values, then rewrite the files (in place or into \
+                             a new folder) with consistently regenerated UIDs",
+                        )
+                        .clicked()
+                    {
+                        self.anon_open = true;
+                        ui.close();
                     }
                 });
                 ui.menu_button("Help", |ui| {
@@ -4144,6 +4198,7 @@ impl ViewerApp {
 
     fn modals(&mut self, ctx: &egui::Context) {
         self.generator_window(ctx);
+        self.anonymize_window(ctx);
         if let Some(err) = self.error.clone() {
             egui::Window::new("Error")
                 .collapsible(false)
@@ -4314,6 +4369,351 @@ impl ViewerApp {
         }
         if do_generate {
             self.start_generate();
+        }
+    }
+
+    // -- Tools ▶ Anonymize DICOM folder ------------------------------------
+
+    fn anon_start_scan(&mut self) {
+        let dir = PathBuf::from(self.anon_dir.trim());
+        if dir.as_os_str().is_empty() {
+            self.error = Some("Choose a folder with DICOM data first".into());
+            return;
+        }
+        let progress = Arc::new(Progress::default());
+        progress.set("starting…");
+        let p2 = progress.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(anonymize::scan(&dir, &p2));
+        });
+        self.anon_scan = None;
+        self.anon_result = None;
+        self.anon_scan_job = Some(AnonScanJob { progress, rx });
+    }
+
+    fn anon_start_apply(&mut self) {
+        let Some(scan) = &self.anon_scan else { return };
+        let params = anonymize::ApplyParams {
+            replacements: scan
+                .findings
+                .iter()
+                .filter(|f| f.enabled)
+                .map(|f| (f.tag, f.vr, f.replacement.trim().to_string()))
+                .collect(),
+            remove_private: self.anon_remove_private,
+            remap_uids: self.anon_remap_uids,
+            mark_deidentified: self.anon_mark,
+            out_dir: if self.anon_in_place {
+                None
+            } else {
+                let out = PathBuf::from(self.anon_out.trim());
+                if out.as_os_str().is_empty() {
+                    self.error = Some(
+                        "Choose an output folder, or tick “overwrite in place”".into(),
+                    );
+                    return;
+                }
+                Some(out)
+            },
+        };
+        let files = scan.files.clone();
+        let root = scan.root.clone();
+        let progress = Arc::new(Progress::default());
+        progress.set("starting…");
+        let p2 = progress.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(anonymize::apply(&files, &root, &params, &p2));
+        });
+        self.anon_result = None;
+        self.anon_apply_job = Some(AnonApplyJob { progress, rx });
+    }
+
+    /// The anonymizer tool window: pick a folder, scan it, review every
+    /// identifying tag (current values, proposed replacement — editable),
+    /// then rewrite the files.
+    fn anonymize_window(&mut self, ctx: &egui::Context) {
+        if !self.anon_open {
+            return;
+        }
+        // Poll background jobs.
+        if let Some(job) = &self.anon_scan_job {
+            match job.rx.try_recv() {
+                Ok(Ok(mut scan)) => {
+                    if self.anon_out.trim().is_empty() {
+                        self.anon_out = format!("{}_anon", scan.root.display());
+                    }
+                    scan.warnings.truncate(8);
+                    self.anon_scan = Some(scan);
+                    self.anon_scan_job = None;
+                }
+                Ok(Err(e)) => {
+                    self.error = Some(format!("{e:#}"));
+                    self.anon_scan_job = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.error = Some("Scan thread terminated unexpectedly".into());
+                    self.anon_scan_job = None;
+                }
+            }
+        }
+        if let Some(job) = &self.anon_apply_job {
+            match job.rx.try_recv() {
+                Ok(Ok(n)) => {
+                    let dest = if self.anon_in_place {
+                        "in place".to_string()
+                    } else {
+                        format!("into {}", self.anon_out.trim())
+                    };
+                    self.anon_result =
+                        Some(format!("✔ {n} file(s) anonymized {dest}"));
+                    self.anon_apply_job = None;
+                }
+                Ok(Err(e)) => {
+                    self.error = Some(format!("{e:#}"));
+                    self.anon_apply_job = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.error = Some("Anonymize thread terminated unexpectedly".into());
+                    self.anon_apply_job = None;
+                }
+            }
+        }
+
+        let busy = self.anon_scan_job.is_some() || self.anon_apply_job.is_some();
+        let mut open = true;
+        let mut browse_in = false;
+        let mut browse_out = false;
+        let mut do_scan = false;
+        let mut do_apply = false;
+
+        egui::Window::new("🔏 Anonymize DICOM folder")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_size([780.0, 560.0])
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(
+                    "Scans a folder, shows every identifying tag with its current values \
+                     and a proposed replacement (editable), then rewrites the files. \
+                     UIDs are regenerated consistently across all files, so series, \
+                     structure-set, plan and dose references stay linked.",
+                );
+                ui.add_space(6.0);
+
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("DICOM folder").strong());
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.anon_dir)
+                            .desired_width(420.0)
+                            .hint_text("folder to scan (recursively)"),
+                    );
+                    if ui.button("📂 Browse…").clicked() {
+                        browse_in = true;
+                    }
+                    if ui
+                        .add_enabled(!busy, egui::Button::new("🔍 Scan"))
+                        .clicked()
+                    {
+                        do_scan = true;
+                    }
+                });
+
+                if let Some(job) = &self.anon_scan_job {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(job.progress.get());
+                    });
+                }
+
+                if let Some(scan) = &mut self.anon_scan {
+                    let mods = scan
+                        .modalities
+                        .iter()
+                        .map(|(m, n)| format!("{m} {n}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    ui.weak(format!(
+                        "{} DICOM file(s) ({mods}) — {} unique UID(s), {} private element(s)",
+                        scan.files.len(),
+                        scan.uid_count,
+                        scan.private_count
+                    ));
+                    for w in &scan.warnings {
+                        ui.colored_label(warn_color(ui.visuals()), format!("⚠ {w}"));
+                    }
+                    ui.add_space(4.0);
+
+                    // ---- findings table ----
+                    egui::ScrollArea::vertical()
+                        .max_height(ui.available_height() - 130.0)
+                        .show(ui, |ui| {
+                            egui::Grid::new("anon_grid")
+                                .num_columns(3)
+                                .striped(true)
+                                .spacing([10.0, 3.0])
+                                .show(ui, |ui| {
+                                    ui.label(egui::RichText::new("Tag").strong());
+                                    ui.label(egui::RichText::new("Current value(s)").strong());
+                                    ui.label(egui::RichText::new("New value").strong());
+                                    ui.end_row();
+                                    for f in &mut scan.findings {
+                                        let label = format!(
+                                            "({:04X},{:04X}) {}",
+                                            f.tag.group(),
+                                            f.tag.element(),
+                                            f.name
+                                        );
+                                        ui.checkbox(&mut f.enabled, label)
+                                            .on_hover_text(format!(
+                                                "present in {} file(s); unchecked rows are \
+                                                 left unchanged",
+                                                f.n_files
+                                            ));
+                                        let shown = f
+                                            .values
+                                            .iter()
+                                            .map(|v| {
+                                                if v.is_empty() { "«empty»" } else { v.as_str() }
+                                            })
+                                            .collect::<Vec<_>>()
+                                            .join("  |  ");
+                                        let extra = f.n_values.saturating_sub(f.values.len());
+                                        let txt = if extra > 0 {
+                                            format!("{shown}  (+{extra} more)")
+                                        } else {
+                                            shown
+                                        };
+                                        ui.add(
+                                            egui::Label::new(egui::RichText::new(txt).weak())
+                                                .truncate(),
+                                        )
+                                        .on_hover_text(f.values.join("\n"));
+                                        ui.horizontal(|ui| {
+                                            ui.add_enabled(
+                                                f.enabled,
+                                                egui::TextEdit::singleline(&mut f.replacement)
+                                                    .desired_width(170.0)
+                                                    .hint_text("(clear)"),
+                                            );
+                                            if f.replacement != f.suggested
+                                                && ui
+                                                    .small_button("↺")
+                                                    .on_hover_text(format!(
+                                                        "Back to the suggestion: “{}”",
+                                                        if f.suggested.is_empty() {
+                                                            "(clear)"
+                                                        } else {
+                                                            &f.suggested
+                                                        }
+                                                    ))
+                                                    .clicked()
+                                            {
+                                                f.replacement = f.suggested.clone();
+                                            }
+                                        });
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.checkbox(
+                            &mut self.anon_remap_uids,
+                            format!("Regenerate {} UID(s)", scan.uid_count),
+                        )
+                        .on_hover_text(
+                            "Every study / series / SOP instance / frame-of-reference UID is \
+                             replaced by a fresh one — the same original always maps to the \
+                             same new UID, so cross-references stay valid",
+                        );
+                        ui.checkbox(
+                            &mut self.anon_remove_private,
+                            format!("Remove {} private element(s)", scan.private_count),
+                        )
+                        .on_hover_text("Drops all odd-group (vendor private) elements");
+                        ui.checkbox(&mut self.anon_mark, "Mark as de-identified")
+                            .on_hover_text(
+                                "Writes PatientIdentityRemoved=YES and DeidentificationMethod",
+                            );
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Write to").strong());
+                        ui.add_enabled(
+                            !self.anon_in_place,
+                            egui::TextEdit::singleline(&mut self.anon_out)
+                                .desired_width(380.0)
+                                .hint_text("output folder (files keep their relative paths)"),
+                        );
+                        if ui
+                            .add_enabled(!self.anon_in_place, egui::Button::new("📂 Browse…"))
+                            .clicked()
+                        {
+                            browse_out = true;
+                        }
+                        ui.checkbox(&mut self.anon_in_place, "overwrite in place")
+                            .on_hover_text("Rewrites the original files — no copy is kept");
+                    });
+
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if let Some(job) = &self.anon_apply_job {
+                            ui.spinner();
+                            ui.label(job.progress.get());
+                        } else if ui
+                            .add_enabled(!busy, egui::Button::new("🔏 Anonymize"))
+                            .on_hover_text("Applies the checked replacements to every file")
+                            .clicked()
+                        {
+                            do_apply = true;
+                        }
+                        if let Some(msg) = &self.anon_result {
+                            ui.label(msg);
+                        }
+                    });
+                }
+            });
+
+        if !open {
+            // Closing the window forgets everything that was scanned — the
+            // findings (they contain patient identity!), any running scan,
+            // the result line and the derived output path. Only the folder
+            // field is kept for convenience.
+            self.anon_scan = None;
+            self.anon_scan_job = None;
+            self.anon_result = None;
+            self.anon_out.clear();
+            self.anon_in_place = false;
+            // A running rewrite is not aborted — the background thread
+            // finishes writing; only its completion message is dropped.
+            self.anon_apply_job = None;
+        }
+        self.anon_open = open;
+        if browse_in {
+            if let Some(dir) = Self::pick_folder("Select a DICOM folder to anonymize") {
+                self.anon_dir = dir.display().to_string();
+            }
+        }
+        if browse_out {
+            if let Some(dir) = Self::pick_folder("Select the output folder") {
+                self.anon_out = dir.display().to_string();
+            }
+        }
+        if do_scan {
+            self.anon_start_scan();
+        }
+        if do_apply {
+            self.anon_start_apply();
         }
     }
 }

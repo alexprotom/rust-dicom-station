@@ -199,6 +199,32 @@ with `DoseGridScaling`) and an RTPLAN skeleton (photon or ion), written with
 reference. The exports round-trip through this viewer and pydicom; they are
 QA/research objects, not guaranteed-complete clinical IODs.
 
+**DICOM anonymizer (Tools menu).** *Tools ▶ 🔏 Anonymize DICOM folder…* is
+an interactive, generalized Rust port of the one-off
+`tools/anonymize_dicom.py` that was used to prepare `example_data/`. Pick a
+folder and **Scan** it (recursive, background thread): the dialog then lists
+every identifying tag actually present — patient identity, birth date/sex,
+dates and times, accession number, physicians, institution, station,
+device — with its **current value(s)** across the files and a **proposed
+replacement**: a deterministic `anon_xxxxxx` patient alias derived from the
+original PatientID, the fixed anonymization date `20000101` / time
+`000000`, or a cleared value. Every proposal is editable, each row can be
+unchecked, and Study/Series descriptions are offered opt-in (unchecked by
+default). Three switches control the rest: **regenerate UIDs** replaces
+every non-standard UID (study, series, SOP instances, frame of reference,
+and every reference to them inside sequences) with fresh `2.25.` UIDs,
+consistently across all files, so RTSTRUCT ▶ series, RTDOSE ▶ RTPLAN ▶
+RTSTRUCT and per-slice image references stay intact; **remove private
+elements** drops all odd-group vendor tags (also inside sequences); and
+**mark as de-identified** writes `PatientIdentityRemoved=YES` +
+`DeidentificationMethod`. Output goes to a separate folder (files keep
+their relative paths; the default is `<input>_anon`) or in place; files are
+written via a temp file so an interrupted run never corrupts an original,
+and pixel data is copied through byte-identical. The whole pipeline is
+covered by `tests/anonymize.rs`: generate the synthetic study, anonymize
+it, reload it, and assert identity is gone, the reference chains still
+resolve, and the volume is unchanged.
+
 **Built-in test-data generator.** *File ▶ 🧪 Generate test data…* writes a
 complete synthetic RT study — CT water phantom with a spherical target and a
 cord, matching RTSTRUCT contours, a Gaussian RTDOSE, a two-beam proton
@@ -437,6 +463,9 @@ src/
   dicom_export.rs  DICOM writer (CT series, RTSTRUCT, RTDOSE, RTPLAN)
   gen_test_data.rs synthetic RT phantom study generator (CT/RTSTRUCT/RTPLAN/
                RTDOSE + DX/RTIMAGE/REG/RTRECORD), driven from the GUI
+  anonymize.rs interactive DICOM anonymizer (Tools menu): tag scan with
+               editable replacements, consistent UID regeneration,
+               private-tag removal
   settings.rs  persisted preferences (theme) in a plain text file next to
                the executable
   volume.rs    3D volume, patient-space geometry, orthogonal slice extraction
@@ -450,6 +479,8 @@ src/
   geometry.rs  minimal 3D vector math
 tools/
   anonymize_dicom.py  stdlib-only DICOM anonymizer used on example_data
+               (the interactive Tools ▶ Anonymize is its generalized
+               Rust successor)
 ```
 
 ## Notes & limitations
