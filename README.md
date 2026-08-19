@@ -154,9 +154,10 @@ the fusion overlay turns mostly gray: the remaining magenta/green fringes
 at the diaphragm and chest wall mark exactly the residual respiratory
 motion the 32 mm grid cannot fully model — tightening the grid spacing
 refines it further at the cost of runtime. Accuracy is verified in
-`tests/registration.rs` against analytically known transforms:
-sub-millimeter recovery for both a rigid rotation + translation and a 7 mm
-Gaussian-bump deformation.
+`tests/registration.rs` against analytically known transforms: on the test
+phantom the recovered mapping lands within ≈ 0.6 mm of a known rigid rotation
++ translation and within ≈ 0.3 mm of a 7 mm Gaussian-bump deformation (the
+asserted tolerances are 1.5 mm and 3 mm).
 
 **Planar images (DX / CR / RTIMAGE).** Digital radiographs and RT images
 (DRRs, portal / setup images) found in the study folder are listed in the
@@ -248,9 +249,9 @@ background thread (scanline rasterization into a binary volume, a
 surface-nets mesher, Laplacian smoothing, area-weighted vertex normals —
 `rayon`-parallel per ROI) and drawn in the ROI display colors with headlight
 shading; EXTERNAL/body ROIs are rendered translucent so the internal anatomy
-stays visible. Drag rotates, the wheel zooms, middle-drag pans, and a slider
-controls global opacity. The meshes are cached per structure set, so
-reopening the window is instant.
+stays visible. Drag rotates, the wheel zooms, middle-drag pans, a slider
+controls global opacity and *⟲ Reset view* restores the default camera. The
+meshes are cached per structure set, so reopening the window is instant.
 
 **Interactive segmentation (🖌 Paint · ◻ Erase · ✨ Grow).** MITK-style
 manual and semi-automatic segmentation, implemented entirely in Rust and
@@ -286,10 +287,12 @@ essentially real time. The sidebar *Segmentations* section manages any
 number of masks per dataset — visibility, display color, active selection,
 volume in cm³, per-stroke undo, delete — and **→RS** converts a mask to
 RTSTRUCT closed planar contours (marching squares per slice, stitched and
-decimated), appending it to the active structure set so it renders like any
-ROI and rides the existing DICOM export.
+decimated), appending it to the active structure set — or creating one when
+the study has no RTSTRUCT — so it renders like any ROI and rides the existing
+DICOM export.
 
-**Interaction** (shown in the status bar):
+**Interaction** (the bindings for the active tool are shown in the status
+bar, and in full under *Help*):
 
 | Input | Action |
 |---|---|
@@ -299,11 +302,24 @@ ROI and rides the existing DICOM export.
 | Middle drag | Pan |
 | Right drag | Window/level (x = width, y = center) |
 
+With a segmentation tool active the left button paints instead of
+navigating, and these bindings are added:
+
+| Input | Action |
+|---|---|
+| Left drag | Paint / erase — or, with ✨, seed and drag ↑↓ to grow/shrink |
+| Alt | Erase while painting |
+| Shift + wheel, `[`, `]` | Brush radius |
+| Ctrl + Z | Undo the last stroke |
+| Esc | Cancel the running region grow |
+
 Each viewport also carries two corner buttons: **⟲** resets that view's zoom,
 pan **and slice** (back to the volume's central slice), and **⛶ / ❐**
 maximizes the view to fill the whole window and restores the multi-view
-layout again. The toolbar holds the **3D A / 3D B** buttons, the **⌖**
-toggle and a global **⟲** that resets every view of both datasets at once.
+layout again. The toolbar holds the window/level controls with the CT
+presets, the **3D A / 3D B** buttons, the **⌖** toggle, a global **⟲** that
+resets every view of both datasets at once, and the segmentation tools with
+their brush radius and 2D/3D switch.
 **⌖** shows/hides the slice intersection lines (crosshair) — and while the
 crosshair is hidden, left-click navigation is disabled entirely: clicking a
 view no longer moves the other views' slices, and slices change only by
@@ -319,8 +335,9 @@ reference) at the crosshair.
 **Dark / light appearance.** *View ▶ Appearance* switches between **🌙 Dark**,
 **☀ Light** and **💻 System** (follows the OS setting and updates live when it
 changes). The choice is remembered in `viewer_settings.txt` next
-to the executable — a two-line text file, safe to edit or delete. The image
-viewports themselves stay black in both themes, as in clinical viewers, so
+to the executable — a tiny `key = value` text file, safe to edit or delete.
+The image viewports themselves stay black in both themes, as in clinical
+viewers, so
 grayscale windowing, the dose colorwash and the overlay annotations keep a
 single calibrated appearance; the surrounding chrome and the hand-painted
 accents follow the theme (unit tests assert the accent colors clear WCAG AA
@@ -369,10 +386,11 @@ example_data/
 ```
 
 512 × 512, 0.977 mm in-plane, 3 mm slices, 396 mm of coverage; ROIs are cord,
-both lungs, heart, esophagus, carina, lymph node, tumor and four implanted
-gold fiducial markers (`_c00` / `_c50` suffix = breathing phase). Both series
-share one Study Instance UID and one Frame of Reference, so they load as
-inhale/exhale of the same study:
+both lungs, heart, esophagus, carina, lymph node (`LN`), tumor and four
+implanted gold fiducial markers, plus a vertebra contour that exists only on
+phase 000 — hence 13 vs 12 ROIs (`_c00` / `_c50` suffix = breathing phase).
+Both series share one Study Instance UID and one Frame of Reference, so they
+load as inhale/exhale of the same study:
 
 ```
 cargo run --release -- example_data/lung_p1_4DCT_phase_000 example_data/lung_p1_4DCT_phase_050
@@ -474,10 +492,23 @@ target-displaced study warps it back onto dataset A.
 
 ## Tests
 
-The integration tests generate the study through the same code path and
-verify geometry round-trips, HU values, contour radii, trilinear dose values,
-isodose radii and plan fields against the closed-form expectations, plus a
-simulate → export → reload round trip. Nothing external is needed:
+Five integration suites plus the in-module unit tests (28 tests in total,
+≈ 1 s) run against the same code paths the GUI uses, with no external data or
+tooling needed:
+
+* **`synthetic_study`** — generate the phantom study, load it back and verify
+  geometry round-trips, HU values, contour radii, trilinear dose values,
+  isodose radii and plan fields against the closed-form expectations;
+* **`simulate_export`** — simulate a known transform → export DICOM → reload;
+* **`registration`** — rigid and B-spline recovery of analytically known
+  transforms (see above);
+* **`segmentation`** — brush strokes and their undo, geodesic growing and
+  hole filling, mask volume, mask → RTSTRUCT contours;
+* **`anonymize`** — anonymize the generated study, reload it, and assert
+  identity is gone while every reference chain still resolves.
+
+The unit tests cover the UID/alias rules of the anonymizer, the tree
+copy/move selection logic, the settings file and the theme contrast (WCAG AA):
 
 ```
 cargo test --release
@@ -488,6 +519,8 @@ cargo test --release
 ```
 src/
   main.rs      entry point (eframe/wgpu window)
+  lib.rs       library root (every module below is public, so the
+               integration tests drive the same code as the GUI)
   app.rs       egui application: three-view layout, panels, interaction
   loader.rs    directory scan, classification, parallel volume loading,
                dataset merging (Add folder / tree copy-move)
@@ -505,14 +538,22 @@ src/
   settings.rs  persisted preferences (theme) in a plain text file next to
                the executable
   volume.rs    3D volume, patient-space geometry, orthogonal slice extraction
-  mesh3d.rs    contour ▶ surface reconstruction (scanline fill, surface nets,
-               Laplacian smoothing) for the 3D structure windows
+  segmentation.rs  voxel label masks: 2D/3D brush, geodesic region growing,
+               per-stroke undo, slice overlays, mask ▶ RTSTRUCT contours
+  mesh3d.rs    contour / mask ▶ surface reconstruction (scanline fill,
+               surface nets, Laplacian smoothing) for the 3D windows
   rtstruct.rs  RT Structure Set parsing
   rtdose.rs    RT Dose parsing + trilinear patient-space sampling
   rtplan.rs    RT Plan / RT Ion Plan parsing
   render.rs    window/level, dose colorwash, marching-squares isodose,
                contour/plane intersection
   geometry.rs  minimal 3D vector math
+tests/
+  synthetic_study.rs  generate ▶ load ▶ verify the analytic phantom
+  simulate_export.rs  simulate ▶ export ▶ reload round trip
+  registration.rs     rigid / B-spline accuracy against known transforms
+  segmentation.rs     brush, region grow, undo, mask ▶ RTSTRUCT
+  anonymize.rs        anonymize ▶ reload: identity gone, references intact
 tools/
   anonymize_dicom.py  stdlib-only DICOM anonymizer used on example_data
                (the interactive Tools ▶ Anonymize is its generalized

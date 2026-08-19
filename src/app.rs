@@ -1990,12 +1990,34 @@ impl ViewerApp {
                     }
                 });
                 ui.menu_button("Help", |ui| {
-                    ui.label("Mouse bindings:");
+                    ui.label("MPR views — mouse:");
                     ui.weak("Left click / drag — move linked crosshair");
                     ui.weak("Mouse wheel — scroll slices");
-                    ui.weak("Ctrl + wheel — zoom at cursor");
+                    ui.weak("Ctrl + wheel / pinch — zoom at cursor");
                     ui.weak("Middle drag — pan");
-                    ui.weak("Right drag — window / level");
+                    ui.weak("Right drag — window / level (x = width, y = center)");
+                    ui.separator();
+                    ui.label("Segmentation (🖌 ◻ ✨ take over the left button):");
+                    ui.weak("Left drag — paint / erase");
+                    ui.weak("Left press + drag ↑↓ — grow / shrink the region (✨)");
+                    ui.weak("Alt — erase while painting");
+                    ui.weak("Shift + wheel, or [ ] — brush radius");
+                    ui.weak("Ctrl + Z — undo the last stroke");
+                    ui.weak("Esc — cancel the running region grow");
+                    ui.separator();
+                    ui.label("Buttons:");
+                    ui.weak("⟲ (view corner) — reset that view's zoom, pan and slice");
+                    ui.weak("⛶ / ❐ — maximize that view / restore the layout");
+                    ui.weak("⟲ (toolbar) — reset every view of both datasets");
+                    ui.weak(
+                        "⌖ — show / hide the crosshair; hidden, left click no \
+                         longer navigates",
+                    );
+                    ui.separator();
+                    ui.weak(format!(
+                        "rust-dicom-viewer {} — research / QA viewer, not a medical device",
+                        env!("CARGO_PKG_VERSION")
+                    ));
                 });
             });
         });
@@ -2887,7 +2909,8 @@ impl ViewerApp {
                                 .small_button("→RS")
                                 .on_hover_text(
                                     "Convert to RTSTRUCT contours: adds a ROI to the \
-                                     structure set, so it exports with File ▶ Export",
+                                     structure set, so it exports with \
+                                     Simulation ▶ 💾 Export",
                                 )
                                 .clicked()
                             {
