@@ -1,6 +1,8 @@
 //! 3D image volume (CT/MR/PT) reconstructed from a DICOM series, with full
 //! patient-coordinate geometry and fast orthogonal slice extraction.
 
+use rayon::prelude::*;
+
 use crate::geometry::Vec3;
 
 /// Viewing orientation of one of the three MPR panes.
@@ -139,31 +141,38 @@ impl Volume {
             let d = self.plane_dims(plane);
             (d[0], d[1])
         };
+        if plane == ViewPlane::Axial {
+            // Native plane: one contiguous copy.
+            let k = slice.min(nz.saturating_sub(1));
+            let base = k * nx * ny;
+            out.clear();
+            out.reserve(w * h);
+            out.extend_from_slice(&self.data[base..base + nx * ny]);
+            return;
+        }
+        // Reformatted planes read across the slice stride, so every element
+        // is its own cache line. Rows are independent — run them in parallel.
         out.clear();
-        out.reserve(w * h);
+        out.resize(w * h, 0);
         match plane {
-            ViewPlane::Axial => {
-                let k = slice.min(nz.saturating_sub(1));
-                let base = k * nx * ny;
-                out.extend_from_slice(&self.data[base..base + nx * ny]);
-            }
             ViewPlane::Sagittal => {
                 let i = slice.min(nx.saturating_sub(1));
                 // rows: k from top (nz-1) down to 0; cols: j 0..ny
-                for kk in (0..nz).rev() {
-                    let base = kk * nx * ny + i;
-                    for j in 0..ny {
-                        out.push(self.data[base + j * nx]);
+                out.par_chunks_mut(w).enumerate().for_each(|(r, row)| {
+                    let base = (nz - 1 - r) * nx * ny + i;
+                    for (j, o) in row.iter_mut().enumerate() {
+                        *o = self.data[base + j * nx];
                     }
-                }
+                });
             }
             ViewPlane::Coronal => {
                 let j = slice.min(ny.saturating_sub(1));
-                for kk in (0..nz).rev() {
-                    let base = kk * nx * ny + j * nx;
-                    out.extend_from_slice(&self.data[base..base + nx]);
-                }
+                out.par_chunks_mut(w).enumerate().for_each(|(r, row)| {
+                    let base = (nz - 1 - r) * nx * ny + j * nx;
+                    row.copy_from_slice(&self.data[base..base + nx]);
+                });
             }
+            ViewPlane::Axial => unreachable!("handled above"),
         }
     }
 

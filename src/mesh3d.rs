@@ -48,7 +48,7 @@ pub fn build_meshes(ss: &StructureSet, progress: &Progress) -> Vec<RoiMesh> {
         })
         .collect();
     // Large, opaque structures first is a nicer default draw order.
-    meshes.sort_by(|a, b| b.tris.len().cmp(&a.tris.len()));
+    meshes.sort_by_key(|m| std::cmp::Reverse(m.tris.len()));
     progress.set("done");
     meshes
 }
@@ -111,8 +111,10 @@ fn build_roi_mesh(roi_index: usize, roi: &Roi) -> Option<RoiMesh> {
     };
     let half_slab = (dz_typ * 0.5).max(h * 0.5) + 1e-6;
 
+    // Each grid layer writes only its own plane of the mask, so the layers
+    // rasterize independently.
     let mut inside = vec![false; gx * gy * gz];
-    for k in 0..gz {
+    inside.par_chunks_mut(gx * gy).enumerate().for_each(|(k, plane)| {
         let z = origin[2] + k as f64 * h;
         // Nearest contour plane.
         let Some((gzv, idxs)) = groups
@@ -124,15 +126,18 @@ fn build_roi_mesh(roi_index: usize, roi: &Roi) -> Option<RoiMesh> {
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
         else {
-            continue;
+            return;
         };
         if (gzv - z).abs() > half_slab {
-            continue;
+            return;
         }
-        // Even–odd scanline fill across all contours of this plane.
+        // Even–odd scanline fill across all contours of this plane. The
+        // crossing buffer is reused down the layer rather than reallocated
+        // for every scanline.
+        let mut xs: Vec<f64> = Vec::new();
         for j in 0..gy {
             let y = origin[1] + j as f64 * h;
-            let mut xs: Vec<f64> = Vec::new();
+            xs.clear();
             for &ci in idxs {
                 let pts = &contours[ci].points;
                 let n = pts.len();
@@ -147,7 +152,7 @@ fn build_roi_mesh(roi_index: usize, roi: &Roi) -> Option<RoiMesh> {
                 continue;
             }
             xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let row = k * gx * gy + j * gx;
+            let row = j * gx;
             for pair in xs.chunks_exact(2) {
                 let i0 = ((pair[0] - origin[0]) / h).ceil().max(0.0) as usize;
                 let i1_f = (pair[1] - origin[0]) / h;
@@ -156,11 +161,11 @@ fn build_roi_mesh(roi_index: usize, roi: &Roi) -> Option<RoiMesh> {
                 }
                 let i1 = (i1_f.floor() as usize).min(gx - 1);
                 for i in i0..=i1 {
-                    inside[row + i] = true;
+                    plane[row + i] = true;
                 }
             }
         }
-    }
+    });
 
     // ---- 2. surface nets -------------------------------------------------
     let (cx, cy, cz) = (gx - 1, gy - 1, gz - 1);
@@ -264,24 +269,54 @@ fn build_roi_mesh(roi_index: usize, roi: &Roi) -> Option<RoiMesh> {
     }
 
     // ---- 3. Laplacian smoothing ----------------------------------------
-    let mut adj: Vec<Vec<u32>> = vec![Vec::new(); verts.len()];
+    // Vertex adjacency in compressed-row form. Storing it as a `Vec` per
+    // vertex deduplicated by linear scan meant one heap allocation per vertex
+    // — on a body contour that is well over a hundred thousand allocations.
+    let nv = verts.len();
+    let mut start = vec![0u32; nv + 1];
     for t in &tris {
-        for e in [[t[0], t[1]], [t[1], t[2]], [t[2], t[0]]] {
-            if !adj[e[0] as usize].contains(&e[1]) {
-                adj[e[0] as usize].push(e[1]);
-            }
-            if !adj[e[1] as usize].contains(&e[0]) {
-                adj[e[1] as usize].push(e[0]);
-            }
+        for &v in t {
+            start[v as usize + 1] += 2;
         }
     }
-    for _ in 0..3 {
-        let prev = verts.clone();
-        for (vi, v) in verts.iter_mut().enumerate() {
-            let nb = &adj[vi];
-            if nb.is_empty() {
-                continue;
+    for i in 0..nv {
+        start[i + 1] += start[i];
+    }
+    let mut adj = vec![0u32; start[nv] as usize];
+    let mut fill = start.clone();
+    for t in &tris {
+        for [a, b] in [[t[0], t[1]], [t[1], t[2]], [t[2], t[0]]] {
+            adj[fill[a as usize] as usize] = b;
+            fill[a as usize] += 1;
+            adj[fill[b as usize] as usize] = a;
+            fill[b as usize] += 1;
+        }
+    }
+    // Each edge is visited once per incident triangle, so collapse repeats.
+    let mut nbrs = vec![0u32; nv];
+    for v in 0..nv {
+        let (a, b) = (start[v] as usize, start[v + 1] as usize);
+        let seg = &mut adj[a..b];
+        seg.sort_unstable();
+        let mut n = 0;
+        for i in 0..seg.len() {
+            if i == 0 || seg[i] != seg[i - 1] {
+                seg[n] = seg[i];
+                n += 1;
             }
+        }
+        nbrs[v] = n as u32;
+    }
+
+    let mut prev = vec![[0.0f32; 3]; nv];
+    for _ in 0..3 {
+        prev.copy_from_slice(&verts);
+        verts.par_iter_mut().enumerate().for_each(|(vi, v)| {
+            let n = nbrs[vi] as usize;
+            if n == 0 {
+                return;
+            }
+            let nb = &adj[start[vi] as usize..start[vi] as usize + n];
             let mut m = [0.0f32; 3];
             for &o in nb {
                 for ax in 0..3 {
@@ -289,10 +324,10 @@ fn build_roi_mesh(roi_index: usize, roi: &Roi) -> Option<RoiMesh> {
                 }
             }
             for ax in 0..3 {
-                let mean = m[ax] / nb.len() as f32;
+                let mean = m[ax] / n as f32;
                 v[ax] = prev[vi][ax] + 0.5 * (mean - prev[vi][ax]);
             }
-        }
+        });
     }
 
     // ---- 4. per-vertex normals ------------------------------------------
@@ -316,8 +351,8 @@ fn build_roi_mesh(roi_index: usize, roi: &Roi) -> Option<RoiMesh> {
     }
     for n in &mut normals {
         let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-12);
-        for ax in 0..3 {
-            n[ax] /= l;
+        for c in n.iter_mut() {
+            *c /= l;
         }
     }
 

@@ -90,8 +90,8 @@ pub struct SimTransform {
 impl SimTransform {
     pub fn new(params: &SimParams, volume_center: Vec3) -> Self {
         SimTransform {
-            rigid: RigidTransform {
-                params: [
+            rigid: RigidTransform::new(
+                [
                     params.rotation_deg[0].to_radians(),
                     params.rotation_deg[1].to_radians(),
                     params.rotation_deg[2].to_radians(),
@@ -99,8 +99,8 @@ impl SimTransform {
                     params.translation[1],
                     params.translation[2],
                 ],
-                center: volume_center,
-            },
+                volume_center,
+            ),
             amp: Vec3::from_slice(&params.bump_amp),
             center: Vec3::from_slice(&params.bump_center),
             sigma2: params.bump_sigma * params.bump_sigma,
@@ -161,25 +161,38 @@ pub fn generate_transformed_study(
     let [nx, ny, nz] = vol.dims;
     let fill = vol.min_value as f32;
     let mut data = vec![0i16; nx * ny * nz];
-    data.par_chunks_mut(nx * ny).enumerate().for_each(|(k, plane)| {
-        for j in 0..ny {
-            for i in 0..nx {
-                let x = vol.voxel_to_patient(i as f64, j as f64, k as f64);
-                let v = vol
-                    .sample_patient(t.unmap(x))
-                    .unwrap_or(fill)
-                    .round()
-                    .clamp(i16::MIN as f32, i16::MAX as f32);
-                plane[j * nx + i] = v as i16;
+    // The voxel lattice maps affinely into patient space, so each row walks
+    // by a constant step instead of re-deriving the position per voxel; the
+    // value range comes out of the same pass rather than a second serial
+    // sweep over the whole volume.
+    let du = vol.row_dir * vol.spacing[0];
+    let dv = vol.col_dir * vol.spacing[1];
+    let (min_v, max_v) = data
+        .par_chunks_mut(nx * ny)
+        .enumerate()
+        .map(|(k, plane)| {
+            let p0 = vol.voxel_to_patient(0.0, 0.0, k as f64);
+            let (mut lo, mut hi) = (i16::MAX, i16::MIN);
+            for (j, row) in plane.chunks_exact_mut(nx).enumerate() {
+                let mut x = p0 + dv * j as f64;
+                for o in row.iter_mut() {
+                    let v = vol
+                        .sample_patient(t.unmap(x))
+                        .unwrap_or(fill)
+                        .round()
+                        .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                    *o = v;
+                    lo = lo.min(v);
+                    hi = hi.max(v);
+                    x = x + du;
+                }
             }
-        }
-    });
-    let mut min_v = i16::MAX;
-    let mut max_v = i16::MIN;
-    for &v in &data {
-        min_v = min_v.min(v);
-        max_v = max_v.max(v);
-    }
+            (lo, hi)
+        })
+        .reduce(
+            || (i16::MAX, i16::MIN),
+            |a, b| (a.0.min(b.0), a.1.max(b.1)),
+        );
     let volume = Volume {
         data,
         dims: vol.dims,
@@ -232,21 +245,25 @@ pub fn generate_transformed_study(
         progress.set(format!("Resampling dose {}/{}…", di + 1, src.doses.len()));
         let [dnx, dny, dnf] = d.dims;
         let mut ddata = vec![0.0f32; dnx * dny * dnf];
-        ddata
+        let ddu = d.row_dir * d.spacing[0];
+        let ddv = d.col_dir * d.spacing[1];
+        let max_dose = ddata
             .par_chunks_mut(dnx * dny)
             .enumerate()
-            .for_each(|(f, plane)| {
+            .map(|(f, plane)| {
                 let base = d.origin + d.normal * d.offsets[f];
-                for j in 0..dny {
-                    for i in 0..dnx {
-                        let x = base
-                            + d.row_dir * (i as f64 * d.spacing[0])
-                            + d.col_dir * (j as f64 * d.spacing[1]);
-                        plane[j * dnx + i] = d.sample(t.unmap(x)).unwrap_or(0.0);
+                let mut hi = 0.0f32;
+                for (j, row) in plane.chunks_exact_mut(dnx).enumerate() {
+                    let mut x = base + ddv * j as f64;
+                    for o in row.iter_mut() {
+                        *o = d.sample(t.unmap(x)).unwrap_or(0.0);
+                        hi = hi.max(*o);
+                        x = x + ddu;
                     }
                 }
-            });
-        let max_dose = ddata.iter().copied().fold(0.0f32, f32::max);
+                hi
+            })
+            .reduce(|| 0.0f32, f32::max);
         doses.push(DoseGrid {
             data: ddata,
             dims: d.dims,

@@ -16,16 +16,22 @@ use crate::volume::{ViewPlane, Volume};
 // ---------------------------------------------------------------------------
 
 /// Convert an i16 slice buffer to grayscale RGBA pixels with window/level.
-pub fn slice_to_gray(slice: &[i16], center: f32, width: f32, out: &mut Vec<Color32>) {
+/// Parallelized over rows of `row_len` pixels.
+pub fn slice_to_gray(slice: &[i16], center: f32, width: f32, row_len: usize, out: &mut Vec<Color32>) {
     let w = width.max(1.0);
     let lo = center - w * 0.5;
     let scale = 255.0 / w;
     out.clear();
-    out.reserve(slice.len());
-    out.extend(slice.iter().map(|&v| {
-        let g = ((v as f32 - lo) * scale).clamp(0.0, 255.0) as u8;
-        Color32::from_gray(g)
-    }));
+    out.resize(slice.len(), Color32::BLACK);
+    let chunk = row_len.max(1);
+    out.par_chunks_mut(chunk)
+        .zip(slice.par_chunks(chunk))
+        .for_each(|(dst, src)| {
+            for (o, &v) in dst.iter_mut().zip(src) {
+                let g = ((v as f32 - lo) * scale).clamp(0.0, 255.0) as u8;
+                *o = Color32::from_gray(g);
+            }
+        });
 }
 
 // ---------------------------------------------------------------------------
@@ -44,13 +50,29 @@ pub fn sample_dose_plane(
     let [w, h] = vol.plane_dims(plane);
     out.clear();
     out.resize(w * h, 0.0);
+    // The display-pixel lattice maps affinely into patient space, so the
+    // per-pixel coordinate is one vector addition rather than a full
+    // index->patient transform.
+    let at = |px: f64, py: f64| {
+        let v = vol.plane_pixel_to_voxel(plane, slice, px, py);
+        vol.voxel_to_patient(v[0], v[1], v[2])
+    };
+    let g00 = dose.grid_coords(at(0.0, 0.0));
+    let gx = sub3(dose.grid_coords(at(1.0, 0.0)), g00);
+    let gy = sub3(dose.grid_coords(at(0.0, 1.0)), g00);
     out.par_chunks_mut(w).enumerate().for_each(|(py, row)| {
-        for (px, o) in row.iter_mut().enumerate() {
-            let v = vol.plane_pixel_to_voxel(plane, slice, px as f64, py as f64);
-            let p = vol.voxel_to_patient(v[0], v[1], v[2]);
-            *o = dose.sample(p).unwrap_or(0.0);
+        let f = py as f64;
+        let mut g = [g00[0] + gy[0] * f, g00[1] + gy[1] * f, g00[2] + gy[2] * f];
+        for o in row.iter_mut() {
+            *o = dose.sample_uvw(g).unwrap_or(0.0);
+            g = [g[0] + gx[0], g[1] + gx[1], g[2] + gx[2]];
         }
     });
+}
+
+#[inline]
+fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
 /// Jet-like colormap (blue → cyan → green → yellow → red), t in [0, 1].
@@ -83,16 +105,17 @@ pub fn dose_colorwash(
     let thr = threshold_frac * reference;
     let a_max = (opacity.clamp(0.0, 1.0) * 255.0) as u8;
     out.clear();
-    out.reserve(dose_plane.len());
-    out.extend(dose_plane.iter().map(|&d| {
-        if d < thr || d <= 0.0 {
-            Color32::TRANSPARENT
-        } else {
-            let t = d / reference;
-            let [r, g, b] = dose_colormap(t);
-            Color32::from_rgba_unmultiplied(r, g, b, a_max)
-        }
-    }));
+    out.resize(dose_plane.len(), Color32::TRANSPARENT);
+    out.par_iter_mut()
+        .zip(dose_plane.par_iter())
+        .for_each(|(o, &d)| {
+            *o = if d < thr || d <= 0.0 {
+                Color32::TRANSPARENT
+            } else {
+                let [r, g, b] = dose_colormap(d / reference);
+                Color32::from_rgba_unmultiplied(r, g, b, a_max)
+            };
+        });
 }
 
 // ---------------------------------------------------------------------------

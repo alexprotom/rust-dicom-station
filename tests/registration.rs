@@ -67,8 +67,8 @@ fn rigid_recovers_known_transform() {
     let spacing = 3.0;
 
     // Ground truth: T_true maps fixed → moving.
-    let t_true = RigidTransform {
-        params: [
+    let t_true = RigidTransform::new(
+        [
             2.0f64.to_radians(),
             -1.5f64.to_radians(),
             3.0f64.to_radians(),
@@ -76,8 +76,8 @@ fn rigid_recovers_known_transform() {
             -4.0,
             3.0,
         ],
-        center: Vec3::ZERO,
-    };
+        Vec3::ZERO,
+    );
 
     let fixed = make_volume(n, spacing, phantom);
     // M(q) = F(T_true⁻¹ q)  ⇒  M(T_true x) = F(x): optimum is exactly T_true.

@@ -149,47 +149,77 @@ fn drot_z(a: f64) -> Mat3 {
 
 /// Euler rigid transform (elastix EulerTransform):
 /// `T(x) = R_z R_y R_x (x - c) + c + t`, parameters `[rx, ry, rz, tx, ty, tz]`.
+///
+/// The rotation matrix, its transpose and the three rotation derivatives are
+/// computed once in [`RigidTransform::new`] and cached. `map`, `unmap` and
+/// `jacobian` run on millions of points per registration and per fusion
+/// frame, so none of them may touch trigonometry. The parameters are private
+/// precisely so the cache cannot go stale — build a new transform to change
+/// them.
 #[derive(Clone)]
 pub struct RigidTransform {
-    pub params: [f64; 6],
-    pub center: Vec3,
+    params: [f64; 6],
+    center: Vec3,
+    /// `R_z R_y R_x`.
+    rot: Mat3,
+    /// `rot` transposed = the exact inverse rotation.
+    rot_t: Mat3,
+    /// `∂R/∂rx`, `∂R/∂ry`, `∂R/∂rz`.
+    drot: [Mat3; 3],
+    /// Translation part `[tx, ty, tz]`.
+    t: Vec3,
 }
 
 impl RigidTransform {
+    pub fn new(params: [f64; 6], center: Vec3) -> Self {
+        let (rx, ry, rz) = (params[0], params[1], params[2]);
+        let rot = rot_z(rz).mul(&rot_y(ry)).mul(&rot_x(rx));
+        RigidTransform {
+            params,
+            center,
+            rot,
+            rot_t: rot.transpose(),
+            drot: [
+                rot_z(rz).mul(&rot_y(ry)).mul(&drot_x(rx)),
+                rot_z(rz).mul(&drot_y(ry)).mul(&rot_x(rx)),
+                drot_z(rz).mul(&rot_y(ry)).mul(&rot_x(rx)),
+            ],
+            t: Vec3::new(params[3], params[4], params[5]),
+        }
+    }
+
     pub fn identity(center: Vec3) -> Self {
-        RigidTransform { params: [0.0; 6], center }
+        Self::new([0.0; 6], center)
     }
 
-    fn rotation(&self) -> Mat3 {
-        rot_z(self.params[2])
-            .mul(&rot_y(self.params[1]))
-            .mul(&rot_x(self.params[0]))
+    /// `[rx, ry, rz, tx, ty, tz]` (radians / mm).
+    pub fn params(&self) -> [f64; 6] {
+        self.params
     }
 
+    pub fn center(&self) -> Vec3 {
+        self.center
+    }
+
+    #[inline]
     pub fn map(&self, p: Vec3) -> Vec3 {
-        let r = self.rotation();
-        let t = Vec3::new(self.params[3], self.params[4], self.params[5]);
-        r.mul_vec(p - self.center) + self.center + t
+        self.rot.mul_vec(p - self.center) + self.center + self.t
     }
 
     /// Exact inverse (rotation transposed).
+    #[inline]
     pub fn unmap(&self, q: Vec3) -> Vec3 {
-        let r = self.rotation().transpose();
-        let t = Vec3::new(self.params[3], self.params[4], self.params[5]);
-        r.mul_vec(q - self.center - t) + self.center
+        self.rot_t.mul_vec(q - self.center - self.t) + self.center
     }
 
     /// ∂T/∂param_i evaluated at fixed point `p` (3-vectors per parameter).
+    #[inline]
     fn jacobian(&self, p: Vec3) -> [Vec3; 6] {
         let v = p - self.center;
-        let (rx, ry, rz) = (self.params[0], self.params[1], self.params[2]);
-        let d_rx = rot_z(rz).mul(&rot_y(ry)).mul(&drot_x(rx)).mul_vec(v);
-        let d_ry = rot_z(rz).mul(&drot_y(ry)).mul(&rot_x(rx)).mul_vec(v);
-        let d_rz = drot_z(rz).mul(&rot_y(ry)).mul(&rot_x(rx)).mul_vec(v);
         [
-            d_rx,
-            d_ry,
-            d_rz,
+            self.drot[0].mul_vec(v),
+            self.drot[1].mul_vec(v),
+            self.drot[2].mul_vec(v),
             Vec3::new(1.0, 0.0, 0.0),
             Vec3::new(0.0, 1.0, 0.0),
             Vec3::new(0.0, 0.0, 1.0),
@@ -251,6 +281,11 @@ impl BSplineTransform {
         }
     }
 
+    /// A copy carrying only the grid geometry, with no coefficients.
+    fn geometry(&self) -> BSplineTransform {
+        BSplineTransform { coeffs: Vec::new(), ..self.clone() }
+    }
+
     /// Grid support of a point: base indices, per-axis weights, and validity.
     #[inline]
     fn support(&self, p: Vec3) -> Option<([i64; 3], [[f64; 4]; 3])> {
@@ -282,8 +317,8 @@ impl BSplineTransform {
                 let iy = (base[1] + ky as i64) as usize;
                 let wyz = w[1][ky] * w[2][kz];
                 let row = 3 * (base[0] as usize + nx * (iy + ny * iz));
-                for kx in 0..4 {
-                    let wt = w[0][kx] * wyz;
+                for (kx, wx) in w[0].iter().enumerate() {
+                    let wt = wx * wyz;
                     let o = row + 3 * kx;
                     disp.x += wt * self.coeffs[o];
                     disp.y += wt * self.coeffs[o + 1];
@@ -356,6 +391,11 @@ pub struct RegImage {
     spacing: [f64; 3],
     origin: Vec3,
     axes: [Vec3; 3],
+    /// Flat indices of voxels eligible for random sampling (value above the
+    /// fixed-image threshold), built once per pyramid level by
+    /// [`RegImage::prepare_sampling`]. Sampling draws from this list instead
+    /// of rejecting random draws, which keeps every draw a hit.
+    eligible: Vec<u32>,
 }
 
 impl RegImage {
@@ -366,7 +406,30 @@ impl RegImage {
             spacing: v.spacing,
             origin: v.origin,
             axes: [v.row_dir, v.col_dir, v.normal],
+            eligible: Vec::new(),
         }
+    }
+
+    /// Build the eligible-voxel list for random sampling. Voxels on the far
+    /// boundary are excluded so a jittered sample always has a full
+    /// interpolation neighbourhood.
+    fn prepare_sampling(&mut self, threshold: f32) {
+        let [nx, ny, nz] = self.dims;
+        if nx < 2 || ny < 2 || nz < 2 {
+            self.eligible.clear();
+            return;
+        }
+        self.eligible = (0..nz - 1)
+            .into_par_iter()
+            .flat_map_iter(|k| {
+                let plane = k * nx * ny;
+                (0..ny - 1).flat_map(move |j| {
+                    let row = plane + j * nx;
+                    (0..nx - 1).map(move |i| (row + i) as u32)
+                })
+            })
+            .filter(|&o| self.data[o as usize] >= threshold)
+            .collect();
     }
 
     #[inline]
@@ -422,6 +485,7 @@ impl RegImage {
                 + self.axes[1] * (0.5 * self.spacing[1] * (dy as f64 - 1.0))
                 + self.axes[2] * (0.5 * self.spacing[2] * (dz as f64 - 1.0)),
             axes: self.axes,
+            eligible: Vec::new(),
         }
     }
 
@@ -439,6 +503,31 @@ impl RegImage {
             + self.axes[0] * (i * self.spacing[0])
             + self.axes[1] * (j * self.spacing[1])
             + self.axes[2] * (k * self.spacing[2])
+    }
+
+    /// Trilinear sample at fractional voxel indices that the caller has
+    /// already constrained to `[0, dim - 1)`. No gradient, no bounds check —
+    /// this is the sampler used when drawing fixed-image samples, which is
+    /// the hottest loop of the whole registration.
+    #[inline]
+    fn value_at_index(&self, u: f64, v: f64, w: f64) -> f32 {
+        let [nx, ny, _] = self.dims;
+        let i0 = u as usize;
+        let j0 = v as usize;
+        let k0 = w as usize;
+        let fu = (u - i0 as f64) as f32;
+        let fv = (v - j0 as f64) as f32;
+        let fw = (w - k0 as f64) as f32;
+        let o = k0 * nx * ny + j0 * nx + i0;
+        let d = &self.data;
+        let c00 = d[o] + (d[o + 1] - d[o]) * fu;
+        let c10 = d[o + nx] + (d[o + nx + 1] - d[o + nx]) * fu;
+        let p = o + nx * ny;
+        let c01 = d[p] + (d[p + 1] - d[p]) * fu;
+        let c11 = d[p + nx] + (d[p + nx + 1] - d[p + nx]) * fu;
+        let c0 = c00 + (c10 - c00) * fv;
+        let c1 = c01 + (c11 - c01) * fv;
+        c0 + (c1 - c0) * fw
     }
 
     /// Trilinear sample + analytic gradient of the interpolant, in patient
@@ -502,39 +591,66 @@ impl RegImage {
 struct XorShift(u64);
 
 impl XorShift {
-    fn next_f64(&mut self) -> f64 {
+    #[inline]
+    fn next_u64(&mut self) -> u64 {
         let mut x = self.0;
         x ^= x << 13;
         x ^= x >> 7;
         x ^= x << 17;
         self.0 = x;
-        (x >> 11) as f64 / (1u64 << 53) as f64
+        x
+    }
+
+    #[inline]
+    fn next_f64(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
     }
 }
 
+/// Deterministic per-sample stream derived from a base seed, so the parallel
+/// draw below produces the same sample set as a serial one would.
+#[inline]
+fn stream(seed: u64, i: usize) -> XorShift {
+    let mut x = seed ^ (i as u64).wrapping_mul(0x9E3779B97F4A7C15);
+    x ^= x >> 30;
+    x = x.wrapping_mul(0xBF58476D1CE4E5B9);
+    x ^= x >> 27;
+    XorShift(x | 1)
+}
+
 /// One iteration's sample set: fixed-space points with fixed image values.
-fn draw_samples(
-    fixed: &RegImage,
-    n: usize,
-    threshold: f32,
-    rng: &mut XorShift,
-) -> Vec<(Vec3, f32)> {
-    let mut out = Vec::with_capacity(n);
-    let mut attempts = 0usize;
-    let max_attempts = n * 20;
-    while out.len() < n && attempts < max_attempts {
-        attempts += 1;
-        let i = rng.next_f64() * (fixed.dims[0] as f64 - 1.0);
-        let j = rng.next_f64() * (fixed.dims[1] as f64 - 1.0);
-        let k = rng.next_f64() * (fixed.dims[2] as f64 - 1.0);
-        let p = fixed.index_to_patient(i, j, k);
-        if let Some((v, _)) = fixed.sample_grad(p) {
-            if v >= threshold {
-                out.push((p, v));
-            }
-        }
+///
+/// Draws uniformly from the pre-built eligible-voxel list (see
+/// [`RegImage::prepare_sampling`]) and jitters within the cell, which keeps
+/// elastix's *RandomCoordinate* continuous sampling while removing the
+/// rejection loop entirely — every draw is a hit, so the work is exactly `n`
+/// interpolations and can run in parallel.
+fn draw_samples(fixed: &RegImage, n: usize, rng: &mut XorShift) -> Vec<(Vec3, f32)> {
+    let m = fixed.eligible.len();
+    if m == 0 || n == 0 {
+        return Vec::new();
     }
-    out
+    let [nx, ny, _] = fixed.dims;
+    let seed = rng.next_u64();
+    (0..n)
+        .into_par_iter()
+        .map(|s| {
+            let mut r = stream(seed, s);
+            let o = fixed.eligible[(r.next_u64() % m as u64) as usize] as usize;
+            let k = o / (nx * ny);
+            let rem = o - k * nx * ny;
+            let (j, i) = (rem / nx, rem % nx);
+            // Sub-voxel jitter inside the cell (indices stay in range because
+            // `prepare_sampling` excluded the far boundary).
+            let u = i as f64 + r.next_f64();
+            let v = j as f64 + r.next_f64();
+            let w = k as f64 + r.next_f64();
+            (
+                fixed.index_to_patient(u, v, w),
+                fixed.value_at_index(u, v, w),
+            )
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -651,9 +767,9 @@ fn asgd(
 // ---------------------------------------------------------------------------
 
 /// MSD metric only (no gradient) — used for reporting.
-fn msd_value(fixed: &RegImage, moving: &RegImage, t: &Transform3, n: usize, thr: f32) -> f64 {
+fn msd_value(fixed: &RegImage, moving: &RegImage, t: &Transform3, n: usize) -> f64 {
     let mut rng = XorShift(0xD1B54A32D192ED03);
-    let samples = draw_samples(fixed, n, thr, &mut rng);
+    let samples = draw_samples(fixed, n, &mut rng);
     let (sum, cnt) = samples
         .par_iter()
         .map(|&(p, f)| match moving.sample_grad(t.map(p)) {
@@ -701,15 +817,23 @@ pub fn register(
         (fixed_full.dims[2] as f64 - 1.0) * 0.5,
     );
 
-    let fixed_pyr = build_pyramid(fixed_full, params.levels);
+    let mut fixed_pyr = build_pyramid(fixed_full, params.levels);
     let moving_pyr = build_pyramid(moving_full, params.levels);
+
+    // Eligible-voxel lists (the fixed-image mask) are built once per level
+    // instead of being re-derived by rejection on every iteration.
+    for img in &mut fixed_pyr {
+        img.prepare_sampling(params.fixed_threshold);
+    }
+    if fixed_pyr.iter().all(|i| i.eligible.is_empty()) {
+        bail!("no fixed-image voxels above the sampling threshold — lower it and retry");
+    }
 
     let initial_metric = msd_value(
         &fixed_pyr[params.levels - 1],
         &moving_pyr[params.levels - 1],
         &Transform3 { rigid: RigidTransform::identity(center), bspline: None },
         params.samples.max(2000),
-        params.fixed_threshold,
     );
 
     // Rotation parameter scale (elastix AutomaticScalesEstimation analogue):
@@ -734,23 +858,15 @@ pub fn register(
         let moving = &moving_pyr[level];
         let delta = fixed.spacing.iter().cloned().fold(0.0f64, f64::max);
         let n_samples = params.samples;
-        let thr = params.fixed_threshold;
         let label = format!("Rigid L{}/{}", level + 1, params.levels);
 
         let center_l = center;
         let eval = move |p: &[f64], grad: &mut [f64], rng: &mut XorShift| -> (f64, f64) {
-            let tr = RigidTransform {
-                params: [
-                    p[0] / rot_scale,
-                    p[1] / rot_scale,
-                    p[2] / rot_scale,
-                    p[3],
-                    p[4],
-                    p[5],
-                ],
-                center: center_l,
-            };
-            let samples = draw_samples(fixed, n_samples, thr, rng);
+            let tr = RigidTransform::new(
+                [p[0] / rot_scale, p[1] / rot_scale, p[2] / rot_scale, p[3], p[4], p[5]],
+                center_l,
+            );
+            let samples = draw_samples(fixed, n_samples, rng);
             let n_total = samples.len().max(1);
             let (g, sum, cnt) = samples
                 .par_iter()
@@ -776,8 +892,8 @@ pub fn register(
                     || ([0.0; 6], 0.0, 0),
                     |a, b| {
                         let mut g = a.0;
-                        for i in 0..6 {
-                            g[i] += b.0[i];
+                        for (x, y) in g.iter_mut().zip(b.0) {
+                            *x += y;
                         }
                         (g, a.1 + b.1, a.2 + b.2)
                     },
@@ -789,13 +905,14 @@ pub fn register(
             (sum / cntf, cnt as f64 / n_total as f64)
         };
 
+        let rp = rigid.params();
         let scaled0 = vec![
-            rigid.params[0] * rot_scale,
-            rigid.params[1] * rot_scale,
-            rigid.params[2] * rot_scale,
-            rigid.params[3],
-            rigid.params[4],
-            rigid.params[5],
+            rp[0] * rot_scale,
+            rp[1] * rot_scale,
+            rp[2] * rot_scale,
+            rp[3],
+            rp[4],
+            rp[5],
         ];
         let mut mlast = last_metric;
         let Some((scaled, iters)) = asgd(
@@ -808,14 +925,17 @@ pub fn register(
         ) else {
             bail!("registration cancelled");
         };
-        rigid.params = [
-            scaled[0] / rot_scale,
-            scaled[1] / rot_scale,
-            scaled[2] / rot_scale,
-            scaled[3],
-            scaled[4],
-            scaled[5],
-        ];
+        rigid = RigidTransform::new(
+            [
+                scaled[0] / rot_scale,
+                scaled[1] / rot_scale,
+                scaled[2] / rot_scale,
+                scaled[3],
+                scaled[4],
+                scaled[5],
+            ],
+            center,
+        );
         total_iters += iters;
         last_metric = mlast;
     }
@@ -836,75 +956,72 @@ pub fn register(
             let moving = &moving_pyr[level];
             let delta = 0.5 * fixed.spacing.iter().cloned().fold(0.0f64, f64::max);
             let n_samples = params.samples;
-            let thr = params.fixed_threshold;
             let label = format!("B-spline L{}/{}", level + 1, params.levels);
             let rigid_l = rigid.clone();
-            let grid = bspline.clone(); // geometry only; coeffs come from p
+            // Grid geometry only - the coefficients come from `p` on every
+            // call, so the coefficient vector itself is not carried along.
+            let grid = bspline.geometry();
 
             let eval = move |p: &[f64], grad: &mut [f64], rng: &mut XorShift| -> (f64, f64) {
-                let samples = draw_samples(fixed, n_samples, thr, rng);
+                let samples = draw_samples(fixed, n_samples, rng);
                 let n_total = samples.len().max(1);
+                // One dense gradient accumulator per worker chunk, scattered
+                // into directly. The previous shape built a 192-entry sparse
+                // Vec for every sample (one heap allocation per sample) and
+                // let rayon allocate an `n_coeffs` accumulator per split,
+                // so the gradient reduction cost far more than the metric.
+                let chunk = samples.len().div_ceil(rayon::current_num_threads().max(1)).max(1);
                 let (gsum, sum, cnt) = samples
-                    .par_iter()
-                    .map(|&(x, fval)| {
-                        let mut sparse: Vec<(usize, f64)> = Vec::new();
-                        let (val, ok) = {
-                            let Some((base, w)) = grid.support(x) else {
-                                return (sparse, 0.0, 0usize);
-                            };
-                            // displacement from p
-                            let mut disp = Vec3::ZERO;
-                            let mut touched = [(0usize, 0.0f64); 64];
-                            let mut ti = 0;
-                            for kz in 0..4 {
-                                let iz = (base[2] + kz as i64) as usize;
-                                for ky in 0..4 {
-                                    let iy = (base[1] + ky as i64) as usize;
-                                    let wyz = w[1][ky] * w[2][kz];
-                                    let row =
-                                        3 * (base[0] as usize + gnx * (iy + gny * iz));
-                                    for kx in 0..4 {
-                                        let wt = w[0][kx] * wyz;
-                                        let o = row + 3 * kx;
-                                        disp.x += wt * p[o];
-                                        disp.y += wt * p[o + 1];
-                                        disp.z += wt * p[o + 2];
-                                        touched[ti] = (o, wt);
-                                        ti += 1;
-                                    }
-                                }
-                            }
-                            let q = rigid_l.map(x) + disp;
-                            match moving.sample_grad(q) {
-                                Some((mval, mg)) => {
-                                    let diff = (mval - fval) as f64;
-                                    for &(o, wt) in touched.iter() {
-                                        let c = 2.0 * diff * wt;
-                                        sparse.push((o, c * mg.x));
-                                        sparse.push((o + 1, c * mg.y));
-                                        sparse.push((o + 2, c * mg.z));
-                                    }
-                                    (diff * diff, 1usize)
-                                }
-                                None => (0.0, 0usize),
-                            }
-                        };
-                        (sparse, val, ok)
-                    })
+                    .par_chunks(chunk)
                     .fold(
                         || (vec![0.0f64; n_coeffs], 0.0f64, 0usize),
-                        |mut acc, item| {
-                            for (o, v) in item.0 {
-                                acc.0[o] += v;
-                            }
-                            (acc.0, acc.1 + item.1, acc.2 + item.2)
+                        |acc, part| {
+                            part.iter().fold(acc, |mut acc, &(x, fval)| {
+                                let Some((base, w)) = grid.support(x) else {
+                                    return acc;
+                                };
+                                let mut disp = Vec3::ZERO;
+                                let mut touched = [(0usize, 0.0f64); 64];
+                                let mut ti = 0;
+                                for kz in 0..4 {
+                                    let iz = (base[2] + kz as i64) as usize;
+                                    for (ky, wy) in w[1].iter().enumerate() {
+                                        let iy = (base[1] + ky as i64) as usize;
+                                        let wyz = wy * w[2][kz];
+                                        let row = 3 * (base[0] as usize + gnx * (iy + gny * iz));
+                                        for (kx, wx) in w[0].iter().enumerate() {
+                                            let wt = wx * wyz;
+                                            let o = row + 3 * kx;
+                                            disp.x += wt * p[o];
+                                            disp.y += wt * p[o + 1];
+                                            disp.z += wt * p[o + 2];
+                                            touched[ti] = (o, wt);
+                                            ti += 1;
+                                        }
+                                    }
+                                }
+                                let Some((mval, mg)) = moving.sample_grad(rigid_l.map(x) + disp)
+                                else {
+                                    return acc;
+                                };
+                                let diff = (mval - fval) as f64;
+                                for &(o, wt) in &touched[..ti] {
+                                    let c = 2.0 * diff * wt;
+                                    acc.0[o] += c * mg.x;
+                                    acc.0[o + 1] += c * mg.y;
+                                    acc.0[o + 2] += c * mg.z;
+                                }
+                                acc.1 += diff * diff;
+                                acc.2 += 1;
+                                acc
+                            })
                         },
                     )
                     .reduce(
                         || (vec![0.0f64; n_coeffs], 0.0f64, 0usize),
                         |mut a, b| {
-                            for i in 0..n_coeffs {
-                                a.0[i] += b.0[i];
+                            for (x, y) in a.0.iter_mut().zip(b.0.iter()) {
+                                *x += y;
                             }
                             (a.0, a.1 + b.1, a.2 + b.2)
                         },
@@ -940,7 +1057,6 @@ pub fn register(
         &moving_pyr[params.levels - 1],
         &transform,
         params.samples.max(2000),
-        params.fixed_threshold,
     );
 
     progress.set("done");

@@ -243,8 +243,8 @@ pub fn matrix_to_rigid(m: &[f64; 16], invert: bool) -> Option<RigidTransform> {
     let mut t = Vec3::new(m[3], m[7], m[11]);
 
     // Orthonormality check (allow small numeric noise).
-    for i in 0..3 {
-        let n = (r[i][0] * r[i][0] + r[i][1] * r[i][1] + r[i][2] * r[i][2]).sqrt();
+    for row in &r {
+        let n = (row[0] * row[0] + row[1] * row[1] + row[2] * row[2]).sqrt();
         if (n - 1.0).abs() > 1e-3 {
             return None;
         }
@@ -276,7 +276,7 @@ pub fn matrix_to_rigid(m: &[f64; 16], invert: bool) -> Option<RigidTransform> {
 
     // Verify the decomposition reproduces the matrix (guards against
     // reflections / scaling).
-    let rec = RigidTransform { params: [a, b, c, t.x, t.y, t.z], center: Vec3::ZERO };
+    let rec = RigidTransform::new([a, b, c, t.x, t.y, t.z], Vec3::ZERO);
     for (probe, orig) in [
         Vec3::new(100.0, 0.0, 0.0),
         Vec3::new(0.0, 100.0, 0.0),

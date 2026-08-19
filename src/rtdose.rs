@@ -43,11 +43,26 @@ pub struct DoseGrid {
 impl DoseGrid {
     /// Trilinear dose sample at a patient-space point. `None` outside grid.
     pub fn sample(&self, p: Vec3) -> Option<f32> {
-        let [nx, ny, nf] = self.dims;
+        self.sample_uvw(self.grid_coords(p))
+    }
+
+    /// Grid coordinates of a patient point: fractional column and row indices
+    /// plus the distance along the grid normal in mm. Affine in `p`, so a
+    /// caller walking a regular lattice can step these incrementally instead
+    /// of re-projecting every point (see [`crate::render::sample_dose_plane`]).
+    #[inline]
+    pub fn grid_coords(&self, p: Vec3) -> [f64; 3] {
         let d = p - self.origin;
-        let u = d.dot(self.row_dir) / self.spacing[0];
-        let v = d.dot(self.col_dir) / self.spacing[1];
-        let w = d.dot(self.normal); // mm along normal
+        [
+            d.dot(self.row_dir) / self.spacing[0],
+            d.dot(self.col_dir) / self.spacing[1],
+            d.dot(self.normal),
+        ]
+    }
+
+    /// Trilinear dose sample at grid coordinates from [`DoseGrid::grid_coords`].
+    pub fn sample_uvw(&self, [u, v, w]: [f64; 3]) -> Option<f32> {
+        let [nx, ny, nf] = self.dims;
 
         if u < 0.0 || v < 0.0 || u > (nx - 1) as f64 || v > (ny - 1) as f64 {
             return None;
@@ -56,13 +71,31 @@ impl DoseGrid {
             return None;
         }
 
+
         // Find bracketing frames (offsets ascending, possibly non-uniform).
-        let hi = match self
-            .offsets
-            .binary_search_by(|o| o.partial_cmp(&w).unwrap_or(std::cmp::Ordering::Equal))
-        {
-            Ok(i) => i,
-            Err(i) => i,
+        // Frame offsets are uniform in practically every RTDOSE, so guess the
+        // index directly and only fall back to a search if the guess misses;
+        // this runs once per displayed pixel.
+        let last = *self.offsets.last().unwrap();
+        let hi = 'find: {
+            if nf > 1 {
+                let step = (last - self.offsets[0]) / (nf - 1) as f64;
+                if step > 1e-9 {
+                    let g = (((w - self.offsets[0]) / step).ceil() as i64).clamp(0, nf as i64) as usize;
+                    let below = g == 0 || self.offsets[g - 1] <= w;
+                    let above = g == nf || self.offsets[g] >= w;
+                    if below && above {
+                        break 'find g;
+                    }
+                }
+            }
+            match self
+                .offsets
+                .binary_search_by(|o| o.partial_cmp(&w).unwrap_or(std::cmp::Ordering::Equal))
+            {
+                Ok(i) => i,
+                Err(i) => i,
+            }
         };
         let (f0, f1, tz) = if hi == 0 {
             (0, 0, 0.0)

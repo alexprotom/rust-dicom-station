@@ -62,11 +62,41 @@ pub fn i32_of(obj: &InMemDicomObject, tag: dicom_core::Tag) -> Option<i32> {
     obj.element(tag).ok().and_then(|e| e.to_int::<i32>().ok())
 }
 
-pub fn items_of<'a>(
-    obj: &'a InMemDicomObject,
+/// Short file name for warning messages.
+fn fname(p: &Path) -> std::borrow::Cow<'_, str> {
+    p.file_name().unwrap_or_default().to_string_lossy()
+}
+
+/// Parse a group of same-kind files in parallel, keeping the successes in
+/// order and turning each failure into a warning.
+fn parse_group<T: Send>(
+    files: &[PathBuf],
+    kind: &str,
+    busy: &str,
+    progress: &Progress,
+    warnings: &mut Vec<String>,
+    load: impl Fn(&Path) -> Result<T> + Sync,
+) -> Vec<T> {
+    if files.is_empty() {
+        return Vec::new();
+    }
+    progress.set(busy);
+    let results: Vec<Result<T>> = files.par_iter().map(|f| load(f)).collect();
+    let mut out = Vec::with_capacity(files.len());
+    for (f, r) in files.iter().zip(results) {
+        match r {
+            Ok(v) => out.push(v),
+            Err(e) => warnings.push(format!("{kind} {} load failed: {e:#}", fname(f))),
+        }
+    }
+    out
+}
+
+pub fn items_of(
+    obj: &InMemDicomObject,
     tag: dicom_core::Tag,
-) -> Option<&'a [InMemDicomObject]> {
-    obj.element(tag).ok().and_then(|e| e.items()).map(|v| &v[..])
+) -> Option<&[InMemDicomObject]> {
+    obj.element(tag).ok().and_then(|e| e.items())
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +254,11 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
     let mut record_files = Vec::new();
     let mut meta = PatientMeta::default();
 
+    // Series are looked up by UID rather than scanned linearly: with many
+    // series in one folder the linear form is quadratic in the file count.
+    let mut series_index: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::new();
+
     for s in &scanned {
         if meta.patient_id.is_empty() && !s.meta.patient_id.is_empty() {
             meta = s.meta.clone();
@@ -258,19 +293,22 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
                 || PLANAR_MODALITIES.contains(&s.modality.as_str())
                 || s.modality.is_empty())
         {
-            match image_series.iter_mut().find(|se| se.uid == s.series_uid) {
-                Some(se) => se.files.push(s.path.clone()),
-                None => image_series.push(SeriesInfo {
-                    uid: s.series_uid.clone(),
-                    modality: s.modality.clone(),
-                    description: s.series_desc.clone(),
-                    patient_id: s.meta.patient_id.clone(),
-                    patient_name: s.meta.patient_name.clone(),
-                    study_uid: s.study_uid.clone(),
-                    study_date: s.meta.study_date.clone(),
-                    study_description: s.meta.study_description.clone(),
-                    files: vec![s.path.clone()],
-                }),
+            match series_index.get(s.series_uid.as_str()) {
+                Some(&i) => image_series[i].files.push(s.path.clone()),
+                None => {
+                    series_index.insert(s.series_uid.as_str(), image_series.len());
+                    image_series.push(SeriesInfo {
+                        uid: s.series_uid.clone(),
+                        modality: s.modality.clone(),
+                        description: s.series_desc.clone(),
+                        patient_id: s.meta.patient_id.clone(),
+                        patient_name: s.meta.patient_name.clone(),
+                        study_uid: s.study_uid.clone(),
+                        study_date: s.meta.study_date.clone(),
+                        study_description: s.meta.study_description.clone(),
+                        files: vec![s.path.clone()],
+                    });
+                }
             }
         }
     }
@@ -288,86 +326,62 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
     warnings.append(&mut vol_warnings);
 
     // RT objects — every structure set is loaded (e.g. one per 4DCT phase);
-    // the application chooses which one is active.
-    let mut structure_sets = Vec::new();
-    for p in &rtstruct_files {
-        progress.set("Parsing RT Structure Sets…");
-        match rtstruct::load(p) {
-            Ok(ss) => structure_sets.push(ss),
-            Err(e) => warnings.push(format!(
-                "RTSTRUCT {} load failed: {e:#}",
-                p.file_name().unwrap_or_default().to_string_lossy()
-            )),
-        }
+    // the application chooses which one is active. Each group is parsed in
+    // parallel; the files are independent.
+    let structure_sets = parse_group(
+        &rtstruct_files,
+        "RTSTRUCT",
+        "Parsing RT Structure Sets…",
+        progress,
+        &mut warnings,
+        rtstruct::load,
+    );
+    let doses = parse_group(
+        &rtdose_files,
+        "RTDOSE",
+        "Parsing RT Dose…",
+        progress,
+        &mut warnings,
+        rtdose::load,
+    );
+    let plans = parse_group(
+        &rtplan_files,
+        "RTPLAN",
+        "Parsing RT Plan…",
+        progress,
+        &mut warnings,
+        rtplan::load,
+    );
+    let planar_images = parse_group(
+        &planar_files,
+        "planar image",
+        "Loading planar images (DX/RTIMAGE)…",
+        progress,
+        &mut warnings,
+        extras::load_planar,
+    );
+    let registrations = parse_group(
+        &reg_files,
+        "REG",
+        "Parsing spatial registrations (REG)…",
+        progress,
+        &mut warnings,
+        extras::load_reg,
+    );
+    for r in registrations.iter().filter(|r| r.deformable) {
+        warnings.push(format!(
+            "REG {} is a deformable registration — only its rigid matrices are read",
+            r.label
+        ));
     }
-
-    let mut doses = Vec::new();
-    for p in &rtdose_files {
-        progress.set("Parsing RT Dose…");
-        match rtdose::load(p) {
-            Ok(d) => doses.push(d),
-            Err(e) => warnings.push(format!(
-                "RTDOSE {} load failed: {e:#}",
-                p.file_name().unwrap_or_default().to_string_lossy()
-            )),
-        }
-    }
-
-    let mut plans = Vec::new();
-    for p in &rtplan_files {
-        progress.set("Parsing RT Plan…");
-        match rtplan::load(p) {
-            Ok(pl) => plans.push(pl),
-            Err(e) => warnings.push(format!(
-                "RTPLAN {} load failed: {e:#}",
-                p.file_name().unwrap_or_default().to_string_lossy()
-            )),
-        }
-    }
-
-    let mut planar_images = Vec::new();
-    for p in &planar_files {
-        progress.set("Loading planar images (DX/RTIMAGE)…");
-        match extras::load_planar(p) {
-            Ok(img) => planar_images.push(img),
-            Err(e) => warnings.push(format!(
-                "planar image {} load failed: {e:#}",
-                p.file_name().unwrap_or_default().to_string_lossy()
-            )),
-        }
-    }
-
-    let mut registrations = Vec::new();
-    for p in &reg_files {
-        progress.set("Parsing spatial registrations (REG)…");
-        match extras::load_reg(p) {
-            Ok(r) => {
-                if r.deformable {
-                    warnings.push(format!(
-                        "REG {} is a deformable registration — only its rigid matrices are read",
-                        p.file_name().unwrap_or_default().to_string_lossy()
-                    ));
-                }
-                registrations.push(r);
-            }
-            Err(e) => warnings.push(format!(
-                "REG {} load failed: {e:#}",
-                p.file_name().unwrap_or_default().to_string_lossy()
-            )),
-        }
-    }
-
-    let mut treat_records = Vec::new();
-    for p in &record_files {
-        progress.set("Parsing treatment records…");
-        match extras::load_record(p) {
-            Ok(r) => treat_records.push(r),
-            Err(e) => warnings.push(format!(
-                "RTRECORD {} load failed: {e:#}",
-                p.file_name().unwrap_or_default().to_string_lossy()
-            )),
-        }
-    }
+    let treat_records = parse_group(
+        &record_files,
+        "RTRECORD",
+        "Parsing treatment records…",
+        progress,
+        &mut warnings,
+        extras::load_record,
+    );
 
     // Frame-of-reference sanity checks.
     for ss in &structure_sets {
@@ -432,6 +446,10 @@ pub fn load_series_volume(
         window: Option<(f32, f32)>,
         thickness: Option<f64>,
         data: Vec<i16>,
+        /// Value range of this slice, accumulated while the pixels are still
+        /// hot in cache instead of by a second serial pass over the volume.
+        min: i16,
+        max: i16,
     }
 
     let opts = ConvertOptions::new().with_modality_lut(ModalityLutOption::Default);
@@ -488,6 +506,12 @@ pub fn load_series_volume(
                 .map(|&v| v.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16)
                 .collect();
 
+            let (mut min, mut max) = (i16::MAX, i16::MIN);
+            for &v in &data {
+                min = min.min(v);
+                max = max.max(v);
+            }
+
             Ok(SliceRec {
                 pos,
                 proj: pos.dot(normal),
@@ -500,6 +524,8 @@ pub fn load_series_volume(
                 window,
                 thickness: f64_of(&obj, tags::SLICE_THICKNESS),
                 data,
+                min,
+                max,
             })
         })
         .collect();
@@ -557,10 +583,8 @@ pub fn load_series_volume(
     let mut min_v = i16::MAX;
     let mut max_v = i16::MIN;
     for s in &slices {
-        for &v in &s.data {
-            min_v = min_v.min(v);
-            max_v = max_v.max(v);
-        }
+        min_v = min_v.min(s.min);
+        max_v = max_v.max(s.max);
         data.extend_from_slice(&s.data);
     }
 

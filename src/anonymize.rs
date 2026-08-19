@@ -20,6 +20,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -28,6 +29,7 @@ use dicom_core::{DataElement, Length, Tag, VR};
 use dicom_dictionary_std::tags;
 use dicom_object::meta::FileMetaTableBuilder;
 use dicom_object::{InMemDicomObject, OpenFileOptions};
+use rayon::prelude::*;
 
 use crate::loader::Progress;
 
@@ -201,6 +203,52 @@ pub fn scan(dir: &Path, progress: &Progress) -> Result<ScanResult> {
     anyhow::ensure!(!files.is_empty(), "No files found in {}", dir.display());
 
     let rule_list = rules();
+
+    /// What one file contributes to the scan totals.
+    struct FileScan {
+        modality: String,
+        /// Present identifying tags with their current value.
+        found: Vec<(Tag, String)>,
+        uids: HashSet<String>,
+        private: usize,
+    }
+
+    // Header parsing dominates the scan and the files are independent, so it
+    // runs in parallel; only the (cheap) merge into the totals is serial.
+    let done = AtomicUsize::new(0);
+    let scanned: Vec<Option<FileScan>> = files
+        .par_iter()
+        .map(|path| {
+            let n = done.fetch_add(1, Ordering::Relaxed);
+            if n.is_multiple_of(64) {
+                progress.set(format!("Reading headers… {}/{}", n + 1, files.len()));
+            }
+            // Header-only read: identifying tags and reference sequences all
+            // sit before Pixel Data.
+            let obj = OpenFileOptions::new()
+                .read_until(tags::PIXEL_DATA)
+                .open_file(path)
+                .ok()?;
+            let mut uids = HashSet::new();
+            let mut private = 0usize;
+            walk_stats(&obj, &mut uids, &mut private);
+            Some(FileScan {
+                modality: crate::loader::str_of(&obj, tags::MODALITY)
+                    .unwrap_or_else(|| "?".into()),
+                found: rule_list
+                    .iter()
+                    .filter_map(|rule| {
+                        let el = obj.element(rule.tag).ok()?;
+                        let v = el.to_str().map(|s| s.trim().to_string()).unwrap_or_default();
+                        Some((rule.tag, v))
+                    })
+                    .collect(),
+                uids,
+                private,
+            })
+        })
+        .collect();
+
     let mut per_tag: HashMap<Tag, (HashSet<String>, usize)> = HashMap::new();
     let mut modalities: BTreeMap<String, usize> = BTreeMap::new();
     let mut uids = HashSet::new();
@@ -208,34 +256,20 @@ pub fn scan(dir: &Path, progress: &Progress) -> Result<ScanResult> {
     let mut dicom_files = Vec::new();
     let mut unreadable = 0usize;
 
-    for (i, path) in files.iter().enumerate() {
-        if i % 25 == 0 {
-            progress.set(format!("Reading headers… {}/{}", i + 1, files.len()));
-        }
-        // Header-only read: identifying tags and reference sequences all sit
-        // before Pixel Data.
-        let Ok(obj) = OpenFileOptions::new()
-            .read_until(tags::PIXEL_DATA)
-            .open_file(path)
-        else {
+    for (path, fs) in files.iter().zip(scanned) {
+        let Some(fs) = fs else {
             unreadable += 1;
             continue;
         };
         dicom_files.push(path.clone());
-        let modality = crate::loader::str_of(&obj, tags::MODALITY).unwrap_or_else(|| "?".into());
-        *modalities.entry(modality).or_insert(0) += 1;
-        for rule in &rule_list {
-            if let Ok(el) = obj.element(rule.tag) {
-                let v = el
-                    .to_str()
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_default();
-                let e = per_tag.entry(rule.tag).or_default();
-                e.0.insert(v);
-                e.1 += 1;
-            }
+        *modalities.entry(fs.modality).or_insert(0) += 1;
+        for (tag, v) in fs.found {
+            let e = per_tag.entry(tag).or_default();
+            e.0.insert(v);
+            e.1 += 1;
         }
-        walk_stats(&obj, &mut uids, &mut private);
+        uids.extend(fs.uids);
+        private += fs.private;
     }
     anyhow::ensure!(
         !dicom_files.is_empty(),
@@ -405,15 +439,22 @@ pub fn apply(files: &[PathBuf], root: &Path, p: &ApplyParams, progress: &Progres
     let mut uid_map: HashMap<String, String> = HashMap::new();
     if p.remap_uids {
         progress.set("Collecting UIDs…");
+        let per_file: Vec<Result<HashSet<String>>> = files
+            .par_iter()
+            .map(|path| {
+                let obj = OpenFileOptions::new()
+                    .read_until(tags::PIXEL_DATA)
+                    .open_file(path)
+                    .with_context(|| format!("re-open {}", path.display()))?;
+                let mut u = HashSet::new();
+                let mut private = 0usize;
+                walk_stats(&obj, &mut u, &mut private);
+                Ok(u)
+            })
+            .collect();
         let mut uids = HashSet::new();
-        let mut private = 0usize;
-        for path in files {
-            let obj = OpenFileOptions::new()
-                .read_until(tags::PIXEL_DATA)
-                .open_file(path)
-                .with_context(|| format!("re-open {}", path.display()))?;
-            walk_stats(&obj, &mut uids, &mut private);
-            // The file meta media-storage UID must follow, too.
+        for r in per_file {
+            uids.extend(r?);
         }
         let salt = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -434,8 +475,12 @@ pub fn apply(files: &[PathBuf], root: &Path, p: &ApplyParams, progress: &Progres
             .with_context(|| format!("create output folder {}", out.display()))?;
     }
 
-    let mut written = 0usize;
-    for (i, path) in files.iter().enumerate() {
+    let done = AtomicUsize::new(0);
+    // One file in, one file out — parallel over files, like the scan pass.
+    let results: Vec<Result<()>> = files
+        .par_iter()
+        .map(|path| -> Result<()> {
+        let i = done.fetch_add(1, Ordering::Relaxed);
         progress.set(format!("Anonymizing… {}/{}", i + 1, files.len()));
         let file_obj = dicom_object::open_file(path)
             .with_context(|| format!("open {}", path.display()))?;
@@ -487,6 +532,12 @@ pub fn apply(files: &[PathBuf], root: &Path, p: &ApplyParams, progress: &Progres
             .with_context(|| format!("write {}", tmp.display()))?;
         std::fs::rename(&tmp, &out_path)
             .with_context(|| format!("replace {}", out_path.display()))?;
+        Ok(())
+        })
+        .collect();
+    let mut written = 0usize;
+    for r in results {
+        r?;
         written += 1;
     }
     progress.set("done");

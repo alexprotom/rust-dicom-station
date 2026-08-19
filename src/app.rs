@@ -158,9 +158,7 @@ struct ViewState {
     dose_key: Option<u64>,
     contour_key: Option<u64>,
     slice_buf: Vec<i16>,
-    gray_buf: Vec<Color32>,
     dose_plane: Vec<f32>,
-    dose_rgba: Vec<Color32>,
     iso_segs: Vec<(usize, render::Segment)>,
     contours: Vec<(usize, render::RoiPlaneGraphics)>,
     fusion_tex: Option<TextureHandle>,
@@ -181,9 +179,7 @@ impl ViewState {
             dose_key: None,
             contour_key: None,
             slice_buf: Vec::new(),
-            gray_buf: Vec::new(),
             dose_plane: Vec::new(),
-            dose_rgba: Vec::new(),
             iso_segs: Vec::new(),
             contours: Vec::new(),
             fusion_tex: None,
@@ -250,26 +246,50 @@ impl StudySlot {
 // Background loading
 // ---------------------------------------------------------------------------
 
+/// A freshly reconstructed volume: pixels, its default window/level and any
+/// non-fatal notes raised while reading the series.
+type LoadedVolume = (Volume, (f32, f32), Vec<String>);
+
 enum LoadResult {
+    /// A whole folder, for the given slot.
     Study(Box<anyhow::Result<LoadedStudy>>, usize),
-    Volume(Box<anyhow::Result<(Volume, (f32, f32), Vec<String>)>>, usize, usize),
+    /// A single series switched into (slot, series index).
+    Volume(Box<anyhow::Result<LoadedVolume>>, usize, usize),
 }
 
-struct LoadJob {
-    progress: Arc<Progress>,
-    rx: mpsc::Receiver<LoadResult>,
+/// A unit of work running on a background thread: a shared progress handle
+/// plus the channel its result arrives on. Every background feature in the
+/// app has this shape, and [`poll_job`] drives them all identically.
+struct Job<T, P = Progress> {
+    progress: Arc<P>,
+    rx: mpsc::Receiver<T>,
 }
 
-struct RegJob {
-    progress: Arc<RegProgress>,
-    rx: mpsc::Receiver<anyhow::Result<RegistrationResult>>,
-    /// Slot used as the fixed image for this run.
-    fixed_slot: usize,
-}
-
-struct SimJob {
-    progress: Arc<Progress>,
-    rx: mpsc::Receiver<(usize, LoadedStudy)>,
+/// Poll a background job. Returns its result once, clearing the slot; reports
+/// a worker that died without answering into `error`; otherwise schedules the
+/// next poll and returns `None`.
+fn poll_job<T, P>(
+    slot: &mut Option<Job<T, P>>,
+    ctx: &egui::Context,
+    what: &str,
+    error: &mut Option<String>,
+) -> Option<T> {
+    let job = slot.as_ref()?;
+    match job.rx.try_recv() {
+        Ok(v) => {
+            *slot = None;
+            Some(v)
+        }
+        Err(mpsc::TryRecvError::Empty) => {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            None
+        }
+        Err(mpsc::TryRecvError::Disconnected) => {
+            *slot = None;
+            *error = Some(format!("{what} thread terminated unexpectedly"));
+            None
+        }
+    }
 }
 
 /// A floating 3D structure-rendering window (one per study slot).
@@ -288,12 +308,49 @@ struct D3Window {
     radius: f32,
     /// Identity of the structure set the meshes were built from.
     key: u64,
-    job: Option<D3Job>,
+    job: Option<Job<Vec<RoiMesh>>>,
+    /// Cached projected geometry for the current camera.
+    frame: D3Frame,
 }
 
-struct D3Job {
-    progress: Arc<Progress>,
-    rx: mpsc::Receiver<Vec<RoiMesh>>,
+
+/// Cached triangle soup of a 3D window.
+///
+/// egui repaints on every pointer move, and projecting + depth-sorting a few
+/// hundred thousand triangles takes several milliseconds, so the soup is
+/// rebuilt only when something it actually depends on changes. The draw
+/// order depends on orientation and visibility alone, so panning and zooming
+/// reuse the existing sort.
+#[derive(Default)]
+struct D3Frame {
+    /// Identity of the current depth sort (orientation + visibility + meshes).
+    order_key: Option<u64>,
+    /// Identity of the current projected vertices (also zoom / pan / size).
+    vertex_key: Option<u64>,
+    mesh: Arc<egui::epaint::Mesh>,
+    /// Triangles in scene order, indexed by the sort below.
+    tris: Vec<[u32; 3]>,
+    /// View-space depth per vertex.
+    depth: Vec<f32>,
+    /// `(monotone depth key) << 32 | triangle slot`, sorted far-to-near.
+    order: Vec<u64>,
+}
+
+/// Map an `f32` to a `u32` that sorts in the same order, so the painter's
+/// algorithm can use a primitive sort instead of a float comparator.
+#[inline]
+fn depth_key(d: f32) -> u32 {
+    let b = d.to_bits();
+    if b & 0x8000_0000 != 0 {
+        !b
+    } else {
+        b ^ 0x8000_0000
+    }
+}
+
+#[inline]
+fn mix(h: u64, v: u64) -> u64 {
+    (h ^ v).wrapping_mul(0x100000001b3)
 }
 
 /// What a right-click action on the data tree selects.
@@ -346,28 +403,9 @@ struct PlanarWindow {
     tex_wl: (f32, f32),
 }
 
-struct ExportJob {
-    progress: Arc<Progress>,
-    rx: mpsc::Receiver<anyhow::Result<(usize, String)>>,
-}
 
-/// Background run of the built-in synthetic test-data generator.
-struct GenJob {
-    progress: Arc<Progress>,
-    rx: mpsc::Receiver<anyhow::Result<(usize, PathBuf)>>,
-}
 
-/// Background folder scan of the anonymizer tool.
-struct AnonScanJob {
-    progress: Arc<Progress>,
-    rx: mpsc::Receiver<anyhow::Result<anonymize::ScanResult>>,
-}
 
-/// Background rewrite pass of the anonymizer tool.
-struct AnonApplyJob {
-    progress: Arc<Progress>,
-    rx: mpsc::Receiver<anyhow::Result<usize>>,
-}
 
 /// A completed registration plus the direction it was run in.
 struct ActiveRegistration {
@@ -391,14 +429,15 @@ pub struct ViewerApp {
     /// Slot whose readout is expanded in the status bar.
     hovered_slot: usize,
 
-    loading: Option<LoadJob>,
+    loading: Option<Job<LoadResult>>,
     /// A load queued behind the one in flight (slot, directory).
     pending_load: Option<(usize, PathBuf)>,
     error: Option<String>,
 
     // Registration (direction selectable: either study can be the fixed one).
     registration: Option<ActiveRegistration>,
-    reg_job: Option<RegJob>,
+    /// The payload carries the slot that was used as the fixed image.
+    reg_job: Option<Job<(usize, anyhow::Result<RegistrationResult>), RegProgress>>,
     /// Fixed-image slot for the *next* registration run (0 = A, 1 = B).
     reg_fixed_slot: usize,
     fusion_on: bool,
@@ -412,9 +451,9 @@ pub struct ViewerApp {
     // Study transform simulator (registration QA).
     sim_source: usize,
     sim_params: SimParams,
-    sim_job: Option<SimJob>,
+    sim_job: Option<Job<(usize, LoadedStudy)>>,
     last_sim: Option<String>,
-    export_job: Option<ExportJob>,
+    export_job: Option<Job<anyhow::Result<(usize, String)>>>,
     export_result: Option<String>,
 
     // Built-in synthetic test-data generator.
@@ -423,7 +462,7 @@ pub struct ViewerApp {
     gen_params: GenParams,
     /// Output folder as edited in the dialog (defaults to the app folder).
     gen_dir: String,
-    gen_job: Option<GenJob>,
+    gen_job: Option<Job<anyhow::Result<(usize, PathBuf)>>>,
     gen_result: Option<String>,
     /// Load the generated study into slot A once it has been written.
     gen_load_after: bool,
@@ -440,8 +479,8 @@ pub struct ViewerApp {
     anon_mark: bool,
     /// Last scan result; findings are edited in place by the table.
     anon_scan: Option<anonymize::ScanResult>,
-    anon_scan_job: Option<AnonScanJob>,
-    anon_apply_job: Option<AnonApplyJob>,
+    anon_scan_job: Option<Job<anyhow::Result<anonymize::ScanResult>>>,
+    anon_apply_job: Option<Job<anyhow::Result<usize>>>,
     anon_result: Option<String>,
 
     /// Open floating viewers for planar images.
@@ -566,7 +605,7 @@ impl ViewerApp {
             let res = loader::load_directory(&path, &p2);
             let _ = tx.send(LoadResult::Study(Box::new(res), slot));
         });
-        self.loading = Some(LoadJob { progress, rx });
+        self.loading = Some(Job { progress, rx });
     }
 
     fn start_series_switch(&mut self, slot: usize, idx: usize) {
@@ -582,7 +621,7 @@ impl ViewerApp {
             let res = loader::load_series_volume(&series, &p2);
             let _ = tx.send(LoadResult::Volume(Box::new(res), slot, idx));
         });
-        self.loading = Some(LoadJob { progress, rx });
+        self.loading = Some(Job { progress, rx });
     }
 
     /// A folder finished loading (*File ▶ Add DICOM folder*): merge it into
@@ -796,9 +835,9 @@ impl ViewerApp {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let res = registration::register(&fixed, &moving, &params, &p2);
-            let _ = tx.send(res);
+            let _ = tx.send((fixed_slot, res));
         });
-        self.reg_job = Some(RegJob { progress, rx, fixed_slot });
+        self.reg_job = Some(Job { progress, rx });
     }
 
     /// Generate a transformed copy of the source study into the other slot
@@ -838,7 +877,7 @@ impl ViewerApp {
             let out = simulate::generate_transformed_study(&src, &params, &p2);
             let _ = tx.send((target, out));
         });
-        self.sim_job = Some(SimJob { progress, rx });
+        self.sim_job = Some(Job { progress, rx });
     }
 
     /// Export a loaded study as DICOM files into a user-chosen folder.
@@ -848,7 +887,7 @@ impl ViewerApp {
         }
         let Some(study) = &self.slots[slot].study else { return };
         let Some(dir) = rfd::FileDialog::new()
-            .set_title(&format!("Export dataset {} as DICOM — choose folder", SLOT_NAMES[slot]))
+            .set_title(format!("Export dataset {} as DICOM — choose folder", SLOT_NAMES[slot]))
             .pick_folder()
         else {
             return;
@@ -863,7 +902,7 @@ impl ViewerApp {
                 .map(|n| (n, dir.display().to_string()));
             let _ = tx.send(res);
         });
-        self.export_job = Some(ExportJob { progress, rx });
+        self.export_job = Some(Job { progress, rx });
     }
 
     /// Apply an appearance preference and remember it for the next run.
@@ -899,7 +938,7 @@ impl ViewerApp {
             let _ = tx.send(res);
         });
         self.gen_result = None;
-        self.gen_job = Some(GenJob { progress, rx });
+        self.gen_job = Some(Job { progress, rx });
     }
 
     /// Reset zoom, pan and slice (back to the volume center) of every view.
@@ -1328,10 +1367,11 @@ impl ViewerApp {
             pan: Vec2::ZERO,
             opacity: 1.0,
             meshes: None,
+            frame: D3Frame::default(),
             center: [0.0; 3],
             radius: 100.0,
             key,
-            job: Some(D3Job { progress, rx }),
+            job: Some(Job { progress, rx }),
         });
     }
 }
@@ -1354,35 +1394,21 @@ impl eframe::App for ViewerApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         // Poll background loading.
-        if let Some(job) = &self.loading {
-            match job.rx.try_recv() {
-                Ok(LoadResult::Study(res, slot)) => {
-                    self.loading = None;
-                    match *res {
-                        Ok(study) => self.absorb_loaded_study(slot, study),
-                        Err(e) => self.error = Some(format!("{e:#}")),
+        match poll_job(&mut self.loading, &ctx, "Loading", &mut self.error) {
+            Some(LoadResult::Study(res, slot)) => match *res {
+                Ok(study) => self.absorb_loaded_study(slot, study),
+                Err(e) => self.error = Some(format!("{e:#}")),
+            },
+            Some(LoadResult::Volume(res, slot, idx)) => match *res {
+                Ok((vol, window, warnings)) => {
+                    self.apply_new_volume(slot, vol, window, idx);
+                    if let Some(study) = &mut self.slots[slot].study {
+                        study.warnings.extend(warnings);
                     }
                 }
-                Ok(LoadResult::Volume(res, slot, idx)) => {
-                    self.loading = None;
-                    match *res {
-                        Ok((vol, window, warnings)) => {
-                            self.apply_new_volume(slot, vol, window, idx);
-                            if let Some(study) = &mut self.slots[slot].study {
-                                study.warnings.extend(warnings);
-                            }
-                        }
-                        Err(e) => self.error = Some(format!("{e:#}")),
-                    }
-                }
-                Err(mpsc::TryRecvError::Empty) => {
-                    ctx.request_repaint_after(std::time::Duration::from_millis(80));
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.loading = None;
-                    self.error = Some("Loading thread terminated unexpectedly".into());
-                }
-            }
+                Err(e) => self.error = Some(format!("{e:#}")),
+            },
+            None => {}
         }
         // Kick a queued load once the current one finished.
         if self.loading.is_none() {
@@ -1392,101 +1418,51 @@ impl eframe::App for ViewerApp {
         }
 
         // Poll background simulation.
-        if let Some(job) = &self.sim_job {
-            match job.rx.try_recv() {
-                Ok((target, study)) => {
-                    self.sim_job = None;
-                    self.on_study_loaded(target, study);
-                    self.comparison = true;
-                }
-                Err(mpsc::TryRecvError::Empty) => {
-                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.sim_job = None;
-                    self.error = Some("Simulation thread terminated unexpectedly".into());
-                }
-            }
+        if let Some((target, study)) = poll_job(&mut self.sim_job, &ctx, "Simulation", &mut self.error) {
+            self.on_study_loaded(target, study);
+            self.comparison = true;
         }
 
         // Poll background export.
-        if let Some(job) = &self.export_job {
-            match job.rx.try_recv() {
-                Ok(Ok((n, dir))) => {
-                    self.export_job = None;
-                    self.export_result = Some(format!("✔ {n} DICOM file(s) written to {dir}"));
-                }
-                Ok(Err(e)) => {
-                    self.export_job = None;
-                    self.error = Some(format!("Export failed: {e:#}"));
-                }
-                Err(mpsc::TryRecvError::Empty) => {
-                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.export_job = None;
-                    self.error = Some("Export thread terminated unexpectedly".into());
-                }
+        match poll_job(&mut self.export_job, &ctx, "Export", &mut self.error) {
+            Some(Ok((n, dir))) => {
+                self.export_result = Some(format!("✔ {n} DICOM file(s) written to {dir}"));
             }
+            Some(Err(e)) => self.error = Some(format!("Export failed: {e:#}")),
+            None => {}
         }
 
         // Poll background test-data generation.
-        if let Some(job) = &self.gen_job {
-            match job.rx.try_recv() {
-                Ok(Ok((n, dir))) => {
-                    self.gen_job = None;
-                    self.gen_result = Some(format!(
-                        "✔ {n} DICOM file(s) written to {}",
-                        dir.display()
-                    ));
-                    if self.gen_load_after {
-                        self.gen_open = false;
-                        self.start_load(0, dir);
-                    }
-                }
-                Ok(Err(e)) => {
-                    self.gen_job = None;
-                    self.error = Some(format!("Test data generation failed: {e:#}"));
-                }
-                Err(mpsc::TryRecvError::Empty) => {
-                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.gen_job = None;
-                    self.error =
-                        Some("Test data generation thread terminated unexpectedly".into());
+        match poll_job(&mut self.gen_job, &ctx, "Test data generation", &mut self.error) {
+            Some(Ok((n, dir))) => {
+                self.gen_result =
+                    Some(format!("✔ {n} DICOM file(s) written to {}", dir.display()));
+                if self.gen_load_after {
+                    self.gen_open = false;
+                    self.start_load(0, dir);
                 }
             }
+            Some(Err(e)) => self.error = Some(format!("Test data generation failed: {e:#}")),
+            None => {}
         }
 
         // Poll background registration.
-        if let Some(job) = &self.reg_job {
-            match job.rx.try_recv() {
-                Ok(Ok(result)) => {
-                    let fixed_slot = self.reg_job.as_ref().map(|j| j.fixed_slot).unwrap_or(0);
-                    self.reg_job = None;
-                    self.registration = Some(ActiveRegistration { result, fixed_slot });
-                    self.fusion_on = true;
-                    self.reg_gen += 1;
-                    // Re-propagate the crosshair through the new transform.
-                    let cursor = self.slots[fixed_slot].cursor;
-                    self.set_cursor(fixed_slot, cursor, usize::MAX);
-                }
-                Ok(Err(e)) => {
-                    self.reg_job = None;
-                    let msg = format!("{e:#}");
-                    if !msg.contains("cancelled") {
-                        self.error = Some(format!("Registration failed: {msg}"));
-                    }
-                }
-                Err(mpsc::TryRecvError::Empty) => {
-                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.reg_job = None;
-                    self.error = Some("Registration thread terminated unexpectedly".into());
+        match poll_job(&mut self.reg_job, &ctx, "Registration", &mut self.error) {
+            Some((fixed_slot, Ok(result))) => {
+                self.registration = Some(ActiveRegistration { result, fixed_slot });
+                self.fusion_on = true;
+                self.reg_gen += 1;
+                // Re-propagate the crosshair through the new transform.
+                let cursor = self.slots[fixed_slot].cursor;
+                self.set_cursor(fixed_slot, cursor, usize::MAX);
+            }
+            Some((_, Err(e))) => {
+                let msg = format!("{e:#}");
+                if !msg.contains("cancelled") {
+                    self.error = Some(format!("Registration failed: {msg}"));
                 }
             }
+            None => {}
         }
 
         self.menu_bar(ui, &ctx);
@@ -1751,6 +1727,7 @@ impl ViewerApp {
 
                     ui.separator();
                     // 3D structure rendering windows.
+                    #[allow(clippy::needless_range_loop)] // `slot` also indexes `self.slots`
                     for slot in 0..2 {
                         let has_structs = self.slots[slot]
                             .study
@@ -1925,15 +1902,15 @@ impl ViewerApp {
                         res.iterations_run,
                         res.elapsed_secs
                     ));
-                    let t = &res.transform.rigid;
+                    let t = res.transform.rigid.params();
                     ui.weak(format!(
                         "t = ({:.1}, {:.1}, {:.1}) mm  r = ({:.2}, {:.2}, {:.2})°",
-                        t.params[3],
-                        t.params[4],
-                        t.params[5],
-                        t.params[0].to_degrees(),
-                        t.params[1].to_degrees(),
-                        t.params[2].to_degrees()
+                        t[3],
+                        t[4],
+                        t[5],
+                        t[0].to_degrees(),
+                        t[1].to_degrees(),
+                        t[2].to_degrees()
                     ));
                     ui.checkbox(
                         &mut self.fusion_on,
@@ -2050,6 +2027,7 @@ impl ViewerApp {
                     });
                 } else {
                     ui.horizontal(|ui| {
+                        #[allow(clippy::needless_range_loop)] // `slot` also indexes `self.slots`
                         for slot in 0..2 {
                             if ui
                                 .add_enabled(
@@ -2803,14 +2781,15 @@ impl ViewerApp {
                             ));
                             match extras::matrix_to_rigid(m, invert) {
                                 Some(rigid) => {
+                                    let rp = rigid.params();
                                     ui.weak(format!(
                                         "  t = ({:.1}, {:.1}, {:.1}) mm  r = ({:.2}, {:.2}, {:.2})°{}",
-                                        rigid.params[3],
-                                        rigid.params[4],
-                                        rigid.params[5],
-                                        rigid.params[0].to_degrees(),
-                                        rigid.params[1].to_degrees(),
-                                        rigid.params[2].to_degrees(),
+                                        rp[3],
+                                        rp[4],
+                                        rp[5],
+                                        rp[0].to_degrees(),
+                                        rp[1].to_degrees(),
+                                        rp[2].to_degrees(),
                                         if invert { "  (inverted)" } else { "" }
                                     ));
                                     ui.horizontal(|ui| {
@@ -2980,6 +2959,7 @@ impl ViewerApp {
                     ui.weak("No data loaded");
                     return;
                 }
+                #[allow(clippy::needless_range_loop)] // `slot` also indexes `self.slots`
                 for slot in 0..2 {
                     if slot == 1 && !self.comparison {
                         // Study B is hidden while comparison mode is off.
@@ -3642,7 +3622,7 @@ impl ViewerApp {
         let Some(study) = &self.slots[slot].study else { return };
         let cursor = self.slots[slot].cursor;
         let mut new_slices = [None; 3];
-        for i in 0..3 {
+        for (i, out) in new_slices.iter_mut().enumerate() {
             if skip_view == Some(i) {
                 continue;
             }
@@ -3653,11 +3633,11 @@ impl ViewerApp {
                 ViewPlane::Coronal => cursor[1],
             };
             let max = study.volume.plane_slice_count(pl).saturating_sub(1);
-            new_slices[i] = Some((sc.round().max(0.0) as usize).min(max));
+            *out = Some((sc.round().max(0.0) as usize).min(max));
         }
-        for i in 0..3 {
-            if let Some(s) = new_slices[i] {
-                self.slots[slot].views[i].slice = s;
+        for (view, s) in self.slots[slot].views.iter_mut().zip(new_slices) {
+            if let Some(s) = s {
+                view.slice = s;
             }
         }
     }
@@ -3699,10 +3679,12 @@ impl ViewerApp {
         if views[idx].img_key != Some(img_key) {
             let view = &mut views[idx];
             let mut slice_buf = std::mem::take(&mut view.slice_buf);
-            let mut gray_buf = std::mem::take(&mut view.gray_buf);
+            let mut gray = Vec::new();
             vol.extract_slice(plane, slice, &mut slice_buf);
-            render::slice_to_gray(&slice_buf, wc, ww, &mut gray_buf);
-            let img = ColorImage::new([w, h], gray_buf.clone());
+            render::slice_to_gray(&slice_buf, wc, ww, w, &mut gray);
+            // Moved straight into the texture: keeping a second copy around
+            // as a scratch buffer only bought an extra full-image memcpy.
+            let img = ColorImage::new([w, h], gray);
             match &mut view.tex {
                 Some(t) => t.set(img, TextureOptions::LINEAR),
                 None => {
@@ -3714,7 +3696,6 @@ impl ViewerApp {
                 }
             }
             view.slice_buf = slice_buf;
-            view.gray_buf = gray_buf;
             view.img_key = Some(img_key);
         }
 
@@ -3727,7 +3708,7 @@ impl ViewerApp {
                 let reference = *dose_reference;
                 let view = &mut views[idx];
                 let mut dose_plane = std::mem::take(&mut view.dose_plane);
-                let mut dose_rgba = std::mem::take(&mut view.dose_rgba);
+                let mut dose_rgba = Vec::new();
                 render::sample_dose_plane(vol, dose, plane, slice, &mut dose_plane);
                 render::dose_colorwash(
                     &dose_plane,
@@ -3736,7 +3717,7 @@ impl ViewerApp {
                     self.dose_opacity,
                     &mut dose_rgba,
                 );
-                let img = ColorImage::new([w, h], dose_rgba.clone());
+                let img = ColorImage::new([w, h], dose_rgba);
                 match &mut view.dose_tex {
                     Some(t) => t.set(img, TextureOptions::LINEAR),
                     None => {
@@ -3747,22 +3728,28 @@ impl ViewerApp {
                         ))
                     }
                 }
-                // Isodose segments.
+                // Isodose segments — one marching-squares pass per enabled
+                // level, and the levels are independent.
+                let levels: Vec<(usize, f32)> = self
+                    .iso_levels
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, l)| l.on)
+                    .map(|(li, l)| (li, l.pct / 100.0 * reference))
+                    .filter(|&(_, abs)| abs > 0.0)
+                    .collect();
+                let per_level: Vec<Vec<(usize, render::Segment)>> = levels
+                    .par_iter()
+                    .map(|&(li, abs)| {
+                        render::marching_squares(&dose_plane, w, h, abs)
+                            .into_iter()
+                            .map(|seg| (li, seg))
+                            .collect()
+                    })
+                    .collect();
                 view.iso_segs.clear();
-                for (li, level) in self.iso_levels.iter().enumerate() {
-                    if !level.on {
-                        continue;
-                    }
-                    let abs = level.pct / 100.0 * reference;
-                    if abs <= 0.0 {
-                        continue;
-                    }
-                    for seg in render::marching_squares(&dose_plane, w, h, abs) {
-                        view.iso_segs.push((li, seg));
-                    }
-                }
+                view.iso_segs.extend(per_level.into_iter().flatten());
                 view.dose_plane = dose_plane;
-                view.dose_rgba = dose_rgba;
                 view.dose_key = Some(dose_key);
             }
         }
@@ -3996,9 +3983,10 @@ impl ViewerApp {
                 continue;
             }
             // Poll mesh building.
-            if let Some(job) = &w.job {
-                match job.rx.try_recv() {
-                    Ok(meshes) => {
+            {
+                let mut err = None;
+                if let Some(meshes) = poll_job(&mut w.job, ctx, "Meshing", &mut err) {
+                    {
                         // Scene bounding sphere for auto-fit.
                         let (mut mn, mut mx) = ([f32::MAX; 3], [f32::MIN; 3]);
                         for m in &meshes {
@@ -4021,18 +4009,12 @@ impl ViewerApp {
                                 .max(10.0);
                         }
                         w.meshes = Some(Arc::new(meshes));
-                        w.job = None;
-                    }
-                    Err(mpsc::TryRecvError::Empty) => {
-                        ctx.request_repaint_after(std::time::Duration::from_millis(100));
-                    }
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        w.job = None;
                     }
                 }
+                self.error = self.error.take().or(err);
             }
 
-            let visible: Vec<bool> = self.slots[w.slot].roi_visible.clone();
+            let visible: &[bool] = &self.slots[w.slot].roi_visible;
             let title = format!("3D structures — dataset {}", SLOT_NAMES[w.slot]);
             let mut open = w.open;
             egui::Window::new(title)
@@ -4107,83 +4089,126 @@ impl ViewerApp {
                         );
                         return;
                     }
-                    let (sy, cy) = w.yaw.sin_cos();
-                    let (sp, cp) = w.pitch.sin_cos();
-                    let c = w.center;
-                    // Yaw about patient z, then pitch about the screen x axis.
-                    let rot = |p: [f32; 3], centered: bool| -> [f32; 3] {
-                        let (x, y, z) = if centered {
-                            (p[0] - c[0], p[1] - c[1], p[2] - c[2])
-                        } else {
-                            (p[0], p[1], p[2])
-                        };
-                        let x1 = cy * x - sy * y;
-                        let y1 = sy * x + cy * y;
-                        let y2 = cp * y1 - sp * z;
-                        let z2 = sp * y1 + cp * z;
-                        [x1, y2, z2]
-                    };
                     let scale = 0.45 * rect.width().min(rect.height()) / w.radius * w.zoom;
                     let cx = rect.center().x + w.pan.x;
                     let cyc = rect.center().y + w.pan.y;
                     let alpha = (w.opacity * 255.0) as u8;
 
-                    let mut evertices: Vec<egui::epaint::Vertex> = Vec::new();
-                    let mut vdepth: Vec<f32> = Vec::new();
-                    let mut tri_list: Vec<(f32, [u32; 3])> = Vec::new();
+                    // What the cached geometry depends on. Orientation and
+                    // visibility fix the draw order; the rest only moves the
+                    // already-ordered triangles around on screen.
+                    let mut order_key = mix(0x243F6A8885A308D3, Arc::as_ptr(meshes) as u64);
+                    order_key = mix(order_key, w.yaw.to_bits() as u64);
+                    order_key = mix(order_key, w.pitch.to_bits() as u64);
                     for m in meshes.iter() {
-                        if !visible.get(m.roi_index).copied().unwrap_or(true) {
-                            continue;
-                        }
-                        let base = evertices.len() as u32;
-                        // External/body contours render translucent so the
-                        // interior structures remain visible.
-                        let roi_alpha = if m.external {
-                            (alpha as f32 * 0.22) as u8
-                        } else {
-                            alpha
+                        let on = visible.get(m.roi_index).copied().unwrap_or(true);
+                        order_key = mix(order_key, on as u64);
+                    }
+                    let mut vertex_key = mix(order_key, scale.to_bits() as u64);
+                    vertex_key = mix(vertex_key, cx.to_bits() as u64);
+                    vertex_key = mix(vertex_key, cyc.to_bits() as u64);
+                    vertex_key = mix(vertex_key, alpha as u64);
+
+                    if w.frame.vertex_key != Some(vertex_key) {
+                        let (sy, cy) = w.yaw.sin_cos();
+                        let (sp, cp) = w.pitch.sin_cos();
+                        let c = w.center;
+                        // Yaw about patient z, then pitch about the screen x.
+                        let rot = |p: [f32; 3], centered: bool| -> [f32; 3] {
+                            let (x, y, z) = if centered {
+                                (p[0] - c[0], p[1] - c[1], p[2] - c[2])
+                            } else {
+                                (p[0], p[1], p[2])
+                            };
+                            let x1 = cy * x - sy * y;
+                            let y1 = sy * x + cy * y;
+                            let y2 = cp * y1 - sp * z;
+                            let z2 = sp * y1 + cp * z;
+                            [x1, y2, z2]
                         };
-                        for (v, n) in m.verts.iter().zip(m.normals.iter()) {
-                            let t = rot(*v, true);
-                            let nn = rot(*n, false);
-                            // Headlight along the view axis, two-sided.
-                            let inten = 0.30 + 0.70 * nn[1].abs();
-                            let col = Color32::from_rgba_unmultiplied(
-                                (m.color[0] as f32 * inten) as u8,
-                                (m.color[1] as f32 * inten) as u8,
-                                (m.color[2] as f32 * inten) as u8,
-                                roi_alpha,
-                            );
-                            evertices.push(egui::epaint::Vertex {
-                                pos: Pos2::new(cx + t[0] * scale, cyc - t[2] * scale),
-                                uv: egui::epaint::WHITE_UV,
-                                color: col,
-                            });
-                            vdepth.push(t[1]);
+                        let reorder = w.frame.order_key != Some(order_key);
+                        let f = &mut w.frame;
+                        // Buffers are reused across frames; `make_mut` hands
+                        // back the previous allocation because the painter has
+                        // already dropped last frame's reference.
+                        let mesh = Arc::make_mut(&mut f.mesh);
+                        mesh.vertices.clear();
+                        f.depth.clear();
+                        if reorder {
+                            f.tris.clear();
                         }
-                        for t in &m.tris {
-                            let d = (vdepth[(base + t[0]) as usize]
-                                + vdepth[(base + t[1]) as usize]
-                                + vdepth[(base + t[2]) as usize])
-                                / 3.0;
-                            tri_list.push((d, [base + t[0], base + t[1], base + t[2]]));
+                        for m in meshes.iter() {
+                            if !visible.get(m.roi_index).copied().unwrap_or(true) {
+                                continue;
+                            }
+                            let base = mesh.vertices.len() as u32;
+                            // External/body contours render translucent so the
+                            // interior structures remain visible.
+                            let roi_alpha = if m.external {
+                                (alpha as f32 * 0.22) as u8
+                            } else {
+                                alpha
+                            };
+                            for (v, n) in m.verts.iter().zip(m.normals.iter()) {
+                                let t = rot(*v, true);
+                                let nn = rot(*n, false);
+                                // Headlight along the view axis, two-sided.
+                                let inten = 0.30 + 0.70 * nn[1].abs();
+                                let col = Color32::from_rgba_unmultiplied(
+                                    (m.color[0] as f32 * inten) as u8,
+                                    (m.color[1] as f32 * inten) as u8,
+                                    (m.color[2] as f32 * inten) as u8,
+                                    roi_alpha,
+                                );
+                                mesh.vertices.push(egui::epaint::Vertex {
+                                    pos: Pos2::new(cx + t[0] * scale, cyc - t[2] * scale),
+                                    uv: egui::epaint::WHITE_UV,
+                                    color: col,
+                                });
+                                f.depth.push(t[1]);
+                            }
+                            if reorder {
+                                f.tris.extend(
+                                    m.tris
+                                        .iter()
+                                        .map(|t| [base + t[0], base + t[1], base + t[2]]),
+                                );
+                            }
                         }
+
+                        if reorder {
+                            // Painter's algorithm: far triangles first (viewer
+                            // at -y). Packing the depth into the high half of a
+                            // u64 lets this be a primitive sort rather than a
+                            // float comparator over a tuple.
+                            f.order.clear();
+                            f.order.extend(f.tris.iter().enumerate().map(|(i, t)| {
+                                let d = (f.depth[t[0] as usize]
+                                    + f.depth[t[1] as usize]
+                                    + f.depth[t[2] as usize])
+                                    / 3.0;
+                                ((!depth_key(d) as u64) << 32) | i as u64
+                            }));
+                            f.order.par_sort_unstable();
+                            mesh.indices.clear();
+                            mesh.indices.reserve(f.order.len() * 3);
+                            for &o in &f.order {
+                                mesh.indices.extend_from_slice(&f.tris[(o & 0xFFFF_FFFF) as usize]);
+                            }
+                            f.order_key = Some(order_key);
+                        }
+                        f.vertex_key = Some(vertex_key);
                     }
-                    // Painter's algorithm: far triangles first (viewer at −y).
-                    tri_list.sort_unstable_by(|a, b| {
-                        b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
-                    });
-                    let mut mesh = egui::epaint::Mesh::default();
-                    mesh.vertices = evertices;
-                    mesh.indices.reserve(tri_list.len() * 3);
-                    for (_, t) in &tri_list {
-                        mesh.indices.extend_from_slice(t);
-                    }
-                    painter.add(egui::Shape::mesh(mesh));
+
+                    painter.add(egui::Shape::Mesh(w.frame.mesh.clone()));
                     painter.text(
                         rect.left_bottom() + Vec2::new(6.0, -6.0),
                         Align2::LEFT_BOTTOM,
-                        format!("{} structure(s), {} triangles", meshes.len(), tri_list.len()),
+                        format!(
+                            "{} structure(s), {} triangles",
+                            meshes.len(),
+                            w.frame.tris.len()
+                        ),
                         FontId::proportional(11.0),
                         Color32::GRAY,
                     );
@@ -4389,7 +4414,7 @@ impl ViewerApp {
         });
         self.anon_scan = None;
         self.anon_result = None;
-        self.anon_scan_job = Some(AnonScanJob { progress, rx });
+        self.anon_scan_job = Some(Job { progress, rx });
     }
 
     fn anon_start_apply(&mut self) {
@@ -4427,7 +4452,7 @@ impl ViewerApp {
             let _ = tx.send(anonymize::apply(&files, &root, &params, &p2));
         });
         self.anon_result = None;
-        self.anon_apply_job = Some(AnonApplyJob { progress, rx });
+        self.anon_apply_job = Some(Job { progress, rx });
     }
 
     /// The anonymizer tool window: pick a folder, scan it, review every
@@ -4438,53 +4463,28 @@ impl ViewerApp {
             return;
         }
         // Poll background jobs.
-        if let Some(job) = &self.anon_scan_job {
-            match job.rx.try_recv() {
-                Ok(Ok(mut scan)) => {
-                    if self.anon_out.trim().is_empty() {
-                        self.anon_out = format!("{}_anon", scan.root.display());
-                    }
-                    scan.warnings.truncate(8);
-                    self.anon_scan = Some(scan);
-                    self.anon_scan_job = None;
+        match poll_job(&mut self.anon_scan_job, ctx, "Scan", &mut self.error) {
+            Some(Ok(mut scan)) => {
+                if self.anon_out.trim().is_empty() {
+                    self.anon_out = format!("{}_anon", scan.root.display());
                 }
-                Ok(Err(e)) => {
-                    self.error = Some(format!("{e:#}"));
-                    self.anon_scan_job = None;
-                }
-                Err(mpsc::TryRecvError::Empty) => {
-                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.error = Some("Scan thread terminated unexpectedly".into());
-                    self.anon_scan_job = None;
-                }
+                scan.warnings.truncate(8);
+                self.anon_scan = Some(scan);
             }
+            Some(Err(e)) => self.error = Some(format!("{e:#}")),
+            None => {}
         }
-        if let Some(job) = &self.anon_apply_job {
-            match job.rx.try_recv() {
-                Ok(Ok(n)) => {
-                    let dest = if self.anon_in_place {
-                        "in place".to_string()
-                    } else {
-                        format!("into {}", self.anon_out.trim())
-                    };
-                    self.anon_result =
-                        Some(format!("✔ {n} file(s) anonymized {dest}"));
-                    self.anon_apply_job = None;
-                }
-                Ok(Err(e)) => {
-                    self.error = Some(format!("{e:#}"));
-                    self.anon_apply_job = None;
-                }
-                Err(mpsc::TryRecvError::Empty) => {
-                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.error = Some("Anonymize thread terminated unexpectedly".into());
-                    self.anon_apply_job = None;
-                }
+        match poll_job(&mut self.anon_apply_job, ctx, "Anonymize", &mut self.error) {
+            Some(Ok(n)) => {
+                let dest = if self.anon_in_place {
+                    "in place".to_string()
+                } else {
+                    format!("into {}", self.anon_out.trim())
+                };
+                self.anon_result = Some(format!("✔ {n} file(s) anonymized {dest}"));
             }
+            Some(Err(e)) => self.error = Some(format!("{e:#}")),
+            None => {}
         }
 
         let busy = self.anon_scan_job.is_some() || self.anon_apply_job.is_some();
