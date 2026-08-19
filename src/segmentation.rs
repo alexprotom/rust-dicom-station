@@ -7,7 +7,7 @@
 //! the exact index order of [`Volume::data`], so slice overlays reuse the
 //! same display conventions as the volume itself.
 
-use std::collections::VecDeque;
+use std::collections::BinaryHeap;
 
 use egui::Color32;
 use rayon::prelude::*;
@@ -339,81 +339,266 @@ pub fn overlay_slice(
 }
 
 // ---------------------------------------------------------------------------
-// Seeded region growing (interactive "smart" segmentation)
+// Seeded organ growing (interactive "smart" segmentation)
 // ---------------------------------------------------------------------------
+//
+// Geodesic fast marching rather than a plain intensity-threshold flood fill:
+// a Dijkstra front expands from the seed, and the cost of traversing a voxel
+// rises exponentially both with its intensity deviation from the seed
+// statistics and with the local gradient magnitude. Organ boundaries (edges,
+// fat planes, tissue transitions) therefore act as barriers — the organ
+// under the seed fills long before the front leaks into neighboring tissue,
+// which a pure threshold grow cannot distinguish. The user's drag selects an
+// arrival-time (geodesic reach) threshold; inside homogeneous tissue the
+// cost is ≈1 per mm, so the reach reads roughly as a radius in mm.
+//
+// The front is expanded *incrementally*: dragging up pops more of the same
+// priority queue, dragging down truncates the already-accepted prefix
+// (Dijkstra accepts in nondecreasing time), so the live preview never
+// recomputes from scratch.
 
-/// Reusable buffers for seeded region growing. The BFS is recomputed live
-/// while the user drags the tolerance, so allocations are kept across runs.
+/// Hard cap on the accepted region (bounds memory and drag latency).
+const GROW_MAX_VOXELS: usize = 8_000_000;
+
+/// Half-extent of the working box around the seed, mm.
+const GROW_BOX_MM: f64 = 130.0;
+
+/// Geodesic reach (≈ mm in homogeneous tissue) at drag level 1.0.
+pub const GROW_BASE_REACH: f32 = 15.0;
+
+/// Incremental geodesic region growing from a seed voxel.
 #[derive(Default)]
 pub struct GrowState {
-    visited: Vec<u64>,
-    queue: VecDeque<u32>,
-    /// Linear voxel indices of the grown region (result of the last run).
+    /// Working-box origin (volume voxel coords) and dimensions.
+    lo: [usize; 3],
+    bdims: [usize; 3],
+    /// Best known arrival time per box voxel (INFINITY = untouched).
+    times: Vec<f32>,
+    /// Tentative front: (arrival-time bits, box index), min-first.
+    heap: BinaryHeap<std::cmp::Reverse<(u32, u32)>>,
+    /// Accepted voxels in nondecreasing-time order: (time, volume index).
+    accepted: Vec<(f32, u32)>,
+    /// Seed statistics: mean and 1 / (2.5 σ) of the local neighborhood.
+    mu: f32,
+    inv_sigma: f32,
+    /// Current selection: the prefix of `accepted` below the drag threshold.
     pub voxels: Vec<u32>,
     /// The voxel cap was hit — the region would grow further.
     pub capped: bool,
 }
 
 impl GrowState {
-    /// 6-connected flood fill from `seed` over voxels whose value lies
-    /// within ±`tol` of the seed value, capped at `max_voxels`.
-    pub fn run(&mut self, vol: &Volume, seed: [usize; 3], tol: f32, max_voxels: usize) {
+    /// Start a grow at `seed`: estimate local statistics, reset the front
+    /// and expand to the base reach ([`GROW_BASE_REACH`], drag level 1).
+    pub fn seed(&mut self, vol: &Volume, seed: [usize; 3]) {
         let [nx, ny, nz] = vol.dims;
-        let n = nx * ny * nz;
-        self.visited.clear();
-        self.visited.resize(n.div_ceil(64), 0);
-        self.queue.clear();
+        self.lo = [0; 3];
+        self.bdims = [0; 3];
+        self.times.clear();
+        self.heap.clear();
+        self.accepted.clear();
         self.voxels.clear();
         self.capped = false;
         if seed[0] >= nx || seed[1] >= ny || seed[2] >= nz {
             return;
         }
-        let sv = vol.index(seed[0], seed[1], seed[2]) as f32;
-        let (lo, hi) = (sv - tol, sv + tol);
-        let data = &vol.data;
+
+        // Robust seed statistics from a 5×5×3 neighborhood: median and MAD.
+        let mut samples: Vec<f32> = Vec::with_capacity(75);
+        for dk in -1i64..=1 {
+            for dj in -2i64..=2 {
+                for di in -2i64..=2 {
+                    if let Some(v) =
+                        vol.get(seed[0] as i64 + di, seed[1] as i64 + dj, seed[2] as i64 + dk)
+                    {
+                        samples.push(v as f32);
+                    }
+                }
+            }
+        }
+        samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mu = samples[samples.len() / 2];
+        let mut devs: Vec<f32> = samples.iter().map(|v| (v - mu).abs()).collect();
+        devs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let sigma = (1.4826 * devs[devs.len() / 2]).clamp(12.0, 150.0);
+        self.mu = mu;
+        self.inv_sigma = 1.0 / (2.5 * sigma);
+
+        // Working box around the seed.
+        for (ax, &s) in seed.iter().enumerate() {
+            let r = (GROW_BOX_MM / vol.spacing[ax]).ceil() as usize;
+            let n = vol.dims[ax];
+            self.lo[ax] = s.saturating_sub(r);
+            self.bdims[ax] = ((s + r + 1).min(n)) - self.lo[ax];
+        }
+        let bn = self.bdims[0] * self.bdims[1] * self.bdims[2];
+        self.times.resize(bn, f32::INFINITY);
+
+        let b0 = self.box_index(seed);
+        self.times[b0] = 0.0;
+        self.heap.push(std::cmp::Reverse((0f32.to_bits(), b0 as u32)));
+        self.expand_until(vol, GROW_BASE_REACH);
+        self.select(GROW_BASE_REACH);
+    }
+
+    /// Set the drag level (multiplier on the base reach) and update the
+    /// selection, expanding the front further if needed.
+    pub fn set_level(&mut self, vol: &Volume, level: f32) {
+        if self.times.is_empty() {
+            return;
+        }
+        let t = GROW_BASE_REACH * level.max(1e-3);
+        self.expand_until(vol, t);
+        self.select(t);
+    }
+
+    /// Drop the large working buffers (called on commit / cancel).
+    pub fn release(&mut self) {
+        self.times = Vec::new();
+        self.heap = BinaryHeap::new();
+        self.accepted = Vec::new();
+        self.voxels.clear();
+        self.capped = false;
+    }
+
+    #[inline]
+    fn box_index(&self, v: [usize; 3]) -> usize {
+        (v[2] - self.lo[2]) * self.bdims[0] * self.bdims[1]
+            + (v[1] - self.lo[1]) * self.bdims[0]
+            + (v[0] - self.lo[0])
+    }
+
+    /// Pop the front until its earliest arrival time exceeds `t`.
+    ///
+    /// Step cost from voxel a to neighbor b (per mm): 1 inside tissue that
+    /// matches the seed statistics, times an exponential penalty on b's
+    /// deviation from the seed mean, plus an exponential penalty on the
+    /// intensity jump of the a→b crossing itself. The jump term puts the
+    /// barrier exactly on the organ boundary, so the organ's own outer
+    /// voxel shell is still cheap to enter from the inside.
+    fn expand_until(&mut self, vol: &Volume, t: f32) {
+        let [nx, ny, _] = vol.dims;
         let sl = nx * ny;
-        let start = seed[2] * sl + seed[1] * nx + seed[0];
-        self.visited[start / 64] |= 1 << (start % 64);
-        self.queue.push_back(start as u32);
-        while let Some(cur) = self.queue.pop_front() {
-            self.voxels.push(cur);
-            if self.voxels.len() >= max_voxels {
+        while let Some(&std::cmp::Reverse((tb, b))) = self.heap.peek() {
+            let time = f32::from_bits(tb);
+            if time > t {
+                break;
+            }
+            if self.accepted.len() >= GROW_MAX_VOXELS {
                 self.capped = true;
                 break;
             }
-            let c = cur as usize;
-            let k = c / sl;
-            let r = c % sl;
-            let j = r / nx;
-            let i = r % nx;
-            let mut try_nb = |idx: usize| {
-                let w = idx / 64;
-                let b = 1u64 << (idx % 64);
-                if self.visited[w] & b == 0 {
-                    self.visited[w] |= b;
-                    let v = data[idx] as f32;
-                    if v >= lo && v <= hi {
-                        self.queue.push_back(idx as u32);
+            self.heap.pop();
+            let b = b as usize;
+            if time > self.times[b] {
+                continue; // stale entry
+            }
+            let bi = b % self.bdims[0];
+            let bj = (b / self.bdims[0]) % self.bdims[1];
+            let bk = b / (self.bdims[0] * self.bdims[1]);
+            let v = [self.lo[0] + bi, self.lo[1] + bj, self.lo[2] + bk];
+            self.accepted.push((time, (v[2] * sl + v[1] * nx + v[0]) as u32));
+            let va = vol.index(v[0], v[1], v[2]) as f32;
+
+            for (ax, dir) in [(0, -1i64), (0, 1), (1, -1), (1, 1), (2, -1), (2, 1)] {
+                let mut nb = [v[0] as i64, v[1] as i64, v[2] as i64];
+                nb[ax] += dir;
+                if nb[ax] < self.lo[ax] as i64
+                    || nb[ax] >= (self.lo[ax] + self.bdims[ax]) as i64
+                {
+                    continue;
+                }
+                let nv = [nb[0] as usize, nb[1] as usize, nb[2] as usize];
+                let nbx = self.box_index(nv);
+                if self.times[nbx] <= time {
+                    continue; // already settled cheaper
+                }
+                let s = vol.spacing[ax] as f32;
+                let vb = vol.index(nv[0], nv[1], nv[2]) as f32;
+                let dev = (vb - self.mu) * self.inv_sigma;
+                let intensity = (dev * dev).min(9.0).exp();
+                let edge = (((vb - va).abs() / s) / 60.0).min(9.0).exp();
+                let nt = time + s * (intensity + edge - 1.0);
+                if nt < self.times[nbx] {
+                    self.times[nbx] = nt;
+                    self.heap.push(std::cmp::Reverse((nt.to_bits(), nbx as u32)));
+                }
+            }
+        }
+    }
+
+    /// Select the accepted prefix with arrival time ≤ `t` into `voxels`.
+    fn select(&mut self, t: f32) {
+        let n = self.accepted.partition_point(|&(time, _)| time <= t);
+        self.voxels.clear();
+        self.voxels.extend(self.accepted[..n].iter().map(|&(_, v)| v));
+    }
+}
+
+/// Fill background holes of a voxel selection that are fully enclosed
+/// within an axial slice (vessels, calcifications, …), so a committed
+/// grow yields a solid organ. Extends `voxels` with the filled cells.
+pub fn fill_holes_slicewise(voxels: &mut Vec<u32>, dims: [usize; 3]) {
+    if voxels.is_empty() {
+        return;
+    }
+    let [nx, ny, _] = dims;
+    let sl = nx * ny;
+    let (mut lo, mut hi) = ([usize::MAX; 3], [0usize; 3]);
+    for &v in voxels.iter() {
+        let idx = v as usize;
+        let c = [idx % nx, (idx % sl) / nx, idx / sl];
+        for ax in 0..3 {
+            lo[ax] = lo[ax].min(c[ax]);
+            hi[ax] = hi[ax].max(c[ax]);
+        }
+    }
+    // One-cell padding guarantees the outer background is connected.
+    let w = hi[0] - lo[0] + 3;
+    let h = hi[1] - lo[1] + 3;
+    let mut buckets: Vec<Vec<u32>> = vec![Vec::new(); hi[2] - lo[2] + 1];
+    for &v in voxels.iter() {
+        buckets[v as usize / sl - lo[2]].push(v);
+    }
+    let mut occ = vec![false; w * h];
+    let mut reach = vec![false; w * h];
+    let mut stack: Vec<usize> = Vec::new();
+    for (dk, bucket) in buckets.iter().enumerate() {
+        if bucket.is_empty() {
+            continue;
+        }
+        occ.fill(false);
+        reach.fill(false);
+        for &v in bucket {
+            let idx = v as usize;
+            occ[(idx % sl / nx - lo[1] + 1) * w + (idx % nx - lo[0] + 1)] = true;
+        }
+        stack.push(0);
+        reach[0] = true;
+        while let Some(p) = stack.pop() {
+            let (x, y) = (p % w, p / w);
+            for (qx, qy) in [
+                (x.wrapping_sub(1), y),
+                (x + 1, y),
+                (x, y.wrapping_sub(1)),
+                (x, y + 1),
+            ] {
+                if qx < w && qy < h {
+                    let q = qy * w + qx;
+                    if !reach[q] && !occ[q] {
+                        reach[q] = true;
+                        stack.push(q);
                     }
                 }
-            };
-            if i > 0 {
-                try_nb(c - 1);
             }
-            if i + 1 < nx {
-                try_nb(c + 1);
-            }
-            if j > 0 {
-                try_nb(c - nx);
-            }
-            if j + 1 < ny {
-                try_nb(c + nx);
-            }
-            if k > 0 {
-                try_nb(c - sl);
-            }
-            if k + 1 < nz {
-                try_nb(c + sl);
+        }
+        let k = lo[2] + dk;
+        for y in 1..h - 1 {
+            for x in 1..w - 1 {
+                let p = y * w + x;
+                if !occ[p] && !reach[p] {
+                    voxels.push((k * sl + (lo[1] + y - 1) * nx + (lo[0] + x - 1)) as u32);
+                }
             }
         }
     }

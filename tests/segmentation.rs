@@ -80,9 +80,9 @@ fn brush_2d_stays_on_its_slice_and_erase_subtracts() {
 }
 
 #[test]
-fn region_grow_fills_exactly_the_connected_blob() {
+fn geodesic_grow_suggests_the_organ_and_respects_its_boundary() {
     let mut vol = test_volume([30, 30, 20], 0);
-    // A 5×5×5 blob of 1000 HU.
+    // A 5×5×5 "organ" of 1000 HU in a 0 HU background.
     for k in 5..10 {
         for j in 5..10 {
             for i in 5..10 {
@@ -91,13 +91,47 @@ fn region_grow_fills_exactly_the_connected_blob() {
         }
     }
     let mut grow = GrowState::default();
-    grow.run(&vol, [7, 7, 7], 100.0, 1_000_000);
+    grow.seed(&vol, [7, 7, 7]);
+    // At the default reach the whole organ — and only the organ — is
+    // suggested: the intensity jump at its boundary is a geodesic barrier.
     assert_eq!(grow.voxels.len(), 125);
     assert!(!grow.capped);
-    // A tolerance spanning the background floods (and hits the cap).
-    grow.run(&vol, [7, 7, 7], 2000.0, 1000);
-    assert!(grow.capped);
-    assert_eq!(grow.voxels.len(), 1000);
+    // Dragging down shrinks the selection to an inner subset…
+    grow.set_level(&vol, 0.15);
+    assert!(!grow.voxels.is_empty() && grow.voxels.len() < 125);
+    // …dragging back up re-extends it instantly (incremental front)…
+    grow.set_level(&vol, 1.0);
+    assert_eq!(grow.voxels.len(), 125);
+    // …and even a 20× reach does not cross the strong boundary.
+    grow.set_level(&vol, 20.0);
+    assert_eq!(grow.voxels.len(), 125);
+    grow.release();
+    assert!(grow.voxels.is_empty());
+}
+
+#[test]
+fn slicewise_hole_filling_closes_enclosed_gaps() {
+    let dims = [10, 10, 3];
+    let (nx, ny) = (dims[0], dims[1]);
+    let sl = nx * ny;
+    // A square ring on slice k=1: border of 3..=6 × 3..=6, hollow inside.
+    let mut voxels: Vec<u32> = Vec::new();
+    for j in 3..=6 {
+        for i in 3..=6 {
+            if i == 3 || i == 6 || j == 3 || j == 6 {
+                voxels.push((sl + j * nx + i) as u32);
+            }
+        }
+    }
+    assert_eq!(voxels.len(), 12);
+    segmentation::fill_holes_slicewise(&mut voxels, dims);
+    // The 2×2 enclosed hole is filled; the outer background is not.
+    assert_eq!(voxels.len(), 16);
+    for j in 4..=5 {
+        for i in 4..=5 {
+            assert!(voxels.contains(&((sl + j * nx + i) as u32)));
+        }
+    }
 }
 
 #[test]

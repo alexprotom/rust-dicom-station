@@ -161,18 +161,13 @@ enum SegTool {
 /// An in-progress region-growing drag.
 struct GrowDrag {
     slot: usize,
-    seed: [usize; 3],
-    /// Current intensity tolerance (± around the seed value, HU).
-    tol: f32,
-    /// Screen y at drag start and the tolerance it corresponds to.
+    /// Drag level: multiplier on the base geodesic reach (1.0 at press).
+    level: f32,
+    /// Screen y at drag start (level 1.0).
     y0: f32,
-    tol0: f32,
     /// The last computed region hit the voxel cap.
     capped: bool,
 }
-
-/// Voxel cap for the live region-growing preview.
-const GROW_MAX_VOXELS: usize = 4_000_000;
 
 // ---------------------------------------------------------------------------
 // Per-viewport state and caches
@@ -566,6 +561,8 @@ pub struct ViewerApp {
     grow_state: GrowState,
     /// Full-volume scratch mask holding the region-growing preview.
     grow_preview: Vec<u8>,
+    /// Voxels currently marked in `grow_preview` (for cheap clearing).
+    grow_marked: Vec<u32>,
     /// Bumped whenever the preview changes → overlay rebuild.
     grow_gen: u64,
     /// Counter for naming newly created segmentations.
@@ -652,6 +649,7 @@ impl ViewerApp {
             grow: None,
             grow_state: GrowState::default(),
             grow_preview: Vec::new(),
+            grow_marked: Vec::new(),
             grow_gen: 0,
             seg_counter: 0,
             dose_mode: DoseMode::Off,
@@ -1158,49 +1156,56 @@ impl ViewerApp {
             (seed[2].round().max(0.0) as usize).min(dims[2] - 1),
         ];
         self.cancel_grow();
-        self.grow = Some(GrowDrag { slot, seed, tol: 40.0, y0: y, tol0: 40.0, capped: false });
-        self.recompute_grow();
+        self.grow = Some(GrowDrag { slot, level: 1.0, y0: y, capped: false });
+        let vol = &self.slots[slot].study.as_ref().unwrap().volume;
+        self.grow_state.seed(vol, seed);
+        self.sync_grow_preview();
     }
 
     fn update_grow(&mut self, y: f32) {
         let Some(g) = &mut self.grow else { return };
-        // Dragging up widens the tolerance, half an HU per pixel.
-        let tol = (g.tol0 + (g.y0 - y) * 0.5).clamp(1.0, 4000.0);
-        if (tol - g.tol).abs() >= 0.5 {
-            g.tol = tol;
-            self.recompute_grow();
+        // Dragging up extends the geodesic reach exponentially.
+        let level = ((g.y0 - y) * 0.015).exp().clamp(0.02, 1000.0);
+        if (level / g.level - 1.0).abs() < 0.01 {
+            return;
         }
+        g.level = level;
+        let slot = g.slot;
+        let Some(study) = &self.slots[slot].study else { return };
+        self.grow_state.set_level(&study.volume, level);
+        self.sync_grow_preview();
     }
 
-    /// Re-run the region growing for the current drag and refresh the
-    /// preview mask (only the previously grown voxels are cleared, so the
+    /// Bring the preview mask in line with the grow state's current
+    /// selection (only previously marked voxels are cleared, so the
     /// full-volume scratch buffer never needs a full wipe).
-    fn recompute_grow(&mut self) {
-        let Some(g) = &self.grow else { return };
-        let (slot, seed, tol) = (g.slot, g.seed, g.tol);
-        let Some(study) = &self.slots[slot].study else { return };
-        let vol = &study.volume;
-        let n = vol.dims[0] * vol.dims[1] * vol.dims[2];
+    fn sync_grow_preview(&mut self) {
+        let Some(g) = &mut self.grow else { return };
+        g.capped = self.grow_state.capped;
+        let n = self.slots[g.slot]
+            .study
+            .as_ref()
+            .map(|st| st.volume.dims.iter().product())
+            .unwrap_or(0);
         if self.grow_preview.len() != n {
             self.grow_preview.clear();
             self.grow_preview.resize(n, 0);
         }
-        for &v in &self.grow_state.voxels {
+        for &v in &self.grow_marked {
             if let Some(p) = self.grow_preview.get_mut(v as usize) {
                 *p = 0;
             }
         }
-        self.grow_state.run(vol, seed, tol, GROW_MAX_VOXELS);
-        for &v in &self.grow_state.voxels {
+        self.grow_marked.clear();
+        self.grow_marked.extend_from_slice(&self.grow_state.voxels);
+        for &v in &self.grow_marked {
             self.grow_preview[v as usize] = 1;
-        }
-        if let Some(g) = &mut self.grow {
-            g.capped = self.grow_state.capped;
         }
         self.grow_gen += 1;
     }
 
-    /// Commit the previewed region into the slot's active segmentation.
+    /// Commit the previewed region into the slot's active segmentation,
+    /// filling slice-enclosed holes (vessels etc.) so the organ is solid.
     fn commit_grow(&mut self) {
         let Some(g) = self.grow.take() else { return };
         let slot = g.slot;
@@ -1208,30 +1213,35 @@ impl ViewerApp {
             if self.slots[slot].segs.is_empty() {
                 self.create_seg(slot);
             }
+            let dims = self.slots[slot].study.as_ref().unwrap().volume.dims;
+            let mut voxels = self.grow_state.voxels.clone();
+            segmentation::fill_holes_slicewise(&mut voxels, dims);
             let s = &mut self.slots[slot];
             let idx = s.active_seg.min(s.segs.len() - 1);
-            s.segs[idx].add_voxels(&self.grow_state.voxels);
+            s.segs[idx].add_voxels(&voxels);
             s.segs[idx].end_stroke();
         }
         self.clear_grow_preview();
+        self.grow_state.release();
     }
 
     /// Abandon any region-growing drag and its preview.
     fn cancel_grow(&mut self) {
         self.grow = None;
         self.clear_grow_preview();
+        self.grow_state.release();
     }
 
     fn clear_grow_preview(&mut self) {
-        if self.grow_state.voxels.is_empty() {
+        if self.grow_marked.is_empty() {
             return;
         }
-        for &v in &self.grow_state.voxels {
+        for &v in &self.grow_marked {
             if let Some(p) = self.grow_preview.get_mut(v as usize) {
                 *p = 0;
             }
         }
-        self.grow_state.voxels.clear();
+        self.grow_marked.clear();
         self.grow_gen += 1;
     }
 
@@ -2154,9 +2164,11 @@ impl ViewerApp {
                         ui,
                         SegTool::Grow,
                         "✨ Grow",
-                        "Interactive region growing: press to place a seed, drag up/down \
-                         to widen/narrow the intensity range (live preview), release to \
-                         commit, Esc to cancel",
+                        "Interactive organ segmentation (geodesic fast marching): press \
+                         to place a seed, drag up/down to grow/shrink the region with a \
+                         live preview. Intensity changes and edges act as barriers, so \
+                         the organ under the seed is suggested before anything leaks. \
+                         Release commits (enclosed holes are filled), Esc cancels",
                     );
                     if matches!(self.seg_tool, SegTool::Brush | SegTool::Erase) {
                         ui.add(
@@ -3503,7 +3515,7 @@ impl ViewerApp {
                             "LMB erase · Shift+wheel / [ ] brush size · Ctrl+Z undo · wheel slice"
                         }
                         SegTool::Grow => {
-                            "LMB press seed · drag up/down = tolerance · release commit · Esc cancel · Ctrl+Z undo"
+                            "LMB press seed · drag up/down = grow/shrink · release commit · Esc cancel · Ctrl+Z undo"
                         }
                     });
                 });
@@ -3895,13 +3907,14 @@ impl ViewerApp {
                         );
                     }
                     if let Some(g) = self.grow.as_ref().filter(|g| g.slot == slot) {
+                        let vv = vol.spacing[0] * vol.spacing[1] * vol.spacing[2] / 1000.0;
                         painter.text(
                             rect.left_bottom() + Vec2::new(6.0, -22.0),
                             Align2::LEFT_BOTTOM,
                             format!(
-                                "grow ±{:.0} HU · {} voxel(s){}",
-                                g.tol,
-                                self.grow_state.voxels.len(),
+                                "grow {:.1} cm³ · reach ×{:.2}{}",
+                                self.grow_state.voxels.len() as f64 * vv,
+                                g.level,
                                 if g.capped { " · CAPPED" } else { "" }
                             ),
                             FontId::proportional(13.0),

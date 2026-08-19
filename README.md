@@ -263,11 +263,19 @@ views:
   flat 2D circle confined to the displayed slice. Strokes are swept as
   capsules between pointer samples, so fast drags stay gap-free. `Alt`
   temporarily erases while painting, `Ctrl+Z` undoes stroke by stroke.
-* **✨ Grow** — blazing-fast interactive region growing: press to place a
-  seed, drag up/down to widen/narrow the intensity tolerance around the
-  seed value with a **live yellow preview** recomputed as you drag
-  (6-connected flood fill over the full volume, capped at 4 M voxels),
-  release to commit, `Esc` to cancel.
+* **✨ Grow** — blazing-fast interactive **organ-wise** segmentation by
+  geodesic fast marching (not a plain threshold): a Dijkstra front expands
+  from the seed, and the cost of each step rises exponentially with the
+  voxel's intensity deviation from robust seed statistics (median/MAD of
+  the local neighborhood) **and** with the intensity jump of the crossing
+  itself — organ boundaries, fat planes and edges act as barriers, so the
+  organ under the cursor is suggested first instead of flooding all
+  similar-intensity tissue. Press to seed, drag up/down to extend/shrink
+  the geodesic reach with a **live yellow preview**; the front expands
+  *incrementally* (drag up continues the same priority queue, drag down
+  truncates the accepted prefix), so the preview never recomputes from
+  scratch. Release commits — enclosed holes (vessels, calcifications) are
+  filled slice-wise so the organ comes out solid — and `Esc` cancels.
 
 Segmentations appear instantly in **all three MPR views** (crisp
 nearest-neighbor colorwash) **and live in the 3D window**: every mask edit
