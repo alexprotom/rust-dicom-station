@@ -298,7 +298,6 @@ ROI and rides the existing DICOM export.
 | Ctrl + wheel / pinch | Zoom (anchored at the cursor) |
 | Middle drag | Pan |
 | Right drag | Window/level (x = width, y = center) |
-| Double click | Reset zoom & pan |
 
 Each viewport also carries two corner buttons: **⟲** resets that view's zoom,
 pan **and slice** (back to the volume's central slice), and **⛶ / ❐**

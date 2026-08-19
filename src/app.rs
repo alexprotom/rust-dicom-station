@@ -1996,7 +1996,6 @@ impl ViewerApp {
                     ui.weak("Ctrl + wheel — zoom at cursor");
                     ui.weak("Middle drag — pan");
                     ui.weak("Right drag — window / level");
-                    ui.weak("Double click — reset view");
                 });
             });
         });
@@ -3506,7 +3505,7 @@ impl ViewerApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.weak(match self.seg_tool {
                         SegTool::None => {
-                            "LMB crosshair · RMB W/L · MMB pan · wheel slice · Ctrl+wheel zoom · double-click reset"
+                            "LMB crosshair · RMB W/L · MMB pan · wheel slice · Ctrl+wheel zoom"
                         }
                         SegTool::Brush => {
                             "LMB paint · Alt erase · Shift+wheel / [ ] brush size · Ctrl+Z undo · wheel slice"
@@ -4169,9 +4168,6 @@ impl ViewerApp {
         if resp.dragged_by(egui::PointerButton::Middle) {
             let d = resp.drag_delta();
             new_pan = Some(view.pan + d / zoom);
-        }
-        if resp.double_clicked() && !over_buttons {
-            reset_view = true;
         }
         let hovered = resp.hovered();
 
