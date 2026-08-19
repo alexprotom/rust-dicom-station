@@ -1,4 +1,5 @@
-//! 3D surface meshing of RT structure sets for the 3D view windows.
+//! 3D surface meshing of RT structure sets and painted segmentation masks
+//! for the 3D view windows.
 //!
 //! Pipeline per ROI (pure Rust, background thread):
 //! 1. rasterize the planar contours into a patient-axis-aligned binary mask
@@ -8,13 +9,21 @@
 //! 3. Laplacian smoothing (3 iterations) to remove voxel staircase artifacts;
 //! 4. area-weighted per-vertex normals for Gouraud shading.
 //!
+//! Painted segmentations skip step 1 — their voxel mask feeds the same
+//! surface-nets pipeline directly via [`mesh_from_mask`].
+//!
 //! The result is comparable to the segmentation surfaces shown by tools like
 //! 3D Slicer (which use flying edges + windowed-sinc smoothing).
 
 use rayon::prelude::*;
 
+use crate::geometry::Vec3;
 use crate::loader::Progress;
 use crate::rtstruct::{Roi, StructureSet};
+use crate::volume::Volume;
+
+/// Raw surface geometry: (vertices, unit normals, triangle indices).
+pub type SurfaceMesh = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[u32; 3]>);
 
 pub struct RoiMesh {
     /// Index of the ROI within the structure set (drives visibility).
@@ -167,7 +176,97 @@ fn build_roi_mesh(roi_index: usize, roi: &Roi) -> Option<RoiMesh> {
         }
     });
 
-    // ---- 2. surface nets -------------------------------------------------
+    // ---- 2-4. surface nets + smoothing + normals ------------------------
+    let map = |x: f64, y: f64, z: f64| -> [f32; 3] {
+        [
+            (origin[0] + x * h) as f32,
+            (origin[1] + y * h) as f32,
+            (origin[2] + z * h) as f32,
+        ]
+    };
+    let (verts, normals, tris) = net_surface(&inside, dims, &map)?;
+
+    let lname = roi.name.to_lowercase();
+    Some(RoiMesh {
+        roi_index,
+        name: roi.name.clone(),
+        color: roi.color,
+        external: roi.roi_type == "EXTERNAL"
+            || lname.contains("body")
+            || lname.contains("external")
+            || lname.contains("outer"),
+        verts,
+        normals,
+        tris,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Segmentation masks → surface meshes
+// ---------------------------------------------------------------------------
+
+/// Geometry of a voxel grid in patient space (a [`Volume`] without its data),
+/// small enough to hand to a background meshing thread.
+#[derive(Clone, Copy)]
+pub struct GridGeom {
+    pub origin: Vec3,
+    pub row_dir: Vec3,
+    pub col_dir: Vec3,
+    pub normal: Vec3,
+    pub spacing: [f64; 3],
+}
+
+impl GridGeom {
+    pub fn of(vol: &Volume) -> Self {
+        GridGeom {
+            origin: vol.origin,
+            row_dir: vol.row_dir,
+            col_dir: vol.col_dir,
+            normal: vol.normal,
+            spacing: vol.spacing,
+        }
+    }
+}
+
+/// Surface-mesh a segmentation mask snapshot produced by
+/// `Segmentation::mesh_grid`: a padded bool grid covering the mask's
+/// bounding box at voxel indices `lo + (g - 1) * stride`.
+pub fn mesh_from_mask(
+    grid: &[bool],
+    gdims: [usize; 3],
+    lo: [usize; 3],
+    stride: usize,
+    geom: &GridGeom,
+) -> Option<SurfaceMesh> {
+    let map = |x: f64, y: f64, z: f64| -> [f32; 3] {
+        let vi = lo[0] as f64 + (x - 1.0) * stride as f64;
+        let vj = lo[1] as f64 + (y - 1.0) * stride as f64;
+        let vk = lo[2] as f64 + (z - 1.0) * stride as f64;
+        let p = geom.origin
+            + geom.row_dir * (vi * geom.spacing[0])
+            + geom.col_dir * (vj * geom.spacing[1])
+            + geom.normal * (vk * geom.spacing[2]);
+        [p.x as f32, p.y as f32, p.z as f32]
+    };
+    net_surface(grid, gdims, &map)
+}
+
+// ---------------------------------------------------------------------------
+// Surface nets over a binary grid
+// ---------------------------------------------------------------------------
+
+/// Surface-nets extraction, Laplacian smoothing and vertex normals over a
+/// binary grid. `map` converts fractional grid coordinates to patient mm
+/// (applied before smoothing, so smoothing acts on the embedded surface).
+fn net_surface(
+    inside: &[bool],
+    gdims: [usize; 3],
+    map: &dyn Fn(f64, f64, f64) -> [f32; 3],
+) -> Option<SurfaceMesh> {
+    let [gx, gy, gz] = gdims;
+    if gx < 3 || gy < 3 || gz < 3 {
+        return None;
+    }
     let (cx, cy, cz) = (gx - 1, gy - 1, gz - 1);
     let cell_at = |i: usize, j: usize, k: usize| k * cx * cy + j * cx + i;
     let corner = |i: usize, j: usize, k: usize| inside[k * gx * gy + j * gx + i];
@@ -207,11 +306,11 @@ fn build_roi_mesh(roi_index: usize, roi: &Roi) -> Option<RoiMesh> {
                         cnt += 1.0;
                     }
                 }
-                let p = [
-                    (origin[0] + (i as f64 + acc[0] / cnt) * h) as f32,
-                    (origin[1] + (j as f64 + acc[1] / cnt) * h) as f32,
-                    (origin[2] + (k as f64 + acc[2] / cnt) * h) as f32,
-                ];
+                let p = map(
+                    i as f64 + acc[0] / cnt,
+                    j as f64 + acc[1] / cnt,
+                    k as f64 + acc[2] / cnt,
+                );
                 cell_vert[cell_at(i, j, k)] = verts.len() as i64;
                 verts.push(p);
             }
@@ -268,7 +367,7 @@ fn build_roi_mesh(roi_index: usize, roi: &Roi) -> Option<RoiMesh> {
         return None;
     }
 
-    // ---- 3. Laplacian smoothing ----------------------------------------
+    // ---- Laplacian smoothing --------------------------------------------
     // Vertex adjacency in compressed-row form. Storing it as a `Vec` per
     // vertex deduplicated by linear scan meant one heap allocation per vertex
     // — on a body contour that is well over a hundred thousand allocations.
@@ -330,7 +429,7 @@ fn build_roi_mesh(roi_index: usize, roi: &Roi) -> Option<RoiMesh> {
         });
     }
 
-    // ---- 4. per-vertex normals ------------------------------------------
+    // ---- per-vertex normals ----------------------------------------------
     let mut normals = vec![[0.0f32; 3]; verts.len()];
     for t in &tris {
         let a = verts[t[0] as usize];
@@ -356,17 +455,5 @@ fn build_roi_mesh(roi_index: usize, roi: &Roi) -> Option<RoiMesh> {
         }
     }
 
-    let lname = roi.name.to_lowercase();
-    Some(RoiMesh {
-        roi_index,
-        name: roi.name.clone(),
-        color: roi.color,
-        external: roi.roi_type == "EXTERNAL"
-            || lname.contains("body")
-            || lname.contains("external")
-            || lname.contains("outer"),
-        verts,
-        normals,
-        tris,
-    })
+    Some((verts, normals, tris))
 }

@@ -17,11 +17,12 @@ use crate::dicom_export;
 use crate::extras;
 use crate::gen_test_data::{self, GenParams};
 use crate::loader::{self, LoadedStudy, Progress};
-use crate::mesh3d::{self, RoiMesh};
+use crate::mesh3d::{self, GridGeom, RoiMesh};
 use crate::registration::{
     self, RegKind, RegParams, RegProgress, RegistrationResult, Transform3,
 };
 use crate::render;
+use crate::segmentation::{self, GrowState, Segmentation};
 use crate::settings::{self, Settings};
 use crate::simulate::{self, SimParams};
 use crate::volume::{ViewPlane, Volume};
@@ -140,6 +141,40 @@ const WL_PRESETS: &[(&str, f32, f32)] = &[
 ];
 
 // ---------------------------------------------------------------------------
+// Interactive segmentation tools
+// ---------------------------------------------------------------------------
+
+/// Active viewport tool. `None` keeps the classic behavior (LMB navigates
+/// the crosshair); the segmentation tools take over the left mouse button.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SegTool {
+    None,
+    /// Paint into the active segmentation (Alt temporarily erases).
+    Brush,
+    /// Erase from the active segmentation.
+    Erase,
+    /// Seeded region growing: press to seed, drag up/down to widen/narrow
+    /// the intensity tolerance, release to commit (Esc cancels).
+    Grow,
+}
+
+/// An in-progress region-growing drag.
+struct GrowDrag {
+    slot: usize,
+    seed: [usize; 3],
+    /// Current intensity tolerance (± around the seed value, HU).
+    tol: f32,
+    /// Screen y at drag start and the tolerance it corresponds to.
+    y0: f32,
+    tol0: f32,
+    /// The last computed region hit the voxel cap.
+    capped: bool,
+}
+
+/// Voxel cap for the live region-growing preview.
+const GROW_MAX_VOXELS: usize = 4_000_000;
+
+// ---------------------------------------------------------------------------
 // Per-viewport state and caches
 // ---------------------------------------------------------------------------
 
@@ -163,6 +198,8 @@ struct ViewState {
     contours: Vec<(usize, render::RoiPlaneGraphics)>,
     fusion_tex: Option<TextureHandle>,
     fusion_key: Option<u64>,
+    seg_tex: Option<TextureHandle>,
+    seg_key: Option<u64>,
 }
 
 impl ViewState {
@@ -184,6 +221,8 @@ impl ViewState {
             contours: Vec::new(),
             fusion_tex: None,
             fusion_key: None,
+            seg_tex: None,
+            seg_key: None,
         }
     }
 
@@ -192,6 +231,7 @@ impl ViewState {
         self.dose_key = None;
         self.contour_key = None;
         self.fusion_key = None;
+        self.seg_key = None;
     }
 }
 
@@ -217,6 +257,10 @@ struct StudySlot {
     active_structs: usize,
     active_dose: usize,
     dose_reference: f32,
+    /// Painted segmentations on this slot's volume.
+    segs: Vec<Segmentation>,
+    /// Index of the segmentation the tools edit.
+    active_seg: usize,
 }
 
 impl StudySlot {
@@ -238,6 +282,8 @@ impl StudySlot {
             active_structs: 0,
             active_dose: 0,
             dose_reference: 1.0,
+            segs: Vec::new(),
+            active_seg: 0,
         }
     }
 }
@@ -309,6 +355,11 @@ struct D3Window {
     /// Identity of the structure set the meshes were built from.
     key: u64,
     job: Option<Job<Vec<RoiMesh>>>,
+    /// Live meshes of the painted segmentations (`roi_index` = seg index).
+    seg_meshes: Option<Arc<Vec<RoiMesh>>>,
+    seg_job: Option<Job<Vec<RoiMesh>>>,
+    /// Hash of the segmentation state `seg_meshes` was built from.
+    seg_built: u64,
     /// Cached projected geometry for the current camera.
     frame: D3Frame,
 }
@@ -502,6 +553,24 @@ pub struct ViewerApp {
     show_labels: bool,
     show_isocenters: bool,
 
+    // Interactive segmentation.
+    seg_tool: SegTool,
+    /// Brush radius in mm (shared by paint and erase).
+    brush_radius_mm: f32,
+    /// Spherical 3D brush (paints across slices) vs. in-plane 2D circle.
+    brush_3d: bool,
+    /// Last brush sample of the stroke in progress: (slot, voxel coords).
+    paint_last: Option<(usize, [f64; 3])>,
+    /// Region-growing drag in progress.
+    grow: Option<GrowDrag>,
+    grow_state: GrowState,
+    /// Full-volume scratch mask holding the region-growing preview.
+    grow_preview: Vec<u8>,
+    /// Bumped whenever the preview changes → overlay rebuild.
+    grow_gen: u64,
+    /// Counter for naming newly created segmentations.
+    seg_counter: usize,
+
     dose_mode: DoseMode,
     dose_opacity: f32,
     dose_threshold_pct: f32,
@@ -576,6 +645,15 @@ impl ViewerApp {
             show_crosshair: true,
             show_labels: true,
             show_isocenters: true,
+            seg_tool: SegTool::None,
+            brush_radius_mm: 5.0,
+            brush_3d: true,
+            paint_last: None,
+            grow: None,
+            grow_state: GrowState::default(),
+            grow_preview: Vec::new(),
+            grow_gen: 0,
+            seg_counter: 0,
             dose_mode: DoseMode::Off,
             dose_opacity: 0.45,
             dose_threshold_pct: 15.0,
@@ -691,7 +769,12 @@ impl ViewerApp {
             v.pan = Vec2::ZERO;
             v.invalidate();
         }
+        // Segmentations were painted on the previous volume grid.
+        s.segs.clear();
+        s.active_seg = 0;
         s.study = Some(study);
+        self.cancel_grow();
+        self.paint_last = None;
         if slot == 1 {
             self.comparison = true;
         }
@@ -747,6 +830,11 @@ impl ViewerApp {
                 v.pan = Vec2::ZERO;
                 v.invalidate();
             }
+            // Segmentations were painted on the previous volume grid.
+            s.segs.clear();
+            s.active_seg = 0;
+            self.cancel_grow();
+            self.paint_last = None;
             self.clear_registration();
             self.settings_gen += 1;
         }
@@ -989,6 +1077,204 @@ impl ViewerApp {
             }
         }
         h ^ self.settings_gen.wrapping_mul(0x2545F4914F6CDD1D)
+    }
+
+    // -- Interactive segmentation ------------------------------------------
+
+    /// Everything the 2D segmentation overlays of a slot depend on.
+    fn seg_overlay_hash(&self, slot: usize) -> u64 {
+        let mut h = mix(0xA07A_5E65u64, slot as u64 + 1);
+        for (i, s) in self.slots[slot].segs.iter().enumerate() {
+            h = mix(h, i as u64 + 1);
+            h = mix(h, s.gen);
+            h = mix(h, s.visible as u64);
+            h = mix(h, u64::from_le_bytes([s.color[0], s.color[1], s.color[2], 0, 0, 0, 0, 0]));
+        }
+        if self.grow.as_ref().is_some_and(|g| g.slot == slot) {
+            h = mix(h, self.grow_gen.wrapping_add(1));
+        }
+        h
+    }
+
+    /// Everything the 3D segmentation meshes of a slot depend on
+    /// (geometry only — color and visibility are applied at draw time).
+    fn seg_mesh_hash(&self, slot: usize) -> u64 {
+        let mut h = mix(0x5E6_3E54u64, slot as u64 + 1);
+        for s in &self.slots[slot].segs {
+            h = mix(h, s.gen.wrapping_add(1));
+        }
+        h
+    }
+
+    /// Create a new segmentation on a slot's volume and make it active.
+    fn create_seg(&mut self, slot: usize) {
+        let Some(study) = &self.slots[slot].study else { return };
+        let dims = study.volume.dims;
+        let color = segmentation::SEG_PALETTE[self.seg_counter % segmentation::SEG_PALETTE.len()];
+        self.seg_counter += 1;
+        let name = format!("Seg {}", self.seg_counter);
+        let s = &mut self.slots[slot];
+        s.segs.push(Segmentation::new(name, color, dims));
+        s.active_seg = s.segs.len() - 1;
+    }
+
+    /// Apply one brush sample: paints a capsule from the previous sample of
+    /// this stroke to `vxl` (creating a segmentation first if none exists).
+    fn apply_brush(&mut self, slot: usize, plane: ViewPlane, slice: usize, vxl: [f64; 3], erase: bool) {
+        if self.slots[slot].segs.is_empty() {
+            if erase {
+                return;
+            }
+            self.create_seg(slot);
+        }
+        let radius = self.brush_radius_mm as f64;
+        let plane2d = if self.brush_3d { None } else { Some((plane, slice)) };
+        let from = match self.paint_last {
+            Some((s, p)) if s == slot => p,
+            _ => vxl,
+        };
+        let StudySlot { study, segs, active_seg, .. } = &mut self.slots[slot];
+        let vol = &study.as_ref().unwrap().volume;
+        let idx = (*active_seg).min(segs.len() - 1);
+        segs[idx].paint_capsule(vol, from, vxl, radius, erase, plane2d);
+        self.paint_last = Some((slot, vxl));
+    }
+
+    /// Close the brush stroke in progress (one undo step).
+    fn end_paint_stroke(&mut self, slot: usize) {
+        let s = &mut self.slots[slot];
+        if let Some(seg) = s.segs.get_mut(s.active_seg) {
+            seg.end_stroke();
+        }
+        self.paint_last = None;
+    }
+
+    fn begin_grow(&mut self, slot: usize, seed: [f64; 3], y: f32) {
+        let Some(study) = &self.slots[slot].study else { return };
+        let dims = study.volume.dims;
+        let seed = [
+            (seed[0].round().max(0.0) as usize).min(dims[0] - 1),
+            (seed[1].round().max(0.0) as usize).min(dims[1] - 1),
+            (seed[2].round().max(0.0) as usize).min(dims[2] - 1),
+        ];
+        self.cancel_grow();
+        self.grow = Some(GrowDrag { slot, seed, tol: 40.0, y0: y, tol0: 40.0, capped: false });
+        self.recompute_grow();
+    }
+
+    fn update_grow(&mut self, y: f32) {
+        let Some(g) = &mut self.grow else { return };
+        // Dragging up widens the tolerance, half an HU per pixel.
+        let tol = (g.tol0 + (g.y0 - y) * 0.5).clamp(1.0, 4000.0);
+        if (tol - g.tol).abs() >= 0.5 {
+            g.tol = tol;
+            self.recompute_grow();
+        }
+    }
+
+    /// Re-run the region growing for the current drag and refresh the
+    /// preview mask (only the previously grown voxels are cleared, so the
+    /// full-volume scratch buffer never needs a full wipe).
+    fn recompute_grow(&mut self) {
+        let Some(g) = &self.grow else { return };
+        let (slot, seed, tol) = (g.slot, g.seed, g.tol);
+        let Some(study) = &self.slots[slot].study else { return };
+        let vol = &study.volume;
+        let n = vol.dims[0] * vol.dims[1] * vol.dims[2];
+        if self.grow_preview.len() != n {
+            self.grow_preview.clear();
+            self.grow_preview.resize(n, 0);
+        }
+        for &v in &self.grow_state.voxels {
+            if let Some(p) = self.grow_preview.get_mut(v as usize) {
+                *p = 0;
+            }
+        }
+        self.grow_state.run(vol, seed, tol, GROW_MAX_VOXELS);
+        for &v in &self.grow_state.voxels {
+            self.grow_preview[v as usize] = 1;
+        }
+        if let Some(g) = &mut self.grow {
+            g.capped = self.grow_state.capped;
+        }
+        self.grow_gen += 1;
+    }
+
+    /// Commit the previewed region into the slot's active segmentation.
+    fn commit_grow(&mut self) {
+        let Some(g) = self.grow.take() else { return };
+        let slot = g.slot;
+        if !self.grow_state.voxels.is_empty() {
+            if self.slots[slot].segs.is_empty() {
+                self.create_seg(slot);
+            }
+            let s = &mut self.slots[slot];
+            let idx = s.active_seg.min(s.segs.len() - 1);
+            s.segs[idx].add_voxels(&self.grow_state.voxels);
+            s.segs[idx].end_stroke();
+        }
+        self.clear_grow_preview();
+    }
+
+    /// Abandon any region-growing drag and its preview.
+    fn cancel_grow(&mut self) {
+        self.grow = None;
+        self.clear_grow_preview();
+    }
+
+    fn clear_grow_preview(&mut self) {
+        if self.grow_state.voxels.is_empty() {
+            return;
+        }
+        for &v in &self.grow_state.voxels {
+            if let Some(p) = self.grow_preview.get_mut(v as usize) {
+                *p = 0;
+            }
+        }
+        self.grow_state.voxels.clear();
+        self.grow_gen += 1;
+    }
+
+    /// Undo the last stroke of a slot's active segmentation.
+    fn undo_active_seg(&mut self, slot: usize) {
+        let s = &mut self.slots[slot];
+        if let Some(seg) = s.segs.get_mut(s.active_seg) {
+            seg.undo_last();
+        }
+    }
+
+    /// Convert a segmentation into RTSTRUCT contours: appends a ROI to the
+    /// slot's active structure set (creating an in-memory set if the study
+    /// has none), so it displays like any ROI and rides the DICOM export.
+    fn seg_to_rtstruct(&mut self, slot: usize, seg_idx: usize) {
+        let StudySlot { study, segs, active_structs, roi_visible, .. } = &mut self.slots[slot];
+        let Some(study) = study.as_mut() else { return };
+        let Some(seg) = segs.get(seg_idx) else { return };
+        let vol = &study.volume;
+        if let Some(ss) = study.structure_sets.get_mut(*active_structs) {
+            let number = ss.rois.iter().map(|r| r.number).max().unwrap_or(0) + 1;
+            ss.rois.push(segmentation::mask_to_roi(seg, vol, number));
+            roi_visible.push(true);
+        } else {
+            let active_series = study.series.get(study.active_series);
+            // Pseudo-UID for the in-memory set (rewritten on DICOM export).
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            study.structure_sets.push(crate::rtstruct::StructureSet {
+                label: "Segmentations".into(),
+                frame_of_reference_uid: vol.frame_of_reference_uid.clone(),
+                sop_instance_uid: format!("2.25.{stamp}"),
+                study_uid: active_series.map(|s| s.study_uid.clone()).unwrap_or_default(),
+                referenced_series_uid: active_series.map(|s| s.uid.clone()).unwrap_or_default(),
+                file_name: "painted-segmentation".into(),
+                rois: vec![segmentation::mask_to_roi(seg, vol, 1)],
+            });
+            *active_structs = study.structure_sets.len() - 1;
+            *roi_visible = vec![true];
+        }
+        self.settings_gen += 1;
     }
 
     fn pick_folder(title: &str) -> Option<PathBuf> {
@@ -1348,16 +1634,43 @@ impl ViewerApp {
                 return;
             }
         }
-        let Some(ss) = self.slots[slot].active_structures().cloned() else { return };
+        let ss = self.slots[slot].active_structures().cloned();
+        if ss.is_none() && self.slots[slot].segs.is_empty() {
+            return;
+        }
+        // Initial auto-fit from the volume extents; replaced by the meshes'
+        // own bounding sphere once structure meshes arrive. Keeps the camera
+        // stable for segmentation-only scenes that rebuild while painting.
+        let (center, radius) = self.slots[slot]
+            .study
+            .as_ref()
+            .map(|st| {
+                let v = &st.volume;
+                let d = v.dims;
+                let a = v.voxel_to_patient(0.0, 0.0, 0.0);
+                let b = v.voxel_to_patient(
+                    d[0] as f64 - 1.0,
+                    d[1] as f64 - 1.0,
+                    d[2] as f64 - 1.0,
+                );
+                let c = (a + b) * 0.5;
+                let r = ((b - a).length() * 0.5).max(10.0);
+                ([c.x as f32, c.y as f32, c.z as f32], r as f32)
+            })
+            .unwrap_or(([0.0; 3], 100.0));
         self.d3_windows.retain(|w| w.slot != slot);
-        let progress = Arc::new(Progress::default());
-        progress.set("starting…");
-        let p2 = progress.clone();
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let meshes = mesh3d::build_meshes(&ss, &p2);
-            let _ = tx.send(meshes);
+        let job = ss.map(|ss| {
+            let progress = Arc::new(Progress::default());
+            progress.set("starting…");
+            let p2 = progress.clone();
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let meshes = mesh3d::build_meshes(&ss, &p2);
+                let _ = tx.send(meshes);
+            });
+            Job { progress, rx }
         });
+        let no_structs = job.is_none();
         self.d3_windows.push(D3Window {
             slot,
             open: true,
@@ -1366,12 +1679,15 @@ impl ViewerApp {
             zoom: 1.0,
             pan: Vec2::ZERO,
             opacity: 1.0,
-            meshes: None,
+            meshes: no_structs.then(|| Arc::new(Vec::new())),
+            seg_meshes: None,
+            seg_job: None,
+            seg_built: 0,
             frame: D3Frame::default(),
-            center: [0.0; 3],
-            radius: 100.0,
+            center,
+            radius,
             key,
-            job: Some(Job { progress, rx }),
+            job,
         });
     }
 }
@@ -1463,6 +1779,35 @@ impl eframe::App for ViewerApp {
                 }
             }
             None => {}
+        }
+
+        // Global segmentation shortcuts (skipped while a text field is
+        // focused): Ctrl+Z undo, Esc cancels a region-grow drag, [ ] resize
+        // the brush.
+        if !ctx.egui_wants_keyboard_input() {
+            let (undo, esc, smaller, bigger) = ctx.input(|i| {
+                (
+                    i.modifiers.command && i.key_pressed(egui::Key::Z),
+                    i.key_pressed(egui::Key::Escape),
+                    i.key_pressed(egui::Key::OpenBracket),
+                    i.key_pressed(egui::Key::CloseBracket),
+                )
+            });
+            if undo {
+                let slot = self.hovered_slot.min(1);
+                self.undo_active_seg(slot);
+            }
+            if esc && self.grow.is_some() {
+                self.cancel_grow();
+            }
+            if self.seg_tool != SegTool::None {
+                if smaller {
+                    self.brush_radius_mm = (self.brush_radius_mm / 1.2).max(0.5);
+                }
+                if bigger {
+                    self.brush_radius_mm = (self.brush_radius_mm * 1.2).min(80.0);
+                }
+            }
         }
 
         self.menu_bar(ui, &ctx);
@@ -1729,21 +2074,23 @@ impl ViewerApp {
                     // 3D structure rendering windows.
                     #[allow(clippy::needless_range_loop)] // `slot` also indexes `self.slots`
                     for slot in 0..2 {
-                        let has_structs = self.slots[slot]
+                        let has_3d = self.slots[slot]
                             .study
                             .as_ref()
                             .map(|s| !s.structure_sets.is_empty())
-                            .unwrap_or(false);
+                            .unwrap_or(false)
+                            || !self.slots[slot].segs.is_empty();
                         if slot == 1 && self.slots[1].study.is_none() {
                             continue;
                         }
                         if ui
                             .add_enabled(
-                                has_structs,
+                                has_3d,
                                 egui::Button::new(format!("3D {}", SLOT_NAMES[slot])),
                             )
                             .on_hover_text(format!(
-                                "Open a 3D surface rendering of dataset {}'s structures",
+                                "Open a 3D surface rendering of dataset {}'s structures \
+                                 and segmentations",
                                 SLOT_NAMES[slot]
                             ))
                             .clicked()
@@ -1773,6 +2120,62 @@ impl ViewerApp {
                         .clicked()
                     {
                         self.reset_all_views();
+                    }
+
+                    // Segmentation tools. Selecting a tool takes over the
+                    // left mouse button in the MPR views.
+                    ui.separator();
+                    let mut pick = |ui: &mut egui::Ui, tool: SegTool, label: &str, tip: &str| {
+                        if ui
+                            .selectable_label(self.seg_tool == tool, label)
+                            .on_hover_text(tip)
+                            .clicked()
+                        {
+                            self.seg_tool = if self.seg_tool == tool { SegTool::None } else { tool };
+                            if self.seg_tool != SegTool::Grow {
+                                self.cancel_grow();
+                            }
+                        }
+                    };
+                    pick(
+                        ui,
+                        SegTool::Brush,
+                        "🖌 Paint",
+                        "Paint the active segmentation (LMB drag).\n\
+                         Hold Alt to erase · Shift+wheel or [ ] resize the brush · Ctrl+Z undo",
+                    );
+                    pick(
+                        ui,
+                        SegTool::Erase,
+                        "◻ Erase",
+                        "Erase from the active segmentation (LMB drag)",
+                    );
+                    pick(
+                        ui,
+                        SegTool::Grow,
+                        "✨ Grow",
+                        "Interactive region growing: press to place a seed, drag up/down \
+                         to widen/narrow the intensity range (live preview), release to \
+                         commit, Esc to cancel",
+                    );
+                    if matches!(self.seg_tool, SegTool::Brush | SegTool::Erase) {
+                        ui.add(
+                            egui::DragValue::new(&mut self.brush_radius_mm)
+                                .speed(0.5)
+                                .range(0.5..=80.0)
+                                .suffix(" mm"),
+                        )
+                        .on_hover_text("Brush radius");
+                        if ui
+                            .selectable_label(self.brush_3d, "3D")
+                            .on_hover_text(
+                                "Spherical 3D brush: paints through neighboring slices.\n\
+                                 Off: flat 2D circle on the displayed slice only",
+                            )
+                            .clicked()
+                        {
+                            self.brush_3d = !self.brush_3d;
+                        }
                     }
                 }
 
@@ -2067,6 +2470,7 @@ impl ViewerApp {
             .show(ui, |ui| {
                 self.series_selector(ui, slot);
                 self.structures_section(ui, slot);
+                self.segmentation_section(ui, slot);
                 self.dose_section(ui, slot);
                 self.plan_section(ui, slot);
                 self.planar_section(ui, slot);
@@ -2426,6 +2830,83 @@ impl ViewerApp {
         }
         if changed {
             self.settings_gen += 1;
+        }
+    }
+
+    fn segmentation_section(&mut self, ui: &mut egui::Ui, slot: usize) {
+        let mut make_new = false;
+        let mut delete: Option<usize> = None;
+        let mut to_struct: Option<usize> = None;
+        {
+            let StudySlot { study, segs, active_seg, .. } = &mut self.slots[slot];
+            let Some(study) = study.as_ref() else { return };
+            let spacing = study.volume.spacing;
+            egui::CollapsingHeader::new(format!("Segmentations ({})", segs.len()))
+                .id_salt(("segs", slot))
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.small_button("➕ New").clicked() {
+                            make_new = true;
+                        }
+                        ui.weak("drawn with 🖌 / ✨ in the views");
+                    });
+                    for (i, seg) in segs.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.color_edit_button_srgb(&mut seg.color);
+                            ui.checkbox(&mut seg.visible, "")
+                                .on_hover_text("Show / hide this segmentation");
+                            let resp = ui
+                                .selectable_label(i == *active_seg, &seg.name)
+                                .on_hover_text(
+                                    "Click to make this the segmentation the tools edit",
+                                );
+                            if resp.clicked() {
+                                *active_seg = i;
+                            }
+                            ui.weak(format!("{:.1} cm³", seg.volume_cm3(spacing)));
+                            if ui
+                                .add_enabled(seg.can_undo(), egui::Button::new("↶").small())
+                                .on_hover_text("Undo the last stroke (Ctrl+Z)")
+                                .clicked()
+                            {
+                                seg.undo_last();
+                            }
+                            if ui
+                                .small_button("→RS")
+                                .on_hover_text(
+                                    "Convert to RTSTRUCT contours: adds a ROI to the \
+                                     structure set, so it exports with File ▶ Export",
+                                )
+                                .clicked()
+                            {
+                                to_struct = Some(i);
+                            }
+                            if ui
+                                .small_button("🗑")
+                                .on_hover_text("Delete this segmentation")
+                                .clicked()
+                            {
+                                delete = Some(i);
+                            }
+                        });
+                    }
+                });
+        }
+        if make_new {
+            self.create_seg(slot);
+        }
+        if let Some(i) = delete {
+            let s = &mut self.slots[slot];
+            if i < s.segs.len() {
+                s.segs.remove(i);
+                if s.active_seg >= s.segs.len() {
+                    s.active_seg = s.segs.len().saturating_sub(1);
+                }
+            }
+        }
+        if let Some(i) = to_struct {
+            self.seg_to_rtstruct(slot, i);
         }
     }
 
@@ -3011,7 +3492,20 @@ impl ViewerApp {
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.weak("LMB crosshair · RMB W/L · MMB pan · wheel slice · Ctrl+wheel zoom · double-click reset");
+                    ui.weak(match self.seg_tool {
+                        SegTool::None => {
+                            "LMB crosshair · RMB W/L · MMB pan · wheel slice · Ctrl+wheel zoom · double-click reset"
+                        }
+                        SegTool::Brush => {
+                            "LMB paint · Alt erase · Shift+wheel / [ ] brush size · Ctrl+Z undo · wheel slice"
+                        }
+                        SegTool::Erase => {
+                            "LMB erase · Shift+wheel / [ ] brush size · Ctrl+Z undo · wheel slice"
+                        }
+                        SegTool::Grow => {
+                            "LMB press seed · drag up/down = tolerance · release commit · Esc cancel · Ctrl+Z undo"
+                        }
+                    });
                 });
             });
         });
@@ -3258,6 +3752,16 @@ impl ViewerApp {
             }
         }
 
+        // Painted segmentations (and the live region-growing preview).
+        if let Some(tex) = &view.seg_tex {
+            painter.image(
+                tex.id(),
+                img_rect,
+                Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+                Color32::WHITE,
+            );
+        }
+
         // Isodose lines.
         if self.dose_mode.iso() {
             for (li, seg) in &view.iso_segs {
@@ -3347,6 +3851,65 @@ impl ViewerApp {
                     [Pos2::new(rect.left(), c.y), Pos2::new(rect.right(), c.y)],
                     s,
                 );
+            }
+        }
+
+        // Brush cursor and region-growing readout.
+        if self.seg_tool != SegTool::None {
+            let hover = ui.input(|i| i.pointer.hover_pos()).filter(|p| rect.contains(*p));
+            match self.seg_tool {
+                SegTool::Brush | SegTool::Erase => {
+                    if let Some(mp) = hover {
+                        let erase = self.seg_tool == SegTool::Erase
+                            || ui.input(|i| i.modifiers.alt);
+                        let col = if erase {
+                            Color32::from_rgba_unmultiplied(255, 90, 90, 200)
+                        } else {
+                            let c = slot_state
+                                .segs
+                                .get(slot_state.active_seg)
+                                .map(|s| s.color)
+                                .unwrap_or([140, 255, 140]);
+                            Color32::from_rgba_unmultiplied(c[0], c[1], c[2], 220)
+                        };
+                        painter.circle_stroke(
+                            mp,
+                            self.brush_radius_mm * zoom,
+                            Stroke::new(1.5, col),
+                        );
+                    }
+                }
+                SegTool::Grow => {
+                    if let Some(mp) = hover {
+                        let s = Stroke::new(
+                            1.5,
+                            Color32::from_rgba_unmultiplied(255, 220, 0, 220),
+                        );
+                        painter.line_segment(
+                            [mp + Vec2::new(-6.0, 0.0), mp + Vec2::new(6.0, 0.0)],
+                            s,
+                        );
+                        painter.line_segment(
+                            [mp + Vec2::new(0.0, -6.0), mp + Vec2::new(0.0, 6.0)],
+                            s,
+                        );
+                    }
+                    if let Some(g) = self.grow.as_ref().filter(|g| g.slot == slot) {
+                        painter.text(
+                            rect.left_bottom() + Vec2::new(6.0, -22.0),
+                            Align2::LEFT_BOTTOM,
+                            format!(
+                                "grow ±{:.0} HU · {} voxel(s){}",
+                                g.tol,
+                                self.grow_state.voxels.len(),
+                                if g.capped { " · CAPPED" } else { "" }
+                            ),
+                            FontId::proportional(13.0),
+                            Color32::from_rgb(255, 220, 0),
+                        );
+                    }
+                }
+                SegTool::None => {}
             }
         }
 
@@ -3468,6 +4031,8 @@ impl ViewerApp {
             Sense::click_and_drag(),
         );
         let n_slices = vol.plane_slice_count(plane);
+        let seg_active = self.seg_tool != SegTool::None;
+        let cur_slice = view.slice;
 
         let mut new_slice = None;
         let mut new_zoom = None;
@@ -3476,23 +4041,34 @@ impl ViewerApp {
         let mut wl_delta = None;
         let mut reset_view = false;
         let mut new_accum = None;
+        let mut new_brush = None;
 
         if resp.hovered() {
-            let (wheel_lines, zoom_delta, pointer) = ui.input(|i| {
+            let (wheel_lines, brush_lines, zoom_delta, pointer) = ui.input(|i| {
                 let mut lines = 0.0f32;
+                let mut brush = 0.0f32;
                 for e in &i.events {
                     if let egui::Event::MouseWheel { unit, delta, modifiers, .. } = e {
-                        if !(modifiers.ctrl || modifiers.command) {
-                            lines += match unit {
-                                egui::MouseWheelUnit::Line => delta.y,
-                                egui::MouseWheelUnit::Point => delta.y / 40.0,
-                                egui::MouseWheelUnit::Page => delta.y * 10.0,
-                            };
+                        let scale = match unit {
+                            egui::MouseWheelUnit::Line => 1.0,
+                            egui::MouseWheelUnit::Point => 1.0 / 40.0,
+                            egui::MouseWheelUnit::Page => 10.0,
+                        };
+                        if modifiers.shift && seg_active {
+                            // Some platforms report shift+wheel horizontally.
+                            brush += (delta.y + delta.x) * scale;
+                        } else if !(modifiers.ctrl || modifiers.command) {
+                            lines += delta.y * scale;
                         }
                     }
                 }
-                (lines, i.zoom_delta(), i.pointer.hover_pos())
+                (lines, brush, i.zoom_delta(), i.pointer.hover_pos())
             });
+            if brush_lines.abs() > 0.0 {
+                new_brush = Some(
+                    (self.brush_radius_mm * (brush_lines * 0.12).exp()).clamp(0.5, 80.0),
+                );
+            }
             if (zoom_delta - 1.0).abs() > 1e-4 {
                 // Keep the point under the cursor fixed while zooming.
                 let z0 = zoom;
@@ -3515,9 +4091,11 @@ impl ViewerApp {
             }
         }
 
-        // Left-click crosshair navigation only while the crosshair is shown;
-        // with ⌖ off, slices change only by scrolling the hovered view.
+        // Left-click crosshair navigation only while the crosshair is shown
+        // and no segmentation tool holds the left button; with ⌖ off, slices
+        // change only by scrolling the hovered view.
         if self.show_crosshair
+            && !seg_active
             && (resp.dragged_by(egui::PointerButton::Primary) || resp.clicked())
             && !over_buttons
         {
@@ -3525,6 +4103,50 @@ impl ViewerApp {
                 let px = screen_to_px(mp);
                 let vxl = vol.plane_pixel_to_voxel(plane, view.slice, px[0] as f64, px[1] as f64);
                 new_cursor = Some(vxl);
+            }
+        }
+
+        // Segmentation tools on the left button.
+        let mut paint_to: Option<([f64; 3], bool)> = None;
+        let mut paint_done = false;
+        let mut grow_start: Option<([f64; 3], f32)> = None;
+        let mut grow_move: Option<f32> = None;
+        let mut grow_done = false;
+        if seg_active && !over_buttons {
+            let to_voxel = |mp: Pos2| {
+                let px = screen_to_px(mp);
+                vol.plane_pixel_to_voxel(plane, cur_slice, px[0] as f64, px[1] as f64)
+            };
+            match self.seg_tool {
+                SegTool::Brush | SegTool::Erase => {
+                    if resp.dragged_by(egui::PointerButton::Primary) || resp.clicked() {
+                        if let Some(mp) = resp.interact_pointer_pos() {
+                            let erase = self.seg_tool == SegTool::Erase
+                                || ui.input(|i| i.modifiers.alt);
+                            paint_to = Some((to_voxel(mp), erase));
+                        }
+                    }
+                    if resp.drag_stopped_by(egui::PointerButton::Primary) || resp.clicked() {
+                        paint_done = true;
+                    }
+                }
+                SegTool::Grow => {
+                    if resp.drag_started_by(egui::PointerButton::Primary)
+                        || (resp.clicked() && self.grow.is_none())
+                    {
+                        if let Some(mp) = resp.interact_pointer_pos() {
+                            grow_start = Some((to_voxel(mp), mp.y));
+                        }
+                    } else if resp.dragged_by(egui::PointerButton::Primary) {
+                        if let Some(mp) = resp.interact_pointer_pos() {
+                            grow_move = Some(mp.y);
+                        }
+                    }
+                    if resp.drag_stopped_by(egui::PointerButton::Primary) || resp.clicked() {
+                        grow_done = true;
+                    }
+                }
+                SegTool::None => {}
             }
         }
         if resp.dragged_by(egui::PointerButton::Secondary) {
@@ -3574,6 +4196,24 @@ impl ViewerApp {
         }
         if let Some(c) = new_cursor {
             self.set_cursor(slot, c, idx);
+        }
+        if let Some(r) = new_brush {
+            self.brush_radius_mm = r;
+        }
+        if let Some((vxl, erase)) = paint_to {
+            self.apply_brush(slot, plane, cur_slice, vxl, erase);
+        }
+        if paint_done {
+            self.end_paint_stroke(slot);
+        }
+        if let Some((seed, y)) = grow_start {
+            self.begin_grow(slot, seed, y);
+        }
+        if let Some(y) = grow_move {
+            self.update_grow(y);
+        }
+        if grow_done {
+            self.commit_grow();
         }
     }
 
@@ -3650,6 +4290,8 @@ impl ViewerApp {
         // Pre-compute hashes that need `&self` before borrowing mutably.
         let dose_hash = self.dose_settings_hash(slot);
         let contour_hash = self.contour_settings_hash(slot);
+        let seg_hash = self.seg_overlay_hash(slot);
+        let grow_here = self.grow.as_ref().is_some_and(|g| g.slot == slot);
         let wc = self.window_center;
         let ww = self.window_width;
         let dose_on = self.dose_mode != DoseMode::Off;
@@ -3662,6 +4304,7 @@ impl ViewerApp {
             active_structs,
             active_dose,
             dose_reference,
+            segs,
             ..
         } = &mut self.slots[slot];
         let study = study.as_ref().unwrap();
@@ -3777,6 +4420,50 @@ impl ViewerApp {
                     views[idx].contour_key = Some(ckey);
                 }
             }
+        }
+
+        // Segmentation overlay: all visible masks plus the live
+        // region-growing preview, blended into one RGBA texture. NEAREST
+        // filtering keeps the voxel raster crisp while editing.
+        if !segs.is_empty() || grow_here {
+            let skey =
+                seg_hash.wrapping_add((slice as u64).wrapping_mul(0x2545F4914F6CDD1D));
+            if views[idx].seg_key != Some(skey) {
+                let mut rgba = vec![Color32::TRANSPARENT; w * h];
+                for seg in segs.iter().filter(|s| s.visible) {
+                    segmentation::overlay_slice(
+                        &seg.mask, vol.dims, plane, slice, seg.color, 90, &mut rgba,
+                    );
+                }
+                let n = vol.dims[0] * vol.dims[1] * vol.dims[2];
+                if grow_here && self.grow_preview.len() == n {
+                    segmentation::overlay_slice(
+                        &self.grow_preview,
+                        vol.dims,
+                        plane,
+                        slice,
+                        [255, 220, 0],
+                        150,
+                        &mut rgba,
+                    );
+                }
+                let img = ColorImage::new([w, h], rgba);
+                let view = &mut views[idx];
+                match &mut view.seg_tex {
+                    Some(t) => t.set(img, TextureOptions::NEAREST),
+                    None => {
+                        view.seg_tex = Some(ctx.load_texture(
+                            format!("seg{slot}_{idx}"),
+                            img,
+                            TextureOptions::NEAREST,
+                        ))
+                    }
+                }
+                view.seg_key = Some(skey);
+            }
+        } else if views[idx].seg_tex.is_some() {
+            views[idx].seg_tex = None;
+            views[idx].seg_key = None;
         }
 
         self.refresh_fusion_cache(ctx, slot, idx);
@@ -4014,7 +4701,66 @@ impl ViewerApp {
                 self.error = self.error.take().or(err);
             }
 
+            // Live segmentation meshes: rebuilt in the background whenever a
+            // mask changes (one build in flight; a newer state simply spawns
+            // the next build once the current one lands), so painting shows
+            // up in 3D essentially in real time.
+            {
+                let mut err = None;
+                if let Some(m) = poll_job(&mut w.seg_job, ctx, "Segmentation meshing", &mut err)
+                {
+                    w.seg_meshes = Some(Arc::new(m));
+                }
+                self.error = self.error.take().or(err);
+                let hash = self.seg_mesh_hash(w.slot);
+                if w.seg_job.is_none() && w.seg_built != hash {
+                    w.seg_built = hash;
+                    if let Some(study) = &self.slots[w.slot].study {
+                        let geom = GridGeom::of(&study.volume);
+                        let snaps: Vec<_> = self.slots[w.slot]
+                            .segs
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, s)| {
+                                s.mesh_grid().map(|g| (i, s.name.clone(), s.color, g))
+                            })
+                            .collect();
+                        if snaps.is_empty() {
+                            w.seg_meshes = Some(Arc::new(Vec::new()));
+                        } else {
+                            let progress = Arc::new(Progress::default());
+                            let (tx, rx) = mpsc::channel();
+                            std::thread::spawn(move || {
+                                let meshes: Vec<RoiMesh> = snaps
+                                    .into_par_iter()
+                                    .filter_map(|(i, name, color, (grid, gdims, lo, stride))| {
+                                        mesh3d::mesh_from_mask(&grid, gdims, lo, stride, &geom)
+                                            .map(|(verts, normals, tris)| RoiMesh {
+                                                roi_index: i,
+                                                name,
+                                                color,
+                                                external: false,
+                                                verts,
+                                                normals,
+                                                tris,
+                                            })
+                                    })
+                                    .collect();
+                                let _ = tx.send(meshes);
+                            });
+                            w.seg_job = Some(Job { progress, rx });
+                        }
+                    }
+                }
+            }
+
             let visible: &[bool] = &self.slots[w.slot].roi_visible;
+            // Snapshot of segmentation display state (visibility + live color).
+            let seg_disp: Vec<(bool, [u8; 3])> = self.slots[w.slot]
+                .segs
+                .iter()
+                .map(|s| (s.visible, s.color))
+                .collect();
             let title = format!("3D structures — dataset {}", SLOT_NAMES[w.slot]);
             let mut open = w.open;
             egui::Window::new(title)
@@ -4079,11 +4825,17 @@ impl ViewerApp {
 
                     // Render.
                     let Some(meshes) = &w.meshes else { return };
-                    if meshes.is_empty() {
+                    let seg_meshes = w.seg_meshes.clone();
+                    let n_seg = seg_meshes.as_ref().map(|m| m.len()).unwrap_or(0);
+                    if meshes.is_empty() && n_seg == 0 {
                         painter.text(
                             rect.center(),
                             Align2::CENTER_CENTER,
-                            "No meshable structures",
+                            if w.seg_job.is_some() {
+                                "Meshing segmentation…"
+                            } else {
+                                "No meshable structures"
+                            },
                             FontId::proportional(14.0),
                             Color32::GRAY,
                         );
@@ -4104,10 +4856,24 @@ impl ViewerApp {
                         let on = visible.get(m.roi_index).copied().unwrap_or(true);
                         order_key = mix(order_key, on as u64);
                     }
+                    if let Some(sm) = &seg_meshes {
+                        order_key = mix(order_key, Arc::as_ptr(sm) as u64);
+                        for m in sm.iter() {
+                            let on = seg_disp.get(m.roi_index).map(|d| d.0).unwrap_or(false);
+                            order_key = mix(order_key, on as u64);
+                        }
+                    }
                     let mut vertex_key = mix(order_key, scale.to_bits() as u64);
                     vertex_key = mix(vertex_key, cx.to_bits() as u64);
                     vertex_key = mix(vertex_key, cyc.to_bits() as u64);
                     vertex_key = mix(vertex_key, alpha as u64);
+                    // Segmentation colors are applied live at draw time.
+                    for (_, c) in &seg_disp {
+                        vertex_key = mix(
+                            vertex_key,
+                            (c[0] as u64) | ((c[1] as u64) << 8) | ((c[2] as u64) << 16),
+                        );
+                    }
 
                     if w.frame.vertex_key != Some(vertex_key) {
                         let (sy, cy) = w.yaw.sin_cos();
@@ -4137,14 +4903,29 @@ impl ViewerApp {
                         if reorder {
                             f.tris.clear();
                         }
-                        for m in meshes.iter() {
-                            if !visible.get(m.roi_index).copied().unwrap_or(true) {
+                        let entries = meshes
+                            .iter()
+                            .map(|m| {
+                                (
+                                    m,
+                                    visible.get(m.roi_index).copied().unwrap_or(true),
+                                    m.color,
+                                    m.external,
+                                )
+                            })
+                            .chain(seg_meshes.iter().flat_map(|a| a.iter()).map(|m| {
+                                let (on, c) =
+                                    seg_disp.get(m.roi_index).copied().unwrap_or((false, m.color));
+                                (m, on, c, false)
+                            }));
+                        for (m, on, color, external) in entries {
+                            if !on {
                                 continue;
                             }
                             let base = mesh.vertices.len() as u32;
                             // External/body contours render translucent so the
                             // interior structures remain visible.
-                            let roi_alpha = if m.external {
+                            let roi_alpha = if external {
                                 (alpha as f32 * 0.22) as u8
                             } else {
                                 alpha
@@ -4155,9 +4936,9 @@ impl ViewerApp {
                                 // Headlight along the view axis, two-sided.
                                 let inten = 0.30 + 0.70 * nn[1].abs();
                                 let col = Color32::from_rgba_unmultiplied(
-                                    (m.color[0] as f32 * inten) as u8,
-                                    (m.color[1] as f32 * inten) as u8,
-                                    (m.color[2] as f32 * inten) as u8,
+                                    (color[0] as f32 * inten) as u8,
+                                    (color[1] as f32 * inten) as u8,
+                                    (color[2] as f32 * inten) as u8,
                                     roi_alpha,
                                 );
                                 mesh.vertices.push(egui::epaint::Vertex {
@@ -4206,7 +4987,7 @@ impl ViewerApp {
                         Align2::LEFT_BOTTOM,
                         format!(
                             "{} structure(s), {} triangles",
-                            meshes.len(),
+                            meshes.len() + n_seg,
                             w.frame.tris.len()
                         ),
                         FontId::proportional(11.0),

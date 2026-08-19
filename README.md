@@ -252,6 +252,35 @@ stays visible. Drag rotates, the wheel zooms, middle-drag pans, and a slider
 controls global opacity. The meshes are cached per structure set, so
 reopening the window is instant.
 
+**Interactive segmentation (🖌 Paint · ◻ Erase · ✨ Grow).** MITK-style
+manual and semi-automatic segmentation, implemented entirely in Rust and
+CPU-side. The toolbar tools take over the left mouse button in the MPR
+views:
+
+* **🖌 Paint / ◻ Erase** — a spherical, spacing-aware **3D brush** (radius
+  in mm, adjustable via the toolbar, `Shift+wheel` or `[` `]`) paints a
+  voxel label mask in any of the three views; a **3D** toggle switches to a
+  flat 2D circle confined to the displayed slice. Strokes are swept as
+  capsules between pointer samples, so fast drags stay gap-free. `Alt`
+  temporarily erases while painting, `Ctrl+Z` undoes stroke by stroke.
+* **✨ Grow** — blazing-fast interactive region growing: press to place a
+  seed, drag up/down to widen/narrow the intensity tolerance around the
+  seed value with a **live yellow preview** recomputed as you drag
+  (6-connected flood fill over the full volume, capped at 4 M voxels),
+  release to commit, `Esc` to cancel.
+
+Segmentations appear instantly in **all three MPR views** (crisp
+nearest-neighbor colorwash) **and live in the 3D window**: every mask edit
+re-meshes the segmentation on a background thread (bounding-box-cropped
+surface nets with automatic striding for huge masks, same smoothing/normals
+pipeline as the RTSTRUCT surfaces), so the 3D surface follows the brush in
+essentially real time. The sidebar *Segmentations* section manages any
+number of masks per dataset — visibility, display color, active selection,
+volume in cm³, per-stroke undo, delete — and **→RS** converts a mask to
+RTSTRUCT closed planar contours (marching squares per slice, stitched and
+decimated), appending it to the active structure set so it renders like any
+ROI and rides the existing DICOM export.
+
 **Interaction** (shown in the status bar):
 
 | Input | Action |
