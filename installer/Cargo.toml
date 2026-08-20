@@ -1,0 +1,66 @@
+# Windows installer for rust-dicom-viewer.
+#
+# This crate is its own workspace root (the empty `[workspace]` table below).
+# That keeps it completely out of the viewer's build graph: `cargo build
+# --release` in the repository root never compiles the installer, and building
+# the installer never touches the viewer's `target/` directory.
+#
+#   cd installer
+#   cargo build --release                # -> installer/target/release/rdv-setup.exe
+#   cargo run --release --bin rdv-pack   # -> installer/dist/rust-dicom-viewer-setup.exe
+
+[package]
+name = "rdv-setup"
+version = "0.1.0"
+edition = "2021"
+description = "Windows installer for the rust-dicom-viewer DICOM / RT viewer"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "rdv-setup"
+path = "src/main.rs"
+
+[[bin]]
+name = "rdv-pack"
+path = "src/bin/pack.rs"
+
+[dependencies]
+anyhow = "1.0"
+walkdir = "2.5"
+rfd = "0.17"                        # native folder picker, same crate the viewer uses
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# rustls + OS trust store, same choice as the viewer: works behind corporate
+# TLS-inspection proxies with custom CAs.
+ureq = { version = "2", features = ["native-certs"] }
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu"] }
+egui = "0.36"
+# Optional: pre-download and convert the TotalSegmentator weights at install
+# time by reusing the viewer's own (pure-Rust) downloader. Built without the
+# GPU backend — this only writes the model cache, it never runs inference.
+rust-dicom-viewer = { path = "..", default-features = false, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Console",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Storage_FileSystem",
+] }
+
+[features]
+default = ["prefetch-models"]
+prefetch-models = ["dep:rust-dicom-viewer"]
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+strip = true

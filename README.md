@@ -78,7 +78,14 @@ cargo test --release
 
 Windows, Linux and macOS are supported; rendering uses `wgpu`
 (DX12/Vulkan/Metal). `--no-default-features` builds a CPU-only viewer
-without the GPU inference backend. No data at hand? *File ▶ 🧪 Generate
+without the GPU inference backend.
+
+On Windows there is also a proper installer — a single
+`rust-dicom-viewer-setup.exe` with shortcuts, an "Open with" entry on
+folders, the Visual C++ runtime check, an optional pre-download of the
+auto-segmentation weights, and a clean uninstall. It is a separate Rust
+program in [installer/](installer/README.md) and is *not* built by
+`cargo build --release`; see its README for the three build steps. No data at hand? *File ▶ 🧪 Generate
 test data…* creates a complete synthetic RT study, and `example_data/`
 ships a real two-phase 4DCT (see
 [docs/example-data.md](docs/example-data.md)).
@@ -95,6 +102,7 @@ ships a real two-phase 4DCT (see
 | [docs/export-and-tools.md](docs/export-and-tools.md) | DICOM export, anonymizer, test-data generator |
 | [docs/architecture.md](docs/architecture.md) | Design, module map, threading, conventions, testing |
 | [docs/example-data.md](docs/example-data.md) | Bundled patient data, source and citations |
+| [installer/README.md](installer/README.md) | The Windows installer: building it, what it installs, silent switches |
 
 ## License and citations
 
