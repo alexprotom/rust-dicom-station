@@ -13,17 +13,20 @@ use egui::ThemePreference;
 const FILE_NAME: &str = "viewer_settings.txt";
 
 /// User preferences that survive a restart.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     /// Light / dark / follow-the-system appearance.
     pub theme: ThemePreference,
+    /// Auto-segmentation model cache directory (None = default:
+    /// `autoseg_models/` next to the executable).
+    pub autoseg_dir: Option<PathBuf>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         // The viewer has always started dark; keep that as the default rather
         // than following the system, which would surprise existing users.
-        Settings { theme: ThemePreference::Dark }
+        Settings { theme: ThemePreference::Dark, autoseg_dir: None }
     }
 }
 
@@ -82,9 +85,15 @@ fn parse(text: &str) -> Settings {
             continue;
         }
         let Some((key, value)) = line.split_once('=') else { continue };
-        if key.trim().eq_ignore_ascii_case("theme") {
+        let key = key.trim();
+        if key.eq_ignore_ascii_case("theme") {
             if let Some(t) = theme_from_str(value) {
                 s.theme = t;
+            }
+        } else if key.eq_ignore_ascii_case("autoseg_models_dir") {
+            let v = value.trim();
+            if !v.is_empty() {
+                s.autoseg_dir = Some(PathBuf::from(v));
             }
         }
     }
@@ -92,12 +101,16 @@ fn parse(text: &str) -> Settings {
 }
 
 fn render(s: &Settings) -> String {
-    format!(
+    let mut out = format!(
         "# rust-dicom-viewer user settings\n\
          # theme = dark | light | system\n\
          theme = {}\n",
         theme_to_str(s.theme)
-    )
+    );
+    if let Some(dir) = &s.autoseg_dir {
+        out.push_str(&format!("autoseg_models_dir = {}\n", dir.display()));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -111,7 +124,7 @@ mod tests {
             ThemePreference::Light,
             ThemePreference::System,
         ] {
-            let s = Settings { theme };
+            let s = Settings { theme, autoseg_dir: None };
             assert_eq!(parse(&render(&s)), s, "round trip of {theme:?}");
         }
     }
@@ -124,13 +137,18 @@ mod tests {
         assert_eq!(parse("theme = mauve"), Settings::default(), "unknown value");
         assert_eq!(
             parse("unknown = 3\nTHEME =  Light \n"),
-            Settings { theme: ThemePreference::Light },
+            Settings { theme: ThemePreference::Light, autoseg_dir: None },
             "case-insensitive key and value, surrounding space ignored"
         );
         assert_eq!(
             parse("theme = white"),
-            Settings { theme: ThemePreference::Light },
+            Settings { theme: ThemePreference::Light, autoseg_dir: None },
             "\"white\" accepted as an alias for light"
         );
+        let with_dir = Settings {
+            theme: ThemePreference::Dark,
+            autoseg_dir: Some(PathBuf::from("D:/models")),
+        };
+        assert_eq!(parse(&render(&with_dir)), with_dir, "model dir round trip");
     }
 }

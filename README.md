@@ -291,6 +291,63 @@ decimated), appending it to the active structure set — or creating one when
 the study has no RTSTRUCT — so it renders like any ROI and rides the existing
 DICOM export.
 
+**Automatic multi-organ segmentation (🤖 auto-contouring).** A complete,
+**pure-Rust re-implementation of
+[TotalSegmentator](https://github.com/wasserth/TotalSegmentator) v2
+inference** (Wasserthal et al., *Radiology: AI* 2023) — no Python, no ONNX
+runtime, no vendor toolkits, at build time or at run time. The *Tools ▶
+🤖 Auto-segment* menu (or the 🤖 Auto… button in the *Segmentations*
+section) segments the displayed CT into up to **117 anatomical structures**
+using the official nnU-Net models of TotalSegmentator's openly licensed
+(Apache-2.0) "total" task:
+
+* **Models.** *3 mm (fast)* — one model, all 117 classes, practical on any
+  CPU; *1.5 mm (high quality)* — the five full-resolution sub-models
+  (organs / vertebrae / cardiac / muscles / ribs, individually selectable);
+  *6 mm (preview)* — a quick coarse look. Weights are downloaded once from
+  the official TotalSegmentator GitHub release (135 MB for 3 mm, ~1.2 GB for
+  1.5 mm), converted and cached in `autoseg_models/` next to the executable
+  (folder configurable and persisted). The PyTorch checkpoints are parsed by
+  a **native torch-pickle reader** (`autoseg/pickle.rs`) and cached as
+  `safetensors` — Python is never involved.
+* **Engine.** The nnU-Net `PlainConvUNet` (Conv3d → InstanceNorm →
+  LeakyReLU blocks, strided-conv downsampling, transposed-conv decoder with
+  skip connections) is rebuilt from each model's `plans.json` and runs
+  either on the **CPU** — a hand-written engine using per-slice im2col +
+  pure-Rust SIMD GEMM, rayon-parallel, 15–50× faster than naive convolution
+  — or on **any GPU via wgpu** (Vulkan / DX12 / Metal: NVIDIA, AMD, Intel,
+  Apple — no CUDA required) through `burn`'s wgpu backend. Device selection
+  is automatic with manual override.
+* **Pipeline.** Exactly TotalSegmentator's: reorientation to canonical
+  axes, trilinear resampling to the model's isotropic spacing, per-model
+  CT normalization (percentile clip + z-score from the dataset fingerprint),
+  Gaussian-weighted sliding-window inference (tile step 0.8, no mirroring
+  TTA), argmax, sub-model label merging, nearest-neighbor mapping back to
+  the CT grid. The logit accumulator streams along the patient axis, so
+  memory stays bounded on long whole-body scans.
+* **Results.** A dialog lists every detected structure with its volume;
+  the checked ones land as ordinary **editable segmentations** (brush /
+  erase / grow correction, live 3D view, per-structure colors from a
+  curated anatomical palette) and can optionally be converted to **RTSTRUCT
+  contours** in the same step — after which they render like any ROI and
+  ride the existing DICOM export. Runs happen on a background thread with
+  progress and cancel; a thorax CT takes well under a minute on a desktop
+  CPU with the 3 mm model.
+* **Fidelity.** Verified against the reference implementation: on an
+  identical input patch the Rust network reproduces PyTorch/nnU-Net logits
+  to ~1e-4 absolute (float noise) with **100 % argmax agreement**, and the
+  end-to-end pipeline agrees with the official Python TotalSegmentator at
+  **mean Dice 0.9995 across 90 structures** on the bundled example study
+  (worst structure 0.992; residual differences are single-voxel boundary
+  tie-breaks).
+
+The weights of the "total" task are published by the TotalSegmentator
+authors under Apache-2.0 ("openly available for any usage"); if you use the
+auto-segmentation in academic work, cite Wasserthal et al., *Radiology:
+Artificial Intelligence* 2023, <https://doi.org/10.1148/ryai.230024> and
+nnU-Net (Isensee et al., *Nature Methods* 2021). As with everything in this
+viewer: research and QA use, not a medical device.
+
 **Interaction** (the bindings for the active tool are shown in the status
 bar, and in full under *Help*):
 
@@ -505,7 +562,14 @@ tooling needed:
 * **`segmentation`** — brush strokes and their undo, geodesic growing and
   hole filling, mask volume, mask → RTSTRUCT contours;
 * **`anonymize`** — anonymize the generated study, reload it, and assert
-  identity is gone while every reference chain still resolves.
+  identity is gone while every reference chain still resolves;
+* **`autoseg`** — assemble a miniature nnU-Net from synthetic tensors with
+  the exact checkpoint key naming and verify the forward pass (plus shape
+  validation); an `#[ignore]`d end-to-end test runs the real 3 mm model
+  against the bundled example study (`RDV_AUTOSEG_MODELS=… cargo test
+  --release --test autoseg -- --ignored`). The module's unit tests pin the
+  sliding-window step positions and the resampling conventions to nnU-Net /
+  TotalSegmentator reference values.
 
 The unit tests cover the UID/alias rules of the anonymizer, the tree
 copy/move selection logic, the settings file and the theme contrast (WCAG AA):
@@ -540,6 +604,19 @@ src/
   volume.rs    3D volume, patient-space geometry, orthogonal slice extraction
   segmentation.rs  voxel label masks: 2D/3D brush, geodesic region growing,
                per-stroke undo, slice overlays, mask ▶ RTSTRUCT contours
+  autoseg/     automatic multi-organ segmentation — TotalSegmentator v2
+               inference re-implemented in pure Rust:
+    mod.rs         public API, engine selection (CPU / wgpu GPU), progress
+    classes.rs     the 117-class table, sub-model label maps, organ colors
+    config.rs      nnU-Net plans.json parsing (architecture + normalization)
+    pickle.rs      native PyTorch-checkpoint (.pth zip + pickle) reader
+    weights.rs     official weight download, conversion, safetensors cache
+    cpu.rs         CPU tensor engine (im2col + SIMD GEMM conv3d, rayon)
+    net.rs         PlainConvUNet assembly + CPU forward pass
+    gpu.rs         wgpu forward pass via burn (feature "gpu", default on)
+    preprocess.rs  canonical reorientation, model-grid resampling, label
+                   back-mapping
+    infer.rs       Gaussian sliding-window inference, streaming argmax
   mesh3d.rs    contour / mask ▶ surface reconstruction (scanline fill,
                surface nets, Laplacian smoothing) for the 3D windows
   rtstruct.rs  RT Structure Set parsing

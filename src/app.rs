@@ -21,6 +21,7 @@ use crate::mesh3d::{self, GridGeom, RoiMesh};
 use crate::registration::{
     self, RegKind, RegParams, RegProgress, RegistrationResult, Transform3,
 };
+use crate::autoseg;
 use crate::render;
 use crate::segmentation::{self, GrowState, Segmentation};
 use crate::settings::{self, Settings};
@@ -28,6 +29,24 @@ use crate::simulate::{self, SimParams};
 use crate::volume::{ViewPlane, Volume};
 
 const SLOT_NAMES: [&str; 2] = ["A", "B"];
+
+/// Parameters of the auto-segmentation run dialog.
+struct AutosegDialog {
+    slot: usize,
+    variant: autoseg::Variant,
+    device: autoseg::DevicePref,
+    /// Sub-model selection for the 1.5 mm variant
+    /// (organs, vertebrae, cardiac, muscles, ribs).
+    parts: [bool; 5],
+}
+
+/// A finished auto-segmentation waiting for the user to choose organs.
+struct AutosegPending {
+    slot: usize,
+    result: autoseg::AutosegResult,
+    selected: Vec<bool>,
+    also_rs: bool,
+}
 
 // ---------------------------------------------------------------------------
 // Theme-dependent colors
@@ -568,6 +587,18 @@ pub struct ViewerApp {
     /// Counter for naming newly created segmentations.
     seg_counter: usize,
 
+    // Auto-segmentation (TotalSegmentator re-implementation, see `autoseg`).
+    /// The payload carries the slot the volume came from.
+    autoseg_job: Option<Job<(usize, anyhow::Result<autoseg::AutosegResult>), autoseg::AutosegProgress>>,
+    /// Slot currently being segmented (progress shown in its sidebar section).
+    autoseg_slot: usize,
+    /// Pre-run parameter dialog, when open.
+    autoseg_dialog: Option<AutosegDialog>,
+    /// Finished result awaiting organ selection.
+    autoseg_pending: Option<AutosegPending>,
+    /// Model cache directory (persisted in the settings file).
+    autoseg_models_dir: String,
+
     dose_mode: DoseMode,
     dose_opacity: f32,
     dose_threshold_pct: f32,
@@ -642,6 +673,16 @@ impl ViewerApp {
             show_crosshair: true,
             show_labels: true,
             show_isocenters: true,
+            autoseg_job: None,
+            autoseg_slot: 0,
+            autoseg_dialog: None,
+            autoseg_pending: None,
+            autoseg_models_dir: prefs
+                .autoseg_dir
+                .clone()
+                .unwrap_or_else(autoseg::default_models_dir)
+                .display()
+                .to_string(),
             seg_tool: SegTool::None,
             brush_radius_mm: 5.0,
             brush_3d: true,
@@ -995,7 +1036,20 @@ impl ViewerApp {
     fn set_theme(&mut self, ctx: &egui::Context, theme: egui::ThemePreference) {
         self.theme = theme;
         ctx.set_theme(theme);
-        match settings::save(&Settings { theme }) {
+        self.persist_settings();
+    }
+
+    /// Write all persisted preferences (best-effort, see `settings::save`).
+    fn persist_settings(&mut self) {
+        let default_dir = autoseg::default_models_dir().display().to_string();
+        let autoseg_dir = if self.autoseg_models_dir.trim().is_empty()
+            || self.autoseg_models_dir == default_dir
+        {
+            None
+        } else {
+            Some(PathBuf::from(self.autoseg_models_dir.trim()))
+        };
+        match settings::save(&Settings { theme: self.theme, autoseg_dir }) {
             Ok(()) => self.settings_error = None,
             Err(e) => {
                 self.settings_error = Some(format!("⚠ settings not saved: {e:#}"));
@@ -1291,6 +1345,108 @@ impl ViewerApp {
         rfd::FileDialog::new().set_title(title).pick_folder()
     }
 
+    // -- Auto-segmentation (TotalSegmentator, see the `autoseg` module) ----
+
+    /// Open the parameter dialog for auto-segmenting the given slot.
+    fn open_autoseg_dialog(&mut self, slot: usize) {
+        if self.slots[slot].study.is_none() || self.autoseg_job.is_some() {
+            return;
+        }
+        self.autoseg_dialog = Some(AutosegDialog {
+            slot,
+            variant: autoseg::Variant::Fast3mm,
+            device: autoseg::DevicePref::Auto,
+            parts: [true; 5],
+        });
+    }
+
+    /// Snapshot the volume and run the segmentation on a worker thread.
+    fn start_autoseg(&mut self, d: &AutosegDialog) {
+        if self.autoseg_job.is_some() {
+            return;
+        }
+        let Some(study) = self.slots[d.slot].study.as_ref() else { return };
+        let volume = study.volume.clone();
+        let models_dir = if self.autoseg_models_dir.trim().is_empty() {
+            autoseg::default_models_dir()
+        } else {
+            PathBuf::from(self.autoseg_models_dir.trim())
+        };
+        self.persist_settings();
+        let progress = Arc::new(autoseg::AutosegProgress::default());
+        progress.set("Starting auto-segmentation…");
+        let p2 = progress.clone();
+        let (tx, rx) = mpsc::channel();
+        let (slot, variant, device, parts) = (d.slot, d.variant, d.device, d.parts);
+        std::thread::spawn(move || {
+            let res = autoseg::run(&volume, variant, device, parts, &models_dir, &p2);
+            let _ = tx.send((slot, res));
+        });
+        self.autoseg_slot = slot;
+        self.autoseg_job = Some(Job { progress, rx });
+    }
+
+    /// A run finished: verify the slot still shows the same volume, then
+    /// open the organ-selection dialog.
+    fn on_autoseg_done(&mut self, slot: usize, result: autoseg::AutosegResult) {
+        let valid = self.slots[slot].study.as_ref().is_some_and(|st| {
+            st.volume.dims == result.volume_dims
+                && st.volume.frame_of_reference_uid == result.frame_of_reference_uid
+        });
+        if !valid {
+            self.error = Some(
+                "Auto-segmentation finished, but the dataset changed while it \
+                 was running — the result was discarded."
+                    .into(),
+            );
+            return;
+        }
+        if result.organs.is_empty() {
+            self.error = Some("Auto-segmentation found no organs in this volume.".into());
+            return;
+        }
+        let selected = vec![true; result.organs.len()];
+        self.autoseg_pending = Some(AutosegPending { slot, result, selected, also_rs: false });
+    }
+
+    /// Materialize the chosen organs as editable segmentations (and
+    /// optionally RTSTRUCT contours).
+    fn apply_autoseg_selection(&mut self) {
+        let Some(p) = self.autoseg_pending.take() else { return };
+        let slot = p.slot;
+        let Some(study) = self.slots[slot].study.as_ref() else { return };
+        if study.volume.dims != p.result.volume_dims {
+            self.error = Some("Dataset changed — auto-segmentation result discarded.".into());
+            return;
+        }
+        let dims = study.volume.dims;
+        let first_new = self.slots[slot].segs.len();
+        let mut added = 0usize;
+        for (organ, sel) in p.result.organs.iter().zip(p.selected.iter()) {
+            if !sel {
+                continue;
+            }
+            let seg = Segmentation::from_label_map(
+                organ.name.to_string(),
+                organ.color,
+                dims,
+                &p.result.labels,
+                organ.label,
+            );
+            self.slots[slot].segs.push(seg);
+            added += 1;
+        }
+        if added == 0 {
+            return;
+        }
+        self.slots[slot].active_seg = first_new;
+        if p.also_rs {
+            for i in first_new..first_new + added {
+                self.seg_to_rtstruct(slot, i);
+            }
+        }
+    }
+
     // -- Data tree copy / move / remove actions ----------------------------
 
     fn apply_tree_action(&mut self, action: TreeAction) {
@@ -1553,6 +1709,10 @@ impl ViewerApp {
             let s = &mut self.slots[slot];
             let Some(st) = s.study.as_mut() else { return };
             let active_uid = st.series.get(st.active_series).map(|se| se.uid.clone());
+            let active_struct_uid = st
+                .structure_sets
+                .get(s.active_structs)
+                .map(|ss| ss.sop_instance_uid.clone());
             let mut i = 0;
             st.series.retain(|_| {
                 let k = !masks.series.get(i).copied().unwrap_or(false);
@@ -1599,12 +1759,24 @@ impl ViewerApp {
                         }
                     }
                 }
-                // Clamp structure / dose selections after pruning.
-                let n_sets = st.structure_sets.len();
-                if s.active_structs >= n_sets {
-                    s.active_structs = 0;
-                    let n = st.structure_sets.first().map(|ss| ss.rois.len()).unwrap_or(0);
-                    s.roi_visible = vec![true; n];
+                // Re-locate the active structure set after pruning (indices may
+                // have shifted, or the set itself may be gone); rebuild the
+                // visibility list whenever the active set changed so it can
+                // never be indexed with a stale length.
+                let relocated = active_struct_uid
+                    .as_deref()
+                    .and_then(|uid| {
+                        st.structure_sets
+                            .iter()
+                            .position(|ss| ss.sop_instance_uid == uid)
+                    });
+                match relocated {
+                    Some(i) => s.active_structs = i,
+                    None => {
+                        s.active_structs = 0;
+                        let n = st.structure_sets.first().map(|ss| ss.rois.len()).unwrap_or(0);
+                        s.roi_visible = vec![true; n];
+                    }
                 }
                 if s.active_dose >= st.doses.len() {
                     s.active_dose = 0;
@@ -1769,6 +1941,18 @@ impl eframe::App for ViewerApp {
                 }
             }
             Some(Err(e)) => self.error = Some(format!("Test data generation failed: {e:#}")),
+            None => {}
+        }
+
+        // Poll background auto-segmentation.
+        match poll_job(&mut self.autoseg_job, &ctx, "Auto-segmentation", &mut self.error) {
+            Some((slot, Ok(result))) => self.on_autoseg_done(slot, result),
+            Some((_, Err(e))) => {
+                let msg = format!("{e:#}");
+                if !msg.contains("cancelled") {
+                    self.error = Some(format!("Auto-segmentation failed: {msg}"));
+                }
+            }
             None => {}
         }
 
@@ -1976,6 +2160,32 @@ impl ViewerApp {
                     }
                 });
                 ui.menu_button("Tools", |ui| {
+                    let auto_free = self.autoseg_job.is_none();
+                    for slot in 0..2 {
+                        if slot == 1 && !self.comparison {
+                            continue;
+                        }
+                        let loaded = self.slots[slot].study.is_some();
+                        if ui
+                            .add_enabled(
+                                loaded && auto_free,
+                                egui::Button::new(format!(
+                                    "🤖 Auto-segment dataset {}…",
+                                    SLOT_NAMES[slot]
+                                )),
+                            )
+                            .on_hover_text(
+                                "Automatic multi-organ segmentation of the displayed CT \
+                                 (TotalSegmentator's nnU-Net models, re-implemented \
+                                 natively in Rust; runs locally on CPU or GPU)",
+                            )
+                            .clicked()
+                        {
+                            self.open_autoseg_dialog(slot);
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
                     if ui
                         .button("🔏 Anonymize DICOM folder…")
                         .on_hover_text(
@@ -2868,8 +3078,17 @@ impl ViewerApp {
 
     fn segmentation_section(&mut self, ui: &mut egui::Ui, slot: usize) {
         let mut make_new = false;
+        let mut open_auto = false;
+        let mut cancel_auto = false;
         let mut delete: Option<usize> = None;
         let mut to_struct: Option<usize> = None;
+        // Auto-segmentation status for this slot (read before the slot borrow).
+        let auto_state = self
+            .autoseg_job
+            .as_ref()
+            .filter(|_| self.autoseg_slot == slot)
+            .map(|job| (job.progress.get(), job.progress.frac()));
+        let auto_enabled = self.autoseg_job.is_none();
         {
             let StudySlot { study, segs, active_seg, .. } = &mut self.slots[slot];
             let Some(study) = study.as_ref() else { return };
@@ -2882,8 +3101,33 @@ impl ViewerApp {
                         if ui.small_button("➕ New").clicked() {
                             make_new = true;
                         }
+                        if ui
+                            .add_enabled(auto_enabled, egui::Button::new("🤖 Auto…").small())
+                            .on_hover_text(
+                                "Automatic multi-organ segmentation \
+                                 (TotalSegmentator, 117 structures, re-implemented \
+                                 natively in Rust — runs locally on CPU or GPU)",
+                            )
+                            .clicked()
+                        {
+                            open_auto = true;
+                        }
                         ui.weak("drawn with 🖌 / ✨ in the views");
                     });
+                    if let Some((msg, frac)) = &auto_state {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.add(
+                                egui::ProgressBar::new(*frac)
+                                    .desired_width(120.0)
+                                    .show_percentage(),
+                            );
+                            if ui.small_button("Cancel").clicked() {
+                                cancel_auto = true;
+                            }
+                        });
+                        ui.weak(msg);
+                    }
                     for (i, seg) in segs.iter_mut().enumerate() {
                         ui.horizontal(|ui| {
                             ui.color_edit_button_srgb(&mut seg.color);
@@ -2929,6 +3173,14 @@ impl ViewerApp {
         }
         if make_new {
             self.create_seg(slot);
+        }
+        if open_auto {
+            self.open_autoseg_dialog(slot);
+        }
+        if cancel_auto {
+            if let Some(job) = &self.autoseg_job {
+                job.progress.cancel();
+            }
         }
         if let Some(i) = delete {
             let s = &mut self.slots[slot];
@@ -5037,6 +5289,8 @@ impl ViewerApp {
     fn modals(&mut self, ctx: &egui::Context) {
         self.generator_window(ctx);
         self.anonymize_window(ctx);
+        self.autoseg_run_window(ctx);
+        self.autoseg_result_window(ctx);
         if let Some(err) = self.error.clone() {
             egui::Window::new("Error")
                 .collapsible(false)
@@ -5049,6 +5303,210 @@ impl ViewerApp {
                         self.error = None;
                     }
                 });
+        }
+    }
+
+    /// Auto-segmentation parameter dialog (model variant, device, weights
+    /// location) — see the `autoseg` module for the pipeline itself.
+    fn autoseg_run_window(&mut self, ctx: &egui::Context) {
+        let Some(d) = &mut self.autoseg_dialog else { return };
+        let mut open = true;
+        let mut close_clicked = false;
+        let mut run_clicked = false;
+        let mut browse_clicked = false;
+        egui::Window::new("🤖 Auto-segmentation")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "Segment the CT of dataset {} into up to 117 anatomical \
+                     structures using TotalSegmentator's nnU-Net models \
+                     (re-implemented natively in Rust).",
+                    SLOT_NAMES[d.slot]
+                ));
+                ui.add_space(6.0);
+                let models_dir = PathBuf::from(self.autoseg_models_dir.trim());
+                ui.label("Model:");
+                for (variant, name, hint) in [
+                    (
+                        autoseg::Variant::Fast3mm,
+                        "3 mm — fast",
+                        "Single model, all 117 structures. Good quality, \
+                         practical on any CPU.",
+                    ),
+                    (
+                        autoseg::Variant::HighRes15mm,
+                        "1.5 mm — high quality",
+                        "Five sub-models at full resolution — the reference \
+                         quality. Slow without a GPU.",
+                    ),
+                    (
+                        autoseg::Variant::Preview6mm,
+                        "6 mm — preview",
+                        "Coarse but very fast — a quick look.",
+                    ),
+                ] {
+                    let need = autoseg::download_needed(variant, d.parts, &models_dir);
+                    let note = if need == 0 {
+                        "weights cached ✓".to_string()
+                    } else {
+                        format!("downloads {} MB once", need / 1_000_000)
+                    };
+                    ui.radio_value(&mut d.variant, variant, format!("{name}  ({note})"))
+                        .on_hover_text(hint);
+                }
+                if d.variant == autoseg::Variant::HighRes15mm {
+                    ui.horizontal(|ui| {
+                        ui.label("Sub-models:");
+                        for (i, name) in autoseg::classes::PART_NAMES.iter().enumerate() {
+                            ui.checkbox(&mut d.parts[i], *name);
+                        }
+                    });
+                }
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label("Compute:");
+                    ui.radio_value(&mut d.device, autoseg::DevicePref::Auto, "Auto")
+                        .on_hover_text("Use the GPU when one is available, else the CPU");
+                    ui.radio_value(&mut d.device, autoseg::DevicePref::Gpu, "GPU")
+                        .on_hover_text(
+                            "Any GPU via wgpu (Vulkan / DX12 / Metal) — no CUDA needed",
+                        );
+                    ui.radio_value(&mut d.device, autoseg::DevicePref::Cpu, "CPU");
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Model folder:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.autoseg_models_dir)
+                            .desired_width(260.0),
+                    );
+                    if ui.button("📁").clicked() {
+                        browse_clicked = true;
+                    }
+                });
+                ui.add_space(4.0);
+                ui.weak(
+                    "Weights: TotalSegmentator 'total' task (Apache-2.0), \
+                     downloaded once from the official GitHub release and cached. \
+                     Research / QA use — not a medical device.",
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let can_run = d.variant != autoseg::Variant::HighRes15mm
+                        || d.parts.iter().any(|p| *p);
+                    if ui
+                        .add_enabled(can_run, egui::Button::new("▶ Segment"))
+                        .clicked()
+                    {
+                        run_clicked = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close_clicked = true;
+                    }
+                });
+            });
+        if browse_clicked {
+            if let Some(dir) = Self::pick_folder("Model folder for auto-segmentation weights") {
+                self.autoseg_models_dir = dir.display().to_string();
+            }
+        }
+        if run_clicked && !close_clicked {
+            if let Some(d) = self.autoseg_dialog.take() {
+                self.start_autoseg(&d);
+            }
+        } else if !open || close_clicked {
+            self.autoseg_dialog = None;
+        }
+    }
+
+    /// Organ-selection dialog shown when an auto-segmentation run finishes.
+    fn autoseg_result_window(&mut self, ctx: &egui::Context) {
+        let Some(p) = &mut self.autoseg_pending else { return };
+        let mut open = true;
+        let mut close_clicked = false;
+        let mut apply_clicked = false;
+        let vol_bytes =
+            p.result.volume_dims[0] * p.result.volume_dims[1] * p.result.volume_dims[2];
+        egui::Window::new("🤖 Auto-segmentation results")
+            .collapsible(false)
+            .resizable(true)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "{} structures found on dataset {} — {} · {:.0} s",
+                    p.result.organs.len(),
+                    SLOT_NAMES[p.slot],
+                    p.result.device,
+                    p.result.elapsed_secs,
+                ));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.small_button("All").clicked() {
+                        p.selected.iter_mut().for_each(|s| *s = true);
+                    }
+                    if ui.small_button("None").clicked() {
+                        p.selected.iter_mut().for_each(|s| *s = false);
+                    }
+                    let n_sel = p.selected.iter().filter(|s| **s).count();
+                    ui.weak(format!(
+                        "{} selected · ≈ {} MB of masks",
+                        n_sel,
+                        n_sel * vol_bytes / 1_000_000
+                    ));
+                });
+                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                    for (organ, sel) in p.result.organs.iter().zip(p.selected.iter_mut()) {
+                        ui.horizontal(|ui| {
+                            ui.checkbox(sel, "");
+                            let (rect, _) = ui
+                                .allocate_exact_size(egui::vec2(12.0, 12.0), Sense::hover());
+                            ui.painter().rect_filled(
+                                rect,
+                                2.0,
+                                Color32::from_rgb(
+                                    organ.color[0],
+                                    organ.color[1],
+                                    organ.color[2],
+                                ),
+                            );
+                            ui.label(organ.name);
+                            ui.weak(format!("{:.1} cm³", organ.cm3));
+                        });
+                    }
+                });
+                ui.add_space(4.0);
+                ui.checkbox(
+                    &mut p.also_rs,
+                    "Also convert to RTSTRUCT contours (→RS)",
+                )
+                .on_hover_text(
+                    "Adds each selected structure as a ROI to the active structure \
+                     set, so it renders like any ROI and rides the DICOM export",
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let n_sel = p.selected.iter().filter(|s| **s).count();
+                    if ui
+                        .add_enabled(
+                            n_sel > 0,
+                            egui::Button::new(format!("Add {n_sel} segmentation(s)")),
+                        )
+                        .clicked()
+                    {
+                        apply_clicked = true;
+                    }
+                    if ui.button("Discard").clicked() {
+                        close_clicked = true;
+                    }
+                });
+            });
+        if apply_clicked && !close_clicked {
+            self.apply_autoseg_selection();
+        } else if !open || close_clicked {
+            self.autoseg_pending = None;
         }
     }
 

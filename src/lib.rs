@@ -3,6 +3,7 @@
 
 pub mod anonymize;
 pub mod app;
+pub mod autoseg;
 pub mod dicom_export;
 pub mod extras;
 pub mod gen_test_data;

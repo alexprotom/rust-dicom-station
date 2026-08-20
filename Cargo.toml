@@ -16,6 +16,21 @@ egui = "0.36"
 rayon = "1.12"
 rfd = "0.17"
 walkdir = "2.5"
+# ---- auto-segmentation (TotalSegmentator re-implementation, pure Rust) ----
+gemm = "0.18"                       # pure-Rust SIMD GEMM kernels (CPU conv engine)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"                    # nnU-Net plans.json parsing
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# weight download — rustls (pure Rust TLS) with the OS trust store, so
+# corporate/clinical TLS-inspection proxies with custom CAs work
+ureq = { version = "2", features = ["native-certs"] }
+safetensors = "0.8"                 # converted-weight cache format
+# GPU inference backend (wgpu: Vulkan / DX12 / Metal — no CUDA toolkit needed)
+burn = { version = "0.21", default-features = false, features = ["std", "wgpu", "fusion", "autotune"], optional = true }
+
+[features]
+default = ["gpu"]
+gpu = ["dep:burn"]
 
 [profile.release]
 opt-level = 3
