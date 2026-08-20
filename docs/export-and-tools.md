@@ -7,13 +7,33 @@ testing.
 ## DICOM export
 
 Any loaded dataset — original, simulated or with converted segmentations —
-can be exported as a set of DICOM files (*Export A/B…* in the Simulation
-section): one CT Image Storage file per slice plus RTSTRUCT, RTDOSE
-(16-bit with `DoseGridScaling`) and an RTPLAN skeleton (photon or ion),
-written with `dicom-rs` in Explicit VR Little Endian, sharing the source
-frame of reference and preserving the RTSTRUCT ▶ series, RTDOSE ▶ RTPLAN ▶
-RTSTRUCT reference chain. Fresh `2.25.…` UIDs are generated for the new
-objects. Export runs on a background thread with progress.
+can be exported as a set of DICOM files via *File ▶ 💾 Export dataset A/B as
+DICOM…*: one CT Image Storage file per slice plus RTSTRUCT, RTDOSE (16-bit
+with `DoseGridScaling`) and an RTPLAN skeleton (photon or ion), written with
+`dicom-rs` in Explicit VR Little Endian and preserving the RTSTRUCT ▶ series,
+RTDOSE ▶ RTPLAN ▶ RTSTRUCT reference chain. Fresh `2.25.…` UIDs are generated
+for the new objects. Export runs on a background thread with progress.
+
+The dialog first shows what will be written, in the same shape as the
+anonymizer: an output folder, then every patient / study / equipment
+attribute that goes into all exported files —
+
+| Tag | Default |
+|---|---|
+| PatientName, PatientID | from the loaded study |
+| PatientBirthDate, PatientSex | empty, `O` |
+| StudyID, StudyDescription, StudyDate, StudyTime | `1`, study's own, study's own date (today if absent), now |
+| AccessionNumber, ReferringPhysicianName | empty |
+| SeriesDescription | from the active series (written on the image series only) |
+| InstitutionName, StationName | empty |
+| Manufacturer, ManufacturerModelName | `rust-dicom-viewer`, `DICOM export` |
+
+Every value is editable, `↺` restores the study's own value (`↺ all` restores
+the whole table), and unchecking a row leaves that tag out of the files
+entirely. *StudyDate* / *StudyTime* also stamp the RTSTRUCT and RTPLAN
+date/time. **Keep the source Frame of Reference UID** (on by default) keeps
+the export spatially linked to its source, so the two load as a comparable
+pair; switching it off generates a fresh frame of reference.
 
 The exports round-trip through this viewer and pydicom; they are
 QA/research objects, not guaranteed-complete clinical IODs.

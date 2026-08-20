@@ -52,10 +52,12 @@ oblique acquisitions display consistently but the plane names are nominal —
 the anatomical edge labels (L/R/A/P/S/I) always reflect the true patient
 directions derived from the direction cosines.
 
-Each viewport carries two corner buttons: **⟲** resets that view's zoom,
-pan and slice, and **⛶ / ❐** maximizes the view to fill the window and
-restores the layout again. The toolbar holds a global **⟲** (resets every
-view of both datasets), the **⌖** crosshair toggle (while hidden,
+Each viewport carries two corner buttons (both name themselves on hover):
+**⟲** resets that view's zoom and pan and puts the crosshair back at the
+volume center — which returns that dataset's three views to their central
+slices — and **⛶ / ❐** maximizes the view to fill the window and restores
+the layout again. The toolbar holds a global **⟲** (the same reset for
+every view of both datasets), the **⌖** crosshair toggle (while hidden,
 left-click navigation is disabled entirely and slices change only by
 scrolling), the **3D A / 3D B** buttons and the segmentation tools.
 

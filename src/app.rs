@@ -518,6 +518,15 @@ pub struct ViewerApp {
     sim_params: SimParams,
     sim_job: Option<Job<(usize, LoadedStudy)>>,
     last_sim: Option<String>,
+    // DICOM export (File ▶ Export dataset …).
+    /// Dialog visibility.
+    export_open: bool,
+    /// Dataset the dialog exports.
+    export_slot: usize,
+    /// Output folder as edited in the dialog.
+    export_dir: String,
+    /// Editable DICOM attributes, filled from the study when the dialog opens.
+    export_params: Option<dicom_export::ExportParams>,
     export_job: Option<Job<anyhow::Result<(usize, String)>>>,
     export_result: Option<String>,
 
@@ -643,6 +652,10 @@ impl ViewerApp {
             sim_params: SimParams::default(),
             sim_job: None,
             last_sim: None,
+            export_open: false,
+            export_slot: 0,
+            export_dir: String::new(),
+            export_params: None,
             export_job: None,
             export_result: None,
             gen_open: false,
@@ -1007,28 +1020,40 @@ impl ViewerApp {
         self.sim_job = Some(Job { progress, rx });
     }
 
-    /// Export a loaded study as DICOM files into a user-chosen folder.
-    fn start_export(&mut self, slot: usize) {
+    /// Open the export dialog for `slot`, pre-filling the DICOM attributes
+    /// from that study (an already-open dialog is re-targeted and refilled).
+    fn open_export_dialog(&mut self, slot: usize) {
+        let Some(study) = &self.slots[slot].study else { return };
+        self.export_params = Some(dicom_export::ExportParams::for_study(study));
+        self.export_slot = slot;
+        self.export_result = None;
+        self.export_open = true;
+    }
+
+    /// Export the dialog's dataset as DICOM files into its output folder.
+    fn start_export(&mut self) {
         if self.export_job.is_some() {
             return;
         }
+        let slot = self.export_slot.min(1);
         let Some(study) = &self.slots[slot].study else { return };
-        let Some(dir) = rfd::FileDialog::new()
-            .set_title(format!("Export dataset {} as DICOM — choose folder", SLOT_NAMES[slot]))
-            .pick_folder()
-        else {
+        let Some(params) = self.export_params.clone() else { return };
+        let dir = PathBuf::from(self.export_dir.trim());
+        if dir.as_os_str().is_empty() {
+            self.error = Some("Choose an output folder for the export".into());
             return;
-        };
+        }
         let src = study.clone();
         let progress = Arc::new(Progress::default());
         progress.set("starting…");
         let p2 = progress.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let res = dicom_export::export_study(&src, &dir, &p2)
+            let res = dicom_export::export_study(&src, &dir, &params, &p2)
                 .map(|n| (n, dir.display().to_string()));
             let _ = tx.send(res);
         });
+        self.export_result = None;
         self.export_job = Some(Job { progress, rx });
     }
 
@@ -1081,23 +1106,34 @@ impl ViewerApp {
         self.gen_job = Some(Job { progress, rx });
     }
 
-    /// Reset zoom, pan and slice (back to the volume center) of every view.
+    /// Reset zoom, pan, crosshair and slice (all back to the volume center)
+    /// of every view of both datasets.
     fn reset_all_views(&mut self) {
         for s in &mut self.slots {
-            let dims = s.study.as_ref().map(|st| st.volume.dims);
             for v in &mut s.views {
                 v.zoom = 0.0;
                 v.pan = Vec2::ZERO;
-                if let Some(dims) = dims {
-                    v.slice = match v.plane {
-                        ViewPlane::Axial => dims[2] / 2,
-                        ViewPlane::Sagittal => dims[0] / 2,
-                        ViewPlane::Coronal => dims[1] / 2,
-                    };
-                    v.invalidate();
-                }
+                v.invalidate();
             }
         }
+        for slot in 0..self.slots.len() {
+            self.center_cursor(slot);
+        }
+    }
+
+    /// Put the crosshair of `slot` back at its volume center and follow it
+    /// with that slot's three slices. The other dataset is left alone even
+    /// when crosshair linking is on — a reset is per-dataset, and "Reset all
+    /// views" recenters both anyway.
+    fn center_cursor(&mut self, slot: usize) {
+        let Some(study) = &self.slots[slot].study else { return };
+        let d = study.volume.dims;
+        self.slots[slot].cursor = [
+            (d[0] as f64 - 1.0).max(0.0) / 2.0,
+            (d[1] as f64 - 1.0).max(0.0) / 2.0,
+            (d[2] as f64 - 1.0).max(0.0) / 2.0,
+        ];
+        self.sync_views_to_cursor(slot, None);
     }
 
     /// Combined hash of everything that affects dose overlays of a slot.
@@ -2028,6 +2064,7 @@ impl ViewerApp {
         let mut reset_views = false;
         let mut do_reg: Option<RegKind> = None;
         let mut open_gen = false;
+        let mut open_export: Option<usize> = None;
         let mut new_theme: Option<egui::ThemePreference> = None;
 
         egui::Panel::top(egui::Id::new("menu_bar")).show(ui, |ui| {
@@ -2070,6 +2107,29 @@ impl ViewerApp {
                     {
                         close_b = true;
                         ui.close();
+                    }
+                    ui.separator();
+                    #[allow(clippy::needless_range_loop)] // `slot` also indexes `self.slots`
+                    for slot in 0..2 {
+                        if slot == 1 && !self.comparison && self.slots[1].study.is_none() {
+                            continue;
+                        }
+                        if ui
+                            .add_enabled(
+                                self.slots[slot].study.is_some(),
+                                egui::Button::new(format!(
+                                    "💾 Export dataset {} as DICOM…",
+                                    SLOT_NAMES[slot]
+                                )),
+                            )
+                            .on_hover_text(
+                                "Write the displayed volume, structure sets, dose grids                                  and plans as DICOM files — with the patient / study /                                  equipment tags reviewed and edited first",
+                            )
+                            .clicked()
+                        {
+                            open_export = Some(slot);
+                            ui.close();
+                        }
                     }
                     ui.separator();
                     if ui
@@ -2255,6 +2315,9 @@ impl ViewerApp {
         if open_gen {
             self.gen_open = true;
         }
+        if let Some(slot) = open_export {
+            self.open_export_dialog(slot);
+        }
         if let Some(theme) = new_theme {
             self.set_theme(ctx, theme);
         }
@@ -2357,7 +2420,10 @@ impl ViewerApp {
                     // Reset every view of both datasets.
                     if ui
                         .button("⟲")
-                        .on_hover_text("Reset all views (zoom, pan and slice)")
+                        .on_hover_text(
+                            "Reset every view of both datasets: fit zoom, clear pan \
+                             and put the crosshairs back at the volume centers",
+                        )
                         .clicked()
                     {
                         self.reset_all_views();
@@ -2587,14 +2653,13 @@ impl ViewerApp {
     }
 
     /// Study transform simulator: apply a known rigid motion + optional
-    /// Gaussian deformation to a study, generate the result into the other
-    /// slot, and export any study as DICOM files.
+    /// Gaussian deformation to a study and generate the result into the
+    /// other slot (the generated study is exportable via *File ▶ Export*).
     fn simulation_section(&mut self, ui: &mut egui::Ui) {
         if self.slots[0].study.is_none() && self.slots[1].study.is_none() {
             return;
         }
         let mut do_generate = false;
-        let mut do_export: Option<usize> = None;
         egui::CollapsingHeader::new(egui::RichText::new("Simulation (registration QA)").strong())
             .default_open(false)
             .show(ui, |ui| {
@@ -2664,43 +2729,10 @@ impl ViewerApp {
                     ui.weak(format!("Ground truth {s}"));
                 }
 
-                ui.separator();
-                ui.label("Export as DICOM files:");
-                if let Some(job) = &self.export_job {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(job.progress.get());
-                    });
-                } else {
-                    ui.horizontal(|ui| {
-                        #[allow(clippy::needless_range_loop)] // `slot` also indexes `self.slots`
-                        for slot in 0..2 {
-                            if ui
-                                .add_enabled(
-                                    self.slots[slot].study.is_some(),
-                                    egui::Button::new(format!(
-                                        "💾 Export {}…",
-                                        SLOT_NAMES[slot]
-                                    )),
-                                )
-                                .clicked()
-                            {
-                                do_export = Some(slot);
-                            }
-                        }
-                    });
-                }
-                if let Some(msg) = &self.export_result {
-                    ui.weak(msg);
-                }
             });
         ui.separator();
         if do_generate {
             self.start_simulation();
-        }
-        if let Some(slot) = do_export {
-            self.export_result = None;
-            self.start_export(slot);
         }
     }
 
@@ -3154,7 +3186,7 @@ impl ViewerApp {
                                 .on_hover_text(
                                     "Convert to RTSTRUCT contours: adds a ROI to the \
                                      structure set, so it exports with \
-                                     Simulation ▶ 💾 Export",
+                                     File ▶ 💾 Export",
                                 )
                                 .clicked()
                             {
@@ -4279,8 +4311,11 @@ impl ViewerApp {
         }
 
         // ---- corner buttons: reset view & maximize / restore layout ----
-        // Registered before the viewport interaction; the viewport handlers
-        // below additionally ignore any pointer activity over the buttons.
+        // Their rectangles are needed here (the viewport handlers below ignore
+        // any pointer activity over them), but the buttons themselves are
+        // registered *after* the viewport interaction: the last widget at a
+        // position is the topmost one, so they get the hover — and show their
+        // tooltips — instead of the full-viewport rectangle underneath.
         let is_max = self.maximized == Some((slot, idx));
         let bsize = egui::vec2(24.0, 20.0);
         let by = rect.top() + 22.0; // below the slice counter
@@ -4288,28 +4323,10 @@ impl ViewerApp {
             Rect::from_min_size(Pos2::new(rect.right() - bsize.x - 4.0, by), bsize);
         let fit_rect =
             Rect::from_min_size(Pos2::new(max_rect.left() - bsize.x - 4.0, by), bsize);
-        let max_resp = ui
-            .put(
-                max_rect,
-                egui::Button::new(if is_max { "❐" } else { "⛶" }).small(),
-            )
-            .on_hover_text(if is_max {
-                "Restore the view layout"
-            } else {
-                "Maximize this view (whole window)"
-            });
-        let fit_resp = ui
-            .put(fit_rect, egui::Button::new("⟲").small())
-            .on_hover_text("Reset view (fit zoom, center)");
         let (pointer_pos, any_click) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_click()));
         let over_buttons = pointer_pos
             .map(|p| max_rect.contains(p) || fit_rect.contains(p))
             .unwrap_or(false);
-        let clicked_max = max_resp.clicked()
-            || (any_click && pointer_pos.map(|p| max_rect.contains(p)).unwrap_or(false));
-        let clicked_fit = fit_resp.clicked()
-            || (any_click && pointer_pos.map(|p| fit_rect.contains(p)).unwrap_or(false));
-        // (applied below, in the mutable phase)
 
         // ---- interaction ----
         let resp = ui.interact(
@@ -4317,6 +4334,26 @@ impl ViewerApp {
             egui::Id::new(("viewport", slot, idx)),
             Sense::click_and_drag(),
         );
+
+        let max_resp = ui
+            .put(
+                max_rect,
+                egui::Button::new(if is_max { "❐" } else { "⛶" }).small(),
+            )
+            .on_hover_text(if is_max {
+                "Restore the multi-view layout"
+            } else {
+                "Maximize this view to the whole window"
+            });
+        let fit_resp = ui.put(fit_rect, egui::Button::new("⟲").small()).on_hover_text(
+            "Reset this view: fit zoom, clear pan and put the crosshair back at \
+             the volume center",
+        );
+        let clicked_max = max_resp.clicked()
+            || (any_click && pointer_pos.map(|p| max_rect.contains(p)).unwrap_or(false));
+        let clicked_fit = fit_resp.clicked()
+            || (any_click && pointer_pos.map(|p| fit_rect.contains(p)).unwrap_or(false));
+        // (applied below, in the mutable phase)
         let n_slices = vol.plane_slice_count(plane);
         let seg_active = self.seg_tool != SegTool::None;
         let cur_slice = view.slice;
@@ -4471,8 +4508,9 @@ impl ViewerApp {
         if reset_view {
             self.slots[slot].views[idx].zoom = 0.0;
             self.slots[slot].views[idx].pan = Vec2::ZERO;
-            // Also return to the default (central) slice.
-            self.slots[slot].views[idx].slice = n_slices / 2;
+            // Also put the crosshair back at the volume center, which returns
+            // this slot's three views to their default (central) slices.
+            self.center_cursor(slot);
         }
         if let Some((dx, dy)) = wl_delta {
             self.window_width = (self.window_width * (1.0 + dx * 0.005)).clamp(1.0, 30000.0);
@@ -5289,6 +5327,7 @@ impl ViewerApp {
     fn modals(&mut self, ctx: &egui::Context) {
         self.generator_window(ctx);
         self.anonymize_window(ctx);
+        self.export_window(ctx);
         self.autoseg_run_window(ctx);
         self.autoseg_result_window(ctx);
         if let Some(err) = self.error.clone() {
@@ -5985,6 +6024,173 @@ impl ViewerApp {
         }
         if do_apply {
             self.anon_start_apply();
+        }
+    }
+
+    /// The DICOM export dialog: choose the output folder, review and edit
+    /// every patient / study / equipment attribute that will be written,
+    /// then write the study out.
+    fn export_window(&mut self, ctx: &egui::Context) {
+        if !self.export_open {
+            return;
+        }
+        let slot = self.export_slot.min(1);
+        if self.slots[slot].study.is_none() {
+            self.export_open = false;
+            return;
+        }
+        let busy = self.export_job.is_some();
+        let mut open = true;
+        let mut browse = false;
+        let mut do_export = false;
+        let mut reset_all = false;
+
+        egui::Window::new(format!("💾 Export dataset {} as DICOM", SLOT_NAMES[slot]))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_size([720.0, 520.0])
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(
+                    "Writes the displayed volume (one file per slice) plus every \
+                     structure set, dose grid and plan as DICOM objects. The \
+                     attributes below are pre-filled from the loaded study and \
+                     written into every exported file; SOP / series / study instance \
+                     UIDs are always freshly generated, with the cross-references \
+                     between the objects kept consistent.",
+                );
+                ui.add_space(6.0);
+
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Write to").strong());
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.export_dir)
+                            .desired_width(420.0)
+                            .hint_text("output folder (created if missing)"),
+                    );
+                    if ui.button("📂 Browse…").clicked() {
+                        browse = true;
+                    }
+                });
+                ui.add_space(4.0);
+
+                let Some(params) = &mut self.export_params else { return };
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("DICOM tags").strong());
+                    ui.weak("unchecked rows are not written at all");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .small_button("↺ all")
+                            .on_hover_text("Restore every value to the study's own")
+                            .clicked()
+                        {
+                            reset_all = true;
+                        }
+                    });
+                });
+
+                egui::ScrollArea::vertical()
+                    .max_height((ui.available_height() - 90.0).max(120.0))
+                    .show(ui, |ui| {
+                        egui::Grid::new("export_grid")
+                            .num_columns(2)
+                            .striped(true)
+                            .spacing([10.0, 3.0])
+                            .show(ui, |ui| {
+                                ui.label(egui::RichText::new("Tag").strong());
+                                ui.label(egui::RichText::new("Value").strong());
+                                ui.end_row();
+                                for f in &mut params.fields {
+                                    let label = format!(
+                                        "({:04X},{:04X}) {}",
+                                        f.tag.group(),
+                                        f.tag.element(),
+                                        f.name
+                                    );
+                                    ui.checkbox(&mut f.enabled, label).on_hover_text(format!(
+                                        "VR {} — unchecked: the tag is left out of the \
+                                         exported files",
+                                        f.vr
+                                    ));
+                                    ui.horizontal(|ui| {
+                                        ui.add_enabled(
+                                            f.enabled,
+                                            egui::TextEdit::singleline(&mut f.value)
+                                                .desired_width(300.0)
+                                                .hint_text("(empty)"),
+                                        );
+                                        if f.value != f.suggested
+                                            && ui
+                                                .small_button("↺")
+                                                .on_hover_text(format!(
+                                                    "Back to the study's value: “{}”",
+                                                    if f.suggested.is_empty() {
+                                                        "(empty)"
+                                                    } else {
+                                                        &f.suggested
+                                                    }
+                                                ))
+                                                .clicked()
+                                        {
+                                            f.value = f.suggested.clone();
+                                        }
+                                    });
+                                    ui.end_row();
+                                }
+                            });
+                    });
+
+                ui.add_space(4.0);
+                ui.checkbox(
+                    &mut params.keep_frame_of_reference,
+                    "Keep the source Frame of Reference UID",
+                )
+                .on_hover_text(
+                    "On: the export stays spatially linked to its source study, so the \
+                     two load as a comparable pair.\nOff: a fresh frame of reference \
+                     is generated",
+                );
+
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if let Some(job) = &self.export_job {
+                        ui.spinner();
+                        ui.label(job.progress.get());
+                    } else if ui
+                        .add_enabled(!busy, egui::Button::new("💾 Export"))
+                        .on_hover_text("Write the DICOM files into the output folder")
+                        .clicked()
+                    {
+                        do_export = true;
+                    }
+                    if let Some(msg) = &self.export_result {
+                        ui.label(msg);
+                    }
+                });
+            });
+
+        // A running export is not aborted when the window closes — the
+        // background thread finishes writing; only its message is dropped.
+        self.export_open = open;
+        if !open {
+            self.export_result = None;
+        }
+        if reset_all {
+            if let Some(params) = &mut self.export_params {
+                for f in &mut params.fields {
+                    f.value = f.suggested.clone();
+                    f.enabled = true;
+                }
+            }
+        }
+        if browse {
+            if let Some(dir) = Self::pick_folder("Select the export output folder") {
+                self.export_dir = dir.display().to_string();
+            }
+        }
+        if do_export {
+            self.start_export();
         }
     }
 }

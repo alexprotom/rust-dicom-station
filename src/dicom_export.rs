@@ -109,35 +109,134 @@ pub(crate) fn today() -> (String, String) {
 }
 
 // ---------------------------------------------------------------------------
+// Export parameters (the editable DICOM attributes of *File ▶ Export*)
+// ---------------------------------------------------------------------------
+
+/// One patient / study / equipment attribute written into every exported
+/// object. Values are pre-filled from the loaded study and can be edited in
+/// the export dialog before the files are written.
+#[derive(Clone)]
+pub struct ExportField {
+    pub tag: Tag,
+    pub name: &'static str,
+    pub vr: VR,
+    /// The value that will be written (empty ⇒ zero-length element).
+    pub value: String,
+    /// What the study itself carried — the dialog's “↺” restores it.
+    pub suggested: String,
+    /// Unchecked rows are skipped entirely (the tag is not written).
+    pub enabled: bool,
+}
+
+/// Everything the export dialog can influence.
+#[derive(Clone)]
+pub struct ExportParams {
+    pub fields: Vec<ExportField>,
+    /// Keep the study's Frame of Reference UID, so the export stays spatially
+    /// linked to its source; otherwise a fresh one is generated.
+    pub keep_frame_of_reference: bool,
+}
+
+impl ExportParams {
+    /// Defaults for `study`: identity and description tags taken from the
+    /// study itself, dates/times from the current clock where the study has
+    /// none, equipment tags naming this application.
+    pub fn for_study(study: &LoadedStudy) -> Self {
+        let (date, time) = today();
+        let f = |tag, name, vr, value: String| ExportField {
+            tag,
+            name,
+            vr,
+            suggested: value.clone(),
+            value,
+            enabled: true,
+        };
+        let series_desc = study
+            .series
+            .get(study.active_series)
+            .map(|s| s.description.clone())
+            .unwrap_or_default();
+        let study_date = if study.meta.study_date.trim().is_empty() {
+            date
+        } else {
+            study.meta.study_date.trim().to_string()
+        };
+        ExportParams {
+            fields: vec![
+                f(tags::PATIENT_NAME, "PatientName", VR::PN, study.meta.patient_name.clone()),
+                f(tags::PATIENT_ID, "PatientID", VR::LO, study.meta.patient_id.clone()),
+                f(tags::PATIENT_BIRTH_DATE, "PatientBirthDate", VR::DA, String::new()),
+                f(tags::PATIENT_SEX, "PatientSex", VR::CS, "O".into()),
+                f(tags::STUDY_ID, "StudyID", VR::SH, "1".into()),
+                f(
+                    tags::STUDY_DESCRIPTION,
+                    "StudyDescription",
+                    VR::LO,
+                    study.meta.study_description.clone(),
+                ),
+                f(tags::STUDY_DATE, "StudyDate", VR::DA, study_date),
+                f(tags::STUDY_TIME, "StudyTime", VR::TM, time),
+                f(tags::ACCESSION_NUMBER, "AccessionNumber", VR::SH, String::new()),
+                f(
+                    tags::REFERRING_PHYSICIAN_NAME,
+                    "ReferringPhysicianName",
+                    VR::PN,
+                    String::new(),
+                ),
+                f(tags::SERIES_DESCRIPTION, "SeriesDescription", VR::LO, series_desc),
+                f(tags::INSTITUTION_NAME, "InstitutionName", VR::LO, String::new()),
+                f(tags::STATION_NAME, "StationName", VR::SH, String::new()),
+                f(tags::MANUFACTURER, "Manufacturer", VR::LO, "rust-dicom-viewer".into()),
+                f(
+                    tags::MANUFACTURER_MODEL_NAME,
+                    "ManufacturerModelName",
+                    VR::LO,
+                    "DICOM export".into(),
+                ),
+            ],
+            keep_frame_of_reference: true,
+        }
+    }
+
+    /// The value that will be written for `tag` (`None` when the row is off).
+    pub fn value(&self, tag: Tag) -> Option<&str> {
+        self.fields
+            .iter()
+            .find(|f| f.tag == tag && f.enabled)
+            .map(|f| f.value.trim())
+    }
+
+    /// Write every enabled field except SeriesDescription, which is a
+    /// per-series attribute and only belongs on the image series.
+    fn write_common(&self, o: &mut InMemDicomObject) {
+        for f in self.fields.iter().filter(|f| f.enabled) {
+            if f.tag == tags::SERIES_DESCRIPTION {
+                continue;
+            }
+            put_str(o, f.tag, f.vr, f.value.trim());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Export
 // ---------------------------------------------------------------------------
 
-struct Ctx {
+struct Ctx<'a> {
     study_uid: String,
     for_uid: String,
+    /// Date / time stamped on the RT objects — the StudyDate / StudyTime
+    /// fields of `params` when set, today otherwise.
     date: String,
     time: String,
+    params: &'a ExportParams,
 }
 
-fn common_elements(o: &mut InMemDicomObject, study: &LoadedStudy, ctx: &Ctx, modality: &str) {
+fn common_elements(o: &mut InMemDicomObject, ctx: &Ctx, modality: &str) {
     put_str(o, tags::SPECIFIC_CHARACTER_SET, VR::CS, "ISO_IR 100");
-    put_str(o, tags::PATIENT_NAME, VR::PN, study.meta.patient_name.clone());
-    put_str(o, tags::PATIENT_ID, VR::LO, study.meta.patient_id.clone());
-    put_str(o, tags::PATIENT_BIRTH_DATE, VR::DA, "");
-    put_str(o, tags::PATIENT_SEX, VR::CS, "O");
+    ctx.params.write_common(o);
     put_str(o, tags::STUDY_INSTANCE_UID, VR::UI, ctx.study_uid.clone());
-    put_str(o, tags::STUDY_DATE, VR::DA, ctx.date.clone());
-    put_str(o, tags::STUDY_TIME, VR::TM, ctx.time.clone());
-    put_str(
-        o,
-        tags::STUDY_DESCRIPTION,
-        VR::LO,
-        study.meta.study_description.clone(),
-    );
-    put_str(o, tags::ACCESSION_NUMBER, VR::SH, "");
-    put_str(o, tags::REFERRING_PHYSICIAN_NAME, VR::PN, "");
     put_str(o, tags::MODALITY, VR::CS, modality);
-    put_str(o, tags::MANUFACTURER, VR::LO, "rust-dicom-viewer export");
 }
 
 pub(crate) fn write_object(
@@ -160,20 +259,33 @@ pub(crate) fn write_object(
 
 /// Export `study` into `dir` as individual DICOM files.
 /// Returns the number of files written.
-pub fn export_study(study: &LoadedStudy, dir: &Path, progress: &Progress) -> Result<usize> {
+pub fn export_study(
+    study: &LoadedStudy,
+    dir: &Path,
+    params: &ExportParams,
+    progress: &Progress,
+) -> Result<usize> {
     std::fs::create_dir_all(dir)
         .with_context(|| format!("create directory {}", dir.display()))?;
-    let (date, time) = today();
+    let (today_date, today_time) = today();
     let vol = &study.volume;
+    let pick = |tag, fallback: &str| {
+        params
+            .value(tag)
+            .filter(|v| !v.is_empty())
+            .unwrap_or(fallback)
+            .to_string()
+    };
     let ctx = Ctx {
         study_uid: new_uid(),
-        for_uid: if vol.frame_of_reference_uid.is_empty() {
-            new_uid()
-        } else {
+        for_uid: if params.keep_frame_of_reference && !vol.frame_of_reference_uid.is_empty() {
             vol.frame_of_reference_uid.clone()
+        } else {
+            new_uid()
         },
-        date,
-        time,
+        date: pick(tags::STUDY_DATE, &today_date),
+        time: pick(tags::STUDY_TIME, &today_time),
+        params,
     };
     let mut n_files = 0usize;
 
@@ -200,21 +312,14 @@ pub fn export_study(study: &LoadedStudy, dir: &Path, progress: &Progress) -> Res
         let sop_uid = new_uid();
         ct_sop_uids.push(sop_uid.clone());
         let mut o = InMemDicomObject::new_empty();
-        common_elements(&mut o, study, &ctx, &modality);
+        common_elements(&mut o, &ctx, &modality);
         put_str(&mut o, tags::SOP_CLASS_UID, VR::UI, SOP_CT);
         put_str(&mut o, tags::SOP_INSTANCE_UID, VR::UI, sop_uid);
         put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, series_uid.clone());
         put_is(&mut o, tags::SERIES_NUMBER, 1);
-        put_str(
-            &mut o,
-            tags::SERIES_DESCRIPTION,
-            VR::LO,
-            study
-                .series
-                .get(study.active_series)
-                .map(|s| s.description.clone())
-                .unwrap_or_default(),
-        );
+        if let Some(d) = params.value(tags::SERIES_DESCRIPTION) {
+            put_str(&mut o, tags::SERIES_DESCRIPTION, VR::LO, d);
+        }
         put_is(&mut o, tags::INSTANCE_NUMBER, k as i64 + 1);
         put_str(&mut o, tags::FRAME_OF_REFERENCE_UID, VR::UI, ctx.for_uid.clone());
         put_str(&mut o, tags::POSITION_REFERENCE_INDICATOR, VR::LO, "");
@@ -272,7 +377,7 @@ pub fn export_study(study: &LoadedStudy, dir: &Path, progress: &Progress) -> Res
             study.structure_sets.len()
         ));
         let mut o = InMemDicomObject::new_empty();
-        common_elements(&mut o, study, &ctx, "RTSTRUCT");
+        common_elements(&mut o, &ctx, "RTSTRUCT");
         put_str(&mut o, tags::SOP_CLASS_UID, VR::UI, SOP_RTSTRUCT);
         put_str(&mut o, tags::SOP_INSTANCE_UID, VR::UI, rs_uids[si].clone());
         put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, new_uid());
@@ -356,7 +461,7 @@ pub fn export_study(study: &LoadedStudy, dir: &Path, progress: &Progress) -> Res
         let [dnx, dny, dnf] = d.dims;
         let scaling = (d.max_dose as f64 / 60000.0).max(1e-9);
         let mut o = InMemDicomObject::new_empty();
-        common_elements(&mut o, study, &ctx, "RTDOSE");
+        common_elements(&mut o, &ctx, "RTDOSE");
         put_str(&mut o, tags::SOP_CLASS_UID, VR::UI, SOP_RTDOSE);
         put_str(&mut o, tags::SOP_INSTANCE_UID, VR::UI, new_uid());
         put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, new_uid());
@@ -436,7 +541,7 @@ pub fn export_study(study: &LoadedStudy, dir: &Path, progress: &Progress) -> Res
                 .any(|b| b.radiation_type == "PROTON" || b.radiation_type == "ION");
         let sop_class = if ion { SOP_RTIONPLAN } else { SOP_RTPLAN };
         let mut o = InMemDicomObject::new_empty();
-        common_elements(&mut o, study, &ctx, "RTPLAN");
+        common_elements(&mut o, &ctx, "RTPLAN");
         put_str(&mut o, tags::SOP_CLASS_UID, VR::UI, sop_class);
         put_str(&mut o, tags::SOP_INSTANCE_UID, VR::UI, plan_uids[pi].clone());
         put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, new_uid());

@@ -44,10 +44,10 @@ holds the registration controls and both dataset trees.*
   without Python, hand-written SIMD CPU engine and a wgpu GPU path
   (Vulkan/DX12/Metal, no CUDA), validated to mean Dice 0.9995 against the
   reference implementation.
-* **Tools** - DICOM export (CT + RTSTRUCT + RTDOSE + RTPLAN), an
-  interactive folder anonymizer with consistent UID regeneration, and a
-  synthetic RT-study generator; 40+ tests assert the whole stack against
-  an analytically known phantom.
+* **Tools** - DICOM export with an editable patient/study tag table
+  (CT + RTSTRUCT + RTDOSE + RTPLAN), an interactive folder anonymizer with
+  consistent UID regeneration, and a synthetic RT-study generator; 40+ tests
+  assert the whole stack against an analytically known phantom.
 
 ## Architecture
 

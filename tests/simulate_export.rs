@@ -74,7 +74,23 @@ fn simulate_and_export_roundtrip() {
     // ---- Export → reload ---------------------------------------------------
     let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/sim_export_test");
     let _ = std::fs::remove_dir_all(&out);
-    let n = dicom_export::export_study(&sim, &out, &progress).expect("export succeeds");
+    // Export with edited DICOM attributes, as the export dialog would hand
+    // them over: two overridden values and one row switched off.
+    let mut params = dicom_export::ExportParams::for_study(&sim);
+    fn field<'a>(
+        params: &'a mut dicom_export::ExportParams,
+        name: &str,
+    ) -> &'a mut dicom_export::ExportField {
+        params
+            .fields
+            .iter_mut()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("export field {name} missing"))
+    }
+    field(&mut params, "PatientID").value = "ANON_EXPORT_1".into();
+    field(&mut params, "PatientName").value = "Anon^Export".into();
+    field(&mut params, "StudyDescription").enabled = false;
+    let n = dicom_export::export_study(&sim, &out, &params, &progress).expect("export succeeds");
     assert!(n >= sim.volume.dims[2] + 3, "expected CT slices + RS + RD + RP, got {n}");
 
     let re = loader::load_directory(&out, &progress).expect("exported study reloads");
@@ -109,6 +125,15 @@ fn simulate_and_export_roundtrip() {
     assert!((plan.target_prescription_dose.unwrap() - 60.0).abs() < 1e-6);
     let iso_re = plan.beams[0].isocenter.unwrap();
     assert!((iso_re - iso_sim).length() < 1e-3, "isocenter round-trip");
+
+    // The edited tags landed in the files, and the disabled row was skipped.
+    assert_eq!(re.meta.patient_id, "ANON_EXPORT_1", "PatientID override");
+    assert_eq!(re.meta.patient_name, "Anon^Export", "PatientName override");
+    assert!(
+        re.meta.study_description.is_empty(),
+        "disabled StudyDescription must not be written, got {:?}",
+        re.meta.study_description
+    );
 
     // Frame of reference preserved so the pair stays comparable.
     assert_eq!(re.volume.frame_of_reference_uid, sim.volume.frame_of_reference_uid);
