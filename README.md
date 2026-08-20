@@ -1,11 +1,11 @@
 # rust-dicom-viewer
 
 A fast, robust DICOM / RT DICOM viewer written **entirely in Rust**. It
-loads a full radiotherapy study — image series (CT/MR/PT), RT Structure
+loads a full radiotherapy study: image series (CT/MRI/PET), RT Structure
 Set, RT Dose, RT Plan (photon and ion/proton), planar images, spatial
-registrations, treatment records — and displays it in the classic
-three-view MPR layout, with a second dataset row for comparison, built-in
-elastix-style **image registration**, MITK-style **interactive
+registrations, treatment records; and displays it in the classic
+three-view layout, with a second dataset row for comparison, built-in
+elastix-style **image registration**, **interactive
 segmentation**, a live **3D structure view**, and **automatic multi-organ
 segmentation** (a pure-Rust re-implementation of TotalSegmentator, 117
 structures, CPU or any GPU).
@@ -24,36 +24,36 @@ holds the registration controls and both dataset trees.*
 
 ## Highlights
 
-* **Viewing** — parallel DICOM loading (incl. compressed syntaxes), true
+* **Viewing** - parallel DICOM loading (incl. compressed syntaxes), true
   patient-space geometry, axial/sagittal/coronal with linked crosshairs,
   window/level with CT presets, dose colorwash + isodose lines, per-beam
   plan summaries, planar images (DX/CR/RTIMAGE), dark/light themes.
-* **Datasets** — a patient ▶ study ▶ series tree per dataset, folder
+* **Datasets** - a patient ▶ study ▶ series tree per dataset, folder
   merging, copy/move/remove with correct reference-chain semantics,
   six-view comparison mode with patient-space crosshair linking.
-* **Registration** — rigid (6-DOF) and deformable (cubic B-spline)
+* **Registration** - rigid (6-DOF) and deformable (cubic B-spline)
   registration re-implemented from elastix (multi-resolution pyramids,
   stochastic sampling, ASGD optimizer), magenta/green fusion overlay,
   DICOM REG support, a known-transform simulator for QA, sub-millimeter
   verified accuracy.
-* **Segmentation** — spacing-aware 2D/3D brush and eraser, geodesic
+* **Segmentation** - spacing-aware 2D/3D brush and eraser, geodesic
   region growing with live preview, per-stroke undo, real-time 3D surface
   view, mask → RTSTRUCT conversion.
-* **Auto-segmentation** — TotalSegmentator v2 inference rebuilt natively:
-  official nnU-Net weights (Apache-2.0) downloaded once and converted
+* **Auto-segmentation** - TotalSegmentator v2 inference rebuilt natively:
+  official nnU-Net weights downloaded once and converted
   without Python, hand-written SIMD CPU engine and a wgpu GPU path
   (Vulkan/DX12/Metal, no CUDA), validated to mean Dice 0.9995 against the
   reference implementation.
-* **Tools** — DICOM export (CT + RTSTRUCT + RTDOSE + RTPLAN), an
+* **Tools** - DICOM export (CT + RTSTRUCT + RTDOSE + RTPLAN), an
   interactive folder anonymizer with consistent UID regeneration, and a
   synthetic RT-study generator; 40+ tests assert the whole stack against
   an analytically known phantom.
 
-## Architecture in one paragraph
+## Architecture
 
-One language, one binary. Every algorithm — DICOM parsing, volume
+One language, one binary. Every algorithm - DICOM parsing, volume
 reconstruction, rendering primitives, registration, meshing, neural-net
-inference, DICOM writing — is implemented in Rust; where a feature
+inference, DICOM writing - is implemented in Rust; where a feature
 usually means binding a C/C++ library (ITK/elastix, ONNX Runtime, CUDA),
 it is re-implemented natively instead. Image processing runs CPU-side
 with `rayon` and aggressive caching; the GPU (via `wgpu`) only blits the
