@@ -75,6 +75,8 @@ src/
                    and text prompts, for the structures a fixed-class model
                    cannot cover
     weights.rs       checkpoint acquisition and licensing notes
+    layout.rs        the published checkpoint's tensor layout and the
+                     checks that verify a file really is that model
   autoseg/         automatic segmentation (pure-Rust TotalSegmentator)
     mod.rs           public API, engine selection, progress/cancel
     classes.rs       117-class table, sub-model maps, organ colors
@@ -182,7 +184,11 @@ code paths the GUI uses, with no external data or tooling:
 * **autoseg** — miniature network assembly with exact checkpoint naming +
   forward pass; sliding-window steps and resampling conventions pinned to
   nnU-Net/scipy reference values; an `#[ignore]`d end-to-end test against
-  the real 3 mm model.
+  the real 3 mm model;
+* **segvol** — the published checkpoint's 475-tensor inventory, recorded in
+  `tests/data/segvol-tensors.csv` and asserted module by module, so the
+  network can be built against the exact key names and shapes without the
+  724 MB download; an `#[ignore]`d test checks the real file.
 
 Beyond the automated tests, the auto-segmentation implementation was
 validated against the reference implementation directly — exact

@@ -16,7 +16,9 @@
 //! volume resized down to that shape, then again as a sliding window over a
 //! crop around whatever the first pass found.
 //!
-//! Status: the weight-acquisition layer is in place; the network itself is
-//! being built up module by module. See `docs/segvol-plan.md`.
+//! Status: the weight-acquisition layer is in place and the published
+//! checkpoint's layout is recorded in [`layout`], verified against the real
+//! file. The network itself is being built up module by module.
 
+pub mod layout;
 pub mod weights;

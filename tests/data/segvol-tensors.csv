@@ -1,0 +1,476 @@
+name,dtype,shape,numel
+model.image_encoder.patch_embedding.position_embeddings,F32,1 2048 768,1572864
+model.image_encoder.patch_embedding.patch_embeddings.1.weight,F32,768 1024,786432
+model.image_encoder.patch_embedding.patch_embeddings.1.bias,F32,768,768
+model.image_encoder.blocks.0.mlp.linear1.weight,F32,3072 768,2359296
+model.image_encoder.blocks.0.mlp.linear1.bias,F32,3072,3072
+model.image_encoder.blocks.0.mlp.linear2.weight,F32,768 3072,2359296
+model.image_encoder.blocks.0.mlp.linear2.bias,F32,768,768
+model.image_encoder.blocks.0.norm1.weight,F32,768,768
+model.image_encoder.blocks.0.norm1.bias,F32,768,768
+model.image_encoder.blocks.0.attn.out_proj.weight,F32,768 768,589824
+model.image_encoder.blocks.0.attn.out_proj.bias,F32,768,768
+model.image_encoder.blocks.0.attn.qkv.weight,F32,2304 768,1769472
+model.image_encoder.blocks.0.norm2.weight,F32,768,768
+model.image_encoder.blocks.0.norm2.bias,F32,768,768
+model.image_encoder.blocks.1.mlp.linear1.weight,F32,3072 768,2359296
+model.image_encoder.blocks.1.mlp.linear1.bias,F32,3072,3072
+model.image_encoder.blocks.1.mlp.linear2.weight,F32,768 3072,2359296
+model.image_encoder.blocks.1.mlp.linear2.bias,F32,768,768
+model.image_encoder.blocks.1.norm1.weight,F32,768,768
+model.image_encoder.blocks.1.norm1.bias,F32,768,768
+model.image_encoder.blocks.1.attn.out_proj.weight,F32,768 768,589824
+model.image_encoder.blocks.1.attn.out_proj.bias,F32,768,768
+model.image_encoder.blocks.1.attn.qkv.weight,F32,2304 768,1769472
+model.image_encoder.blocks.1.norm2.weight,F32,768,768
+model.image_encoder.blocks.1.norm2.bias,F32,768,768
+model.image_encoder.blocks.2.mlp.linear1.weight,F32,3072 768,2359296
+model.image_encoder.blocks.2.mlp.linear1.bias,F32,3072,3072
+model.image_encoder.blocks.2.mlp.linear2.weight,F32,768 3072,2359296
+model.image_encoder.blocks.2.mlp.linear2.bias,F32,768,768
+model.image_encoder.blocks.2.norm1.weight,F32,768,768
+model.image_encoder.blocks.2.norm1.bias,F32,768,768
+model.image_encoder.blocks.2.attn.out_proj.weight,F32,768 768,589824
+model.image_encoder.blocks.2.attn.out_proj.bias,F32,768,768
+model.image_encoder.blocks.2.attn.qkv.weight,F32,2304 768,1769472
+model.image_encoder.blocks.2.norm2.weight,F32,768,768
+model.image_encoder.blocks.2.norm2.bias,F32,768,768
+model.image_encoder.blocks.3.mlp.linear1.weight,F32,3072 768,2359296
+model.image_encoder.blocks.3.mlp.linear1.bias,F32,3072,3072
+model.image_encoder.blocks.3.mlp.linear2.weight,F32,768 3072,2359296
+model.image_encoder.blocks.3.mlp.linear2.bias,F32,768,768
+model.image_encoder.blocks.3.norm1.weight,F32,768,768
+model.image_encoder.blocks.3.norm1.bias,F32,768,768
+model.image_encoder.blocks.3.attn.out_proj.weight,F32,768 768,589824
+model.image_encoder.blocks.3.attn.out_proj.bias,F32,768,768
+model.image_encoder.blocks.3.attn.qkv.weight,F32,2304 768,1769472
+model.image_encoder.blocks.3.norm2.weight,F32,768,768
+model.image_encoder.blocks.3.norm2.bias,F32,768,768
+model.image_encoder.blocks.4.mlp.linear1.weight,F32,3072 768,2359296
+model.image_encoder.blocks.4.mlp.linear1.bias,F32,3072,3072
+model.image_encoder.blocks.4.mlp.linear2.weight,F32,768 3072,2359296
+model.image_encoder.blocks.4.mlp.linear2.bias,F32,768,768
+model.image_encoder.blocks.4.norm1.weight,F32,768,768
+model.image_encoder.blocks.4.norm1.bias,F32,768,768
+model.image_encoder.blocks.4.attn.out_proj.weight,F32,768 768,589824
+model.image_encoder.blocks.4.attn.out_proj.bias,F32,768,768
+model.image_encoder.blocks.4.attn.qkv.weight,F32,2304 768,1769472
+model.image_encoder.blocks.4.norm2.weight,F32,768,768
+model.image_encoder.blocks.4.norm2.bias,F32,768,768
+model.image_encoder.blocks.5.mlp.linear1.weight,F32,3072 768,2359296
+model.image_encoder.blocks.5.mlp.linear1.bias,F32,3072,3072
+model.image_encoder.blocks.5.mlp.linear2.weight,F32,768 3072,2359296
+model.image_encoder.blocks.5.mlp.linear2.bias,F32,768,768
+model.image_encoder.blocks.5.norm1.weight,F32,768,768
+model.image_encoder.blocks.5.norm1.bias,F32,768,768
+model.image_encoder.blocks.5.attn.out_proj.weight,F32,768 768,589824
+model.image_encoder.blocks.5.attn.out_proj.bias,F32,768,768
+model.image_encoder.blocks.5.attn.qkv.weight,F32,2304 768,1769472
+model.image_encoder.blocks.5.norm2.weight,F32,768,768
+model.image_encoder.blocks.5.norm2.bias,F32,768,768
+model.image_encoder.blocks.6.mlp.linear1.weight,F32,3072 768,2359296
+model.image_encoder.blocks.6.mlp.linear1.bias,F32,3072,3072
+model.image_encoder.blocks.6.mlp.linear2.weight,F32,768 3072,2359296
+model.image_encoder.blocks.6.mlp.linear2.bias,F32,768,768
+model.image_encoder.blocks.6.norm1.weight,F32,768,768
+model.image_encoder.blocks.6.norm1.bias,F32,768,768
+model.image_encoder.blocks.6.attn.out_proj.weight,F32,768 768,589824
+model.image_encoder.blocks.6.attn.out_proj.bias,F32,768,768
+model.image_encoder.blocks.6.attn.qkv.weight,F32,2304 768,1769472
+model.image_encoder.blocks.6.norm2.weight,F32,768,768
+model.image_encoder.blocks.6.norm2.bias,F32,768,768
+model.image_encoder.blocks.7.mlp.linear1.weight,F32,3072 768,2359296
+model.image_encoder.blocks.7.mlp.linear1.bias,F32,3072,3072
+model.image_encoder.blocks.7.mlp.linear2.weight,F32,768 3072,2359296
+model.image_encoder.blocks.7.mlp.linear2.bias,F32,768,768
+model.image_encoder.blocks.7.norm1.weight,F32,768,768
+model.image_encoder.blocks.7.norm1.bias,F32,768,768
+model.image_encoder.blocks.7.attn.out_proj.weight,F32,768 768,589824
+model.image_encoder.blocks.7.attn.out_proj.bias,F32,768,768
+model.image_encoder.blocks.7.attn.qkv.weight,F32,2304 768,1769472
+model.image_encoder.blocks.7.norm2.weight,F32,768,768
+model.image_encoder.blocks.7.norm2.bias,F32,768,768
+model.image_encoder.blocks.8.mlp.linear1.weight,F32,3072 768,2359296
+model.image_encoder.blocks.8.mlp.linear1.bias,F32,3072,3072
+model.image_encoder.blocks.8.mlp.linear2.weight,F32,768 3072,2359296
+model.image_encoder.blocks.8.mlp.linear2.bias,F32,768,768
+model.image_encoder.blocks.8.norm1.weight,F32,768,768
+model.image_encoder.blocks.8.norm1.bias,F32,768,768
+model.image_encoder.blocks.8.attn.out_proj.weight,F32,768 768,589824
+model.image_encoder.blocks.8.attn.out_proj.bias,F32,768,768
+model.image_encoder.blocks.8.attn.qkv.weight,F32,2304 768,1769472
+model.image_encoder.blocks.8.norm2.weight,F32,768,768
+model.image_encoder.blocks.8.norm2.bias,F32,768,768
+model.image_encoder.blocks.9.mlp.linear1.weight,F32,3072 768,2359296
+model.image_encoder.blocks.9.mlp.linear1.bias,F32,3072,3072
+model.image_encoder.blocks.9.mlp.linear2.weight,F32,768 3072,2359296
+model.image_encoder.blocks.9.mlp.linear2.bias,F32,768,768
+model.image_encoder.blocks.9.norm1.weight,F32,768,768
+model.image_encoder.blocks.9.norm1.bias,F32,768,768
+model.image_encoder.blocks.9.attn.out_proj.weight,F32,768 768,589824
+model.image_encoder.blocks.9.attn.out_proj.bias,F32,768,768
+model.image_encoder.blocks.9.attn.qkv.weight,F32,2304 768,1769472
+model.image_encoder.blocks.9.norm2.weight,F32,768,768
+model.image_encoder.blocks.9.norm2.bias,F32,768,768
+model.image_encoder.blocks.10.mlp.linear1.weight,F32,3072 768,2359296
+model.image_encoder.blocks.10.mlp.linear1.bias,F32,3072,3072
+model.image_encoder.blocks.10.mlp.linear2.weight,F32,768 3072,2359296
+model.image_encoder.blocks.10.mlp.linear2.bias,F32,768,768
+model.image_encoder.blocks.10.norm1.weight,F32,768,768
+model.image_encoder.blocks.10.norm1.bias,F32,768,768
+model.image_encoder.blocks.10.attn.out_proj.weight,F32,768 768,589824
+model.image_encoder.blocks.10.attn.out_proj.bias,F32,768,768
+model.image_encoder.blocks.10.attn.qkv.weight,F32,2304 768,1769472
+model.image_encoder.blocks.10.norm2.weight,F32,768,768
+model.image_encoder.blocks.10.norm2.bias,F32,768,768
+model.image_encoder.blocks.11.mlp.linear1.weight,F32,3072 768,2359296
+model.image_encoder.blocks.11.mlp.linear1.bias,F32,3072,3072
+model.image_encoder.blocks.11.mlp.linear2.weight,F32,768 3072,2359296
+model.image_encoder.blocks.11.mlp.linear2.bias,F32,768,768
+model.image_encoder.blocks.11.norm1.weight,F32,768,768
+model.image_encoder.blocks.11.norm1.bias,F32,768,768
+model.image_encoder.blocks.11.attn.out_proj.weight,F32,768 768,589824
+model.image_encoder.blocks.11.attn.out_proj.bias,F32,768,768
+model.image_encoder.blocks.11.attn.qkv.weight,F32,2304 768,1769472
+model.image_encoder.blocks.11.norm2.weight,F32,768,768
+model.image_encoder.blocks.11.norm2.bias,F32,768,768
+model.image_encoder.norm.weight,F32,768,768
+model.image_encoder.norm.bias,F32,768,768
+model.mask_decoder.transformer.layers.0.self_attn.q_proj.weight,F32,768 768,589824
+model.mask_decoder.transformer.layers.0.self_attn.q_proj.bias,F32,768,768
+model.mask_decoder.transformer.layers.0.self_attn.k_proj.weight,F32,768 768,589824
+model.mask_decoder.transformer.layers.0.self_attn.k_proj.bias,F32,768,768
+model.mask_decoder.transformer.layers.0.self_attn.v_proj.weight,F32,768 768,589824
+model.mask_decoder.transformer.layers.0.self_attn.v_proj.bias,F32,768,768
+model.mask_decoder.transformer.layers.0.self_attn.out_proj.weight,F32,768 768,589824
+model.mask_decoder.transformer.layers.0.self_attn.out_proj.bias,F32,768,768
+model.mask_decoder.transformer.layers.0.norm1.weight,F32,768,768
+model.mask_decoder.transformer.layers.0.norm1.bias,F32,768,768
+model.mask_decoder.transformer.layers.0.cross_attn_token_to_image.q_proj.weight,F32,384 768,294912
+model.mask_decoder.transformer.layers.0.cross_attn_token_to_image.q_proj.bias,F32,384,384
+model.mask_decoder.transformer.layers.0.cross_attn_token_to_image.k_proj.weight,F32,384 768,294912
+model.mask_decoder.transformer.layers.0.cross_attn_token_to_image.k_proj.bias,F32,384,384
+model.mask_decoder.transformer.layers.0.cross_attn_token_to_image.v_proj.weight,F32,384 768,294912
+model.mask_decoder.transformer.layers.0.cross_attn_token_to_image.v_proj.bias,F32,384,384
+model.mask_decoder.transformer.layers.0.cross_attn_token_to_image.out_proj.weight,F32,768 384,294912
+model.mask_decoder.transformer.layers.0.cross_attn_token_to_image.out_proj.bias,F32,768,768
+model.mask_decoder.transformer.layers.0.norm2.weight,F32,768,768
+model.mask_decoder.transformer.layers.0.norm2.bias,F32,768,768
+model.mask_decoder.transformer.layers.0.mlp.lin1.weight,F32,2048 768,1572864
+model.mask_decoder.transformer.layers.0.mlp.lin1.bias,F32,2048,2048
+model.mask_decoder.transformer.layers.0.mlp.lin2.weight,F32,768 2048,1572864
+model.mask_decoder.transformer.layers.0.mlp.lin2.bias,F32,768,768
+model.mask_decoder.transformer.layers.0.norm3.weight,F32,768,768
+model.mask_decoder.transformer.layers.0.norm3.bias,F32,768,768
+model.mask_decoder.transformer.layers.0.norm4.weight,F32,768,768
+model.mask_decoder.transformer.layers.0.norm4.bias,F32,768,768
+model.mask_decoder.transformer.layers.0.cross_attn_image_to_token.q_proj.weight,F32,384 768,294912
+model.mask_decoder.transformer.layers.0.cross_attn_image_to_token.q_proj.bias,F32,384,384
+model.mask_decoder.transformer.layers.0.cross_attn_image_to_token.k_proj.weight,F32,384 768,294912
+model.mask_decoder.transformer.layers.0.cross_attn_image_to_token.k_proj.bias,F32,384,384
+model.mask_decoder.transformer.layers.0.cross_attn_image_to_token.v_proj.weight,F32,384 768,294912
+model.mask_decoder.transformer.layers.0.cross_attn_image_to_token.v_proj.bias,F32,384,384
+model.mask_decoder.transformer.layers.0.cross_attn_image_to_token.out_proj.weight,F32,768 384,294912
+model.mask_decoder.transformer.layers.0.cross_attn_image_to_token.out_proj.bias,F32,768,768
+model.mask_decoder.transformer.layers.1.self_attn.q_proj.weight,F32,768 768,589824
+model.mask_decoder.transformer.layers.1.self_attn.q_proj.bias,F32,768,768
+model.mask_decoder.transformer.layers.1.self_attn.k_proj.weight,F32,768 768,589824
+model.mask_decoder.transformer.layers.1.self_attn.k_proj.bias,F32,768,768
+model.mask_decoder.transformer.layers.1.self_attn.v_proj.weight,F32,768 768,589824
+model.mask_decoder.transformer.layers.1.self_attn.v_proj.bias,F32,768,768
+model.mask_decoder.transformer.layers.1.self_attn.out_proj.weight,F32,768 768,589824
+model.mask_decoder.transformer.layers.1.self_attn.out_proj.bias,F32,768,768
+model.mask_decoder.transformer.layers.1.norm1.weight,F32,768,768
+model.mask_decoder.transformer.layers.1.norm1.bias,F32,768,768
+model.mask_decoder.transformer.layers.1.cross_attn_token_to_image.q_proj.weight,F32,384 768,294912
+model.mask_decoder.transformer.layers.1.cross_attn_token_to_image.q_proj.bias,F32,384,384
+model.mask_decoder.transformer.layers.1.cross_attn_token_to_image.k_proj.weight,F32,384 768,294912
+model.mask_decoder.transformer.layers.1.cross_attn_token_to_image.k_proj.bias,F32,384,384
+model.mask_decoder.transformer.layers.1.cross_attn_token_to_image.v_proj.weight,F32,384 768,294912
+model.mask_decoder.transformer.layers.1.cross_attn_token_to_image.v_proj.bias,F32,384,384
+model.mask_decoder.transformer.layers.1.cross_attn_token_to_image.out_proj.weight,F32,768 384,294912
+model.mask_decoder.transformer.layers.1.cross_attn_token_to_image.out_proj.bias,F32,768,768
+model.mask_decoder.transformer.layers.1.norm2.weight,F32,768,768
+model.mask_decoder.transformer.layers.1.norm2.bias,F32,768,768
+model.mask_decoder.transformer.layers.1.mlp.lin1.weight,F32,2048 768,1572864
+model.mask_decoder.transformer.layers.1.mlp.lin1.bias,F32,2048,2048
+model.mask_decoder.transformer.layers.1.mlp.lin2.weight,F32,768 2048,1572864
+model.mask_decoder.transformer.layers.1.mlp.lin2.bias,F32,768,768
+model.mask_decoder.transformer.layers.1.norm3.weight,F32,768,768
+model.mask_decoder.transformer.layers.1.norm3.bias,F32,768,768
+model.mask_decoder.transformer.layers.1.norm4.weight,F32,768,768
+model.mask_decoder.transformer.layers.1.norm4.bias,F32,768,768
+model.mask_decoder.transformer.layers.1.cross_attn_image_to_token.q_proj.weight,F32,384 768,294912
+model.mask_decoder.transformer.layers.1.cross_attn_image_to_token.q_proj.bias,F32,384,384
+model.mask_decoder.transformer.layers.1.cross_attn_image_to_token.k_proj.weight,F32,384 768,294912
+model.mask_decoder.transformer.layers.1.cross_attn_image_to_token.k_proj.bias,F32,384,384
+model.mask_decoder.transformer.layers.1.cross_attn_image_to_token.v_proj.weight,F32,384 768,294912
+model.mask_decoder.transformer.layers.1.cross_attn_image_to_token.v_proj.bias,F32,384,384
+model.mask_decoder.transformer.layers.1.cross_attn_image_to_token.out_proj.weight,F32,768 384,294912
+model.mask_decoder.transformer.layers.1.cross_attn_image_to_token.out_proj.bias,F32,768,768
+model.mask_decoder.transformer.final_attn_token_to_image.q_proj.weight,F32,384 768,294912
+model.mask_decoder.transformer.final_attn_token_to_image.q_proj.bias,F32,384,384
+model.mask_decoder.transformer.final_attn_token_to_image.k_proj.weight,F32,384 768,294912
+model.mask_decoder.transformer.final_attn_token_to_image.k_proj.bias,F32,384,384
+model.mask_decoder.transformer.final_attn_token_to_image.v_proj.weight,F32,384 768,294912
+model.mask_decoder.transformer.final_attn_token_to_image.v_proj.bias,F32,384,384
+model.mask_decoder.transformer.final_attn_token_to_image.out_proj.weight,F32,768 384,294912
+model.mask_decoder.transformer.final_attn_token_to_image.out_proj.bias,F32,768,768
+model.mask_decoder.transformer.norm_final_attn.weight,F32,768,768
+model.mask_decoder.transformer.norm_final_attn.bias,F32,768,768
+model.mask_decoder.iou_token.weight,F32,1 768,768
+model.mask_decoder.mask_tokens.weight,F32,4 768,3072
+model.mask_decoder.output_upscaling.0.weight,F32,768 192 2 2 2,1179648
+model.mask_decoder.output_upscaling.0.bias,F32,192,192
+model.mask_decoder.output_upscaling.1.weight,F32,192 16 32 32,3145728
+model.mask_decoder.output_upscaling.1.bias,F32,192 16 32 32,3145728
+model.mask_decoder.output_upscaling.3.weight,F32,192 96 2 2 2,147456
+model.mask_decoder.output_upscaling.3.bias,F32,96,96
+model.mask_decoder.output_hypernetworks_mlps.0.layers.0.weight,F32,768 768,589824
+model.mask_decoder.output_hypernetworks_mlps.0.layers.0.bias,F32,768,768
+model.mask_decoder.output_hypernetworks_mlps.0.layers.1.weight,F32,768 768,589824
+model.mask_decoder.output_hypernetworks_mlps.0.layers.1.bias,F32,768,768
+model.mask_decoder.output_hypernetworks_mlps.0.layers.2.weight,F32,96 768,73728
+model.mask_decoder.output_hypernetworks_mlps.0.layers.2.bias,F32,96,96
+model.mask_decoder.output_hypernetworks_mlps.1.layers.0.weight,F32,768 768,589824
+model.mask_decoder.output_hypernetworks_mlps.1.layers.0.bias,F32,768,768
+model.mask_decoder.output_hypernetworks_mlps.1.layers.1.weight,F32,768 768,589824
+model.mask_decoder.output_hypernetworks_mlps.1.layers.1.bias,F32,768,768
+model.mask_decoder.output_hypernetworks_mlps.1.layers.2.weight,F32,96 768,73728
+model.mask_decoder.output_hypernetworks_mlps.1.layers.2.bias,F32,96,96
+model.mask_decoder.output_hypernetworks_mlps.2.layers.0.weight,F32,768 768,589824
+model.mask_decoder.output_hypernetworks_mlps.2.layers.0.bias,F32,768,768
+model.mask_decoder.output_hypernetworks_mlps.2.layers.1.weight,F32,768 768,589824
+model.mask_decoder.output_hypernetworks_mlps.2.layers.1.bias,F32,768,768
+model.mask_decoder.output_hypernetworks_mlps.2.layers.2.weight,F32,96 768,73728
+model.mask_decoder.output_hypernetworks_mlps.2.layers.2.bias,F32,96,96
+model.mask_decoder.output_hypernetworks_mlps.3.layers.0.weight,F32,768 768,589824
+model.mask_decoder.output_hypernetworks_mlps.3.layers.0.bias,F32,768,768
+model.mask_decoder.output_hypernetworks_mlps.3.layers.1.weight,F32,768 768,589824
+model.mask_decoder.output_hypernetworks_mlps.3.layers.1.bias,F32,768,768
+model.mask_decoder.output_hypernetworks_mlps.3.layers.2.weight,F32,96 768,73728
+model.mask_decoder.output_hypernetworks_mlps.3.layers.2.bias,F32,96,96
+model.mask_decoder.iou_prediction_head.layers.0.weight,F32,256 768,196608
+model.mask_decoder.iou_prediction_head.layers.0.bias,F32,256,256
+model.mask_decoder.iou_prediction_head.layers.1.weight,F32,256 256,65536
+model.mask_decoder.iou_prediction_head.layers.1.bias,F32,256,256
+model.mask_decoder.iou_prediction_head.layers.2.weight,F32,4 256,1024
+model.mask_decoder.iou_prediction_head.layers.2.bias,F32,4,4
+model.mask_decoder.txt_align_upscaled_embedding.weight,F32,96 768,73728
+model.mask_decoder.txt_align_upscaled_embedding.bias,F32,96,96
+model.prompt_encoder.pe_layer.positional_encoding_gaussian_matrix,F32,3 384,1152
+model.prompt_encoder.point_embeddings.0.weight,F32,1 768,768
+model.prompt_encoder.point_embeddings.1.weight,F32,1 768,768
+model.prompt_encoder.point_embeddings.2.weight,F32,1 768,768
+model.prompt_encoder.point_embeddings.3.weight,F32,1 768,768
+model.prompt_encoder.not_a_point_embed.weight,F32,1 768,768
+model.prompt_encoder.mask_downscaling.0.weight,F32,4 1 2 2,16
+model.prompt_encoder.mask_downscaling.0.bias,F32,4,4
+model.prompt_encoder.mask_downscaling.1.weight,F32,4,4
+model.prompt_encoder.mask_downscaling.1.bias,F32,4,4
+model.prompt_encoder.mask_downscaling.3.weight,F32,16 4 2 2,256
+model.prompt_encoder.mask_downscaling.3.bias,F32,16,16
+model.prompt_encoder.mask_downscaling.4.weight,F32,16,16
+model.prompt_encoder.mask_downscaling.4.bias,F32,16,16
+model.prompt_encoder.mask_downscaling.6.weight,F32,768 16 1 1,12288
+model.prompt_encoder.mask_downscaling.6.bias,F32,768,768
+model.prompt_encoder.no_mask_embed.weight,F32,1 768,768
+model.text_encoder.clip_text_model.text_model.embeddings.position_ids,I64,1 77,77
+model.text_encoder.clip_text_model.text_model.embeddings.token_embedding.weight,F32,49408 512,25296896
+model.text_encoder.clip_text_model.text_model.embeddings.position_embedding.weight,F32,77 512,39424
+model.text_encoder.clip_text_model.text_model.encoder.layers.0.self_attn.k_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.0.self_attn.k_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.0.self_attn.v_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.0.self_attn.v_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.0.self_attn.q_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.0.self_attn.q_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.0.self_attn.out_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.0.self_attn.out_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.0.layer_norm1.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.0.layer_norm1.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.0.mlp.fc1.weight,F32,2048 512,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.0.mlp.fc1.bias,F32,2048,2048
+model.text_encoder.clip_text_model.text_model.encoder.layers.0.mlp.fc2.weight,F32,512 2048,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.0.mlp.fc2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.0.layer_norm2.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.0.layer_norm2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.1.self_attn.k_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.1.self_attn.k_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.1.self_attn.v_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.1.self_attn.v_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.1.self_attn.q_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.1.self_attn.q_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.1.self_attn.out_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.1.self_attn.out_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.1.layer_norm1.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.1.layer_norm1.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.1.mlp.fc1.weight,F32,2048 512,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.1.mlp.fc1.bias,F32,2048,2048
+model.text_encoder.clip_text_model.text_model.encoder.layers.1.mlp.fc2.weight,F32,512 2048,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.1.mlp.fc2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.1.layer_norm2.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.1.layer_norm2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.2.self_attn.k_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.2.self_attn.k_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.2.self_attn.v_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.2.self_attn.v_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.2.self_attn.q_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.2.self_attn.q_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.2.self_attn.out_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.2.self_attn.out_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.2.layer_norm1.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.2.layer_norm1.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.2.mlp.fc1.weight,F32,2048 512,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.2.mlp.fc1.bias,F32,2048,2048
+model.text_encoder.clip_text_model.text_model.encoder.layers.2.mlp.fc2.weight,F32,512 2048,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.2.mlp.fc2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.2.layer_norm2.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.2.layer_norm2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.3.self_attn.k_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.3.self_attn.k_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.3.self_attn.v_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.3.self_attn.v_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.3.self_attn.q_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.3.self_attn.q_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.3.self_attn.out_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.3.self_attn.out_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.3.layer_norm1.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.3.layer_norm1.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.3.mlp.fc1.weight,F32,2048 512,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.3.mlp.fc1.bias,F32,2048,2048
+model.text_encoder.clip_text_model.text_model.encoder.layers.3.mlp.fc2.weight,F32,512 2048,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.3.mlp.fc2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.3.layer_norm2.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.3.layer_norm2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.4.self_attn.k_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.4.self_attn.k_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.4.self_attn.v_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.4.self_attn.v_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.4.self_attn.q_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.4.self_attn.q_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.4.self_attn.out_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.4.self_attn.out_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.4.layer_norm1.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.4.layer_norm1.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.4.mlp.fc1.weight,F32,2048 512,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.4.mlp.fc1.bias,F32,2048,2048
+model.text_encoder.clip_text_model.text_model.encoder.layers.4.mlp.fc2.weight,F32,512 2048,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.4.mlp.fc2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.4.layer_norm2.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.4.layer_norm2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.5.self_attn.k_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.5.self_attn.k_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.5.self_attn.v_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.5.self_attn.v_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.5.self_attn.q_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.5.self_attn.q_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.5.self_attn.out_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.5.self_attn.out_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.5.layer_norm1.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.5.layer_norm1.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.5.mlp.fc1.weight,F32,2048 512,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.5.mlp.fc1.bias,F32,2048,2048
+model.text_encoder.clip_text_model.text_model.encoder.layers.5.mlp.fc2.weight,F32,512 2048,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.5.mlp.fc2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.5.layer_norm2.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.5.layer_norm2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.6.self_attn.k_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.6.self_attn.k_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.6.self_attn.v_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.6.self_attn.v_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.6.self_attn.q_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.6.self_attn.q_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.6.self_attn.out_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.6.self_attn.out_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.6.layer_norm1.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.6.layer_norm1.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.6.mlp.fc1.weight,F32,2048 512,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.6.mlp.fc1.bias,F32,2048,2048
+model.text_encoder.clip_text_model.text_model.encoder.layers.6.mlp.fc2.weight,F32,512 2048,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.6.mlp.fc2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.6.layer_norm2.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.6.layer_norm2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.7.self_attn.k_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.7.self_attn.k_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.7.self_attn.v_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.7.self_attn.v_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.7.self_attn.q_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.7.self_attn.q_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.7.self_attn.out_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.7.self_attn.out_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.7.layer_norm1.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.7.layer_norm1.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.7.mlp.fc1.weight,F32,2048 512,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.7.mlp.fc1.bias,F32,2048,2048
+model.text_encoder.clip_text_model.text_model.encoder.layers.7.mlp.fc2.weight,F32,512 2048,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.7.mlp.fc2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.7.layer_norm2.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.7.layer_norm2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.8.self_attn.k_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.8.self_attn.k_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.8.self_attn.v_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.8.self_attn.v_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.8.self_attn.q_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.8.self_attn.q_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.8.self_attn.out_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.8.self_attn.out_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.8.layer_norm1.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.8.layer_norm1.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.8.mlp.fc1.weight,F32,2048 512,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.8.mlp.fc1.bias,F32,2048,2048
+model.text_encoder.clip_text_model.text_model.encoder.layers.8.mlp.fc2.weight,F32,512 2048,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.8.mlp.fc2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.8.layer_norm2.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.8.layer_norm2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.9.self_attn.k_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.9.self_attn.k_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.9.self_attn.v_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.9.self_attn.v_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.9.self_attn.q_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.9.self_attn.q_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.9.self_attn.out_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.9.self_attn.out_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.9.layer_norm1.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.9.layer_norm1.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.9.mlp.fc1.weight,F32,2048 512,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.9.mlp.fc1.bias,F32,2048,2048
+model.text_encoder.clip_text_model.text_model.encoder.layers.9.mlp.fc2.weight,F32,512 2048,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.9.mlp.fc2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.9.layer_norm2.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.9.layer_norm2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.10.self_attn.k_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.10.self_attn.k_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.10.self_attn.v_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.10.self_attn.v_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.10.self_attn.q_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.10.self_attn.q_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.10.self_attn.out_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.10.self_attn.out_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.10.layer_norm1.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.10.layer_norm1.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.10.mlp.fc1.weight,F32,2048 512,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.10.mlp.fc1.bias,F32,2048,2048
+model.text_encoder.clip_text_model.text_model.encoder.layers.10.mlp.fc2.weight,F32,512 2048,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.10.mlp.fc2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.10.layer_norm2.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.10.layer_norm2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.11.self_attn.k_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.11.self_attn.k_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.11.self_attn.v_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.11.self_attn.v_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.11.self_attn.q_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.11.self_attn.q_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.11.self_attn.out_proj.weight,F32,512 512,262144
+model.text_encoder.clip_text_model.text_model.encoder.layers.11.self_attn.out_proj.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.11.layer_norm1.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.11.layer_norm1.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.11.mlp.fc1.weight,F32,2048 512,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.11.mlp.fc1.bias,F32,2048,2048
+model.text_encoder.clip_text_model.text_model.encoder.layers.11.mlp.fc2.weight,F32,512 2048,1048576
+model.text_encoder.clip_text_model.text_model.encoder.layers.11.mlp.fc2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.11.layer_norm2.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.encoder.layers.11.layer_norm2.bias,F32,512,512
+model.text_encoder.clip_text_model.text_model.final_layer_norm.weight,F32,512,512
+model.text_encoder.clip_text_model.text_model.final_layer_norm.bias,F32,512,512
+model.text_encoder.dim_align.weight,F32,768 512,393216
+model.text_encoder.dim_align.bias,F32,768,768

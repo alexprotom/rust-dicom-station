@@ -1,0 +1,420 @@
+//! SegVol integration tests.
+//!
+//! The fast tests run against `tests/data/segvol-tensors.csv` — the tensor
+//! inventory of the real `pytorch_model.bin`, recorded by
+//! `examples/segvol_probe`. That fixture lets the network assembly be
+//! developed and checked against the exact published key names and shapes
+//! without a 724 MB download, which is also what makes these tests runnable
+//! in CI.
+//!
+//! The `#[ignore]`d test checks the actual checkpoint. Enable it locally with
+//!
+//! ```text
+//! RDS_SEGVOL_MODEL=path/to/segvol_model \
+//!   cargo test --release --test segvol -- --ignored
+//! ```
+//!
+//! (the weights are downloaded into that folder on first use).
+
+use rust_dicom_station::nn::pickle::Dtype;
+use rust_dicom_station::segvol::layout::{self, Inventory, TensorInfo};
+
+/// One row of the recorded inventory.
+struct Row {
+    name: String,
+    dtype: Dtype,
+    shape: Vec<usize>,
+}
+
+fn recorded() -> Vec<Row> {
+    let csv = include_str!("data/segvol-tensors.csv");
+    let mut rows = Vec::new();
+    for (i, line) in csv.lines().enumerate().skip(1) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split(',').collect();
+        assert_eq!(f.len(), 4, "line {}: {line}", i + 1);
+        let dtype = match f[1] {
+            "F32" => Dtype::F32,
+            "F64" => Dtype::F64,
+            "F16" => Dtype::F16,
+            "I64" => Dtype::I64,
+            "I32" => Dtype::I32,
+            other => panic!("line {}: unknown dtype {other}", i + 1),
+        };
+        let shape: Vec<usize> = f[2]
+            .split_whitespace()
+            .map(|d| d.parse().unwrap())
+            .collect();
+        let numel: usize = f[3].parse().unwrap();
+        assert_eq!(
+            shape.iter().product::<usize>(),
+            numel,
+            "line {}: shape does not match numel",
+            i + 1
+        );
+        rows.push(Row {
+            name: f[0].to_string(),
+            dtype,
+            shape,
+        });
+    }
+    rows
+}
+
+fn inventory(rows: &[Row]) -> Inventory {
+    Inventory::of(rows.iter().map(|r| TensorInfo {
+        name: &r.name,
+        dtype: r.dtype,
+        shape: &r.shape,
+        contiguous: None, // the recorded inventory carries no strides
+    }))
+}
+
+#[test]
+fn the_recorded_inventory_matches_the_expected_layout() {
+    let rows = recorded();
+    let inv = inventory(&rows);
+    let problems = inv.problems();
+    assert!(problems.is_empty(), "{problems:#?}");
+    assert_eq!(inv.tensors, layout::EXPECTED_TENSORS);
+    assert_eq!(inv.params, layout::EXPECTED_PARAMS);
+    assert_eq!(inv.dead_params, layout::DEAD_PARAMS);
+    assert_eq!(
+        inv.live_params(),
+        layout::EXPECTED_PARAMS - layout::DEAD_PARAMS
+    );
+}
+
+#[test]
+fn every_key_is_unique_and_carries_the_wrapper_prefix() {
+    let rows = recorded();
+    let mut seen = std::collections::HashSet::new();
+    for r in &rows {
+        assert!(
+            r.name.starts_with("model."),
+            "{} lacks the SegVolModel wrapper prefix",
+            r.name
+        );
+        assert!(seen.insert(r.name.clone()), "duplicate key {}", r.name);
+    }
+}
+
+#[test]
+fn the_image_encoder_is_a_12_block_768_wide_vit() {
+    let rows = recorded();
+    let inv = inventory(&rows);
+    for b in 0..layout::EXPECTED_VIT_BLOCKS {
+        let p = format!("image_encoder.blocks.{b}");
+        // fused qkv, no bias — MONAI's SABlock hardcodes bias=False
+        assert_eq!(
+            inv.shape(&format!("{p}.attn.qkv.weight")),
+            Some(&[2304, 768][..])
+        );
+        assert_eq!(inv.shape(&format!("{p}.attn.qkv.bias")), None);
+        // the output projection does have one
+        assert_eq!(
+            inv.shape(&format!("{p}.attn.out_proj.weight")),
+            Some(&[768, 768][..])
+        );
+        assert_eq!(
+            inv.shape(&format!("{p}.attn.out_proj.bias")),
+            Some(&[768][..])
+        );
+        // pre-norm: two LayerNorms per block, MLP ratio 4
+        assert_eq!(inv.shape(&format!("{p}.norm1.weight")), Some(&[768][..]));
+        assert_eq!(inv.shape(&format!("{p}.norm2.weight")), Some(&[768][..]));
+        assert_eq!(
+            inv.shape(&format!("{p}.mlp.linear1.weight")),
+            Some(&[3072, 768][..])
+        );
+        assert_eq!(
+            inv.shape(&format!("{p}.mlp.linear2.weight")),
+            Some(&[768, 3072][..])
+        );
+    }
+    // one block past the end must not exist
+    assert_eq!(
+        inv.shape(&format!(
+            "image_encoder.blocks.{}.attn.qkv.weight",
+            layout::EXPECTED_VIT_BLOCKS
+        )),
+        None
+    );
+    assert_eq!(inv.shape("image_encoder.norm.weight"), Some(&[768][..]));
+}
+
+#[test]
+fn the_prompt_encoder_is_seven_live_tensors_plus_a_dead_2d_branch() {
+    let rows = recorded();
+    let inv = inventory(&rows);
+    // the Fourier matrix is a buffer and must be loaded, not regenerated
+    assert_eq!(
+        inv.shape("prompt_encoder.pe_layer.positional_encoding_gaussian_matrix"),
+        Some(&[3, 384][..])
+    );
+    // four point embeddings: negative, positive, box-min corner, box-max corner
+    for i in 0..4 {
+        assert_eq!(
+            inv.shape(&format!("prompt_encoder.point_embeddings.{i}.weight")),
+            Some(&[1, 768][..])
+        );
+    }
+    assert_eq!(inv.shape("prompt_encoder.point_embeddings.4.weight"), None);
+    assert_eq!(
+        inv.shape("prompt_encoder.not_a_point_embed.weight"),
+        Some(&[1, 768][..])
+    );
+    assert_eq!(
+        inv.shape("prompt_encoder.no_mask_embed.weight"),
+        Some(&[1, 768][..])
+    );
+
+    // the dead branch is 2-D throughout: 4-element kernel shapes, not 5
+    let dead: Vec<&Row> = rows
+        .iter()
+        .filter(|r| layout::is_dead_weight(&r.name))
+        .collect();
+    assert_eq!(dead.len(), 10);
+    for r in &dead {
+        assert!(r.shape.len() <= 4, "{} is {:?}", r.name, r.shape);
+    }
+    let dead_params: usize = dead.iter().map(|r| r.shape.iter().product::<usize>()).sum();
+    assert_eq!(dead_params, layout::DEAD_PARAMS);
+    // live prompt-encoder parameters: the buffer plus six 768-d embeddings
+    assert_eq!(
+        inv.per_group["prompt_encoder"].1 - dead_params,
+        1152 + 6 * 768
+    );
+}
+
+#[test]
+fn the_mask_decoder_is_a_depth_2_two_way_transformer() {
+    let rows = recorded();
+    let inv = inventory(&rows);
+    for l in 0..layout::EXPECTED_DECODER_LAYERS {
+        let p = format!("mask_decoder.transformer.layers.{l}");
+        // self-attention at full width, both cross-attentions at half
+        assert_eq!(
+            inv.shape(&format!("{p}.self_attn.q_proj.weight")),
+            Some(&[768, 768][..])
+        );
+        for a in ["cross_attn_token_to_image", "cross_attn_image_to_token"] {
+            assert_eq!(
+                inv.shape(&format!("{p}.{a}.q_proj.weight")),
+                Some(&[384, 768][..])
+            );
+            assert_eq!(
+                inv.shape(&format!("{p}.{a}.out_proj.weight")),
+                Some(&[768, 384][..])
+            );
+            // unlike the ViT, every decoder projection carries a bias
+            assert_eq!(inv.shape(&format!("{p}.{a}.q_proj.bias")), Some(&[384][..]));
+        }
+        // four LayerNorms per layer, MLP 768 -> 2048 -> 768
+        for n in 1..=4 {
+            assert_eq!(inv.shape(&format!("{p}.norm{n}.weight")), Some(&[768][..]));
+        }
+        assert_eq!(
+            inv.shape(&format!("{p}.mlp.lin1.weight")),
+            Some(&[2048, 768][..])
+        );
+        assert_eq!(
+            inv.shape(&format!("{p}.mlp.lin2.weight")),
+            Some(&[768, 2048][..])
+        );
+    }
+    assert_eq!(
+        inv.shape(&format!(
+            "mask_decoder.transformer.layers.{}.self_attn.q_proj.weight",
+            layout::EXPECTED_DECODER_LAYERS
+        )),
+        None
+    );
+    // the final token-to-image attention and its norm
+    assert_eq!(
+        inv.shape("mask_decoder.transformer.final_attn_token_to_image.q_proj.weight"),
+        Some(&[384, 768][..])
+    );
+    assert_eq!(
+        inv.shape("mask_decoder.transformer.norm_final_attn.weight"),
+        Some(&[768][..])
+    );
+
+    // one iou token + four mask tokens; inference reads mask channel 0 only
+    assert_eq!(
+        inv.shape("mask_decoder.iou_token.weight"),
+        Some(&[1, 768][..])
+    );
+    assert_eq!(
+        inv.shape("mask_decoder.mask_tokens.weight"),
+        Some(&[4, 768][..])
+    );
+    // one hypernetwork MLP per mask token, 768 -> 768 -> 768 -> 96
+    for i in 0..4 {
+        let p = format!("mask_decoder.output_hypernetworks_mlps.{i}.layers");
+        assert_eq!(inv.shape(&format!("{p}.0.weight")), Some(&[768, 768][..]));
+        assert_eq!(inv.shape(&format!("{p}.1.weight")), Some(&[768, 768][..]));
+        assert_eq!(inv.shape(&format!("{p}.2.weight")), Some(&[96, 768][..]));
+    }
+    assert_eq!(
+        inv.shape("mask_decoder.output_hypernetworks_mlps.4.layers.0.weight"),
+        None
+    );
+    // IoU head 768 -> 256 -> 256 -> 4
+    assert_eq!(
+        inv.shape("mask_decoder.iou_prediction_head.layers.2.weight"),
+        Some(&[4, 256][..])
+    );
+}
+
+#[test]
+fn the_decoder_layer_norm_normalizes_over_all_four_trailing_dims() {
+    // This is the single most easily mis-ported tensor in the checkpoint: a
+    // LayerNorm whose normalized_shape is (C, D, H, W), giving it 3.1 M
+    // affine values in each of weight and bias rather than the 192 a
+    // channel-wise norm would have. It is also what freezes the input shape.
+    let rows = recorded();
+    let inv = inventory(&rows);
+    let want = &[192, 16, 32, 32][..];
+    assert_eq!(
+        inv.shape("mask_decoder.output_upscaling.1.weight"),
+        Some(want)
+    );
+    assert_eq!(
+        inv.shape("mask_decoder.output_upscaling.1.bias"),
+        Some(want)
+    );
+    assert_eq!(want.iter().product::<usize>(), 3_145_728);
+    // it alone is 21% of the mask decoder
+    let ln = 2 * 3_145_728;
+    let decoder = inv.per_group["mask_decoder"].1;
+    assert!(
+        (0.20..0.22).contains(&(ln as f64 / decoder as f64)),
+        "{ln} of {decoder}"
+    );
+}
+
+#[test]
+fn the_text_tower_is_clip_vit_b_32() {
+    let rows = recorded();
+    let inv = inventory(&rows);
+    let emb = "text_encoder.clip_text_model.text_model.embeddings";
+    // vocab 49408, width 512, 77 positions — the ViT-B/32 text tower
+    assert_eq!(
+        inv.shape(&format!("{emb}.token_embedding.weight")),
+        Some(&[49408, 512][..])
+    );
+    assert_eq!(
+        inv.shape(&format!("{emb}.position_embedding.weight")),
+        Some(&[77, 512][..])
+    );
+    // position_ids is the checkpoint's only integer tensor
+    let ints: Vec<&Row> = rows
+        .iter()
+        .filter(|r| matches!(r.dtype, Dtype::I64 | Dtype::I32))
+        .collect();
+    assert_eq!(ints.len(), 1);
+    assert_eq!(
+        layout::normalize_key(&ints[0].name),
+        format!("{emb}.position_ids")
+    );
+    assert_eq!(ints[0].shape, vec![1, 77]);
+
+    for l in 0..layout::EXPECTED_CLIP_LAYERS {
+        let p = format!("text_encoder.clip_text_model.text_model.encoder.layers.{l}");
+        assert_eq!(
+            inv.shape(&format!("{p}.self_attn.q_proj.weight")),
+            Some(&[512, 512][..])
+        );
+        assert_eq!(
+            inv.shape(&format!("{p}.mlp.fc1.weight")),
+            Some(&[2048, 512][..])
+        );
+        assert_eq!(
+            inv.shape(&format!("{p}.layer_norm1.weight")),
+            Some(&[512][..])
+        );
+    }
+    assert_eq!(
+        inv.shape("text_encoder.clip_text_model.text_model.final_layer_norm.weight"),
+        Some(&[512][..])
+    );
+    // and the projection that lifts a pooled 512-d CLIP embedding to the
+    // network's 768-d prompt width
+    assert_eq!(
+        inv.shape("text_encoder.dim_align.weight"),
+        Some(&[768, 512][..])
+    );
+    assert_eq!(inv.shape("text_encoder.dim_align.bias"), Some(&[768][..]));
+}
+
+#[test]
+fn a_layout_deviation_is_reported_rather_than_ignored() {
+    // Guard the guard: if a future checkpoint drops a tensor the port needs,
+    // problems() must say so.
+    let mut rows = recorded();
+    rows.retain(|r| {
+        !r.name
+            .ends_with("prompt_encoder.pe_layer.positional_encoding_gaussian_matrix")
+    });
+    let problems = inventory(&rows).problems();
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("positional_encoding_gaussian_matrix")),
+        "{problems:#?}"
+    );
+    // and an unexpected qkv bias must be caught too
+    let mut rows = recorded();
+    rows.push(Row {
+        name: "model.image_encoder.blocks.0.attn.qkv.bias".into(),
+        dtype: Dtype::F32,
+        shape: vec![2304],
+    });
+    let problems = inventory(&rows).problems();
+    assert!(
+        problems.iter().any(|p| p.contains("qkv.bias")),
+        "{problems:#?}"
+    );
+}
+
+/// End-to-end against the published checkpoint. Ignored by default: it needs
+/// the 724 MB download.
+#[test]
+#[ignore]
+fn the_real_checkpoint_matches_the_recorded_inventory() {
+    use rust_dicom_station::segvol::weights;
+    let dir =
+        std::path::PathBuf::from(std::env::var("RDS_SEGVOL_MODEL").expect("set RDS_SEGVOL_MODEL"));
+    struct Quiet;
+    impl rust_dicom_station::nn::cache::ProgressSink for Quiet {
+        fn report(&self, _f: f32, m: &str) {
+            eprintln!("{m}");
+        }
+    }
+    let path = weights::ensure_file(&weights::CHECKPOINT, &dir, &Quiet).unwrap();
+    let reader = weights::open_checkpoint(&path).unwrap();
+    let live = Inventory::of(reader.tensors.iter().map(|(name, meta)| TensorInfo {
+        name,
+        dtype: meta.dtype,
+        shape: &meta.shape,
+        contiguous: Some(meta.is_contiguous()),
+    }));
+    let problems = live.problems();
+    assert!(problems.is_empty(), "{problems:#?}");
+
+    // and it agrees with the recorded fixture tensor for tensor
+    let rows = recorded();
+    assert_eq!(reader.tensors.len(), rows.len());
+    for r in &rows {
+        let found = reader
+            .tensors
+            .iter()
+            .find(|(n, _)| n == &r.name)
+            .unwrap_or_else(|| panic!("checkpoint is missing {}", r.name));
+        assert_eq!(found.1.shape, r.shape, "{}", r.name);
+        assert_eq!(found.1.dtype, r.dtype, "{}", r.name);
+    }
+}
