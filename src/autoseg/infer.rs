@@ -299,7 +299,7 @@ mod tests {
         for z in 0..20 {
             for y in 0..8 {
                 for x in 0..6 {
-                    let expect = (z >= 5 && z < 15 && y >= 2 && y < 6 && x >= 1 && x < 5) as u8;
+                    let expect = ((5..15).contains(&z) && (2..6).contains(&y) && (1..5).contains(&x)) as u8;
                     assert_eq!(labels[(z * 8 + y) * 6 + x], expect, "at {z},{y},{x}");
                 }
             }

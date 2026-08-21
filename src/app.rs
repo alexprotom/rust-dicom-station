@@ -2221,7 +2221,7 @@ impl ViewerApp {
                 });
                 ui.menu_button("Tools", |ui| {
                     let auto_free = self.autoseg_job.is_none();
-                    for slot in 0..2 {
+                    for (slot, slot_name) in SLOT_NAMES.iter().enumerate() {
                         if slot == 1 && !self.comparison {
                             continue;
                         }
@@ -2230,8 +2230,7 @@ impl ViewerApp {
                             .add_enabled(
                                 loaded && auto_free,
                                 egui::Button::new(format!(
-                                    "🤖 Auto-segment dataset {}…",
-                                    SLOT_NAMES[slot]
+                                    "🤖 Auto-segment dataset {slot_name}…"
                                 )),
                             )
                             .on_hover_text(
