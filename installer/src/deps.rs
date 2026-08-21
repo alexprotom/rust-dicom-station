@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 
 use crate::plan::VCREDIST_URL;
-use crate::win::registry::{Key, Hive};
+use crate::win::registry::{Hive, Key};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Dependency {
@@ -29,8 +29,8 @@ pub fn vcredist_state() -> Dependency {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
         .join("System32");
-    let dlls_present = sysdir.join("vcruntime140.dll").is_file()
-        && sysdir.join("vcruntime140_1.dll").is_file();
+    let dlls_present =
+        sysdir.join("vcruntime140.dll").is_file() && sysdir.join("vcruntime140_1.dll").is_file();
     if dlls_present {
         return Dependency::Present;
     }

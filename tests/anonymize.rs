@@ -16,7 +16,10 @@ fn anonymize_roundtrip() {
     std::fs::create_dir_all(&src).unwrap();
 
     let progress = Progress::default();
-    let params = GenParams { extras: true, ..GenParams::default() };
+    let params = GenParams {
+        extras: true,
+        ..GenParams::default()
+    };
     gen_test_data::generate(&src, &params, &progress).expect("generate test study");
 
     // --- scan ---
@@ -56,8 +59,16 @@ fn anonymize_roundtrip() {
     let anon = loader::load_directory(&dst, &progress).expect("load anonymized");
 
     // Identity replaced.
-    assert!(anon.meta.patient_name.starts_with("anon_"), "{}", anon.meta.patient_name);
-    assert!(anon.meta.patient_id.starts_with("anon_"), "{}", anon.meta.patient_id);
+    assert!(
+        anon.meta.patient_name.starts_with("anon_"),
+        "{}",
+        anon.meta.patient_name
+    );
+    assert!(
+        anon.meta.patient_id.starts_with("anon_"),
+        "{}",
+        anon.meta.patient_id
+    );
     assert_eq!(anon.meta.study_date, "20000101");
 
     // UIDs changed but consistently: the structure set still references the

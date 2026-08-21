@@ -56,10 +56,7 @@ pub struct UNet {
     pub head: SegHead,
 }
 
-fn take<'a>(
-    map: &'a HashMap<String, WTensor>,
-    key: &str,
-) -> Result<&'a WTensor> {
+fn take<'a>(map: &'a HashMap<String, WTensor>, key: &str) -> Result<&'a WTensor> {
     map.get(key)
         .with_context(|| format!("checkpoint tensor missing: {key}"))
 }
@@ -77,7 +74,12 @@ impl UNet {
                 let stride = if i == 0 { cfg.strides[s] } else { [1, 1, 1] };
                 let prefix = format!("encoder.stages.{s}.0.convs.{i}");
                 blocks.push(load_block(
-                    tensors, &prefix, cin, cout, cfg.kernels[s], stride,
+                    tensors,
+                    &prefix,
+                    cin,
+                    cout,
+                    cfg.kernels[s],
+                    stride,
                 )?);
             }
             enc.push(blocks);

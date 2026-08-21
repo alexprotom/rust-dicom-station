@@ -17,7 +17,13 @@ use crate::volume::{ViewPlane, Volume};
 
 /// Convert an i16 slice buffer to grayscale RGBA pixels with window/level.
 /// Parallelized over rows of `row_len` pixels.
-pub fn slice_to_gray(slice: &[i16], center: f32, width: f32, row_len: usize, out: &mut Vec<Color32>) {
+pub fn slice_to_gray(
+    slice: &[i16],
+    center: f32,
+    width: f32,
+    row_len: usize,
+    out: &mut Vec<Color32>,
+) {
     let w = width.max(1.0);
     let lo = center - w * 0.5;
     let scale = 255.0 / w;
@@ -310,7 +316,12 @@ pub fn roi_on_plane(vol: &Volume, roi: &Roi, plane: ViewPlane, slice: usize) -> 
 
 /// Map a patient-space point onto display-pixel coordinates of a plane,
 /// returning (x, y, distance-from-plane-in-slices).
-pub fn patient_to_plane_pixel(vol: &Volume, plane: ViewPlane, slice: usize, p: Vec3) -> ([f32; 2], f64) {
+pub fn patient_to_plane_pixel(
+    vol: &Volume,
+    plane: ViewPlane,
+    slice: usize,
+    p: Vec3,
+) -> ([f32; 2], f64) {
     let v = vol.patient_to_voxel(p);
     let pp = vol.voxel_to_plane_pixel(plane, v);
     ([pp[0] as f32, pp[1] as f32], pp[2] - slice as f64)

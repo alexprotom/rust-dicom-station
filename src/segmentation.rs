@@ -210,7 +210,11 @@ impl Segmentation {
                     if cur != want {
                         self.pending.push((idx as u32, cur));
                         self.mask[idx] = want;
-                        self.count = if want == 1 { self.count + 1 } else { self.count - 1 };
+                        self.count = if want == 1 {
+                            self.count + 1
+                        } else {
+                            self.count - 1
+                        };
                         self.touch(i, j, k);
                         any = true;
                     }
@@ -261,11 +265,17 @@ impl Segmentation {
     /// Undo the last stroke (finishing an in-progress one first).
     pub fn undo_last(&mut self) -> bool {
         self.end_stroke();
-        let Some(changes) = self.undo.pop() else { return false };
+        let Some(changes) = self.undo.pop() else {
+            return false;
+        };
         for &(idx, old) in changes.iter().rev() {
             let cur = self.mask[idx as usize];
             if cur != old {
-                self.count = if old != 0 { self.count + 1 } else { self.count - 1 };
+                self.count = if old != 0 {
+                    self.count + 1
+                } else {
+                    self.count - 1
+                };
             }
             self.mask[idx as usize] = old;
         }
@@ -299,32 +309,34 @@ impl Segmentation {
         let mut grid = vec![false; g[0] * g[1] * g[2]];
         let mask = &self.mask;
         // Each grid layer max-pools its own voxel slab — layers are independent.
-        grid.par_chunks_mut(g[0] * g[1]).enumerate().for_each(|(gk, layer)| {
-            if gk == 0 || gk == g[2] - 1 {
-                return; // padding layers stay empty
-            }
-            let k0 = lo[2] + (gk - 1) * stride;
-            let k1 = (k0 + stride).min(hi[2] + 1);
-            for gj in 1..g[1] - 1 {
-                let j0 = lo[1] + (gj - 1) * stride;
-                let j1 = (j0 + stride).min(hi[1] + 1);
-                for gi in 1..g[0] - 1 {
-                    let i0 = lo[0] + (gi - 1) * stride;
-                    let i1 = (i0 + stride).min(hi[0] + 1);
-                    'blk: for k in k0..k1 {
-                        for j in j0..j1 {
-                            let base = k * nx * ny + j * nx;
-                            for i in i0..i1 {
-                                if mask[base + i] != 0 {
-                                    layer[gj * g[0] + gi] = true;
-                                    break 'blk;
+        grid.par_chunks_mut(g[0] * g[1])
+            .enumerate()
+            .for_each(|(gk, layer)| {
+                if gk == 0 || gk == g[2] - 1 {
+                    return; // padding layers stay empty
+                }
+                let k0 = lo[2] + (gk - 1) * stride;
+                let k1 = (k0 + stride).min(hi[2] + 1);
+                for gj in 1..g[1] - 1 {
+                    let j0 = lo[1] + (gj - 1) * stride;
+                    let j1 = (j0 + stride).min(hi[1] + 1);
+                    for gi in 1..g[0] - 1 {
+                        let i0 = lo[0] + (gi - 1) * stride;
+                        let i1 = (i0 + stride).min(hi[0] + 1);
+                        'blk: for k in k0..k1 {
+                            for j in j0..j1 {
+                                let base = k * nx * ny + j * nx;
+                                for i in i0..i1 {
+                                    if mask[base + i] != 0 {
+                                        layer[gj * g[0] + gi] = true;
+                                        break 'blk;
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-        });
+            });
         Some((grid, g, lo, stride))
     }
 }
@@ -448,9 +460,11 @@ impl GrowState {
         for dk in -1i64..=1 {
             for dj in -2i64..=2 {
                 for di in -2i64..=2 {
-                    if let Some(v) =
-                        vol.get(seed[0] as i64 + di, seed[1] as i64 + dj, seed[2] as i64 + dk)
-                    {
+                    if let Some(v) = vol.get(
+                        seed[0] as i64 + di,
+                        seed[1] as i64 + dj,
+                        seed[2] as i64 + dk,
+                    ) {
                         samples.push(v as f32);
                     }
                 }
@@ -476,7 +490,8 @@ impl GrowState {
 
         let b0 = self.box_index(seed);
         self.times[b0] = 0.0;
-        self.heap.push(std::cmp::Reverse((0f32.to_bits(), b0 as u32)));
+        self.heap
+            .push(std::cmp::Reverse((0f32.to_bits(), b0 as u32)));
         self.expand_until(vol, GROW_BASE_REACH);
         self.select(GROW_BASE_REACH);
     }
@@ -537,15 +552,14 @@ impl GrowState {
             let bj = (b / self.bdims[0]) % self.bdims[1];
             let bk = b / (self.bdims[0] * self.bdims[1]);
             let v = [self.lo[0] + bi, self.lo[1] + bj, self.lo[2] + bk];
-            self.accepted.push((time, (v[2] * sl + v[1] * nx + v[0]) as u32));
+            self.accepted
+                .push((time, (v[2] * sl + v[1] * nx + v[0]) as u32));
             let va = vol.index(v[0], v[1], v[2]) as f32;
 
             for (ax, dir) in [(0, -1i64), (0, 1), (1, -1), (1, 1), (2, -1), (2, 1)] {
                 let mut nb = [v[0] as i64, v[1] as i64, v[2] as i64];
                 nb[ax] += dir;
-                if nb[ax] < self.lo[ax] as i64
-                    || nb[ax] >= (self.lo[ax] + self.bdims[ax]) as i64
-                {
+                if nb[ax] < self.lo[ax] as i64 || nb[ax] >= (self.lo[ax] + self.bdims[ax]) as i64 {
                     continue;
                 }
                 let nv = [nb[0] as usize, nb[1] as usize, nb[2] as usize];
@@ -561,7 +575,8 @@ impl GrowState {
                 let nt = time + s * (intensity + edge - 1.0);
                 if nt < self.times[nbx] {
                     self.times[nbx] = nt;
-                    self.heap.push(std::cmp::Reverse((nt.to_bits(), nbx as u32)));
+                    self.heap
+                        .push(std::cmp::Reverse((nt.to_bits(), nbx as u32)));
                 }
             }
         }
@@ -571,7 +586,8 @@ impl GrowState {
     fn select(&mut self, t: f32) {
         let n = self.accepted.partition_point(|&(time, _)| time <= t);
         self.voxels.clear();
-        self.voxels.extend(self.accepted[..n].iter().map(|&(_, v)| v));
+        self.voxels
+            .extend(self.accepted[..n].iter().map(|&(_, v)| v));
     }
 }
 
@@ -679,9 +695,7 @@ pub fn mask_to_roi(seg: &Segmentation, vol: &Volume, number: i32) -> Roi {
                 }
                 let points: Vec<Vec3> = pts
                     .iter()
-                    .map(|p| {
-                        vol.voxel_to_patient(p[0] as f64 - 1.0, p[1] as f64 - 1.0, k as f64)
-                    })
+                    .map(|p| vol.voxel_to_patient(p[0] as f64 - 1.0, p[1] as f64 - 1.0, k as f64))
                     .collect();
                 contours.push(Contour {
                     points,
@@ -703,10 +717,7 @@ pub fn mask_to_roi(seg: &Segmentation, vol: &Volume, number: i32) -> Roi {
 /// endpoint lies exactly on a half-integer, so doubling is lossless.
 #[inline]
 fn ep_key(p: [f32; 2]) -> (i64, i64) {
-    (
-        (p[0] * 2.0).round() as i64,
-        (p[1] * 2.0).round() as i64,
-    )
+    ((p[0] * 2.0).round() as i64, (p[1] * 2.0).round() as i64)
 }
 
 /// Chain unordered marching-squares segments into closed loops.

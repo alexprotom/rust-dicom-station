@@ -130,21 +130,29 @@ pub fn load(path: &Path) -> Result<StructureSet> {
             let mut contours = Vec::new();
             if let Some(citems) = items_of(it, tags::CONTOUR_SEQUENCE) {
                 for c in citems {
-                    let geometric_type =
-                        str_of(c, tags::CONTOUR_GEOMETRIC_TYPE).unwrap_or_else(|| "CLOSED_PLANAR".into());
-                    let Some(data) = f64s_of(c, tags::CONTOUR_DATA) else { continue };
+                    let geometric_type = str_of(c, tags::CONTOUR_GEOMETRIC_TYPE)
+                        .unwrap_or_else(|| "CLOSED_PLANAR".into());
+                    let Some(data) = f64s_of(c, tags::CONTOUR_DATA) else {
+                        continue;
+                    };
                     if data.len() < 3 {
                         continue;
                     }
-                    let points: Vec<Vec3> = data
-                        .chunks_exact(3)
-                        .map(Vec3::from_slice)
-                        .collect();
-                    contours.push(Contour { points, geometric_type });
+                    let points: Vec<Vec3> = data.chunks_exact(3).map(Vec3::from_slice).collect();
+                    contours.push(Contour {
+                        points,
+                        geometric_type,
+                    });
                 }
             }
 
-            rois.push(Roi { number, name, color, roi_type, contours });
+            rois.push(Roi {
+                number,
+                name,
+                color,
+                roi_type,
+                contours,
+            });
         }
     }
 
@@ -159,7 +167,9 @@ pub fn load(path: &Path) -> Result<StructureSet> {
                 _ => 4,
             }
         }
-        rank(a).cmp(&rank(b)).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        rank(a)
+            .cmp(&rank(b))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
 
     Ok(StructureSet {

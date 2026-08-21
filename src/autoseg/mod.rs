@@ -123,8 +123,10 @@ impl ProgressSink for AutosegProgress {
     fn report(&self, frac: f32, msg: &str) {
         let base = f32::from_bits(self.phase_base.load(Ordering::Relaxed));
         let span = f32::from_bits(self.phase_span.load(Ordering::Relaxed));
-        self.frac
-            .store((base + span * frac.clamp(0.0, 1.0)).to_bits(), Ordering::Relaxed);
+        self.frac.store(
+            (base + span * frac.clamp(0.0, 1.0)).to_bits(),
+            Ordering::Relaxed,
+        );
         self.set(msg);
     }
     fn cancelled(&self) -> bool {

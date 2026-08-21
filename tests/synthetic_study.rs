@@ -30,14 +30,22 @@ fn load_synthetic_study() {
     let progress = Progress::default();
     let t0 = std::time::Instant::now();
     let study = loader::load_directory(dir, &progress).expect("study should load");
-    eprintln!("loaded in {:?}; warnings: {:?}", t0.elapsed(), study.warnings);
+    eprintln!(
+        "loaded in {:?}; warnings: {:?}",
+        t0.elapsed(),
+        study.warnings
+    );
 
     // ---- Volume ----
     let v = &study.volume;
     assert_eq!(v.dims, [96, 96, 40], "volume dims");
     assert!((v.spacing[0] - 2.0).abs() < 1e-6);
     assert!((v.spacing[1] - 2.0).abs() < 1e-6);
-    assert!((v.spacing[2] - 2.0).abs() < 1e-3, "slice spacing {}", v.spacing[2]);
+    assert!(
+        (v.spacing[2] - 2.0).abs() < 1e-3,
+        "slice spacing {}",
+        v.spacing[2]
+    );
 
     // Patient (0,0,0) is the center of the target sphere (HU 100).
     let c = v.patient_to_voxel(Vec3::ZERO);
@@ -48,26 +56,45 @@ fn load_synthetic_study() {
     assert_eq!(hu_air, -1000, "air HU");
     // Water shell inside body but outside target.
     let w = v.patient_to_voxel(Vec3::new(50.0, 0.0, 1.0));
-    let hu_water = v.index(w[0].round() as usize, w[1].round() as usize, w[2].round() as usize);
+    let hu_water = v.index(
+        w[0].round() as usize,
+        w[1].round() as usize,
+        w[2].round() as usize,
+    );
     assert_eq!(hu_water, 0, "water HU");
 
     // Round-trip mapping.
     let p = v.voxel_to_patient(10.0, 20.0, 30.0);
     let back = v.patient_to_voxel(p);
-    assert!((back[0] - 10.0).abs() < 1e-9 && (back[1] - 20.0).abs() < 1e-9 && (back[2] - 30.0).abs() < 1e-9);
+    assert!(
+        (back[0] - 10.0).abs() < 1e-9
+            && (back[1] - 20.0).abs() < 1e-9
+            && (back[2] - 30.0).abs() < 1e-9
+    );
 
     // ---- Structures ----
     let ss = study.structure_sets.first().expect("RTSTRUCT present");
     assert_eq!(ss.rois.len(), 3);
-    let target = ss.rois.iter().find(|r| r.name == "TARGET").expect("TARGET roi");
+    let target = ss
+        .rois
+        .iter()
+        .find(|r| r.name == "TARGET")
+        .expect("TARGET roi");
     assert_eq!(target.roi_type, "PTV");
-    assert!(target.contours.len() >= 20, "target contour count {}", target.contours.len());
+    assert!(
+        target.contours.len() >= 20,
+        "target contour count {}",
+        target.contours.len()
+    );
     let body = ss.rois.iter().find(|r| r.name == "BODY").unwrap();
     assert_eq!(body.contours.len(), 40);
 
     // Axial contour of TARGET on the central slice must be a circle of r≈25 mm.
     let gfx = render::roi_on_plane(v, target, ViewPlane::Axial, 20);
-    assert!(!gfx.polylines.is_empty(), "target polyline on central axial slice");
+    assert!(
+        !gfx.polylines.is_empty(),
+        "target polyline on central axial slice"
+    );
     let pl = &gfx.polylines[0];
     let r_mm: f32 = pl
         .iter()
@@ -77,7 +104,10 @@ fn load_synthetic_study() {
         })
         .sum::<f32>()
         / pl.len() as f32;
-    assert!((r_mm - 24.97).abs() < 1.0, "target radius on central slice: {r_mm}");
+    assert!(
+        (r_mm - 24.97).abs() < 1.0,
+        "target radius on central slice: {r_mm}"
+    );
 
     // Sagittal silhouette segments should exist through the target center.
     let gfx_sag = render::roi_on_plane(v, target, ViewPlane::Sagittal, 48);
@@ -92,13 +122,19 @@ fn load_synthetic_study() {
     // 1 sigma away along x: 60 * exp(-0.5) ≈ 36.39
     let one_sigma = d.sample(Vec3::new(20.0, 0.0, 0.0)).unwrap();
     assert!((one_sigma - 36.39).abs() < 1.0, "1-sigma dose {one_sigma}");
-    assert!(d.sample(Vec3::new(500.0, 0.0, 0.0)).is_none(), "outside grid");
+    assert!(
+        d.sample(Vec3::new(500.0, 0.0, 0.0)).is_none(),
+        "outside grid"
+    );
 
     // Dose plane resampling + isodose extraction on the central axial slice.
     let mut plane = Vec::new();
     render::sample_dose_plane(v, d, ViewPlane::Axial, 20, &mut plane);
     let max_in_plane = plane.iter().copied().fold(0.0f32, f32::max);
-    assert!((max_in_plane - 60.0).abs() < 1.5, "max in plane {max_in_plane}");
+    assert!(
+        (max_in_plane - 60.0).abs() < 1.5,
+        "max in plane {max_in_plane}"
+    );
     let segs = render::marching_squares(&plane, 96, 96, 30.0);
     assert!(segs.len() > 20, "50% isodose segments: {}", segs.len());
     // The 50% (30 Gy) isodose of a sigma-20 Gaussian lies at r = 20*sqrt(2 ln 2) ≈ 23.55 mm.
@@ -144,7 +180,10 @@ fn load_synthetic_study() {
         .find(|p| p.modality == "RTIMAGE")
         .expect("RTIMAGE");
     assert_eq!(rti.label, "DRR_G000");
-    assert!(rti.info.iter().any(|(k, v)| k == "Machine" && v == "SYNTH-PBS"));
+    assert!(rti
+        .info
+        .iter()
+        .any(|(k, v)| k == "Machine" && v == "SYNTH-PBS"));
     assert!(rti.info.iter().any(|(k, _)| k == "SAD"));
 
     // ---- REG spatial registration ----
@@ -156,15 +195,18 @@ fn load_synthetic_study() {
     let item = &reg.items[1];
     assert!(!item.is_identity);
     assert_eq!(item.matrix_type, "RIGID");
-    let rigid = rust_dicom_station::extras::matrix_to_rigid(&item.matrix, false)
-        .expect("rigid conversion");
+    let rigid =
+        rust_dicom_station::extras::matrix_to_rigid(&item.matrix, false).expect("rigid conversion");
     let mapped = rigid.map(Vec3::new(1.0, 2.0, 3.0));
     assert!(
         (mapped - Vec3::new(13.0, -7.0, 3.0)).length() < 1e-6,
         "REG matrix maps by (12,-9,0): got {mapped:?}"
     );
     let inv = rust_dicom_station::extras::matrix_to_rigid(&item.matrix, true).unwrap();
-    assert!((inv.map(mapped) - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-6, "inverted REG");
+    assert!(
+        (inv.map(mapped) - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-6,
+        "inverted REG"
+    );
 
     // ---- RTRECORD ----
     assert_eq!(study.treat_records.len(), 1);
@@ -232,8 +274,8 @@ fn generator_parameters_shift_the_phantom() {
         reg_shift: [1.0, 2.0, 3.0],
         extras: false,
     };
-    let n = gen_test_data::generate(&dir, &params, &Progress::default())
-        .expect("generation succeeds");
+    let n =
+        gen_test_data::generate(&dir, &params, &Progress::default()).expect("generation succeeds");
     assert_eq!(n, 40 + 3, "CT slices + RS/RP/RD, no extras");
 
     let study = loader::load_directory(&dir, &Progress::default()).expect("loads");
@@ -258,7 +300,9 @@ fn generator_parameters_shift_the_phantom() {
         "water away from the shifted target"
     );
 
-    let dose = study.doses[0].sample(center).expect("dose at the shifted peak");
+    let dose = study.doses[0]
+        .sample(center)
+        .expect("dose at the shifted peak");
     assert!((dose - 45.0).abs() < 1.0, "peak dose {dose}");
 
     let plan = &study.plans[0];
@@ -300,7 +344,11 @@ fn multiple_structure_sets_are_all_loaded() {
         let e = e.unwrap();
         std::fs::copy(e.path(), multi.join(e.file_name())).unwrap();
     }
-    std::fs::copy(multi.join("RS_synth.dcm"), multi.join("RS_synth_phase2.dcm")).unwrap();
+    std::fs::copy(
+        multi.join("RS_synth.dcm"),
+        multi.join("RS_synth_phase2.dcm"),
+    )
+    .unwrap();
 
     let study = loader::load_directory(&multi, &Progress::default()).expect("loads");
     assert_eq!(study.structure_sets.len(), 2, "both RTSTRUCTs loaded");
@@ -310,13 +358,19 @@ fn multiple_structure_sets_are_all_loaded() {
         assert!(!ss.referenced_series_uid.is_empty());
         // The reference must point at the CT series that exists in the tree.
         assert!(
-            study.series.iter().any(|se| se.uid == ss.referenced_series_uid),
+            study
+                .series
+                .iter()
+                .any(|se| se.uid == ss.referenced_series_uid),
             "referenced series present in the study tree"
         );
     }
     // No "using first file" warning anymore.
     assert!(
-        !study.warnings.iter().any(|w| w.contains("RTSTRUCT files found")),
+        !study
+            .warnings
+            .iter()
+            .any(|w| w.contains("RTSTRUCT files found")),
         "no discard warning: {:?}",
         study.warnings
     );

@@ -3,9 +3,7 @@
 //! Run with `--release` (the optimizer loops are slow in debug builds).
 
 use rust_dicom_station::geometry::Vec3;
-use rust_dicom_station::registration::{
-    register, RegKind, RegParams, RegProgress, RigidTransform,
-};
+use rust_dicom_station::registration::{register, RegKind, RegParams, RegProgress, RigidTransform};
 use rust_dicom_station::volume::Volume;
 
 /// Smoothly-edged multi-feature phantom (values in HU-like units).
@@ -41,8 +39,8 @@ fn make_volume(n: usize, spacing: f64, f: impl Fn(Vec3) -> f32 + Sync) -> Volume
     for k in 0..n {
         for j in 0..n {
             for i in 0..n {
-                let p = origin
-                    + Vec3::new(i as f64 * spacing, j as f64 * spacing, k as f64 * spacing);
+                let p =
+                    origin + Vec3::new(i as f64 * spacing, j as f64 * spacing, k as f64 * spacing);
                 data[k * n * n + j * n + i] = f(p).round().clamp(-32768.0, 32767.0) as i16;
             }
         }
@@ -196,7 +194,10 @@ fn bspline_recovers_gaussian_bump() {
         max_err = max_err.max(err);
     }
     eprintln!("bspline: max mapping error at probes {max_err:.2} mm");
-    assert!(max_err < 3.0, "max deformable mapping error {max_err:.2} mm >= 3 mm");
+    assert!(
+        max_err < 3.0,
+        "max deformable mapping error {max_err:.2} mm >= 3 mm"
+    );
 
     // Approximate inverse should round-trip within a fraction of a mm.
     let p = Vec3::new(12.0, 8.0, 3.0);

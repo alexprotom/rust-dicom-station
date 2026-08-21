@@ -58,7 +58,10 @@ pub fn load_planar(path: &Path) -> Result<PlanarImage> {
         .to_vec_with_options(&opts)
         .with_context(|| format!("convert pixels of {}", path.display()))?;
     if data.len() < rows * cols {
-        bail!("pixel buffer smaller than Rows×Columns in {}", path.display());
+        bail!(
+            "pixel buffer smaller than Rows×Columns in {}",
+            path.display()
+        );
     }
     data.truncate(rows * cols);
 
@@ -89,18 +92,12 @@ pub fn load_planar(path: &Path) -> Result<PlanarImage> {
         f64s_of(&obj, tags::WINDOW_WIDTH).and_then(|v| v.first().copied()),
     ) {
         (Some(c), Some(w)) if w > 0.0 && !mono1 => (c as f32, w as f32),
-        _ => (
-            (min_v + max_v) * 0.5,
-            (max_v - min_v).max(1.0),
-        ),
+        _ => ((min_v + max_v) * 0.5, (max_v - min_v).max(1.0)),
     };
 
     let label = str_of(&obj, tags::RT_IMAGE_LABEL)
         .or_else(|| str_of(&obj, tags::SERIES_DESCRIPTION))
-        .or_else(|| {
-            path.file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-        })
+        .or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()))
         .unwrap_or_else(|| modality.clone());
 
     // Display metadata.
@@ -112,7 +109,10 @@ pub fn load_planar(path: &Path) -> Result<PlanarImage> {
             }
         }
     };
-    add("Date", str_of(&obj, tags::CONTENT_DATE).or_else(|| str_of(&obj, tags::STUDY_DATE)));
+    add(
+        "Date",
+        str_of(&obj, tags::CONTENT_DATE).or_else(|| str_of(&obj, tags::STUDY_DATE)),
+    );
     if modality == "RTIMAGE" {
         add("Machine", str_of(&obj, tags::RADIATION_MACHINE_NAME));
         add(
@@ -200,13 +200,16 @@ pub fn load_reg(path: &Path) -> Result<SpatialReg> {
     if let Some(regs) = items_of(&obj, tags::REGISTRATION_SEQUENCE) {
         for r in regs {
             let for_uid = str_of(r, tags::FRAME_OF_REFERENCE_UID).unwrap_or_default();
-            let Some(mreg) = items_of(r, tags::MATRIX_REGISTRATION_SEQUENCE) else { continue };
+            let Some(mreg) = items_of(r, tags::MATRIX_REGISTRATION_SEQUENCE) else {
+                continue;
+            };
             for mr in mreg {
-                let Some(ms) = items_of(mr, tags::MATRIX_SEQUENCE) else { continue };
+                let Some(ms) = items_of(mr, tags::MATRIX_SEQUENCE) else {
+                    continue;
+                };
                 for m in ms {
-                    let Some(vals) =
-                        f64s_of(m, tags::FRAME_OF_REFERENCE_TRANSFORMATION_MATRIX)
-                            .filter(|v| v.len() >= 16)
+                    let Some(vals) = f64s_of(m, tags::FRAME_OF_REFERENCE_TRANSFORMATION_MATRIX)
+                        .filter(|v| v.len() >= 16)
                     else {
                         continue;
                     };
@@ -219,7 +222,12 @@ pub fn load_reg(path: &Path) -> Result<SpatialReg> {
                         .iter()
                         .enumerate()
                         .all(|(i, &v)| (v - if i % 5 == 0 { 1.0 } else { 0.0 }).abs() < 1e-6);
-                    items.push(RegMatrixItem { for_uid: for_uid.clone(), matrix, matrix_type, is_identity });
+                    items.push(RegMatrixItem {
+                        for_uid: for_uid.clone(),
+                        matrix,
+                        matrix_type,
+                        is_identity,
+                    });
                 }
             }
         }
@@ -227,7 +235,12 @@ pub fn load_reg(path: &Path) -> Result<SpatialReg> {
     if items.is_empty() {
         bail!("REG object contains no transformation matrices");
     }
-    Ok(SpatialReg { label, deformable, frame_of_reference_uid, items })
+    Ok(SpatialReg {
+        label,
+        deformable,
+        frame_of_reference_uid,
+        items,
+    })
 }
 
 /// Convert a rigid 4×4 DICOM frame-of-reference matrix into our Euler-
@@ -235,11 +248,7 @@ pub fn load_reg(path: &Path) -> Result<SpatialReg> {
 /// the upper-left 3×3 block is not (close to) a pure rotation.
 pub fn matrix_to_rigid(m: &[f64; 16], invert: bool) -> Option<RigidTransform> {
     // Row-major: p' = M·p (homogeneous).
-    let mut r = [
-        [m[0], m[1], m[2]],
-        [m[4], m[5], m[6]],
-        [m[8], m[9], m[10]],
-    ];
+    let mut r = [[m[0], m[1], m[2]], [m[4], m[5], m[6]], [m[8], m[9], m[10]]];
     let mut t = Vec3::new(m[3], m[7], m[11]);
 
     // Orthonormality check (allow small numeric noise).

@@ -123,58 +123,58 @@ fn build_roi_mesh(roi_index: usize, roi: &Roi) -> Option<RoiMesh> {
     // Each grid layer writes only its own plane of the mask, so the layers
     // rasterize independently.
     let mut inside = vec![false; gx * gy * gz];
-    inside.par_chunks_mut(gx * gy).enumerate().for_each(|(k, plane)| {
-        let z = origin[2] + k as f64 * h;
-        // Nearest contour plane.
-        let Some((gzv, idxs)) = groups
-            .iter()
-            .min_by(|a, b| {
+    inside
+        .par_chunks_mut(gx * gy)
+        .enumerate()
+        .for_each(|(k, plane)| {
+            let z = origin[2] + k as f64 * h;
+            // Nearest contour plane.
+            let Some((gzv, idxs)) = groups.iter().min_by(|a, b| {
                 (a.0 - z)
                     .abs()
                     .partial_cmp(&(b.0 - z).abs())
                     .unwrap_or(std::cmp::Ordering::Equal)
-            })
-        else {
-            return;
-        };
-        if (gzv - z).abs() > half_slab {
-            return;
-        }
-        // Even–odd scanline fill across all contours of this plane. The
-        // crossing buffer is reused down the layer rather than reallocated
-        // for every scanline.
-        let mut xs: Vec<f64> = Vec::new();
-        for j in 0..gy {
-            let y = origin[1] + j as f64 * h;
-            xs.clear();
-            for &ci in idxs {
-                let pts = &contours[ci].points;
-                let n = pts.len();
-                for e in 0..n {
-                    let (p, q) = (pts[e], pts[(e + 1) % n]);
-                    if (p.y - y) * (q.y - y) <= 0.0 && p.y != q.y {
-                        xs.push(p.x + (y - p.y) / (q.y - p.y) * (q.x - p.x));
+            }) else {
+                return;
+            };
+            if (gzv - z).abs() > half_slab {
+                return;
+            }
+            // Even–odd scanline fill across all contours of this plane. The
+            // crossing buffer is reused down the layer rather than reallocated
+            // for every scanline.
+            let mut xs: Vec<f64> = Vec::new();
+            for j in 0..gy {
+                let y = origin[1] + j as f64 * h;
+                xs.clear();
+                for &ci in idxs {
+                    let pts = &contours[ci].points;
+                    let n = pts.len();
+                    for e in 0..n {
+                        let (p, q) = (pts[e], pts[(e + 1) % n]);
+                        if (p.y - y) * (q.y - y) <= 0.0 && p.y != q.y {
+                            xs.push(p.x + (y - p.y) / (q.y - p.y) * (q.x - p.x));
+                        }
+                    }
+                }
+                if xs.len() < 2 {
+                    continue;
+                }
+                xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let row = j * gx;
+                for pair in xs.chunks_exact(2) {
+                    let i0 = ((pair[0] - origin[0]) / h).ceil().max(0.0) as usize;
+                    let i1_f = (pair[1] - origin[0]) / h;
+                    if i1_f < 0.0 {
+                        continue;
+                    }
+                    let i1 = (i1_f.floor() as usize).min(gx - 1);
+                    for i in i0..=i1 {
+                        plane[row + i] = true;
                     }
                 }
             }
-            if xs.len() < 2 {
-                continue;
-            }
-            xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let row = j * gx;
-            for pair in xs.chunks_exact(2) {
-                let i0 = ((pair[0] - origin[0]) / h).ceil().max(0.0) as usize;
-                let i1_f = (pair[1] - origin[0]) / h;
-                if i1_f < 0.0 {
-                    continue;
-                }
-                let i1 = (i1_f.floor() as usize).min(gx - 1);
-                for i in i0..=i1 {
-                    plane[row + i] = true;
-                }
-            }
-        }
-    });
+        });
 
     // ---- 2-4. surface nets + smoothing + normals ------------------------
     let map = |x: f64, y: f64, z: f64| -> [f32; 3] {
@@ -275,13 +275,28 @@ fn net_surface(
     let mut verts: Vec<[f32; 3]> = Vec::new();
     // Cell-local corner offsets and the 12 cell edges (corner index pairs).
     const CORNERS: [[usize; 3]; 8] = [
-        [0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0],
-        [0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1],
+        [0, 0, 0],
+        [1, 0, 0],
+        [0, 1, 0],
+        [1, 1, 0],
+        [0, 0, 1],
+        [1, 0, 1],
+        [0, 1, 1],
+        [1, 1, 1],
     ];
     const EDGES: [[usize; 2]; 12] = [
-        [0, 1], [2, 3], [4, 5], [6, 7],
-        [0, 2], [1, 3], [4, 6], [5, 7],
-        [0, 4], [1, 5], [2, 6], [3, 7],
+        [0, 1],
+        [2, 3],
+        [4, 5],
+        [6, 7],
+        [0, 2],
+        [1, 3],
+        [4, 6],
+        [5, 7],
+        [0, 4],
+        [1, 5],
+        [2, 6],
+        [3, 7],
     ];
     for k in 0..cz {
         for j in 0..cy {

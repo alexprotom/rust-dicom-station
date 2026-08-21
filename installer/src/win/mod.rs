@@ -22,8 +22,8 @@ use windows::Win32::System::Console::{
     STD_ERROR_HANDLE, STD_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
 use windows::Win32::UI::Shell::{
-    IsUserAnAdmin, SHGetKnownFolderPath, ShellExecuteW, FOLDERID_Desktop, FOLDERID_LocalAppData,
-    FOLDERID_ProgramFiles, FOLDERID_Programs, KF_FLAG_DEFAULT,
+    FOLDERID_Desktop, FOLDERID_LocalAppData, FOLDERID_ProgramFiles, FOLDERID_Programs,
+    IsUserAnAdmin, SHGetKnownFolderPath, ShellExecuteW, KF_FLAG_DEFAULT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     MessageBoxW, SendMessageTimeoutW, HWND_BROADCAST, MB_ICONERROR, MB_OK, SMTO_ABORTIFHUNG,
@@ -37,9 +37,11 @@ pub fn wide(s: &str) -> Vec<u16> {
 
 fn known_folder(id: &GUID) -> Result<PathBuf> {
     unsafe {
-        let p: PWSTR = SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, None)
-            .context("SHGetKnownFolderPath")?;
-        let s = p.to_string().context("known folder path is not valid UTF-16")?;
+        let p: PWSTR =
+            SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, None).context("SHGetKnownFolderPath")?;
+        let s = p
+            .to_string()
+            .context("known folder path is not valid UTF-16")?;
         CoTaskMemFree(Some(p.0 as *const _));
         Ok(PathBuf::from(s))
     }
@@ -153,7 +155,11 @@ pub fn broadcast_environment_change() {
 pub fn delete_on_reboot(path: &Path) {
     let h = HSTRING::from(path.as_os_str());
     unsafe {
-        let _ = MoveFileExW(PCWSTR(h.as_ptr()), PCWSTR::null(), MOVEFILE_DELAY_UNTIL_REBOOT);
+        let _ = MoveFileExW(
+            PCWSTR(h.as_ptr()),
+            PCWSTR::null(),
+            MOVEFILE_DELAY_UNTIL_REBOOT,
+        );
     }
 }
 
@@ -199,6 +205,11 @@ pub fn message_box(title: &str, text: &str) {
     let t = HSTRING::from(title);
     let b = HSTRING::from(text);
     unsafe {
-        MessageBoxW(None, PCWSTR(b.as_ptr()), PCWSTR(t.as_ptr()), MB_ICONERROR | MB_OK);
+        MessageBoxW(
+            None,
+            PCWSTR(b.as_ptr()),
+            PCWSTR(t.as_ptr()),
+            MB_ICONERROR | MB_OK,
+        );
     }
 }

@@ -71,7 +71,6 @@ impl DoseGrid {
             return None;
         }
 
-
         // Find bracketing frames (offsets ascending, possibly non-uniform).
         // Frame offsets are uniform in practically every RTDOSE, so guess the
         // index directly and only fall back to a search if the guess misses;
@@ -81,7 +80,8 @@ impl DoseGrid {
             if nf > 1 {
                 let step = (last - self.offsets[0]) / (nf - 1) as f64;
                 if step > 1e-9 {
-                    let g = (((w - self.offsets[0]) / step).ceil() as i64).clamp(0, nf as i64) as usize;
+                    let g =
+                        (((w - self.offsets[0]) / step).ceil() as i64).clamp(0, nf as i64) as usize;
                     let below = g == 0 || self.offsets[g - 1] <= w;
                     let above = g == nf || self.offsets[g] >= w;
                     if below && above {
@@ -104,7 +104,11 @@ impl DoseGrid {
         } else {
             let o0 = self.offsets[hi - 1];
             let o1 = self.offsets[hi];
-            let t = if (o1 - o0).abs() > 1e-9 { (w - o0) / (o1 - o0) } else { 0.0 };
+            let t = if (o1 - o0).abs() > 1e-9 {
+                (w - o0) / (o1 - o0)
+            } else {
+                0.0
+            };
             (hi - 1, hi, t)
         };
 
@@ -188,13 +192,21 @@ pub fn load(path: &Path) -> Result<DoseGrid> {
             }
             32 => {
                 if words.len() < n * 2 {
-                    bail!("RTDOSE pixel words ({}) < expected ({})", words.len(), n * 2);
+                    bail!(
+                        "RTDOSE pixel words ({}) < expected ({})",
+                        words.len(),
+                        n * 2
+                    );
                 }
                 words
                     .chunks_exact(2)
                     .map(|c| {
                         let v = (c[0] as u32) | ((c[1] as u32) << 16);
-                        if signed { v as i32 as f64 } else { v as f64 }
+                        if signed {
+                            v as i32 as f64
+                        } else {
+                            v as f64
+                        }
                     })
                     .collect()
             }
@@ -205,14 +217,22 @@ pub fn load(path: &Path) -> Result<DoseGrid> {
                 .chunks_exact(2)
                 .map(|c| {
                     let v = u16::from_le_bytes([c[0], c[1]]);
-                    if signed { v as i16 as f64 } else { v as f64 }
+                    if signed {
+                        v as i16 as f64
+                    } else {
+                        v as f64
+                    }
                 })
                 .collect(),
             32 => bytes
                 .chunks_exact(4)
                 .map(|c| {
                     let v = u32::from_le_bytes([c[0], c[1], c[2], c[3]]);
-                    if signed { v as i32 as f64 } else { v as f64 }
+                    if signed {
+                        v as i32 as f64
+                    } else {
+                        v as f64
+                    }
                 })
                 .collect(),
             other => bail!("Unsupported RTDOSE BitsAllocated {other} (OB)"),
@@ -254,7 +274,11 @@ pub fn load(path: &Path) -> Result<DoseGrid> {
     let label = format!(
         "{} [{}] max {:.2} {}",
         path.file_stem().unwrap_or_default().to_string_lossy(),
-        if summation_type.is_empty() { "DOSE" } else { &summation_type },
+        if summation_type.is_empty() {
+            "DOSE"
+        } else {
+            &summation_type
+        },
         max_dose,
         units.to_lowercase()
     );

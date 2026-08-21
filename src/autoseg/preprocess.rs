@@ -61,9 +61,21 @@ impl SarMap {
         let dirs: [Vec3; 3] = [vol.row_dir, vol.col_dir, vol.normal];
         // Canonical targets in LPS: S = +z, A = −y, R = −x.
         let targets: [Vec3; 3] = [
-            Vec3 { x: 0.0, y: 0.0, z: 1.0 },
-            Vec3 { x: 0.0, y: -1.0, z: 0.0 },
-            Vec3 { x: -1.0, y: 0.0, z: 0.0 },
+            Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+            },
+            Vec3 {
+                x: 0.0,
+                y: -1.0,
+                z: 0.0,
+            },
+            Vec3 {
+                x: -1.0,
+                y: 0.0,
+                z: 0.0,
+            },
         ];
         let mut perm = [0usize; 3];
         let mut flip = [false; 3];
@@ -136,45 +148,51 @@ pub fn resample_to_model(vol: &Volume, map: &SarMap) -> Vec<f32> {
         }
     };
     let mut out = vec![0f32; d0 * d1 * d2];
-    out.par_chunks_mut(d1 * d2).enumerate().for_each(|(m0, slab)| {
-        let c_a0 = coord(0, m0);
-        let mut coords = [0f64; 3]; // per volume axis (x, y, z)
-        coords[map.perm[0]] = c_a0;
-        for m1 in 0..d1 {
-            coords[map.perm[1]] = coord(1, m1);
-            for m2 in 0..d2 {
-                coords[map.perm[2]] = coord(2, m2);
-                // trilinear with edge clamp
-                let cx = coords[0].clamp(0.0, (nx - 1) as f64);
-                let cy = coords[1].clamp(0.0, (ny - 1) as f64);
-                let cz = coords[2].clamp(0.0, (nz - 1) as f64);
-                let (x0, y0, z0) = (cx.floor() as usize, cy.floor() as usize, cz.floor() as usize);
-                let (x1, y1, z1) = (
-                    (x0 + 1).min(nx - 1),
-                    (y0 + 1).min(ny - 1),
-                    (z0 + 1).min(nz - 1),
-                );
-                let (fx, fy, fz) = (
-                    (cx - x0 as f64) as f32,
-                    (cy - y0 as f64) as f32,
-                    (cz - z0 as f64) as f32,
-                );
-                let at = |x: usize, y: usize, z: usize| -> f32 {
-                    data[z * nx * ny + y * nx + x] as f32
-                };
-                let c00 = at(x0, y0, z0) * (1.0 - fx) + at(x1, y0, z0) * fx;
-                let c10 = at(x0, y1, z0) * (1.0 - fx) + at(x1, y1, z0) * fx;
-                let c01 = at(x0, y0, z1) * (1.0 - fx) + at(x1, y0, z1) * fx;
-                let c11 = at(x0, y1, z1) * (1.0 - fx) + at(x1, y1, z1) * fx;
-                let c0 = c00 * (1.0 - fy) + c10 * fy;
-                let c1 = c01 * (1.0 - fy) + c11 * fy;
-                let v = c0 * (1.0 - fz) + c1 * fz;
-                // int32 conversion (truncation toward zero), as in
-                // TotalSegmentator's change_spacing(dtype=np.int32)
-                slab[m1 * d2 + m2] = v.trunc();
+    out.par_chunks_mut(d1 * d2)
+        .enumerate()
+        .for_each(|(m0, slab)| {
+            let c_a0 = coord(0, m0);
+            let mut coords = [0f64; 3]; // per volume axis (x, y, z)
+            coords[map.perm[0]] = c_a0;
+            for m1 in 0..d1 {
+                coords[map.perm[1]] = coord(1, m1);
+                for m2 in 0..d2 {
+                    coords[map.perm[2]] = coord(2, m2);
+                    // trilinear with edge clamp
+                    let cx = coords[0].clamp(0.0, (nx - 1) as f64);
+                    let cy = coords[1].clamp(0.0, (ny - 1) as f64);
+                    let cz = coords[2].clamp(0.0, (nz - 1) as f64);
+                    let (x0, y0, z0) = (
+                        cx.floor() as usize,
+                        cy.floor() as usize,
+                        cz.floor() as usize,
+                    );
+                    let (x1, y1, z1) = (
+                        (x0 + 1).min(nx - 1),
+                        (y0 + 1).min(ny - 1),
+                        (z0 + 1).min(nz - 1),
+                    );
+                    let (fx, fy, fz) = (
+                        (cx - x0 as f64) as f32,
+                        (cy - y0 as f64) as f32,
+                        (cz - z0 as f64) as f32,
+                    );
+                    let at = |x: usize, y: usize, z: usize| -> f32 {
+                        data[z * nx * ny + y * nx + x] as f32
+                    };
+                    let c00 = at(x0, y0, z0) * (1.0 - fx) + at(x1, y0, z0) * fx;
+                    let c10 = at(x0, y1, z0) * (1.0 - fx) + at(x1, y1, z0) * fx;
+                    let c01 = at(x0, y0, z1) * (1.0 - fx) + at(x1, y0, z1) * fx;
+                    let c11 = at(x0, y1, z1) * (1.0 - fx) + at(x1, y1, z1) * fx;
+                    let c0 = c00 * (1.0 - fy) + c10 * fy;
+                    let c1 = c01 * (1.0 - fy) + c11 * fy;
+                    let v = c0 * (1.0 - fz) + c1 * fz;
+                    // int32 conversion (truncation toward zero), as in
+                    // TotalSegmentator's change_spacing(dtype=np.int32)
+                    slab[m1 * d2 + m2] = v.trunc();
+                }
             }
-        }
-    });
+        });
     out
 }
 
@@ -210,23 +228,25 @@ pub fn labels_to_volume_grid(labels_model: &[u8], map: &SarMap, vol: &Volume) ->
         m.clamp(0, (map.model_dims[a] - 1) as isize) as usize
     };
     let mut out = vec![0u8; nx * ny * nz];
-    out.par_chunks_mut(nx * ny).enumerate().for_each(|(k, slab)| {
-        let a_of_z = sar_of_axis[2];
-        let m_z = model_idx(a_of_z, k);
-        for j in 0..ny {
-            let a_of_y = sar_of_axis[1];
-            let m_y = model_idx(a_of_y, j);
-            for (i, dst) in slab[j * nx..(j + 1) * nx].iter_mut().enumerate() {
-                let a_of_x = sar_of_axis[0];
-                let m_x = model_idx(a_of_x, i);
-                let mut m = [0usize; 3];
-                m[a_of_z] = m_z;
-                m[a_of_y] = m_y;
-                m[a_of_x] = m_x;
-                *dst = labels_model[(m[0] * d1 + m[1]) * d2 + m[2]];
+    out.par_chunks_mut(nx * ny)
+        .enumerate()
+        .for_each(|(k, slab)| {
+            let a_of_z = sar_of_axis[2];
+            let m_z = model_idx(a_of_z, k);
+            for j in 0..ny {
+                let a_of_y = sar_of_axis[1];
+                let m_y = model_idx(a_of_y, j);
+                for (i, dst) in slab[j * nx..(j + 1) * nx].iter_mut().enumerate() {
+                    let a_of_x = sar_of_axis[0];
+                    let m_x = model_idx(a_of_x, i);
+                    let mut m = [0usize; 3];
+                    m[a_of_z] = m_z;
+                    m[a_of_y] = m_y;
+                    m[a_of_x] = m_x;
+                    *dst = labels_model[(m[0] * d1 + m[1]) * d2 + m[2]];
+                }
             }
-        }
-    });
+        });
     out
 }
 
@@ -240,10 +260,26 @@ mod tests {
             data: vec![0i16; dims[0] * dims[1] * dims[2]],
             dims,
             spacing,
-            origin: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
-            row_dir: Vec3 { x: 1.0, y: 0.0, z: 0.0 },
-            col_dir: Vec3 { x: 0.0, y: 1.0, z: 0.0 },
-            normal: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
+            origin: Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            row_dir: Vec3 {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            col_dir: Vec3 {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
+            normal: Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+            },
             frame_of_reference_uid: String::new(),
             min_value: 0,
             max_value: 0,

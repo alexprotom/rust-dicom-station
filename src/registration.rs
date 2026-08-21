@@ -110,8 +110,7 @@ impl Mat3 {
         let mut r = [0.0; 9];
         for i in 0..3 {
             for j in 0..3 {
-                r[i * 3 + j] =
-                    a[i * 3] * b[j] + a[i * 3 + 1] * b[3 + j] + a[i * 3 + 2] * b[6 + j];
+                r[i * 3 + j] = a[i * 3] * b[j] + a[i * 3 + 1] * b[3 + j] + a[i * 3 + 2] * b[6 + j];
             }
         }
         Mat3(r)
@@ -283,7 +282,10 @@ impl BSplineTransform {
 
     /// A copy carrying only the grid geometry, with no coefficients.
     fn geometry(&self) -> BSplineTransform {
-        BSplineTransform { coeffs: Vec::new(), ..self.clone() }
+        BSplineTransform {
+            coeffs: Vec::new(),
+            ..self.clone()
+        }
     }
 
     /// Grid support of a point: base indices, per-axis weights, and validity.
@@ -451,27 +453,29 @@ impl RegImage {
             let cr = (c + 1).clamp(0, n as i64 - 1) as usize;
             [cl, cc, cr]
         };
-        out.par_chunks_mut(mx * my).enumerate().for_each(|(k, plane)| {
-            let ks = smooth(k as i64, nz, dz == 2);
-            for j in 0..my {
-                let js = smooth(j as i64, ny, dy == 2);
-                for i in 0..mx {
-                    let is = smooth(i as i64, nx, dx == 2);
-                    let mut acc = 0.0f32;
-                    let wz = [0.25f32, 0.5, 0.25];
-                    let wy = [0.25f32, 0.5, 0.25];
-                    let wx = [0.25f32, 0.5, 0.25];
-                    for (kz, &kk) in ks.iter().enumerate() {
-                        for (jy, &jj) in js.iter().enumerate() {
-                            for (ix, &ii) in is.iter().enumerate() {
-                                acc += wz[kz] * wy[jy] * wx[ix] * self.at(ii, jj, kk);
+        out.par_chunks_mut(mx * my)
+            .enumerate()
+            .for_each(|(k, plane)| {
+                let ks = smooth(k as i64, nz, dz == 2);
+                for j in 0..my {
+                    let js = smooth(j as i64, ny, dy == 2);
+                    for i in 0..mx {
+                        let is = smooth(i as i64, nx, dx == 2);
+                        let mut acc = 0.0f32;
+                        let wz = [0.25f32, 0.5, 0.25];
+                        let wy = [0.25f32, 0.5, 0.25];
+                        let wx = [0.25f32, 0.5, 0.25];
+                        for (kz, &kk) in ks.iter().enumerate() {
+                            for (jy, &jj) in js.iter().enumerate() {
+                                for (ix, &ii) in is.iter().enumerate() {
+                                    acc += wz[kz] * wy[jy] * wx[ix] * self.at(ii, jj, kk);
+                                }
                             }
                         }
+                        plane[j * mx + i] = acc;
                     }
-                    plane[j * mx + i] = acc;
                 }
-            }
-        });
+            });
         RegImage {
             data: out,
             dims: [mx, my, mz],
@@ -749,7 +753,10 @@ fn asgd(
         t = (t + if dot > 0.0 { -0.8 } else { 1.0 }).max(0.0);
 
         if it % 25 == 0 {
-            progress.set(format!("{label}: iter {}/{}  MSD {:.1}", it, cfg.iterations, m));
+            progress.set(format!(
+                "{label}: iter {}/{}  MSD {:.1}",
+                it, cfg.iterations, m
+            ));
         }
     }
     // Return the best parameters rather than the last ones if the last
@@ -777,7 +784,11 @@ fn msd_value(fixed: &RegImage, moving: &RegImage, t: &Transform3, n: usize) -> f
             None => (0.0, 0),
         })
         .reduce(|| (0.0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
-    if cnt == 0 { f64::MAX } else { sum / cnt as f64 }
+    if cnt == 0 {
+        f64::MAX
+    } else {
+        sum / cnt as f64
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -832,7 +843,10 @@ pub fn register(
     let initial_metric = msd_value(
         &fixed_pyr[params.levels - 1],
         &moving_pyr[params.levels - 1],
-        &Transform3 { rigid: RigidTransform::identity(center), bspline: None },
+        &Transform3 {
+            rigid: RigidTransform::identity(center),
+            bspline: None,
+        },
         params.samples.max(2000),
     );
 
@@ -863,7 +877,14 @@ pub fn register(
         let center_l = center;
         let eval = move |p: &[f64], grad: &mut [f64], rng: &mut XorShift| -> (f64, f64) {
             let tr = RigidTransform::new(
-                [p[0] / rot_scale, p[1] / rot_scale, p[2] / rot_scale, p[3], p[4], p[5]],
+                [
+                    p[0] / rot_scale,
+                    p[1] / rot_scale,
+                    p[2] / rot_scale,
+                    p[3],
+                    p[4],
+                    p[5],
+                ],
                 center_l,
             );
             let samples = draw_samples(fixed, n_samples, rng);
@@ -918,7 +939,11 @@ pub fn register(
         let Some((scaled, iters)) = asgd(
             scaled0,
             &eval,
-            &AsgdConfig { iterations: params.iterations, big_a: 20.0, delta },
+            &AsgdConfig {
+                iterations: params.iterations,
+                big_a: 20.0,
+                delta,
+            },
             progress,
             &label,
             &mut mlast,
@@ -940,7 +965,10 @@ pub fn register(
         last_metric = mlast;
     }
 
-    let mut transform = Transform3 { rigid: rigid.clone(), bspline: None };
+    let mut transform = Transform3 {
+        rigid: rigid.clone(),
+        bspline: None,
+    };
 
     // ---------------- B-spline stage (deformable only) ----------------
     if params.kind == RegKind::Deformable {
@@ -970,7 +998,10 @@ pub fn register(
                 // Vec for every sample (one heap allocation per sample) and
                 // let rayon allocate an `n_coeffs` accumulator per split,
                 // so the gradient reduction cost far more than the metric.
-                let chunk = samples.len().div_ceil(rayon::current_num_threads().max(1)).max(1);
+                let chunk = samples
+                    .len()
+                    .div_ceil(rayon::current_num_threads().max(1))
+                    .max(1);
                 let (gsum, sum, cnt) = samples
                     .par_chunks(chunk)
                     .fold(
@@ -1037,7 +1068,11 @@ pub fn register(
             let Some((coeffs, iters)) = asgd(
                 bspline.coeffs.clone(),
                 &eval,
-                &AsgdConfig { iterations: params.iterations, big_a: 20.0, delta },
+                &AsgdConfig {
+                    iterations: params.iterations,
+                    big_a: 20.0,
+                    delta,
+                },
                 progress,
                 &label,
                 &mut mlast,

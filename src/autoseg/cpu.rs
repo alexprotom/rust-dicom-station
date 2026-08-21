@@ -57,7 +57,11 @@ pub fn conv3d(
     let [kd, kh, kw] = kernel;
     let [sd, sh, sw] = stride;
     debug_assert_eq!(weight.len(), cout * cin * kd * kh * kw);
-    let (od, oh, ow) = (conv_out(d, kd, sd), conv_out(h, kh, sh), conv_out(w, kw, sw));
+    let (od, oh, ow) = (
+        conv_out(d, kd, sd),
+        conv_out(h, kh, sh),
+        conv_out(w, kw, sw),
+    );
     let ohw = oh * ow;
     let k = cin * kd * kh * kw;
     let (pd, ph, pw) = ((kd / 2) as isize, (kh / 2) as isize, (kw / 2) as isize);
@@ -87,7 +91,8 @@ pub fn conv3d(
                             if iy < 0 || iy >= h as isize {
                                 continue;
                             }
-                            let src_row = &x.data[zbase + iy as usize * w..zbase + iy as usize * w + w];
+                            let src_row =
+                                &x.data[zbase + iy as usize * w..zbase + iy as usize * w + w];
                             let drow = &mut dst[oy * ow..(oy + 1) * ow];
                             if sw == 1 {
                                 // contiguous copy with edge clipping
@@ -175,7 +180,7 @@ pub fn conv_transpose3d_2x(x: &Act, weight: &[f32], bias: &[f32], cout: usize) -
     let ohw = oh * ow;
     let out_ptr = SendPtr(out.data.as_mut_ptr());
     let od_stride = od * ohw; // per-channel stride in the output
-    // one input slice z → output slices 2z, 2z+1 (disjoint across the loop)
+                              // one input slice z → output slices 2z, 2z+1 (disjoint across the loop)
     (0..d).into_par_iter().for_each(|z| {
         // gather input slice as [cin, hw]
         let mut xin = vec![0f32; cin * hw];
@@ -325,13 +330,11 @@ mod tests {
                                         if ix < 0 || ix >= w as isize {
                                             continue;
                                         }
-                                        let xv = x.data[((ci * d + iz as usize) * h
-                                            + iy as usize)
+                                        let xv = x.data[((ci * d + iz as usize) * h + iy as usize)
                                             * w
                                             + ix as usize];
-                                        let wv = weight[(((co * cin + ci) * kd + kz) * kh + ky)
-                                            * kw
-                                            + kx];
+                                        let wv = weight
+                                            [(((co * cin + ci) * kd + kz) * kh + ky) * kw + kx];
                                         acc += xv * wv;
                                     }
                                 }
@@ -417,8 +420,7 @@ mod tests {
                                         let wv = w[((ci * 2 + co) * 8) + dz * 4 + dy * 2 + dx];
                                         acc += xv * wv;
                                     }
-                                    let got = y.data[((co * 6 + 2 * z + dz) * 8 + 2 * yy + dy)
-                                        * 4
+                                    let got = y.data[((co * 6 + 2 * z + dz) * 8 + 2 * yy + dy) * 4
                                         + 2 * xx
                                         + dx];
                                     assert!((got - acc).abs() < 1e-4);
@@ -431,7 +433,7 @@ mod tests {
         }
     }
 
-#[test]
+    #[test]
     fn instance_norm_normalizes() {
         let mut x = rand_act(2, 8, 8, 8, 77);
         for v in &mut x.data {

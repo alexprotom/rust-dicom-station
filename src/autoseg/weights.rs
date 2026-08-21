@@ -305,8 +305,7 @@ fn save_safetensors(path: &Path, tensors: &[(String, Vec<usize>, Vec<f32>)]) -> 
 
 fn load_safetensors(path: &Path) -> Result<HashMap<String, WTensor>> {
     use safetensors::tensor::Dtype;
-    let bytes =
-        std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
     let st = safetensors::SafeTensors::deserialize(&bytes)
         .with_context(|| format!("parse {}", path.display()))?;
     let mut out = HashMap::new();

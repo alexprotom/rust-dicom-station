@@ -70,7 +70,9 @@ impl Manifest {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let Some((key, value)) = line.split_once('=') else { continue };
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
             let (key, value) = (key.trim(), value.trim());
             match key {
                 "version" => m.version = value.to_string(),
@@ -117,7 +119,10 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
 
     // ---- files -----------------------------------------------------------
     let total_bytes = payload.total_size().unwrap_or(0);
-    log(format!("Copying {} of program files", human_size(total_bytes)));
+    log(format!(
+        "Copying {} of program files",
+        human_size(total_bytes)
+    ));
     let mut last = 0.0f32;
     manifest.files = payload.extract_to(&opts.dir, &mut |frac, name| {
         // The copy owns 0.05..0.55 of the bar.
@@ -143,7 +148,10 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
     step(0.57, "Writing the uninstaller…");
     write_uninstaller(payload, &opts.uninstaller_path())?;
     manifest.files.push(UNINSTALLER_EXE.to_string());
-    log(format!("Uninstaller: {}", opts.uninstaller_path().display()));
+    log(format!(
+        "Uninstaller: {}",
+        opts.uninstaller_path().display()
+    ));
 
     // ---- settings seed ----------------------------------------------------
     // The viewer stores its settings next to the executable and, by default,
@@ -293,7 +301,10 @@ fn write_uninstall_entry(
     key.set_str("Publisher", PUBLISHER)?;
     key.set_str("InstallLocation", &opts.dir.to_string_lossy())?;
     key.set_str("DisplayIcon", &opts.exe_path().to_string_lossy())?;
-    key.set_str("UninstallString", &format!("\"{}\" --uninstall", uninst.display()))?;
+    key.set_str(
+        "UninstallString",
+        &format!("\"{}\" --uninstall", uninst.display()),
+    )?;
     key.set_str(
         "QuietUninstallString",
         &format!("\"{}\" --uninstall --silent", uninst.display()),

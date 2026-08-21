@@ -48,7 +48,10 @@ impl Payload {
         if let Some((offset, len)) = read_footer(&exe)? {
             return Ok(Payload::Embedded { exe, offset, len });
         }
-        let dir = exe.parent().map(|p| p.join("payload")).filter(|p| p.is_dir());
+        let dir = exe
+            .parent()
+            .map(|p| p.join("payload"))
+            .filter(|p| p.is_dir());
         match dir {
             Some(dir) => Ok(Payload::Directory(dir)),
             None => bail!(
@@ -78,18 +81,26 @@ impl Payload {
                 for i in 0..zip.len() {
                     let f = zip.by_index(i)?;
                     if f.is_file() {
-                        out.push(Entry { name: f.name().replace('\\', "/"), size: f.size() });
+                        out.push(Entry {
+                            name: f.name().replace('\\', "/"),
+                            size: f.size(),
+                        });
                     }
                 }
                 Ok(out)
             }
             Payload::Directory(dir) => {
                 let mut out = Vec::new();
-                for e in walkdir::WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+                for e in walkdir::WalkDir::new(dir)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                {
                     if !e.file_type().is_file() {
                         continue;
                     }
-                    let Ok(rel) = e.path().strip_prefix(dir) else { continue };
+                    let Ok(rel) = e.path().strip_prefix(dir) else {
+                        continue;
+                    };
                     out.push(Entry {
                         name: rel.to_string_lossy().replace('\\', "/"),
                         size: e.metadata().map(|m| m.len()).unwrap_or(0),
@@ -228,7 +239,12 @@ pub struct Section {
 
 impl Section {
     pub fn new(file: File, start: u64, len: u64) -> Section {
-        Section { file, start, len, pos: 0 }
+        Section {
+            file,
+            start,
+            len,
+            pos: 0,
+        }
     }
 }
 

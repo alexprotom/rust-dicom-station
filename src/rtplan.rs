@@ -96,14 +96,13 @@ pub fn load(path: &Path) -> Result<PlanInfo> {
 
     // Beams: photon/electron plans use BeamSequence + ControlPointSequence,
     // ion (proton/carbon) plans use IonBeamSequence + IonControlPointSequence.
-    let (beam_items, cp_tag, kind) =
-        if let Some(items) = items_of(&obj, tags::ION_BEAM_SEQUENCE) {
-            (Some(items), tags::ION_CONTROL_POINT_SEQUENCE, "Ion")
-        } else if let Some(items) = items_of(&obj, tags::BEAM_SEQUENCE) {
-            (Some(items), tags::CONTROL_POINT_SEQUENCE, "Photon/Electron")
-        } else {
-            (None, tags::CONTROL_POINT_SEQUENCE, "")
-        };
+    let (beam_items, cp_tag, kind) = if let Some(items) = items_of(&obj, tags::ION_BEAM_SEQUENCE) {
+        (Some(items), tags::ION_CONTROL_POINT_SEQUENCE, "Ion")
+    } else if let Some(items) = items_of(&obj, tags::BEAM_SEQUENCE) {
+        (Some(items), tags::CONTROL_POINT_SEQUENCE, "Photon/Electron")
+    } else {
+        (None, tags::CONTROL_POINT_SEQUENCE, "")
+    };
     plan.plan_kind = kind.to_string();
 
     if let Some(items) = beam_items {
@@ -138,17 +137,13 @@ pub fn load(path: &Path) -> Result<PlanInfo> {
                             .map(|v| Vec3::from_slice(&v));
                     }
                     if let Some(e) = f64_of(cp, tags::NOMINAL_BEAM_ENERGY) {
-                        info.energy_min =
-                            Some(info.energy_min.map_or(e, |m: f64| m.min(e)));
-                        info.energy_max =
-                            Some(info.energy_max.map_or(e, |m: f64| m.max(e)));
+                        info.energy_min = Some(info.energy_min.map_or(e, |m: f64| m.min(e)));
+                        info.energy_max = Some(info.energy_max.map_or(e, |m: f64| m.max(e)));
                     }
                 }
             }
 
-            if let Some((_, mset, bdose)) =
-                beam_msets.iter().find(|(n, _, _)| *n == number)
-            {
+            if let Some((_, mset, bdose)) = beam_msets.iter().find(|(n, _, _)| *n == number) {
                 info.meterset = *mset;
                 info.beam_dose = *bdose;
             }

@@ -6,22 +6,20 @@ use std::sync::mpsc;
 use std::sync::Arc;
 
 use egui::{
-    Align2, Color32, ColorImage, FontId, Pos2, Rect, Sense, Stroke, TextureHandle,
-    TextureOptions, Vec2,
+    Align2, Color32, ColorImage, FontId, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions,
+    Vec2,
 };
 
 use rayon::prelude::*;
 
 use crate::anonymize;
+use crate::autoseg;
 use crate::dicom_export;
 use crate::extras;
 use crate::gen_test_data::{self, GenParams};
 use crate::loader::{self, LoadedStudy, Progress};
 use crate::mesh3d::{self, GridGeom, RoiMesh};
-use crate::registration::{
-    self, RegKind, RegParams, RegProgress, RegistrationResult, Transform3,
-};
-use crate::autoseg;
+use crate::registration::{self, RegKind, RegParams, RegProgress, RegistrationResult, Transform3};
 use crate::render;
 use crate::segmentation::{self, GrowState, Segmentation};
 use crate::settings::{self, Settings};
@@ -132,14 +130,46 @@ struct IsoLevel {
 
 fn default_iso_levels() -> Vec<IsoLevel> {
     vec![
-        IsoLevel { pct: 107.0, color: Color32::from_rgb(255, 0, 255), on: true },
-        IsoLevel { pct: 100.0, color: Color32::from_rgb(255, 0, 0), on: true },
-        IsoLevel { pct: 95.0, color: Color32::from_rgb(255, 128, 0), on: true },
-        IsoLevel { pct: 90.0, color: Color32::from_rgb(255, 255, 0), on: true },
-        IsoLevel { pct: 80.0, color: Color32::from_rgb(0, 220, 0), on: true },
-        IsoLevel { pct: 70.0, color: Color32::from_rgb(0, 255, 255), on: true },
-        IsoLevel { pct: 50.0, color: Color32::from_rgb(0, 128, 255), on: true },
-        IsoLevel { pct: 30.0, color: Color32::from_rgb(0, 0, 255), on: true },
+        IsoLevel {
+            pct: 107.0,
+            color: Color32::from_rgb(255, 0, 255),
+            on: true,
+        },
+        IsoLevel {
+            pct: 100.0,
+            color: Color32::from_rgb(255, 0, 0),
+            on: true,
+        },
+        IsoLevel {
+            pct: 95.0,
+            color: Color32::from_rgb(255, 128, 0),
+            on: true,
+        },
+        IsoLevel {
+            pct: 90.0,
+            color: Color32::from_rgb(255, 255, 0),
+            on: true,
+        },
+        IsoLevel {
+            pct: 80.0,
+            color: Color32::from_rgb(0, 220, 0),
+            on: true,
+        },
+        IsoLevel {
+            pct: 70.0,
+            color: Color32::from_rgb(0, 255, 255),
+            on: true,
+        },
+        IsoLevel {
+            pct: 50.0,
+            color: Color32::from_rgb(0, 128, 255),
+            on: true,
+        },
+        IsoLevel {
+            pct: 30.0,
+            color: Color32::from_rgb(0, 0, 255),
+            on: true,
+        },
     ]
 }
 
@@ -378,7 +408,6 @@ struct D3Window {
     frame: D3Frame,
 }
 
-
 /// Cached triangle soup of a 3D window.
 ///
 /// egui repaints on every pointer move, and projecting + depth-sorting a few
@@ -467,10 +496,6 @@ struct PlanarWindow {
     tex: Option<TextureHandle>,
     tex_wl: (f32, f32),
 }
-
-
-
-
 
 /// A completed registration plus the direction it was run in.
 struct ActiveRegistration {
@@ -598,7 +623,8 @@ pub struct ViewerApp {
 
     // Auto-segmentation (TotalSegmentator re-implementation, see `autoseg`).
     /// The payload carries the slot the volume came from.
-    autoseg_job: Option<Job<(usize, anyhow::Result<autoseg::AutosegResult>), autoseg::AutosegProgress>>,
+    autoseg_job:
+        Option<Job<(usize, anyhow::Result<autoseg::AutosegResult>), autoseg::AutosegProgress>>,
     /// Slot currently being segmented (progress shown in its sidebar section).
     autoseg_slot: usize,
     /// Pre-run parameter dialog, when open.
@@ -742,7 +768,9 @@ impl ViewerApp {
         if self.loading.is_some() {
             return;
         }
-        let Some(study) = &self.slots[slot].study else { return };
+        let Some(study) = &self.slots[slot].study else {
+            return;
+        };
         let series = study.series[idx].clone();
         let progress = Arc::new(Progress::default());
         let (tx, rx) = mpsc::channel();
@@ -782,7 +810,10 @@ impl ViewerApp {
         let s = &mut self.slots[slot];
         // Default to the structure set drawn on the active image series
         // (matters for e.g. 4DCT patients with one RTSTRUCT per phase).
-        let active_uid = study.series.get(study.active_series).map(|se| se.uid.clone());
+        let active_uid = study
+            .series
+            .get(study.active_series)
+            .map(|se| se.uid.clone());
         s.active_structs = active_uid
             .as_deref()
             .and_then(|uid| {
@@ -861,8 +892,7 @@ impl ViewerApp {
                 {
                     if i != s.active_structs {
                         s.active_structs = i;
-                        s.roi_visible =
-                            vec![true; study.structure_sets[i].rois.len()];
+                        s.roi_visible = vec![true; study.structure_sets[i].rois.len()];
                     }
                 }
             }
@@ -921,7 +951,10 @@ impl ViewerApp {
     fn apply_external_rigid(&mut self, rigid: registration::RigidTransform, fixed_slot: usize) {
         self.registration = Some(ActiveRegistration {
             result: RegistrationResult {
-                transform: Arc::new(Transform3 { rigid, bspline: None }),
+                transform: Arc::new(Transform3 {
+                    rigid,
+                    bspline: None,
+                }),
                 kind: RegKind::Rigid,
                 initial_metric: 0.0,
                 final_metric: 0.0,
@@ -955,8 +988,7 @@ impl ViewerApp {
             &self.slots[fixed_slot].study,
             &self.slots[moving_slot].study,
         ) else {
-            self.error =
-                Some("Registration needs two loaded studies (comparison mode)".into());
+            self.error = Some("Registration needs two loaded studies (comparison mode)".into());
             return;
         };
         let fixed = f.volume.clone();
@@ -1023,7 +1055,9 @@ impl ViewerApp {
     /// Open the export dialog for `slot`, pre-filling the DICOM attributes
     /// from that study (an already-open dialog is re-targeted and refilled).
     fn open_export_dialog(&mut self, slot: usize) {
-        let Some(study) = &self.slots[slot].study else { return };
+        let Some(study) = &self.slots[slot].study else {
+            return;
+        };
         self.export_params = Some(dicom_export::ExportParams::for_study(study));
         self.export_slot = slot;
         self.export_result = None;
@@ -1036,8 +1070,12 @@ impl ViewerApp {
             return;
         }
         let slot = self.export_slot.min(1);
-        let Some(study) = &self.slots[slot].study else { return };
-        let Some(params) = self.export_params.clone() else { return };
+        let Some(study) = &self.slots[slot].study else {
+            return;
+        };
+        let Some(params) = self.export_params.clone() else {
+            return;
+        };
         let dir = PathBuf::from(self.export_dir.trim());
         if dir.as_os_str().is_empty() {
             self.error = Some("Choose an output folder for the export".into());
@@ -1074,7 +1112,10 @@ impl ViewerApp {
         } else {
             Some(PathBuf::from(self.autoseg_models_dir.trim()))
         };
-        match settings::save(&Settings { theme: self.theme, autoseg_dir }) {
+        match settings::save(&Settings {
+            theme: self.theme,
+            autoseg_dir,
+        }) {
             Ok(()) => self.settings_error = None,
             Err(e) => {
                 self.settings_error = Some(format!("⚠ settings not saved: {e:#}"));
@@ -1126,7 +1167,9 @@ impl ViewerApp {
     /// when crosshair linking is on — a reset is per-dataset, and "Reset all
     /// views" recenters both anyway.
     fn center_cursor(&mut self, slot: usize) {
-        let Some(study) = &self.slots[slot].study else { return };
+        let Some(study) = &self.slots[slot].study else {
+            return;
+        };
         let d = study.volume.dims;
         self.slots[slot].cursor = [
             (d[0] as f64 - 1.0).max(0.0) / 2.0,
@@ -1176,7 +1219,10 @@ impl ViewerApp {
             h = mix(h, i as u64 + 1);
             h = mix(h, s.gen);
             h = mix(h, s.visible as u64);
-            h = mix(h, u64::from_le_bytes([s.color[0], s.color[1], s.color[2], 0, 0, 0, 0, 0]));
+            h = mix(
+                h,
+                u64::from_le_bytes([s.color[0], s.color[1], s.color[2], 0, 0, 0, 0, 0]),
+            );
         }
         if self.grow.as_ref().is_some_and(|g| g.slot == slot) {
             h = mix(h, self.grow_gen.wrapping_add(1));
@@ -1196,7 +1242,9 @@ impl ViewerApp {
 
     /// Create a new segmentation on a slot's volume and make it active.
     fn create_seg(&mut self, slot: usize) {
-        let Some(study) = &self.slots[slot].study else { return };
+        let Some(study) = &self.slots[slot].study else {
+            return;
+        };
         let dims = study.volume.dims;
         let color = segmentation::SEG_PALETTE[self.seg_counter % segmentation::SEG_PALETTE.len()];
         self.seg_counter += 1;
@@ -1208,7 +1256,14 @@ impl ViewerApp {
 
     /// Apply one brush sample: paints a capsule from the previous sample of
     /// this stroke to `vxl` (creating a segmentation first if none exists).
-    fn apply_brush(&mut self, slot: usize, plane: ViewPlane, slice: usize, vxl: [f64; 3], erase: bool) {
+    fn apply_brush(
+        &mut self,
+        slot: usize,
+        plane: ViewPlane,
+        slice: usize,
+        vxl: [f64; 3],
+        erase: bool,
+    ) {
         if self.slots[slot].segs.is_empty() {
             if erase {
                 return;
@@ -1216,12 +1271,21 @@ impl ViewerApp {
             self.create_seg(slot);
         }
         let radius = self.brush_radius_mm as f64;
-        let plane2d = if self.brush_3d { None } else { Some((plane, slice)) };
+        let plane2d = if self.brush_3d {
+            None
+        } else {
+            Some((plane, slice))
+        };
         let from = match self.paint_last {
             Some((s, p)) if s == slot => p,
             _ => vxl,
         };
-        let StudySlot { study, segs, active_seg, .. } = &mut self.slots[slot];
+        let StudySlot {
+            study,
+            segs,
+            active_seg,
+            ..
+        } = &mut self.slots[slot];
         let vol = &study.as_ref().unwrap().volume;
         let idx = (*active_seg).min(segs.len() - 1);
         segs[idx].paint_capsule(vol, from, vxl, radius, erase, plane2d);
@@ -1238,7 +1302,9 @@ impl ViewerApp {
     }
 
     fn begin_grow(&mut self, slot: usize, seed: [f64; 3], y: f32) {
-        let Some(study) = &self.slots[slot].study else { return };
+        let Some(study) = &self.slots[slot].study else {
+            return;
+        };
         let dims = study.volume.dims;
         let seed = [
             (seed[0].round().max(0.0) as usize).min(dims[0] - 1),
@@ -1246,7 +1312,12 @@ impl ViewerApp {
             (seed[2].round().max(0.0) as usize).min(dims[2] - 1),
         ];
         self.cancel_grow();
-        self.grow = Some(GrowDrag { slot, level: 1.0, y0: y, capped: false });
+        self.grow = Some(GrowDrag {
+            slot,
+            level: 1.0,
+            y0: y,
+            capped: false,
+        });
         let vol = &self.slots[slot].study.as_ref().unwrap().volume;
         self.grow_state.seed(vol, seed);
         self.sync_grow_preview();
@@ -1261,7 +1332,9 @@ impl ViewerApp {
         }
         g.level = level;
         let slot = g.slot;
-        let Some(study) = &self.slots[slot].study else { return };
+        let Some(study) = &self.slots[slot].study else {
+            return;
+        };
         self.grow_state.set_level(&study.volume, level);
         self.sync_grow_preview();
     }
@@ -1347,7 +1420,13 @@ impl ViewerApp {
     /// slot's active structure set (creating an in-memory set if the study
     /// has none), so it displays like any ROI and rides the DICOM export.
     fn seg_to_rtstruct(&mut self, slot: usize, seg_idx: usize) {
-        let StudySlot { study, segs, active_structs, roi_visible, .. } = &mut self.slots[slot];
+        let StudySlot {
+            study,
+            segs,
+            active_structs,
+            roi_visible,
+            ..
+        } = &mut self.slots[slot];
         let Some(study) = study.as_mut() else { return };
         let Some(seg) = segs.get(seg_idx) else { return };
         let vol = &study.volume;
@@ -1366,7 +1445,9 @@ impl ViewerApp {
                 label: "Segmentations".into(),
                 frame_of_reference_uid: vol.frame_of_reference_uid.clone(),
                 sop_instance_uid: format!("2.25.{stamp}"),
-                study_uid: active_series.map(|s| s.study_uid.clone()).unwrap_or_default(),
+                study_uid: active_series
+                    .map(|s| s.study_uid.clone())
+                    .unwrap_or_default(),
                 referenced_series_uid: active_series.map(|s| s.uid.clone()).unwrap_or_default(),
                 file_name: "painted-segmentation".into(),
                 rois: vec![segmentation::mask_to_roi(seg, vol, 1)],
@@ -1401,7 +1482,9 @@ impl ViewerApp {
         if self.autoseg_job.is_some() {
             return;
         }
-        let Some(study) = self.slots[d.slot].study.as_ref() else { return };
+        let Some(study) = self.slots[d.slot].study.as_ref() else {
+            return;
+        };
         let volume = study.volume.clone();
         let models_dir = if self.autoseg_models_dir.trim().is_empty() {
             autoseg::default_models_dir()
@@ -1442,15 +1525,24 @@ impl ViewerApp {
             return;
         }
         let selected = vec![true; result.organs.len()];
-        self.autoseg_pending = Some(AutosegPending { slot, result, selected, also_rs: false });
+        self.autoseg_pending = Some(AutosegPending {
+            slot,
+            result,
+            selected,
+            also_rs: false,
+        });
     }
 
     /// Materialize the chosen organs as editable segmentations (and
     /// optionally RTSTRUCT contours).
     fn apply_autoseg_selection(&mut self) {
-        let Some(p) = self.autoseg_pending.take() else { return };
+        let Some(p) = self.autoseg_pending.take() else {
+            return;
+        };
         let slot = p.slot;
-        let Some(study) = self.slots[slot].study.as_ref() else { return };
+        let Some(study) = self.slots[slot].study.as_ref() else {
+            return;
+        };
         if study.volume.dims != p.result.volume_dims {
             self.error = Some("Dataset changed — auto-segmentation result discarded.".into());
             return;
@@ -1497,11 +1589,7 @@ impl ViewerApp {
                 .iter()
                 .map(|s| s.patient_key() == pid)
                 .collect(),
-            TreeSel::Study(uid) => study
-                .series
-                .iter()
-                .map(|s| s.study_uid == *uid)
-                .collect(),
+            TreeSel::Study(uid) => study.series.iter().map(|s| s.study_uid == *uid).collect(),
             TreeSel::Series(i) => (0..study.series.len()).map(|k| k == *i).collect(),
         }
     }
@@ -1602,7 +1690,9 @@ impl ViewerApp {
     /// source's active series.
     fn build_subset(study: &LoadedStudy, masks: &SubsetMasks, activate: usize) -> LoadedStudy {
         let pick = |sel: &[bool], n: usize| -> Vec<usize> {
-            (0..n).filter(|&i| sel.get(i).copied().unwrap_or(false)).collect()
+            (0..n)
+                .filter(|&i| sel.get(i).copied().unwrap_or(false))
+                .collect()
         };
         let series: Vec<loader::SeriesInfo> = pick(&masks.series, study.series.len())
             .iter()
@@ -1644,9 +1734,21 @@ impl ViewerApp {
                 .iter()
                 .map(|&i| study.plans[i].clone())
                 .collect(),
-            planar_images: if masks.take_extras { study.planar_images.clone() } else { Vec::new() },
-            registrations: if masks.take_extras { study.registrations.clone() } else { Vec::new() },
-            treat_records: if masks.take_extras { study.treat_records.clone() } else { Vec::new() },
+            planar_images: if masks.take_extras {
+                study.planar_images.clone()
+            } else {
+                Vec::new()
+            },
+            registrations: if masks.take_extras {
+                study.registrations.clone()
+            } else {
+                Vec::new()
+            },
+            treat_records: if masks.take_extras {
+                study.treat_records.clone()
+            } else {
+                Vec::new()
+            },
             warnings: Vec::new(),
             default_window: study.default_window,
         }
@@ -1656,7 +1758,9 @@ impl ViewerApp {
     /// selection (plus its linked RT objects) into the other dataset slot;
     /// move and remove then delete it from the source.
     fn tree_transfer(&mut self, from: usize, sel: &TreeSel, op: TreeOp) {
-        let Some(study) = self.slots[from].study.as_ref() else { return };
+        let Some(study) = self.slots[from].study.as_ref() else {
+            return;
+        };
         let sel_mask = Self::tree_sel_mask(study, sel);
         if !sel_mask.iter().any(|b| *b) {
             return;
@@ -1686,8 +1790,7 @@ impl ViewerApp {
                 }
             };
             let sub = Self::build_subset(study, &masks, activate);
-            let direct = (activate == active)
-                .then(|| (study.volume.clone(), study.default_window));
+            let direct = (activate == active).then(|| (study.volume.clone(), study.default_window));
             let uid = study.series[activate].uid.clone();
             self.tree_insert(1 - from, sub, &uid, direct);
         }
@@ -1799,18 +1902,20 @@ impl ViewerApp {
                 // have shifted, or the set itself may be gone); rebuild the
                 // visibility list whenever the active set changed so it can
                 // never be indexed with a stale length.
-                let relocated = active_struct_uid
-                    .as_deref()
-                    .and_then(|uid| {
-                        st.structure_sets
-                            .iter()
-                            .position(|ss| ss.sop_instance_uid == uid)
-                    });
+                let relocated = active_struct_uid.as_deref().and_then(|uid| {
+                    st.structure_sets
+                        .iter()
+                        .position(|ss| ss.sop_instance_uid == uid)
+                });
                 match relocated {
                     Some(i) => s.active_structs = i,
                     None => {
                         s.active_structs = 0;
-                        let n = st.structure_sets.first().map(|ss| ss.rois.len()).unwrap_or(0);
+                        let n = st
+                            .structure_sets
+                            .first()
+                            .map(|ss| ss.rois.len())
+                            .unwrap_or(0);
                         s.roi_visible = vec![true; n];
                     }
                 }
@@ -1866,11 +1971,7 @@ impl ViewerApp {
                 let v = &st.volume;
                 let d = v.dims;
                 let a = v.voxel_to_patient(0.0, 0.0, 0.0);
-                let b = v.voxel_to_patient(
-                    d[0] as f64 - 1.0,
-                    d[1] as f64 - 1.0,
-                    d[2] as f64 - 1.0,
-                );
+                let b = v.voxel_to_patient(d[0] as f64 - 1.0, d[1] as f64 - 1.0, d[2] as f64 - 1.0);
                 let c = (a + b) * 0.5;
                 let r = ((b - a).length() * 0.5).max(10.0);
                 ([c.x as f32, c.y as f32, c.z as f32], r as f32)
@@ -1952,7 +2053,9 @@ impl eframe::App for ViewerApp {
         }
 
         // Poll background simulation.
-        if let Some((target, study)) = poll_job(&mut self.sim_job, &ctx, "Simulation", &mut self.error) {
+        if let Some((target, study)) =
+            poll_job(&mut self.sim_job, &ctx, "Simulation", &mut self.error)
+        {
             self.on_study_loaded(target, study);
             self.comparison = true;
         }
@@ -1967,10 +2070,14 @@ impl eframe::App for ViewerApp {
         }
 
         // Poll background test-data generation.
-        match poll_job(&mut self.gen_job, &ctx, "Test data generation", &mut self.error) {
+        match poll_job(
+            &mut self.gen_job,
+            &ctx,
+            "Test data generation",
+            &mut self.error,
+        ) {
             Some(Ok((n, dir))) => {
-                self.gen_result =
-                    Some(format!("✔ {n} DICOM file(s) written to {}", dir.display()));
+                self.gen_result = Some(format!("✔ {n} DICOM file(s) written to {}", dir.display()));
                 if self.gen_load_after {
                     self.gen_open = false;
                     self.start_load(0, dir);
@@ -1981,7 +2088,12 @@ impl eframe::App for ViewerApp {
         }
 
         // Poll background auto-segmentation.
-        match poll_job(&mut self.autoseg_job, &ctx, "Auto-segmentation", &mut self.error) {
+        match poll_job(
+            &mut self.autoseg_job,
+            &ctx,
+            "Auto-segmentation",
+            &mut self.error,
+        ) {
             Some((slot, Ok(result))) => self.on_autoseg_done(slot, result),
             Some((_, Err(e))) => {
                 let msg = format!("{e:#}");
@@ -2437,7 +2549,11 @@ impl ViewerApp {
                             .on_hover_text(tip)
                             .clicked()
                         {
-                            self.seg_tool = if self.seg_tool == tool { SegTool::None } else { tool };
+                            self.seg_tool = if self.seg_tool == tool {
+                                SegTool::None
+                            } else {
+                                tool
+                            };
                             if self.seg_tool != SegTool::Grow {
                                 self.cancel_grow();
                             }
@@ -2608,10 +2724,7 @@ impl ViewerApp {
                     ui.label(format!("✔ {kind}  ({moving} ▶ {fixed})"));
                     ui.weak(format!(
                         "MSD {:.1} ▶ {:.1}  ({} iters, {:.1} s)",
-                        res.initial_metric,
-                        res.final_metric,
-                        res.iterations_run,
-                        res.elapsed_secs
+                        res.initial_metric, res.final_metric, res.iterations_run, res.elapsed_secs
                     ));
                     let t = res.transform.rigid.params();
                     ui.weak(format!(
@@ -2623,13 +2736,9 @@ impl ViewerApp {
                         t[1].to_degrees(),
                         t[2].to_degrees()
                     ));
-                    ui.checkbox(
-                        &mut self.fusion_on,
-                        format!("Fusion overlay on {fixed}"),
-                    );
+                    ui.checkbox(&mut self.fusion_on, format!("Fusion overlay on {fixed}"));
                     let resp = ui.add(
-                        egui::Slider::new(&mut self.fusion_weight, 0.0..=1.0)
-                            .text("Fusion blend"),
+                        egui::Slider::new(&mut self.fusion_weight, 0.0..=1.0).text("Fusion blend"),
                     );
                     let _ = resp;
                     if ui.button("Clear registration").clicked() {
@@ -2727,7 +2836,6 @@ impl ViewerApp {
                 if let Some(s) = &self.last_sim {
                     ui.weak(format!("Ground truth {s}"));
                 }
-
             });
         ui.separator();
         if do_generate {
@@ -2790,7 +2898,11 @@ impl ViewerApp {
                 format!(
                     "{} {} ({} sl.)",
                     s.modality,
-                    if s.description.is_empty() { "series" } else { &s.description },
+                    if s.description.is_empty() {
+                        "series"
+                    } else {
+                        &s.description
+                    },
                     s.files.len()
                 )
             };
@@ -2825,8 +2937,7 @@ impl ViewerApp {
                         // Studies of this patient, in first-seen order.
                         let mut studies: Vec<&str> = Vec::new();
                         for s in &study.series {
-                            if s.patient_key() == *pkey
-                                && !studies.contains(&s.study_uid.as_str())
+                            if s.patient_key() == *pkey && !studies.contains(&s.study_uid.as_str())
                             {
                                 studies.push(&s.study_uid);
                             }
@@ -2835,9 +2946,7 @@ impl ViewerApp {
                             let info = study
                                 .series
                                 .iter()
-                                .find(|s| {
-                                    s.study_uid == *study_uid && s.patient_key() == *pkey
-                                })
+                                .find(|s| s.study_uid == *study_uid && s.patient_key() == *pkey)
                                 .unwrap();
                             let title = format!(
                                 "Study {}{}",
@@ -2857,21 +2966,16 @@ impl ViewerApp {
                                 .default_open(true)
                                 .show(ui, |ui| {
                                     for (i, s) in study.series.iter().enumerate() {
-                                        if s.study_uid != *study_uid
-                                            || s.patient_key() != *pkey
-                                        {
+                                        if s.study_uid != *study_uid || s.patient_key() != *pkey {
                                             continue;
                                         }
-                                        let resp =
-                                            ui.selectable_label(i == active, label(s));
+                                        let resp = ui.selectable_label(i == active, label(s));
                                         if resp.clicked() && i != active {
                                             switch_to = Some(i);
                                         }
                                         resp.context_menu(|ui| {
                                             if ui
-                                                .button(format!(
-                                                    "Copy series to dataset {other}"
-                                                ))
+                                                .button(format!("Copy series to dataset {other}"))
                                                 .clicked()
                                             {
                                                 act_series = Some(TreeAction {
@@ -2882,9 +2986,7 @@ impl ViewerApp {
                                                 ui.close();
                                             }
                                             if ui
-                                                .button(format!(
-                                                    "Move series to dataset {other}"
-                                                ))
+                                                .button(format!("Move series to dataset {other}"))
                                                 .clicked()
                                             {
                                                 act_series = Some(TreeAction {
@@ -3002,7 +3104,12 @@ impl ViewerApp {
         let mut changed = false;
         let mut new_active: Option<usize> = None;
         {
-            let StudySlot { study, roi_visible, active_structs, .. } = &mut self.slots[slot];
+            let StudySlot {
+                study,
+                roi_visible,
+                active_structs,
+                ..
+            } = &mut self.slots[slot];
             let study = study.as_ref().unwrap();
             let active_set = (*active_structs).min(n_sets - 1);
             let ss = &study.structure_sets[active_set];
@@ -3023,7 +3130,11 @@ impl ViewerApp {
                                     format!(
                                         " ▶ {} {}",
                                         se.modality,
-                                        if se.description.is_empty() { "series" } else { &se.description }
+                                        if se.description.is_empty() {
+                                            "series"
+                                        } else {
+                                            &se.description
+                                        }
                                     )
                                 })
                                 .unwrap_or_default();
@@ -3031,7 +3142,11 @@ impl ViewerApp {
                                 i == active_set,
                                 format!(
                                     "{} ({} ROIs){}",
-                                    if set.label.is_empty() { &set.file_name } else { &set.label },
+                                    if set.label.is_empty() {
+                                        &set.file_name
+                                    } else {
+                                        &set.label
+                                    },
                                     set.rois.len(),
                                     series_ref
                                 ),
@@ -3121,7 +3236,12 @@ impl ViewerApp {
             .map(|job| (job.progress.get(), job.progress.frac()));
         let auto_enabled = self.autoseg_job.is_none();
         {
-            let StudySlot { study, segs, active_seg, .. } = &mut self.slots[slot];
+            let StudySlot {
+                study,
+                segs,
+                active_seg,
+                ..
+            } = &mut self.slots[slot];
             let Some(study) = study.as_ref() else { return };
             let spacing = study.volume.spacing;
             egui::CollapsingHeader::new(format!("Segmentations ({})", segs.len()))
@@ -3241,7 +3361,12 @@ impl ViewerApp {
         let mut opacity = self.dose_opacity;
         let mut threshold = self.dose_threshold_pct;
         {
-            let StudySlot { study, active_dose, dose_reference, .. } = &mut self.slots[slot];
+            let StudySlot {
+                study,
+                active_dose,
+                dose_reference,
+                ..
+            } = &mut self.slots[slot];
             let doses = &study.as_ref().unwrap().doses;
             let plans = &study.as_ref().unwrap().plans;
             egui::CollapsingHeader::new("Dose")
@@ -3275,7 +3400,11 @@ impl ViewerApp {
                         {
                             ui.weak(format!(
                                 "▶ plan {}",
-                                if p.label.is_empty() { "unnamed" } else { &p.label }
+                                if p.label.is_empty() {
+                                    "unnamed"
+                                } else {
+                                    &p.label
+                                }
                             ));
                         }
                     }
@@ -3283,9 +3412,12 @@ impl ViewerApp {
                     egui::ComboBox::from_id_salt(("dose_mode", slot))
                         .selected_text(mode.label())
                         .show_ui(ui, |ui| {
-                            for m in
-                                [DoseMode::Off, DoseMode::Colorwash, DoseMode::Isodose, DoseMode::Both]
-                            {
+                            for m in [
+                                DoseMode::Off,
+                                DoseMode::Colorwash,
+                                DoseMode::Isodose,
+                                DoseMode::Both,
+                            ] {
                                 ui.selectable_value(&mut mode, m, m.label());
                             }
                         });
@@ -3303,9 +3435,7 @@ impl ViewerApp {
                         }
                     });
                     ui.add(egui::Slider::new(&mut opacity, 0.0..=1.0).text("Opacity"));
-                    ui.add(
-                        egui::Slider::new(&mut threshold, 0.0..=100.0).text("Threshold %"),
-                    );
+                    ui.add(egui::Slider::new(&mut threshold, 0.0..=100.0).text("Threshold %"));
                 });
         }
         self.dose_mode = mode;
@@ -3338,7 +3468,9 @@ impl ViewerApp {
     }
 
     fn plan_section(&mut self, ui: &mut egui::Ui, slot: usize) {
-        let Some(study) = &self.slots[slot].study else { return };
+        let Some(study) = &self.slots[slot].study else {
+            return;
+        };
         if study.plans.is_empty() {
             // No RTPLAN in this study — show nothing.
             return;
@@ -3346,7 +3478,11 @@ impl ViewerApp {
         for (pi, plan) in study.plans.iter().enumerate() {
             egui::CollapsingHeader::new(format!(
                 "Plan: {}",
-                if plan.label.is_empty() { "unnamed" } else { &plan.label }
+                if plan.label.is_empty() {
+                    "unnamed"
+                } else {
+                    &plan.label
+                }
             ))
             .id_salt(("plan", slot, pi))
             .default_open(pi == 0)
@@ -3376,7 +3512,11 @@ impl ViewerApp {
                     {
                         ui.weak(format!(
                             "▶ structures {}",
-                            if ss.label.is_empty() { &ss.file_name } else { &ss.label }
+                            if ss.label.is_empty() {
+                                &ss.file_name
+                            } else {
+                                &ss.label
+                            }
                         ));
                     }
                 }
@@ -3465,9 +3605,7 @@ impl ViewerApp {
                 .show(ui, |ui| {
                     for (i, img) in study.planar_images.iter().enumerate() {
                         ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!("[{}]", img.modality)).weak(),
-                            );
+                            ui.label(egui::RichText::new(format!("[{}]", img.modality)).weak());
                             ui.label(&img.label);
                             if ui.small_button("View").clicked() {
                                 open_idx = Some(i);
@@ -3648,7 +3786,9 @@ impl ViewerApp {
 
     /// RT (Ion) Beams Treatment Records: per-beam delivered metersets.
     fn records_section(&mut self, ui: &mut egui::Ui, slot: usize) {
-        let Some(study) = &self.slots[slot].study else { return };
+        let Some(study) = &self.slots[slot].study else {
+            return;
+        };
         if study.treat_records.is_empty() {
             return;
         }
@@ -3731,7 +3871,9 @@ impl ViewerApp {
     }
 
     fn warnings_section(&mut self, ui: &mut egui::Ui, slot: usize) {
-        let Some(study) = &self.slots[slot].study else { return };
+        let Some(study) = &self.slots[slot].study else {
+            return;
+        };
         if study.warnings.is_empty() {
             return;
         }
@@ -3886,8 +4028,7 @@ impl ViewerApp {
     /// three-in-a-row layout and by the maximized single-view layout).
     fn view_cell(&mut self, ui: &mut egui::Ui, slot: usize, idx: usize, cell: Rect) {
         let slider_h = 26.0;
-        let view_rect =
-            Rect::from_min_max(cell.min, Pos2::new(cell.max.x, cell.max.y - slider_h));
+        let view_rect = Rect::from_min_max(cell.min, Pos2::new(cell.max.x, cell.max.y - slider_h));
         let slider_rect = Rect::from_min_max(
             Pos2::new(cell.min.x + 6.0, cell.max.y - slider_h + 2.0),
             Pos2::new(cell.max.x - 6.0, cell.max.y - 2.0),
@@ -3930,10 +4071,8 @@ impl ViewerApp {
             FontId::proportional(15.0),
             hint,
         );
-        let btn_rect = Rect::from_center_size(
-            rect.center() + Vec2::new(0.0, 10.0),
-            Vec2::new(220.0, 28.0),
-        );
+        let btn_rect =
+            Rect::from_center_size(rect.center() + Vec2::new(0.0, 10.0), Vec2::new(220.0, 28.0));
         if ui
             .put(btn_rect, egui::Button::new("📂 Add DICOM folder…"))
             .clicked()
@@ -4005,7 +4144,9 @@ impl ViewerApp {
         self.refresh_view_caches(&ctx, slot, idx);
 
         let slot_state = &self.slots[slot];
-        let Some(study) = &slot_state.study else { return };
+        let Some(study) = &slot_state.study else {
+            return;
+        };
         let vol = &study.volume;
         let view = &slot_state.views[idx];
 
@@ -4095,7 +4236,9 @@ impl ViewerApp {
         if self.show_contours {
             if let Some(ss) = slot_state.active_structures() {
                 for (ri, gfx) in &view.contours {
-                    let Some(roi) = ss.rois.get(*ri) else { continue };
+                    let Some(roi) = ss.rois.get(*ri) else {
+                        continue;
+                    };
                     let color = Color32::from_rgb(roi.color[0], roi.color[1], roi.color[2]);
                     let stroke = Stroke::new(1.8, color);
                     for pl in &gfx.polylines {
@@ -4135,8 +4278,7 @@ impl ViewerApp {
                         continue;
                     }
                     seen.push(key);
-                    let (pp, dz) =
-                        render::patient_to_plane_pixel(vol, plane, view.slice, iso);
+                    let (pp, dz) = render::patient_to_plane_pixel(vol, plane, view.slice, iso);
                     let on_plane = dz.abs() <= 1.0;
                     let alpha = if on_plane { 255 } else { 80 };
                     let col = Color32::from_rgba_unmultiplied(255, 230, 40, alpha);
@@ -4144,8 +4286,10 @@ impl ViewerApp {
                     if rect.expand(20.0).contains(c) {
                         let s = Stroke::new(1.5, col);
                         painter.circle_stroke(c, 6.0, s);
-                        painter.line_segment([c + Vec2::new(-9.0, 0.0), c + Vec2::new(9.0, 0.0)], s);
-                        painter.line_segment([c + Vec2::new(0.0, -9.0), c + Vec2::new(0.0, 9.0)], s);
+                        painter
+                            .line_segment([c + Vec2::new(-9.0, 0.0), c + Vec2::new(9.0, 0.0)], s);
+                        painter
+                            .line_segment([c + Vec2::new(0.0, -9.0), c + Vec2::new(0.0, 9.0)], s);
                     }
                 }
             }
@@ -4173,12 +4317,14 @@ impl ViewerApp {
 
         // Brush cursor and region-growing readout.
         if self.seg_tool != SegTool::None {
-            let hover = ui.input(|i| i.pointer.hover_pos()).filter(|p| rect.contains(*p));
+            let hover = ui
+                .input(|i| i.pointer.hover_pos())
+                .filter(|p| rect.contains(*p));
             match self.seg_tool {
                 SegTool::Brush | SegTool::Erase => {
                     if let Some(mp) = hover {
-                        let erase = self.seg_tool == SegTool::Erase
-                            || ui.input(|i| i.modifiers.alt);
+                        let erase =
+                            self.seg_tool == SegTool::Erase || ui.input(|i| i.modifiers.alt);
                         let col = if erase {
                             Color32::from_rgba_unmultiplied(255, 90, 90, 200)
                         } else {
@@ -4198,18 +4344,11 @@ impl ViewerApp {
                 }
                 SegTool::Grow => {
                     if let Some(mp) = hover {
-                        let s = Stroke::new(
-                            1.5,
-                            Color32::from_rgba_unmultiplied(255, 220, 0, 220),
-                        );
-                        painter.line_segment(
-                            [mp + Vec2::new(-6.0, 0.0), mp + Vec2::new(6.0, 0.0)],
-                            s,
-                        );
-                        painter.line_segment(
-                            [mp + Vec2::new(0.0, -6.0), mp + Vec2::new(0.0, 6.0)],
-                            s,
-                        );
+                        let s = Stroke::new(1.5, Color32::from_rgba_unmultiplied(255, 220, 0, 220));
+                        painter
+                            .line_segment([mp + Vec2::new(-6.0, 0.0), mp + Vec2::new(6.0, 0.0)], s);
+                        painter
+                            .line_segment([mp + Vec2::new(0.0, -6.0), mp + Vec2::new(0.0, 6.0)], s);
                     }
                     if let Some(g) = self.grow.as_ref().filter(|g| g.slot == slot) {
                         let vv = vol.spacing[0] * vol.spacing[1] * vol.spacing[2] / 1000.0;
@@ -4318,11 +4457,10 @@ impl ViewerApp {
         let is_max = self.maximized == Some((slot, idx));
         let bsize = egui::vec2(24.0, 20.0);
         let by = rect.top() + 22.0; // below the slice counter
-        let max_rect =
-            Rect::from_min_size(Pos2::new(rect.right() - bsize.x - 4.0, by), bsize);
-        let fit_rect =
-            Rect::from_min_size(Pos2::new(max_rect.left() - bsize.x - 4.0, by), bsize);
-        let (pointer_pos, any_click) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_click()));
+        let max_rect = Rect::from_min_size(Pos2::new(rect.right() - bsize.x - 4.0, by), bsize);
+        let fit_rect = Rect::from_min_size(Pos2::new(max_rect.left() - bsize.x - 4.0, by), bsize);
+        let (pointer_pos, any_click) =
+            ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_click()));
         let over_buttons = pointer_pos
             .map(|p| max_rect.contains(p) || fit_rect.contains(p))
             .unwrap_or(false);
@@ -4344,10 +4482,12 @@ impl ViewerApp {
             } else {
                 "Maximize this view to the whole window"
             });
-        let fit_resp = ui.put(fit_rect, egui::Button::new("⟲").small()).on_hover_text(
-            "Reset this view: fit zoom, clear pan and put the crosshair back at \
+        let fit_resp = ui
+            .put(fit_rect, egui::Button::new("⟲").small())
+            .on_hover_text(
+                "Reset this view: fit zoom, clear pan and put the crosshair back at \
              the volume center",
-        );
+            );
         let clicked_max = max_resp.clicked()
             || (any_click && pointer_pos.map(|p| max_rect.contains(p)).unwrap_or(false));
         let clicked_fit = fit_resp.clicked()
@@ -4371,7 +4511,13 @@ impl ViewerApp {
                 let mut lines = 0.0f32;
                 let mut brush = 0.0f32;
                 for e in &i.events {
-                    if let egui::Event::MouseWheel { unit, delta, modifiers, .. } = e {
+                    if let egui::Event::MouseWheel {
+                        unit,
+                        delta,
+                        modifiers,
+                        ..
+                    } = e
+                    {
                         let scale = match unit {
                             egui::MouseWheelUnit::Line => 1.0,
                             egui::MouseWheelUnit::Point => 1.0 / 40.0,
@@ -4388,9 +4534,8 @@ impl ViewerApp {
                 (lines, brush, i.zoom_delta(), i.pointer.hover_pos())
             });
             if brush_lines.abs() > 0.0 {
-                new_brush = Some(
-                    (self.brush_radius_mm * (brush_lines * 0.12).exp()).clamp(0.5, 80.0),
-                );
+                new_brush =
+                    Some((self.brush_radius_mm * (brush_lines * 0.12).exp()).clamp(0.5, 80.0));
             }
             if (zoom_delta - 1.0).abs() > 1e-4 {
                 // Keep the point under the cursor fixed while zooming.
@@ -4444,8 +4589,8 @@ impl ViewerApp {
                 SegTool::Brush | SegTool::Erase => {
                     if resp.dragged_by(egui::PointerButton::Primary) || resp.clicked() {
                         if let Some(mp) = resp.interact_pointer_pos() {
-                            let erase = self.seg_tool == SegTool::Erase
-                                || ui.input(|i| i.modifiers.alt);
+                            let erase =
+                                self.seg_tool == SegTool::Erase || ui.input(|i| i.modifiers.alt);
                             paint_to = Some((to_voxel(mp), erase));
                         }
                     }
@@ -4542,7 +4687,9 @@ impl ViewerApp {
     /// and — when study linking is on — propagate the same patient-space
     /// point to the other study.
     fn set_cursor(&mut self, slot: usize, c: [f64; 3], source_view: usize) {
-        let Some(study) = &self.slots[slot].study else { return };
+        let Some(study) = &self.slots[slot].study else {
+            return;
+        };
         let dims = study.volume.dims;
         let clamped = [
             c[0].clamp(0.0, dims[0] as f64 - 1.0),
@@ -4557,7 +4704,9 @@ impl ViewerApp {
 
         if self.link_studies {
             let other = 1 - slot;
-            let Some(ostudy) = &self.slots[other].study else { return };
+            let Some(ostudy) = &self.slots[other].study else {
+                return;
+            };
             // Map through the registration transform when one exists.
             // The transform maps fixed-slot patient coordinates into the
             // moving slot; clicks on the moving study use the inverse.
@@ -4580,7 +4729,9 @@ impl ViewerApp {
     /// Update slice indices of a slot's views to follow its cursor
     /// (skipping the view the user is interacting with, if any).
     fn sync_views_to_cursor(&mut self, slot: usize, skip_view: Option<usize>) {
-        let Some(study) = &self.slots[slot].study else { return };
+        let Some(study) = &self.slots[slot].study else {
+            return;
+        };
         let cursor = self.slots[slot].cursor;
         let mut new_slices = [None; 3];
         for (i, out) in new_slices.iter_mut().enumerate() {
@@ -4665,8 +4816,7 @@ impl ViewerApp {
 
         // Dose overlay + isodose segments.
         if dose_on && !study.doses.is_empty() {
-            let dose_key =
-                dose_hash.wrapping_add((slice as u64).wrapping_mul(0x9E3779B97F4A7C15));
+            let dose_key = dose_hash.wrapping_add((slice as u64).wrapping_mul(0x9E3779B97F4A7C15));
             if views[idx].dose_key != Some(dose_key) {
                 let dose = &study.doses[(*active_dose).min(study.doses.len() - 1)];
                 let reference = *dose_reference;
@@ -4747,8 +4897,7 @@ impl ViewerApp {
         // region-growing preview, blended into one RGBA texture. NEAREST
         // filtering keeps the voxel raster crisp while editing.
         if !segs.is_empty() || grow_here {
-            let skey =
-                seg_hash.wrapping_add((slice as u64).wrapping_mul(0x2545F4914F6CDD1D));
+            let skey = seg_hash.wrapping_add((slice as u64).wrapping_mul(0x2545F4914F6CDD1D));
             if views[idx].seg_key != Some(skey) {
                 let mut rgba = vec![Color32::TRANSPARENT; w * h];
                 for seg in segs.iter().filter(|s| s.visible) {
@@ -4799,7 +4948,9 @@ impl ViewerApp {
         if !self.fusion_on {
             return;
         }
-        let Some(reg) = &self.registration else { return };
+        let Some(reg) = &self.registration else {
+            return;
+        };
         if reg.fixed_slot != slot {
             return;
         }
@@ -4921,10 +5072,7 @@ impl ViewerApp {
                 w.tex_wl = w.wl;
             }
 
-            let title = format!(
-                "{}: {} [{}]",
-                SLOT_NAMES[w.slot], img.label, img.modality
-            );
+            let title = format!("{}: {} [{}]", SLOT_NAMES[w.slot], img.label, img.modality);
             let mut open = w.open;
             egui::Window::new(title)
                 .id(egui::Id::new(("planar_win", w.slot, w.idx)))
@@ -4934,9 +5082,7 @@ impl ViewerApp {
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("W/L:");
-                        ui.add(
-                            egui::DragValue::new(&mut w.wl.0).speed(4.0).prefix("C "),
-                        );
+                        ui.add(egui::DragValue::new(&mut w.wl.0).speed(4.0).prefix("C "));
                         ui.add(
                             egui::DragValue::new(&mut w.wl.1)
                                 .speed(8.0)
@@ -5028,8 +5174,7 @@ impl ViewerApp {
             // up in 3D essentially in real time.
             {
                 let mut err = None;
-                if let Some(m) = poll_job(&mut w.seg_job, ctx, "Segmentation meshing", &mut err)
-                {
+                if let Some(m) = poll_job(&mut w.seg_job, ctx, "Segmentation meshing", &mut err) {
                     w.seg_meshes = Some(Arc::new(m));
                 }
                 self.error = self.error.take().or(err);
@@ -5055,8 +5200,8 @@ impl ViewerApp {
                                 let meshes: Vec<RoiMesh> = snaps
                                     .into_par_iter()
                                     .filter_map(|(i, name, color, (grid, gdims, lo, stride))| {
-                                        mesh3d::mesh_from_mask(&grid, gdims, lo, stride, &geom)
-                                            .map(|(verts, normals, tris)| RoiMesh {
+                                        mesh3d::mesh_from_mask(&grid, gdims, lo, stride, &geom).map(
+                                            |(verts, normals, tris)| RoiMesh {
                                                 roi_index: i,
                                                 name,
                                                 color,
@@ -5064,7 +5209,8 @@ impl ViewerApp {
                                                 verts,
                                                 normals,
                                                 tris,
-                                            })
+                                            },
+                                        )
                                     })
                                     .collect();
                                 let _ = tx.send(meshes);
@@ -5098,9 +5244,7 @@ impl ViewerApp {
                         return;
                     }
                     ui.horizontal(|ui| {
-                        ui.add(
-                            egui::Slider::new(&mut w.opacity, 0.2..=1.0).text("Opacity"),
-                        );
+                        ui.add(egui::Slider::new(&mut w.opacity, 0.2..=1.0).text("Opacity"));
                         if ui.small_button("⟲ Reset view").clicked() {
                             w.yaw = 0.7;
                             w.pitch = -0.5;
@@ -5112,8 +5256,7 @@ impl ViewerApp {
 
                     let avail = ui.available_size();
                     let size = Vec2::new(avail.x.max(240.0), avail.y.max(240.0));
-                    let (resp, painter) =
-                        ui.allocate_painter(size, Sense::click_and_drag());
+                    let (resp, painter) = ui.allocate_painter(size, Sense::click_and_drag());
                     let rect = resp.rect;
                     painter.rect_filled(rect, 0.0, Color32::BLACK);
 
@@ -5140,8 +5283,7 @@ impl ViewerApp {
                             }
                             (l, i.zoom_delta())
                         });
-                        w.zoom =
-                            (w.zoom * (lines * 0.12).exp() * zd).clamp(0.1, 40.0);
+                        w.zoom = (w.zoom * (lines * 0.12).exp() * zd).clamp(0.1, 40.0);
                     }
 
                     // Render.
@@ -5235,8 +5377,10 @@ impl ViewerApp {
                                 )
                             })
                             .chain(seg_meshes.iter().flat_map(|a| a.iter()).map(|m| {
-                                let (on, c) =
-                                    seg_disp.get(m.roi_index).copied().unwrap_or((false, m.color));
+                                let (on, c) = seg_disp
+                                    .get(m.roi_index)
+                                    .copied()
+                                    .unwrap_or((false, m.color));
                                 (m, on, c, false)
                             }));
                         for (m, on, color, external) in entries {
@@ -5295,7 +5439,8 @@ impl ViewerApp {
                             mesh.indices.clear();
                             mesh.indices.reserve(f.order.len() * 3);
                             for &o in &f.order {
-                                mesh.indices.extend_from_slice(&f.tris[(o & 0xFFFF_FFFF) as usize]);
+                                mesh.indices
+                                    .extend_from_slice(&f.tris[(o & 0xFFFF_FFFF) as usize]);
                             }
                             f.order_key = Some(order_key);
                         }
@@ -5347,7 +5492,9 @@ impl ViewerApp {
     /// Auto-segmentation parameter dialog (model variant, device, weights
     /// location) — see the `autoseg` module for the pipeline itself.
     fn autoseg_run_window(&mut self, ctx: &egui::Context) {
-        let Some(d) = &mut self.autoseg_dialog else { return };
+        let Some(d) = &mut self.autoseg_dialog else {
+            return;
+        };
         let mut open = true;
         let mut close_clicked = false;
         let mut run_clicked = false;
@@ -5409,9 +5556,7 @@ impl ViewerApp {
                     ui.radio_value(&mut d.device, autoseg::DevicePref::Auto, "Auto")
                         .on_hover_text("Use the GPU when one is available, else the CPU");
                     ui.radio_value(&mut d.device, autoseg::DevicePref::Gpu, "GPU")
-                        .on_hover_text(
-                            "Any GPU via wgpu (Vulkan / DX12 / Metal) — no CUDA needed",
-                        );
+                        .on_hover_text("Any GPU via wgpu (Vulkan / DX12 / Metal) — no CUDA needed");
                     ui.radio_value(&mut d.device, autoseg::DevicePref::Cpu, "CPU");
                 });
                 ui.horizontal(|ui| {
@@ -5432,8 +5577,8 @@ impl ViewerApp {
                 );
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let can_run = d.variant != autoseg::Variant::HighRes15mm
-                        || d.parts.iter().any(|p| *p);
+                    let can_run =
+                        d.variant != autoseg::Variant::HighRes15mm || d.parts.iter().any(|p| *p);
                     if ui
                         .add_enabled(can_run, egui::Button::new("▶ Segment"))
                         .clicked()
@@ -5461,12 +5606,13 @@ impl ViewerApp {
 
     /// Organ-selection dialog shown when an auto-segmentation run finishes.
     fn autoseg_result_window(&mut self, ctx: &egui::Context) {
-        let Some(p) = &mut self.autoseg_pending else { return };
+        let Some(p) = &mut self.autoseg_pending else {
+            return;
+        };
         let mut open = true;
         let mut close_clicked = false;
         let mut apply_clicked = false;
-        let vol_bytes =
-            p.result.volume_dims[0] * p.result.volume_dims[1] * p.result.volume_dims[2];
+        let vol_bytes = p.result.volume_dims[0] * p.result.volume_dims[1] * p.result.volume_dims[2];
         egui::Window::new("🤖 Auto-segmentation results")
             .collapsible(false)
             .resizable(true)
@@ -5495,35 +5641,34 @@ impl ViewerApp {
                         n_sel * vol_bytes / 1_000_000
                     ));
                 });
-                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                    for (organ, sel) in p.result.organs.iter().zip(p.selected.iter_mut()) {
-                        ui.horizontal(|ui| {
-                            ui.checkbox(sel, "");
-                            let (rect, _) = ui
-                                .allocate_exact_size(egui::vec2(12.0, 12.0), Sense::hover());
-                            ui.painter().rect_filled(
-                                rect,
-                                2.0,
-                                Color32::from_rgb(
-                                    organ.color[0],
-                                    organ.color[1],
-                                    organ.color[2],
-                                ),
-                            );
-                            ui.label(organ.name);
-                            ui.weak(format!("{:.1} cm³", organ.cm3));
-                        });
-                    }
-                });
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .show(ui, |ui| {
+                        for (organ, sel) in p.result.organs.iter().zip(p.selected.iter_mut()) {
+                            ui.horizontal(|ui| {
+                                ui.checkbox(sel, "");
+                                let (rect, _) =
+                                    ui.allocate_exact_size(egui::vec2(12.0, 12.0), Sense::hover());
+                                ui.painter().rect_filled(
+                                    rect,
+                                    2.0,
+                                    Color32::from_rgb(
+                                        organ.color[0],
+                                        organ.color[1],
+                                        organ.color[2],
+                                    ),
+                                );
+                                ui.label(organ.name);
+                                ui.weak(format!("{:.1} cm³", organ.cm3));
+                            });
+                        }
+                    });
                 ui.add_space(4.0);
-                ui.checkbox(
-                    &mut p.also_rs,
-                    "Also convert to RTSTRUCT contours (→RS)",
-                )
-                .on_hover_text(
-                    "Adds each selected structure as a ROI to the active structure \
+                ui.checkbox(&mut p.also_rs, "Also convert to RTSTRUCT contours (→RS)")
+                    .on_hover_text(
+                        "Adds each selected structure as a ROI to the active structure \
                      set, so it renders like any ROI and rides the DICOM export",
-                );
+                    );
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let n_sel = p.selected.iter().filter(|s| **s).count();
@@ -5594,7 +5739,10 @@ impl ViewerApp {
                         reset_dir = true;
                     }
                 });
-                ui.weak(format!("Files: {}", gen_test_data::output_summary(&self.gen_params)));
+                ui.weak(format!(
+                    "Files: {}",
+                    gen_test_data::output_summary(&self.gen_params)
+                ));
 
                 ui.add_space(6.0);
                 ui.label(egui::RichText::new("Phantom").strong());
@@ -5650,9 +5798,7 @@ impl ViewerApp {
                         );
                         ui.horizontal(|ui| {
                             for v in &mut self.gen_params.reg_shift {
-                                ui.add(
-                                    egui::DragValue::new(v).speed(0.5).range(-100.0..=100.0),
-                                );
+                                ui.add(egui::DragValue::new(v).speed(0.5).range(-100.0..=100.0));
                             }
                         });
                         ui.end_row();
@@ -5661,7 +5807,10 @@ impl ViewerApp {
                     &mut self.gen_params.extras,
                     "Also write DX, RTIMAGE, REG and RTRECORD objects",
                 );
-                ui.checkbox(&mut self.gen_load_after, "Load the study into slot A when done");
+                ui.checkbox(
+                    &mut self.gen_load_after,
+                    "Load the study into slot A when done",
+                );
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -5743,9 +5892,8 @@ impl ViewerApp {
             } else {
                 let out = PathBuf::from(self.anon_out.trim());
                 if out.as_os_str().is_empty() {
-                    self.error = Some(
-                        "Choose an output folder, or tick “overwrite in place”".into(),
-                    );
+                    self.error =
+                        Some("Choose an output folder, or tick “overwrite in place”".into());
                     return;
                 }
                 Some(out)
@@ -5881,17 +6029,20 @@ impl ViewerApp {
                                             f.tag.element(),
                                             f.name
                                         );
-                                        ui.checkbox(&mut f.enabled, label)
-                                            .on_hover_text(format!(
-                                                "present in {} file(s); unchecked rows are \
+                                        ui.checkbox(&mut f.enabled, label).on_hover_text(format!(
+                                            "present in {} file(s); unchecked rows are \
                                                  left unchanged",
-                                                f.n_files
-                                            ));
+                                            f.n_files
+                                        ));
                                         let shown = f
                                             .values
                                             .iter()
                                             .map(|v| {
-                                                if v.is_empty() { "«empty»" } else { v.as_str() }
+                                                if v.is_empty() {
+                                                    "«empty»"
+                                                } else {
+                                                    v.as_str()
+                                                }
                                             })
                                             .collect::<Vec<_>>()
                                             .join("  |  ");
@@ -6074,7 +6225,9 @@ impl ViewerApp {
                 });
                 ui.add_space(4.0);
 
-                let Some(params) = &mut self.export_params else { return };
+                let Some(params) = &mut self.export_params else {
+                    return;
+                };
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("DICOM tags").strong());
                     ui.weak("unchecked rows are not written at all");
@@ -6202,7 +6355,11 @@ mod theme_tests {
     fn luminance(c: Color32) -> f64 {
         let ch = |v: u8| {
             let s = v as f64 / 255.0;
-            if s <= 0.03928 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+            if s <= 0.03928 {
+                s / 12.92
+            } else {
+                ((s + 0.055) / 1.055).powf(2.4)
+            }
         };
         0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b())
     }
@@ -6412,12 +6569,7 @@ mod tree_tests {
     #[test]
     fn merge_dedupes_by_uid() {
         let mut dest = two_chain_study();
-        let masks = ViewerApp::subset_masks(
-            &dest,
-            &[true, false],
-            false,
-            false,
-        );
+        let masks = ViewerApp::subset_masks(&dest, &[true, false], false, false);
         let sub = ViewerApp::build_subset(&dest, &masks, 0);
         let notes = loader::merge_study(&mut dest, sub);
         assert_eq!(dest.series.len(), 2, "duplicate series must not be added");

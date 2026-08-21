@@ -4,9 +4,9 @@
 use anyhow::{Context, Result};
 use windows::core::PCWSTR;
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegDeleteValueW, RegOpenKeyExW,
-    RegQueryValueExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ,
-    KEY_WRITE, REG_DWORD, REG_EXPAND_SZ, REG_OPTION_NON_VOLATILE, REG_SZ, REG_VALUE_TYPE,
+    RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW,
+    RegSetValueExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_DWORD,
+    REG_EXPAND_SZ, REG_OPTION_NON_VOLATILE, REG_SZ, REG_VALUE_TYPE,
 };
 
 use super::wide;
@@ -30,9 +30,7 @@ impl Hive {
     pub fn environment_key(self) -> &'static str {
         match self {
             Hive::CurrentUser => "Environment",
-            Hive::LocalMachine => {
-                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
-            }
+            Hive::LocalMachine => r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
         }
     }
 
@@ -81,7 +79,11 @@ impl Key {
     /// Open an existing key for reading (and writing when `write`).
     pub fn open(root: HKEY, path: &str, write: bool) -> Result<Key> {
         let p = wide(path);
-        let access = if write { KEY_READ | KEY_WRITE } else { KEY_READ };
+        let access = if write {
+            KEY_READ | KEY_WRITE
+        } else {
+            KEY_READ
+        };
         let mut key = HKEY::default();
         unsafe {
             RegOpenKeyExW(root, PCWSTR(p.as_ptr()), None, access, &mut key)
@@ -185,7 +187,10 @@ pub fn delete_tree(root: HKEY, path: &str) -> Result<()> {
         if err.0 == 2 {
             return Ok(());
         }
-        Err(anyhow::anyhow!("delete registry key {path}: error {}", err.0))
+        Err(anyhow::anyhow!(
+            "delete registry key {path}: error {}",
+            err.0
+        ))
     }
 }
 

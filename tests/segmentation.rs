@@ -156,12 +156,28 @@ fn overlay_matches_extract_slice_conventions() {
 
     // Sagittal: horizontal = j, vertical = k flipped (row = nz-1-k).
     let mut out = vec![clear; ny * nz];
-    segmentation::overlay_slice(&mask, dims, ViewPlane::Sagittal, i, [255, 0, 0], 90, &mut out);
+    segmentation::overlay_slice(
+        &mask,
+        dims,
+        ViewPlane::Sagittal,
+        i,
+        [255, 0, 0],
+        90,
+        &mut out,
+    );
     assert_eq!(hit(&out), vec![(nz - 1 - k) * ny + j]);
 
     // Coronal: horizontal = i, vertical = k flipped.
     let mut out = vec![clear; nx * nz];
-    segmentation::overlay_slice(&mask, dims, ViewPlane::Coronal, j, [255, 0, 0], 90, &mut out);
+    segmentation::overlay_slice(
+        &mask,
+        dims,
+        ViewPlane::Coronal,
+        j,
+        [255, 0, 0],
+        90,
+        &mut out,
+    );
     assert_eq!(hit(&out), vec![(nz - 1 - k) * nx + i]);
 }
 

@@ -59,7 +59,10 @@ fn tiny_unet_assembles_and_runs() {
         for i in 0..2 {
             let cin = if i == 0 { cin_stage } else { f };
             let p = format!("encoder.stages.{st}.0.convs.{i}");
-            t.insert(format!("{p}.conv.weight"), tensor(&mut s, &[f, cin, 3, 3, 3]));
+            t.insert(
+                format!("{p}.conv.weight"),
+                tensor(&mut s, &[f, cin, 3, 3, 3]),
+            );
             t.insert(format!("{p}.conv.bias"), tensor(&mut s, &[f]));
             t.insert(format!("{p}.norm.weight"), tensor(&mut s, &[f]));
             t.insert(format!("{p}.norm.bias"), tensor(&mut s, &[f]));
@@ -73,11 +76,17 @@ fn tiny_unet_assembles_and_runs() {
             format!("decoder.transpconvs.{tr}.weight"),
             tensor(&mut s, &[c_below, c_skip, 2, 2, 2]),
         );
-        t.insert(format!("decoder.transpconvs.{tr}.bias"), tensor(&mut s, &[c_skip]));
+        t.insert(
+            format!("decoder.transpconvs.{tr}.bias"),
+            tensor(&mut s, &[c_skip]),
+        );
         for i in 0..2 {
             let cin = if i == 0 { 2 * c_skip } else { c_skip };
             let p = format!("decoder.stages.{tr}.convs.{i}");
-            t.insert(format!("{p}.conv.weight"), tensor(&mut s, &[c_skip, cin, 3, 3, 3]));
+            t.insert(
+                format!("{p}.conv.weight"),
+                tensor(&mut s, &[c_skip, cin, 3, 3, 3]),
+            );
             t.insert(format!("{p}.conv.bias"), tensor(&mut s, &[c_skip]));
             t.insert(format!("{p}.norm.weight"), tensor(&mut s, &[c_skip]));
             t.insert(format!("{p}.norm.bias"), tensor(&mut s, &[c_skip]));
@@ -86,7 +95,10 @@ fn tiny_unet_assembles_and_runs() {
             format!("decoder.seg_layers.{tr}.weight"),
             tensor(&mut s, &[classes, c_skip, 1, 1, 1]),
         );
-        t.insert(format!("decoder.seg_layers.{tr}.bias"), tensor(&mut s, &[classes]));
+        t.insert(
+            format!("decoder.seg_layers.{tr}.bias"),
+            tensor(&mut s, &[classes]),
+        );
     }
     let unet = net::UNet::build(cfg, &t).expect("assemble");
     assert_eq!(unet.num_classes(), classes);
@@ -95,7 +107,9 @@ fn tiny_unet_assembles_and_runs() {
         d: 16,
         h: 16,
         w: 16,
-        data: (0..16 * 16 * 16).map(|i| (i % 13) as f32 * 0.1 - 0.6).collect(),
+        data: (0..16 * 16 * 16)
+            .map(|i| (i % 13) as f32 * 0.1 - 0.6)
+            .collect(),
     };
     let y = unet.forward_cpu(x);
     assert_eq!((y.c, y.d, y.h, y.w), (classes, 16, 16, 16));
@@ -106,7 +120,9 @@ fn tiny_unet_assembles_and_runs() {
         d: 16,
         h: 16,
         w: 16,
-        data: (0..16 * 16 * 16).map(|i| (i % 13) as f32 * 0.1 - 0.6).collect(),
+        data: (0..16 * 16 * 16)
+            .map(|i| (i % 13) as f32 * 0.1 - 0.6)
+            .collect(),
     };
     let y2 = unet.forward_cpu(x2);
     assert_eq!(y.data, y2.data);
@@ -136,9 +152,18 @@ fn shape_mismatch_is_rejected() {
         "encoder.stages.0.0.convs.0.conv.weight".into(),
         tensor(&mut s, &[4, 2, 3, 3, 3]),
     );
-    t.insert("encoder.stages.0.0.convs.0.conv.bias".into(), tensor(&mut s, &[4]));
-    t.insert("encoder.stages.0.0.convs.0.norm.weight".into(), tensor(&mut s, &[4]));
-    t.insert("encoder.stages.0.0.convs.0.norm.bias".into(), tensor(&mut s, &[4]));
+    t.insert(
+        "encoder.stages.0.0.convs.0.conv.bias".into(),
+        tensor(&mut s, &[4]),
+    );
+    t.insert(
+        "encoder.stages.0.0.convs.0.norm.weight".into(),
+        tensor(&mut s, &[4]),
+    );
+    t.insert(
+        "encoder.stages.0.0.convs.0.norm.bias".into(),
+        tensor(&mut s, &[4]),
+    );
     let err = match net::UNet::build(cfg, &t) {
         Ok(_) => panic!("mis-shaped checkpoint was accepted"),
         Err(e) => e,
@@ -157,9 +182,11 @@ fn real_model_on_example_data() {
     );
     let data_dir = std::env::var("RDS_EXAMPLE_DATA")
         .unwrap_or_else(|_| "example_data/lung_p1_4DCT_phase_000".into());
-    let study =
-        rust_dicom_station::loader::load_directory(std::path::Path::new(&data_dir), &Default::default())
-            .expect("load example data");
+    let study = rust_dicom_station::loader::load_directory(
+        std::path::Path::new(&data_dir),
+        &Default::default(),
+    )
+    .expect("load example data");
     let progress = autoseg::AutosegProgress::default();
     let result = autoseg::run(
         &study.volume,
@@ -189,7 +216,10 @@ fn real_model_on_example_data() {
     .iter()
     .map(|n| organ(n).cm3)
     .sum();
-    assert!(lungs > 2000.0 && lungs < 8000.0, "total lung volume {lungs} cm³");
+    assert!(
+        lungs > 2000.0 && lungs < 8000.0,
+        "total lung volume {lungs} cm³"
+    );
     let heart = organ("heart").cm3;
     assert!(heart > 300.0 && heart < 1200.0, "heart {heart} cm³");
     assert!(organ("liver").cm3 > 800.0);

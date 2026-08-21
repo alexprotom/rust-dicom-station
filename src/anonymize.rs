@@ -68,8 +68,20 @@ const ANON_TIME: &str = "000000";
 #[allow(deprecated)] // retired tags (OtherPatientIDs, EthnicGroup) still occur in old files
 fn rules() -> Vec<Rule> {
     use Suggest::*;
-    let r = |tag, name, vr, suggest| Rule { tag, name, vr, suggest, default_on: true };
-    let opt = |tag, name, vr| Rule { tag, name, vr, suggest: Keep, default_on: false };
+    let r = |tag, name, vr, suggest| Rule {
+        tag,
+        name,
+        vr,
+        suggest,
+        default_on: true,
+    };
+    let opt = |tag, name, vr| Rule {
+        tag,
+        name,
+        vr,
+        suggest: Keep,
+        default_on: false,
+    };
     vec![
         r(tags::PATIENT_NAME, "PatientName", VR::PN, Alias),
         r(tags::PATIENT_ID, "PatientID", VR::LO, Alias),
@@ -81,7 +93,12 @@ fn rules() -> Vec<Rule> {
         r(tags::PATIENT_SIZE, "PatientSize", VR::DS, Clear),
         r(tags::OTHER_PATIENT_I_DS, "OtherPatientIDs", VR::LO, Clear),
         r(tags::PATIENT_ADDRESS, "PatientAddress", VR::LO, Clear),
-        r(tags::PATIENT_TELEPHONE_NUMBERS, "PatientTelephoneNumbers", VR::SH, Clear),
+        r(
+            tags::PATIENT_TELEPHONE_NUMBERS,
+            "PatientTelephoneNumbers",
+            VR::SH,
+            Clear,
+        ),
         r(tags::PATIENT_COMMENTS, "PatientComments", VR::LT, Clear),
         r(tags::ETHNIC_GROUP, "EthnicGroup", VR::SH, Clear),
         r(tags::STUDY_DATE, "StudyDate", VR::DA, Date),
@@ -93,20 +110,54 @@ fn rules() -> Vec<Rule> {
         r(tags::ACQUISITION_TIME, "AcquisitionTime", VR::TM, Time),
         r(tags::CONTENT_TIME, "ContentTime", VR::TM, Time),
         r(tags::ACCESSION_NUMBER, "AccessionNumber", VR::SH, Clear),
-        r(tags::REFERRING_PHYSICIAN_NAME, "ReferringPhysicianName", VR::PN, Clear),
-        r(tags::PERFORMING_PHYSICIAN_NAME, "PerformingPhysicianName", VR::PN, Clear),
-        r(tags::PHYSICIANS_OF_RECORD, "PhysiciansOfRecord", VR::PN, Clear),
+        r(
+            tags::REFERRING_PHYSICIAN_NAME,
+            "ReferringPhysicianName",
+            VR::PN,
+            Clear,
+        ),
+        r(
+            tags::PERFORMING_PHYSICIAN_NAME,
+            "PerformingPhysicianName",
+            VR::PN,
+            Clear,
+        ),
+        r(
+            tags::PHYSICIANS_OF_RECORD,
+            "PhysiciansOfRecord",
+            VR::PN,
+            Clear,
+        ),
         r(tags::OPERATORS_NAME, "OperatorsName", VR::PN, Clear),
         r(tags::INSTITUTION_NAME, "InstitutionName", VR::LO, Clear),
-        r(tags::INSTITUTION_ADDRESS, "InstitutionAddress", VR::ST, Clear),
-        r(tags::INSTITUTIONAL_DEPARTMENT_NAME, "InstitutionalDepartmentName", VR::LO, Clear),
+        r(
+            tags::INSTITUTION_ADDRESS,
+            "InstitutionAddress",
+            VR::ST,
+            Clear,
+        ),
+        r(
+            tags::INSTITUTIONAL_DEPARTMENT_NAME,
+            "InstitutionalDepartmentName",
+            VR::LO,
+            Clear,
+        ),
         r(tags::STATION_NAME, "StationName", VR::SH, Clear),
-        r(tags::DEVICE_SERIAL_NUMBER, "DeviceSerialNumber", VR::LO, Clear),
+        r(
+            tags::DEVICE_SERIAL_NUMBER,
+            "DeviceSerialNumber",
+            VR::LO,
+            Clear,
+        ),
         r(tags::STUDY_ID, "StudyID", VR::SH, Fixed("1")),
         opt(tags::STUDY_DESCRIPTION, "StudyDescription", VR::LO),
         opt(tags::SERIES_DESCRIPTION, "SeriesDescription", VR::LO),
         opt(tags::MANUFACTURER, "Manufacturer", VR::LO),
-        opt(tags::MANUFACTURER_MODEL_NAME, "ManufacturerModelName", VR::LO),
+        opt(
+            tags::MANUFACTURER_MODEL_NAME,
+            "ManufacturerModelName",
+            VR::LO,
+        ),
     ]
 }
 
@@ -233,13 +284,15 @@ pub fn scan(dir: &Path, progress: &Progress) -> Result<ScanResult> {
             let mut private = 0usize;
             walk_stats(&obj, &mut uids, &mut private);
             Some(FileScan {
-                modality: crate::loader::str_of(&obj, tags::MODALITY)
-                    .unwrap_or_else(|| "?".into()),
+                modality: crate::loader::str_of(&obj, tags::MODALITY).unwrap_or_else(|| "?".into()),
                 found: rule_list
                     .iter()
                     .filter_map(|rule| {
                         let el = obj.element(rule.tag).ok()?;
-                        let v = el.to_str().map(|s| s.trim().to_string()).unwrap_or_default();
+                        let v = el
+                            .to_str()
+                            .map(|s| s.trim().to_string())
+                            .unwrap_or_default();
                         Some((rule.tag, v))
                     })
                     .collect(),
@@ -288,7 +341,9 @@ pub fn scan(dir: &Path, progress: &Progress) -> Result<ScanResult> {
 
     let mut warnings = Vec::new();
     if unreadable > 0 {
-        warnings.push(format!("{unreadable} non-DICOM file(s) will be left untouched"));
+        warnings.push(format!(
+            "{unreadable} non-DICOM file(s) will be left untouched"
+        ));
     }
     if ids.len() > 1 {
         warnings.push(format!(
@@ -300,7 +355,9 @@ pub fn scan(dir: &Path, progress: &Progress) -> Result<ScanResult> {
 
     let mut findings = Vec::new();
     for rule in &rule_list {
-        let Some((vals, n_files)) = per_tag.get(&rule.tag) else { continue };
+        let Some((vals, n_files)) = per_tag.get(&rule.tag) else {
+            continue;
+        };
         let mut values: Vec<String> = vals.iter().cloned().collect();
         values.sort();
         let n_values = values.len();
@@ -426,14 +483,23 @@ fn transform(obj: &mut InMemDicomObject, p: &ApplyParams, uid_map: &HashMap<Stri
 
 fn put_replacement(obj: &mut InMemDicomObject, tag: Tag, vr: VR, value: &str) {
     if value.is_empty() {
-        obj.put(DataElement::new(tag, vr, Value::Primitive(PrimitiveValue::Empty)));
+        obj.put(DataElement::new(
+            tag,
+            vr,
+            Value::Primitive(PrimitiveValue::Empty),
+        ));
     } else {
         obj.put(DataElement::new(tag, vr, PrimitiveValue::from(value)));
     }
 }
 
 /// Rewrite every scanned file. Returns the number of files written.
-pub fn apply(files: &[PathBuf], root: &Path, p: &ApplyParams, progress: &Progress) -> Result<usize> {
+pub fn apply(
+    files: &[PathBuf],
+    root: &Path,
+    p: &ApplyParams,
+    progress: &Progress,
+) -> Result<usize> {
     // Pass 1: collect every non-standard UID so the remapping is consistent
     // across files (referential integrity of the whole folder).
     let mut uid_map: HashMap<String, String> = HashMap::new();
@@ -480,59 +546,59 @@ pub fn apply(files: &[PathBuf], root: &Path, p: &ApplyParams, progress: &Progres
     let results: Vec<Result<()>> = files
         .par_iter()
         .map(|path| -> Result<()> {
-        let i = done.fetch_add(1, Ordering::Relaxed);
-        progress.set(format!("Anonymizing… {}/{}", i + 1, files.len()));
-        let file_obj = dicom_object::open_file(path)
-            .with_context(|| format!("open {}", path.display()))?;
-        let meta = file_obj.meta().clone();
-        let mut obj = file_obj.into_inner();
+            let i = done.fetch_add(1, Ordering::Relaxed);
+            progress.set(format!("Anonymizing… {}/{}", i + 1, files.len()));
+            let file_obj = dicom_object::open_file(path)
+                .with_context(|| format!("open {}", path.display()))?;
+            let meta = file_obj.meta().clone();
+            let mut obj = file_obj.into_inner();
 
-        transform(&mut obj, p, &uid_map);
-        for (tag, vr, value) in &p.replacements {
-            put_replacement(&mut obj, *tag, *vr, value);
-        }
-        if p.mark_deidentified {
-            put_replacement(&mut obj, tags::PATIENT_IDENTITY_REMOVED, VR::CS, "YES");
-            put_replacement(
-                &mut obj,
-                tags::DEIDENTIFICATION_METHOD,
-                VR::LO,
-                "rust-dicom-station anonymizer",
-            );
-        }
-
-        let sop_class = crate::loader::str_of(&obj, tags::SOP_CLASS_UID).unwrap_or_default();
-        let sop_inst = crate::loader::str_of(&obj, tags::SOP_INSTANCE_UID).unwrap_or_default();
-        let ts = meta.transfer_syntax().trim_end_matches('\0').to_string();
-        let out_obj = obj
-            .with_meta(
-                FileMetaTableBuilder::new()
-                    .transfer_syntax(&ts)
-                    .media_storage_sop_class_uid(&sop_class)
-                    .media_storage_sop_instance_uid(&sop_inst),
-            )
-            .with_context(|| format!("rebuild file meta of {}", path.display()))?;
-
-        let out_path = match &p.out_dir {
-            Some(out) => {
-                let rel = path.strip_prefix(root).unwrap_or(path.as_path());
-                let dst = out.join(rel);
-                if let Some(parent) = dst.parent() {
-                    std::fs::create_dir_all(parent)
-                        .with_context(|| format!("create {}", parent.display()))?;
-                }
-                dst
+            transform(&mut obj, p, &uid_map);
+            for (tag, vr, value) in &p.replacements {
+                put_replacement(&mut obj, *tag, *vr, value);
             }
-            None => path.clone(),
-        };
-        // Write via a temp file so an error never corrupts the original.
-        let tmp = out_path.with_extension("tmp_anon");
-        out_obj
-            .write_to_file(&tmp)
-            .with_context(|| format!("write {}", tmp.display()))?;
-        std::fs::rename(&tmp, &out_path)
-            .with_context(|| format!("replace {}", out_path.display()))?;
-        Ok(())
+            if p.mark_deidentified {
+                put_replacement(&mut obj, tags::PATIENT_IDENTITY_REMOVED, VR::CS, "YES");
+                put_replacement(
+                    &mut obj,
+                    tags::DEIDENTIFICATION_METHOD,
+                    VR::LO,
+                    "rust-dicom-station anonymizer",
+                );
+            }
+
+            let sop_class = crate::loader::str_of(&obj, tags::SOP_CLASS_UID).unwrap_or_default();
+            let sop_inst = crate::loader::str_of(&obj, tags::SOP_INSTANCE_UID).unwrap_or_default();
+            let ts = meta.transfer_syntax().trim_end_matches('\0').to_string();
+            let out_obj = obj
+                .with_meta(
+                    FileMetaTableBuilder::new()
+                        .transfer_syntax(&ts)
+                        .media_storage_sop_class_uid(&sop_class)
+                        .media_storage_sop_instance_uid(&sop_inst),
+                )
+                .with_context(|| format!("rebuild file meta of {}", path.display()))?;
+
+            let out_path = match &p.out_dir {
+                Some(out) => {
+                    let rel = path.strip_prefix(root).unwrap_or(path.as_path());
+                    let dst = out.join(rel);
+                    if let Some(parent) = dst.parent() {
+                        std::fs::create_dir_all(parent)
+                            .with_context(|| format!("create {}", parent.display()))?;
+                    }
+                    dst
+                }
+                None => path.clone(),
+            };
+            // Write via a temp file so an error never corrupts the original.
+            let tmp = out_path.with_extension("tmp_anon");
+            out_obj
+                .write_to_file(&tmp)
+                .with_context(|| format!("write {}", tmp.display()))?;
+            std::fs::rename(&tmp, &out_path)
+                .with_context(|| format!("replace {}", out_path.display()))?;
+            Ok(())
         })
         .collect();
     let mut written = 0usize;

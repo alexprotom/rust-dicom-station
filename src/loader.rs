@@ -92,10 +92,7 @@ fn parse_group<T: Send>(
     out
 }
 
-pub fn items_of(
-    obj: &InMemDicomObject,
-    tag: dicom_core::Tag,
-) -> Option<&[InMemDicomObject]> {
+pub fn items_of(obj: &InMemDicomObject, tag: dicom_core::Tag) -> Option<&[InMemDicomObject]> {
     obj.element(tag).ok().and_then(|e| e.items())
 }
 
@@ -238,7 +235,9 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
     let mut warnings = Vec::new();
     let unreadable = files.len() - scanned.len();
     if unreadable > 0 {
-        warnings.push(format!("{unreadable} file(s) were not readable as DICOM and were skipped"));
+        warnings.push(format!(
+            "{unreadable} file(s) were not readable as DICOM and were skipped"
+        ));
     }
     if scanned.is_empty() {
         bail!("No DICOM files found in {}", dir.display());
@@ -256,8 +255,7 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
 
     // Series are looked up by UID rather than scanned linearly: with many
     // series in one folder the linear form is quadratic in the file count.
-    let mut series_index: std::collections::HashMap<&str, usize> =
-        std::collections::HashMap::new();
+    let mut series_index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
 
     for s in &scanned {
         if meta.patient_id.is_empty() && !s.meta.patient_id.is_empty() {
@@ -431,7 +429,11 @@ pub fn load_series_volume(
     progress.set(format!(
         "Loading {} slice(s) of series {}…",
         series.files.len(),
-        if series.description.is_empty() { &series.modality } else { &series.description }
+        if series.description.is_empty() {
+            &series.modality
+        } else {
+            &series.description
+        }
     ));
 
     struct SliceRec {
@@ -499,7 +501,10 @@ pub fn load_series_volume(
                 .to_vec_with_options(&opts)
                 .with_context(|| format!("convert pixels of {}", path.display()))?;
             if f.len() < rows * cols {
-                bail!("pixel buffer smaller than Rows×Columns in {}", path.display());
+                bail!(
+                    "pixel buffer smaller than Rows×Columns in {}",
+                    path.display()
+                );
             }
             let data: Vec<i16> = f[..rows * cols]
                 .iter()
@@ -554,7 +559,11 @@ pub fn load_series_volume(
     }
 
     // Sort along the slice normal and drop duplicates.
-    slices.sort_by(|a, b| a.proj.partial_cmp(&b.proj).unwrap_or(std::cmp::Ordering::Equal));
+    slices.sort_by(|a, b| {
+        a.proj
+            .partial_cmp(&b.proj)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     slices.dedup_by(|a, b| (a.proj - b.proj).abs() < 0.01);
 
     let nz = slices.len();
@@ -626,7 +635,9 @@ pub fn merge_study(dest: &mut LoadedStudy, src: LoadedStudy) -> Vec<String> {
         }
     }
     if skipped > 0 {
-        notes.push(format!("{skipped} series were already present and were not added again"));
+        notes.push(format!(
+            "{skipped} series were already present and were not added again"
+        ));
     }
 
     for ss in src.structure_sets {
@@ -642,7 +653,10 @@ pub fn merge_study(dest: &mut LoadedStudy, src: LoadedStudy) -> Vec<String> {
     }
     for p in src.plans {
         let dup = !p.sop_instance_uid.is_empty()
-            && dest.plans.iter().any(|d| d.sop_instance_uid == p.sop_instance_uid);
+            && dest
+                .plans
+                .iter()
+                .any(|d| d.sop_instance_uid == p.sop_instance_uid);
         if !dup {
             dest.plans.push(p);
         }

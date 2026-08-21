@@ -54,7 +54,8 @@ fn main() -> Result<()> {
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         let mut val = |flag: &str| -> Result<String> {
-            it.next().ok_or_else(|| anyhow::anyhow!("{flag} needs a value"))
+            it.next()
+                .ok_or_else(|| anyhow::anyhow!("{flag} needs a value"))
         };
         match a.as_str() {
             "-h" | "--help" => {
@@ -129,8 +130,8 @@ fn main() -> Result<()> {
         zip.write_all(info.as_bytes())?;
         for (name, path) in &files {
             zip.start_file(name.as_str(), opts)?;
-            let mut f = std::fs::File::open(path)
-                .with_context(|| format!("read {}", path.display()))?;
+            let mut f =
+                std::fs::File::open(path).with_context(|| format!("read {}", path.display()))?;
             std::io::copy(&mut f, &mut zip)?;
             println!("  {name}");
         }

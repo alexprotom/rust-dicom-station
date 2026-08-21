@@ -26,7 +26,11 @@ pub fn run_install(payload: Payload, mut opts: Options, silent: bool) -> Result<
         println!(
             "Model weights       : {}{}",
             opts.models.label(),
-            if models::AVAILABLE { "" } else { "  (not available in this build)" }
+            if models::AVAILABLE {
+                ""
+            } else {
+                "  (not available in this build)"
+            }
         );
         println!(
             "Program files       : {}\n",

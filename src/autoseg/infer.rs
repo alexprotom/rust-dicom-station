@@ -26,7 +26,9 @@ fn compute_steps(image_size: usize, tile_size: usize, step_frac: f64) -> Vec<usi
         return vec![0];
     }
     let max_step = (image_size - tile_size) as f64 / (num - 1) as f64;
-    (0..num).map(|i| (max_step * i as f64).round() as usize).collect()
+    (0..num)
+        .map(|i| (max_step * i as f64).round() as usize)
+        .collect()
 }
 
 /// 1-D Gaussian importance profile for one patch axis (σ = len/8, center at
@@ -299,7 +301,8 @@ mod tests {
         for z in 0..20 {
             for y in 0..8 {
                 for x in 0..6 {
-                    let expect = ((5..15).contains(&z) && (2..6).contains(&y) && (1..5).contains(&x)) as u8;
+                    let expect =
+                        ((5..15).contains(&z) && (2..6).contains(&y) && (1..5).contains(&x)) as u8;
                     assert_eq!(labels[(z * 8 + y) * 6 + x], expect, "at {z},{y},{x}");
                 }
             }

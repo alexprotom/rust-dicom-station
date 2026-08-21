@@ -79,7 +79,8 @@ fn parse_args() -> Result<Args> {
     let mut opts = Options::default();
     let mut it = std::env::args().skip(1);
     let next = |it: &mut std::iter::Skip<std::env::Args>, flag: &str| -> Result<String> {
-        it.next().ok_or_else(|| anyhow::anyhow!("{flag} needs a value"))
+        it.next()
+            .ok_or_else(|| anyhow::anyhow!("{flag} needs a value"))
     };
     while let Some(arg) = it.next() {
         match arg.as_str() {

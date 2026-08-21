@@ -178,7 +178,13 @@ impl Volume {
 
     /// Convert an in-plane display pixel position (fractional) plus the view's
     /// current slice index into fractional volume indices (i, j, k).
-    pub fn plane_pixel_to_voxel(&self, plane: ViewPlane, slice: usize, px: f64, py: f64) -> [f64; 3] {
+    pub fn plane_pixel_to_voxel(
+        &self,
+        plane: ViewPlane,
+        slice: usize,
+        px: f64,
+        py: f64,
+    ) -> [f64; 3] {
         let nz = self.dims[2] as f64;
         match plane {
             ViewPlane::Axial => [px, py, slice as f64],

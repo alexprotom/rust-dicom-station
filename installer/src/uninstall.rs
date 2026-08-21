@@ -57,14 +57,14 @@ pub fn relaunch_from_temp(target: &Target, extra_args: &[&str]) -> Result<std::p
     let tmp = std::env::temp_dir().join(format!("{PRODUCT_ID}-uninstall.exe"));
     // A leftover from an earlier run may still be scheduled for deletion.
     let _ = std::fs::remove_file(&tmp);
-    std::fs::copy(&exe, &tmp)
-        .with_context(|| format!("copy uninstaller to {}", tmp.display()))?;
+    std::fs::copy(&exe, &tmp).with_context(|| format!("copy uninstaller to {}", tmp.display()))?;
     let mut cmd = std::process::Command::new(&tmp);
     cmd.arg("--uninstall")
         .arg("--from")
         .arg(&target.dir)
         .args(extra_args);
-    cmd.spawn().with_context(|| format!("start {}", tmp.display()))
+    cmd.spawn()
+        .with_context(|| format!("start {}", tmp.display()))
 }
 
 /// Remove the installation. `remove_models` also deletes the weight cache.
@@ -75,25 +75,40 @@ pub fn run(target: &Target, remove_models: bool, sink: Sink) -> Result<()> {
     let dir = &m.install_dir;
 
     let app_exe = dir.join(APP_EXE);
-    if app_exe.exists() && std::fs::OpenOptions::new().write(true).open(&app_exe).is_err() {
+    if app_exe.exists()
+        && std::fs::OpenOptions::new()
+            .write(true)
+            .open(&app_exe)
+            .is_err()
+    {
         bail!("{APP_NAME} is still running — close it and try again");
     }
 
     // ---- registry ---------------------------------------------------------
     step(0.05, "Removing registry entries…");
-    let hive = if m.machine_wide { Hive::LocalMachine } else { Hive::CurrentUser };
+    let hive = if m.machine_wide {
+        Hive::LocalMachine
+    } else {
+        Hive::CurrentUser
+    };
     registry::delete_tree(hive.hkey(), &uninstall_key_path())?;
     if m.file_association {
         let classes = r"Software\Classes";
         registry::delete_tree(hive.hkey(), &format!(r"{classes}\{PROGID}"))?;
-        registry::delete_tree(hive.hkey(), &format!(r"{classes}\Directory\shell\{PRODUCT_ID}"))?;
+        registry::delete_tree(
+            hive.hkey(),
+            &format!(r"{classes}\Directory\shell\{PRODUCT_ID}"),
+        )?;
         registry::delete_tree(
             hive.hkey(),
             &format!(r"{classes}\Directory\Background\shell\{PRODUCT_ID}"),
         )?;
         for ext in [".dcm", ".dicom"] {
-            if let Ok(k) = Key::open(hive.hkey(), &format!(r"{classes}\{ext}\OpenWithProgids"), true)
-            {
+            if let Ok(k) = Key::open(
+                hive.hkey(),
+                &format!(r"{classes}\{ext}\OpenWithProgids"),
+                true,
+            ) {
                 let _ = k.delete_value(PROGID);
             }
         }
@@ -164,7 +179,10 @@ pub fn run(target: &Target, remove_models: bool, sink: Sink) -> Result<()> {
         if std::fs::remove_dir(&m.models_dir).is_ok() {
             prune_empty_parents(&m.models_dir);
         } else {
-            log(format!("Kept the model cache in {}", m.models_dir.display()));
+            log(format!(
+                "Kept the model cache in {}",
+                m.models_dir.display()
+            ));
         }
     }
 

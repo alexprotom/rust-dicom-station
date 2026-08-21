@@ -32,7 +32,8 @@ impl GpuContext {
     pub fn try_new() -> Result<GpuContext> {
         let result = std::panic::catch_unwind(|| {
             let device = WgpuDevice::default();
-            let t = Tensor::<B, 1>::from_data(TensorData::new(vec![1.0f32, 2.0, 3.0], [3]), &device);
+            let t =
+                Tensor::<B, 1>::from_data(TensorData::new(vec![1.0f32, 2.0, 3.0], [3]), &device);
             let s: f32 = t.sum().into_scalar();
             (device, s)
         });
@@ -89,7 +90,13 @@ impl GpuNet {
                 w: upload5(
                     d,
                     &blk.w,
-                    [blk.cout, blk.cin, blk.kernel[0], blk.kernel[1], blk.kernel[2]],
+                    [
+                        blk.cout,
+                        blk.cin,
+                        blk.kernel[0],
+                        blk.kernel[1],
+                        blk.kernel[2],
+                    ],
                 ),
                 b: upload1(d, &blk.b),
                 gamma: upload5(d, &blk.gamma, [1, blk.cout, 1, 1, 1]),
@@ -116,11 +123,7 @@ impl GpuNet {
                 b: upload1(d, &t.b),
             })
             .collect();
-        let head_w = upload5(
-            d,
-            &unet.head.w,
-            [unet.head.classes, unet.head.cin, 1, 1, 1],
-        );
+        let head_w = upload5(d, &unet.head.w, [unet.head.classes, unet.head.cin, 1, 1, 1]);
         let head_b = upload1(d, &unet.head.b);
         Ok(GpuNet {
             device: d.clone(),

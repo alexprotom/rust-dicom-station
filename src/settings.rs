@@ -26,7 +26,10 @@ impl Default for Settings {
     fn default() -> Self {
         // The viewer has always started dark; keep that as the default rather
         // than following the system, which would surprise existing users.
-        Settings { theme: ThemePreference::Dark, autoseg_dir: None }
+        Settings {
+            theme: ThemePreference::Dark,
+            autoseg_dir: None,
+        }
     }
 }
 
@@ -84,7 +87,9 @@ fn parse(text: &str) -> Settings {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let Some((key, value)) = line.split_once('=') else { continue };
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
         let key = key.trim();
         if key.eq_ignore_ascii_case("theme") {
             if let Some(t) = theme_from_str(value) {
@@ -124,7 +129,10 @@ mod tests {
             ThemePreference::Light,
             ThemePreference::System,
         ] {
-            let s = Settings { theme, autoseg_dir: None };
+            let s = Settings {
+                theme,
+                autoseg_dir: None,
+            };
             assert_eq!(parse(&render(&s)), s, "round trip of {theme:?}");
         }
     }
@@ -137,12 +145,18 @@ mod tests {
         assert_eq!(parse("theme = mauve"), Settings::default(), "unknown value");
         assert_eq!(
             parse("unknown = 3\nTHEME =  Light \n"),
-            Settings { theme: ThemePreference::Light, autoseg_dir: None },
+            Settings {
+                theme: ThemePreference::Light,
+                autoseg_dir: None
+            },
             "case-insensitive key and value, surrounding space ignored"
         );
         assert_eq!(
             parse("theme = white"),
-            Settings { theme: ThemePreference::Light, autoseg_dir: None },
+            Settings {
+                theme: ThemePreference::Light,
+                autoseg_dir: None
+            },
             "\"white\" accepted as an alias for light"
         );
         let with_dir = Settings {

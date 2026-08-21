@@ -144,9 +144,15 @@ pub fn default_output_dir() -> PathBuf {
 /// Names of the files this generator writes (for UI hints and cleanup).
 pub fn output_summary(p: &GenParams) -> String {
     if p.extras {
-        format!("CT_000…CT_{:03}.dcm, RS/RP/RD_synth.dcm, DX/RI/REG/RT_record_synth.dcm", NZ - 1)
+        format!(
+            "CT_000…CT_{:03}.dcm, RS/RP/RD_synth.dcm, DX/RI/REG/RT_record_synth.dcm",
+            NZ - 1
+        )
     } else {
-        format!("CT_000…CT_{:03}.dcm, RS_synth.dcm, RP_synth.dcm, RD_synth.dcm", NZ - 1)
+        format!(
+            "CT_000…CT_{:03}.dcm, RS_synth.dcm, RP_synth.dcm, RD_synth.dcm",
+            NZ - 1
+        )
     }
 }
 
@@ -174,14 +180,29 @@ fn base_dataset(ids: &Ids, sop_class: &str, sop_uid: &str, modality: &str) -> In
     put_str(&mut o, tags::PATIENT_ID, VR::LO, PATIENT_ID);
     put_str(&mut o, tags::PATIENT_BIRTH_DATE, VR::DA, "19700101");
     put_str(&mut o, tags::PATIENT_SEX, VR::CS, "O");
-    put_str(&mut o, tags::STUDY_INSTANCE_UID, VR::UI, ids.study_uid.clone());
+    put_str(
+        &mut o,
+        tags::STUDY_INSTANCE_UID,
+        VR::UI,
+        ids.study_uid.clone(),
+    );
     put_str(&mut o, tags::STUDY_DATE, VR::DA, ids.date.clone());
     put_str(&mut o, tags::STUDY_TIME, VR::TM, ids.time.clone());
-    put_str(&mut o, tags::STUDY_DESCRIPTION, VR::LO, "Synthetic RT study");
+    put_str(
+        &mut o,
+        tags::STUDY_DESCRIPTION,
+        VR::LO,
+        "Synthetic RT study",
+    );
     put_str(&mut o, tags::ACCESSION_NUMBER, VR::SH, "1");
     put_str(&mut o, tags::REFERRING_PHYSICIAN_NAME, VR::PN, "");
     put_str(&mut o, tags::MODALITY, VR::CS, modality);
-    put_str(&mut o, tags::MANUFACTURER, VR::LO, "rust-dicom-station synthetic");
+    put_str(
+        &mut o,
+        tags::MANUFACTURER,
+        VR::LO,
+        "rust-dicom-station synthetic",
+    );
     o
 }
 
@@ -209,8 +230,7 @@ fn put_pixels_u16(o: &mut InMemDicomObject, words: Vec<u16>) {
 /// Generate the synthetic study into `dir`, creating it if necessary.
 /// Returns the number of DICOM files written.
 pub fn generate(dir: &Path, params: &GenParams, progress: &Progress) -> Result<usize> {
-    std::fs::create_dir_all(dir)
-        .with_context(|| format!("create directory {}", dir.display()))?;
+    std::fs::create_dir_all(dir).with_context(|| format!("create directory {}", dir.display()))?;
     let (date, time) = today();
     let mut ids = Ids {
         study_uid: new_uid(),
@@ -284,11 +304,21 @@ fn write_ct(dir: &Path, p: &GenParams, ids: &mut Ids, progress: &Progress) -> Re
         let sop_uid = new_uid();
         ids.ct_sop_uids.push(sop_uid.clone());
         let mut o = base_dataset(ids, SOP_CT, &sop_uid, "CT");
-        put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, ids.ct_series_uid.clone());
+        put_str(
+            &mut o,
+            tags::SERIES_INSTANCE_UID,
+            VR::UI,
+            ids.ct_series_uid.clone(),
+        );
         put_is(&mut o, tags::SERIES_NUMBER, 1);
         put_str(&mut o, tags::SERIES_DESCRIPTION, VR::LO, "Synthetic CT");
         put_is(&mut o, tags::INSTANCE_NUMBER, k as i64 + 1);
-        put_str(&mut o, tags::FRAME_OF_REFERENCE_UID, VR::UI, ids.for_uid.clone());
+        put_str(
+            &mut o,
+            tags::FRAME_OF_REFERENCE_UID,
+            VR::UI,
+            ids.for_uid.clone(),
+        );
         put_str(&mut o, tags::POSITION_REFERENCE_INDICATOR, VR::LO, "");
         put_ds(&mut o, tags::IMAGE_POSITION_PATIENT, &[x0, y0, z]);
         put_ds(
@@ -306,7 +336,12 @@ fn write_ct(dir: &Path, p: &GenParams, ids: &mut Ids, progress: &Progress) -> Re
         put_us(&mut o, tags::HIGH_BIT, 15);
         put_us(&mut o, tags::PIXEL_REPRESENTATION, 1); // signed
         put_us(&mut o, tags::SAMPLES_PER_PIXEL, 1);
-        put_str(&mut o, tags::PHOTOMETRIC_INTERPRETATION, VR::CS, "MONOCHROME2");
+        put_str(
+            &mut o,
+            tags::PHOTOMETRIC_INTERPRETATION,
+            VR::CS,
+            "MONOCHROME2",
+        );
         put_ds(&mut o, tags::RESCALE_INTERCEPT, &[-1024.0]);
         put_ds(&mut o, tags::RESCALE_SLOPE, &[1.0]);
         put_str(&mut o, tags::RESCALE_TYPE, VR::LO, "HU");
@@ -356,7 +391,10 @@ fn write_rtstruct(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> 
     put_seq(
         &mut rt_ref_series,
         tags::CONTOUR_IMAGE_SEQUENCE,
-        ids.ct_sop_uids.iter().map(|u| ref_item(SOP_CT, u)).collect(),
+        ids.ct_sop_uids
+            .iter()
+            .map(|u| ref_item(SOP_CT, u))
+            .collect(),
     );
     let mut rt_ref_study = ref_item(SOP_DETACHED_STUDY, &ids.study_uid);
     put_seq(
@@ -365,7 +403,12 @@ fn write_rtstruct(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> 
         vec![rt_ref_series],
     );
     let mut ref_frame = InMemDicomObject::new_empty();
-    put_str(&mut ref_frame, tags::FRAME_OF_REFERENCE_UID, VR::UI, ids.for_uid.clone());
+    put_str(
+        &mut ref_frame,
+        tags::FRAME_OF_REFERENCE_UID,
+        VR::UI,
+        ids.for_uid.clone(),
+    );
     put_seq(
         &mut ref_frame,
         tags::RT_REFERENCED_STUDY_SEQUENCE,
@@ -425,8 +468,17 @@ fn write_rtstruct(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> 
             };
             let pts = circle_points(sx, cy + sy, r, z, 64);
             let mut co = InMemDicomObject::new_empty();
-            put_str(&mut co, tags::CONTOUR_GEOMETRIC_TYPE, VR::CS, "CLOSED_PLANAR");
-            put_is(&mut co, tags::NUMBER_OF_CONTOUR_POINTS, (pts.len() / 3) as i64);
+            put_str(
+                &mut co,
+                tags::CONTOUR_GEOMETRIC_TYPE,
+                VR::CS,
+                "CLOSED_PLANAR",
+            );
+            put_is(
+                &mut co,
+                tags::NUMBER_OF_CONTOUR_POINTS,
+                (pts.len() / 3) as i64,
+            );
             put_strs(&mut co, tags::CONTOUR_DATA, VR::DS, &pts);
             put_seq(
                 &mut co,
@@ -460,7 +512,12 @@ fn write_rtplan(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> Re
     let mut o = base_dataset(ids, SOP_RTIONPLAN, &ids.plan_uid, "RTPLAN");
     put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, new_uid());
     put_is(&mut o, tags::SERIES_NUMBER, 3);
-    put_str(&mut o, tags::FRAME_OF_REFERENCE_UID, VR::UI, ids.for_uid.clone());
+    put_str(
+        &mut o,
+        tags::FRAME_OF_REFERENCE_UID,
+        VR::UI,
+        ids.for_uid.clone(),
+    );
     put_str(
         &mut o,
         tags::RT_PLAN_LABEL,
@@ -522,7 +579,11 @@ fn write_rtplan(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> Re
         put_is(&mut b, tags::NUMBER_OF_BOLI, 0);
         put_is(&mut b, tags::NUMBER_OF_BLOCKS, 0);
         put_ds(&mut b, tags::FINAL_CUMULATIVE_METERSET_WEIGHT, &[1.0]);
-        put_is(&mut b, tags::NUMBER_OF_CONTROL_POINTS, ENERGIES.len() as i64);
+        put_is(
+            &mut b,
+            tags::NUMBER_OF_CONTROL_POINTS,
+            ENERGIES.len() as i64,
+        );
         put_is(&mut b, tags::NUMBER_OF_RANGE_SHIFTERS, 0);
         put_is(&mut b, tags::NUMBER_OF_LATERAL_SPREADING_DEVICES, 0);
         put_is(&mut b, tags::NUMBER_OF_RANGE_MODULATORS, 0);
@@ -600,7 +661,12 @@ fn write_rtdose(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> Re
     let mut o = base_dataset(ids, SOP_RTDOSE, &new_uid(), "RTDOSE");
     put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, new_uid());
     put_is(&mut o, tags::SERIES_NUMBER, 4);
-    put_str(&mut o, tags::FRAME_OF_REFERENCE_UID, VR::UI, ids.for_uid.clone());
+    put_str(
+        &mut o,
+        tags::FRAME_OF_REFERENCE_UID,
+        VR::UI,
+        ids.for_uid.clone(),
+    );
     put_ds(&mut o, tags::IMAGE_POSITION_PATIENT, &[dx0, dy0, dz0]);
     put_ds(
         &mut o,
@@ -623,7 +689,12 @@ fn write_rtdose(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> Re
     put_us(&mut o, tags::HIGH_BIT, 31);
     put_us(&mut o, tags::PIXEL_REPRESENTATION, 0);
     put_us(&mut o, tags::SAMPLES_PER_PIXEL, 1);
-    put_str(&mut o, tags::PHOTOMETRIC_INTERPRETATION, VR::CS, "MONOCHROME2");
+    put_str(
+        &mut o,
+        tags::PHOTOMETRIC_INTERPRETATION,
+        VR::CS,
+        "MONOCHROME2",
+    );
     put_str(&mut o, tags::DOSE_UNITS, VR::CS, "GY");
     put_str(&mut o, tags::DOSE_TYPE, VR::CS, "PHYSICAL");
     put_str(&mut o, tags::DOSE_SUMMATION_TYPE, VR::CS, "PLAN");
@@ -708,7 +779,12 @@ fn write_extras(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> Re
         VR::LO,
         "Synthetic spatial registration",
     );
-    put_str(&mut o, tags::FRAME_OF_REFERENCE_UID, VR::UI, ids.for_uid.clone());
+    put_str(
+        &mut o,
+        tags::FRAME_OF_REFERENCE_UID,
+        VR::UI,
+        ids.for_uid.clone(),
+    );
     put_str(&mut o, tags::CONTENT_DATE, VR::DA, ids.date.clone());
     put_str(&mut o, tags::CONTENT_TIME, VR::TM, ids.time.clone());
 
@@ -770,8 +846,18 @@ fn write_extras(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> Re
             put_is(&mut it, tags::REFERENCED_BEAM_NUMBER, num);
             put_str(&mut it, tags::BEAM_NAME, VR::LO, name);
             put_is(&mut it, tags::CURRENT_FRACTION_NUMBER, 5);
-            put_str(&mut it, tags::TREATMENT_TERMINATION_STATUS, VR::CS, "NORMAL");
-            put_str(&mut it, tags::TREATMENT_VERIFICATION_STATUS, VR::CS, "VERIFIED");
+            put_str(
+                &mut it,
+                tags::TREATMENT_TERMINATION_STATUS,
+                VR::CS,
+                "NORMAL",
+            );
+            put_str(
+                &mut it,
+                tags::TREATMENT_VERIFICATION_STATUS,
+                VR::CS,
+                "VERIFIED",
+            );
             put_ds(&mut it, tags::SPECIFIED_PRIMARY_METERSET, &[spec]);
             put_ds(&mut it, tags::DELIVERED_PRIMARY_METERSET, &[deliv]);
             put_str(&mut it, tags::TREATMENT_DELIVERY_TYPE, VR::CS, "TREATMENT");
@@ -779,11 +865,7 @@ fn write_extras(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> Re
         })
         .collect();
     put_seq(&mut o, tags::TREATMENT_SESSION_ION_BEAM_SEQUENCE, recs);
-    write_object(
-        o,
-        SOP_RT_ION_BEAMS_RECORD,
-        &dir.join("RT_record_synth.dcm"),
-    )?;
+    write_object(o, SOP_RT_ION_BEAMS_RECORD, &dir.join("RT_record_synth.dcm"))?;
 
     Ok(4)
 }

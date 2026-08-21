@@ -71,7 +71,9 @@ pub fn run_install(payload: Payload, opts: Options, autostart: bool) -> Result<(
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
     let payload_size = payload.total_size().unwrap_or(0);
     let mut app = SetupApp::new(
-        Job::Install { payload: Arc::new(payload) },
+        Job::Install {
+            payload: Arc::new(payload),
+        },
         Screen::Welcome,
         opts,
         version,
@@ -91,7 +93,9 @@ pub fn run_uninstall(target: Target) -> Result<()> {
     opts.models_dir = target.manifest.models_dir.clone();
     let version = target.manifest.version.clone();
     let app = SetupApp::new(
-        Job::Uninstall { target: Arc::new(target) },
+        Job::Uninstall {
+            target: Arc::new(target),
+        },
         Screen::ConfirmUninstall,
         opts,
         version,
@@ -110,10 +114,14 @@ fn launch(app: SetupApp, title: &str) -> Result<()> {
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
-    eframe::run_native(title, options, Box::new(|cc| {
-        cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
-        Ok(Box::new(app))
-    }))
+    eframe::run_native(
+        title,
+        options,
+        Box::new(|cc| {
+            cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
+            Ok(Box::new(app))
+        }),
+    )
     .map_err(|e| anyhow::anyhow!("could not open the installer window: {e}"))
 }
 
@@ -160,8 +168,12 @@ impl SetupApp {
         let opts = self.opts.clone();
         let remove_models = self.remove_models;
         let job = match &self.job {
-            Job::Install { payload } => Job::Install { payload: payload.clone() },
-            Job::Uninstall { target } => Job::Uninstall { target: target.clone() },
+            Job::Install { payload } => Job::Install {
+                payload: payload.clone(),
+            },
+            Job::Uninstall { target } => Job::Uninstall {
+                target: target.clone(),
+            },
         };
         std::thread::spawn(move || {
             let sink = move |ev: Event| {
@@ -229,8 +241,10 @@ impl eframe::App for SetupApp {
 
 impl SetupApp {
     fn welcome(&mut self, ui: &mut egui::Ui) {
-        ui.label("This will install the viewer, its Start-menu entry and, optionally, the \
-                  auto-segmentation model weights.");
+        ui.label(
+            "This will install the viewer, its Start-menu entry and, optionally, the \
+                  auto-segmentation model weights.",
+        );
         ui.add_space(6.0);
         if let Some(text) = &self.license {
             ui.label(RichText::new("License").strong());
@@ -283,7 +297,10 @@ impl SetupApp {
             ui.horizontal(|ui| {
                 let w = ui.available_width() - 90.0;
                 if ui
-                    .add_sized([w.max(200.0), 22.0], egui::TextEdit::singleline(&mut self.dir_text))
+                    .add_sized(
+                        [w.max(200.0), 22.0],
+                        egui::TextEdit::singleline(&mut self.dir_text),
+                    )
                     .changed()
                 {
                     self.opts.set_dir(PathBuf::from(self.dir_text.trim()));
@@ -474,7 +491,9 @@ impl SetupApp {
     }
 
     fn confirm_uninstall(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let Job::Uninstall { target } = &self.job else { return };
+        let Job::Uninstall { target } = &self.job else {
+            return;
+        };
         ui.label(format!(
             "This removes {APP_NAME} from {}.",
             target.manifest.install_dir.display()

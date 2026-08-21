@@ -177,13 +177,8 @@ pub fn class_color(label: u8) -> [u8; 3] {
         n if n.starts_with("vertebrae_") || n == "sacrum" => [226, 202, 134],
         n if n.starts_with("rib_") => [253, 232, 158],
         n if n.contains("artery") || n.contains("trunk") => [216, 101, 79],
-        n if n.contains("vein") || n.contains("vena") || n.contains("atrial") => {
-            [0, 151, 206]
-        }
-        n if n.contains("gluteus")
-            || n.contains("autochthon")
-            || n.contains("iliopsoas") =>
-        {
+        n if n.contains("vein") || n.contains("vena") || n.contains("atrial") => [0, 151, 206],
+        n if n.contains("gluteus") || n.contains("autochthon") || n.contains("iliopsoas") => {
             [192, 104, 88]
         }
         n if n.contains("femur")

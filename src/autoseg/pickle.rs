@@ -235,9 +235,8 @@ impl<'a> Machine<'a> {
                     (&items[0], &items[1], &items[2])
                 {
                     if tag.as_ref() == "storage" && m.as_ref() == "torch" {
-                        let dtype = Dtype::from_storage_class(cls).with_context(|| {
-                            format!("unsupported torch storage class {cls}")
-                        })?;
+                        let dtype = Dtype::from_storage_class(cls)
+                            .with_context(|| format!("unsupported torch storage class {cls}"))?;
                         let numel = items[4].as_usize()?;
                         return Ok(Value::Storage(key.clone(), dtype, numel));
                     }
@@ -264,7 +263,7 @@ impl<'a> Machine<'a> {
                     .push(Value::List(Rc::new(RefCell::new(Vec::new())))),
                 b')' => self.stack.push(Value::Tuple(Rc::new(Vec::new()))),
                 b'N' => self.stack.push(Value::None),
-                0x88 => self.stack.push(Value::Bool(true)),  // NEWTRUE
+                0x88 => self.stack.push(Value::Bool(true)), // NEWTRUE
                 0x89 => self.stack.push(Value::Bool(false)), // NEWFALSE
                 b'J' => {
                     let v = self.i32le()?;
@@ -330,8 +329,10 @@ impl<'a> Machine<'a> {
                     // GLOBAL: two newline-terminated strings
                     let module = self.line()?.to_owned();
                     let name = self.line()?.to_owned();
-                    self.stack
-                        .push(Value::Global(Rc::from(module.as_str()), Rc::from(name.as_str())));
+                    self.stack.push(Value::Global(
+                        Rc::from(module.as_str()),
+                        Rc::from(name.as_str()),
+                    ));
                 }
                 0x93 => {
                     // STACK_GLOBAL
@@ -349,7 +350,11 @@ impl<'a> Machine<'a> {
                 }
                 b'r' => {
                     let id = self.u32le()?;
-                    let top = self.stack.last().context("LONG_BINPUT: empty stack")?.clone();
+                    let top = self
+                        .stack
+                        .last()
+                        .context("LONG_BINPUT: empty stack")?
+                        .clone();
                     self.memo.insert(id, top);
                 }
                 0x94 => {

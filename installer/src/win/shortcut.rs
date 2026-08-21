@@ -6,8 +6,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use windows::core::{Interface, HSTRING, PCWSTR};
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER,
-    COINIT_APARTMENTTHREADED,
+    CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
 use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
 
@@ -32,8 +31,7 @@ pub fn init_com() {
 pub fn create(s: &Shortcut) -> Result<()> {
     init_com();
     if let Some(parent) = s.link.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create {}", parent.display()))?;
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     unsafe {
         let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)
@@ -42,17 +40,20 @@ pub fn create(s: &Shortcut) -> Result<()> {
         link.SetPath(PCWSTR(target.as_ptr())).context("SetPath")?;
         if !s.args.is_empty() {
             let args = HSTRING::from(s.args);
-            link.SetArguments(PCWSTR(args.as_ptr())).context("SetArguments")?;
+            link.SetArguments(PCWSTR(args.as_ptr()))
+                .context("SetArguments")?;
         }
         let dir = HSTRING::from(s.working_dir.as_os_str());
         link.SetWorkingDirectory(PCWSTR(dir.as_ptr()))
             .context("SetWorkingDirectory")?;
         if !s.description.is_empty() {
             let desc = HSTRING::from(s.description);
-            link.SetDescription(PCWSTR(desc.as_ptr())).context("SetDescription")?;
+            link.SetDescription(PCWSTR(desc.as_ptr()))
+                .context("SetDescription")?;
         }
         // The viewer carries no separate icon resource; use the executable's.
-        link.SetIconLocation(PCWSTR(target.as_ptr()), 0).context("SetIconLocation")?;
+        link.SetIconLocation(PCWSTR(target.as_ptr()), 0)
+            .context("SetIconLocation")?;
         let persist: IPersistFile = link.cast().context("IPersistFile")?;
         let path = HSTRING::from(s.link.as_os_str());
         persist

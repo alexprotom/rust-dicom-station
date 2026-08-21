@@ -28,7 +28,11 @@ fn main() -> eframe::Result<()> {
         "rust-dicom-station",
         options,
         Box::new(move |cc| {
-            Ok(Box::new(app::ViewerApp::new(cc, initial_path, initial_path_b)))
+            Ok(Box::new(app::ViewerApp::new(
+                cc,
+                initial_path,
+                initial_path_b,
+            )))
         }),
     )
 }

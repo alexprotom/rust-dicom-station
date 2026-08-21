@@ -38,7 +38,11 @@ fn simulate_and_export_roundtrip() {
     let t = SimTransform::new(&params, center);
 
     // Transform inverse must round-trip.
-    for p in [Vec3::ZERO, Vec3::new(30.0, -20.0, 15.0), Vec3::new(-50.0, 40.0, -25.0)] {
+    for p in [
+        Vec3::ZERO,
+        Vec3::new(30.0, -20.0, 15.0),
+        Vec3::new(-50.0, 40.0, -25.0),
+    ] {
         let rt = (t.unmap(t.map(p)) - p).length();
         assert!(rt < 1e-3, "sim transform inverse round-trip {rt}");
     }
@@ -49,7 +53,10 @@ fn simulate_and_export_roundtrip() {
     // The target center (HU 100 at patient origin in the source) must now be
     // at T(0): sample the simulated volume there.
     let target_new = t.map(Vec3::ZERO);
-    let hu = sim.volume.sample_patient(target_new).expect("inside volume");
+    let hu = sim
+        .volume
+        .sample_patient(target_new)
+        .expect("inside volume");
     assert!((hu - 100.0).abs() < 2.0, "HU at mapped target center: {hu}");
 
     // Contours were mapped exactly.
@@ -58,7 +65,10 @@ fn simulate_and_export_roundtrip() {
     assert_eq!(ss_src.rois.len(), ss_sim.rois.len());
     let p_src = ss_src.rois[0].contours[0].points[0];
     let p_sim = ss_sim.rois[0].contours[0].points[0];
-    assert!((p_sim - t.map(p_src)).length() < 1e-9, "contour point mapping");
+    assert!(
+        (p_sim - t.map(p_src)).length() < 1e-9,
+        "contour point mapping"
+    );
 
     // Dose peak moved with the anatomy: D_new(T(0)) ≈ D_old(0) = 60 Gy.
     // (±2 Gy: the peak lands between 4 mm dose-grid points, and the value
@@ -69,7 +79,10 @@ fn simulate_and_export_roundtrip() {
     // Isocenter mapped.
     let iso_src = src.plans[0].beams[0].isocenter.unwrap();
     let iso_sim = sim.plans[0].beams[0].isocenter.unwrap();
-    assert!((iso_sim - t.map(iso_src)).length() < 1e-9, "isocenter mapping");
+    assert!(
+        (iso_sim - t.map(iso_src)).length() < 1e-9,
+        "isocenter mapping"
+    );
 
     // ---- Export → reload ---------------------------------------------------
     let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/sim_export_test");
@@ -91,15 +104,24 @@ fn simulate_and_export_roundtrip() {
     field(&mut params, "PatientName").value = "Anon^Export".into();
     field(&mut params, "StudyDescription").enabled = false;
     let n = dicom_export::export_study(&sim, &out, &params, &progress).expect("export succeeds");
-    assert!(n >= sim.volume.dims[2] + 3, "expected CT slices + RS + RD + RP, got {n}");
+    assert!(
+        n >= sim.volume.dims[2] + 3,
+        "expected CT slices + RS + RD + RP, got {n}"
+    );
 
     let re = loader::load_directory(&out, &progress).expect("exported study reloads");
     assert_eq!(re.volume.dims, sim.volume.dims, "reloaded dims");
     assert!((re.volume.spacing[2] - sim.volume.spacing[2]).abs() < 1e-3);
 
     // Same HU at the mapped target center after the DICOM round trip.
-    let hu_re = re.volume.sample_patient(target_new).expect("inside reloaded volume");
-    assert!((hu_re - 100.0).abs() < 2.0, "reloaded HU at mapped target: {hu_re}");
+    let hu_re = re
+        .volume
+        .sample_patient(target_new)
+        .expect("inside reloaded volume");
+    assert!(
+        (hu_re - 100.0).abs() < 2.0,
+        "reloaded HU at mapped target: {hu_re}"
+    );
 
     // Structures round-trip: same count, contour points within DS precision.
     let ss_re = re.structure_sets.first().expect("RTSTRUCT reloads");
@@ -109,13 +131,22 @@ fn simulate_and_export_roundtrip() {
     assert_eq!(target_roi_re.contours.len(), target_roi_sim.contours.len());
     let a = target_roi_sim.contours[0].points[0];
     let b = target_roi_re.contours[0].points[0];
-    assert!((a - b).length() < 1e-3, "contour DS round-trip error {}", (a - b).length());
+    assert!(
+        (a - b).length() < 1e-3,
+        "contour DS round-trip error {}",
+        (a - b).length()
+    );
     assert_eq!(target_roi_re.roi_type, "PTV");
 
     // Dose round-trip (16-bit quantization ⇒ ~1e-3 relative tolerance).
     assert_eq!(re.doses.len(), 1);
-    let d_re = re.doses[0].sample(target_new).expect("reloaded dose sample");
-    assert!((d_re - d_new).abs() < 0.05, "dose round-trip {d_re} vs {d_new}");
+    let d_re = re.doses[0]
+        .sample(target_new)
+        .expect("reloaded dose sample");
+    assert!(
+        (d_re - d_new).abs() < 0.05,
+        "dose round-trip {d_re} vs {d_new}"
+    );
 
     // Plan round-trip.
     assert_eq!(re.plans.len(), 1);
@@ -136,11 +167,12 @@ fn simulate_and_export_roundtrip() {
     );
 
     // Frame of reference preserved so the pair stays comparable.
-    assert_eq!(re.volume.frame_of_reference_uid, sim.volume.frame_of_reference_uid);
-
-    eprintln!(
-        "round-trip OK: {n} files, HU {hu_re:.1}, dose {d_re:.2} Gy at mapped target"
+    assert_eq!(
+        re.volume.frame_of_reference_uid,
+        sim.volume.frame_of_reference_uid
     );
+
+    eprintln!("round-trip OK: {n} files, HU {hu_re:.1}, dose {d_re:.2} Gy at mapped target");
     let _ = std::fs::remove_dir_all(&out);
     let _ = std::fs::remove_dir_all(&dir);
 }

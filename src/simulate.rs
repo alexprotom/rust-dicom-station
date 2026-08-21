@@ -72,8 +72,7 @@ impl SimParams {
     }
 
     pub fn has_bump(&self) -> bool {
-        self.bump_amp.iter().any(|a| a.abs() > 1e-9)
-            && self.bump_sigma > 1e-6
+        self.bump_amp.iter().any(|a| a.abs() > 1e-9) && self.bump_sigma > 1e-6
     }
 }
 
@@ -189,10 +188,7 @@ pub fn generate_transformed_study(
             }
             (lo, hi)
         })
-        .reduce(
-            || (i16::MAX, i16::MIN),
-            |a, b| (a.0.min(b.0), a.1.max(b.1)),
-        );
+        .reduce(|| (i16::MAX, i16::MIN), |a, b| (a.0.min(b.0), a.1.max(b.1)));
     let volume = Volume {
         data,
         dims: vol.dims,
@@ -302,7 +298,11 @@ pub fn generate_transformed_study(
     let mut meta = src.meta.clone();
     meta.study_description = format!(
         "{} [simulated: {}]",
-        if meta.study_description.is_empty() { "Study" } else { &meta.study_description },
+        if meta.study_description.is_empty() {
+            "Study"
+        } else {
+            &meta.study_description
+        },
         params.describe()
     );
 
@@ -310,7 +310,10 @@ pub fn generate_transformed_study(
     LoadedStudy {
         meta,
         series: vec![SeriesInfo {
-            uid: format!("sim.{}", src.series.first().map(|s| s.uid.as_str()).unwrap_or("0")),
+            uid: format!(
+                "sim.{}",
+                src.series.first().map(|s| s.uid.as_str()).unwrap_or("0")
+            ),
             modality: src
                 .series
                 .first()
@@ -342,7 +345,10 @@ pub fn generate_transformed_study(
         planar_images: src.planar_images.clone(),
         registrations: src.registrations.clone(),
         treat_records: src.treat_records.clone(),
-        warnings: vec![format!("Simulated dataset — ground truth: {}", params.describe())],
+        warnings: vec![format!(
+            "Simulated dataset — ground truth: {}",
+            params.describe()
+        )],
         default_window: src.default_window,
     }
 }

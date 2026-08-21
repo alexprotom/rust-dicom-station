@@ -8,7 +8,11 @@ pub struct Vec3 {
 }
 
 impl Vec3 {
-    pub const ZERO: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
+    pub const ZERO: Vec3 = Vec3 {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
 
     #[inline]
     pub fn new(x: f64, y: f64, z: f64) -> Self {
@@ -17,7 +21,11 @@ impl Vec3 {
 
     #[inline]
     pub fn from_slice(s: &[f64]) -> Self {
-        Vec3 { x: s[0], y: s[1], z: s[2] }
+        Vec3 {
+            x: s[0],
+            y: s[1],
+            z: s[2],
+        }
     }
 
     #[inline]
@@ -43,7 +51,11 @@ impl Vec3 {
     pub fn normalized(self) -> Vec3 {
         let l = self.length();
         if l > 1e-12 {
-            Vec3 { x: self.x / l, y: self.y / l, z: self.z / l }
+            Vec3 {
+                x: self.x / l,
+                y: self.y / l,
+                z: self.z / l,
+            }
         } else {
             Vec3::ZERO
         }
@@ -81,9 +93,17 @@ pub fn direction_label(v: Vec3) -> &'static str {
     let ay = v.y.abs();
     let az = v.z.abs();
     if ax >= ay && ax >= az {
-        if v.x >= 0.0 { "L" } else { "R" }
+        if v.x >= 0.0 {
+            "L"
+        } else {
+            "R"
+        }
     } else if ay >= ax && ay >= az {
-        if v.y >= 0.0 { "P" } else { "A" }
+        if v.y >= 0.0 {
+            "P"
+        } else {
+            "A"
+        }
     } else if v.z >= 0.0 {
         "S"
     } else {
