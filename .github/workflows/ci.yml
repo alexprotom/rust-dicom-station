@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # The viewer itself: formatting, lints, the full test suite, and a build of
+  # the CPU-only configuration so `--no-default-features` cannot silently rot.
+  viewer:
+    name: viewer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # eframe/winit need X11, Wayland and xkbcommon headers to build on Linux.
+      # Windows runners need nothing extra.
+      - name: Install Linux GUI build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev \
+            libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Formatting and lints are platform-independent — check them once.
+      - name: cargo fmt --check
+        if: runner.os == 'Linux'
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test
+
+      # The GPU inference backend is behind the default `gpu` feature; this is
+      # the pure-CPU build the README documents.
+      - name: cargo check (CPU only)
+        run: cargo check --no-default-features --all-targets
+
+  # The Windows installer is a separate workspace and is never built by
+  # `cargo build` in the repository root, so it needs its own job. It is
+  # Windows-only by construction (`compile_error!` on other targets).
+  installer:
+    name: installer (windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: installer
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: installer
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      # Default features include `prefetch-models`, which pulls the viewer in
+      # as a path dependency for the weight-download code.
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo build (standalone, no model prefetch)
+        run: cargo build --release --no-default-features
+
+      - name: cargo build (default)
+        run: cargo build --release
