@@ -30,8 +30,21 @@ src/
   main.rs          entry point (eframe/wgpu window)
   lib.rs           library root — every module is public, so the
                    integration tests drive the same code as the GUI
-  app.rs           egui application: layout, panels, interaction,
-                   background-job orchestration, dialogs
+  app/             egui application, split by concern; every submodule is a
+                   further `impl ViewerApp` block, so the struct and all its
+                   state stay in one place while the behaviour is grouped:
+    mod.rs           ViewerApp and every type it holds, construction,
+                     the job plumbing, and the per-frame driver
+    theme.rs         theme-dependent colors
+    chrome.rs        menu bar, toolbar, status bar
+    panels.rs        side panel and its per-dataset sections
+    views.rs         central MPR viewports, interaction, texture caches
+    d3.rs            live 3D structure window
+    planar.rs        floating DX/CR/RTIMAGE viewers
+    dialogs.rs       auto-segmentation, generator, anonymizer, export
+    jobs.rs          the operations that spawn a background job
+    tree.rs          dataset-tree copy / move / remove
+    seg.rs           interactive segmentation state machine
   loader.rs        directory scan, classification, parallel volume
                    loading, dataset merging
   volume.rs        3D volume, patient-space geometry, slice extraction
@@ -69,6 +82,11 @@ examples/          autoseg_cli, autoseg_probe (headless dev tools)
 ```
 
 ## UI architecture
+
+`ViewerApp` is defined in `app/mod.rs` together with every type it holds;
+the sibling modules only add `impl ViewerApp` blocks. Keeping the
+definitions in the parent module is what lets each child reach the struct's
+private fields without widening any visibility beyond `pub(super)`.
 
 `ViewerApp` owns two `StudySlot`s (datasets A and B). Each slot holds the
 loaded study (series list, volume, structure sets, doses, plans, planar
