@@ -11,31 +11,11 @@
 
 use rayon::prelude::*;
 
-/// A dense f32 activation volume `[c][d][h][w]`.
-#[derive(Clone)]
-pub struct Act {
-    pub c: usize,
-    pub d: usize,
-    pub h: usize,
-    pub w: usize,
-    pub data: Vec<f32>,
-}
-
-impl Act {
-    pub fn zeros(c: usize, d: usize, h: usize, w: usize) -> Act {
-        Act {
-            c,
-            d,
-            h,
-            w,
-            data: vec![0.0; c * d * h * w],
-        }
-    }
-    #[inline]
-    pub fn spatial(&self) -> usize {
-        self.d * self.h * self.w
-    }
-}
+// The activation volume and the transposed convolution are shared with the
+// SegVol mask decoder, so they live in `nn`; re-exported here because this
+// is where the nnU-Net code has always reached for them.
+use crate::nn::tensor::SendPtr;
+pub use crate::nn::tensor::{conv_transpose3d_2x, Act};
 
 #[inline]
 fn conv_out(len: usize, k: usize, s: usize) -> usize {
@@ -157,99 +137,6 @@ pub fn conv3d(
         }
     });
     out
-}
-
-/// Transposed 3D convolution with kernel = stride = 2 (the only case the
-/// nnU-Net decoder uses): every input voxel projects to a disjoint 2×2×2
-/// output block. `weight`: `[cin, cout, 2, 2, 2]`.
-pub fn conv_transpose3d_2x(x: &Act, weight: &[f32], bias: &[f32], cout: usize) -> Act {
-    let (cin, d, h, w) = (x.c, x.d, x.h, x.w);
-    debug_assert_eq!(weight.len(), cin * cout * 8);
-    let (od, oh, ow) = (d * 2, h * 2, w * 2);
-    // Repack weight as [cout*8, cin] for a row-major GEMM.
-    let mut wt = vec![0f32; cout * 8 * cin];
-    for ci in 0..cin {
-        for co in 0..cout {
-            for t in 0..8 {
-                wt[(co * 8 + t) * cin + ci] = weight[(ci * cout + co) * 8 + t];
-            }
-        }
-    }
-    let hw = h * w;
-    let mut out = Act::zeros(cout, od, oh, ow);
-    let ohw = oh * ow;
-    let out_ptr = SendPtr(out.data.as_mut_ptr());
-    let od_stride = od * ohw; // per-channel stride in the output
-                              // one input slice z → output slices 2z, 2z+1 (disjoint across the loop)
-    (0..d).into_par_iter().for_each(|z| {
-        // gather input slice as [cin, hw]
-        let mut xin = vec![0f32; cin * hw];
-        for c in 0..cin {
-            let src = &x.data[c * d * hw + z * hw..c * d * hw + (z + 1) * hw];
-            xin[c * hw..(c + 1) * hw].copy_from_slice(src);
-        }
-        // GEMM: [cout*8, cin] × [cin, hw] → [cout*8, hw]
-        let mut tmp = vec![0f32; cout * 8 * hw];
-        unsafe {
-            gemm::gemm(
-                cout * 8,
-                hw,
-                cin,
-                tmp.as_mut_ptr(),
-                1,
-                hw as isize,
-                false,
-                wt.as_ptr(),
-                1,
-                cin as isize,
-                xin.as_ptr(),
-                1,
-                hw as isize,
-                0.0f32,
-                1.0f32,
-                false,
-                false,
-                false,
-                gemm::Parallelism::None,
-            );
-        }
-        // scatter: tmp[(co*8 + (dz*4+dy*2+dx)) * hw + y*w + x]
-        //   → out[co][2z+dz][2y+dy][2x+dx]
-        for co in 0..cout {
-            let bv = bias[co];
-            for dz in 0..2usize {
-                let obase = co * od_stride + (2 * z + dz) * ohw;
-                for dy in 0..2usize {
-                    for dx in 0..2usize {
-                        let t = dz * 4 + dy * 2 + dx;
-                        let src = &tmp[(co * 8 + t) * hw..(co * 8 + t + 1) * hw];
-                        for y in 0..h {
-                            let orow = obase + (2 * y + dy) * ow + dx;
-                            let dst = unsafe {
-                                std::slice::from_raw_parts_mut(out_ptr.get().add(orow), 2 * w - 1)
-                            };
-                            let srow = &src[y * w..(y + 1) * w];
-                            for (xi, sv) in srow.iter().enumerate() {
-                                dst[2 * xi] = sv + bv;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    });
-    out
-}
-
-/// Wrapper making a raw pointer Send/Sync for disjoint-slice parallel writes.
-struct SendPtr(*mut f32);
-unsafe impl Send for SendPtr {}
-unsafe impl Sync for SendPtr {}
-impl SendPtr {
-    /// Method (not field) access, so closures capture the whole wrapper.
-    fn get(&self) -> *mut f32 {
-        self.0
-    }
 }
 
 /// InstanceNorm3d (affine, eps 1e-5, biased variance) fused with
@@ -395,41 +282,6 @@ mod tests {
         let slow = conv3d_naive(&x, &w, &b, 5, [1, 1, 1], [1, 1, 1]);
         for (a, b) in fast.data.iter().zip(slow.data.iter()) {
             assert!((a - b).abs() < 1e-4);
-        }
-    }
-
-    #[test]
-    fn transpose_conv_matches_definition() {
-        let x = rand_act(3, 3, 4, 2, 5);
-        let mut s = 9u64;
-        let w: Vec<f32> = (0..3 * 2 * 8).map(|_| rngf(&mut s)).collect();
-        let b: Vec<f32> = (0..2).map(|_| rngf(&mut s)).collect();
-        let y = conv_transpose3d_2x(&x, &w, &b, 2);
-        assert_eq!((y.c, y.d, y.h, y.w), (2, 6, 8, 4));
-        // definition: y[co, 2z+dz, 2y+dy, 2x+dx] = b + Σ_ci x[ci,z,y,x]·w[ci,co,dz,dy,dx]
-        for co in 0..2 {
-            for z in 0..3 {
-                for yy in 0..4 {
-                    for xx in 0..2 {
-                        for dz in 0..2 {
-                            for dy in 0..2 {
-                                for dx in 0..2 {
-                                    let mut acc = b[co];
-                                    for ci in 0..3 {
-                                        let xv = x.data[((ci * 3 + z) * 4 + yy) * 2 + xx];
-                                        let wv = w[((ci * 2 + co) * 8) + dz * 4 + dy * 2 + dx];
-                                        acc += xv * wv;
-                                    }
-                                    let got = y.data[((co * 6 + 2 * z + dz) * 8 + 2 * yy + dy) * 4
-                                        + 2 * xx
-                                        + dx];
-                                    assert!((got - acc).abs() < 1e-4);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 

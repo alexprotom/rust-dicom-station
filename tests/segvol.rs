@@ -418,3 +418,91 @@ fn the_real_checkpoint_matches_the_recorded_inventory() {
         assert_eq!(found.1.dtype, r.dtype, "{}", r.name);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Network assembly and forward passes.
+//
+// The recorded inventory gives the exact published key names and shapes, so a
+// checkpoint with the right structure and arbitrary values can be synthesized
+// here. That exercises the whole assembly path -- every key the builders ask
+// for, every shape assertion -- and a real forward pass, without the 724 MB
+// download. Only the numbers are fake; the architecture is not.
+
+use rust_dicom_station::nn::cache::WTensor;
+use rust_dicom_station::segvol::config::*;
+use rust_dicom_station::segvol::params::Params;
+use rust_dicom_station::segvol::vit::Vit;
+
+/// Deterministic small values: large enough to exercise the arithmetic,
+/// small enough that twelve residual blocks do not overflow.
+fn fill(seed: u64, n: usize) -> Vec<f32> {
+    let mut s = seed | 1;
+    (0..n)
+        .map(|_| {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            (((s >> 11) as f64 / (1u64 << 53) as f64) as f32 - 0.5) * 0.05
+        })
+        .collect()
+}
+
+/// Synthesize a checkpoint containing exactly the recorded tensors whose keys
+/// match `keep`.
+fn synthetic(keep: impl Fn(&str) -> bool) -> Params {
+    let mut m = std::collections::HashMap::new();
+    for (i, r) in recorded().iter().enumerate() {
+        let key = layout::normalize_key(&r.name);
+        if !keep(key) {
+            continue;
+        }
+        let n: usize = r.shape.iter().product();
+        m.insert(
+            key.to_string(),
+            WTensor {
+                shape: r.shape.clone(),
+                data: fill(i as u64 + 1, n),
+            },
+        );
+    }
+    Params::new(m)
+}
+
+#[test]
+fn the_image_encoder_assembles_from_the_published_key_names() {
+    let p = synthetic(|k| k.starts_with("image_encoder."));
+    Vit::build(&p).expect("image encoder");
+}
+
+#[test]
+fn assembly_rejects_a_checkpoint_with_a_qkv_bias() {
+    // MONAI builds the fused qkv with bias=False. A checkpoint that has one
+    // is a different network and must be refused, not quietly accommodated.
+    let mut m = std::collections::HashMap::new();
+    for r in recorded() {
+        let key = layout::normalize_key(&r.name).to_string();
+        if !key.starts_with("image_encoder.") {
+            continue;
+        }
+        let n: usize = r.shape.iter().product();
+        m.insert(
+            key,
+            WTensor {
+                shape: r.shape.clone(),
+                data: vec![0.0; n],
+            },
+        );
+    }
+    m.insert(
+        "image_encoder.blocks.0.attn.qkv.bias".to_string(),
+        WTensor {
+            shape: vec![3 * EMBED],
+            data: vec![0.0; 3 * EMBED],
+        },
+    );
+    let e = Vit::build(&Params::new(m))
+        .map(|_| ())
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("bias=False"), "{e}");
+}

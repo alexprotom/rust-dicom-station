@@ -16,9 +16,14 @@
 //! volume resized down to that shape, then again as a sliding window over a
 //! crop around whatever the first pass found.
 //!
-//! Status: the weight-acquisition layer is in place and the published
-//! checkpoint's layout is recorded in [`layout`], verified against the real
-//! file. The network itself is being built up module by module.
+//! Status: the image encoder ([`vit`]) is implemented against the checkpoint
+//! layout recorded in [`layout`] and verified against the real file. Still to
+//! come: the prompt encoder and mask decoder, the CLIP text tower and
+//! tokenizer, the preprocessing and two-pass inference pipeline, the GPU
+//! backend, and the interaction.
 
+pub mod config;
 pub mod layout;
+pub mod params;
+pub mod vit;
 pub mod weights;

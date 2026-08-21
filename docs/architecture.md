@@ -71,12 +71,22 @@ src/
     pickle.rs        native PyTorch checkpoint (.pth) reader
     cache.rs         download, safetensors weight cache, progress/cancel
     half.rs          binary16 <-> binary32 conversion
+    tensor.rs        Mat [rows, cols] and Act [c,d,h,w]; transposed conv
+    linalg.rs        gemm-backed linear/matmul, layer norm, softmax,
+                     GELU / ReLU / QuickGELU
+    attention.rs     multi-head attention, optionally causally masked
   segvol/          promptable segmentation (pure-Rust SegVol) — box, point
                    and text prompts, for the structures a fixed-class model
                    cannot cover
     weights.rs       checkpoint acquisition and licensing notes
     layout.rs        the published checkpoint's tensor layout and the
                      checks that verify a file really is that model
+    config.rs        the network's fixed dimensions
+    params.rs        shape-checked access to the checkpoint's tensors
+    vit.rs           image encoder (MONAI 3-D ViT, 12 blocks, 2048 tokens)
+    prompt.rs        prompt encoder: box / point / text -> sparse + dense
+    decoder.rs       two-way transformer, upscaling, mask hypernetworks
+    net.rs           assembly and the single-window forward pass
   autoseg/         automatic segmentation (pure-Rust TotalSegmentator)
     mod.rs           public API, engine selection, progress/cancel
     classes.rs       117-class table, sub-model maps, organ colors
@@ -186,9 +196,11 @@ code paths the GUI uses, with no external data or tooling:
   nnU-Net/scipy reference values; an `#[ignore]`d end-to-end test against
   the real 3 mm model;
 * **segvol** — the published checkpoint's 475-tensor inventory, recorded in
-  `tests/data/segvol-tensors.csv` and asserted module by module, so the
-  network can be built against the exact key names and shapes without the
-  724 MB download; an `#[ignore]`d test checks the real file.
+  `tests/data/segvol-tensors.csv` and asserted module by module. The same
+  fixture synthesizes a checkpoint with the real key names and shapes, so
+  the network assembles and runs a genuine forward pass in CI without the
+  724 MB download; `#[ignore]`d tests cover the real file and the full
+  181 M-parameter image-encoder pass.
 
 Beyond the automated tests, the auto-segmentation implementation was
 validated against the reference implementation directly — exact

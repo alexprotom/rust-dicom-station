@@ -8,8 +8,17 @@
 //! convert to `safetensors`, load from that cache ever after. No Python, no
 //! libtorch, no ONNX Runtime.
 //!
+//! Alongside the loading machinery are the dense kernels a transformer needs:
+//! [`tensor`] holds the two concrete shapes, [`linalg`] the matrix multiply,
+//! normalizations and activations, and [`attention`] the one attention
+//! routine every part of the network shares. Convolutions specific to a
+//! U-Net remain in [`crate::autoseg::cpu`].
+//!
 //! [`autoseg`]: crate::autoseg
 
+pub mod attention;
 pub mod cache;
 pub mod half;
+pub mod linalg;
 pub mod pickle;
+pub mod tensor;
