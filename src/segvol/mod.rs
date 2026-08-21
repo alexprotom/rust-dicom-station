@@ -16,14 +16,17 @@
 //! volume resized down to that shape, then again as a sliding window over a
 //! crop around whatever the first pass found.
 //!
-//! Status: the image encoder ([`vit`]) is implemented against the checkpoint
-//! layout recorded in [`layout`] and verified against the real file. Still to
-//! come: the prompt encoder and mask decoder, the CLIP text tower and
-//! tokenizer, the preprocessing and two-pass inference pipeline, the GPU
-//! backend, and the interaction.
+//! Status: the image encoder ([`vit`]), prompt encoder ([`prompt`]) and mask
+//! decoder ([`decoder`]) are implemented and assembled by [`net`], against
+//! the checkpoint layout recorded in [`layout`] and verified against the real
+//! file. Still to come: the CLIP text tower and tokenizer, the preprocessing
+//! and two-pass inference pipeline, the GPU backend, and the interaction.
 
 pub mod config;
+pub mod decoder;
 pub mod layout;
+pub mod net;
 pub mod params;
+pub mod prompt;
 pub mod vit;
 pub mod weights;

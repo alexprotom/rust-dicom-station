@@ -431,7 +431,8 @@ fn the_real_checkpoint_matches_the_recorded_inventory() {
 use rust_dicom_station::nn::cache::WTensor;
 use rust_dicom_station::segvol::config::*;
 use rust_dicom_station::segvol::params::Params;
-use rust_dicom_station::segvol::vit::Vit;
+use rust_dicom_station::segvol::prompt::{Point, PromptEncoder};
+use rust_dicom_station::segvol::{decoder::MaskDecoder, net::SegVolNet, vit::Vit};
 
 /// Deterministic small values: large enough to exercise the arithmetic,
 /// small enough that twelve residual blocks do not overflow.
@@ -466,6 +467,85 @@ fn synthetic(keep: impl Fn(&str) -> bool) -> Params {
         );
     }
     Params::new(m)
+}
+
+#[test]
+fn the_prompt_encoder_and_mask_decoder_assemble_and_run() {
+    // Everything except the image encoder and the text tower: the prompt
+    // encoder, the depth-2 two-way transformer, the (C,D,H,W) LayerNorm, both
+    // transposed convolutions, the four hypernetworks and the IoU head.
+    let p = synthetic(|k| k.starts_with("prompt_encoder.") || k.starts_with("mask_decoder."));
+    let prompt = PromptEncoder::build(&p).expect("prompt encoder");
+    let decoder = MaskDecoder::build(&p).expect("mask decoder");
+
+    let image =
+        rust_dicom_station::nn::tensor::Mat::from_vec(TOKENS, EMBED, fill(999, TOKENS * EMBED));
+    let image_pe = prompt.dense_pe();
+    let text: Vec<f32> = fill(7, EMBED);
+
+    let prompts = prompt.encode(
+        &[Point::foreground([16.0, 128.0, 128.0])],
+        &[[4.0, 40.0, 40.0, 28.0, 200.0, 200.0]],
+        Some(&text),
+    );
+    // one point + two box corners + one text token
+    assert_eq!(prompts.sparse.rows, 4);
+
+    let out = decoder.forward(
+        &image,
+        &image_pe,
+        &prompts.sparse,
+        &prompts.dense,
+        Some(&text),
+    );
+    assert_eq!(out.masks.c, NUM_MASK_TOKENS);
+    assert_eq!([out.masks.d, out.masks.h, out.masks.w], MASK_SHAPE);
+    assert_eq!(out.iou.len(), NUM_MASK_TOKENS);
+    assert!(
+        out.masks.data.iter().all(|v| v.is_finite()),
+        "non-finite logits"
+    );
+    assert!(out.iou.iter().all(|v| v.is_finite()));
+    // the four mask channels are genuinely different filters
+    let ch = |i: usize| &out.masks.data[i * out.masks.spatial()..(i + 1) * out.masks.spatial()];
+    assert_ne!(ch(0), ch(1));
+    // inference keeps channel 0
+    assert_eq!(out.best().data, ch(0));
+    assert_eq!(out.best().c, 1);
+}
+
+#[test]
+fn the_text_similarity_path_actually_changes_the_logits() {
+    // Text enters twice. Dropping the additive similarity map is a silent
+    // accuracy loss, so assert it moves the output.
+    let p = synthetic(|k| k.starts_with("prompt_encoder.") || k.starts_with("mask_decoder."));
+    let prompt = PromptEncoder::build(&p).unwrap();
+    let decoder = MaskDecoder::build(&p).unwrap();
+    let image =
+        rust_dicom_station::nn::tensor::Mat::from_vec(TOKENS, EMBED, fill(31, TOKENS * EMBED));
+    let pe = prompt.dense_pe();
+    let text: Vec<f32> = fill(41, EMBED);
+    let boxes = [[4.0, 40.0, 40.0, 28.0, 200.0, 200.0]];
+
+    // identical sparse tokens, text similarity on and off
+    let pr = prompt.encode(&[], &boxes, Some(&text));
+    let with = decoder.forward(&image, &pe, &pr.sparse, &pr.dense, Some(&text));
+    let without = decoder.forward(&image, &pe, &pr.sparse, &pr.dense, None);
+    assert_ne!(with.masks.data, without.masks.data);
+    // the difference is the same map added to every channel
+    let sp = with.masks.spatial();
+    let d0: Vec<f32> = (0..sp)
+        .map(|i| with.masks.data[i] - without.masks.data[i])
+        .collect();
+    let d1: Vec<f32> = (0..sp)
+        .map(|i| with.masks.data[sp + i] - without.masks.data[sp + i])
+        .collect();
+    for (a, b) in d0.iter().zip(d1.iter()) {
+        assert!(
+            (a - b).abs() < 1e-3,
+            "similarity map must be shared: {a} vs {b}"
+        );
+    }
 }
 
 #[test]
@@ -505,4 +585,21 @@ fn assembly_rejects_a_checkpoint_with_a_qkv_bias() {
         .unwrap_err()
         .to_string();
     assert!(e.contains("bias=False"), "{e}");
+}
+
+#[test]
+#[ignore]
+fn the_whole_network_runs_a_forward_pass() {
+    // Heavy: the full 181 M-parameter assembly plus a real image-encoder pass
+    // (2.5e11 MACs). Run with `cargo test --release -- --ignored`.
+    let p = synthetic(|k| !k.starts_with("text_encoder."));
+    let net = SegVolNet::build(&p).expect("network");
+    let volume: Vec<f32> = fill(5, ROI[0] * ROI[1] * ROI[2]);
+    let out = net.forward(&volume, &[], &[[4.0, 40.0, 40.0, 28.0, 200.0, 200.0]], None);
+    assert_eq!([out.masks.d, out.masks.h, out.masks.w], MASK_SHAPE);
+    assert!(out.masks.data.iter().all(|v| v.is_finite()));
+    // re-decoding against a cached embedding must match a full forward
+    let image = net.encode_image(&volume);
+    let again = net.decode(&image, &[], &[[4.0, 40.0, 40.0, 28.0, 200.0, 200.0]], None);
+    assert_eq!(out.masks.data, again.masks.data);
 }
