@@ -147,7 +147,7 @@ checkpoint key naming and verifies the forward pass, and an `#[ignore]`d
 end-to-end test runs the real 3 mm model against the bundled example data:
 
 ```
-RDV_AUTOSEG_MODELS=path/to/autoseg_models \
+RDS_AUTOSEG_MODELS=path/to/autoseg_models \
   cargo test --release --test autoseg -- --ignored
 ```
 

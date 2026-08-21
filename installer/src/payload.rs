@@ -1,10 +1,10 @@
 //! The installer payload — the files that end up in the install directory.
 //!
-//! A shipped `rust-dicom-viewer-setup.exe` is the `rdv-setup` binary with a
+//! A shipped `rust-dicom-station-setup.exe` is the `rds-setup` binary with a
 //! zip appended to it and a small fixed-size footer at the very end:
 //!
 //! ```text
-//! [ rdv-setup.exe ][ payload.zip ][ "RDVPAY01" | u64 offset | u64 length ]
+//! [ rds-setup.exe ][ payload.zip ][ "RDSPAY01" | u64 offset | u64 length ]
 //! ```
 //!
 //! Appending rather than `include_bytes!`-ing the payload has one concrete
@@ -12,7 +12,7 @@
 //! so the uninstaller left behind in the install directory is a plain
 //! truncated copy of ourselves — a few MB instead of a few hundred.
 //!
-//! A freshly `cargo build`-ed `rdv-setup.exe` has no payload; it then falls
+//! A freshly `cargo build`-ed `rds-setup.exe` has no payload; it then falls
 //! back to a `payload/` directory next to the executable, which is handy when
 //! working on the installer itself.
 
@@ -22,7 +22,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 /// Footer magic. Bump the trailing digits if the layout ever changes.
-pub const MAGIC: &[u8; 8] = b"RDVPAY01";
+pub const MAGIC: &[u8; 8] = b"RDSPAY01";
 /// magic + u64 offset + u64 length.
 pub const FOOTER_LEN: usize = 8 + 8 + 8;
 
@@ -54,7 +54,7 @@ impl Payload {
             None => bail!(
                 "no payload: this setup binary carries no embedded files and there is no \
                  'payload' directory next to {}.\nBuild a shippable installer with \
-                 `cargo run --release --bin rdv-pack`.",
+                 `cargo run --release --bin rds-pack`.",
                 exe.display()
             ),
         }

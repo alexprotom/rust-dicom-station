@@ -1,13 +1,13 @@
-//! rust-dicom-viewer — a fast, robust DICOM / RT DICOM viewer in pure Rust.
+//! rust-dicom-station — a fast, robust DICOM / RT DICOM viewer in pure Rust.
 //!
-//! Usage: `rust-dicom-viewer [DICOM_DIRECTORY] [COMPARISON_DIRECTORY]`
+//! Usage: `rust-dicom-station [DICOM_DIRECTORY] [COMPARISON_DIRECTORY]`
 //!
 //! With two directories, comparison mode starts automatically (study A on
 //! top, study B below — six views total).
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use rust_dicom_viewer::app;
+use rust_dicom_station::app;
 
 use std::path::PathBuf;
 
@@ -25,7 +25,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "rust-dicom-viewer",
+        "rust-dicom-station",
         options,
         Box::new(move |cc| {
             Ok(Box::new(app::ViewerApp::new(cc, initial_path, initial_path_b)))

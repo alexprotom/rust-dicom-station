@@ -2,11 +2,11 @@
 //!
 //! Run with `--release` (the optimizer loops are slow in debug builds).
 
-use rust_dicom_viewer::geometry::Vec3;
-use rust_dicom_viewer::registration::{
+use rust_dicom_station::geometry::Vec3;
+use rust_dicom_station::registration::{
     register, RegKind, RegParams, RegProgress, RigidTransform,
 };
-use rust_dicom_viewer::volume::Volume;
+use rust_dicom_station::volume::Volume;
 
 /// Smoothly-edged multi-feature phantom (values in HU-like units).
 /// A *finite* ellipsoid body (so every rigid DOF is constrained by the

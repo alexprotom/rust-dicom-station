@@ -14,8 +14,8 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use rust_dicom_viewer::autoseg::{self, AutosegProgress, DevicePref, Variant};
-use rust_dicom_viewer::loader;
+use rust_dicom_station::autoseg::{self, AutosegProgress, DevicePref, Variant};
+use rust_dicom_station::loader;
 
 fn main() {
     if let Err(e) = run() {

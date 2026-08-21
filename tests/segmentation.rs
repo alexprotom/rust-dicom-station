@@ -1,10 +1,10 @@
 //! Segmentation tool tests: brush geometry, undo, region growing, slice
 //! overlay display conventions, RTSTRUCT conversion and surface meshing.
 
-use rust_dicom_viewer::geometry::Vec3;
-use rust_dicom_viewer::mesh3d::{self, GridGeom};
-use rust_dicom_viewer::segmentation::{self, GrowState, Segmentation};
-use rust_dicom_viewer::volume::{ViewPlane, Volume};
+use rust_dicom_station::geometry::Vec3;
+use rust_dicom_station::mesh3d::{self, GridGeom};
+use rust_dicom_station::segmentation::{self, GrowState, Segmentation};
+use rust_dicom_station::volume::{ViewPlane, Volume};
 
 /// A synthetic volume with anisotropic spacing (1 x 1 x 2 mm) — the brush
 /// and meshing math must honor per-axis spacing.

@@ -1,4 +1,4 @@
-//! `rdv-setup` — the Windows installer for rust-dicom-viewer.
+//! `rds-setup` — the Windows installer for rust-dicom-station.
 //!
 //! Run without arguments it shows a small wizard; `--silent` and `--console`
 //! drive the same code from a terminal, and `--uninstall` (the form recorded
@@ -11,7 +11,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 #[cfg(not(windows))]
-compile_error!("rdv-setup installs a Windows application and only builds for Windows targets");
+compile_error!("rds-setup installs a Windows application and only builds for Windows targets");
 
 mod console;
 mod deps;
@@ -32,11 +32,11 @@ use payload::Payload;
 use plan::*;
 
 const USAGE: &str = "\
-Rust DICOM Viewer setup
+Rust DICOM Station setup
 
 USAGE:
-    rdv-setup [OPTIONS]
-    rdv-setup --uninstall [--remove-models] [--silent]
+    rds-setup [OPTIONS]
+    rds-setup --uninstall [--remove-models] [--silent]
 
 INSTALL OPTIONS:
     --dir <PATH>          destination folder

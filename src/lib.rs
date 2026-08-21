@@ -1,4 +1,4 @@
-//! rust-dicom-viewer library: DICOM / RT DICOM loading, geometry and
+//! rust-dicom-station library: DICOM / RT DICOM loading, geometry and
 //! rendering primitives, plus the egui application.
 
 pub mod anonymize;

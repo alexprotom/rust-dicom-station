@@ -3,8 +3,8 @@
 //!
 //! cargo run --release --example autoseg_probe -- <dicom_dir> <models_dir> <spec_key> <out_prefix>
 
-use rust_dicom_viewer::autoseg::{config::ModelConfig, cpu, net, preprocess, weights};
-use rust_dicom_viewer::loader;
+use rust_dicom_station::autoseg::{config::ModelConfig, cpu, net, preprocess, weights};
+use rust_dicom_station::loader;
 use std::path::PathBuf;
 
 struct Quiet;

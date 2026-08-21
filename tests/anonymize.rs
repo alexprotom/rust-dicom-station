@@ -3,9 +3,9 @@
 //! that identity is gone, UIDs changed consistently, the DICOM reference
 //! chains still resolve, and the image content is untouched.
 
-use rust_dicom_viewer::anonymize::{self, ApplyParams};
-use rust_dicom_viewer::gen_test_data::{self, GenParams};
-use rust_dicom_viewer::loader::{self, Progress};
+use rust_dicom_station::anonymize::{self, ApplyParams};
+use rust_dicom_station::gen_test_data::{self, GenParams};
+use rust_dicom_station::loader::{self, Progress};
 
 #[test]
 fn anonymize_roundtrip() {

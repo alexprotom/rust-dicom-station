@@ -2285,7 +2285,7 @@ impl ViewerApp {
                     );
                     ui.separator();
                     ui.weak(format!(
-                        "rust-dicom-viewer {} — research / QA viewer, not a medical device",
+                        "rust-dicom-station {} — research / QA viewer, not a medical device",
                         env!("CARGO_PKG_VERSION")
                     ));
                 });

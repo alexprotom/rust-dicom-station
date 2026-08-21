@@ -4,15 +4,15 @@ use std::path::{Path, PathBuf};
 
 use crate::win::registry::Hive;
 
-pub const APP_NAME: &str = "Rust DICOM Viewer";
-pub const APP_EXE: &str = "rust-dicom-viewer.exe";
-pub const PUBLISHER: &str = "rust-dicom-viewer contributors";
+pub const APP_NAME: &str = "Rust DICOM Station";
+pub const APP_EXE: &str = "rust-dicom-station.exe";
+pub const PUBLISHER: &str = "Rust DICOM Station contributors";
 /// Shown in Apps & features. Empty means "do not write the value".
 pub const HOMEPAGE: &str = "";
 /// Registry-safe product id, used for the Add/Remove Programs key.
-pub const PRODUCT_ID: &str = "RustDicomViewer";
+pub const PRODUCT_ID: &str = "RustDicomStation";
 /// ProgID for the optional `.dcm` file association.
-pub const PROGID: &str = "RustDicomViewer.DicomFile";
+pub const PROGID: &str = "RustDicomStation.DicomFile";
 pub const UNINSTALLER_EXE: &str = "uninstall.exe";
 pub const MANIFEST_FILE: &str = "install-manifest.txt";
 /// Written next to the executable by the viewer itself; the installer only
@@ -155,7 +155,7 @@ impl Options {
     }
 }
 
-/// `%LOCALAPPDATA%\Programs\Rust DICOM Viewer` or `%ProgramFiles%\Rust DICOM
+/// `%LOCALAPPDATA%\Programs\Rust DICOM Station` or `%ProgramFiles%\Rust DICOM
 /// Viewer`, with a plain-C: fallback should the shell folder lookup fail.
 pub fn default_install_dir(scope: Scope) -> PathBuf {
     match scope {

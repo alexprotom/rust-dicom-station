@@ -102,7 +102,7 @@ fn parse(text: &str) -> Settings {
 
 fn render(s: &Settings) -> String {
     let mut out = format!(
-        "# rust-dicom-viewer user settings\n\
+        "# rust-dicom-station user settings\n\
          # theme = dark | light | system\n\
          theme = {}\n",
         theme_to_str(s.theme)

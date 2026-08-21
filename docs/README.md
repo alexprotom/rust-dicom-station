@@ -1,6 +1,6 @@
 # Documentation
 
-Comprehensive documentation for **rust-dicom-viewer**. Start with the
+Comprehensive documentation for **rust-dicom-station**. Start with the
 [main README](../README.md) for the overview and quick start; each page here
 covers one area in depth.
 

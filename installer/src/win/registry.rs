@@ -258,9 +258,9 @@ mod tests {
 
     #[test]
     fn path_membership_ignores_case_slashes_and_trailing_separators() {
-        let list = r"C:\Windows;C:\Program Files\Rust DICOM Viewer\;D:\bin";
-        assert!(path_contains(list, r"c:\program files\rust dicom viewer"));
-        assert!(path_contains(list, r"C:/Program Files/Rust DICOM Viewer"));
+        let list = r"C:\Windows;C:\Program Files\Rust DICOM Station\;D:\bin";
+        assert!(path_contains(list, r"c:\program files\rust dicom station"));
+        assert!(path_contains(list, r"C:/Program Files/Rust DICOM Station"));
         assert!(!path_contains(list, r"C:\Program Files\Other"));
         assert!(!path_contains(";;", r""), "empty entries never match");
     }

@@ -161,7 +161,7 @@ pub fn delete_on_reboot(path: &Path) {
 /// started from a shell, otherwise allocate a fresh window. Standard handles
 /// are then rebound to `CONOUT$`/`CONIN$` so `println!` and `read_line` work
 /// — but only the ones the process does not already have, so redirection
-/// (`rdv-setup --silent > log.txt`) keeps working.
+/// (`rds-setup --silent > log.txt`) keeps working.
 pub fn attach_console() {
     unsafe {
         if AttachConsole(ATTACH_PARENT_PROCESS).is_err() && AllocConsole().is_err() {

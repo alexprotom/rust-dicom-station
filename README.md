@@ -81,7 +81,7 @@ Windows, Linux and macOS are supported; rendering uses `wgpu`
 without the GPU inference backend.
 
 On Windows there is also a proper installer — a single
-`rust-dicom-viewer-setup.exe` with shortcuts, an "Open with" entry on
+`rust-dicom-station-setup.exe` with shortcuts, an "Open with" entry on
 folders, the Visual C++ runtime check, an optional pre-download of the
 auto-segmentation weights, and a clean uninstall. It is a separate Rust
 program in [installer/](installer/README.md) and is *not* built by

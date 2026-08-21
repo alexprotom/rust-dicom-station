@@ -181,7 +181,7 @@ fn base_dataset(ids: &Ids, sop_class: &str, sop_uid: &str, modality: &str) -> In
     put_str(&mut o, tags::ACCESSION_NUMBER, VR::SH, "1");
     put_str(&mut o, tags::REFERRING_PHYSICIAN_NAME, VR::PN, "");
     put_str(&mut o, tags::MODALITY, VR::CS, modality);
-    put_str(&mut o, tags::MANUFACTURER, VR::LO, "rust-dicom-viewer synthetic");
+    put_str(&mut o, tags::MANUFACTURER, VR::LO, "rust-dicom-station synthetic");
     o
 }
 

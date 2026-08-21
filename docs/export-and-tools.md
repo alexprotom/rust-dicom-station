@@ -26,7 +26,7 @@ attribute that goes into all exported files —
 | AccessionNumber, ReferringPhysicianName | empty |
 | SeriesDescription | from the active series (written on the image series only) |
 | InstitutionName, StationName | empty |
-| Manufacturer, ManufacturerModelName | `rust-dicom-viewer`, `DICOM export` |
+| Manufacturer, ManufacturerModelName | `rust-dicom-station`, `DICOM export` |
 
 Every value is editable, `↺` restores the study's own value (`↺ all` restores
 the whole table), and unchecking a row leaves that tag out of the files

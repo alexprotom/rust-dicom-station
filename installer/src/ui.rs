@@ -314,7 +314,7 @@ impl SetupApp {
             ui.checkbox(&mut self.opts.desktop_shortcut, "Desktop shortcut");
             ui.checkbox(
                 &mut self.opts.file_association,
-                "Add \"Open with Rust DICOM Viewer\" to folders and DICOM files",
+                "Add \"Open with Rust DICOM Station\" to folders and DICOM files",
             );
             ui.checkbox(
                 &mut self.opts.add_to_path,

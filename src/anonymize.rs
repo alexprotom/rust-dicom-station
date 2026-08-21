@@ -497,7 +497,7 @@ pub fn apply(files: &[PathBuf], root: &Path, p: &ApplyParams, progress: &Progres
                 &mut obj,
                 tags::DEIDENTIFICATION_METHOD,
                 VR::LO,
-                "rust-dicom-viewer anonymizer",
+                "rust-dicom-station anonymizer",
             );
         }
 

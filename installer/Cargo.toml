@@ -1,4 +1,4 @@
-# Windows installer for rust-dicom-viewer.
+# Windows installer for rust-dicom-station.
 #
 # This crate is its own workspace root (the empty `[workspace]` table below).
 # That keeps it completely out of the viewer's build graph: `cargo build
@@ -6,25 +6,25 @@
 # the installer never touches the viewer's `target/` directory.
 #
 #   cd installer
-#   cargo build --release                # -> installer/target/release/rdv-setup.exe
-#   cargo run --release --bin rdv-pack   # -> installer/dist/rust-dicom-viewer-setup.exe
+#   cargo build --release                # -> installer/target/release/rds-setup.exe
+#   cargo run --release --bin rds-pack   # -> installer/dist/rust-dicom-station-setup.exe
 
 [package]
-name = "rdv-setup"
+name = "rds-setup"
 version = "0.1.0"
 edition = "2021"
-description = "Windows installer for the rust-dicom-viewer DICOM / RT viewer"
+description = "Windows installer for the rust-dicom-station DICOM / RT viewer"
 license = "MIT"
 publish = false
 
 [workspace]
 
 [[bin]]
-name = "rdv-setup"
+name = "rds-setup"
 path = "src/main.rs"
 
 [[bin]]
-name = "rdv-pack"
+name = "rds-pack"
 path = "src/bin/pack.rs"
 
 [dependencies]
@@ -40,7 +40,7 @@ egui = "0.36"
 # Optional: pre-download and convert the TotalSegmentator weights at install
 # time by reusing the viewer's own (pure-Rust) downloader. Built without the
 # GPU backend — this only writes the model cache, it never runs inference.
-rust-dicom-viewer = { path = "..", default-features = false, optional = true }
+rust-dicom-station = { path = "..", default-features = false, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
@@ -58,7 +58,7 @@ windows = { version = "0.62", features = [
 
 [features]
 default = ["prefetch-models"]
-prefetch-models = ["dep:rust-dicom-viewer"]
+prefetch-models = ["dep:rust-dicom-station"]
 
 [profile.release]
 opt-level = "s"

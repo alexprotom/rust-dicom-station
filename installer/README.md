@@ -1,6 +1,6 @@
 # Windows installer
 
-`rust-dicom-viewer-setup.exe` — a single-file installer for the viewer,
+`rust-dicom-station-setup.exe` — a single-file installer for the viewer,
 written in Rust like everything else in this project. No WiX, no NSIS, no
 Inno Setup: the wizard is egui/eframe (the viewer's own UI stack) and the
 system integration is direct Win32 — shell links through `IShellLink`,
@@ -15,8 +15,8 @@ building the installer never touches the viewer's `target/`.
 ```
 cargo build --release                      # 1. the viewer, from the repo root
 cd installer
-cargo build --release                      # 2. rdv-setup.exe + rdv-pack.exe
-cargo run --release --bin rdv-pack         # 3. dist/rust-dicom-viewer-setup.exe
+cargo build --release                      # 2. rds-setup.exe + rds-pack.exe
+cargo run --release --bin rds-pack         # 3. dist/rust-dicom-station-setup.exe
 ```
 
 Step 3 appends the payload to the setup binary. Useful flags:
@@ -30,7 +30,7 @@ Step 3 appends the payload to the setup binary. Useful flags:
 
 Without `--example-data` the result is about 35 MB.
 
-A `cargo build`-ed `rdv-setup.exe` has no payload; it then looks for a
+A `cargo build`-ed `rds-setup.exe` has no payload; it then looks for a
 `payload/` directory next to itself, which is the convenient way to iterate
 on the installer without re-packing.
 
@@ -39,10 +39,10 @@ publisher" warning on first run.
 
 ## What the installer does
 
-* **Copies the program** — `rust-dicom-viewer.exe`, `README.md`,
+* **Copies the program** — `rust-dicom-station.exe`, `README.md`,
   `LICENSE.txt`, `docs/`, and `example_data/` when it was packed in — into
-  `%LOCALAPPDATA%\Programs\Rust DICOM Viewer` (per user, the default) or
-  `%ProgramFiles%\Rust DICOM Viewer` (all users, asks for elevation).
+  `%LOCALAPPDATA%\Programs\Rust DICOM Station` (per user, the default) or
+  `%ProgramFiles%\Rust DICOM Station` (all users, asks for elevation).
 * **Dependencies** — checks for the Microsoft Visual C++ runtime that Rust's
   MSVC target links against and installs it from Microsoft when missing.
   Rendering needs Direct3D 12 or Vulkan, which the display driver already
@@ -52,10 +52,10 @@ publisher" warning on first run.
   the viewer's own downloader, so the first auto-segmentation run does not
   have to wait for a 135 MB … 1.3 GB download. Skipped by default.
   A machine-wide install points the cache at
-  `%LOCALAPPDATA%\RustDicomViewer\autoseg_models` (recorded in
+  `%LOCALAPPDATA%\RustDicomStation\autoseg_models` (recorded in
   `viewer_settings.txt`), because `Program Files` is not user-writable.
 * **Integration** — Start-menu and desktop shortcuts, an
-  "Open with Rust DICOM Viewer" verb on folders (the viewer takes a
+  "Open with Rust DICOM Station" verb on folders (the viewer takes a
   directory), a `.dcm`/`.dicom` entry that is *added* to `OpenWithProgids`
   rather than hijacking whatever owns DICOM files today, and optionally the
   program folder on `PATH`.
@@ -73,10 +73,10 @@ The same binary drives everything; `--silent` and `--console` skip the
 wizard, which is what you want for deployment.
 
 ```
-rdv-setup --silent --dir "D:\Apps\RDV" --add-to-path --models 3mm
-rdv-setup --silent --all-users            # from an elevated prompt
+rds-setup --silent --dir "D:\Apps\RDS" --add-to-path --models 3mm
+rds-setup --silent --all-users            # from an elevated prompt
 uninstall.exe --uninstall --silent --remove-models
-rdv-setup --help
+rds-setup --help
 ```
 
 `--models` takes `none | 6mm | 3mm | 1.5mm | all`; the other flags are
@@ -102,4 +102,4 @@ from the wizard and the viewer downloads weights on first use as usual.
 | `src/ui.rs` | the egui wizard |
 | `src/console.rs` | text-mode / silent front end |
 | `src/win/` | shell links, registry, known folders, console attach |
-| `src/bin/pack.rs` | `rdv-pack`, builds the shippable installer |
+| `src/bin/pack.rs` | `rds-pack`, builds the shippable installer |

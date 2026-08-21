@@ -5,11 +5,11 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use rust_dicom_viewer::gen_test_data::{self, GenParams};
-use rust_dicom_viewer::geometry::Vec3;
-use rust_dicom_viewer::loader::{self, Progress};
-use rust_dicom_viewer::render;
-use rust_dicom_viewer::volume::ViewPlane;
+use rust_dicom_station::gen_test_data::{self, GenParams};
+use rust_dicom_station::geometry::Vec3;
+use rust_dicom_station::loader::{self, Progress};
+use rust_dicom_station::render;
+use rust_dicom_station::volume::ViewPlane;
 
 /// Generate the canonical (default-parameter) study once per test binary.
 fn test_data_dir() -> &'static PathBuf {
@@ -156,14 +156,14 @@ fn load_synthetic_study() {
     let item = &reg.items[1];
     assert!(!item.is_identity);
     assert_eq!(item.matrix_type, "RIGID");
-    let rigid = rust_dicom_viewer::extras::matrix_to_rigid(&item.matrix, false)
+    let rigid = rust_dicom_station::extras::matrix_to_rigid(&item.matrix, false)
         .expect("rigid conversion");
     let mapped = rigid.map(Vec3::new(1.0, 2.0, 3.0));
     assert!(
         (mapped - Vec3::new(13.0, -7.0, 3.0)).length() < 1e-6,
         "REG matrix maps by (12,-9,0): got {mapped:?}"
     );
-    let inv = rust_dicom_viewer::extras::matrix_to_rigid(&item.matrix, true).unwrap();
+    let inv = rust_dicom_station::extras::matrix_to_rigid(&item.matrix, true).unwrap();
     assert!((inv.map(mapped) - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-6, "inverted REG");
 
     // ---- RTRECORD ----

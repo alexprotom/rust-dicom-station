@@ -45,7 +45,7 @@ pub struct Manifest {
 impl Manifest {
     pub fn render(&self) -> String {
         let mut out = String::from(
-            "# rust-dicom-viewer install manifest — used by uninstall.exe.\n\
+            "# rust-dicom-station install manifest — used by uninstall.exe.\n\
              # Editing this file changes what the uninstaller removes.\n",
         );
         out.push_str(&format!("version = {}\n", self.version));
@@ -153,7 +153,7 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
         let settings = opts.dir.join(SETTINGS_FILE);
         if !settings.exists() {
             let text = format!(
-                "# rust-dicom-viewer user settings\n\
+                "# rust-dicom-station user settings\n\
                  # theme = dark | light | system\n\
                  theme = dark\n\
                  autoseg_models_dir = {}\n",
@@ -330,7 +330,7 @@ fn write_file_association(opts: &Options, hive: registry::Hive) -> Result<()> {
         k.set_str(PROGID, "")?;
     }
 
-    // "Open with Rust DICOM Viewer" on a folder, and on the empty space inside
+    // "Open with Rust DICOM Station" on a folder, and on the empty space inside
     // one — the viewer takes a directory as its argument.
     for base in [
         format!(r"{classes}\Directory\shell\{PRODUCT_ID}"),
@@ -345,7 +345,7 @@ fn write_file_association(opts: &Options, hive: registry::Hive) -> Result<()> {
     Ok(())
 }
 
-/// Product version: from the payload if `rdv-pack` recorded one, else ours.
+/// Product version: from the payload if `rds-pack` recorded one, else ours.
 fn payload_version(payload: &Payload) -> String {
     payload
         .read_text("payload-info.txt")
@@ -360,7 +360,7 @@ fn payload_version(payload: &Payload) -> String {
 
 /// Writability probe — cheaper and more honest than inspecting ACLs.
 fn check_writable(dir: &Path) -> Result<()> {
-    let probe = dir.join(".rdv-write-test");
+    let probe = dir.join(".rds-write-test");
     match std::fs::write(&probe, b"x") {
         Ok(()) => {
             let _ = std::fs::remove_file(&probe);

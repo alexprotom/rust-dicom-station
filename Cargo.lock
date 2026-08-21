@@ -6412,7 +6412,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust-dicom-viewer"
+name = "rust-dicom-station"
 version = "0.1.0"
 dependencies = [
  "anyhow",

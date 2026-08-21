@@ -2,11 +2,11 @@
 //! load synthetic study → apply known transform → verify in-memory result →
 //! export as DICOM → reload with the normal loader → verify again.
 
-use rust_dicom_viewer::dicom_export;
-use rust_dicom_viewer::gen_test_data::{self, GenParams};
-use rust_dicom_viewer::geometry::Vec3;
-use rust_dicom_viewer::loader::{self, Progress};
-use rust_dicom_viewer::simulate::{generate_transformed_study, SimParams, SimTransform};
+use rust_dicom_station::dicom_export;
+use rust_dicom_station::gen_test_data::{self, GenParams};
+use rust_dicom_station::geometry::Vec3;
+use rust_dicom_station::loader::{self, Progress};
+use rust_dicom_station::simulate::{generate_transformed_study, SimParams, SimTransform};
 
 /// Source study for this test, written by the built-in generator.
 fn test_data_dir() -> std::path::PathBuf {

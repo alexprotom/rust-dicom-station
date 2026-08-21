@@ -22,7 +22,7 @@ pub const AVAILABLE: bool = cfg!(feature = "prefetch-models");
 #[cfg(feature = "prefetch-models")]
 mod imp {
     use super::*;
-    use rust_dicom_viewer::autoseg::weights::{
+    use rust_dicom_station::autoseg::weights::{
         self, ModelSpec, ProgressSink, SPECS_15MM, SPEC_3MM, SPEC_6MM,
     };
 

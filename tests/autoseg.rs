@@ -6,7 +6,7 @@
 //! bundled example data; enable it locally with
 //!
 //! ```text
-//! RDV_AUTOSEG_MODELS=path/to/autoseg_models \
+//! RDS_AUTOSEG_MODELS=path/to/autoseg_models \
 //!   cargo test --release --test autoseg -- --ignored
 //! ```
 //!
@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use rust_dicom_viewer::autoseg::{self, config::ModelConfig, cpu, net, weights::WTensor};
+use rust_dicom_station::autoseg::{self, config::ModelConfig, cpu, net, weights::WTensor};
 
 /// Deterministic pseudo-random values.
 fn rngf(seed: &mut u64) -> f32 {
@@ -153,12 +153,12 @@ fn shape_mismatch_is_rejected() {
 #[ignore]
 fn real_model_on_example_data() {
     let models_dir = std::path::PathBuf::from(
-        std::env::var("RDV_AUTOSEG_MODELS").expect("set RDV_AUTOSEG_MODELS"),
+        std::env::var("RDS_AUTOSEG_MODELS").expect("set RDS_AUTOSEG_MODELS"),
     );
-    let data_dir = std::env::var("RDV_EXAMPLE_DATA")
+    let data_dir = std::env::var("RDS_EXAMPLE_DATA")
         .unwrap_or_else(|_| "example_data/lung_p1_4DCT_phase_000".into());
     let study =
-        rust_dicom_viewer::loader::load_directory(std::path::Path::new(&data_dir), &Default::default())
+        rust_dicom_station::loader::load_directory(std::path::Path::new(&data_dir), &Default::default())
             .expect("load example data");
     let progress = autoseg::AutosegProgress::default();
     let result = autoseg::run(

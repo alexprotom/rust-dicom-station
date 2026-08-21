@@ -186,7 +186,7 @@ impl ExportParams {
                 f(tags::SERIES_DESCRIPTION, "SeriesDescription", VR::LO, series_desc),
                 f(tags::INSTITUTION_NAME, "InstitutionName", VR::LO, String::new()),
                 f(tags::STATION_NAME, "StationName", VR::SH, String::new()),
-                f(tags::MANUFACTURER, "Manufacturer", VR::LO, "rust-dicom-viewer".into()),
+                f(tags::MANUFACTURER, "Manufacturer", VR::LO, "rust-dicom-station".into()),
                 f(
                     tags::MANUFACTURER_MODEL_NAME,
                     "ManufacturerModelName",
