@@ -71,6 +71,10 @@ src/
     pickle.rs        native PyTorch checkpoint (.pth) reader
     cache.rs         download, safetensors weight cache, progress/cancel
     half.rs          binary16 <-> binary32 conversion
+  segvol/          promptable segmentation (pure-Rust SegVol) — box, point
+                   and text prompts, for the structures a fixed-class model
+                   cannot cover
+    weights.rs       checkpoint acquisition and licensing notes
   autoseg/         automatic segmentation (pure-Rust TotalSegmentator)
     mod.rs           public API, engine selection, progress/cancel
     classes.rs       117-class table, sub-model maps, organ colors
