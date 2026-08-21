@@ -1,6 +1,6 @@
-# rust-dicom-viewer
+# rust-dicom-station
 
-A fast, robust DICOM / RT DICOM viewer written **entirely in Rust**. It
+RDS (Rust DICOM Station) is a fast, robust DICOM / RT DICOM viewer written **entirely in Rust**. It
 loads a full radiotherapy study: image series (CT/MRI/PET), RT Structure
 Set, RT Dose, RT Plan (photon and ion/proton), planar images, spatial
 registrations, treatment records; and displays it in the classic
