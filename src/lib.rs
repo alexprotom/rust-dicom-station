@@ -10,6 +10,7 @@ pub mod gen_test_data;
 pub mod geometry;
 pub mod loader;
 pub mod mesh3d;
+pub mod nn;
 pub mod registration;
 pub mod render;
 pub mod rtdose;

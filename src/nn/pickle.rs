@@ -5,11 +5,13 @@
 //! little-endian storage blob per tensor under `<prefix>/data/<key>`.
 //!
 //! This module implements just enough of the pickle virtual machine to walk
-//! the nnU-Net checkpoints shipped by TotalSegmentator and extract the
-//! `network_weights` state dict: every tensor's storage key, dtype, shape,
-//! stride and storage offset. No Python, no libtorch — the pickle opcodes
-//! below cover everything `torch.save` (protocol 2) emits for these files,
-//! plus a few protocol-4 opcodes for robustness.
+//! such a checkpoint and extract a state dict — every tensor's storage key,
+//! dtype, shape, stride and storage offset — either from the archive root
+//! (a bare `state_dict()`, as Hugging Face's `pytorch_model.bin` files are
+//! saved) or from a named entry of the root dict (`network_weights` in an
+//! nnU-Net training checkpoint). No Python, no libtorch: the opcodes below
+//! cover everything `torch.save` (protocol 2) emits for these files, plus a
+//! few protocol-4 opcodes for robustness.
 //!
 //! Reference: CPython `pickletools` / `pickle.py`, and
 //! `torch/serialization.py` (`_rebuild_tensor_v2`, persistent IDs of the form
@@ -21,6 +23,8 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 use std::rc::Rc;
+
+use super::half::f16_to_f32;
 
 /// Element type of a torch storage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -630,39 +634,271 @@ impl PthReader {
     }
 }
 
-fn f16_to_f32(bits: u16) -> f32 {
-    let sign = ((bits >> 15) as u32) << 31;
-    let exp = ((bits >> 10) & 0x1f) as u32;
-    let frac = (bits & 0x3ff) as u32;
-    let f = match (exp, frac) {
-        (0, 0) => sign,
-        (0, f) => {
-            // subnormal
-            let mut e = 127 - 15 + 1;
-            let mut f = f;
-            while f & 0x400 == 0 {
-                f <<= 1;
-                e -= 1;
-            }
-            sign | ((e as u32) << 23) | ((f & 0x3ff) << 13)
-        }
-        (0x1f, 0) => sign | 0x7f80_0000,
-        (0x1f, f) => sign | 0x7f80_0000 | (f << 13),
-        (e, f) => sign | ((e + 127 - 15) << 23) | (f << 13),
-    };
-    f32::from_bits(f)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // ---- a synthetic torch checkpoint ----------------------------------
+    //
+    // `torch.save` writes a ZIP holding `archive/data.pkl` (a protocol-2
+    // pickle) plus one raw little-endian blob per storage under
+    // `archive/data/<key>`. These helpers emit exactly that, so the reader is
+    // exercised end to end — including the root-level `state_dict()` layout
+    // that Hugging Face checkpoints use — without PyTorch, and without the
+    // 700 MB download.
+
+    fn unicode(out: &mut Vec<u8>, s: &str) {
+        out.push(b'X');
+        out.extend_from_slice(&(s.len() as u32).to_le_bytes());
+        out.extend_from_slice(s.as_bytes());
+    }
+    fn global_(out: &mut Vec<u8>, module: &str, name: &str) {
+        out.push(b'c');
+        out.extend_from_slice(module.as_bytes());
+        out.push(b'\n');
+        out.extend_from_slice(name.as_bytes());
+        out.push(b'\n');
+    }
+    fn int_(out: &mut Vec<u8>, v: u64) {
+        if v < 256 {
+            out.push(b'K');
+            out.push(v as u8);
+        } else {
+            out.push(b'J');
+            out.extend_from_slice(&(v as u32).to_le_bytes());
+        }
+    }
+    fn tuple_of(out: &mut Vec<u8>, vals: &[usize]) {
+        out.push(b'(');
+        for v in vals {
+            int_(out, *v as u64);
+        }
+        out.push(b't');
+    }
+
+    struct Entry {
+        name: &'static str,
+        storage_key: &'static str,
+        storage_class: &'static str,
+        storage_numel: usize,
+        offset: usize,
+        shape: Vec<usize>,
+        stride: Vec<usize>,
+    }
+
+    fn contiguous(name: &'static str, key: &'static str, shape: &[usize]) -> Entry {
+        let mut stride = vec![1usize; shape.len()];
+        for i in (0..shape.len().saturating_sub(1)).rev() {
+            stride[i] = stride[i + 1] * shape[i + 1];
+        }
+        Entry {
+            name,
+            storage_key: key,
+            storage_class: "FloatStorage",
+            storage_numel: shape.iter().product(),
+            offset: 0,
+            shape: shape.to_vec(),
+            stride,
+        }
+    }
+
+    /// Emit the `_rebuild_tensor_v2(storage, offset, size, stride, ...)` call
+    /// for one entry.
+    fn push_tensor(out: &mut Vec<u8>, e: &Entry) {
+        global_(out, "torch._utils", "_rebuild_tensor_v2");
+        out.push(b'(');
+        // persistent id: ('storage', torch.<Class>, key, 'cpu', numel)
+        out.push(b'(');
+        unicode(out, "storage");
+        global_(out, "torch", e.storage_class);
+        unicode(out, e.storage_key);
+        unicode(out, "cpu");
+        int_(out, e.storage_numel as u64);
+        out.push(b't');
+        out.push(b'Q'); // BINPERSID
+        int_(out, e.offset as u64);
+        tuple_of(out, &e.shape);
+        tuple_of(out, &e.stride);
+        out.push(0x89); // requires_grad = False
+        out.push(b'}'); // backward_hooks = {}
+        out.push(b't');
+        out.push(b'R'); // REDUCE
+    }
+
+    /// Build a `.pth`. `top_key` empty means the archive root *is* the state
+    /// dict; otherwise the root is `{top_key: <state dict>, "epoch": 7}`.
+    fn build_pth(entries: &[Entry], storages: &[(&str, Vec<u8>)], top_key: &str) -> Vec<u8> {
+        let mut pkl = vec![0x80, 0x02];
+        if !top_key.is_empty() {
+            pkl.push(b'}');
+            pkl.push(b'(');
+            unicode(&mut pkl, top_key);
+        }
+        pkl.push(b'}'); // the state dict itself
+        pkl.push(b'(');
+        for e in entries {
+            unicode(&mut pkl, e.name);
+            push_tensor(&mut pkl, e);
+        }
+        pkl.push(b'u'); // SETITEMS
+        if !top_key.is_empty() {
+            unicode(&mut pkl, "epoch");
+            int_(&mut pkl, 7);
+            pkl.push(b'u');
+        }
+        pkl.push(b'.'); // STOP
+
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buf);
+            let opts: zip::write::FileOptions<()> = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("archive/data.pkl", opts).unwrap();
+            std::io::Write::write_all(&mut zip, &pkl).unwrap();
+            for (key, bytes) in storages {
+                zip.start_file(format!("archive/data/{key}"), opts).unwrap();
+                std::io::Write::write_all(&mut zip, bytes).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    fn f32_bytes(v: &[f32]) -> Vec<u8> {
+        v.iter().flat_map(|x| x.to_le_bytes()).collect()
+    }
+
+    fn write_temp(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("rds_pickle_tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join(name);
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
     #[test]
-    fn f16_conversion() {
-        assert_eq!(f16_to_f32(0x3c00), 1.0);
-        assert_eq!(f16_to_f32(0xc000), -2.0);
-        assert_eq!(f16_to_f32(0x0000), 0.0);
-        assert!((f16_to_f32(0x3555) - 0.333).abs() < 1e-3);
+    fn reads_a_root_level_state_dict() {
+        // The Hugging Face layout: torch.save(model.state_dict(), ...) with no
+        // wrapper dict. This is how the SegVol checkpoint is published.
+        let vals: Vec<f32> = (0..6).map(|i| i as f32 * 0.5 - 1.0).collect();
+        let entries = vec![
+            contiguous("image_encoder.patch_embedding.weight", "0", &[2, 3]),
+            contiguous("mask_decoder.iou_token.weight", "1", &[2]),
+        ];
+        let pth = build_pth(
+            &entries,
+            &[("0", f32_bytes(&vals)), ("1", f32_bytes(&[9.0, -9.0]))],
+            "",
+        );
+        let path = write_temp("root.pth", &pth);
+        let mut r = PthReader::open(&path, "").unwrap();
+        assert_eq!(r.tensors.len(), 2);
+        let names: Vec<&str> = r.tensors.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "image_encoder.patch_embedding.weight",
+                "mask_decoder.iou_token.weight"
+            ]
+        );
+        let (_, meta) = r.tensors[0].clone();
+        assert_eq!(meta.shape, [2, 3]);
+        assert_eq!(meta.numel(), 6);
+        assert!(meta.is_contiguous());
+        assert_eq!(r.read_f32(&meta).unwrap(), vals);
+        let (_, meta1) = r.tensors[1].clone();
+        assert_eq!(r.read_f32(&meta1).unwrap(), [9.0, -9.0]);
+    }
+
+    #[test]
+    fn reads_a_nested_state_dict_and_ignores_siblings() {
+        // The nnU-Net training-checkpoint layout the auto-segmentation module
+        // already relies on: {"network_weights": {...}, "epoch": 7}.
+        let vals = vec![1.5f32, 2.5, 3.5, 4.5];
+        let entries = vec![contiguous(
+            "encoder.stages.0.0.convs.0.conv.weight",
+            "0",
+            &[4],
+        )];
+        let pth = build_pth(&entries, &[("0", f32_bytes(&vals))], "network_weights");
+        let path = write_temp("nested.pth", &pth);
+        let mut r = PthReader::open(&path, "network_weights").unwrap();
+        assert_eq!(r.tensors.len(), 1);
+        let (name, meta) = r.tensors[0].clone();
+        assert_eq!(name, "encoder.stages.0.0.convs.0.conv.weight");
+        assert_eq!(r.read_f32(&meta).unwrap(), vals);
+        // asking for the root instead finds no tensors, since the root holds
+        // only the nested dict and an int
+        assert!(PthReader::open(&path, "").is_err());
+        // and a key that is not there is an error, not a silent empty result
+        assert!(PthReader::open(&path, "optimizer_state").is_err());
+    }
+
+    #[test]
+    fn honors_storage_offset_and_shared_storages() {
+        // Two tensors viewing one storage at different offsets — torch emits
+        // this whenever parameters were sliced out of a single buffer.
+        let all: Vec<f32> = (0..10).map(|i| i as f32).collect();
+        let mut a = contiguous("a", "0", &[4]);
+        a.storage_numel = 10;
+        let mut b = contiguous("b", "0", &[3]);
+        b.storage_numel = 10;
+        b.offset = 6;
+        let pth = build_pth(&[a, b], &[("0", f32_bytes(&all))], "");
+        let path = write_temp("offset.pth", &pth);
+        let mut r = PthReader::open(&path, "").unwrap();
+        let (_, ma) = r.tensors[0].clone();
+        let (_, mb) = r.tensors[1].clone();
+        assert_eq!(r.read_f32(&ma).unwrap(), [0.0, 1.0, 2.0, 3.0]);
+        assert_eq!(r.read_f32(&mb).unwrap(), [6.0, 7.0, 8.0]);
+    }
+
+    #[test]
+    fn widens_half_precision_storages() {
+        // f16 checkpoints are read at full precision.
+        let bits: Vec<u16> = vec![0x3c00, 0xc000, 0x0000]; // 1, -2, 0
+        let raw: Vec<u8> = bits.iter().flat_map(|x| x.to_le_bytes()).collect();
+        let mut e = contiguous("half", "0", &[3]);
+        e.storage_class = "HalfStorage";
+        let pth = build_pth(&[e], &[("0", raw)], "");
+        let path = write_temp("half.pth", &pth);
+        let mut r = PthReader::open(&path, "").unwrap();
+        let (_, meta) = r.tensors[0].clone();
+        assert_eq!(meta.dtype, Dtype::F16);
+        assert_eq!(r.read_f32(&meta).unwrap(), [1.0, -2.0, 0.0]);
+    }
+
+    #[test]
+    fn rejects_non_contiguous_and_truncated_storages() {
+        // A transposed view: strides do not match the shape's row-major order.
+        let mut t = contiguous("t", "0", &[2, 3]);
+        t.stride = vec![1, 2];
+        let pth = build_pth(&[t], &[("0", f32_bytes(&[0.0; 6]))], "");
+        let path = write_temp("noncontig.pth", &pth);
+        let mut r = PthReader::open(&path, "").unwrap();
+        let (_, meta) = r.tensors[0].clone();
+        assert!(!meta.is_contiguous());
+        let err = r.read_f32(&meta).unwrap_err().to_string();
+        assert!(err.contains("non-contiguous"), "{err}");
+
+        // A storage blob shorter than the shape demands must be an error, not
+        // a panic or a silently short vector.
+        let short = contiguous("s", "0", &[8]);
+        let pth = build_pth(&[short], &[("0", f32_bytes(&[1.0, 2.0]))], "");
+        let path = write_temp("short.pth", &pth);
+        let mut r = PthReader::open(&path, "").unwrap();
+        let (_, meta) = r.tensors[0].clone();
+        assert!(r
+            .read_f32(&meta)
+            .unwrap_err()
+            .to_string()
+            .contains("too small"));
+    }
+
+    #[test]
+    fn rejects_a_file_that_is_not_a_checkpoint() {
+        let path = write_temp("garbage.pth", b"not a zip at all");
+        assert!(PthReader::open(&path, "").is_err());
     }
 
     #[test]

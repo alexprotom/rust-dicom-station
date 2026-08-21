@@ -22,7 +22,6 @@ pub mod cpu;
 pub mod gpu;
 pub mod infer;
 pub mod net;
-pub mod pickle;
 pub mod preprocess;
 pub mod weights;
 

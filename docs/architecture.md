@@ -66,12 +66,16 @@ src/
   gen_test_data.rs synthetic RT phantom study generator
   anonymize.rs     interactive DICOM anonymizer engine
   settings.rs      persisted preferences (plain text file)
+  nn/              shared neural-network infrastructure — nothing in here
+                   knows about a particular architecture
+    pickle.rs        native PyTorch checkpoint (.pth) reader
+    cache.rs         download, safetensors weight cache, progress/cancel
+    half.rs          binary16 <-> binary32 conversion
   autoseg/         automatic segmentation (pure-Rust TotalSegmentator)
     mod.rs           public API, engine selection, progress/cancel
     classes.rs       117-class table, sub-model maps, organ colors
     config.rs        nnU-Net plans.json parsing
-    pickle.rs        native PyTorch checkpoint (.pth) reader
-    weights.rs       weight download / conversion / safetensors cache
+    weights.rs       which models exist and where they are published
     cpu.rs           CPU tensor engine (im2col + SIMD GEMM conv3d)
     net.rs           PlainConvUNet assembly + CPU forward
     gpu.rs           wgpu forward via burn (cargo feature `gpu`)
