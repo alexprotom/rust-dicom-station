@@ -17,16 +17,19 @@
 //! crop around whatever the first pass found.
 //!
 //! Status: the image encoder ([`vit`]), prompt encoder ([`prompt`]) and mask
-//! decoder ([`decoder`]) are implemented and assembled by [`net`], against
-//! the checkpoint layout recorded in [`layout`] and verified against the real
-//! file. Still to come: the CLIP text tower and tokenizer, the preprocessing
-//! and two-pass inference pipeline, the GPU backend, and the interaction.
+//! decoder ([`decoder`]) are assembled by [`net`]; [`preprocess`] and
+//! [`infer`] carry a study through the two-pass pipeline. All of it is
+//! written against the checkpoint layout recorded in [`layout`] and verified
+//! against the real file. Still to come: the CLIP text tower and tokenizer,
+//! the GPU backend, and the interaction.
 
 pub mod config;
 pub mod decoder;
+pub mod infer;
 pub mod layout;
 pub mod net;
 pub mod params;
+pub mod preprocess;
 pub mod prompt;
 pub mod vit;
 pub mod weights;

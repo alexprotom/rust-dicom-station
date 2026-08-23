@@ -55,48 +55,63 @@ fn np_round(v: f64) -> f64 {
     }
 }
 
+/// Find the permutation and flips that carry a volume's own axes onto the
+/// canonical `[S, A, R]` order — superior, anterior and right, each
+/// increasing with the array index.
+///
+/// Both inference engines want this: it is what `nibabel`'s
+/// `as_closest_canonical` followed by nnU-Net's axis convention produces, and
+/// it is also what SegVol's `Orientationd(axcodes="RAS")` plus its
+/// `DimTranspose` (which swaps the first and last spatial axes) produces.
+/// Volumes are not assumed to be axis-aligned; the best match is chosen by
+/// direction cosine.
+pub fn canonical_axes(vol: &Volume) -> ([usize; 3], [bool; 3]) {
+    // LPS direction vectors of the three volume axes.
+    let dirs: [Vec3; 3] = [vol.row_dir, vol.col_dir, vol.normal];
+    // Canonical targets in LPS: S = +z, A = -y, R = -x.
+    let targets: [Vec3; 3] = [
+        Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        },
+        Vec3 {
+            x: 0.0,
+            y: -1.0,
+            z: 0.0,
+        },
+        Vec3 {
+            x: -1.0,
+            y: 0.0,
+            z: 0.0,
+        },
+    ];
+    let mut perm = [0usize; 3];
+    let mut flip = [false; 3];
+    let mut used = [false; 3];
+    for a in 0..3 {
+        let mut best = 0usize;
+        let mut best_dot = f64::NEG_INFINITY;
+        for v in 0..3 {
+            if used[v] {
+                continue;
+            }
+            let dot = dirs[v].dot(targets[a]);
+            if dot.abs() > best_dot {
+                best_dot = dot.abs();
+                best = v;
+            }
+        }
+        used[best] = true;
+        perm[a] = best;
+        flip[a] = dirs[best].dot(targets[a]) < 0.0;
+    }
+    (perm, flip)
+}
+
 impl SarMap {
     pub fn new(vol: &Volume, target_spacing: f64) -> SarMap {
-        // LPS direction vectors of the three volume axes.
-        let dirs: [Vec3; 3] = [vol.row_dir, vol.col_dir, vol.normal];
-        // Canonical targets in LPS: S = +z, A = −y, R = −x.
-        let targets: [Vec3; 3] = [
-            Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 1.0,
-            },
-            Vec3 {
-                x: 0.0,
-                y: -1.0,
-                z: 0.0,
-            },
-            Vec3 {
-                x: -1.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        ];
-        let mut perm = [0usize; 3];
-        let mut flip = [false; 3];
-        let mut used = [false; 3];
-        for a in 0..3 {
-            let mut best = 0usize;
-            let mut best_dot = f64::NEG_INFINITY;
-            for v in 0..3 {
-                if used[v] {
-                    continue;
-                }
-                let dot = dirs[v].dot(targets[a]);
-                if dot.abs() > best_dot {
-                    best_dot = dot.abs();
-                    best = v;
-                }
-            }
-            used[best] = true;
-            perm[a] = best;
-            flip[a] = dirs[best].dot(targets[a]) < 0.0;
-        }
+        let (perm, flip) = canonical_axes(vol);
         let dims = [vol.dims[0], vol.dims[1], vol.dims[2]];
         let spac = [vol.spacing[0], vol.spacing[1], vol.spacing[2]];
         let orig_dims = [dims[perm[0]], dims[perm[1]], dims[perm[2]]];

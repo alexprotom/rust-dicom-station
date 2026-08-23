@@ -87,6 +87,9 @@ src/
     prompt.rs        prompt encoder: box / point / text -> sparse + dense
     decoder.rs       two-way transformer, upscaling, mask hypernetworks
     net.rs           assembly and the single-window forward pass
+    preprocess.rs    foreground normalization, canonical orientation,
+                     nearest-exact / trilinear resampling, mask back-mapping
+    infer.rs         zoom-out / zoom-in orchestration, MONAI window layout
   autoseg/         automatic segmentation (pure-Rust TotalSegmentator)
     mod.rs           public API, engine selection, progress/cancel
     classes.rs       117-class table, sub-model maps, organ colors
