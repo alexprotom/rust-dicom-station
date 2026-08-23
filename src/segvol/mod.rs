@@ -21,12 +21,16 @@
 //! [`infer`] carry a study through the two-pass pipeline; [`bpe`] and
 //! [`clip`] turn a structure name into a text prompt. All of it is written
 //! against the checkpoint layout recorded in [`layout`] and verified against
-//! the real file. Still to come: the GPU backend and the interaction.
+//! the real file, with the image encoder additionally available on any
+//! GPU wgpu can drive ([`gpu`], cargo feature `gpu`). Still to come: the
+//! interaction.
 
 pub mod bpe;
 pub mod clip;
 pub mod config;
 pub mod decoder;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod infer;
 pub mod layout;
 pub mod net;
