@@ -18,11 +18,13 @@
 //!
 //! Status: the image encoder ([`vit`]), prompt encoder ([`prompt`]) and mask
 //! decoder ([`decoder`]) are assembled by [`net`]; [`preprocess`] and
-//! [`infer`] carry a study through the two-pass pipeline. All of it is
-//! written against the checkpoint layout recorded in [`layout`] and verified
-//! against the real file. Still to come: the CLIP text tower and tokenizer,
-//! the GPU backend, and the interaction.
+//! [`infer`] carry a study through the two-pass pipeline; [`bpe`] and
+//! [`clip`] turn a structure name into a text prompt. All of it is written
+//! against the checkpoint layout recorded in [`layout`] and verified against
+//! the real file. Still to come: the GPU backend and the interaction.
 
+pub mod bpe;
+pub mod clip;
 pub mod config;
 pub mod decoder;
 pub mod infer;

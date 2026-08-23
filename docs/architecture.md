@@ -90,6 +90,8 @@ src/
     preprocess.rs    foreground normalization, canonical orientation,
                      nearest-exact / trilinear resampling, mask back-mapping
     infer.rs         zoom-out / zoom-in orchestration, MONAI window layout
+    bpe.rs           CLIP byte-pair tokenizer
+    clip.rs          CLIP text tower + dim_align, with a prompt cache
   autoseg/         automatic segmentation (pure-Rust TotalSegmentator)
     mod.rs           public API, engine selection, progress/cancel
     classes.rs       117-class table, sub-model maps, organ colors

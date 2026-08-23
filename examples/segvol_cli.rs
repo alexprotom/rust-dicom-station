@@ -19,7 +19,9 @@ use rust_dicom_station::nn::cache::{load_safetensors, ProgressSink};
 use rust_dicom_station::segvol::infer::{self, Config, Hooks};
 use rust_dicom_station::segvol::params::Params;
 use rust_dicom_station::segvol::prompt::{BBox, Point};
-use rust_dicom_station::segvol::{net::SegVolNet, preprocess, weights};
+use rust_dicom_station::segvol::{
+    bpe::Bpe, clip::TextEncoder, net::SegVolNet, preprocess, weights,
+};
 
 struct Stderr;
 impl ProgressSink for Stderr {
@@ -52,6 +54,7 @@ fn main() -> anyhow::Result<()> {
     let mut boxes: Vec<BBox> = Vec::new();
     let mut points: Vec<Point> = Vec::new();
     let mut cfg = Config::default();
+    let mut text_prompt: Option<String> = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--models" => models = Some(PathBuf::from(args.next().unwrap())),
@@ -68,13 +71,15 @@ fn main() -> anyhow::Result<()> {
             }
             "--point" => points.push(Point::foreground(triple(&args.next().unwrap()))),
             "--negative-point" => points.push(Point::background(triple(&args.next().unwrap()))),
+            "--text" => text_prompt = Some(args.next().unwrap()),
             "--no-zoom-in" => cfg.use_zoom_in = false,
             "--fast-box" => cfg.skip_coarse_with_box = true,
             "--threshold" => cfg.threshold = args.next().unwrap().parse()?,
             "-h" | "--help" => {
                 eprintln!(
                     "usage: segvol_cli <DICOM_DIR> [--models DIR] [--box z0,y0,x0,z1,y1,x1] \
-                     [--point z,y,x] [--no-zoom-in] [--fast-box] [--threshold F] [--out FILE]"
+                     [--point z,y,x] [--text STRUCTURE] [--no-zoom-in] [--fast-box] \
+                     [--threshold F] [--out FILE]"
                 );
                 return Ok(());
             }
@@ -94,7 +99,7 @@ fn main() -> anyhow::Result<()> {
         "prepared {:?} (oriented {:?}, crop at {:?})",
         prep.dims, prep.oriented_dims, prep.crop_lo
     );
-    if boxes.is_empty() && points.is_empty() {
+    if boxes.is_empty() && points.is_empty() && text_prompt.is_none() {
         // Default to the whole prepared extent, which is a legitimate prompt
         // and makes the tool useful with no arguments.
         let d = prep.dims;
@@ -156,8 +161,23 @@ fn main() -> anyhow::Result<()> {
     let net = SegVolNet::build(&params)?;
     eprintln!("network ready ({} tensors)", params.len());
 
+    // A text prompt needs the tokenizer's two data files and the text tower.
+    let text: Option<Vec<f32>> = match &text_prompt {
+        None => None,
+        Some(name) => {
+            for f in [weights::CLIP_VOCAB, weights::CLIP_MERGES] {
+                weights::ensure_file(&f, &models, &Stderr)?;
+            }
+            let bpe = Bpe::from_dir(&models)?;
+            let enc = TextEncoder::build(&params)?;
+            let ids = bpe.encode(&rust_dicom_station::segvol::bpe::prompt_for(name));
+            eprintln!("text prompt {:?} -> {} tokens", name, ids.len());
+            Some(enc.encode_ids(&ids))
+        }
+    };
+
     let t0 = std::time::Instant::now();
-    let seg = infer::segment(&net, &prep, &points, &boxes, None, cfg, &Stderr)?;
+    let seg = infer::segment(&net, &prep, &points, &boxes, text.as_deref(), cfg, &Stderr)?;
     eprintln!(
         "\rsegmented in {:.1}s: {} voxels, {} refinement window(s), coarse pass {}",
         t0.elapsed().as_secs_f64(),

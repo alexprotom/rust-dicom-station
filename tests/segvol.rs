@@ -603,3 +603,51 @@ fn the_whole_network_runs_a_forward_pass() {
     let again = net.decode(&image, &[], &[[4.0, 40.0, 40.0, 28.0, 200.0, 200.0]], None);
     assert_eq!(out.masks.data, again.masks.data);
 }
+
+// ---------------------------------------------------------------------------
+// The tokenizer against the published vocabulary.
+//
+// vocab.json and merges.txt cannot be synthesized -- the merge table *is* the
+// algorithm -- so this is the one part of the port with no offline check. The
+// round-trip below is strong evidence in its place: decoding recovers the
+// input only if the byte alphabet, the merge ranks and the vocabulary all
+// line up.
+
+#[test]
+#[ignore]
+fn the_real_tokenizer_round_trips() {
+    use rust_dicom_station::segvol::bpe::{self, Bpe, BOS, EOS};
+    let dir =
+        std::path::PathBuf::from(std::env::var("RDS_SEGVOL_MODEL").expect("set RDS_SEGVOL_MODEL"));
+    let t = Bpe::from_dir(&dir).expect("vocab.json + merges.txt");
+    assert_eq!(t.vocab_size(), 49408);
+
+    for name in [
+        "liver",
+        "spleen",
+        "left kidney",
+        "pancreas",
+        "aorta",
+        "gallbladder",
+        "urinary bladder",
+        "esophagus",
+    ] {
+        let text = bpe::prompt_for(name);
+        let ids = t.encode(&text);
+        assert_eq!(ids.first(), Some(&BOS));
+        assert_eq!(ids.last(), Some(&EOS));
+        assert!(
+            ids.len() >= 8 && ids.len() <= 32,
+            "{name}: {} tokens",
+            ids.len()
+        );
+        // decoding must recover the cleaned text exactly
+        assert_eq!(t.decode(&ids), text.to_lowercase(), "round trip for {name}");
+    }
+    // common single words tokenize to one symbol plus the two markers
+    for w in ["liver", "the", "of"] {
+        assert_eq!(t.encode(w).len(), 3, "{w} should be a single token");
+    }
+    // every digit separately
+    assert_eq!(t.encode("2024").len(), 6);
+}
