@@ -192,6 +192,30 @@ impl ViewerApp {
                         }
                     }
                     ui.separator();
+                    for (slot, slot_name) in SLOT_NAMES.iter().enumerate() {
+                        if slot == 1 && !self.comparison {
+                            continue;
+                        }
+                        let loaded = self.slots[slot].study.is_some();
+                        if ui
+                            .add_enabled(
+                                loaded && self.segvol_job.is_none(),
+                                egui::Button::new(format!(
+                                    "🧠 Prompt-segment dataset {slot_name}…"
+                                )),
+                            )
+                            .on_hover_text(
+                                "Segment whatever you point at — a box, a click or a \
+                                 structure name (SegVol, re-implemented natively in Rust). \
+                                 Covers the lesions and targets a fixed-class model cannot.",
+                            )
+                            .clicked()
+                        {
+                            self.open_segvol_dialog(slot);
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
                     if ui
                         .button("🔏 Anonymize DICOM folder…")
                         .on_hover_text(

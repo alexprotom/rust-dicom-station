@@ -45,6 +45,7 @@ src/
     jobs.rs          the operations that spawn a background job
     tree.rs          dataset-tree copy / move / remove
     seg.rs           interactive segmentation state machine
+    prompt_seg.rs    prompt-driven segmentation: dialog, worker, result
   loader.rs        directory scan, classification, parallel volume
                    loading, dataset merging
   volume.rs        3D volume, patient-space geometry, slice extraction

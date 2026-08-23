@@ -32,6 +32,7 @@ mod dialogs;
 mod jobs;
 mod panels;
 mod planar;
+mod prompt_seg;
 mod seg;
 mod theme;
 mod tree;
@@ -588,6 +589,16 @@ pub struct ViewerApp {
     /// Model cache directory (persisted in the settings file).
     autoseg_models_dir: String,
 
+    // Prompt-driven segmentation (SegVol re-implementation, see `segvol`).
+    #[allow(clippy::type_complexity)]
+    segvol_job:
+        Option<Job<(usize, anyhow::Result<prompt_seg::SegVolResult>), prompt_seg::SegVolProgress>>,
+    segvol_slot: usize,
+    segvol_dialog: Option<prompt_seg::SegVolDialog>,
+    segvol_models_dir: String,
+    /// One-line summary of the last finished run.
+    segvol_status: Option<String>,
+
     dose_mode: DoseMode,
     dose_opacity: f32,
     dose_threshold_pct: f32,
@@ -680,6 +691,13 @@ impl ViewerApp {
             autoseg_slot: 0,
             autoseg_dialog: None,
             autoseg_pending: None,
+            segvol_job: None,
+            segvol_slot: 0,
+            segvol_dialog: None,
+            segvol_models_dir: crate::segvol::weights::default_models_dir()
+                .display()
+                .to_string(),
+            segvol_status: None,
             autoseg_models_dir: prefs
                 .autoseg_dir
                 .clone()
@@ -864,6 +882,17 @@ impl eframe::App for ViewerApp {
             Some((slot, Ok(result))) => self.on_autoseg_done(slot, result),
             Some((_, Err(e))) => {
                 let msg = format!("{e:#}");
+
+                match poll_job(
+                    &mut self.segvol_job,
+                    &ctx,
+                    "Prompt segmentation",
+                    &mut self.error,
+                ) {
+                    Some((slot, Ok(result))) => self.on_segvol_done(slot, result),
+                    Some((_, Err(e))) => self.error = Some(format!("{e:#}")),
+                    None => {}
+                }
                 if !msg.contains("cancelled") {
                     self.error = Some(format!("Auto-segmentation failed: {msg}"));
                 }

@@ -98,6 +98,7 @@ ships a real two-phase 4DCT (see
 | [docs/rt-objects.md](docs/rt-objects.md) | RTSTRUCT, RTDOSE, RTPLAN, REG, RTRECORD, reference chains |
 | [docs/registration.md](docs/registration.md) | Rigid + B-spline registration, fusion, simulator, verification |
 | [docs/segmentation.md](docs/segmentation.md) | Brush / eraser / region growing, 3D view, mask → RTSTRUCT |
+| [docs/segvol.md](docs/segvol.md) | Prompt-driven segmentation: box / point / text, the SegVol re-implementation |
 | [docs/auto-segmentation.md](docs/auto-segmentation.md) | The pure-Rust TotalSegmentator: models, pipeline, engines, validation, classes, licensing |
 | [docs/export-and-tools.md](docs/export-and-tools.md) | DICOM export, anonymizer, test-data generator |
 | [docs/architecture.md](docs/architecture.md) | Design, module map, threading, conventions, testing |
