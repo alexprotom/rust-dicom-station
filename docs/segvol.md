@@ -41,6 +41,11 @@ loop is *prompt, fix by hand, export*.
 * **Threshold** — probability cut applied to the network's output, 0.5 by
   default.
 
+*Planned:* drawing the box directly in the viewports — drag in any MPR view,
+extend along the third axis — with negative point clicks and a coarse-pass
+live preview, instead of anchoring every prompt on the crosshair. The dialog
+is the current interface to the same engine.
+
 ## Headless
 
 ```
@@ -83,6 +88,18 @@ min-max to [0,1] and crop the resulting zero rim.
 Roughly 6 s per window on a desktop CPU; the image encoder is ~97% of that
 and runs on any GPU `wgpu` can drive when the `gpu` feature is on (default).
 
+### Why the text tower is native
+
+The smaller build would have been a table of precomputed embeddings over a
+curated structure vocabulary. It was rejected for two reasons: generating the
+table requires running PyTorch offline, so the shipped artifact would be
+downstream of a Python step this project cannot reproduce — and it removes
+free-text prompts, SegVol's headline capability. The tower's weights are
+inside the checkpoint being downloaded anyway, so implementing it natively
+costs no extra bytes over the wire beyond the tokenizer's two small data
+files; encoded prompts are cached by string, so repeated prompts skip the
+tower entirely, which recovers the table's practical benefit.
+
 ## Weights, and their licence
 
 The checkpoint (~724 MB) is downloaded from
@@ -116,3 +133,17 @@ kernel is checked against hand-computed values. What has **not** been done is
 a layer-by-layer numerical comparison against the reference implementation,
 which is what the auto-segmentation engine's mean Dice 0.9995 rests on. Until
 that is run, treat the output as untested against the original.
+
+When that validation is run, it should look like this. The normative
+reference is HF `model_segvol_single.py` — the GitHub and Hugging Face
+pipelines differ in places (reorientation, padding), and the HF file is
+self-contained and is what the published demo runs. Dump its activations at
+four cut points — after the patch embed, after ViT block 6, after the final
+encoder norm, and at the decoder's low-resolution logits — and compare each
+to 1e-4 absolute. Then a full two-pass run on the bundled example study,
+box-prompted, compared by Dice against the reference: **> 0.99 is the pass
+mark; below that is a bug, not noise.** CPU and GPU masks on identical input
+should agree bit-for-bit, since the final step is a threshold rather than an
+argmax over near-equal logits. Running the Python reference at development
+time does not violate the one-language rule, which is about what ships in the
+binary — a comparison harness is a test fixture.

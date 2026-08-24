@@ -72,7 +72,10 @@ impl SegVolProgress {
         *self.device.lock().unwrap_or_else(|e| e.into_inner()) = d.into();
     }
     pub fn device(&self) -> String {
-        self.device.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.device
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
     pub fn frac(&self) -> f32 {
         f32::from_bits(self.frac.load(Ordering::Relaxed))

@@ -105,7 +105,8 @@ src/
     preprocess.rs    canonical reorientation, resampling, back-mapping
     infer.rs         Gaussian sliding window, streaming argmax
 tests/             integration suites (see Testing below)
-examples/          autoseg_cli, autoseg_probe (headless dev tools)
+examples/          autoseg_cli, autoseg_probe, segvol_cli, segvol_probe
+                   (headless dev tools)
 ```
 
 ## UI architecture
