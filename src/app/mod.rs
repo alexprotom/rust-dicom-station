@@ -882,19 +882,25 @@ impl eframe::App for ViewerApp {
             Some((slot, Ok(result))) => self.on_autoseg_done(slot, result),
             Some((_, Err(e))) => {
                 let msg = format!("{e:#}");
-
-                match poll_job(
-                    &mut self.segvol_job,
-                    &ctx,
-                    "Prompt segmentation",
-                    &mut self.error,
-                ) {
-                    Some((slot, Ok(result))) => self.on_segvol_done(slot, result),
-                    Some((_, Err(e))) => self.error = Some(format!("{e:#}")),
-                    None => {}
-                }
                 if !msg.contains("cancelled") {
                     self.error = Some(format!("Auto-segmentation failed: {msg}"));
+                }
+            }
+            None => {}
+        }
+
+        // Poll background prompt segmentation.
+        match poll_job(
+            &mut self.segvol_job,
+            &ctx,
+            "Prompt segmentation",
+            &mut self.error,
+        ) {
+            Some((slot, Ok(result))) => self.on_segvol_done(slot, result),
+            Some((_, Err(e))) => {
+                let msg = format!("{e:#}");
+                if !msg.contains("cancelled") {
+                    self.error = Some(format!("Prompt segmentation failed: {msg}"));
                 }
             }
             None => {}

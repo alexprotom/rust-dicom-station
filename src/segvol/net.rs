@@ -17,6 +17,11 @@ use super::vit::Vit;
 /// The assembled network, weights resident.
 pub struct SegVolNet {
     pub vit: Vit,
+    /// GPU image encoder, attached after build when a usable adapter exists.
+    /// The CPU encoder stays resident regardless — it is the fallback when a
+    /// window fails on the device mid-run.
+    #[cfg(feature = "gpu")]
+    gpu_vit: Option<super::gpu::GpuVit>,
     pub prompt: PromptEncoder,
     pub decoder: MaskDecoder,
     /// The dense positional encoding, computed once at build time: it depends
@@ -30,16 +35,46 @@ impl SegVolNet {
         let image_pe = prompt.dense_pe();
         Ok(SegVolNet {
             vit: Vit::build(p)?,
+            #[cfg(feature = "gpu")]
+            gpu_vit: None,
             prompt,
             decoder: MaskDecoder::build(p)?,
             image_pe,
         })
     }
 
+    /// Attach a GPU image encoder; every subsequent window encodes on the
+    /// device instead of the CPU.
+    #[cfg(feature = "gpu")]
+    pub fn attach_gpu(&mut self, gpu: super::gpu::GpuVit) {
+        self.gpu_vit = Some(gpu);
+    }
+
+    /// Whether a GPU encoder is attached.
+    pub fn on_gpu(&self) -> bool {
+        #[cfg(feature = "gpu")]
+        {
+            self.gpu_vit.is_some()
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            false
+        }
+    }
+
     /// Encode one `ROI`-shaped volume. The result can be reused across
     /// several prompts, which is what makes interactive re-prompting cheap:
     /// the image encoder is ~97% of the compute.
     pub fn encode_image(&self, volume: &[f32]) -> Mat {
+        #[cfg(feature = "gpu")]
+        if let Some(gpu) = &self.gpu_vit {
+            match gpu.forward(volume) {
+                Ok(m) => return m,
+                Err(e) => {
+                    eprintln!("segvol: GPU encode failed ({e:#}); falling back to the CPU")
+                }
+            }
+        }
         self.vit.forward(volume)
     }
 

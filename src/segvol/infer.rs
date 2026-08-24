@@ -387,6 +387,7 @@ pub fn segment(
         }
     }
 
+    hooks.report(1.0, "Assembling the mask…");
     let mut mask = vec![0u8; crop_dims[0] * crop_dims[1] * crop_dims[2]];
     mask.par_chunks_mut(crop_dims[1] * crop_dims[2])
         .enumerate()

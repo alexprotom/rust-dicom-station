@@ -51,10 +51,12 @@ pub(super) struct SegVolDialog {
     pub name: String,
 }
 
-/// Progress handle shared with the worker: message, fraction, cancel flag.
+/// Progress handle shared with the worker: message, fraction, cancel flag,
+/// and — once resolved — which device the image encoder runs on.
 #[derive(Default)]
 pub struct SegVolProgress {
     msg: Mutex<String>,
+    device: Mutex<String>,
     frac: AtomicU32,
     cancel: AtomicBool,
 }
@@ -65,6 +67,12 @@ impl SegVolProgress {
     }
     pub fn get(&self) -> String {
         self.msg.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+    pub fn set_device(&self, d: impl Into<String>) {
+        *self.device.lock().unwrap_or_else(|e| e.into_inner()) = d.into();
+    }
+    pub fn device(&self) -> String {
+        self.device.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
     pub fn frac(&self) -> f32 {
         f32::from_bits(self.frac.load(Ordering::Relaxed))
@@ -107,6 +115,8 @@ pub struct SegVolResult {
     pub windows: usize,
     pub coarse: bool,
     pub elapsed_secs: f64,
+    /// Which device the image encoder ran on, e.g. "GPU (wgpu)".
+    pub device: String,
     pub volume_dims: [usize; 3],
     pub frame_of_reference_uid: String,
 }
@@ -252,10 +262,11 @@ impl ViewerApp {
         self.slots[slot].segs.push(seg);
         self.slots[slot].active_seg = self.slots[slot].segs.len() - 1;
         self.segvol_status = Some(format!(
-            "{}: {} voxels in {:.1}s ({} refinement window(s), coarse pass {})",
+            "{}: {} voxels in {:.1}s on {} ({} refinement window(s), coarse pass {})",
             result.name,
             result.voxels,
             result.elapsed_secs,
+            result.device,
             result.windows,
             if result.coarse { "ran" } else { "skipped" }
         ));
@@ -272,6 +283,10 @@ impl ViewerApp {
                 .resizable(false)
                 .show(ctx, |ui| {
                     ui.label(format!("Dataset {}", SLOT_NAMES[self.segvol_slot]));
+                    let dev = job.progress.device();
+                    if !dev.is_empty() {
+                        ui.weak(format!("Encoder: {dev}"));
+                    }
                     ui.add(egui::ProgressBar::new(frac).show_percentage());
                     ui.label(if msg.is_empty() { "Working…" } else { &msg });
                     ui.separator();
@@ -453,7 +468,31 @@ fn run_segvol(
     }
     progress.set("Loading the network…");
     let params = Params::new(crate::nn::cache::load_safetensors(&cache)?);
-    let net = SegVolNet::build(&params).context("assemble the SegVol network")?;
+    #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
+    let mut net = SegVolNet::build(&params).context("assemble the SegVol network")?;
+
+    // Put the image encoder on the GPU when a usable adapter exists; fall
+    // back to the CPU otherwise. Either way the device is reported, both in
+    // the progress dialog and in the finished-run status line.
+    #[cfg(feature = "gpu")]
+    let device = {
+        progress.set("Looking for a GPU…");
+        match crate::segvol::gpu::GpuContext::try_new()
+            .and_then(|ctx| crate::segvol::gpu::GpuVit::new(&ctx, &params).map(|v| (ctx, v)))
+        {
+            Ok((ctx, vit)) => {
+                net.attach_gpu(vit);
+                format!("GPU ({})", ctx.describe())
+            }
+            Err(e) => {
+                eprintln!("segvol: no usable GPU, running on the CPU: {e:#}");
+                format!("CPU ({} threads)", rayon::current_num_threads())
+            }
+        }
+    };
+    #[cfg(not(feature = "gpu"))]
+    let device = format!("CPU ({} threads)", rayon::current_num_threads());
+    progress.set_device(&device);
 
     let centre = prompt_from_crosshair(&prep, cursor);
     let mut points: Vec<Point> = Vec::new();
@@ -499,6 +538,7 @@ fn run_segvol(
         windows: seg.windows,
         coarse: seg.coarse,
         elapsed_secs: t0.elapsed().as_secs_f64(),
+        device,
         volume_dims: volume.dims,
         frame_of_reference_uid: volume.frame_of_reference_uid.clone(),
     })
