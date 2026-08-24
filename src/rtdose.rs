@@ -199,7 +199,9 @@ pub fn load(path: &Path) -> Result<DoseGrid> {
                     );
                 }
                 words
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| {
                         let v = (c[0] as u32) | ((c[1] as u32) << 16);
                         if signed {
@@ -214,9 +216,11 @@ pub fn load(path: &Path) -> Result<DoseGrid> {
         },
         DicomValue::Primitive(PrimitiveValue::U8(bytes)) => match bits {
             16 => bytes
-                .chunks_exact(2)
-                .map(|c| {
-                    let v = u16::from_le_bytes([c[0], c[1]]);
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&c| {
+                    let v = u16::from_le_bytes(c);
                     if signed {
                         v as i16 as f64
                     } else {
@@ -225,9 +229,11 @@ pub fn load(path: &Path) -> Result<DoseGrid> {
                 })
                 .collect(),
             32 => bytes
-                .chunks_exact(4)
-                .map(|c| {
-                    let v = u32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|&c| {
+                    let v = u32::from_le_bytes(c);
                     if signed {
                         v as i32 as f64
                     } else {

@@ -162,7 +162,7 @@ fn build_roi_mesh(roi_index: usize, roi: &Roi) -> Option<RoiMesh> {
                 }
                 xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                 let row = j * gx;
-                for pair in xs.chunks_exact(2) {
+                for pair in xs.as_chunks::<2>().0 {
                     let i0 = ((pair[0] - origin[0]) / h).ceil().max(0.0) as usize;
                     let i1_f = (pair[1] - origin[0]) / h;
                     if i1_f < 0.0 {

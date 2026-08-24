@@ -614,18 +614,18 @@ impl PthReader {
         let mut out = Vec::with_capacity(meta.numel());
         match meta.dtype {
             Dtype::F32 => {
-                for c in raw.chunks_exact(4) {
-                    out.push(f32::from_le_bytes(c.try_into().unwrap()));
+                for &c in raw.as_chunks::<4>().0 {
+                    out.push(f32::from_le_bytes(c));
                 }
             }
             Dtype::F64 => {
-                for c in raw.chunks_exact(8) {
-                    out.push(f64::from_le_bytes(c.try_into().unwrap()) as f32);
+                for &c in raw.as_chunks::<8>().0 {
+                    out.push(f64::from_le_bytes(c) as f32);
                 }
             }
             Dtype::F16 => {
-                for c in raw.chunks_exact(2) {
-                    out.push(f16_to_f32(u16::from_le_bytes(c.try_into().unwrap())));
+                for &c in raw.as_chunks::<2>().0 {
+                    out.push(f16_to_f32(u16::from_le_bytes(c)));
                 }
             }
             other => bail!("unsupported tensor dtype {:?}", other),

@@ -138,7 +138,12 @@ pub fn load(path: &Path) -> Result<StructureSet> {
                     if data.len() < 3 {
                         continue;
                     }
-                    let points: Vec<Vec3> = data.chunks_exact(3).map(Vec3::from_slice).collect();
+                    let points: Vec<Vec3> = data
+                        .as_chunks::<3>()
+                        .0
+                        .iter()
+                        .map(|&[x, y, z]| Vec3::new(x, y, z))
+                        .collect();
                     contours.push(Contour {
                         points,
                         geometric_type,

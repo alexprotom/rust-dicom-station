@@ -295,7 +295,7 @@ pub fn roi_on_plane(vol: &Volume, roi: &Roi, plane: ViewPlane, slice: usize) -> 
                 let k_int = kc.round() as i64;
                 let cap_above = !k_occupied.contains(&(k_int + 1));
                 let cap_below = !k_occupied.contains(&(k_int - 1));
-                for pair in crossings.chunks_exact(2) {
+                for pair in crossings.as_chunks::<2>().0 {
                     let (xa, xb) = (pair[0] as f32, pair[1] as f32);
                     // Vertical boundary ticks spanning one slice row.
                     g.segments.push(([xa, y - 0.5], [xa, y + 0.5]));

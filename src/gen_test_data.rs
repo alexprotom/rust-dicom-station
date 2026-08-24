@@ -911,7 +911,7 @@ mod tests {
     fn circle_points_are_on_the_circle() {
         let pts = circle_points(3.0, -4.0, 25.0, 7.0, 64);
         assert_eq!(pts.len(), 64 * 3);
-        for c in pts.chunks_exact(3) {
+        for c in pts.as_chunks::<3>().0 {
             let x: f64 = c[0].parse().unwrap();
             let y: f64 = c[1].parse().unwrap();
             let z: f64 = c[2].parse().unwrap();
