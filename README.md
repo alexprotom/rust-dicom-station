@@ -1,14 +1,18 @@
 # rust-dicom-station
 
+[![CI](https://github.com/alexprotom/rust-dicom-station/actions/workflows/ci.yml/badge.svg)](https://github.com/alexprotom/rust-dicom-station/actions/workflows/ci.yml)
+
 RDS (Rust DICOM Station) is a fast, robust DICOM / RT DICOM viewer written **entirely in Rust**. It
 loads a full radiotherapy study: image series (CT/MRI/PET), RT Structure
 Set, RT Dose, RT Plan (photon and ion/proton), planar images, spatial
 registrations, treatment records; and displays it in the classic
 three-view layout, with a second dataset row for comparison, built-in
 elastix-style **image registration**, **interactive
-segmentation**, a live **3D structure view**, and **automatic multi-organ
+segmentation**, a live **3D structure view**, **automatic multi-organ
 segmentation** (a pure-Rust re-implementation of TotalSegmentator, 117
-structures, CPU or any GPU).
+structures, CPU or any GPU), and **prompt-driven segmentation** (a
+pure-Rust re-implementation of SegVol — point at anything with a box, a
+click or a structure name, and get an editable mask back).
 
 ![overview](docs/screenshot_overview.png)
 
@@ -44,10 +48,19 @@ holds the registration controls and both dataset trees.*
   without Python, hand-written SIMD CPU engine and a wgpu GPU path
   (Vulkan/DX12/Metal, no CUDA), validated to mean Dice 0.9995 against the
   reference implementation.
+* **Prompt segmentation** - SegVol (NeurIPS 2024) rebuilt natively: a
+  181 M-parameter 3-D ViT with a SAM-style prompt encoder and mask
+  decoder plus a CLIP text tower, prompted with a **box**, a **click**,
+  or **free text** ("liver", "tumor"…) — for the structures no
+  fixed-class model can cover: lesions, targets, post-surgical cavities.
+  Two-pass zoom-out / zoom-in inference, the image encoder on the same
+  no-CUDA wgpu GPU path, results landing as ordinary editable
+  segmentations, convertible to RTSTRUCT.
 * **Tools** - DICOM export with an editable patient/study tag table
   (CT + RTSTRUCT + RTDOSE + RTPLAN), an interactive folder anonymizer with
-  consistent UID regeneration, and a synthetic RT-study generator; 40+ tests
-  assert the whole stack against an analytically known phantom.
+  consistent UID regeneration, and a synthetic RT-study generator; 140+
+  tests across seven integration suites assert the whole stack against an
+  analytically known phantom, on Linux and Windows in CI.
 
 ## Architecture
 
@@ -57,7 +70,7 @@ inference, DICOM writing - is implemented in Rust; where a feature
 usually means binding a C/C++ library (ITK/elastix, ONNX Runtime, CUDA),
 it is re-implemented natively instead. Image processing runs CPU-side
 with `rayon` and aggressive caching; the GPU (via `wgpu`) only blits the
-UI and, optionally, runs the segmentation network. Long operations run on
+UI and, optionally, runs the segmentation networks. Long operations run on
 background threads with progress and cancellation. The full module map,
 threading model, geometry conventions and performance numbers are in
 [docs/architecture.md](docs/architecture.md).
@@ -75,6 +88,11 @@ cargo run --release -- example_data/lung_p1_4DCT_phase_000 example_data/lung_p1_
 
 cargo test --release
 ```
+
+To try prompt segmentation on the bundled patient: put the crosshair on
+the tumor, then *Tools ▶ 🧠 Prompt segmentation*, prompt kind **Box**,
+Run. Both segmentation engines fetch their weights on first use; both
+also have headless CLIs in [examples/](examples/).
 
 Windows, Linux and macOS are supported; rendering uses `wgpu`
 (DX12/Vulkan/Metal). `--no-default-features` builds a CPU-only viewer
@@ -113,7 +131,11 @@ patient P102, redistributed under CC BY 3.0 — cite it as described in
 TotalSegmentator's openly licensed (Apache-2.0) "total"-task weights —
 cite Wasserthal et al. (Radiology AI 2023) and nnU-Net (Isensee et al.,
 Nature Methods 2021) as described in
-[docs/auto-segmentation.md](docs/auto-segmentation.md).
+[docs/auto-segmentation.md](docs/auto-segmentation.md). Prompt
+segmentation re-implements SegVol (Du et al., NeurIPS 2024); its weights
+carry **no license declaration**, so they are only ever downloaded from
+Hugging Face to your own machine at your request and are never
+redistributed — see [docs/segvol.md](docs/segvol.md).
 
 This software is a viewer for research and QA convenience — **not a
 medical device, and not for clinical decision-making.**
