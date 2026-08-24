@@ -202,7 +202,10 @@ code paths the GUI uses, with no external data or tooling:
   forward pass; sliding-window steps and resampling conventions pinned to
   nnU-Net/scipy reference values; an `#[ignore]`d end-to-end test against
   the real 3 mm model;
-* **segvol** — the published checkpoint's 475-tensor inventory, recorded in
+* **segvol** — CPU/GPU agreement for the image encoder is `#[ignore]`d, not
+  because it is unimportant but because `WgpuDevice::default()` returns a
+  *software* adapter on CI runners; run it where the hardware is. The
+  published checkpoint's 475-tensor inventory is recorded in
   `tests/data/segvol-tensors.csv` and asserted module by module. The same
   fixture synthesizes a checkpoint with the real key names and shapes, so
   the network assembles and runs a genuine forward pass in CI without the

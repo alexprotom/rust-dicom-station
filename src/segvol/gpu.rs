@@ -89,13 +89,10 @@ pub struct GpuVit {
 /// Upload a `[out, in]` weight already transposed to `[in, out]`, so the
 /// forward pass is a plain `x @ w` with no per-call transpose.
 fn upload_weight_t(d: &WgpuDevice, w: &[f32], out: usize, inp: usize) -> Tensor<B, 2> {
-    let mut t = vec![0f32; out * inp];
-    for o in 0..out {
-        for i in 0..inp {
-            t[i * out + o] = w[o * inp + i];
-        }
-    }
-    Tensor::from_data(TensorData::new(t, [inp, out]), d)
+    Tensor::from_data(
+        TensorData::new(transpose_weight(w, out, inp), [inp, out]),
+        d,
+    )
 }
 
 /// Upload a length-`n` vector shaped for broadcasting over `[1, tokens, n]`.
@@ -223,34 +220,73 @@ fn gelu_erf(x: Tensor<B, 3>) -> Tensor<B, 3> {
 
 /// Multi-head attention over `[1, tokens, embed]` tensors.
 ///
-/// Unlike the CPU path, which walks heads one at a time to bound its working
-/// set, this batches all of them: the score tensor is
-/// `heads x tokens x tokens` — 200 MB in `f32` for the image encoder — which
-/// is the shape a GPU wants and well within any device that can run the model
-/// at all.
+/// Heads are processed one at a time, as on the CPU, and for a harder reason
+/// than working-set size: batching all twelve would need a
+/// `heads x tokens x tokens` score buffer — 192 MB in `f32` for the image
+/// encoder — and **WebGPU's default `maxStorageBufferBindingSize` is
+/// 128 MiB**. A batched implementation therefore fails to allocate on any
+/// adapter that only offers the guaranteed limits, which includes software
+/// rasterizers and plenty of real hardware. Per head the score buffer is
+/// 16.8 MB, comfortably inside the guarantee, and each head is still a large
+/// enough matmul to keep the device busy.
 fn attention(q: Tensor<B, 3>, k: Tensor<B, 3>, v: Tensor<B, 3>, heads: usize) -> Tensor<B, 3> {
     let hd = EMBED / heads;
-    let split =
-        |t: Tensor<B, 3>| -> Tensor<B, 4> { t.reshape([1, TOKENS, heads, hd]).swap_dims(1, 2) };
-    let (q, k, v) = (split(q), split(k), split(v));
-    let scores = q.matmul(k.swap_dims(2, 3)) / (hd as f64).sqrt();
-    let attn = softmax(scores, 3);
-    attn.matmul(v)
-        .swap_dims(1, 2)
-        .reshape([1, TOKENS, heads * hd])
+    let scale = (hd as f64).sqrt();
+    let mut per_head = Vec::with_capacity(heads);
+    for h in 0..heads {
+        let cols = h * hd..(h + 1) * hd;
+        let qh = q.clone().slice([0..1, 0..TOKENS, cols.clone()]);
+        let kh = k.clone().slice([0..1, 0..TOKENS, cols.clone()]);
+        let vh = v.clone().slice([0..1, 0..TOKENS, cols]);
+        let scores = qh.matmul(kh.swap_dims(1, 2)) / scale;
+        per_head.push(softmax(scores, 2).matmul(vh));
+    }
+    Tensor::cat(per_head, 2)
+}
+
+/// Transpose an `[out, in]` weight into `[in, out]`.
+fn transpose_weight(w: &[f32], out: usize, inp: usize) -> Vec<f32> {
+    let mut t = vec![0f32; out * inp];
+    for o in 0..out {
+        for i in 0..inp {
+            t[i * out + o] = w[o * inp + i];
+        }
+    }
+    t
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Agreement with the CPU encoder, on whatever GPU is present.
-    ///
-    /// Skipped rather than failed when there is no usable adapter, so the
-    /// suite stays green in a headless container while still checking the
-    /// backend everywhere it can actually run.
     #[test]
-    fn gpu_agrees_with_the_cpu_encoder_when_a_gpu_exists() {
+    fn the_weight_transpose_is_correct() {
+        // [out=2, in=3] row-major -> [in=3, out=2] row-major
+        let w = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        assert_eq!(
+            transpose_weight(&w, 2, 3),
+            vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]
+        );
+        // transposing twice is the identity
+        let back = transpose_weight(&transpose_weight(&w, 2, 3), 3, 2);
+        assert_eq!(back, w.to_vec());
+    }
+
+    /// Agreement with the CPU encoder.
+    ///
+    /// Ignored by default. It needs a real GPU: `WgpuDevice::default()`
+    /// happily returns a *software* adapter wherever Mesa's lavapipe or
+    /// Windows' WARP is installed — which is the case on CI runners — and
+    /// running twelve transformer blocks through a software rasterizer takes
+    /// minutes and tests nothing about the backend. Run it where the hardware
+    /// is:
+    ///
+    /// ```text
+    /// cargo test --release --lib segvol::gpu -- --ignored
+    /// ```
+    #[test]
+    #[ignore]
+    fn gpu_agrees_with_the_cpu_encoder() {
         let Ok(ctx) = GpuContext::try_new() else {
             eprintln!("no GPU available; skipping the CPU/GPU agreement check");
             return;

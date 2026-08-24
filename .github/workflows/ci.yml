@@ -54,12 +54,20 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      # The GPU agreement test is #[ignore]d on purpose: runners expose a
+      # *software* adapter (Mesa's lavapipe on Linux, WARP on Windows), and
+      # driving twelve transformer blocks through a rasterizer takes minutes
+      # and proves nothing about the backend.
       - name: cargo test
         run: cargo test
 
       # The GPU inference backend is behind the default `gpu` feature; this is
-      # the pure-CPU build the README documents.
+      # the pure-CPU build the README documents. Feature wiring does not vary
+      # by platform, and a second feature set means a second copy of the whole
+      # dependency graph on disk — which Windows runners cannot spare — so it
+      # is checked on Linux only.
       - name: cargo check (CPU only)
+        if: runner.os == 'Linux'
         run: cargo check --no-default-features --all-targets
 
   # The Windows installer is a separate workspace and is never built by
@@ -90,8 +98,12 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: cargo build (standalone, no model prefetch)
-        run: cargo build --release --no-default-features
-
+      # One release build, not two: the default feature set pulls the whole
+      # viewer in as a path dependency, so building both feature sets in
+      # release means two copies of burn and wgpu on a runner with ~9 GB free.
+      # The standalone configuration is type-checked instead.
       - name: cargo build (default)
         run: cargo build --release
+
+      - name: cargo check (standalone, no model prefetch)
+        run: cargo check --no-default-features
