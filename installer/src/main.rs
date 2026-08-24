@@ -203,14 +203,14 @@ fn do_install(args: &Args) -> Result<()> {
     if !models::AVAILABLE {
         opts.models = Models::None;
     }
-    if opts.scope == Scope::AllUsers && !win::is_elevated() {
-        if args.silent || args.console {
-            bail!(
-                "a machine-wide installation needs administrator rights — start the installer \
-                 from an elevated prompt, or install with --just-me"
-            );
-        }
-        // The wizard asks for elevation when the user presses Install.
+    // A machine-wide installation needs elevation. The wizard asks for it when
+    // the user presses Install; the silent and console paths have no way to ask,
+    // so they fail here instead.
+    if opts.scope == Scope::AllUsers && !win::is_elevated() && (args.silent || args.console) {
+        bail!(
+            "a machine-wide installation needs administrator rights — start the installer \
+             from an elevated prompt, or install with --just-me"
+        );
     }
     if args.silent || args.console {
         return console::run_install(payload, opts, args.silent);

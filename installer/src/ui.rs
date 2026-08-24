@@ -88,9 +88,11 @@ pub fn run_install(payload: Payload, opts: Options, autostart: bool) -> Result<(
 
 /// Show the uninstall confirmation window.
 pub fn run_uninstall(target: Target) -> Result<()> {
-    let mut opts = Options::default();
-    opts.dir = target.manifest.install_dir.clone();
-    opts.models_dir = target.manifest.models_dir.clone();
+    let opts = Options {
+        dir: target.manifest.install_dir.clone(),
+        models_dir: target.manifest.models_dir.clone(),
+        ..Default::default()
+    };
     let version = target.manifest.version.clone();
     let app = SetupApp::new(
         Job::Uninstall {
