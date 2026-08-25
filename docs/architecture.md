@@ -112,6 +112,25 @@ rust-dicom-station
 └── CI: fmt, clippy -D warnings, tests on Linux + Windows, CPU-only build, installer build
 ```
 
+### Sources of the algorithms
+
+Nothing in the tree above is bound as a library; each of the heavy
+algorithms is a native re-implementation of a published reference, and the
+reference is what the tests compare against. Registration follows
+[elastix](https://elastix.dev/) (rigid and B-spline, ASGD, pyramids); the
+*planned* B-spline and landmark registration would follow
+[Plastimatch](https://plastimatch.org/), which is also the reference for the
+planned DRR generation. Auto-segmentation re-implements
+[TotalSegmentator](https://github.com/wasserth/TotalSegmentator) on its
+[nnU-Net](https://github.com/MIC-DKFZ/nnUNet) models; prompt segmentation
+re-implements [SegVol](https://github.com/BAAI-DCAI/SegVol); slice
+propagation re-implements [MedSAM2](https://github.com/bowang-lab/MedSAM2),
+i.e. Meta's [SAM 2](https://github.com/facebookresearch/sam2) fine-tuned on
+medical images. The papers to cite, the licences of the weights and the
+numerical validation of each port are in the per-feature documents
+([registration.md](registration.md), [auto-segmentation.md](auto-segmentation.md),
+[segvol.md](segvol.md), [medsam2.md](medsam2.md)).
+
 ## Module map
 
 Where each function above lives. The right-hand tag names its functional
