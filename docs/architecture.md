@@ -245,9 +245,10 @@ src/
 tests/             nine integration suites (see Testing)
 examples/          autoseg_cli, autoseg_probe, segvol_cli, segvol_probe,
                    medsam2_cli, medsam2_probe; common/ holds what they share
-tools/             gen_reference_activations.py, gen_ops_fixtures.py (produce
-                   the reference dumps the tests compare against),
-                   anonymize_dicom.py (how the bundled example data was made)
+tools/             gen_reference_activations.py, gen_ops_fixtures.py — the
+                   two PyTorch scripts that produce the fixtures and reference
+                   dumps the MedSAM2 tests compare against (never run at
+                   build time; needed only to regenerate them)
 installer/         the Windows installer, its own workspace (see its README)
 ```
 

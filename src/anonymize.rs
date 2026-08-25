@@ -1,6 +1,6 @@
-//! Interactive DICOM anonymizer (*Tools ▶ Anonymize DICOM folder…*) — a
-//! generalized Rust port of the one-off `tools/anonymize_dicom.py` used to
-//! prepare `example_data/`.
+//! Interactive DICOM anonymizer (*Tools ▶ Anonymize DICOM folder…*). It
+//! grew out of the one-off script that prepared `example_data/` and
+//! generalizes it: any folder, every identifying tag, editable proposals.
 //!
 //! Two phases, both on background threads:
 //!

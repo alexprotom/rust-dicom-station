@@ -72,10 +72,6 @@ identifying strings nested inside sequences (e.g. operator names in beam
 session sequences) are not yet rewritten (UID remapping and private-tag
 removal do recurse).
 
-The original one-off script that prepared the bundled example data,
-`tools/anonymize_dicom.py` (pure standard library), remains in the repo;
-the interactive tool is its generalized Rust successor.
-
 ## Synthetic test-data generator
 
 *File ▶ 🧪 Generate test data…* (also offered on the empty start screen)

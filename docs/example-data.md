@@ -61,8 +61,8 @@ collection. If you use it, cite the data and the associated publications:
 ## Anonymization
 
 The TCIA data is already de-identified; the copy here was additionally
-rewritten by `tools/anonymize_dicom.py` to minimal, readable identifiers —
-patient `lung_p1`, and a UID tree that is easy to read in a debugger:
+rewritten to minimal, readable identifiers — patient `lung_p1`, and a UID
+tree that is easy to read in a debugger:
 
 | | phase_000 | phase_050 |
 |---|---|---|
@@ -76,8 +76,5 @@ images and contours — accession number, device manufacturer and model,
 software versions, acquisition dates and private tags — was dropped; pixel
 data, geometry, ROI names, colors, types and contour points are untouched,
 and every RTSTRUCT image reference still resolves to a slice of its own
-series. The script is pure standard library and re-runnable:
-
-```
-python3 tools/anonymize_dicom.py example_data
-```
+series. The built-in anonymizer (*Tools ▶ 🔏 Anonymize DICOM folder…*, see
+[export-and-tools.md](export-and-tools.md)) does the same to any folder.
