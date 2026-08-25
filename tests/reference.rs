@@ -78,7 +78,10 @@ macro_rules! reference_or_skip {
 
 impl Reference {
     fn act<const D: usize>(&self, key: &str) -> Tensor<B, D> {
-        let t = self.acts.get(key).unwrap_or_else(|| panic!("activation {key}"));
+        let t = self
+            .acts
+            .get(key)
+            .unwrap_or_else(|| panic!("activation {key}"));
         assert_eq!(t.shape.len(), D, "{key} has rank {}", t.shape.len());
         let mut shape = [1usize; D];
         shape.copy_from_slice(&t.shape);
@@ -224,10 +227,7 @@ fn the_sam_head_matches_the_reference() {
     worst = worst.max(r.compare(out.high_res_masks, "sam_box.high_res_masks"));
     worst = worst.max(r.compare(out.ious, "sam_box.ious"));
     worst = worst.max(r.compare(out.obj_ptr, "sam_box.obj_ptr"));
-    worst = worst.max(r.compare(
-        out.object_score_logits,
-        "sam_box.object_score_logits",
-    ));
+    worst = worst.max(r.compare(out.object_score_logits, "sam_box.object_score_logits"));
 
     // ---- a propagated slice: three masks, the best by predicted IoU ------
     assert!(SamHead::<B>::use_multimask(0));
@@ -237,10 +237,7 @@ fn the_sam_head_matches_the_reference() {
     worst = worst.max(r.compare(out.high_res_masks, "sam_track.high_res_masks"));
     worst = worst.max(r.compare(out.ious, "sam_track.ious"));
     worst = worst.max(r.compare(out.obj_ptr, "sam_track.obj_ptr"));
-    worst = worst.max(r.compare(
-        out.object_score_logits,
-        "sam_track.object_score_logits",
-    ));
+    worst = worst.max(r.compare(out.object_score_logits, "sam_track.object_score_logits"));
     assert!(worst < 1e-3, "worst deviation {worst:e}");
 }
 
@@ -275,7 +272,10 @@ fn the_mask_decoder_reproduces_the_reference_masks() {
     worst = worst.max(r.compare(selected.ious, "dec_box.ious"));
     worst = worst.max(r.compare(selected.sam_tokens.clone(), "dec_box.tokens"));
     worst = worst.max(r.compare(selected.object_score_logits, "dec_box.obj_score"));
-    let token = selected.sam_tokens.slice([0..1, 0..1, 0..256]).reshape([1, 256]);
+    let token = selected
+        .sam_tokens
+        .slice([0..1, 0..1, 0..256])
+        .reshape([1, 256]);
     worst = worst.max(r.compare(head.project_obj_ptr(token), "dec_box.obj_ptr"));
 
     // and the tracking path: no prompt, three masks kept
@@ -371,7 +371,10 @@ fn the_tracker_reproduces_the_reference_propagation() {
 
     let mut forward = Tracker::new(&model, n);
     let out = forward.prompt(prompt_slice, &anchor, &prompt);
-    worst = worst.max(r.compare(as_ref_shape(out.high_res_masks), &format!("fwd.{prompt_slice}")));
+    worst = worst.max(r.compare(
+        as_ref_shape(out.high_res_masks),
+        &format!("fwd.{prompt_slice}"),
+    ));
     for i in prompt_slice + 1..n {
         let feats = model.encode_slice(frame(i));
         let out = forward.track(i, &feats, false);
