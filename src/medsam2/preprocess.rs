@@ -24,7 +24,7 @@
 //!
 //! Slices are taken along the patient's superior axis and oriented the way a
 //! radiologist reads them: rows run anterior to posterior, columns right to
-//! left. That is [`crate::autoseg::preprocess::canonical_axes`]'s `[S, A, R]`
+//! left. That is [`Volume::canonical_axes`]'s `[S, A, R]`
 //! with the last two axes flipped, and for an ordinary head-first-supine CT it
 //! is exactly the acquisition order, so nothing is moved at all.
 
@@ -32,7 +32,6 @@ use burn::tensor::backend::Backend;
 use burn::tensor::Tensor;
 use rayon::prelude::*;
 
-use crate::autoseg::preprocess::canonical_axes;
 use crate::volume::Volume;
 
 use super::config;
@@ -90,11 +89,8 @@ pub struct Prepared {
     perm: [usize; 3],
     /// Oriented axis runs opposite to the volume axis.
     flip: [bool; 3],
-    pub window: Window,
 }
 
-/// Axial axes: the superior axis for slices, then anterior-to-posterior rows
-/// and right-to-left columns.
 /// Where a volume voxel lands in the oriented stack.
 fn reorient_index(
     voxel: [usize; 3],
@@ -122,13 +118,15 @@ pub fn volume_index_to_prepared(vol: &Volume, voxel: [usize; 3]) -> [usize; 3] {
     reorient_index(voxel, perm, flip, dims)
 }
 
-/// Which volume axis becomes which prepared axis, and whether it is reversed.
+/// Which volume axis becomes which prepared axis, and whether it is reversed:
+/// the superior axis for slices, then anterior-to-posterior rows and
+/// right-to-left columns.
 ///
 /// Exposed because the user interface needs to know *before* anything is
 /// prepared which of the three views a prompt has to be drawn in: the one
 /// whose slices are the ones the network will propagate through.
 pub fn axial_axes(vol: &Volume) -> ([usize; 3], [bool; 3]) {
-    let (perm, mut flip) = canonical_axes(vol);
+    let (perm, mut flip) = vol.canonical_axes();
     // `canonical_axes` targets [S, A, R]; reading order is [S, P, L].
     flip[1] = !flip[1];
     flip[2] = !flip[2];
@@ -181,7 +179,6 @@ impl Prepared {
             ],
             perm,
             flip,
-            window,
         }
     }
 

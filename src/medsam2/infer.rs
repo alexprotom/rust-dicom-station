@@ -26,6 +26,7 @@ use burn::tensor::Tensor;
 use super::model::{Medsam2, SliceFeatures};
 use super::ops;
 use super::track::{Prompt, SliceOutput, Tracker};
+use crate::progress::{ProgressSink, CANCELLED};
 
 /// How to propagate.
 #[derive(Clone, Copy, Debug)]
@@ -75,17 +76,6 @@ pub trait Slices<B: Backend> {
     fn out_size(&self) -> [usize; 2];
 }
 
-/// Progress reporting and cancellation.
-pub trait Hooks: Sync {
-    fn report(&self, _frac: f32, _msg: &str) {}
-    fn cancelled(&self) -> bool {
-        false
-    }
-}
-
-pub struct Quiet;
-impl Hooks for Quiet {}
-
 /// One propagated structure.
 pub struct Segmentation {
     /// One byte per pixel per slice, `slices` long, each `size` in extent.
@@ -106,28 +96,8 @@ impl Segmentation {
     }
 }
 
-/// Run one prompt through the stack.
-pub fn propagate<B: Backend>(
-    model: &Medsam2<B>,
-    slices: &dyn Slices<B>,
-    prompt_slice: usize,
-    prompt: &Prompt<B>,
-    config: &Config,
-    hooks: &dyn Hooks,
-) -> Result<Segmentation> {
-    if prompt_slice >= slices.len() {
-        bail!(
-            "slice {prompt_slice} is outside a stack of {}",
-            slices.len()
-        );
-    }
-    hooks.report(0.0, "Encoding the prompted slice");
-    let anchor = model.encode_slice(slices.slice(prompt_slice));
-    propagate_from(model, slices, prompt_slice, &anchor, prompt, config, hooks)
-}
-
-/// The same, with the prompted slice already encoded — which is what makes
-/// re-running an adjusted prompt on the same slice cheap.
+/// Run one prompt through the stack, the prompted slice already encoded —
+/// which is what makes re-running an adjusted prompt on the same slice cheap.
 pub fn propagate_from<B: Backend>(
     model: &Medsam2<B>,
     slices: &dyn Slices<B>,
@@ -135,7 +105,7 @@ pub fn propagate_from<B: Backend>(
     anchor: &SliceFeatures<B>,
     prompt: &Prompt<B>,
     config: &Config,
-    hooks: &dyn Hooks,
+    hooks: &dyn ProgressSink,
 ) -> Result<Segmentation> {
     let n = slices.len();
     if n == 0 {
@@ -185,7 +155,7 @@ pub fn propagate_from<B: Backend>(
     // ---- forwards ----------------------------------------------------------
     for index in prompt_slice + 1..=last {
         if hooks.cancelled() {
-            bail!("cancelled");
+            bail!(CANCELLED);
         }
         hooks.report(
             visited as f32 / total as f32,
@@ -206,7 +176,7 @@ pub fn propagate_from<B: Backend>(
         reverse.prompt(prompt_slice, anchor, prompt);
         for index in (first..prompt_slice).rev() {
             if hooks.cancelled() {
-                bail!("cancelled");
+                bail!(CANCELLED);
             }
             hooks.report(
                 visited as f32 / total as f32,

@@ -17,17 +17,24 @@ impl ViewerApp {
     }
 
     // -- Auto-segmentation (TotalSegmentator, see the `autoseg` module) ----
-    /// Open the parameter dialog for auto-segmenting the given slot.
+    /// Open the tool window for auto-segmenting the given slot.
     pub(super) fn open_autoseg_dialog(&mut self, slot: usize) {
-        if self.slots[slot].study.is_none() || self.autoseg_job.is_some() {
+        if self.slots[slot].study.is_none() {
             return;
         }
-        self.autoseg_dialog = Some(AutosegDialog {
-            slot,
-            variant: autoseg::Variant::Fast3mm,
-            device: autoseg::DevicePref::Auto,
-            parts: [true; 5],
-        });
+        match &mut self.autoseg_dialog {
+            // Re-target an open window unless it is busy with the other slot.
+            Some(d) if self.autoseg_job.is_none() => d.slot = slot,
+            Some(_) => {}
+            None => {
+                self.autoseg_dialog = Some(AutosegDialog {
+                    slot,
+                    variant: autoseg::Variant::Fast3mm,
+                    device: autoseg::DevicePref::Auto,
+                    parts: [true; 5],
+                });
+            }
+        }
     }
 
     // -- Modals -----------------------------------------------------------
@@ -54,30 +61,41 @@ impl ViewerApp {
         }
     }
 
-    /// Auto-segmentation parameter dialog (model variant, device, weights
-    /// location) — see the `autoseg` module for the pipeline itself.
+    /// The auto-segmentation tool window: model variant, compute device and
+    /// model folder, then the run — whose progress replaces the buttons.
     pub(super) fn autoseg_run_window(&mut self, ctx: &egui::Context) {
         let Some(d) = &mut self.autoseg_dialog else {
             return;
         };
+        if self.slots[d.slot].study.is_none() {
+            self.autoseg_dialog = None;
+            return;
+        }
+        let running = self
+            .autoseg_job
+            .as_ref()
+            .filter(|_| self.autoseg_slot == d.slot);
         let mut open = true;
-        let mut close_clicked = false;
-        let mut run_clicked = false;
-        let mut browse_clicked = false;
-        egui::Window::new("🤖 Auto-segmentation")
-            .collapsible(false)
+        let mut close = false;
+        let mut run = false;
+        let mut browse = false;
+        let mut cancel = false;
+        let models_dir = models::engine_dir(
+            &models::root_from_setting(&self.models_dir),
+            models::Engine::TotalSegmentator,
+        );
+        egui::Window::new(AUTOSEG.title(d.slot))
+            .id(egui::Id::new("autoseg_window"))
+            .collapsible(true)
             .resizable(false)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .default_width(380.0)
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.label(format!(
-                    "Segment the CT of dataset {} into up to 117 anatomical \
-                     structures using TotalSegmentator's nnU-Net models \
-                     (re-implemented natively in Rust).",
-                    SLOT_NAMES[d.slot]
-                ));
-                ui.add_space(6.0);
-                let models_dir = PathBuf::from(self.autoseg_models_dir.trim());
+                ui.label(
+                    "Segments the CT into up to 117 anatomical structures with \
+                     TotalSegmentator's nnU-Net models, re-implemented natively in Rust.",
+                );
+                ui.separator();
                 ui.label("Model:");
                 for (variant, name, hint) in [
                     (
@@ -104,8 +122,19 @@ impl ViewerApp {
                     } else {
                         format!("downloads {} MB once", need / 1_000_000)
                     };
-                    ui.radio_value(&mut d.variant, variant, format!("{name}  ({note})"))
-                        .on_hover_text(hint);
+                    if ui
+                        .add_enabled(
+                            running.is_none(),
+                            egui::RadioButton::new(
+                                d.variant == variant,
+                                format!("{name}  ({note})"),
+                            ),
+                        )
+                        .on_hover_text(hint)
+                        .clicked()
+                    {
+                        d.variant = variant;
+                    }
                 }
                 if d.variant == autoseg::Variant::HighRes15mm {
                     ui.horizontal(|ui| {
@@ -115,57 +144,57 @@ impl ViewerApp {
                         }
                     });
                 }
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label("Compute:");
-                    ui.radio_value(&mut d.device, autoseg::DevicePref::Auto, "Auto")
-                        .on_hover_text("Use the GPU when one is available, else the CPU");
-                    ui.radio_value(&mut d.device, autoseg::DevicePref::Gpu, "GPU")
-                        .on_hover_text("Any GPU via wgpu (Vulkan / DX12 / Metal) — no CUDA needed");
-                    ui.radio_value(&mut d.device, autoseg::DevicePref::Cpu, "CPU");
+                ui.separator();
+                ui.collapsing("Options", |ui| {
+                    device_row(ui, &mut d.device);
+                    browse =
+                        models_dir_row(ui, &mut self.models_dir, models::Engine::TotalSegmentator);
                 });
-                ui.horizontal(|ui| {
-                    ui.label("Model folder:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.autoseg_models_dir)
-                            .desired_width(260.0),
-                    );
-                    if ui.button("📁").clicked() {
-                        browse_clicked = true;
-                    }
-                });
-                ui.add_space(4.0);
-                ui.weak(
-                    "Weights: TotalSegmentator 'total' task (Apache-2.0), \
-                     downloaded once from the official GitHub release and cached. \
-                     Research / QA use — not a medical device.",
+                ui.separator();
+                licence_line(
+                    ui,
+                    "Weights: TotalSegmentator 'total' task (Apache-2.0), downloaded once \
+                     from the official GitHub release.",
+                    false,
                 );
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    let can_run =
-                        d.variant != autoseg::Variant::HighRes15mm || d.parts.iter().any(|p| *p);
-                    if ui
-                        .add_enabled(can_run, egui::Button::new("▶ Segment"))
-                        .clicked()
-                    {
-                        run_clicked = true;
+                ui.separator();
+                match running {
+                    Some(job) => cancel = progress_row(ui, &job.progress),
+                    None => {
+                        ui.horizontal(|ui| {
+                            let can_run = d.variant != autoseg::Variant::HighRes15mm
+                                || d.parts.iter().any(|p| *p);
+                            if ui
+                                .add_enabled(can_run, egui::Button::new("▶ Segment"))
+                                .on_hover_text("Run the network on the whole volume")
+                                .clicked()
+                            {
+                                run = true;
+                            }
+                            if ui.button("Close").clicked() {
+                                close = true;
+                            }
+                        });
                     }
-                    if ui.button("Cancel").clicked() {
-                        close_clicked = true;
-                    }
-                });
+                }
             });
-        if browse_clicked {
-            if let Some(dir) = Self::pick_folder("Model folder for auto-segmentation weights") {
-                self.autoseg_models_dir = dir.display().to_string();
+        if browse {
+            if let Some(dir) = Self::pick_folder("Model folder") {
+                self.models_dir = dir.display().to_string();
             }
         }
-        if run_clicked && !close_clicked {
-            if let Some(d) = self.autoseg_dialog.take() {
-                self.start_autoseg(&d);
+        if cancel {
+            if let Some(job) = &self.autoseg_job {
+                job.progress.cancel();
             }
-        } else if !open || close_clicked {
+        }
+        if run {
+            self.start_autoseg();
+        }
+        if !open || close {
+            // The run, if any, carries on; the sidebar still shows it.
             self.autoseg_dialog = None;
+            self.persist_settings();
         }
     }
 
@@ -178,7 +207,7 @@ impl ViewerApp {
         let mut close_clicked = false;
         let mut apply_clicked = false;
         let vol_bytes = p.result.volume_dims[0] * p.result.volume_dims[1] * p.result.volume_dims[2];
-        egui::Window::new("🤖 Auto-segmentation results")
+        egui::Window::new(AUTOSEG.titled("results", p.slot))
             .collapsible(false)
             .resizable(true)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
@@ -258,9 +287,8 @@ impl ViewerApp {
         }
     }
 
-    /// Built-in synthetic test-data generator (the Rust replacement for the
-    /// old `tools/generate_test_data.py`): pick an output folder, tweak the
-    /// phantom parameters and write a complete RT study.
+    /// Built-in synthetic test-data generator: pick an output folder, tweak
+    /// the phantom parameters and write a complete RT study.
     pub(super) fn generator_window(&mut self, ctx: &egui::Context) {
         if !self.gen_open {
             return;

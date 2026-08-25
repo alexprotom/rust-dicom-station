@@ -10,7 +10,10 @@
 use rayon::prelude::*;
 
 use crate::geometry::Vec3;
-use crate::loader::{LoadedStudy, Progress, SeriesInfo};
+use std::sync::Arc;
+
+use crate::loader::{LoadedStudy, SeriesInfo};
+use crate::progress::Progress;
 use crate::registration::RigidTransform;
 use crate::rtdose::DoseGrid;
 use crate::rtstruct::{Contour, Roi, StructureSet};
@@ -336,7 +339,7 @@ pub fn generate_transformed_study(
             files: Vec::new(),
         }],
         active_series: 0,
-        volume,
+        volume: Arc::new(volume),
         structure_sets,
         doses,
         plans,

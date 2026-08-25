@@ -11,23 +11,16 @@
 //! cargo run --release --example segvol_probe -- [MODELS_DIR] [--keys] [--csv FILE]
 //! ```
 //!
-//! `MODELS_DIR` defaults to `segvol_model/` next to the executable. `--keys`
+//! `MODELS_DIR` defaults to `models/segvol/` next to the executable. `--keys`
 //! lists every tensor; `--csv` rewrites the recorded inventory.
 
 use std::io::Write;
 use std::path::PathBuf;
 
+use rust_dicom_station::models::{self, Engine};
+use rust_dicom_station::progress::Stderr;
 use rust_dicom_station::segvol::layout::{self, Inventory, TensorInfo};
 use rust_dicom_station::segvol::weights::{self, CHECKPOINT};
-
-struct Stderr;
-impl rust_dicom_station::nn::cache::ProgressSink for Stderr {
-    fn report(&self, _frac: f32, msg: &str) {
-        // Carriage return keeps the download on one line.
-        eprint!("\r\x1b[K{msg}");
-        std::io::stderr().flush().ok();
-    }
-}
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
@@ -45,9 +38,10 @@ fn main() -> anyhow::Result<()> {
             other => models_dir = Some(PathBuf::from(other)),
         }
     }
-    let models_dir = models_dir.unwrap_or_else(weights::default_models_dir);
+    let models_dir =
+        models_dir.unwrap_or_else(|| models::engine_dir(&models::default_root(), Engine::SegVol));
 
-    if !weights::is_cached(&CHECKPOINT, &models_dir) {
+    if !CHECKPOINT.is_cached(&models_dir) {
         eprintln!(
             "Fetching {} ({} MB) into {}",
             CHECKPOINT.name,
@@ -60,7 +54,7 @@ fn main() -> anyhow::Result<()> {
              redistributed by this program."
         );
     }
-    let path = weights::ensure_file(&CHECKPOINT, &models_dir, &Stderr)?;
+    let path = CHECKPOINT.ensure(&models_dir, &Stderr)?;
     eprintln!("\rusing {}", path.display());
 
     let reader = weights::open_checkpoint(&path)?;
@@ -73,7 +67,7 @@ fn main() -> anyhow::Result<()> {
 
     println!("tensors        {:>13}", inv.tensors);
     println!("values         {:>13}", inv.params);
-    println!("  learnable    {:>13}", inv.params - inv.int_values - 1152);
+    println!("  learnable    {:>13}", layout::EXPECTED_LEARNABLE);
     println!("  live         {:>13}", inv.live_params());
     println!("  dead branch  {:>13}", inv.dead_params);
     println!();

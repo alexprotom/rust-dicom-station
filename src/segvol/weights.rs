@@ -3,7 +3,10 @@
 //! The published weights live in the Hugging Face repository
 //! [`BAAI/SegVol`](https://huggingface.co/BAAI/SegVol) as a single
 //! `pytorch_model.bin` — a plain `state_dict()` saved with `torch.save`, so
-//! [`crate::nn::pickle`] reads it directly with an empty top-level key.
+//! [`crate::nn::pickle`] reads it directly with an empty top-level key. The
+//! download, the conversion to the `safetensors` cache and the cache itself
+//! are the shared machinery in [`crate::nn::cache`]; what stays here is what
+//! is SegVol's alone — which files, which tensors, and under what names.
 //!
 //! ## Licensing
 //!
@@ -20,20 +23,14 @@
 //! TotalSegmentator ones may be.
 
 use anyhow::{Context, Result};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use crate::nn::cache::ProgressSink;
-use crate::nn::pickle::PthReader;
+use crate::nn::cache::{self, ConvertSpec, RemoteFile};
+use crate::nn::params::Params;
+use crate::nn::pickle::{Dtype, PthReader};
+use crate::progress::ProgressSink;
 
-/// One file to fetch from the model repository.
-#[derive(Clone, Copy, Debug)]
-pub struct RemoteFile {
-    /// File name, used both remotely and in the local cache.
-    pub name: &'static str,
-    pub url: &'static str,
-    /// Published size in bytes; progress display only.
-    pub bytes: u64,
-}
+use super::layout;
 
 /// The model weights: a bare `state_dict()`, fp32, ~724 MB.
 pub const CHECKPOINT: RemoteFile = RemoteFile {
@@ -41,7 +38,7 @@ pub const CHECKPOINT: RemoteFile = RemoteFile {
     url: "https://huggingface.co/BAAI/SegVol/resolve/main/pytorch_model.bin",
     // Tensor bytes; the ZIP container adds a little. Only a fallback for the
     // progress bar when the server sends no Content-Length.
-    bytes: super::layout::PAYLOAD_BYTES,
+    bytes: layout::PAYLOAD_BYTES,
 };
 
 /// CLIP byte-pair vocabulary, needed to turn a text prompt into tokens.
@@ -62,44 +59,59 @@ pub const CLIP_MERGES: RemoteFile = RemoteFile {
     bytes: 524_619,
 };
 
-/// Default cache directory: `segvol_model/` next to the executable.
-pub fn default_models_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("segvol_model")
+/// The two tokenizer files, fetched together.
+pub const CLIP_FILES: [RemoteFile; 2] = [CLIP_VOCAB, CLIP_MERGES];
+
+/// Name of the converted-weight cache written beside the checkpoint.
+pub const CACHE_NAME: &str = "segvol.safetensors";
+
+/// True when the converted cache is present, so nothing has to be downloaded
+/// or parsed to run.
+pub fn is_ready(models_dir: &Path) -> bool {
+    models_dir.join(CACHE_NAME).is_file()
 }
 
-/// True when `f` is already in the cache directory.
-pub fn is_cached(f: &RemoteFile, models_dir: &Path) -> bool {
-    models_dir.join(f.name).is_file()
+/// Bytes still to download before the network (and, with `text`, the
+/// tokenizer) can run.
+pub fn download_needed(models_dir: &Path, text: bool) -> u64 {
+    let weights = if is_ready(models_dir) {
+        0
+    } else {
+        cache::download_needed([&CHECKPOINT], models_dir)
+    };
+    let tokenizer = if text {
+        cache::download_needed(&CLIP_FILES, models_dir)
+    } else {
+        0
+    };
+    weights + tokenizer
 }
 
-/// Bytes still to download for the given files.
-pub fn download_needed(files: &[RemoteFile], models_dir: &Path) -> u64 {
-    files
-        .iter()
-        .filter(|f| !is_cached(f, models_dir))
-        .map(|f| f.bytes)
-        .sum()
-}
-
-/// Fetch `f` into `models_dir` if it is not already there, and return its
-/// path. Downloads land on a temporary name and are renamed only once
-/// complete, so an interrupted download is never mistaken for a cached file.
-pub fn ensure_file(f: &RemoteFile, models_dir: &Path, sink: &dyn ProgressSink) -> Result<PathBuf> {
-    let dest = models_dir.join(f.name);
-    if dest.is_file() {
-        return Ok(dest);
+/// Which tensors to convert: the live ones, under their normalized names.
+/// CLIP's `position_ids` buffer is the checkpoint's only integer tensor and
+/// nothing reads it.
+fn convert_spec() -> ConvertSpec<'static> {
+    ConvertSpec {
+        top_key: "",
+        keep: &|name, meta| {
+            !layout::is_dead_weight(name)
+                && matches!(meta.dtype, Dtype::F32 | Dtype::F16 | Dtype::F64)
+        },
+        rename: &|name| layout::normalize_key(name).to_string(),
+        label: "SegVol",
     }
-    std::fs::create_dir_all(models_dir)
-        .with_context(|| format!("create {}", models_dir.display()))?;
-    let tmp = dest.with_extension("part");
-    crate::nn::cache::download_to_file(f.url, &tmp, f.bytes, f.name, sink)
-        .with_context(|| format!("download {}", f.url))?;
-    std::fs::rename(&tmp, &dest)?;
-    Ok(dest)
+}
+
+/// The whole first-use path: download if needed, convert once, and load from
+/// the converted cache ever after.
+pub fn load(models_dir: &Path, sink: &dyn ProgressSink) -> Result<Params> {
+    let tensors = cache::ensure_converted(
+        &models_dir.join(CACHE_NAME),
+        &convert_spec(),
+        || CHECKPOINT.ensure(models_dir, sink),
+        sink,
+    )?;
+    Ok(Params::new(tensors))
 }
 
 /// Open the checkpoint's state dict. The archive root *is* the state dict,
@@ -117,7 +129,7 @@ mod tests {
 
     #[test]
     fn the_download_hint_matches_the_recorded_payload() {
-        assert_eq!(CHECKPOINT.bytes, super::super::layout::PAYLOAD_BYTES);
+        assert_eq!(CHECKPOINT.bytes, layout::PAYLOAD_BYTES);
     }
 
     #[test]
@@ -131,5 +143,16 @@ mod tests {
             );
             assert!(f.url.ends_with(f.name), "{} vs {}", f.url, f.name);
         }
+    }
+
+    #[test]
+    fn an_empty_folder_needs_the_whole_download() {
+        let dir = std::env::temp_dir().join("rds_segvol_weights_empty");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(download_needed(&dir, false), CHECKPOINT.bytes);
+        assert_eq!(
+            download_needed(&dir, true),
+            CHECKPOINT.bytes + CLIP_VOCAB.bytes + CLIP_MERGES.bytes
+        );
     }
 }

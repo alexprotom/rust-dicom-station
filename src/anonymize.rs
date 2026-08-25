@@ -31,7 +31,7 @@ use dicom_object::meta::FileMetaTableBuilder;
 use dicom_object::{InMemDicomObject, OpenFileOptions};
 use rayon::prelude::*;
 
-use crate::loader::Progress;
+use crate::progress::Progress;
 
 // ---------------------------------------------------------------------------
 // Rules: which tags are treated as identifying, and what to suggest.

@@ -22,8 +22,8 @@
 //! [`clip`] turn a structure name into a text prompt. All of it is written
 //! against the checkpoint layout recorded in [`layout`] and verified against
 //! the real file, with the image encoder additionally available on any
-//! GPU wgpu can drive ([`gpu`], cargo feature `gpu`). Still to come: the
-//! interaction.
+//! GPU wgpu can drive ([`gpu`], cargo feature `gpu`). The user interface is
+//! `app::prompt_seg`; the checkpoint comes and goes through [`weights`].
 
 pub mod bpe;
 pub mod clip;
@@ -34,7 +34,6 @@ pub mod gpu;
 pub mod infer;
 pub mod layout;
 pub mod net;
-pub mod params;
 pub mod preprocess;
 pub mod prompt;
 pub mod vit;

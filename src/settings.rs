@@ -12,14 +12,17 @@ use egui::ThemePreference;
 
 const FILE_NAME: &str = "viewer_settings.txt";
 
+/// Settings key of the model root; the installer writes it too.
+pub const MODELS_DIR_KEY: &str = "models_dir";
+
 /// User preferences that survive a restart.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     /// Light / dark / follow-the-system appearance.
     pub theme: ThemePreference,
-    /// Auto-segmentation model cache directory (None = default:
-    /// `autoseg_models/` next to the executable).
-    pub autoseg_dir: Option<PathBuf>,
+    /// Root of the downloaded network weights (None = default: `models/`
+    /// next to the executable, see [`crate::models`]).
+    pub models_dir: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -28,7 +31,7 @@ impl Default for Settings {
         // than following the system, which would surprise existing users.
         Settings {
             theme: ThemePreference::Dark,
-            autoseg_dir: None,
+            models_dir: None,
         }
     }
 }
@@ -95,10 +98,10 @@ fn parse(text: &str) -> Settings {
             if let Some(t) = theme_from_str(value) {
                 s.theme = t;
             }
-        } else if key.eq_ignore_ascii_case("autoseg_models_dir") {
+        } else if key.eq_ignore_ascii_case(MODELS_DIR_KEY) {
             let v = value.trim();
             if !v.is_empty() {
-                s.autoseg_dir = Some(PathBuf::from(v));
+                s.models_dir = Some(PathBuf::from(v));
             }
         }
     }
@@ -112,8 +115,8 @@ fn render(s: &Settings) -> String {
          theme = {}\n",
         theme_to_str(s.theme)
     );
-    if let Some(dir) = &s.autoseg_dir {
-        out.push_str(&format!("autoseg_models_dir = {}\n", dir.display()));
+    if let Some(dir) = &s.models_dir {
+        out.push_str(&format!("{MODELS_DIR_KEY} = {}\n", dir.display()));
     }
     out
 }
@@ -131,7 +134,7 @@ mod tests {
         ] {
             let s = Settings {
                 theme,
-                autoseg_dir: None,
+                models_dir: None,
             };
             assert_eq!(parse(&render(&s)), s, "round trip of {theme:?}");
         }
@@ -147,7 +150,7 @@ mod tests {
             parse("unknown = 3\nTHEME =  Light \n"),
             Settings {
                 theme: ThemePreference::Light,
-                autoseg_dir: None
+                models_dir: None
             },
             "case-insensitive key and value, surrounding space ignored"
         );
@@ -155,13 +158,13 @@ mod tests {
             parse("theme = white"),
             Settings {
                 theme: ThemePreference::Light,
-                autoseg_dir: None
+                models_dir: None
             },
             "\"white\" accepted as an alias for light"
         );
         let with_dir = Settings {
             theme: ThemePreference::Dark,
-            autoseg_dir: Some(PathBuf::from("D:/models")),
+            models_dir: Some(PathBuf::from("D:/models")),
         };
         assert_eq!(parse(&render(&with_dir)), with_dir, "model dir round trip");
     }

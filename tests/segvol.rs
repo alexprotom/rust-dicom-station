@@ -10,7 +10,7 @@
 //! The `#[ignore]`d test checks the actual checkpoint. Enable it locally with
 //!
 //! ```text
-//! RDS_SEGVOL_MODEL=path/to/segvol_model \
+//! RDS_SEGVOL_MODEL=path/to/models/segvol \
 //!   cargo test --release --test segvol -- --ignored
 //! ```
 //!
@@ -388,13 +388,9 @@ fn the_real_checkpoint_matches_the_recorded_inventory() {
     use rust_dicom_station::segvol::weights;
     let dir =
         std::path::PathBuf::from(std::env::var("RDS_SEGVOL_MODEL").expect("set RDS_SEGVOL_MODEL"));
-    struct Quiet;
-    impl rust_dicom_station::nn::cache::ProgressSink for Quiet {
-        fn report(&self, _f: f32, m: &str) {
-            eprintln!("{m}");
-        }
-    }
-    let path = weights::ensure_file(&weights::CHECKPOINT, &dir, &Quiet).unwrap();
+    let path = weights::CHECKPOINT
+        .ensure(&dir, &rust_dicom_station::progress::Stderr)
+        .unwrap();
     let reader = weights::open_checkpoint(&path).unwrap();
     let live = Inventory::of(reader.tensors.iter().map(|(name, meta)| TensorInfo {
         name,
@@ -429,8 +425,8 @@ fn the_real_checkpoint_matches_the_recorded_inventory() {
 // download. Only the numbers are fake; the architecture is not.
 
 use rust_dicom_station::nn::cache::WTensor;
+use rust_dicom_station::nn::params::Params;
 use rust_dicom_station::segvol::config::*;
-use rust_dicom_station::segvol::params::Params;
 use rust_dicom_station::segvol::prompt::{Point, PromptEncoder};
 use rust_dicom_station::segvol::{decoder::MaskDecoder, net::SegVolNet, vit::Vit};
 

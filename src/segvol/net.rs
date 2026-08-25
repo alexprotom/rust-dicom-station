@@ -7,12 +7,12 @@
 
 use anyhow::Result;
 
-use crate::nn::tensor::{Act, Mat};
+use crate::nn::tensor::Mat;
 
 use super::decoder::{Decoded, MaskDecoder};
-use super::params::Params;
 use super::prompt::{BBox, Point, PromptEncoder};
 use super::vit::Vit;
+use crate::nn::params::Params;
 
 /// The assembled network, weights resident.
 pub struct SegVolNet {
@@ -48,18 +48,6 @@ impl SegVolNet {
     #[cfg(feature = "gpu")]
     pub fn attach_gpu(&mut self, gpu: super::gpu::GpuVit) {
         self.gpu_vit = Some(gpu);
-    }
-
-    /// Whether a GPU encoder is attached.
-    pub fn on_gpu(&self) -> bool {
-        #[cfg(feature = "gpu")]
-        {
-            self.gpu_vit.is_some()
-        }
-        #[cfg(not(feature = "gpu"))]
-        {
-            false
-        }
     }
 
     /// Encode one `ROI`-shaped volume. The result can be reused across
@@ -101,11 +89,5 @@ impl SegVolNet {
     ) -> Decoded {
         let image = self.encode_image(volume);
         self.decode(&image, points, boxes, text)
-    }
-
-    /// The logit volume a caller actually wants: mask channel 0, at
-    /// `MASK_SHAPE`.
-    pub fn logits(decoded: &Decoded) -> Act {
-        decoded.best()
     }
 }

@@ -17,9 +17,11 @@ use crate::autoseg;
 use crate::dicom_export;
 use crate::extras;
 use crate::gen_test_data::{self, GenParams};
-use crate::loader::{self, LoadedStudy, Progress};
+use crate::loader::{self, LoadedStudy};
 use crate::mesh3d::{self, GridGeom, RoiMesh};
-use crate::registration::{self, RegKind, RegParams, RegProgress, RegistrationResult, Transform3};
+use crate::models;
+use crate::progress::{self, Progress};
+use crate::registration::{self, RegKind, RegParams, RegistrationResult, Transform3};
 use crate::render;
 use crate::segmentation::{self, GrowState, Segmentation};
 use crate::settings::{self, Settings};
@@ -35,15 +37,17 @@ mod panels;
 mod planar;
 mod prompt_seg;
 mod seg;
+mod seg_engines;
 mod theme;
 mod tree;
 mod views;
 
+use seg_engines::*;
 use theme::*;
 
 const SLOT_NAMES: [&str; 2] = ["A", "B"];
 
-/// Parameters of the auto-segmentation run dialog.
+/// The auto-segmentation window: its parameters, and the run they start.
 struct AutosegDialog {
     slot: usize,
     variant: autoseg::Variant,
@@ -306,7 +310,7 @@ impl StudySlot {
 
 /// A freshly reconstructed volume: pixels, its default window/level and any
 /// non-fatal notes raised while reading the series.
-type LoadedVolume = (Volume, (f32, f32), Vec<String>);
+type LoadedVolume = (Arc<Volume>, (f32, f32), Vec<String>);
 
 enum LoadResult {
     /// A whole folder, for the given slot.
@@ -321,6 +325,23 @@ enum LoadResult {
 struct Job<T, P = Progress> {
     progress: Arc<P>,
     rx: mpsc::Receiver<T>,
+}
+
+impl<T, P> Job<T, P> {
+    /// Run `work` on a new thread and return the handle to poll for its
+    /// result. The worker gets the progress handle; the caller keeps a clone.
+    fn spawn(progress: Arc<P>, work: impl FnOnce(&P) -> T + Send + 'static) -> Job<T, P>
+    where
+        T: Send + 'static,
+        P: Send + Sync + 'static,
+    {
+        let (tx, rx) = mpsc::channel();
+        let p = progress.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(work(&p));
+        });
+        Job { progress, rx }
+    }
 }
 
 /// Poll a background job. Returns its result once, clearing the slot; reports
@@ -345,6 +366,26 @@ fn poll_job<T, P>(
         Err(mpsc::TryRecvError::Disconnected) => {
             *slot = None;
             *error = Some(format!("{what} thread terminated unexpectedly"));
+            None
+        }
+    }
+}
+
+/// [`poll_job`] for the jobs that answer with `(slot, Result)`: a failure is
+/// reported as `"{what} failed: …"`, except a cancellation, which is what
+/// the user asked for and needs no dialog.
+fn poll_tool_job<T, P>(
+    slot: &mut Option<Job<(usize, anyhow::Result<T>), P>>,
+    ctx: &egui::Context,
+    what: &str,
+    error: &mut Option<String>,
+) -> Option<(usize, T)> {
+    match poll_job(slot, ctx, what, error)? {
+        (s, Ok(v)) => Some((s, v)),
+        (_, Err(e)) => {
+            if !progress::is_cancellation(&e) {
+                *error = Some(format!("{what} failed: {e:#}"));
+            }
             None
         }
     }
@@ -493,7 +534,7 @@ pub struct ViewerApp {
     // Registration (direction selectable: either study can be the fixed one).
     registration: Option<ActiveRegistration>,
     /// The payload carries the slot that was used as the fixed image.
-    reg_job: Option<Job<(usize, anyhow::Result<RegistrationResult>), RegProgress>>,
+    reg_job: Option<SegJob<RegistrationResult>>,
     /// Fixed-image slot for the *next* registration run (0 = A, 1 = B).
     reg_fixed_slot: usize,
     fusion_on: bool,
@@ -587,34 +628,29 @@ pub struct ViewerApp {
     /// Counter for naming newly created segmentations.
     seg_counter: usize,
 
+    /// Root folder of the downloaded network weights, shared by the three
+    /// engines (persisted in the settings file; blank = the default).
+    models_dir: String,
+
     // Auto-segmentation (TotalSegmentator re-implementation, see `autoseg`).
     /// The payload carries the slot the volume came from.
-    autoseg_job:
-        Option<Job<(usize, anyhow::Result<autoseg::AutosegResult>), autoseg::AutosegProgress>>,
+    autoseg_job: Option<SegJob<autoseg::AutosegResult>>,
     /// Slot currently being segmented (progress shown in its sidebar section).
     autoseg_slot: usize,
-    /// Pre-run parameter dialog, when open.
+    /// The tool window, when open; it stays open while a run is in flight.
     autoseg_dialog: Option<AutosegDialog>,
     /// Finished result awaiting organ selection.
     autoseg_pending: Option<AutosegPending>,
-    /// Model cache directory (persisted in the settings file).
-    autoseg_models_dir: String,
 
     // Prompt-driven segmentation (SegVol re-implementation, see `segvol`).
-    #[allow(clippy::type_complexity)]
-    segvol_job:
-        Option<Job<(usize, anyhow::Result<prompt_seg::SegVolResult>), prompt_seg::SegVolProgress>>,
+    segvol_job: Option<SegJob<prompt_seg::SegVolResult>>,
     segvol_slot: usize,
+    /// The tool window, when open; it stays open across runs.
     segvol_dialog: Option<prompt_seg::SegVolDialog>,
-    segvol_models_dir: String,
-    /// One-line summary of the last finished run.
-    segvol_status: Option<String>,
 
     // Slice-propagating segmentation (MedSAM2 re-implementation): the drawn
     // box, the loaded engine and the prepared stack all live in one struct.
-    #[allow(clippy::type_complexity)]
-    medsam2_job:
-        Option<Job<(usize, anyhow::Result<box_seg::Medsam2Done>), box_seg::Medsam2Progress>>,
+    medsam2_job: Option<SegJob<box_seg::Medsam2Done>>,
     medsam2: box_seg::Medsam2State,
 
     dose_mode: DoseMode,
@@ -650,6 +686,21 @@ impl ViewerApp {
     ) -> Self {
         let prefs = settings::load();
         cc.egui_ctx.set_theme(prefs.theme);
+        let models_dir = prefs
+            .models_dir
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        // Installations that predate the single `models/` root keep their
+        // downloads; the folders are moved into place, never re-fetched.
+        let moved = models::migrate_legacy_layout(&models::root_from_setting(&models_dir));
+        for engine in &moved {
+            eprintln!(
+                "moved the {} weights into {}",
+                engine.subdir(),
+                models::root_from_setting(&models_dir).display()
+            );
+        }
         let mut app = ViewerApp {
             slots: [StudySlot::empty(), StudySlot::empty()],
             comparison: initial_b.is_some(),
@@ -705,6 +756,7 @@ impl ViewerApp {
             show_crosshair: true,
             show_labels: true,
             show_isocenters: true,
+            models_dir,
             autoseg_job: None,
             autoseg_slot: 0,
             autoseg_dialog: None,
@@ -712,18 +764,8 @@ impl ViewerApp {
             segvol_job: None,
             segvol_slot: 0,
             segvol_dialog: None,
-            segvol_models_dir: crate::segvol::weights::default_models_dir()
-                .display()
-                .to_string(),
-            segvol_status: None,
             medsam2_job: None,
             medsam2: Default::default(),
-            autoseg_models_dir: prefs
-                .autoseg_dir
-                .clone()
-                .unwrap_or_else(autoseg::default_models_dir)
-                .display()
-                .to_string(),
             seg_tool: SegTool::None,
             brush_radius_mm: 5.0,
             brush_3d: true,
@@ -760,17 +802,16 @@ impl ViewerApp {
 
     /// Write all persisted preferences (best-effort, see `settings::save`).
     pub(super) fn persist_settings(&mut self) {
-        let default_dir = autoseg::default_models_dir().display().to_string();
-        let autoseg_dir = if self.autoseg_models_dir.trim().is_empty()
-            || self.autoseg_models_dir == default_dir
-        {
-            None
-        } else {
-            Some(PathBuf::from(self.autoseg_models_dir.trim()))
-        };
+        let default_dir = models::default_root().display().to_string();
+        let models_dir =
+            if self.models_dir.trim().is_empty() || self.models_dir.trim() == default_dir {
+                None
+            } else {
+                Some(PathBuf::from(self.models_dir.trim()))
+            };
         match settings::save(&Settings {
             theme: self.theme,
-            autoseg_dir,
+            models_dir,
         }) {
             Ok(()) => self.settings_error = None,
             Err(e) => {
@@ -892,69 +933,36 @@ impl eframe::App for ViewerApp {
             None => {}
         }
 
-        // Poll background auto-segmentation.
-        match poll_job(
-            &mut self.autoseg_job,
+        // Poll the three segmentation engines.
+        if let Some((slot, result)) =
+            poll_tool_job(&mut self.autoseg_job, &ctx, AUTOSEG.name, &mut self.error)
+        {
+            self.on_autoseg_done(slot, result);
+        }
+        if let Some((slot, result)) = poll_tool_job(
+            &mut self.medsam2_job,
             &ctx,
-            "Auto-segmentation",
+            SLICE_PROP.name,
             &mut self.error,
         ) {
-            Some((slot, Ok(result))) => self.on_autoseg_done(slot, result),
-            Some((_, Err(e))) => {
-                let msg = format!("{e:#}");
-                if !msg.contains("cancelled") {
-                    self.error = Some(format!("Auto-segmentation failed: {msg}"));
-                }
-            }
-            None => {}
+            self.on_medsam2_done(slot, result);
         }
-
-        // Poll background slice propagation.
-        match poll_job(&mut self.medsam2_job, &ctx, "Propagation", &mut self.error) {
-            Some((slot, Ok(result))) => self.on_medsam2_done(slot, result),
-            Some((_, Err(e))) => {
-                let msg = format!("{e:#}");
-                if !msg.contains("cancelled") {
-                    self.error = Some(format!("Propagation failed: {msg}"));
-                }
-            }
-            None => {}
-        }
-
-        // Poll background prompt segmentation.
-        match poll_job(
-            &mut self.segvol_job,
-            &ctx,
-            "Prompt segmentation",
-            &mut self.error,
-        ) {
-            Some((slot, Ok(result))) => self.on_segvol_done(slot, result),
-            Some((_, Err(e))) => {
-                let msg = format!("{e:#}");
-                if !msg.contains("cancelled") {
-                    self.error = Some(format!("Prompt segmentation failed: {msg}"));
-                }
-            }
-            None => {}
+        if let Some((slot, result)) =
+            poll_tool_job(&mut self.segvol_job, &ctx, PROMPT_SEG.name, &mut self.error)
+        {
+            self.on_segvol_done(slot, result);
         }
 
         // Poll background registration.
-        match poll_job(&mut self.reg_job, &ctx, "Registration", &mut self.error) {
-            Some((fixed_slot, Ok(result))) => {
-                self.registration = Some(ActiveRegistration { result, fixed_slot });
-                self.fusion_on = true;
-                self.reg_gen += 1;
-                // Re-propagate the crosshair through the new transform.
-                let cursor = self.slots[fixed_slot].cursor;
-                self.set_cursor(fixed_slot, cursor, usize::MAX);
-            }
-            Some((_, Err(e))) => {
-                let msg = format!("{e:#}");
-                if !msg.contains("cancelled") {
-                    self.error = Some(format!("Registration failed: {msg}"));
-                }
-            }
-            None => {}
+        if let Some((fixed_slot, result)) =
+            poll_tool_job(&mut self.reg_job, &ctx, "Registration", &mut self.error)
+        {
+            self.registration = Some(ActiveRegistration { result, fixed_slot });
+            self.fusion_on = true;
+            self.reg_gen += 1;
+            // Re-propagate the crosshair through the new transform.
+            let cursor = self.slots[fixed_slot].cursor;
+            self.set_cursor(fixed_slot, cursor, usize::MAX);
         }
 
         // Global segmentation shortcuts (skipped while a text field is

@@ -5,9 +5,9 @@
 //! while the network is being assembled rather than producing a plausible
 //! mask from a mis-shaped tensor.
 //!
-//! This is the generalization of `segvol::params`, which predates it and
-//! normalizes SegVol's own `model.` prefix on construction; new engines
-//! should use this one and pass a key normalizer if they need it.
+//! Every engine assembles its network from one of these; a checkpoint whose
+//! keys carry a wrapper prefix is normalized once, at conversion time, so
+//! the keys asked for here are the ones the cache holds.
 
 use anyhow::{bail, Result};
 use std::collections::HashMap;

@@ -2,9 +2,12 @@
 //!
 //! ```text
 //! cargo run --release --example autoseg_cli -- <dicom_dir> <out_prefix>
-//!     [--variant fast3|highres|preview6] [--models-dir DIR] [--device auto|cpu|gpu]
+//!     [--variant fast3|highres|preview6] [--models DIR] [--device auto|gpu|cpu]
 //!     [--parts organs,vertebrae,cardiac,muscles,ribs]
 //! ```
+//!
+//! `--models` is the engine's folder, `models/totalsegmentator/` next to the
+//! executable by default.
 //!
 //! Writes `<out_prefix>.bin` (u8 labels, `Volume::data` order) and
 //! `<out_prefix>.json` (dims, spacing, origin, orientation, organ table) so
@@ -14,8 +17,10 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use rust_dicom_station::autoseg::{self, AutosegProgress, DevicePref, Variant};
+use rust_dicom_station::autoseg::{self, DevicePref, Variant};
 use rust_dicom_station::loader;
+use rust_dicom_station::models::{self, Engine};
+use rust_dicom_station::progress::Progress;
 
 fn main() {
     if let Err(e) = run() {
@@ -29,7 +34,7 @@ fn run() -> anyhow::Result<()> {
     let dir = PathBuf::from(args.next().ok_or_else(usage)?);
     let out_prefix = args.next().ok_or_else(usage)?;
     let mut variant = Variant::Fast3mm;
-    let mut models_dir = autoseg::default_models_dir();
+    let mut models_dir = models::engine_dir(&models::default_root(), Engine::TotalSegmentator);
     let mut device = DevicePref::Auto;
     let mut parts = [true; 5];
     while let Some(a) = args.next() {
@@ -42,14 +47,13 @@ fn run() -> anyhow::Result<()> {
                     v => anyhow::bail!("unknown variant {v:?}"),
                 }
             }
-            "--models-dir" => models_dir = PathBuf::from(args.next().ok_or_else(usage)?),
+            "--models" | "--models-dir" => {
+                models_dir = PathBuf::from(args.next().ok_or_else(usage)?)
+            }
             "--device" => {
-                device = match args.next().as_deref() {
-                    Some("auto") => DevicePref::Auto,
-                    Some("cpu") => DevicePref::Cpu,
-                    Some("gpu") => DevicePref::Gpu,
-                    v => anyhow::bail!("unknown device {v:?}"),
-                }
+                let v = args.next().unwrap_or_default();
+                device = DevicePref::from_key(&v)
+                    .ok_or_else(|| anyhow::anyhow!("unknown device {v:?}"))?;
             }
             "--parts" => {
                 parts = [false; 5];
@@ -65,7 +69,7 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
-    let progress = loader::Progress::default();
+    let progress = Progress::default();
     eprintln!("loading {} …", dir.display());
     let study = loader::load_directory(&dir, &progress)?;
     let vol = &study.volume;
@@ -74,7 +78,7 @@ fn run() -> anyhow::Result<()> {
         vol.dims[0], vol.dims[1], vol.dims[2], vol.spacing[0], vol.spacing[1], vol.spacing[2]
     );
 
-    let ap = AutosegProgress::default();
+    let ap = Progress::default();
     let t = std::time::Instant::now();
     let done = std::sync::atomic::AtomicBool::new(false);
     let result = std::thread::scope(|s| {
@@ -149,6 +153,6 @@ fn run() -> anyhow::Result<()> {
 
 fn usage() -> anyhow::Error {
     anyhow::anyhow!(
-        "usage: autoseg_cli <dicom_dir> <out_prefix> [--variant fast3|highres|preview6] [--models-dir DIR] [--device auto|cpu|gpu] [--parts a,b,…]"
+        "usage: autoseg_cli <dicom_dir> <out_prefix> [--variant fast3|highres|preview6] [--models DIR] [--device auto|gpu|cpu] [--parts a,b,…]"
     )
 }

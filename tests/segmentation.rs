@@ -230,3 +230,37 @@ fn mask_meshes_into_a_sphere_surface() {
         assert!(t.iter().all(|&i| (i as usize) < verts.len()));
     }
 }
+
+#[test]
+fn a_label_map_splits_into_per_class_segmentations_in_one_pass() {
+    // A 5 x 4 x 3 label map with three classes scattered through it.
+    let dims = [5, 4, 3];
+    let mut labels = vec![0u8; 60];
+    labels[0] = 7; // (0,0,0)
+    labels[3 * 5 + 4] = 7; // (4,3,0)
+    labels[20 + 2 * 5 + 1] = 2; // (1,2,1)
+    labels[40 + 5 + 2] = 2; // (2,1,2)
+    labels[40 + 3 * 5 + 3] = 9; // (3,3,2)
+    let classes = vec![
+        (7u8, "seven".to_string(), [1u8, 2, 3]),
+        (2, "two".to_string(), [4, 5, 6]),
+        (9, "nine".to_string(), [7, 8, 9]),
+        (5, "absent".to_string(), [0, 0, 0]),
+    ];
+    let many = Segmentation::from_label_map_many(dims, &labels, &classes);
+    assert_eq!(many.len(), 4);
+    for (seg, (label, name, color)) in many.iter().zip(&classes) {
+        let one = Segmentation::from_label_map(name.clone(), *color, dims, &labels, *label);
+        assert_eq!(seg.name, one.name);
+        assert_eq!(seg.color, one.color);
+        assert_eq!(seg.mask, one.mask, "{name}");
+        assert_eq!(seg.count, one.count, "{name}");
+        assert_eq!(seg.bbox, one.bbox, "{name}");
+    }
+    assert_eq!(many[0].count, 2);
+    assert_eq!(many[0].bbox, Some(([0, 0, 0], [4, 3, 0])));
+    assert_eq!(many[1].bbox, Some(([1, 1, 1], [2, 2, 2])));
+    assert_eq!(many[2].bbox, Some(([3, 3, 2], [3, 3, 2])));
+    assert_eq!(many[3].count, 0);
+    assert_eq!(many[3].bbox, None);
+}

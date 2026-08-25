@@ -24,13 +24,15 @@
 //! becomes network coordinates.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::Arc;
 
 use crate::medsam2::engine::{Engine, EnginePrompt, PixelPrompt};
-use crate::medsam2::infer::{Config, Hooks};
+use crate::medsam2::infer::Config;
 use crate::medsam2::preprocess::{self, Prepared, Window};
 use crate::medsam2::weights::{self, Variant};
+use crate::models::Engine as ModelsEngine;
+use crate::nn::device::DevicePref;
+use crate::progress::Progress;
 use crate::volume::{ViewPlane, Volume};
 
 use super::*;
@@ -185,63 +187,6 @@ impl BoxPrompt {
 
 // ------------------------------------------------------------- background --
 
-/// Progress, cancellation and the device label, shared with the worker.
-#[derive(Default)]
-pub struct Medsam2Progress {
-    message: Mutex<String>,
-    device: Mutex<String>,
-    frac: AtomicU32,
-    cancelled: AtomicBool,
-}
-
-impl Medsam2Progress {
-    pub fn set(&self, m: impl Into<String>) {
-        *self.message.lock().unwrap() = m.into();
-    }
-    pub fn get(&self) -> String {
-        self.message.lock().unwrap().clone()
-    }
-    pub fn set_device(&self, d: impl Into<String>) {
-        *self.device.lock().unwrap() = d.into();
-    }
-    pub fn device(&self) -> String {
-        self.device.lock().unwrap().clone()
-    }
-    pub fn frac(&self) -> f32 {
-        f32::from_bits(self.frac.load(Ordering::Relaxed))
-    }
-    pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Relaxed);
-    }
-    pub fn cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Relaxed)
-    }
-    fn advance(&self, frac: f32, msg: &str) {
-        self.frac.store(frac.to_bits(), Ordering::Relaxed);
-        if !msg.is_empty() {
-            self.set(msg);
-        }
-    }
-}
-
-impl Hooks for Medsam2Progress {
-    fn report(&self, frac: f32, msg: &str) {
-        self.advance(frac, msg);
-    }
-    fn cancelled(&self) -> bool {
-        Medsam2Progress::cancelled(self)
-    }
-}
-
-impl crate::nn::cache::ProgressSink for Medsam2Progress {
-    fn report(&self, frac: f32, msg: &str) {
-        self.advance(frac, msg);
-    }
-    fn cancelled(&self) -> bool {
-        Medsam2Progress::cancelled(self)
-    }
-}
-
 /// Identifies the prepared stack: rebuild it when any of this changes.
 #[derive(Clone, PartialEq, Debug)]
 pub struct PrepKey {
@@ -280,33 +225,40 @@ pub struct Medsam2Done {
     pub result: Medsam2Result,
 }
 
-/// The background half: build whatever is missing, then run the request.
-#[allow(clippy::too_many_arguments)]
-fn run_job(
+/// Everything a run needs, snapshotted from the panel when it starts.
+struct Medsam2Request {
+    /// The loaded network, when a previous run left one.
     engine: Option<Arc<Engine>>,
+    /// The prepared stack, when it is still the one this study and window need.
     cached: Option<(Arc<Prepared>, Arc<Volume>)>,
-    fresh: Option<Volume>,
+    /// The voxels to prepare a stack from, when `cached` is `None`.
+    fresh: Option<Arc<Volume>>,
     key: PrepKey,
     variant: Variant,
     window: Window,
+    device: DevicePref,
     models_dir: PathBuf,
     request: Request,
     slice: usize,
     prompt: EnginePrompt,
     cfg: Config,
-    progress: &Medsam2Progress,
-) -> anyhow::Result<Medsam2Done> {
-    let prepared_is_new = cached.is_none();
-    let (prepared, volume) = match cached {
+}
+
+/// The background half: build whatever is missing, then run the request.
+fn run_job(req: Medsam2Request, progress: &Progress) -> anyhow::Result<Medsam2Done> {
+    let prepared_is_new = req.cached.is_none();
+    let (prepared, volume) = match req.cached {
         Some(pair) => pair,
         None => {
             progress.set("Preparing the study…");
-            let volume = Arc::new(fresh.ok_or_else(|| anyhow::anyhow!("no volume to prepare"))?);
-            let prepared = Arc::new(Prepared::prepare(&volume, window));
+            let volume = req
+                .fresh
+                .ok_or_else(|| anyhow::anyhow!("no volume to prepare"))?;
+            let prepared = Arc::new(Prepared::prepare(&volume, req.window));
             (prepared, volume)
         }
     };
-    let engine = match engine {
+    let engine = match req.engine {
         Some(e) => {
             if prepared_is_new {
                 // The engine keeps the last encoded slice; a stack built with
@@ -317,33 +269,40 @@ fn run_job(
         }
         None => {
             progress.set("Loading the weights…");
-            let params = weights::load(variant, &models_dir, progress)?;
-            Arc::new(Engine::load(&params, true)?)
+            let params = weights::load(req.variant, &req.models_dir, progress)?;
+            progress.set("Choosing the compute device…");
+            Arc::new(Engine::load(&params, req.device)?)
         }
     };
     progress.set_device(engine.device().to_string());
 
     let started = std::time::Instant::now();
-    let result = match request {
+    let result = match req.request {
         Request::Preview => {
             progress.set("Segmenting this slice…");
-            let slice_mask = engine.preview(&prepared, slice, &prompt, &cfg)?;
+            let slice_mask = engine.preview(&prepared, req.slice, &req.prompt, &req.cfg)?;
             let voxels = slice_mask.iter().filter(|v| **v != 0).count() as u64;
             // One slice, on the volume's grid, so the viewer can draw it with
             // everything else.
             let mut masks: Vec<Vec<u8>> = (0..prepared.dims[0]).map(|_| Vec::new()).collect();
-            masks[slice] = slice_mask;
+            masks[req.slice] = slice_mask;
             Medsam2Result {
                 mask: prepared.mask_to_volume_grid(&masks, &volume),
                 voxels,
                 slices_visited: 1,
-                extent: Some((slice, slice)),
+                extent: Some((req.slice, req.slice)),
                 elapsed_secs: started.elapsed().as_secs_f64(),
             }
         }
         Request::Propagate => {
-            let (mask, seg) =
-                engine.propagate_to_volume(&prepared, &volume, slice, &prompt, &cfg, progress)?;
+            let (mask, seg) = engine.propagate_to_volume(
+                &prepared,
+                &volume,
+                req.slice,
+                &req.prompt,
+                &req.cfg,
+                progress,
+            )?;
             Medsam2Result {
                 mask,
                 voxels: seg.voxels,
@@ -358,8 +317,8 @@ fn run_job(
         engine,
         prepared,
         volume,
-        key,
-        request,
+        key: req.key,
+        request: req.request,
         result,
     })
 }
@@ -393,8 +352,8 @@ pub(super) struct Medsam2State {
     pub variant: Variant,
     pub window: WindowSource,
     pub cfg: Config,
+    pub device: DevicePref,
     pub name: String,
-    pub models_dir: String,
     pub status: Option<String>,
     /// Set when the box changed and an automatic preview is due.
     pub dirty: bool,
@@ -428,8 +387,8 @@ impl Default for Medsam2State {
                 max_slices: None,
                 ..Config::default()
             },
-            name: "MedSAM2".to_string(),
-            models_dir: weights::default_models_dir().display().to_string(),
+            device: DevicePref::Auto,
+            name: "Propagated".to_string(),
             status: None,
             dirty: false,
             range_pinned: false,
@@ -526,12 +485,17 @@ pub(super) fn plane_name(plane: ViewPlane) -> &'static str {
 // -------------------------------------------------------- the application --
 
 impl ViewerApp {
-    /// Tools ▶ propagate from a slice.
+    /// Tools ▶ slice propagation: open the tool window for `slot`.
     pub(super) fn open_medsam2_panel(&mut self, slot: usize) {
         if self.slots[slot].study.is_none() {
             return;
         }
         if self.medsam2.slot != slot {
+            // Not while a run on the other dataset is still in flight: the
+            // box, the target segmentation and the range belong to it.
+            if self.medsam2_job.is_some() {
+                return;
+            }
             self.medsam2.prompt = None;
             self.medsam2.target_seg = None;
             self.medsam2.base_mask = None;
@@ -661,45 +625,37 @@ impl ViewerApp {
         } else {
             Some(study.volume.clone())
         };
-        let models_dir = if self.medsam2.models_dir.trim().is_empty() {
-            weights::default_models_dir()
-        } else {
-            PathBuf::from(self.medsam2.models_dir.trim())
-        };
-        let engine = self.medsam2.engine.clone();
-        let variant = self.medsam2.variant;
-        let progress = Arc::new(Medsam2Progress::default());
+        let progress = Arc::new(Progress::default());
         progress.set(match request {
             Request::Preview => "Segmenting this slice…",
             Request::Propagate => "Propagating…",
         });
-        let p2 = progress.clone();
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let res = run_job(
-                engine, cached, fresh, key, variant, window, models_dir, request, slice, prompt,
-                cfg, &p2,
-            );
-            let _ = tx.send((slot, res));
-        });
+        let req = Medsam2Request {
+            engine: self.medsam2.engine.clone(),
+            cached,
+            fresh,
+            key,
+            variant: self.medsam2.variant,
+            window,
+            device: self.medsam2.device,
+            models_dir: self.engine_models_dir(ModelsEngine::MedSam2),
+            request,
+            slice,
+            prompt,
+            cfg,
+        };
         self.medsam2.dirty = false;
-        self.medsam2_job = Some(Job { progress, rx });
+        self.medsam2_job = Some(Job::spawn(progress, move |p| (slot, run_job(req, p))));
     }
 
     /// A run finished.
     pub(super) fn on_medsam2_done(&mut self, slot: usize, done: Medsam2Done) {
-        let valid = self.slots[slot].study.as_ref().is_some_and(|st| {
-            st.volume.dims == done.key.dims && st.volume.frame_of_reference_uid == done.key.uid
-        });
+        let valid = self.slot_still_shows(slot, done.key.dims, &done.key.uid);
         // Keep the expensive parts whatever happened to the result.
         self.medsam2.engine = Some(done.engine);
         self.medsam2.prep = Some((done.key.clone(), done.prepared, done.volume));
         if !valid {
-            self.error = Some(
-                "The run finished, but the dataset changed while it was \
-                 running — the result was discarded."
-                    .into(),
-            );
+            self.error = Some(stale_result(&SLICE_PROP));
             return;
         }
         let preview = matches!(done.request, Request::Preview);
@@ -741,14 +697,7 @@ impl ViewerApp {
                     Segmentation::from_label_map(name, color, dims, &r.mask, 1);
                 i
             }
-            _ => {
-                let color = segmentation::SEG_PALETTE
-                    [self.slots[slot].segs.len() % segmentation::SEG_PALETTE.len()];
-                self.slots[slot]
-                    .segs
-                    .push(Segmentation::from_label_map(name, color, dims, &r.mask, 1));
-                self.slots[slot].segs.len() - 1
-            }
+            _ => self.add_segmentation(slot, name, dims, &r.mask),
         };
         self.medsam2.target_seg = Some(index);
         self.slots[slot].active_seg = index;
@@ -764,7 +713,7 @@ impl ViewerApp {
         let cm3 = r.voxels as f64 * spacing[0] * spacing[1] * spacing[2] / 1000.0;
         self.medsam2.status = Some(if preview {
             format!(
-                "This slice: {} pixels in {:.1}s on {}",
+                "This slice: {} pixels in {:.1} s on {}",
                 r.voxels, r.elapsed_secs, done.device
             )
         } else {
@@ -773,13 +722,18 @@ impl ViewerApp {
                 None => "nothing".to_string(),
             };
             format!(
-                "{} voxels ({cm3:.1} cm³) over {span} in {:.1}s on {} — {} slice(s) tracked",
-                r.voxels, r.elapsed_secs, done.device, r.slices_visited
+                "✔ {}: {} voxels ({cm3:.1} cm³) over {span} in {:.1} s on {} — {} slice(s) tracked",
+                self.medsam2.name.trim(),
+                r.voxels,
+                r.elapsed_secs,
+                done.device,
+                r.slices_visited
             )
         });
     }
 
-    /// The panel, and the progress readout while a run is in flight.
+    /// The tool window; while a run is in flight its buttons become the
+    /// progress row.
     pub(super) fn medsam2_window(&mut self, ctx: &egui::Context) {
         if !self.medsam2.open {
             return;
@@ -793,22 +747,27 @@ impl ViewerApp {
         let n_slices = study.volume.plane_slice_count(plane);
         let current = self.slots[slot].views[super::plane_index(plane)].slice;
         let running = self.medsam2_job.is_some();
+        let models_dir = self.engine_models_dir(ModelsEngine::MedSam2);
 
         let mut request: Option<Request> = None;
+        let mut open = true;
         let mut close = false;
         let mut cancel = false;
         let mut clear = false;
+        let mut browse = false;
 
-        egui::Window::new("🧠 MedSAM2 — propagate from a slice")
+        egui::Window::new(SLICE_PROP.title(slot))
+            .id(egui::Id::new("medsam2_window"))
             .collapsible(true)
             .resizable(false)
-            .default_width(320.0)
+            .default_width(380.0)
+            .open(&mut open)
             .show(ctx, |ui| {
-                ui.label(format!("Dataset {}", SLOT_NAMES[slot]));
-                ui.weak(format!(
-                    "Drag a box around the structure in the {} view, on a slice where it \
-                     is clear. The box stays: drag its corners to resize, its middle to \
-                     move it.",
+                ui.label(format!(
+                    "Follows a structure boxed on one slice through the stack with MedSAM2, \
+                     re-implemented natively in Rust. Drag a box around it in the {} view, on a \
+                     slice where it is clear; the box stays — drag its corners to resize, its \
+                     middle to move it.",
                     plane_name(plane)
                 ));
                 ui.separator();
@@ -863,37 +822,38 @@ impl ViewerApp {
                 // ---- the range -------------------------------------------
                 ui.separator();
                 ui.label("Propagate through:");
-                let mut range = self.medsam2.range.unwrap_or((0, n_slices - 1));
+                let last = n_slices.saturating_sub(1);
+                let mut range = self.medsam2.range.unwrap_or((0, last));
                 let before = range;
+                // Slice numbers are shown 1-based; the values stay 0-based.
+                fn one_based<'a>(
+                    v: &'a mut usize,
+                    last: usize,
+                    prefix: &str,
+                ) -> egui::DragValue<'a> {
+                    egui::DragValue::new(v)
+                        .range(0..=last)
+                        .custom_formatter(|v, _| format!("{}", v as usize + 1))
+                        .custom_parser(|s| s.parse::<f64>().ok().map(|v| v - 1.0))
+                        .prefix(prefix)
+                }
                 ui.horizontal(|ui| {
-                    ui.add(
-                        egui::DragValue::new(&mut range.0)
-                            .range(1..=n_slices)
-                            .custom_formatter(|v, _| format!("{}", v as usize + 1))
-                            .custom_parser(|s| s.parse::<f64>().ok().map(|v| v - 1.0))
-                            .prefix("from "),
-                    );
+                    ui.add(one_based(&mut range.0, last, "from "));
                     if ui.button("⤒ this slice").clicked() {
                         range.0 = current;
                     }
-                    ui.add(
-                        egui::DragValue::new(&mut range.1)
-                            .range(1..=n_slices)
-                            .custom_formatter(|v, _| format!("{}", v as usize + 1))
-                            .custom_parser(|s| s.parse::<f64>().ok().map(|v| v - 1.0))
-                            .prefix("to "),
-                    );
+                    ui.add(one_based(&mut range.1, last, "to "));
                     if ui.button("⤓ this slice").clicked() {
                         range.1 = current;
                     }
                 });
                 ui.horizontal(|ui| {
                     if ui.button("Whole study").clicked() {
-                        range = (0, n_slices - 1);
+                        range = (0, last);
                     }
                     if let Some(b) = &self.medsam2.prompt {
                         if ui.button("± 32 slices").clicked() {
-                            range = (b.slice.saturating_sub(32), (b.slice + 32).min(n_slices - 1));
+                            range = (b.slice.saturating_sub(32), (b.slice + 32).min(last));
                         }
                     }
                     ui.weak(format!("{} of {} slices", range.1 - range.0 + 1, n_slices));
@@ -902,65 +862,10 @@ impl ViewerApp {
                     // Touched by hand: stop following the box.
                     self.medsam2.range_pinned = true;
                 }
-                let hi = n_slices - 1;
-                self.medsam2.range =
-                    Some((range.0.min(range.1).min(hi), range.0.max(range.1).min(hi)));
-
-                // ---- options ---------------------------------------------
-                ui.separator();
-                egui::CollapsingHeader::new("Model and image")
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label("Window:");
-                            ui.selectable_value(
-                                &mut self.medsam2.window,
-                                WindowSource::Viewport,
-                                "Viewport",
-                            );
-                            for (i, (name, _, _)) in Window::PRESETS.iter().enumerate() {
-                                ui.selectable_value(
-                                    &mut self.medsam2.window,
-                                    WindowSource::Preset(i),
-                                    *name,
-                                );
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Model:");
-                            egui::ComboBox::from_id_salt("medsam2_variant")
-                                .selected_text(self.medsam2.variant.label())
-                                .show_ui(ui, |ui| {
-                                    for v in Variant::ALL {
-                                        ui.selectable_value(
-                                            &mut self.medsam2.variant,
-                                            v,
-                                            v.label(),
-                                        );
-                                    }
-                                });
-                        });
-                        ui.checkbox(&mut self.medsam2.cfg.reverse_pass, "Both directions");
-                        ui.checkbox(
-                            &mut self.medsam2.cfg.largest_component,
-                            "Keep only the largest connected component",
-                        );
-                        ui.add(
-                            egui::Slider::new(&mut self.medsam2.cfg.threshold, -4.0..=4.0)
-                                .text("threshold"),
-                        );
-                        ui.horizontal(|ui| {
-                            ui.label("Cache:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.medsam2.models_dir)
-                                    .desired_width(200.0),
-                            );
-                        });
-                        ui.weak(
-                            "The weights (156 MB) are downloaded on first use and are \
-                             licensed for research and education only.",
-                        );
-                    });
+                self.medsam2.range = Some((
+                    range.0.min(range.1).min(last),
+                    range.0.max(range.1).min(last),
+                ));
 
                 if self.medsam2.base_mask.is_some() {
                     ui.checkbox(&mut self.medsam2.merge, "Add to what is already there")
@@ -972,40 +877,86 @@ impl ViewerApp {
                 }
                 ui.horizontal(|ui| {
                     ui.label("Name:");
-                    ui.add(egui::TextEdit::singleline(&mut self.medsam2.name).desired_width(150.0));
+                    ui.add(egui::TextEdit::singleline(&mut self.medsam2.name).desired_width(160.0));
                 });
+
+                // ---- options ---------------------------------------------
+                ui.separator();
+                ui.collapsing("Options", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Window:");
+                        ui.selectable_value(
+                            &mut self.medsam2.window,
+                            WindowSource::Viewport,
+                            "Viewport",
+                        );
+                        for (i, (name, _, _)) in Window::PRESETS.iter().enumerate() {
+                            ui.selectable_value(
+                                &mut self.medsam2.window,
+                                WindowSource::Preset(i),
+                                *name,
+                            );
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Model:");
+                        egui::ComboBox::from_id_salt("medsam2_variant")
+                            .selected_text(self.medsam2.variant.label())
+                            .show_ui(ui, |ui| {
+                                for v in Variant::ALL {
+                                    ui.selectable_value(&mut self.medsam2.variant, v, v.label());
+                                }
+                            });
+                    });
+                    ui.checkbox(&mut self.medsam2.cfg.reverse_pass, "Both directions");
+                    ui.checkbox(
+                        &mut self.medsam2.cfg.largest_component,
+                        "Keep only the largest connected component",
+                    );
+                    ui.horizontal(|ui| {
+                        ui.label("Threshold:");
+                        ui.add(egui::Slider::new(
+                            &mut self.medsam2.cfg.threshold,
+                            -4.0..=4.0,
+                        ));
+                    });
+                    device_row(ui, &mut self.medsam2.device);
+                    browse = models_dir_row(ui, &mut self.models_dir, ModelsEngine::MedSam2);
+                });
+                ui.separator();
+                let need = weights::download_needed(self.medsam2.variant, &models_dir);
+                let weights_note = if need == 0 {
+                    "Weights: MedSAM2 (research and education only) — cached ✓.".to_string()
+                } else {
+                    format!(
+                        "Weights: MedSAM2 (research and education only) — {} MB downloaded \
+                         once from Hugging Face, at your request, never redistributed.",
+                        need / 1_000_000
+                    )
+                };
+                licence_line(ui, &weights_note, true);
 
                 // ---- run -------------------------------------------------
                 ui.separator();
-                if running {
-                    if let Some(job) = &self.medsam2_job {
-                        let msg = job.progress.get();
-                        let dev = job.progress.device();
-                        if !dev.is_empty() {
-                            ui.weak(format!("Running on: {dev}"));
-                        }
-                        ui.add(egui::ProgressBar::new(job.progress.frac()).show_percentage());
-                        ui.label(if msg.is_empty() { "Working…" } else { &msg });
-                        if ui.button("Cancel").clicked() {
-                            cancel = true;
-                        }
+                match &self.medsam2_job {
+                    Some(job) => cancel = progress_row(ui, &job.progress),
+                    None => {
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(
+                                    self.medsam2.prompt.is_some(),
+                                    egui::Button::new("▶ Propagate"),
+                                )
+                                .on_hover_text("Follow the structure through the slice range")
+                                .clicked()
+                            {
+                                request = Some(Request::Propagate);
+                            }
+                            if ui.button("Close").clicked() {
+                                close = true;
+                            }
+                        });
                     }
-                } else {
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(
-                                self.medsam2.prompt.is_some(),
-                                egui::Button::new("▶ Propagate"),
-                            )
-                            .on_hover_text("Follow the structure through the slice range")
-                            .clicked()
-                        {
-                            request = Some(Request::Propagate);
-                        }
-                        if ui.button("Close").clicked() {
-                            close = true;
-                        }
-                    });
                 }
                 if let Some(status) = &self.medsam2.status {
                     ui.separator();
@@ -1013,6 +964,11 @@ impl ViewerApp {
                 }
             });
 
+        if browse {
+            if let Some(dir) = Self::pick_folder("Model folder") {
+                self.models_dir = dir.display().to_string();
+            }
+        }
         if clear {
             self.medsam2.prompt = None;
             self.medsam2.dirty = false;
@@ -1025,13 +981,15 @@ impl ViewerApp {
                 job.progress.cancel();
             }
         }
-        if close {
+        if !open || close {
             self.medsam2.open = false;
-            // The weights stay; the study-sized buffers do not.
+            // The weights stay; the study-sized buffers do not. A run in
+            // flight carries on and lands as usual.
             self.medsam2.prep = None;
             if let Some(e) = &self.medsam2.engine {
                 e.clear_cache();
             }
+            self.persist_settings();
         }
         // An automatic preview waits for the pointer to be released, and for
         // whatever is running to finish.

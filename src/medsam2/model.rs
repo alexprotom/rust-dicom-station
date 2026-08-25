@@ -92,13 +92,14 @@ impl<B: Backend> Medsam2<B> {
     /// projections the decoder needs.
     pub fn encode_slice(&self, image: Tensor<B, 4>) -> SliceFeatures<B> {
         let stages = self.trunk.forward(image);
-        let levels = self.neck.forward(&stages);
-        let high_res = self
-            .head
-            .decoder
-            .project_high_res(levels[0].clone(), levels[1].clone());
+        let mut levels = self.neck.forward(&stages);
+        // `scalp`: the lowest-resolution level(s) are computed and dropped.
+        levels.truncate(config::USED_LEVELS);
+        let [level0, level1, level2] = <[_; config::USED_LEVELS]>::try_from(levels)
+            .unwrap_or_else(|v| panic!("the neck emitted {} levels", v.len()));
+        let high_res = self.head.decoder.project_high_res(level0, level1);
         SliceFeatures {
-            pix_feat: levels[2].clone(),
+            pix_feat: level2,
             high_res,
         }
     }

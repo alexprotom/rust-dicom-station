@@ -259,7 +259,7 @@ impl ViewerApp {
         to: usize,
         sub: LoadedStudy,
         activate_uid: &str,
-        direct: Option<(Volume, (f32, f32))>,
+        direct: Option<(Arc<Volume>, (f32, f32))>,
     ) {
         self.comparison = true;
         if self.slots[to].study.is_none() {
@@ -458,7 +458,7 @@ mod tree_tests {
             meta: loader::PatientMeta::default(),
             series: vec![series("se1", "P1", "st1"), series("se2", "P1", "st2")],
             active_series: 0,
-            volume: Volume {
+            volume: Arc::new(Volume {
                 data: vec![0],
                 dims: [1, 1, 1],
                 spacing: [1.0, 1.0, 1.0],
@@ -469,7 +469,7 @@ mod tree_tests {
                 frame_of_reference_uid: String::new(),
                 min_value: 0,
                 max_value: 0,
-            },
+            }),
             structure_sets: vec![
                 structset("ss1", "se1", "st1"),
                 structset("ss2", "se2", "st2"),

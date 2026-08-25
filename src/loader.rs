@@ -6,7 +6,7 @@
 //! dedicated modules.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use dicom_dictionary_std::tags;
@@ -16,25 +16,11 @@ use rayon::prelude::*;
 
 use crate::extras::{self, PlanarImage, SpatialReg, TreatRecord};
 use crate::geometry::Vec3;
+use crate::progress::Progress;
 use crate::rtdose::{self, DoseGrid};
 use crate::rtplan::{self, PlanInfo};
 use crate::rtstruct::{self, StructureSet};
 use crate::volume::Volume;
-
-/// Shared progress indicator for the background loading thread.
-#[derive(Default)]
-pub struct Progress {
-    msg: Mutex<String>,
-}
-
-impl Progress {
-    pub fn set(&self, s: impl Into<String>) {
-        *self.msg.lock().unwrap() = s.into();
-    }
-    pub fn get(&self) -> String {
-        self.msg.lock().unwrap().clone()
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Safe element extraction helpers (missing/malformed tags never panic).
@@ -142,7 +128,10 @@ pub struct LoadedStudy {
     pub meta: PatientMeta,
     pub series: Vec<SeriesInfo>,
     pub active_series: usize,
-    pub volume: Volume,
+    /// The displayed volume. Shared, not copied: every background job (a
+    /// registration, a segmentation engine, an export) works on the same
+    /// allocation the views draw from, and a series switch replaces it.
+    pub volume: Arc<Volume>,
     /// All RT Structure Sets found in the folder (e.g. one per 4DCT phase).
     /// The application selects the active one per study slot.
     pub structure_sets: Vec<StructureSet>,
@@ -409,7 +398,7 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
         meta,
         series: image_series,
         active_series,
-        volume,
+        volume: Arc::new(volume),
         structure_sets,
         doses,
         plans,
@@ -626,9 +615,13 @@ pub fn load_series_volume(
 pub fn merge_study(dest: &mut LoadedStudy, src: LoadedStudy) -> Vec<String> {
     let mut notes = Vec::new();
 
+    // Series are the one collection that grows into the hundreds (every
+    // phase of a 4DCT is one), so their UIDs are looked up in a set.
+    let mut known: std::collections::HashSet<String> =
+        dest.series.iter().map(|d| d.uid.clone()).collect();
     let mut skipped = 0usize;
     for s in src.series {
-        if dest.series.iter().any(|d| d.uid == s.uid) {
+        if !known.insert(s.uid.clone()) {
             skipped += 1;
         } else {
             dest.series.push(s);

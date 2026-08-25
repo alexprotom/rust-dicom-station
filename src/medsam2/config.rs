@@ -7,7 +7,7 @@
 //! out. Everything below is therefore SAM 2.1-T's own geometry, evaluated at
 //! 512.
 //!
-//! Unlike [`crate::medsam2`]'s sibling engine SegVol, none of this is baked
+//! Unlike the sibling engine [`crate::segvol`], none of this is baked
 //! into the checkpoint: the weights are resolution-independent, and every
 //! quantity that depends on `IMAGE_SIZE` (the interpolated background
 //! position embedding, the dense prompt encoding, the RoPE frequency table)
@@ -57,8 +57,12 @@ pub const D_MODEL: usize = 256;
 pub const FPN_LEVELS: usize = 4;
 /// Levels that receive the top-down addition.
 pub const FPN_TOP_DOWN_LEVELS: [usize; 2] = [2, 3];
-/// How many of the lowest-resolution levels the image encoder throws away.
+/// How many of the lowest-resolution levels the image encoder throws away:
+/// the neck emits [`FPN_LEVELS`], the model consumes the first
+/// `FPN_LEVELS - SCALP`.
 pub const SCALP: usize = 1;
+/// The levels the model actually consumes.
+pub const USED_LEVELS: usize = FPN_LEVELS - SCALP;
 
 /// Grid of the feature map the SAM head and the memory attention consume
 /// (FPN level 2, stride 16).
@@ -91,6 +95,8 @@ pub const NUM_MASK_TOKENS: usize = 4;
 pub const UPSCALED_CH: usize = D_MODEL / 8;
 /// Width of the hypernetwork MLPs' output.
 pub const HYPER_DIM: usize = UPSCALED_CH;
+/// Hidden layers of the IoU prediction head (`D_MODEL` wide, then the
+/// per-mask output).
 pub const IOU_HEAD_DEPTH: usize = 3;
 
 // ---- memory attention ----------------------------------------------------

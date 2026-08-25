@@ -269,24 +269,26 @@ impl ViewerApp {
         }
         let dims = study.volume.dims;
         let first_new = self.slots[slot].segs.len();
-        let mut added = 0usize;
-        for (organ, sel) in p.result.organs.iter().zip(p.selected.iter()) {
-            if !sel {
-                continue;
-            }
-            let seg = Segmentation::from_label_map(
-                organ.name.to_string(),
-                organ.color,
-                dims,
-                &p.result.labels,
-                organ.label,
-            );
-            self.slots[slot].segs.push(seg);
-            added += 1;
-        }
+        let classes: Vec<(u8, String, [u8; 3])> = p
+            .result
+            .organs
+            .iter()
+            .zip(p.selected.iter())
+            .filter(|(_, sel)| **sel)
+            .map(|(organ, _)| (organ.label, organ.name.to_string(), organ.color))
+            .collect();
+        let added = classes.len();
         if added == 0 {
             return;
         }
+        // One pass over the label map for every chosen structure.
+        self.slots[slot]
+            .segs
+            .extend(Segmentation::from_label_map_many(
+                dims,
+                &p.result.labels,
+                &classes,
+            ));
         self.slots[slot].active_seg = first_new;
         if p.also_rs {
             for i in first_new..first_new + added {

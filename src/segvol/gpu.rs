@@ -22,43 +22,14 @@ use burn::backend::Wgpu;
 use burn::tensor::activation::softmax;
 use burn::tensor::{Tensor, TensorData};
 
+use crate::nn::device::{guarded, GpuContext};
+use crate::nn::params::Params;
 use crate::nn::tensor::Mat;
 
 use super::config::*;
-use super::params::Params;
 use super::vit::Vit;
 
 type B = Wgpu;
-
-/// A validated wgpu device.
-pub struct GpuContext {
-    device: WgpuDevice,
-}
-
-impl GpuContext {
-    /// Initialize the default wgpu device and prove it works with a tiny
-    /// computation. Backend initialization failures surface as panics inside
-    /// wgpu/cubecl, so they are caught here and turned into errors — the same
-    /// discipline the auto-segmentation backend uses.
-    pub fn try_new() -> Result<GpuContext> {
-        let result = std::panic::catch_unwind(|| {
-            let device = WgpuDevice::default();
-            let t =
-                Tensor::<B, 1>::from_data(TensorData::new(vec![1.0f32, 2.0, 3.0], [3]), &device);
-            let s: f32 = t.sum().into_scalar();
-            (device, s)
-        });
-        match result {
-            Ok((device, s)) if (s - 6.0).abs() < 1e-3 => Ok(GpuContext { device }),
-            Ok((_, s)) => bail!("GPU self-test returned {s}, expected 6"),
-            Err(_) => bail!("no usable wgpu adapter found"),
-        }
-    }
-
-    pub fn describe(&self) -> String {
-        "wgpu".to_string()
-    }
-}
 
 /// One transformer block's weights, resident on the device.
 struct GBlock {
@@ -103,23 +74,23 @@ fn upload_row(d: &WgpuDevice, v: &[f32]) -> Tensor<B, 3> {
 impl GpuVit {
     /// Build from the same checkpoint tensors the CPU encoder reads.
     pub fn new(ctx: &GpuContext, p: &Params) -> Result<GpuVit> {
-        let d = &ctx.device;
+        let d = ctx.device();
         let pe = "image_encoder.patch_embedding";
         let (patch_w, patch_b) =
-            p.linear(&format!("{pe}.patch_embeddings.1"), EMBED, PATCH_FEATURES)?;
+            p.linear_opt(&format!("{pe}.patch_embeddings.1"), EMBED, PATCH_FEATURES)?;
         let pos = p.get(&format!("{pe}.position_embeddings"), &[1, TOKENS, EMBED])?;
         let mut blocks = Vec::with_capacity(VIT_BLOCKS);
         for i in 0..VIT_BLOCKS {
             let b = format!("image_encoder.blocks.{i}");
-            let (ln1_w, ln1_b) = p.norm(&format!("{b}.norm1"), &[EMBED])?;
-            let (ln2_w, ln2_b) = p.norm(&format!("{b}.norm2"), &[EMBED])?;
-            let (qkv_w, qkv_bias) = p.linear(&format!("{b}.attn.qkv"), 3 * EMBED, EMBED)?;
+            let (ln1_w, ln1_b) = p.norm(&format!("{b}.norm1"), EMBED)?;
+            let (ln2_w, ln2_b) = p.norm(&format!("{b}.norm2"), EMBED)?;
+            let (qkv_w, qkv_bias) = p.linear_opt(&format!("{b}.attn.qkv"), 3 * EMBED, EMBED)?;
             if qkv_bias.is_some() {
                 bail!("{b}.attn.qkv has a bias; this is not the network this port implements");
             }
-            let (out_w, out_b) = p.linear(&format!("{b}.attn.out_proj"), EMBED, EMBED)?;
-            let (lin1_w, lin1_b) = p.linear(&format!("{b}.mlp.linear1"), VIT_MLP, EMBED)?;
-            let (lin2_w, lin2_b) = p.linear(&format!("{b}.mlp.linear2"), EMBED, VIT_MLP)?;
+            let (out_w, out_b) = p.linear_opt(&format!("{b}.attn.out_proj"), EMBED, EMBED)?;
+            let (lin1_w, lin1_b) = p.linear_opt(&format!("{b}.mlp.linear1"), VIT_MLP, EMBED)?;
+            let (lin2_w, lin2_b) = p.linear_opt(&format!("{b}.mlp.linear2"), EMBED, VIT_MLP)?;
             blocks.push(GBlock {
                 ln1_w: upload_row(d, ln1_w),
                 ln1_b: upload_row(d, ln1_b),
@@ -134,7 +105,7 @@ impl GpuVit {
                 lin2_b: upload_row(d, lin2_b.context("mlp.linear2 needs a bias")?),
             });
         }
-        let (norm_w, norm_b) = p.norm("image_encoder.norm", &[EMBED])?;
+        let (norm_w, norm_b) = p.norm("image_encoder.norm", EMBED)?;
         Ok(GpuVit {
             device: d.clone(),
             patch_w: upload_weight_t(d, patch_w, EMBED, PATCH_FEATURES),
@@ -175,9 +146,7 @@ impl GpuVit {
             }
             Ok(Mat::from_vec(TOKENS, EMBED, data))
         };
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(run))
-            .map_err(|_| anyhow!("GPU inference failed (backend panic)"))?
-            .context("GPU image encoder")
+        guarded(run).context("GPU image encoder")
     }
 
     fn block(&self, b: &GBlock, x: Tensor<B, 3>) -> Tensor<B, 3> {

@@ -13,5 +13,5 @@ covers one area in depth.
 | [auto-segmentation.md](auto-segmentation.md) | Automatic multi-organ segmentation — the pure-Rust TotalSegmentator re-implementation: models, usage, the inference pipeline, CPU/GPU engines, validation, the full 117-class table, licensing |
 | [segvol.md](segvol.md) | Prompt-driven segmentation — the pure-Rust SegVol re-implementation: box / point / text prompts, the two-pass pipeline, weights and licensing, validation status |
 | [export-and-tools.md](export-and-tools.md) | DICOM export, the interactive anonymizer, the synthetic test-data generator |
-| [architecture.md](architecture.md) | Code architecture: design philosophy, module map, threading model, caching, geometry conventions, performance, testing |
+| [architecture.md](architecture.md) | Code architecture: design philosophy, the functional overview (what the program does, by category), the module map (where each function lives), the shared engine windows, threading model, the model folder, caching, geometry conventions, testing |
 | [example-data.md](example-data.md) | The bundled example patient data: contents, source, citations, license |

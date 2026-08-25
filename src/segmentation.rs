@@ -81,8 +81,8 @@ impl Segmentation {
 
     /// Build a segmentation from one class of a multi-label voxel map
     /// (`labels` in `Volume::data` index order, mask = `labels == label`).
-    /// Used by the auto-segmentation pipeline; count and bounding box are
-    /// filled in the same pass, there is no undo history.
+    /// Count and bounding box are filled in the same pass; there is no undo
+    /// history.
     pub fn from_label_map(
         name: String,
         color: [u8; 3],
@@ -90,33 +90,55 @@ impl Segmentation {
         labels: &[u8],
         label: u8,
     ) -> Self {
-        let mut seg = Segmentation::new(name, color, dims);
-        debug_assert_eq!(labels.len(), seg.mask.len());
+        Self::from_label_map_many(dims, labels, &[(label, name, color)])
+            .pop()
+            .expect("one class requested")
+    }
+
+    /// Build one segmentation per requested class of a multi-label voxel
+    /// map in a single pass over it — what an auto-segmentation run with a
+    /// hundred structures needs, rather than a hundred passes.
+    pub fn from_label_map_many(
+        dims: [usize; 3],
+        labels: &[u8],
+        classes: &[(u8, String, [u8; 3])],
+    ) -> Vec<Self> {
+        debug_assert_eq!(labels.len(), dims[0] * dims[1] * dims[2]);
         let [nx, ny, _] = dims;
-        let mut count = 0usize;
-        for (idx, (m, l)) in seg.mask.iter_mut().zip(labels.iter()).enumerate() {
-            if *l == label {
-                *m = 1;
-                count += 1;
-                let k = idx / (nx * ny);
-                let r = idx % (nx * ny);
-                seg.bbox = match seg.bbox {
-                    None => Some(([r % nx, r / nx, k], [r % nx, r / nx, k])),
-                    Some((mut lo, mut hi)) => {
-                        let (i, j) = (r % nx, r / nx);
-                        lo[0] = lo[0].min(i);
-                        lo[1] = lo[1].min(j);
-                        lo[2] = lo[2].min(k);
-                        hi[0] = hi[0].max(i);
-                        hi[1] = hi[1].max(j);
-                        hi[2] = hi[2].max(k);
-                        Some((lo, hi))
-                    }
-                };
+        // Which requested segmentation a label maps to, if any.
+        let mut slot = [usize::MAX; 256];
+        for (s, (label, _, _)) in classes.iter().enumerate() {
+            slot[*label as usize] = s;
+        }
+        let mut segs: Vec<Segmentation> = classes
+            .iter()
+            .map(|(_, name, color)| Segmentation::new(name.clone(), *color, dims))
+            .collect();
+        // Per class: the extent seen so far, tracked per row so the inner
+        // loop touches nothing but the mask.
+        let mut boxes: Vec<Option<([usize; 3], [usize; 3])>> = vec![None; segs.len()];
+        for (row, chunk) in labels.chunks(nx).enumerate() {
+            let (j, k) = (row % ny, row / ny);
+            for (i, l) in chunk.iter().enumerate() {
+                let s = slot[*l as usize];
+                if s == usize::MAX {
+                    continue;
+                }
+                segs[s].mask[row * nx + i] = 1;
+                segs[s].count += 1;
+                boxes[s] = Some(match boxes[s] {
+                    None => ([i, j, k], [i, j, k]),
+                    Some((lo, hi)) => (
+                        [lo[0].min(i), lo[1].min(j), lo[2].min(k)],
+                        [hi[0].max(i), hi[1].max(j), hi[2].max(k)],
+                    ),
+                });
             }
         }
-        seg.count = count;
-        seg
+        for (seg, bbox) in segs.iter_mut().zip(boxes) {
+            seg.bbox = bbox;
+        }
+        segs
     }
 
     #[inline]

@@ -12,26 +12,19 @@
 //! cargo run --release --example medsam2_probe -- [MODELS_DIR] [--variant NAME] [--keys] [--csv FILE]
 //! ```
 //!
-//! `MODELS_DIR` defaults to `medsam2_model/` next to the executable.
-//! `--variant` is one of `latest` (the default), `ct-lesion`,
-//! `mri-liver-lesion` or `base-2411`. `--keys` lists every tensor; `--csv`
-//! writes the inventory to a file.
+//! `MODELS_DIR` defaults to `models/medsam2/` next to the executable.
+//! `--variant` is one of `latest` (the default), `ct-lesion`, `mri-liver` or
+//! `2411`. `--keys` lists every tensor; `--csv` writes the inventory to a
+//! file.
 
 use std::io::Write;
 use std::path::PathBuf;
 
 use rust_dicom_station::medsam2::layout::{self, TensorInfo};
 use rust_dicom_station::medsam2::weights::{self, Variant};
+use rust_dicom_station::models::{self, Engine};
 use rust_dicom_station::nn::pickle::Dtype;
-
-struct Stderr;
-
-impl rust_dicom_station::nn::cache::ProgressSink for Stderr {
-    fn report(&self, _frac: f32, msg: &str) {
-        eprint!("\r{msg}                    ");
-        std::io::stderr().flush().ok();
-    }
-}
+use rust_dicom_station::progress::Stderr;
 
 fn main() -> anyhow::Result<()> {
     let mut dir: Option<PathBuf> = None;
@@ -45,22 +38,17 @@ fn main() -> anyhow::Result<()> {
             "--csv" => csv = args.next().map(PathBuf::from),
             "--variant" => {
                 let name = args.next().unwrap_or_default();
-                variant = match name.as_str() {
-                    "latest" => Variant::Latest,
-                    "ct-lesion" => Variant::CtLesion,
-                    "mri-liver-lesion" => Variant::MriLiverLesion,
-                    "base-2411" => Variant::Base2411,
-                    other => anyhow::bail!("unknown variant {other}"),
-                };
+                variant = Variant::from_key(&name)
+                    .ok_or_else(|| anyhow::anyhow!("unknown variant {name}"))?;
             }
             other => dir = Some(PathBuf::from(other)),
         }
     }
-    let dir = dir.unwrap_or_else(weights::default_models_dir);
+    let dir = dir.unwrap_or_else(|| models::engine_dir(&models::default_root(), Engine::MedSam2));
 
     let file = variant.file();
     eprintln!("{} ({}) in {}", file.name, variant.label(), dir.display());
-    let path = weights::ensure_file(&file, &dir, &Stderr)?;
+    let path = file.ensure(&dir, &Stderr)?;
     eprintln!();
 
     let reader = weights::open_checkpoint(&path)?;

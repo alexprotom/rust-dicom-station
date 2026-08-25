@@ -69,8 +69,8 @@ holds the registration controls and both dataset trees.*
   full propagation.
 * **Tools** - DICOM export with an editable patient/study tag table
   (CT + RTSTRUCT + RTDOSE + RTPLAN), an interactive folder anonymizer with
-  consistent UID regeneration, and a synthetic RT-study generator; 140+
-  tests across seven integration suites assert the whole stack against an
+  consistent UID regeneration, and a synthetic RT-study generator; 250+
+  tests across nine integration suites assert the whole stack against an
   analytically known phantom, on Linux and Windows in CI.
 
 ## Architecture
@@ -101,9 +101,11 @@ cargo test --release
 ```
 
 To try prompt segmentation on the bundled patient: put the crosshair on
-the tumor, then *Tools ▶ 🧠 Prompt segmentation*, prompt kind **Box**,
-Run. Both segmentation engines fetch their weights on first use; both
-also have headless CLIs in [examples/](examples/).
+the tumor, then *Tools ▶ 🧠 Prompt-segment dataset A…*, prompt **Box**,
+**▶ Segment**. All three segmentation engines fetch their weights on first
+use into one folder, `models/` next to the executable (one sub-folder per
+engine, movable from any of the tool windows); all three also have
+headless CLIs in [examples/](examples/).
 
 Windows, Linux and macOS are supported; rendering uses `wgpu`
 (DX12/Vulkan/Metal). `--no-default-features` builds a CPU-only viewer
@@ -131,7 +133,7 @@ ships a real two-phase 4DCT (see
 | [docs/medsam2.md](docs/medsam2.md) | Propagating a prompt through a stack: the MedSAM2 re-implementation |
 | [docs/auto-segmentation.md](docs/auto-segmentation.md) | The pure-Rust TotalSegmentator: models, pipeline, engines, validation, classes, licensing |
 | [docs/export-and-tools.md](docs/export-and-tools.md) | DICOM export, anonymizer, test-data generator |
-| [docs/architecture.md](docs/architecture.md) | Design, module map, threading, conventions, testing |
+| [docs/architecture.md](docs/architecture.md) | Design, functional overview, module map, threading, the model folder, conventions, testing |
 | [docs/example-data.md](docs/example-data.md) | Bundled patient data, source and citations |
 | [installer/README.md](installer/README.md) | The Windows installer: building it, what it installs, silent switches |
 

@@ -118,13 +118,22 @@ impl Act {
         self.d * self.h * self.w
     }
 
-    /// View the volume as a `[c, d*h*w]` matrix without copying semantics
-    /// changing — channels are rows.
+    /// View the volume as a `[c, d*h*w]` matrix — channels are rows.
     pub fn to_mat(&self) -> Mat {
         Mat {
             rows: self.c,
             cols: self.spatial(),
             data: self.data.clone(),
+        }
+    }
+
+    /// The same view, taking the storage along: the layouts are identical,
+    /// so nothing is copied.
+    pub fn into_mat(self) -> Mat {
+        Mat {
+            rows: self.c,
+            cols: self.spatial(),
+            data: self.data,
         }
     }
 

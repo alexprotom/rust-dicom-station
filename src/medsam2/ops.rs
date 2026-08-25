@@ -51,13 +51,24 @@ pub fn to_vec<B: Backend, const D: usize>(t: Tensor<B, D>) -> Vec<f32> {
 }
 
 /// `y = x @ wT + b`, with `w` stored `[out, in]` as PyTorch does.
+///
+/// The transpose is taken on every call; a layer that is applied once per
+/// slice should keep the transposed weight instead ([`linear_t`]).
 pub fn linear<B: Backend, const D: usize>(
     x: Tensor<B, D>,
     w: &Tensor<B, 2>,
     b: Option<&Tensor<B, 1>>,
 ) -> Tensor<B, D> {
-    let wt: Tensor<B, D> = w.clone().transpose().unsqueeze::<D>();
-    let y = x.matmul(wt);
+    linear_t(x, &w.clone().transpose(), b)
+}
+
+/// `y = x @ wt + b`, with the weight already transposed to `[in, out]`.
+pub fn linear_t<B: Backend, const D: usize>(
+    x: Tensor<B, D>,
+    wt: &Tensor<B, 2>,
+    b: Option<&Tensor<B, 1>>,
+) -> Tensor<B, D> {
+    let y = x.matmul(wt.clone().unsqueeze::<D>());
     match b {
         Some(b) => y + b.clone().unsqueeze::<D>(),
         None => y,

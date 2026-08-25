@@ -155,8 +155,8 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
 
     // ---- settings seed ----------------------------------------------------
     // The viewer stores its settings next to the executable and, by default,
-    // the model cache too. Under Program Files that folder is read-only for
-    // normal users, so point the cache somewhere writable up front.
+    // the model root too. Under Program Files that folder is read-only for
+    // normal users, so point the root somewhere writable up front.
     if opts.models_dir != default_models_dir(Scope::CurrentUser, &opts.dir) {
         let settings = opts.dir.join(SETTINGS_FILE);
         if !settings.exists() {
@@ -164,13 +164,13 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
                 "# rust-dicom-station user settings\n\
                  # theme = dark | light | system\n\
                  theme = dark\n\
-                 autoseg_models_dir = {}\n",
+                 {SETTINGS_MODELS_KEY} = {}\n",
                 opts.models_dir.display()
             );
             std::fs::write(&settings, text)
                 .with_context(|| format!("write {}", settings.display()))?;
             manifest.files.push(SETTINGS_FILE.to_string());
-            log(format!("Model cache set to {}", opts.models_dir.display()));
+            log(format!("Model folder set to {}", opts.models_dir.display()));
         }
     }
     std::fs::create_dir_all(&opts.models_dir).ok();
@@ -249,14 +249,14 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
 
     // ---- optional model weights ------------------------------------------
     if opts.models != Models::None {
-        step(0.80, "Downloading auto-segmentation models…");
+        step(0.80, "Downloading the auto-segmentation weights…");
         crate::models::prefetch(
             opts.models,
             &opts.models_dir,
             &|f, msg| sink(Event::Progress(0.80 + 0.19 * f, msg.to_string())),
             cancel,
         )?;
-        log("Auto-segmentation models ready".into());
+        log("Auto-segmentation weights ready".into());
     }
 
     step(1.0, "Installation complete");

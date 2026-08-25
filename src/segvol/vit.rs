@@ -23,7 +23,7 @@ use crate::nn::linalg::{gelu, layer_norm, linear, LAYER_NORM_EPS};
 use crate::nn::tensor::Mat;
 
 use super::config::*;
-use super::params::Params;
+use crate::nn::params::Params;
 
 /// One pre-norm transformer block.
 struct Block {
@@ -55,25 +55,25 @@ impl Vit {
     pub fn build(p: &Params) -> Result<Vit> {
         let pe = "image_encoder.patch_embedding";
         let (patch_w, patch_b) = p
-            .linear(&format!("{pe}.patch_embeddings.1"), EMBED, PATCH_FEATURES)
+            .linear_opt(&format!("{pe}.patch_embeddings.1"), EMBED, PATCH_FEATURES)
             .context("patch embedding")?;
         let pos = p.get(&format!("{pe}.position_embeddings"), &[1, TOKENS, EMBED])?;
         let mut blocks = Vec::with_capacity(VIT_BLOCKS);
         for i in 0..VIT_BLOCKS {
             let b = format!("image_encoder.blocks.{i}");
-            let (norm1_w, norm1_b) = p.norm(&format!("{b}.norm1"), &[EMBED])?;
-            let (norm2_w, norm2_b) = p.norm(&format!("{b}.norm2"), &[EMBED])?;
+            let (norm1_w, norm1_b) = p.norm(&format!("{b}.norm1"), EMBED)?;
+            let (norm2_w, norm2_b) = p.norm(&format!("{b}.norm2"), EMBED)?;
             // Fused qkv: [3 * EMBED, EMBED], deliberately without a bias.
-            let (qkv_w, qkv_b) = p.linear(&format!("{b}.attn.qkv"), 3 * EMBED, EMBED)?;
+            let (qkv_w, qkv_b) = p.linear_opt(&format!("{b}.attn.qkv"), 3 * EMBED, EMBED)?;
             if qkv_b.is_some() {
                 anyhow::bail!(
                     "{b}.attn.qkv has a bias; MONAI's SABlock builds it with bias=False, \
                      so this checkpoint is not the network this port implements"
                 );
             }
-            let (out_w, out_b) = p.linear(&format!("{b}.attn.out_proj"), EMBED, EMBED)?;
-            let (lin1_w, lin1_b) = p.linear(&format!("{b}.mlp.linear1"), VIT_MLP, EMBED)?;
-            let (lin2_w, lin2_b) = p.linear(&format!("{b}.mlp.linear2"), EMBED, VIT_MLP)?;
+            let (out_w, out_b) = p.linear_opt(&format!("{b}.attn.out_proj"), EMBED, EMBED)?;
+            let (lin1_w, lin1_b) = p.linear_opt(&format!("{b}.mlp.linear1"), VIT_MLP, EMBED)?;
+            let (lin2_w, lin2_b) = p.linear_opt(&format!("{b}.mlp.linear2"), EMBED, VIT_MLP)?;
             blocks.push(Block {
                 norm1_w: norm1_w.to_vec(),
                 norm1_b: norm1_b.to_vec(),
@@ -88,7 +88,7 @@ impl Vit {
                 lin2_b: lin2_b.context("mlp.linear2 needs a bias")?.to_vec(),
             });
         }
-        let (norm_w, norm_b) = p.norm("image_encoder.norm", &[EMBED])?;
+        let (norm_w, norm_b) = p.norm("image_encoder.norm", EMBED)?;
         Ok(Vit {
             patch_w: patch_w.to_vec(),
             patch_b: patch_b.context("patch embedding needs a bias")?.to_vec(),

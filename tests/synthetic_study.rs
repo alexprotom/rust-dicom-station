@@ -7,7 +7,8 @@ use std::sync::OnceLock;
 
 use rust_dicom_station::gen_test_data::{self, GenParams};
 use rust_dicom_station::geometry::Vec3;
-use rust_dicom_station::loader::{self, Progress};
+use rust_dicom_station::loader;
+use rust_dicom_station::progress::Progress;
 use rust_dicom_station::render;
 use rust_dicom_station::volume::ViewPlane;
 

@@ -6,7 +6,7 @@
 //! bundled example data; enable it locally with
 //!
 //! ```text
-//! RDS_AUTOSEG_MODELS=path/to/autoseg_models \
+//! RDS_AUTOSEG_MODELS=path/to/models/totalsegmentator \
 //!   cargo test --release --test autoseg -- --ignored
 //! ```
 //!
@@ -14,7 +14,8 @@
 
 use std::collections::HashMap;
 
-use rust_dicom_station::autoseg::{self, config::ModelConfig, cpu, net, weights::WTensor};
+use rust_dicom_station::autoseg::{self, config::ModelConfig, cpu, net};
+use rust_dicom_station::nn::cache::WTensor;
 
 /// Deterministic pseudo-random values.
 fn rngf(seed: &mut u64) -> f32 {
@@ -111,7 +112,7 @@ fn tiny_unet_assembles_and_runs() {
             .map(|i| (i % 13) as f32 * 0.1 - 0.6)
             .collect(),
     };
-    let y = unet.forward_cpu(x);
+    let y = unet.forward_cpu(&x);
     assert_eq!((y.c, y.d, y.h, y.w), (classes, 16, 16, 16));
     assert!(y.data.iter().all(|v| v.is_finite()));
     // network is deterministic
@@ -124,7 +125,7 @@ fn tiny_unet_assembles_and_runs() {
             .map(|i| (i % 13) as f32 * 0.1 - 0.6)
             .collect(),
     };
-    let y2 = unet.forward_cpu(x2);
+    let y2 = unet.forward_cpu(&x2);
     assert_eq!(y.data, y2.data);
 }
 
@@ -187,7 +188,7 @@ fn real_model_on_example_data() {
         &Default::default(),
     )
     .expect("load example data");
-    let progress = autoseg::AutosegProgress::default();
+    let progress = rust_dicom_station::progress::Progress::default();
     let result = autoseg::run(
         &study.volume,
         autoseg::Variant::Fast3mm,

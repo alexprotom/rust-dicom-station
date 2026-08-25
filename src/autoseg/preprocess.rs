@@ -19,7 +19,6 @@
 
 use rayon::prelude::*;
 
-use crate::geometry::Vec3;
 use crate::volume::Volume;
 
 /// Mapping between the volume's index space and the model's [S,A,R] grid.
@@ -31,103 +30,30 @@ pub struct SarMap {
     pub flip: [bool; 3],
     /// Volume dims along the mapped axes ([S,A,R] order).
     pub orig_dims: [usize; 3],
-    /// Volume spacing along the mapped axes (mm).
-    pub orig_spacing: [f64; 3],
-    /// Model grid dims ([S,A,R] order).
+    /// Model grid dims ([S,A,R] order) at the model's isotropic spacing.
     pub model_dims: [usize; 3],
-    /// Isotropic model spacing (mm).
-    pub target: f64,
-}
-
-/// numpy-compatible round-half-to-even.
-fn np_round(v: f64) -> f64 {
-    let r = v.round();
-    if (v - v.trunc()).abs() == 0.5 {
-        // exactly .5 → nearest even
-        let f = v.floor();
-        if (f as i64) % 2 == 0 {
-            f
-        } else {
-            f + 1.0
-        }
-    } else {
-        r
-    }
-}
-
-/// Find the permutation and flips that carry a volume's own axes onto the
-/// canonical `[S, A, R]` order — superior, anterior and right, each
-/// increasing with the array index.
-///
-/// Both inference engines want this: it is what `nibabel`'s
-/// `as_closest_canonical` followed by nnU-Net's axis convention produces, and
-/// it is also what SegVol's `Orientationd(axcodes="RAS")` plus its
-/// `DimTranspose` (which swaps the first and last spatial axes) produces.
-/// Volumes are not assumed to be axis-aligned; the best match is chosen by
-/// direction cosine.
-pub fn canonical_axes(vol: &Volume) -> ([usize; 3], [bool; 3]) {
-    // LPS direction vectors of the three volume axes.
-    let dirs: [Vec3; 3] = [vol.row_dir, vol.col_dir, vol.normal];
-    // Canonical targets in LPS: S = +z, A = -y, R = -x.
-    let targets: [Vec3; 3] = [
-        Vec3 {
-            x: 0.0,
-            y: 0.0,
-            z: 1.0,
-        },
-        Vec3 {
-            x: 0.0,
-            y: -1.0,
-            z: 0.0,
-        },
-        Vec3 {
-            x: -1.0,
-            y: 0.0,
-            z: 0.0,
-        },
-    ];
-    let mut perm = [0usize; 3];
-    let mut flip = [false; 3];
-    let mut used = [false; 3];
-    for a in 0..3 {
-        let mut best = 0usize;
-        let mut best_dot = f64::NEG_INFINITY;
-        for v in 0..3 {
-            if used[v] {
-                continue;
-            }
-            let dot = dirs[v].dot(targets[a]);
-            if dot.abs() > best_dot {
-                best_dot = dot.abs();
-                best = v;
-            }
-        }
-        used[best] = true;
-        perm[a] = best;
-        flip[a] = dirs[best].dot(targets[a]) < 0.0;
-    }
-    (perm, flip)
 }
 
 impl SarMap {
     pub fn new(vol: &Volume, target_spacing: f64) -> SarMap {
-        let (perm, flip) = canonical_axes(vol);
+        let (perm, flip) = vol.canonical_axes();
         let dims = [vol.dims[0], vol.dims[1], vol.dims[2]];
         let spac = [vol.spacing[0], vol.spacing[1], vol.spacing[2]];
         let orig_dims = [dims[perm[0]], dims[perm[1]], dims[perm[2]]];
         let orig_spacing = [spac[perm[0]], spac[perm[1]], spac[perm[2]]];
         let model_dims = [
-            (np_round(orig_dims[0] as f64 * orig_spacing[0] / target_spacing) as usize).max(1),
-            (np_round(orig_dims[1] as f64 * orig_spacing[1] / target_spacing) as usize).max(1),
-            (np_round(orig_dims[2] as f64 * orig_spacing[2] / target_spacing) as usize).max(1),
+            ((orig_dims[0] as f64 * orig_spacing[0] / target_spacing).round_ties_even() as usize)
+                .max(1),
+            ((orig_dims[1] as f64 * orig_spacing[1] / target_spacing).round_ties_even() as usize)
+                .max(1),
+            ((orig_dims[2] as f64 * orig_spacing[2] / target_spacing).round_ties_even() as usize)
+                .max(1),
         ];
         SarMap {
             perm,
             flip,
             orig_dims,
-            orig_spacing,
             model_dims,
-            target: target_spacing,
         }
     }
 }
@@ -337,13 +263,5 @@ mod tests {
         for (idx, v) in vol.data.iter().enumerate() {
             assert_eq!(back[idx], (*v == 100) as u8, "voxel {idx}");
         }
-    }
-
-    #[test]
-    fn np_round_half_even() {
-        assert_eq!(np_round(2.5), 2.0);
-        assert_eq!(np_round(3.5), 4.0);
-        assert_eq!(np_round(2.4), 2.0);
-        assert_eq!(np_round(166.67), 167.0);
     }
 }

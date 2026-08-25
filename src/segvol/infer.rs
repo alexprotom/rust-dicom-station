@@ -28,6 +28,7 @@ use super::config::*;
 use super::net::SegVolNet;
 use super::preprocess::{self, Prepared};
 use super::prompt::{BBox, Point};
+use crate::progress::{ProgressSink, CANCELLED};
 
 /// How to run inference.
 #[derive(Clone, Copy, Debug)]
@@ -68,18 +69,6 @@ pub struct Segmentation {
     /// Whether a coarse pass ran.
     pub coarse: bool,
 }
-
-/// Reported progress, and the chance to cancel.
-pub trait Hooks: Sync {
-    fn report(&self, _frac: f32, _msg: &str) {}
-    fn cancelled(&self) -> bool {
-        false
-    }
-}
-
-/// A no-op implementation for callers that do not care.
-pub struct Quiet;
-impl Hooks for Quiet {}
 
 /// MONAI's `dense_patch_slices`: window start positions along one axis.
 ///
@@ -224,7 +213,7 @@ pub fn segment(
     boxes: &[BBox],
     text: Option<&[f32]>,
     cfg: Config,
-    hooks: &dyn Hooks,
+    hooks: &dyn ProgressSink,
 ) -> Result<Segmentation> {
     if points.is_empty() && boxes.is_empty() && text.is_none() {
         bail!("a prompt is required: a box, at least one point, or a text embedding");
@@ -267,7 +256,7 @@ pub fn segment(
             .collect();
         let logits = run_window(net, &small, &coarse_points, &coarse_boxes, text);
         if hooks.cancelled() {
-            bail!("cancelled");
+            bail!(CANCELLED);
         }
         if !cfg.use_zoom_in {
             let mask: Vec<u8> = logits
@@ -339,7 +328,7 @@ pub fn segment(
 
     for (wi, w) in windows.iter().enumerate() {
         if hooks.cancelled() {
-            bail!("cancelled");
+            bail!(CANCELLED);
         }
         hooks.report(
             wi as f32 / windows.len() as f32,

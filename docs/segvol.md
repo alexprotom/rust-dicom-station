@@ -15,7 +15,11 @@ re-implementation of [SegVol](https://github.com/BAAI-DCAI/SegVol)
 
 ## Using it
 
-**Tools ▶ 🧠 Prompt-segment dataset A…**
+**Tools ▶ 🧠 Prompt-segment dataset A…**, or the **🧠 Prompt…** button in
+the sidebar *Segmentations* section, opens the tool window (**🧠 Prompt
+segmentation — dataset A**). It stays open across runs and reports each
+result on its last line; the three segmentation engines share one window
+layout, see [architecture.md](architecture.md#the-three-engine-windows).
 
 Move the crosshair onto the structure first; the prompt is anchored to it.
 
@@ -40,19 +44,26 @@ loop is *prompt, fix by hand, export*.
   it is off by default.
 * **Threshold** — probability cut applied to the network's output, 0.5 by
   default.
+* **Compute** — *Auto* (GPU for the image encoder when available, else
+  CPU), *GPU*, or *CPU*.
+* **Model folder** — the root every engine downloads into, `models/` next
+  to the executable by default; this engine's files go to `models/segvol/`.
 
-*Planned:* drawing the box directly in the viewports — drag in any MPR view,
-extend along the third axis — with negative point clicks and a coarse-pass
-live preview, instead of anchoring every prompt on the crosshair. The dialog
-is the current interface to the same engine.
+A box drawn directly in the image, with include / exclude clicks and a live
+preview, is what [slice propagation](medsam2.md) offers; this window keeps
+the crosshair-anchored prompt because SegVol's box is three-dimensional.
 
 ## Headless
 
 ```
 cargo run --release --example segvol_cli -- <DICOM_DIR> \
-    [--box z0,y0,x0,z1,y1,x1] [--point z,y,x] [--text liver] \
-    [--no-zoom-in] [--fast-box] [--threshold F] [--out mask.raw]
+    [--models DIR] [--device auto|gpu|cpu] \
+    [--box z0,y0,x0,z1,y1,x1] [--point z,y,x] [--negative-point z,y,x] \
+    [--text liver] [--no-zoom-in] [--fast-box] [--threshold F] [--out mask.raw]
 ```
+
+`--models` is the engine's folder, `models/segvol/` next to the executable
+by default.
 
 Coordinates are in the *prepared* grid — canonically oriented `[S, A, R]` and
 cropped to the foreground — which is what the network sees. `--out` writes one
@@ -104,7 +115,10 @@ tower entirely, which recovers the table's practical benefit.
 
 The checkpoint (~724 MB) is downloaded from
 [huggingface.co/BAAI/SegVol](https://huggingface.co/BAAI/SegVol) on first use,
-along with the CLIP tokenizer's two small data files.
+along with the CLIP tokenizer's two small data files, into `models/segvol/`
+under the model folder, and converted once into a `safetensors` cache
+beside it. The tool window says whether the weights are cached or how much
+a run will download.
 
 **The SegVol code is MIT, but the weights carry no licence declaration at
 all** — no licence tag, no LICENSE file — and the training corpus aggregates

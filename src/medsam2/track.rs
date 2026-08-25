@@ -96,10 +96,6 @@ impl<B: Backend> MemoryBank<B> {
         !self.conditioning.is_empty()
     }
 
-    pub fn is_prompted(&self, index: usize) -> bool {
-        self.conditioning.contains_key(&index)
-    }
-
     /// Which slices contribute spatial memory to `frame_idx`, as
     /// `(temporal index, slice)` pairs in the order the reference concatenates
     /// them. Split out from [`Self::assemble`] so it can be asserted directly.
@@ -247,10 +243,6 @@ impl<'a, B: Backend> Tracker<'a, B> {
             model,
             bank: MemoryBank::new(num_frames),
         }
-    }
-
-    pub fn bank(&self) -> &MemoryBank<B> {
-        &self.bank
     }
 
     /// Segment a prompted slice. Memory attention is skipped entirely.

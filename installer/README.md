@@ -50,10 +50,14 @@ publisher" warning on first run.
 * **Model weights, optionally** — pre-downloads and converts the
   TotalSegmentator weights (6 mm, 3 mm, the 1.5 mm set, or everything) using
   the viewer's own downloader, so the first auto-segmentation run does not
-  have to wait for a 135 MB … 1.3 GB download. Skipped by default.
-  A machine-wide install points the cache at
-  `%LOCALAPPDATA%\RustDicomStation\autoseg_models` (recorded in
-  `viewer_settings.txt`), because `Program Files` is not user-writable.
+  have to wait for a 135 MB … 1.3 GB download. Skipped by default. They go
+  where the viewer keeps every engine's weights: the `totalsegmentator/`
+  sub-folder of the model folder, `models/` next to the executable. A
+  machine-wide install points that folder at
+  `%LOCALAPPDATA%\RustDicomStation\models` (recorded as `models_dir` in
+  `viewer_settings.txt`), because `Program Files` is not user-writable. The
+  SegVol and MedSAM2 weights are never pre-fetched — their licences allow
+  only a download by the user, which the viewer does on first use.
 * **Integration** — Start-menu and desktop shortcuts, an
   "Open with Rust DICOM Station" verb on folders (the viewer takes a
   directory), a `.dcm`/`.dicom` entry that is *added* to `OpenWithProgids`
@@ -64,8 +68,9 @@ publisher" warning on first run.
 
 Everything created is recorded in `install-manifest.txt`, and the uninstaller
 removes exactly what is listed there — nothing else in the folder, and the
-`PATH` entry only if the installer added it. The model cache is kept unless
-you ask for it to go (an empty one is cleaned up either way).
+`PATH` entry only if the installer added it. The model folder is kept unless
+you ask for it to go — and then it goes whole, every engine's downloads
+included (an empty one is cleaned up either way).
 
 ## Command line
 
@@ -80,7 +85,7 @@ rds-setup --help
 ```
 
 `--models` takes `none | 6mm | 3mm | 1.5mm | all`; the other flags are
-`--just-me`, `--models-dir`, `--no-start-menu`, `--no-desktop-shortcut`,
+`--just-me`, `--models-dir` (the model folder), `--no-start-menu`, `--no-desktop-shortcut`,
 `--no-file-association`, `--no-vcredist`, `--no-launch`, and `--from` for the
 uninstaller.
 

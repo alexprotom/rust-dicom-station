@@ -19,7 +19,11 @@ sharp as the image.
 
 ## Using it
 
-**Tools ▶ 🧠 Propagate from a slice…** opens the panel. The workflow is the
+**Tools ▶ ⏩ Propagate through dataset A…**, or the **⏩ Propagate…** button
+in the sidebar *Segmentations* section, opens the tool window (**⏩ Slice
+propagation — dataset A**; the three segmentation engines share one window
+layout, see [architecture.md](architecture.md#the-three-engine-windows)).
+The workflow is the
 one the [MedSAM2 extension for 3D
 Slicer](https://github.com/bowang-lab/MedSAMSlicer/tree/MedSAM2) established
 — box the structure on one slice, check that slice, then propagate — with
@@ -75,13 +79,15 @@ conditioning slice per run).
 | **▭ Box / ➕ Include / ➖ Exclude** | what a left-drag or click in the drawing view does |
 | **Preview this slice**, *automatically* | segment the prompted slice, on demand or after every change |
 | **from / to**, *this slice*, *Whole study* | the slice range to propagate through |
-| **Window** | the intensity window the model sees — the viewport's own by default, so what you see is what it segments, plus the paper's presets |
-| **Model** | which fine-tune to run: general (default), CT-lesion, MRI-liver-lesion, or the 2024-11 base |
-| **Both directions** | off tracks only towards higher slice numbers |
-| **Largest connected component** | drop everything but the biggest 26-connected blob — usually right for a single lesion |
-| **Threshold** | the logit cut, 0 by default (probability 0.5) |
 | **Add to what is already there** | union this run with the current result instead of replacing it |
 | **Name** | what the segmentation is called |
+| **Options ▸ Window** | the intensity window the model sees — the viewport's own by default, so what you see is what it segments, plus the paper's presets |
+| **Options ▸ Model** | which fine-tune to run: general (default), CT lesions, MRI liver lesions, or the 2024-11 base |
+| **Options ▸ Both directions** | off tracks only towards higher slice numbers |
+| **Options ▸ Largest connected component** | drop everything but the biggest 26-connected blob — usually right for a single lesion |
+| **Options ▸ Threshold** | the logit cut, 0 by default (probability 0.5) |
+| **Options ▸ Compute** | *Auto* (GPU when available, else CPU), *GPU*, or *CPU* |
+| **Options ▸ Model folder** | the root every engine downloads into; this engine's files go to `models/medsam2/` |
 
 The result is an ordinary segmentation: editable with the brush and eraser,
 visible in the 3D window, convertible to RTSTRUCT. The usual loop is
@@ -96,12 +102,15 @@ a session pays for loading.
 
 ```
 cargo run --release --example medsam2_cli -- <DICOM_DIR> \
-    [--variant latest|ct-lesion|mri-liver-lesion|base-2411] \
-    [--slice N] [--box r0,c0,r1,c1] [--point r,c] \
+    [--models DIR] [--variant latest|ct-lesion|mri-liver|2411] \
+    [--device auto|gpu|cpu] [--slice N] [--box r0,c0,r1,c1] [--point r,c] \
     [--window LO,HI] [--preset Abdomen] [--range FIRST,LAST] \
     [--max-slices N] [--all-slices] [--forward-only] [--threshold F] \
-    [--no-cleanup] [--cpu] [--out mask.raw]
+    [--no-cleanup] [--out mask.raw]
 ```
+
+`--models` is the engine's folder, `models/medsam2/` next to the executable
+by default.
 
 Coordinates are in the *prepared* stack — axial slices in reading order,
 which for an ordinary head-first-supine CT is the acquisition order. `--out`
@@ -197,7 +206,9 @@ a GPU. This port never does.
 
 The checkpoint (156 MB) is downloaded from
 [huggingface.co/wanglab/MedSAM2](https://huggingface.co/wanglab/MedSAM2) on
-first use and converted once into a `safetensors` cache beside it.
+first use into `models/medsam2/` under the model folder and converted once
+into a `safetensors` cache beside it. The tool window says whether the
+chosen variant is cached or how much a run will download.
 
 **The MedSAM2 code is Apache-2.0, but the weights are tagged CC-BY-SA-4.0 and
 the model card adds that they "can only be used for research and education

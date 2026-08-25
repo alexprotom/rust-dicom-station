@@ -145,7 +145,10 @@ impl ViewerApp {
             .put(btn_rect, egui::Button::new("📂 Add DICOM folder…"))
             .clicked()
         {
-            if let Some(dir) = Self::pick_folder("Select DICOM folder to add to dataset B") {
+            if let Some(dir) = Self::pick_folder(&format!(
+                "Select DICOM folder to add to dataset {}",
+                SLOT_NAMES[slot]
+            )) {
                 self.start_load(slot, dir);
             }
         }

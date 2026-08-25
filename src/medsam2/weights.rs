@@ -5,7 +5,8 @@
 //! `.pt` files that differ only in what they were fine-tuned on: one
 //! architecture, one loader, a choice in the UI. Each is a
 //! `torch.save({"model": state_dict, ...})`, so [`crate::nn::pickle`] reads it
-//! with the top-level key `"model"`.
+//! with the top-level key `"model"`. The download, the conversion and the
+//! `safetensors` cache are the shared machinery in [`crate::nn::cache`].
 //!
 //! ## Licensing
 //!
@@ -22,24 +23,14 @@
 //! a derivative that must not be redistributed either.
 
 use anyhow::{Context, Result};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use crate::nn::cache::{self, ProgressSink, StoreDtype, WTensor};
+use crate::nn::cache::{self, ConvertSpec, RemoteFile};
 use crate::nn::params::Params;
 use crate::nn::pickle::PthReader;
+use crate::progress::ProgressSink;
 
 use super::layout;
-
-/// One file to fetch from the model repository.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RemoteFile {
-    /// File name, used both remotely and in the local cache.
-    pub name: &'static str,
-    pub url: &'static str,
-    /// Published size in bytes; progress display only.
-    pub bytes: u64,
-}
 
 /// Which fine-tune to run. All of them are SAM 2.1-T at 512 with identical
 /// tensor layouts, so the choice costs nothing but a download.
@@ -72,6 +63,21 @@ impl Variant {
             Variant::MriLiverLesion => "MRI liver lesions",
             Variant::Base2411 => "Base (2024-11)",
         }
+    }
+
+    /// The short name the command-line tools accept.
+    pub fn key(self) -> &'static str {
+        match self {
+            Variant::Latest => "latest",
+            Variant::CtLesion => "ct-lesion",
+            Variant::MriLiverLesion => "mri-liver",
+            Variant::Base2411 => "2411",
+        }
+    }
+
+    /// The variant a command-line name refers to, if any.
+    pub fn from_key(key: &str) -> Option<Variant> {
+        Variant::ALL.into_iter().find(|v| v.key() == key)
     }
 
     pub fn file(self) -> RemoteFile {
@@ -110,50 +116,19 @@ impl Variant {
     }
 }
 
-/// Default cache directory: `medsam2_model/` next to the executable.
-pub fn default_models_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("medsam2_model")
-}
-
 /// True when the converted cache is present, so nothing has to be downloaded
 /// or parsed.
 pub fn is_ready(v: Variant, models_dir: &Path) -> bool {
     models_dir.join(v.cache_name()).is_file()
 }
 
-/// True when `f` is already in the cache directory.
-pub fn is_cached(f: &RemoteFile, models_dir: &Path) -> bool {
-    models_dir.join(f.name).is_file()
-}
-
 /// Bytes still to download for this variant.
 pub fn download_needed(v: Variant, models_dir: &Path) -> u64 {
-    if is_ready(v, models_dir) || is_cached(&v.file(), models_dir) {
+    if is_ready(v, models_dir) {
         0
     } else {
-        v.file().bytes
+        cache::download_needed([&v.file()], models_dir)
     }
-}
-
-/// Fetch `f` into `models_dir` if it is not already there, and return its
-/// path. Downloads land on a temporary name and are renamed only once
-/// complete, so an interrupted download is never mistaken for a cached file.
-pub fn ensure_file(f: &RemoteFile, models_dir: &Path, sink: &dyn ProgressSink) -> Result<PathBuf> {
-    let dest = models_dir.join(f.name);
-    if dest.is_file() {
-        return Ok(dest);
-    }
-    std::fs::create_dir_all(models_dir)
-        .with_context(|| format!("create {}", models_dir.display()))?;
-    let tmp = dest.with_extension("part");
-    cache::download_to_file(f.url, &tmp, f.bytes, f.name, sink)
-        .with_context(|| format!("download {}", f.url))?;
-    std::fs::rename(&tmp, &dest)?;
-    Ok(dest)
 }
 
 /// Open a checkpoint's state dict. SAM 2 saves it under `"model"`.
@@ -162,61 +137,26 @@ pub fn open_checkpoint(path: &Path) -> Result<PthReader> {
         .with_context(|| format!("read MedSAM2 checkpoint {}", path.display()))
 }
 
-/// Read every live tensor out of an opened checkpoint.
-pub fn read_all(reader: &mut PthReader, sink: &dyn ProgressSink) -> Result<Vec<(String, WTensor)>> {
-    let metas: Vec<(String, crate::nn::pickle::TensorMeta)> = reader
-        .tensors
-        .iter()
-        .filter(|(name, _)| !layout::is_dead_weight(name))
-        .cloned()
-        .collect();
-    let n = metas.len().max(1);
-    let mut out = Vec::with_capacity(metas.len());
-    for (i, (name, meta)) in metas.iter().enumerate() {
-        if sink.cancelled() {
-            anyhow::bail!("cancelled");
-        }
-        sink.report(i as f32 / n as f32, "Converting weights");
-        let data = reader
-            .read_f32(meta)
-            .with_context(|| format!("read tensor {name}"))?;
-        let key = layout::normalize_key(name).to_string();
-        out.push((
-            key,
-            WTensor {
-                shape: meta.shape.clone(),
-                data,
-            },
-        ));
+/// Which tensors to convert: the live ones, under their normalized names.
+fn convert_spec() -> ConvertSpec<'static> {
+    ConvertSpec {
+        top_key: "model",
+        keep: &|name, _| !layout::is_dead_weight(name),
+        rename: &|name| layout::normalize_key(name).to_string(),
+        label: "MedSAM2",
     }
-    Ok(out)
 }
 
 /// The whole first-use path: download if needed, convert once, and load from
 /// the converted cache ever after.
-///
-/// The cache is written in `f32`. MedSAM2 is small enough (156 MB) that
-/// halving it would save little, and keeping full precision leaves the port
-/// comparable with a reference run tensor for tensor.
 pub fn load(v: Variant, models_dir: &Path, sink: &dyn ProgressSink) -> Result<Params> {
-    let cache_path = models_dir.join(v.cache_name());
-    if cache_path.is_file() {
-        sink.report(0.0, "Loading weights");
-        let tensors = cache::load_safetensors(&cache_path)?;
-        return Ok(Params::new(tensors));
-    }
-    let pt = ensure_file(&v.file(), models_dir, sink)?;
-    let mut reader = open_checkpoint(&pt)?;
-    let tensors = read_all(&mut reader, sink)?;
-    let flat: Vec<(String, Vec<usize>, Vec<f32>)> = tensors
-        .iter()
-        .map(|(k, t)| (k.clone(), t.shape.clone(), t.data.clone()))
-        .collect();
-    sink.report(0.95, "Writing weight cache");
-    cache::save_safetensors(&cache_path, &flat, StoreDtype::F32)
-        .with_context(|| format!("write {}", cache_path.display()))?;
-    let map: HashMap<String, WTensor> = tensors.into_iter().collect();
-    Ok(Params::new(map))
+    let tensors = cache::ensure_converted(
+        &models_dir.join(v.cache_name()),
+        &convert_spec(),
+        || v.file().ensure(models_dir, sink),
+        sink,
+    )?;
+    Ok(Params::new(tensors))
 }
 
 #[cfg(test)]
@@ -235,7 +175,9 @@ mod tests {
             );
             assert!(f.url.ends_with(f.name), "{} vs {}", f.url, f.name);
             assert_eq!(f.bytes, layout::PAYLOAD_BYTES);
+            assert_eq!(Variant::from_key(v.key()), Some(v));
         }
+        assert_eq!(Variant::from_key("nope"), None);
     }
 
     #[test]
@@ -258,5 +200,15 @@ mod tests {
         {
             assert!(layout::PAYLOAD_BYTES < 160_000_000);
         }
+    }
+
+    #[test]
+    fn an_empty_folder_needs_the_whole_download() {
+        let dir = std::env::temp_dir().join("rds_medsam2_weights_empty");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(
+            download_needed(Variant::Latest, &dir),
+            layout::PAYLOAD_BYTES
+        );
     }
 }

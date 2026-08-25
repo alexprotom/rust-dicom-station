@@ -26,6 +26,13 @@ use super::config::{self, D_MODEL, NUM_MASK_TOKENS};
 use super::layers::{Conv, ConvT2x, Mlp, Norm, SamAttention};
 use super::ops;
 
+/// `[D_MODEL] * IOU_HEAD_DEPTH + [NUM_MASK_TOKENS]`: the IoU head's widths.
+fn iou_head_dims() -> Vec<usize> {
+    let mut dims = vec![D_MODEL; config::IOU_HEAD_DEPTH];
+    dims.push(NUM_MASK_TOKENS);
+    dims
+}
+
 /// One `TwoWayAttentionBlock`.
 struct TwoWayBlock<B: Backend> {
     self_attn: SamAttention<B>,
@@ -263,7 +270,7 @@ impl<B: Backend> MaskDecoder<B> {
             iou_head: Mlp::load_with(
                 p,
                 &format!("{d}.iou_prediction_head"),
-                &[D_MODEL, D_MODEL, D_MODEL, NUM_MASK_TOKENS],
+                &iou_head_dims(),
                 true,
                 dev,
             )?,

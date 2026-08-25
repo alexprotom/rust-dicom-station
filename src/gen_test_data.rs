@@ -1,5 +1,4 @@
-//! Synthetic DICOM RT study generator — a pure-Rust replacement for the
-//! former `tools/generate_test_data.py`.
+//! Synthetic DICOM RT study generator.
 //!
 //! Writes a complete, self-consistent test study into a directory:
 //!
@@ -27,7 +26,7 @@ use dicom_object::InMemDicomObject;
 use crate::dicom_export::{
     fmt_ds, new_uid, put_ds, put_is, put_seq, put_str, put_strs, put_us, today, write_object,
 };
-use crate::loader::Progress;
+use crate::progress::Progress;
 use crate::settings;
 
 // ---------------------------------------------------------------------------
@@ -119,20 +118,6 @@ impl Default for GenParams {
             reg_shift: [12.0, -9.0, 0.0],
             extras: true,
         }
-    }
-}
-
-impl GenParams {
-    /// Short ASCII summary, safe for DICOM default-repertoire strings.
-    pub fn describe(&self) -> String {
-        format!(
-            "peak={:.1}Gy shift=({:.1},{:.1})mm target_dy={:.1}mm{}",
-            self.peak,
-            self.shift_x,
-            self.shift_y,
-            self.target_shift_y,
-            if self.extras { " +extras" } else { "" }
-        )
     }
 }
 

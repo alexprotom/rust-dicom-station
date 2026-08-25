@@ -8,7 +8,7 @@
 use anyhow::Result;
 use burn::tensor::activation::{gelu, relu, sigmoid};
 use burn::tensor::backend::Backend;
-use burn::tensor::Tensor;
+use burn::tensor::{Tensor, TensorData};
 
 use crate::nn::params::Params;
 
@@ -52,9 +52,11 @@ impl<B: Backend> Norm<B> {
     }
 }
 
-/// An `nn.Linear`.
+/// An `nn.Linear`. The weight is kept transposed, `[in, out]`, so applying
+/// it is one matmul with nothing rearranged per call — every `Lin` in the
+/// network runs once per slice, hundreds of slices per run.
 pub struct Lin<B: Backend> {
-    pub weight: Tensor<B, 2>,
+    pub weight_t: Tensor<B, 2>,
     pub bias: Tensor<B, 1>,
 }
 
@@ -67,14 +69,21 @@ impl<B: Backend> Lin<B> {
         dev: &B::Device,
     ) -> Result<Lin<B>> {
         let (w, b) = p.linear(prefix, out, inp)?;
+        // Transposed on the host, once: the device tensor is contiguous.
+        let mut wt = vec![0f32; out * inp];
+        for o in 0..out {
+            for i in 0..inp {
+                wt[i * out + o] = w[o * inp + i];
+            }
+        }
         Ok(Lin {
-            weight: ops::from_slice(w, [out, inp], dev),
+            weight_t: Tensor::from_data(TensorData::new(wt, [inp, out]), dev),
             bias: ops::from_slice(b, [out], dev),
         })
     }
 
     pub fn apply<const D: usize>(&self, x: Tensor<B, D>) -> Tensor<B, D> {
-        ops::linear(x, &self.weight, Some(&self.bias))
+        ops::linear_t(x, &self.weight_t, Some(&self.bias))
     }
 }
 

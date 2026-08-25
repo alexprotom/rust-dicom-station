@@ -26,20 +26,26 @@ hard-coded network definition.
 ## Using it in the viewer
 
 *Tools ▶ 🤖 Auto-segment dataset A/B…* or the **🤖 Auto…** button in the
-sidebar *Segmentations* section opens the run dialog:
+sidebar *Segmentations* section opens the tool window (**🤖
+Auto-segmentation — dataset A**; the three segmentation engines share one
+window layout, see [architecture.md](architecture.md#the-three-engine-windows)):
 
 * **Model** — one of the three variants (the dialog shows whether weights
   are already cached or how much will be downloaded once). For 1.5 mm, the
   five sub-models can be toggled individually — running only *organs* +
   *cardiac*, for instance, takes a fifth of the time of the full set.
-* **Compute** — *Auto* (GPU when available, else CPU), *GPU*, or *CPU*.
-* **Model folder** — where weights are cached; defaults to
-  `autoseg_models/` next to the executable and is persisted in
-  `viewer_settings.txt`.
+* **Options ▸ Compute** — *Auto* (GPU when available, else CPU), *GPU*, or
+  *CPU*.
+* **Options ▸ Model folder** — the root every engine downloads into,
+  `models/` next to the executable by default; this engine's files go to
+  `models/totalsegmentator/`. Persisted as `models_dir` in
+  `viewer_settings.txt`; the same field appears in the other two tool
+  windows.
 
-The run executes on a background thread with a progress bar and **Cancel**
-(effective during download, conversion and between inference tiles). When
-it finishes, a **results dialog** lists every detected structure with its
+**▶ Segment** runs on a background thread; the window's buttons turn into a
+progress row (device, bar, message, **Cancel** — effective during download,
+conversion and between inference tiles), and the sidebar shows the same
+progress. When it finishes, a **results dialog** lists every detected structure with its
 volume; the checked ones are materialized as ordinary editable
 segmentations — brush/erase/grow correction, live 3D view, per-structure
 colors from a curated anatomical palette — and can optionally be converted
@@ -71,9 +77,11 @@ proxies with custom CAs work), then converts them natively:
 
 Subsequent runs load the cache directly with no network access. For
 **air-gapped machines**, run any variant once on a connected machine and
-copy the model folder (`autoseg_models/<variant>/` containing
+copy the model folder (`models/totalsegmentator/<variant>/` containing
 `model.safetensors` + `plans.json`); the viewer never needs the network
-again.
+again. Installations from before the single `models/` root are migrated at
+startup: an old `autoseg_models/` beside the executable is renamed into
+place, nothing is downloaded twice.
 
 ## The inference pipeline
 
@@ -147,7 +155,7 @@ checkpoint key naming and verifies the forward pass, and an `#[ignore]`d
 end-to-end test runs the real 3 mm model against the bundled example data:
 
 ```
-RDS_AUTOSEG_MODELS=path/to/autoseg_models \
+RDS_AUTOSEG_MODELS=path/to/models/totalsegmentator \
   cargo test --release --test autoseg -- --ignored
 ```
 
@@ -158,8 +166,8 @@ Two developer examples ship with the source:
 ```
 # headless segmentation → labels .bin + organ-table .json
 cargo run --release --example autoseg_cli -- <dicom_dir> <out_prefix> \
-    [--variant fast3|highres|preview6] [--device auto|cpu|gpu] \
-    [--models-dir DIR] [--parts organs,cardiac,...]
+    [--variant fast3|highres|preview6] [--device auto|gpu|cpu] \
+    [--models DIR] [--parts organs,cardiac,...]
 
 # dump one preprocessed patch + its logits (for numerical comparison)
 cargo run --release --example autoseg_probe -- <dicom_dir> <models_dir> \

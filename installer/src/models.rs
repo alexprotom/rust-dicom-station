@@ -5,6 +5,10 @@
 //! a machine that is already online. The work is done by the viewer's own
 //! `autoseg::weights` code — the installer links the library without the GPU
 //! backend, so this only writes the model cache, it never runs inference.
+//! The files land where the viewer looks for them: the `totalsegmentator/`
+//! sub-folder of the model root (`rust_dicom_station::models`). Only these
+//! weights are ever pre-fetched — they are Apache-2.0; the SegVol and MedSAM2
+//! weights must be downloaded by the user at their own request.
 //!
 //! Building the installer with `--no-default-features` drops the dependency
 //! (and the option disappears from the UI).
@@ -22,9 +26,9 @@ pub const AVAILABLE: bool = cfg!(feature = "prefetch-models");
 #[cfg(feature = "prefetch-models")]
 mod imp {
     use super::*;
-    use rust_dicom_station::autoseg::weights::{
-        self, ModelSpec, ProgressSink, SPECS_15MM, SPEC_3MM, SPEC_6MM,
-    };
+    use rust_dicom_station::autoseg::weights::{self, ModelSpec, SPECS_15MM, SPEC_3MM, SPEC_6MM};
+    use rust_dicom_station::models::{engine_dir, Engine};
+    use rust_dicom_station::progress::ProgressSink;
 
     pub fn specs(models: Models) -> Vec<ModelSpec> {
         match models {
@@ -40,11 +44,12 @@ mod imp {
         }
     }
 
-    /// Total download in bytes, ignoring models already cached in `dir`.
-    pub fn download_size(models: Models, dir: &Path) -> u64 {
+    /// Total download in bytes, ignoring models already cached under `root`.
+    pub fn download_size(models: Models, root: &Path) -> u64 {
+        let dir = engine_dir(root, Engine::TotalSegmentator);
         specs(models)
             .iter()
-            .filter(|s| !weights::is_cached(s, dir))
+            .filter(|s| !weights::is_cached(s, &dir))
             .map(|s| s.zip_bytes)
             .sum()
     }
@@ -69,17 +74,18 @@ mod imp {
 
     pub fn prefetch(
         models: Models,
-        dir: &Path,
+        root: &Path,
         progress: &(dyn Fn(f32, &str) + Sync),
         cancel: &AtomicBool,
     ) -> Result<()> {
         let specs = specs(models);
-        std::fs::create_dir_all(dir)?;
+        let dir = engine_dir(root, Engine::TotalSegmentator);
+        std::fs::create_dir_all(&dir)?;
         for (i, spec) in specs.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
                 anyhow::bail!("cancelled");
             }
-            if weights::is_cached(spec, dir) {
+            if weights::is_cached(spec, &dir) {
                 continue;
             }
             let sink = Slice {
@@ -90,7 +96,7 @@ mod imp {
             };
             // `ensure_model` downloads, converts and caches; the returned
             // tensors are dropped right away — we only wanted the cache.
-            let _ = weights::ensure_model(spec, dir, &sink)?;
+            let _ = weights::ensure_model(spec, &dir, &sink)?;
         }
         Ok(())
     }

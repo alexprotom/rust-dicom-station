@@ -18,7 +18,7 @@
 use rayon::prelude::*;
 
 use crate::geometry::Vec3;
-use crate::loader::Progress;
+use crate::progress::Progress;
 use crate::rtstruct::{Roi, StructureSet};
 use crate::volume::Volume;
 
@@ -28,7 +28,6 @@ pub type SurfaceMesh = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[u32; 3]>);
 pub struct RoiMesh {
     /// Index of the ROI within the structure set (drives visibility).
     pub roi_index: usize,
-    pub name: String,
     pub color: [u8; 3],
     /// EXTERNAL / body contour — drawn translucent so interior structures
     /// stay visible (as in 3D Slicer).
@@ -189,7 +188,6 @@ fn build_roi_mesh(roi_index: usize, roi: &Roi) -> Option<RoiMesh> {
     let lname = roi.name.to_lowercase();
     Some(RoiMesh {
         roi_index,
-        name: roi.name.clone(),
         color: roi.color,
         external: roi.roi_type == "EXTERNAL"
             || lname.contains("body")

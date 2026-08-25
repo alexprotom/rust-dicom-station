@@ -17,11 +17,13 @@ use std::sync::Mutex;
 use anyhow::Result;
 use burn::tensor::backend::Backend;
 
+use crate::nn::device::DevicePref;
 use crate::nn::params::Params;
+use crate::progress::ProgressSink;
 use crate::volume::Volume;
 
 use super::config;
-use super::infer::{self, Config, Hooks, Segmentation, Slices};
+use super::infer::{self, Config, Segmentation, Slices};
 use super::model::{Medsam2, SliceFeatures};
 use super::ops;
 use super::preprocess::Prepared;
@@ -103,57 +105,41 @@ enum Inner {
 /// The loaded network, on whichever backend was chosen.
 pub struct Engine {
     inner: Inner,
-    device: &'static str,
-}
-
-/// Try to bring up a wgpu device, proving it works before anything depends on
-/// it. Backend initialization failures surface as panics inside `burn`, so
-/// they are caught rather than propagated.
-#[cfg(feature = "gpu")]
-pub fn gpu_available() -> bool {
-    use burn::tensor::{Tensor, TensorData};
-    std::panic::catch_unwind(|| {
-        let device = burn::tensor::Device::<Gpu>::default();
-        let t = Tensor::<Gpu, 1>::from_data(TensorData::new(vec![1.0f32, 2.0, 3.0], [3]), &device);
-        let s: f32 = t.sum().into_scalar();
-        (s - 6.0).abs() < 1e-3
-    })
-    .unwrap_or(false)
-}
-
-#[cfg(not(feature = "gpu"))]
-pub fn gpu_available() -> bool {
-    false
+    device: String,
 }
 
 impl Engine {
-    /// Build the network from a loaded state dict.
-    pub fn load(params: &Params, prefer_gpu: bool) -> Result<Engine> {
-        #[cfg(feature = "gpu")]
-        if prefer_gpu && gpu_available() {
-            let device = burn::tensor::Device::<Gpu>::default();
-            return Ok(Engine {
+    /// Build the network from a loaded state dict, on the GPU when `device`
+    /// allows it and a usable adapter exists (see [`DevicePref::resolve`]).
+    pub fn load(params: &Params, device: DevicePref) -> Result<Engine> {
+        let gpu = device.resolve()?;
+        match gpu {
+            #[cfg(feature = "gpu")]
+            Some(ctx) => Ok(Engine {
                 inner: Inner::Gpu(
-                    Box::new(Medsam2::<Gpu>::load(params, &device)?),
+                    Box::new(Medsam2::<Gpu>::load(params, ctx.device())?),
                     Mutex::new(None),
                 ),
-                device: "GPU (wgpu)",
-            });
+                device: ctx.describe(),
+            }),
+            #[cfg(not(feature = "gpu"))]
+            Some(ctx) => ctx.unreachable(),
+            None => {
+                let device = burn::tensor::Device::<Cpu>::default();
+                Ok(Engine {
+                    inner: Inner::Cpu(
+                        Box::new(Medsam2::<Cpu>::load(params, &device)?),
+                        Mutex::new(None),
+                    ),
+                    device: crate::nn::device::describe_cpu(),
+                })
+            }
         }
-        let _ = prefer_gpu;
-        let device = burn::tensor::Device::<Cpu>::default();
-        Ok(Engine {
-            inner: Inner::Cpu(
-                Box::new(Medsam2::<Cpu>::load(params, &device)?),
-                Mutex::new(None),
-            ),
-            device: "CPU",
-        })
     }
 
     /// What to show the user: which backend is actually running.
-    pub fn device(&self) -> &'static str {
-        self.device
+    pub fn device(&self) -> &str {
+        &self.device
     }
 
     /// Segment one structure: prompt one slice, propagate through the stack.
@@ -163,7 +149,7 @@ impl Engine {
         slice: usize,
         prompt: &EnginePrompt,
         config: &Config,
-        hooks: &dyn Hooks,
+        hooks: &dyn ProgressSink,
     ) -> Result<Segmentation> {
         match &self.inner {
             Inner::Cpu(model, cache) => run(model, cache, prepared, slice, prompt, config, hooks),
@@ -209,7 +195,7 @@ impl Engine {
         slice: usize,
         prompt: &EnginePrompt,
         config: &Config,
-        hooks: &dyn Hooks,
+        hooks: &dyn ProgressSink,
     ) -> Result<(Vec<u8>, Segmentation)> {
         let seg = self.propagate(prepared, slice, prompt, config, hooks)?;
         let grid = prepared.mask_to_volume_grid(&seg.masks, volume);
@@ -283,7 +269,7 @@ fn run<B: Backend>(
     slice: usize,
     prompt: &EnginePrompt,
     config: &Config,
-    hooks: &dyn Hooks,
+    hooks: &dyn ProgressSink,
 ) -> Result<Segmentation> {
     let device = model.device().clone();
     let prompt = to_prompt::<B>(prepared, prompt, &device);

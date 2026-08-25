@@ -3,7 +3,8 @@
 //! Run with `--release` (the optimizer loops are slow in debug builds).
 
 use rust_dicom_station::geometry::Vec3;
-use rust_dicom_station::registration::{register, RegKind, RegParams, RegProgress, RigidTransform};
+use rust_dicom_station::progress::Progress;
+use rust_dicom_station::registration::{register, RegKind, RegParams, RigidTransform};
 use rust_dicom_station::volume::Volume;
 
 /// Smoothly-edged multi-feature phantom (values in HU-like units).
@@ -89,7 +90,7 @@ fn rigid_recovers_known_transform() {
         grid_spacing_mm: 32.0,
         fixed_threshold: -500.0,
     };
-    let progress = RegProgress::default();
+    let progress = Progress::default();
     let t0 = std::time::Instant::now();
     let res = register(&fixed, &moving, &params, &progress).expect("registration runs");
     eprintln!(
@@ -163,7 +164,7 @@ fn bspline_recovers_gaussian_bump() {
         grid_spacing_mm: 24.0,
         fixed_threshold: -500.0,
     };
-    let progress = RegProgress::default();
+    let progress = Progress::default();
     let t0 = std::time::Instant::now();
     let res = register(&fixed, &moving, &params, &progress).expect("registration runs");
     eprintln!(

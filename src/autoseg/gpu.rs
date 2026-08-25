@@ -17,37 +17,9 @@ use burn::tensor::ops::{ConvOptions, ConvTransposeOptions};
 use burn::tensor::{Tensor, TensorData};
 
 use super::net::UNet;
+use crate::nn::device::{guarded, GpuContext};
 
 type B = Wgpu;
-
-/// A validated wgpu device.
-pub struct GpuContext {
-    device: WgpuDevice,
-}
-
-impl GpuContext {
-    /// Initialize the default wgpu device and prove it works with a tiny
-    /// computation. Backend initialization failures surface as panics inside
-    /// wgpu/cubecl, so they are caught here and turned into errors.
-    pub fn try_new() -> Result<GpuContext> {
-        let result = std::panic::catch_unwind(|| {
-            let device = WgpuDevice::default();
-            let t =
-                Tensor::<B, 1>::from_data(TensorData::new(vec![1.0f32, 2.0, 3.0], [3]), &device);
-            let s: f32 = t.sum().into_scalar();
-            (device, s)
-        });
-        match result {
-            Ok((device, s)) if (s - 6.0).abs() < 1e-3 => Ok(GpuContext { device }),
-            Ok((_, s)) => bail!("GPU self-test returned {s}, expected 6"),
-            Err(_) => bail!("no usable wgpu adapter found"),
-        }
-    }
-
-    pub fn adapter_name(&self) -> String {
-        "wgpu".to_string()
-    }
-}
 
 struct GBlock {
     w: Tensor<B, 5>,
@@ -84,7 +56,7 @@ fn upload1(device: &WgpuDevice, data: &[f32]) -> Tensor<B, 1> {
 
 impl GpuNet {
     pub fn new(ctx: &GpuContext, unet: &UNet) -> Result<GpuNet> {
-        let d = &ctx.device;
+        let d = ctx.device();
         let up_block = |blk: &super::net::ConvBlock| -> GBlock {
             GBlock {
                 w: upload5(
@@ -181,9 +153,7 @@ impl GpuNet {
             }
             Ok(data)
         };
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(run))
-            .map_err(|_| anyhow!("GPU inference failed (backend panic)"))?
-            .context("GPU forward")
+        guarded(run).context("GPU forward")
     }
 }
 

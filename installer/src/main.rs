@@ -43,7 +43,7 @@ INSTALL OPTIONS:
     --all-users           install for all users (needs administrator rights)
     --just-me             install for the current user only (default)
     --models <SET>        pre-download weights: none | 6mm | 3mm | 1.5mm | all
-    --models-dir <PATH>   where to keep the model cache
+    --models-dir <PATH>   the model folder (every engine's weights go in it)
     --no-start-menu       skip the Start-menu shortcut
     --no-desktop-shortcut skip the desktop shortcut
     --no-file-association skip the .dcm / folder context-menu entries
@@ -54,7 +54,7 @@ INSTALL OPTIONS:
 UNINSTALL OPTIONS:
     --uninstall           remove an existing installation
     --from <PATH>         installation folder (default: the uninstaller's own)
-    --remove-models       also delete the downloaded model weights
+    --remove-models       also delete the model folder with every downloaded model
 
 GENERAL:
     --silent              no window and no questions

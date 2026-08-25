@@ -14,6 +14,7 @@ use rust_dicom_station::medsam2::{
     prompt::Point, sam::SamHead,
 };
 use rust_dicom_station::nn::cache::WTensor;
+use rust_dicom_station::nn::device::DevicePref;
 use rust_dicom_station::nn::params::Params;
 
 type B = burn::backend::NdArray;
@@ -236,11 +237,12 @@ fn phantom(dims: [usize; 3]) -> rust_dicom_station::volume::Volume {
 #[test]
 fn a_box_prompt_propagates_through_a_small_stack() {
     use rust_dicom_station::medsam2::engine::{Engine, EnginePrompt, PixelPrompt};
-    use rust_dicom_station::medsam2::infer::{Config, Quiet};
+    use rust_dicom_station::medsam2::infer::Config;
     use rust_dicom_station::medsam2::preprocess::{Prepared, Window};
+    use rust_dicom_station::progress::Quiet;
 
-    let engine = Engine::load(&synthetic_params(), false).expect("cpu engine");
-    assert_eq!(engine.device(), "CPU");
+    let engine = Engine::load(&synthetic_params(), DevicePref::Cpu).expect("cpu engine");
+    assert!(engine.device().starts_with("CPU"), "{}", engine.device());
     let vol = phantom([48, 40, 5]);
     let prepared = Prepared::prepare(&vol, Window::new(-100.0, 300.0));
     assert_eq!(prepared.dims, [5, 40, 48]);
@@ -277,10 +279,11 @@ fn a_box_prompt_propagates_through_a_small_stack() {
 #[test]
 fn an_existing_contour_can_be_the_prompt() {
     use rust_dicom_station::medsam2::engine::{Engine, EnginePrompt};
-    use rust_dicom_station::medsam2::infer::{Config, Quiet};
+    use rust_dicom_station::medsam2::infer::Config;
     use rust_dicom_station::medsam2::preprocess::{Prepared, Window};
+    use rust_dicom_station::progress::Quiet;
 
-    let engine = Engine::load(&synthetic_params(), false).expect("cpu engine");
+    let engine = Engine::load(&synthetic_params(), DevicePref::Cpu).expect("cpu engine");
     let vol = phantom([48, 40, 3]);
     let prepared = Prepared::prepare(&vol, Window::new(-100.0, 300.0));
 
@@ -310,11 +313,12 @@ fn an_existing_contour_can_be_the_prompt() {
 #[test]
 fn a_preview_agrees_with_the_prompted_slice_and_reuses_its_features() {
     use rust_dicom_station::medsam2::engine::{Engine, EnginePrompt, PixelPrompt};
-    use rust_dicom_station::medsam2::infer::{Config, Quiet};
+    use rust_dicom_station::medsam2::infer::Config;
     use rust_dicom_station::medsam2::preprocess::{Prepared, Window};
+    use rust_dicom_station::progress::Quiet;
     use std::time::Instant;
 
-    let engine = Engine::load(&synthetic_params(), false).expect("cpu engine");
+    let engine = Engine::load(&synthetic_params(), DevicePref::Cpu).expect("cpu engine");
     let vol = phantom([48, 40, 3]);
     let prepared = Prepared::prepare(&vol, Window::new(-100.0, 300.0));
     let prompt = EnginePrompt::Points(PixelPrompt::box_corners(10.0, 12.0, 30.0, 36.0));

@@ -18,7 +18,7 @@ use std::collections::HashMap;
 
 use super::config::ModelConfig;
 use super::cpu::{concat, conv3d, conv_transpose3d_2x, instance_norm_lrelu, Act};
-use super::weights::WTensor;
+use crate::nn::cache::WTensor;
 
 /// One Conv3d → InstanceNorm → LeakyReLU block.
 pub struct ConvBlock {
@@ -152,15 +152,21 @@ impl UNet {
 
     /// CPU forward pass for one patch `[1, D, H, W]` → logits
     /// `[classes, D, H, W]`.
-    pub fn forward_cpu(&self, x: Act) -> Act {
+    pub fn forward_cpu(&self, x: &Act) -> Act {
         let n = self.enc.len();
+        // Every stage's output is a skip connection, and the next stage reads
+        // it straight out of `skips` — nothing is copied (stage 0's output is
+        // 180 MB at 112³).
         let mut skips: Vec<Act> = Vec::with_capacity(n);
-        let mut h = x;
-        for stage in &self.enc {
-            for blk in stage {
-                h = run_block(blk, h);
+        for (i, stage) in self.enc.iter().enumerate() {
+            let src: &Act = if i == 0 { x } else { &skips[i - 1] };
+            let mut blocks = stage.iter();
+            let first = blocks.next().expect("a stage has at least one block");
+            let mut h = run_block(first, src);
+            for blk in blocks {
+                h = run_block(blk, &h);
             }
-            skips.push(h.clone());
+            skips.push(h);
         }
         let mut cur = skips.pop().unwrap();
         for (t, tc) in self.transp.iter().enumerate() {
@@ -168,7 +174,7 @@ impl UNet {
             let skip = skips.pop().unwrap();
             cur = concat(&up, &skip);
             for blk in &self.dec[t] {
-                cur = run_block(blk, cur);
+                cur = run_block(blk, &cur);
             }
         }
         conv3d(
@@ -186,8 +192,8 @@ fn cfg_features0(head_shape: &[usize]) -> usize {
     head_shape[1]
 }
 
-fn run_block(blk: &ConvBlock, x: Act) -> Act {
-    let mut y = conv3d(&x, &blk.w, &blk.b, blk.cout, blk.kernel, blk.stride);
+fn run_block(blk: &ConvBlock, x: &Act) -> Act {
+    let mut y = conv3d(x, &blk.w, &blk.b, blk.cout, blk.kernel, blk.stride);
     instance_norm_lrelu(&mut y, &blk.gamma, &blk.beta);
     y
 }

@@ -137,9 +137,7 @@ impl ViewerApp {
                             .segs
                             .iter()
                             .enumerate()
-                            .filter_map(|(i, s)| {
-                                s.mesh_grid().map(|g| (i, s.name.clone(), s.color, g))
-                            })
+                            .filter_map(|(i, s)| s.mesh_grid().map(|g| (i, s.color, g)))
                             .collect();
                         if snaps.is_empty() {
                             w.seg_meshes = Some(Arc::new(Vec::new()));
@@ -149,11 +147,10 @@ impl ViewerApp {
                             std::thread::spawn(move || {
                                 let meshes: Vec<RoiMesh> = snaps
                                     .into_par_iter()
-                                    .filter_map(|(i, name, color, (grid, gdims, lo, stride))| {
+                                    .filter_map(|(i, color, (grid, gdims, lo, stride))| {
                                         mesh3d::mesh_from_mask(&grid, gdims, lo, stride, &geom).map(
                                             |(verts, normals, tris)| RoiMesh {
                                                 roi_index: i,
-                                                name,
                                                 color,
                                                 external: false,
                                                 verts,

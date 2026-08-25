@@ -19,7 +19,8 @@ use dicom_dictionary_std::tags;
 use dicom_object::meta::FileMetaTableBuilder;
 use dicom_object::InMemDicomObject;
 
-use crate::loader::{LoadedStudy, Progress};
+use crate::loader::LoadedStudy;
+use crate::progress::Progress;
 
 const SOP_CT: &str = "1.2.840.10008.5.1.4.1.1.2";
 const SOP_RTSTRUCT: &str = "1.2.840.10008.5.1.4.1.1.481.3";
@@ -324,7 +325,7 @@ pub fn export_study(
     let mut n_files = 0usize;
 
     // Stable SOP Instance UIDs so the exported objects keep their DICOM
-    // cross-references (dose â¶ plan â¶ structure set).
+    // cross-references (dose ▶ plan ▶ structure set).
     let rs_uids: Vec<String> = study.structure_sets.iter().map(|_| new_uid()).collect();
     let plan_uids: Vec<String> = study.plans.iter().map(|_| new_uid()).collect();
 

@@ -28,7 +28,7 @@ use crate::nn::tensor::Mat;
 
 use super::bpe::{Bpe, EOS};
 use super::config::*;
-use super::params::Params;
+use crate::nn::params::Params;
 
 struct Layer {
     ln1: (Vec<f32>, Vec<f32>),
@@ -52,7 +52,7 @@ pub struct TextEncoder {
 }
 
 fn pair(p: &Params, prefix: &str, out: usize, inp: usize) -> Result<(Vec<f32>, Vec<f32>)> {
-    let (w, b) = p.linear(prefix, out, inp)?;
+    let (w, b) = p.linear_opt(prefix, out, inp)?;
     Ok((
         w.to_vec(),
         b.with_context(|| format!("{prefix} needs a bias"))?
@@ -61,7 +61,7 @@ fn pair(p: &Params, prefix: &str, out: usize, inp: usize) -> Result<(Vec<f32>, V
 }
 
 fn norm(p: &Params, prefix: &str) -> Result<(Vec<f32>, Vec<f32>)> {
-    let (w, b) = p.norm(prefix, &[CLIP_WIDTH])?;
+    let (w, b) = p.norm(prefix, CLIP_WIDTH)?;
     Ok((w.to_vec(), b.to_vec()))
 }
 
@@ -177,10 +177,6 @@ impl TextEncoder {
             .unwrap_or_else(|e| e.into_inner())
             .insert(key, v.clone());
         v
-    }
-
-    pub fn cached(&self) -> usize {
-        self.cache.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 }
 

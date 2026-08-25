@@ -36,7 +36,8 @@ impl ViewerApp {
         let (tx, rx) = mpsc::channel();
         let p2 = progress.clone();
         std::thread::spawn(move || {
-            let res = loader::load_series_volume(&series, &p2);
+            let res = loader::load_series_volume(&series, &p2)
+                .map(|(vol, window, warnings)| (Arc::new(vol), window, warnings));
             let _ = tx.send(LoadResult::Volume(Box::new(res), slot, idx));
         });
         self.loading = Some(Job { progress, rx });
@@ -135,7 +136,7 @@ impl ViewerApp {
     pub(super) fn apply_new_volume(
         &mut self,
         slot: usize,
-        vol: Volume,
+        vol: Arc<Volume>,
         window: (f32, f32),
         idx: usize,
     ) {
@@ -241,21 +242,19 @@ impl ViewerApp {
         let moving = m.volume.clone();
         let params = RegParams {
             kind,
-            levels: 3,
             iterations: self.reg_iterations,
             samples: self.reg_samples,
             grid_spacing_mm: self.reg_grid_mm,
-            fixed_threshold: -500.0,
+            ..RegParams::default()
         };
-        let progress = Arc::new(RegProgress::default());
+        let progress = Arc::new(Progress::default());
         progress.set("starting…");
-        let p2 = progress.clone();
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let res = registration::register(&fixed, &moving, &params, &p2);
-            let _ = tx.send((fixed_slot, res));
-        });
-        self.reg_job = Some(Job { progress, rx });
+        self.reg_job = Some(Job::spawn(progress, move |p| {
+            (
+                fixed_slot,
+                registration::register(&fixed, &moving, &params, p),
+            )
+        }));
     }
 
     /// Generate a transformed copy of the source study into the other slot
@@ -353,47 +352,39 @@ impl ViewerApp {
         self.gen_job = Some(Job { progress, rx });
     }
 
-    /// Snapshot the volume and run the segmentation on a worker thread.
-    pub(super) fn start_autoseg(&mut self, d: &AutosegDialog) {
+    /// Snapshot the volume and run the segmentation on a worker thread, with
+    /// the parameters of the open tool window.
+    pub(super) fn start_autoseg(&mut self) {
         if self.autoseg_job.is_some() {
             return;
         }
+        let Some(d) = &self.autoseg_dialog else {
+            return;
+        };
         let Some(study) = self.slots[d.slot].study.as_ref() else {
             return;
         };
         let volume = study.volume.clone();
-        let models_dir = if self.autoseg_models_dir.trim().is_empty() {
-            autoseg::default_models_dir()
-        } else {
-            PathBuf::from(self.autoseg_models_dir.trim())
-        };
-        self.persist_settings();
-        let progress = Arc::new(autoseg::AutosegProgress::default());
-        progress.set("Starting auto-segmentation…");
-        let p2 = progress.clone();
-        let (tx, rx) = mpsc::channel();
+        let models_dir = self.engine_models_dir(models::Engine::TotalSegmentator);
         let (slot, variant, device, parts) = (d.slot, d.variant, d.device, d.parts);
-        std::thread::spawn(move || {
-            let res = autoseg::run(&volume, variant, device, parts, &models_dir, &p2);
-            let _ = tx.send((slot, res));
-        });
+        self.persist_settings();
+        let progress = Arc::new(Progress::default());
+        progress.set("Starting auto-segmentation…");
         self.autoseg_slot = slot;
-        self.autoseg_job = Some(Job { progress, rx });
+        self.autoseg_job = Some(Job::spawn(progress, move |p| {
+            (
+                slot,
+                autoseg::run(&volume, variant, device, parts, &models_dir, p),
+            )
+        }));
     }
 
     /// A run finished: verify the slot still shows the same volume, then
-    /// open the organ-selection dialog.
+    /// open the organ-selection dialog in place of the tool window.
     pub(super) fn on_autoseg_done(&mut self, slot: usize, result: autoseg::AutosegResult) {
-        let valid = self.slots[slot].study.as_ref().is_some_and(|st| {
-            st.volume.dims == result.volume_dims
-                && st.volume.frame_of_reference_uid == result.frame_of_reference_uid
-        });
-        if !valid {
-            self.error = Some(
-                "Auto-segmentation finished, but the dataset changed while it \
-                 was running — the result was discarded."
-                    .into(),
-            );
+        self.autoseg_dialog = None;
+        if !self.slot_still_shows(slot, result.volume_dims, &result.frame_of_reference_uid) {
+            self.error = Some(stale_result(&AUTOSEG));
             return;
         }
         if result.organs.is_empty() {

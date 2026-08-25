@@ -245,7 +245,7 @@ impl SetupApp {
     fn welcome(&mut self, ui: &mut egui::Ui) {
         ui.label(
             "This will install the viewer, its Start-menu entry and, optionally, the \
-                  auto-segmentation model weights.",
+                  auto-segmentation weights.",
         );
         ui.add_space(6.0);
         if let Some(text) = &self.license {
@@ -362,7 +362,7 @@ impl SetupApp {
             );
 
             ui.add_space(10.0);
-            ui.label(RichText::new("Auto-segmentation model weights").strong());
+            ui.label(RichText::new("Model folder and auto-segmentation weights").strong());
             if models::AVAILABLE {
                 egui::ComboBox::from_id_salt("models")
                     .width(360.0)
@@ -373,7 +373,7 @@ impl SetupApp {
                         }
                     });
                 ui.horizontal(|ui| {
-                    ui.label("Cache folder:");
+                    ui.label("Model folder:");
                     let w = ui.available_width() - 10.0;
                     if ui
                         .add_sized(
@@ -507,7 +507,7 @@ impl SetupApp {
             ui.checkbox(
                 &mut self.remove_models,
                 format!(
-                    "Also delete the downloaded model weights in {} ({})",
+                    "Also delete every downloaded model in {} ({})",
                     models_dir.display(),
                     human_size(size)
                 ),

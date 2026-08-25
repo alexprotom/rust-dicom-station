@@ -17,7 +17,7 @@
 //! 2. **Canonical orientation.** The reference reaches `[S, A, R]` by
 //!    `Orientationd(axcodes="RAS")` then a transpose swapping the first and
 //!    last spatial axes. We get there directly from the DICOM direction
-//!    cosines with [`crate::autoseg::preprocess::canonical_axes`], which is
+//!    cosines with [`Volume::canonical_axes`], which is
 //!    the same target the nnU-Net engine already uses.
 //! 3. **Min-max to [0, 1]**, which puts the global minimum at exactly zero.
 //! 4. **Foreground crop** of everything `> 0` — that zero floor is what makes
@@ -28,7 +28,6 @@
 
 use rayon::prelude::*;
 
-use crate::autoseg::preprocess::canonical_axes;
 use crate::volume::Volume;
 
 /// A volume ready for the network: canonically oriented `[S, A, R]`,
@@ -57,29 +56,44 @@ pub struct ForegroundStats {
     pub std: f32,
 }
 
-/// numpy's `percentile` with linear interpolation, on already-sorted data.
-fn percentile_sorted(sorted: &[f32], q: f64) -> f32 {
-    if sorted.is_empty() {
+/// numpy's `percentile` with linear interpolation — the two order statistics
+/// it interpolates between are found by selection rather than by sorting
+/// the whole (up to 10⁸-element) sample.
+fn percentile(values: &mut [f32], q: f64) -> f32 {
+    if values.is_empty() {
         return 0.0;
     }
-    let pos = q / 100.0 * (sorted.len() - 1) as f64;
+    let pos = q / 100.0 * (values.len() - 1) as f64;
     let lo = pos.floor() as usize;
     let hi = pos.ceil() as usize;
+    let (_, at_lo, above) = values.select_nth_unstable_by(lo, f32::total_cmp);
+    let at_lo = *at_lo;
     if lo == hi {
-        return sorted[lo];
+        return at_lo;
     }
+    // The next order statistic is the smallest of what selection left above.
+    let at_hi = above
+        .iter()
+        .copied()
+        .min_by(f32::total_cmp)
+        .unwrap_or(at_lo);
     let frac = (pos - lo as f64) as f32;
-    sorted[lo] * (1.0 - frac) + sorted[hi] * frac
+    at_lo * (1.0 - frac) + at_hi * frac
 }
 
 /// Threshold at the mean, then summarize what is above it.
 pub fn foreground_stats(v: &[f32]) -> ForegroundStats {
+    // The sums stay sequential: their order decides the last bits of the
+    // threshold and the normalization, and a run must reproduce itself.
     let mean_all = v.iter().map(|x| *x as f64).sum::<f64>() / v.len().max(1) as f64;
-    let mut fg: Vec<f32> = v.iter().copied().filter(|x| *x as f64 > mean_all).collect();
+    let mut fg: Vec<f32> = v
+        .par_iter()
+        .copied()
+        .filter(|x| *x as f64 > mean_all)
+        .collect();
     if fg.is_empty() {
         fg = v.to_vec();
     }
-    fg.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let n = fg.len() as f64;
     let m = fg.iter().map(|x| *x as f64).sum::<f64>() / n;
     // numpy's std: population, ddof = 0
@@ -89,8 +103,8 @@ pub fn foreground_stats(v: &[f32]) -> ForegroundStats {
         .sum::<f64>()
         / n;
     ForegroundStats {
-        lower: percentile_sorted(&fg, 0.05),
-        upper: percentile_sorted(&fg, 99.95),
+        lower: percentile(&mut fg, 0.05),
+        upper: percentile(&mut fg, 99.95),
         mean: m as f32,
         std: var.sqrt() as f32,
     }
@@ -98,7 +112,7 @@ pub fn foreground_stats(v: &[f32]) -> ForegroundStats {
 
 /// Prepare a DICOM volume for the network.
 pub fn prepare(vol: &Volume) -> Prepared {
-    let (perm, flip) = canonical_axes(vol);
+    let (perm, flip) = vol.canonical_axes();
     let dims = [vol.dims[0], vol.dims[1], vol.dims[2]];
     let oriented_dims = [dims[perm[0]], dims[perm[1]], dims[perm[2]]];
 
@@ -356,13 +370,17 @@ mod tests {
 
     #[test]
     fn percentiles_interpolate_the_way_numpy_does() {
-        let v: Vec<f32> = (0..=10).map(|i| i as f32).collect();
-        assert_eq!(percentile_sorted(&v, 0.0), 0.0);
-        assert_eq!(percentile_sorted(&v, 100.0), 10.0);
-        assert_eq!(percentile_sorted(&v, 50.0), 5.0);
+        // Shuffled on purpose: selection must not depend on the order.
+        let v: Vec<f32> = [7, 2, 9, 0, 5, 3, 10, 1, 8, 4, 6]
+            .iter()
+            .map(|i| *i as f32)
+            .collect();
+        assert_eq!(percentile(&mut v.clone(), 0.0), 0.0);
+        assert_eq!(percentile(&mut v.clone(), 100.0), 10.0);
+        assert_eq!(percentile(&mut v.clone(), 50.0), 5.0);
         // 25th percentile of 0..10 is 2.5 under linear interpolation
-        assert!((percentile_sorted(&v, 25.0) - 2.5).abs() < 1e-6);
-        assert!(percentile_sorted(&[], 50.0) == 0.0);
+        assert!((percentile(&mut v.clone(), 25.0) - 2.5).abs() < 1e-6);
+        assert!(percentile(&mut [], 50.0) == 0.0);
     }
 
     #[test]

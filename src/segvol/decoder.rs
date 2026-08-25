@@ -26,7 +26,7 @@ use crate::nn::linalg::{gelu, layer_norm, linear, matmul, relu, LAYER_NORM_EPS};
 use crate::nn::tensor::{conv_transpose3d_2x, Act, Mat};
 
 use super::config::*;
-use super::params::Params;
+use crate::nn::params::Params;
 
 /// A `q`/`k`/`v`/`out` projection group running at `internal` width.
 struct Attn {
@@ -41,7 +41,7 @@ impl Attn {
     fn build(p: &Params, prefix: &str, downsample: usize) -> Result<Attn> {
         let internal = EMBED / downsample;
         let proj = |name: &str, out: usize, inp: usize| -> Result<(Vec<f32>, Vec<f32>)> {
-            let (w, b) = p.linear(&format!("{prefix}.{name}"), out, inp)?;
+            let (w, b) = p.linear_opt(&format!("{prefix}.{name}"), out, inp)?;
             Ok((
                 w.to_vec(),
                 b.with_context(|| format!("{prefix}.{name} needs a bias"))?
@@ -75,7 +75,7 @@ impl Mlp {
     fn build(p: &Params, prefix: &str, dims: &[usize]) -> Result<Mlp> {
         let mut layers = Vec::new();
         for (i, pair) in dims.windows(2).enumerate() {
-            let (w, b) = p.linear(&format!("{prefix}.layers.{i}"), pair[1], pair[0])?;
+            let (w, b) = p.linear_opt(&format!("{prefix}.layers.{i}"), pair[1], pair[0])?;
             layers.push((
                 w.to_vec(),
                 b.with_context(|| format!("{prefix}.layers.{i} needs a bias"))?
@@ -113,7 +113,7 @@ struct Layer {
 }
 
 fn norm_of(p: &Params, prefix: &str) -> Result<(Vec<f32>, Vec<f32>)> {
-    let (w, b) = p.norm(prefix, &[EMBED])?;
+    let (w, b) = p.norm(prefix, EMBED)?;
     Ok((w.to_vec(), b.to_vec()))
 }
 
@@ -140,11 +140,11 @@ impl Layer {
             )?,
             norm2: norm_of(p, &format!("{b}.norm2"))?,
             mlp_lin1: {
-                let (w, bi) = p.linear(&format!("{b}.mlp.lin1"), DEC_MLP, EMBED)?;
+                let (w, bi) = p.linear_opt(&format!("{b}.mlp.lin1"), DEC_MLP, EMBED)?;
                 (w.to_vec(), bi.context("mlp.lin1 needs a bias")?.to_vec())
             },
             mlp_lin2: {
-                let (w, bi) = p.linear(&format!("{b}.mlp.lin2"), EMBED, DEC_MLP)?;
+                let (w, bi) = p.linear_opt(&format!("{b}.mlp.lin2"), EMBED, DEC_MLP)?;
                 (w.to_vec(), bi.context("mlp.lin2 needs a bias")?.to_vec())
             },
             norm3: norm_of(p, &format!("{b}.norm3"))?,
@@ -237,7 +237,6 @@ pub struct MaskDecoder {
 
 impl MaskDecoder {
     pub fn build(p: &Params) -> Result<MaskDecoder> {
-        let feat = FEAT_SHAPE[0] * FEAT_SHAPE[1] * FEAT_SHAPE[2];
         let up_shape = &[EMBED / 4, FEAT_SHAPE[0], FEAT_SHAPE[1], FEAT_SHAPE[2]][..];
         let mut layers = Vec::with_capacity(DEC_LAYERS);
         for i in 0..DEC_LAYERS {
@@ -251,12 +250,11 @@ impl MaskDecoder {
                 &[EMBED, EMBED, EMBED, UPSCALED_CHANNELS],
             )?);
         }
-        let (txt_w, txt_b) = p.linear(
+        let (txt_w, txt_b) = p.linear_opt(
             "mask_decoder.txt_align_upscaled_embedding",
             UPSCALED_CHANNELS,
             EMBED,
         )?;
-        let _ = feat;
         Ok(MaskDecoder {
             iou_token: p
                 .get("mask_decoder.iou_token.weight", &[1, EMBED])?
@@ -341,7 +339,10 @@ impl MaskDecoder {
         // [TOKENS, EMBED] -> [EMBED, GRID] -> upscale
         let volume = Act::from_tokens(&src, GRID[0], GRID[1], GRID[2]);
         let upscaled = self.upscale(&volume);
-        let up_mat = upscaled.to_mat(); // [UPSCALED_CHANNELS, spatial]
+        let up_dims = [upscaled.d, upscaled.h, upscaled.w];
+        // [UPSCALED_CHANNELS, spatial], the same storage — 50 MB per window
+        // not copied.
+        let up_mat = upscaled.into_mat();
 
         // One 96-wide filter per mask token.
         let mut hyper_in = Mat::zeros(NUM_MASK_TOKENS, UPSCALED_CHANNELS);
@@ -372,9 +373,9 @@ impl MaskDecoder {
         Decoded {
             masks: Act {
                 c: NUM_MASK_TOKENS,
-                d: upscaled.d,
-                h: upscaled.h,
-                w: upscaled.w,
+                d: up_dims[0],
+                h: up_dims[1],
+                w: up_dims[2],
                 data: masks.data,
             },
             iou,

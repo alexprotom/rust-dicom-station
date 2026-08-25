@@ -26,12 +26,11 @@ pub mod preprocess;
 pub mod weights;
 
 use anyhow::{bail, Context, Result};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::path::Path;
 
+use crate::progress::{Progress, ProgressSink, CANCELLED};
 use crate::volume::Volume;
-use weights::{ModelSpec, ProgressSink};
+use weights::ModelSpec;
 
 /// Which TotalSegmentator model set to run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,11 +52,6 @@ impl Variant {
             Variant::Preview6mm => "6 mm (preview)",
         }
     }
-    /// nnU-Net tile step fraction: 0.8 for the "total" task (TotalSegmentator
-    /// uses 0.5 only for other tasks).
-    fn step_frac(&self) -> f64 {
-        0.8
-    }
     fn specs(&self, parts: [bool; 5]) -> Vec<ModelSpec> {
         match self {
             Variant::Fast3mm => vec![weights::SPEC_3MM],
@@ -72,66 +66,11 @@ impl Variant {
     }
 }
 
-/// Device preference for inference.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DevicePref {
-    /// GPU when available, CPU otherwise.
-    Auto,
-    Cpu,
-    Gpu,
-}
+/// nnU-Net tile step fraction: 0.8 for the "total" task (TotalSegmentator
+/// uses 0.5 only for other tasks).
+const STEP_FRAC: f64 = 0.8;
 
-/// Progress handle shared with the UI thread: message + fraction + cancel.
-#[derive(Default)]
-pub struct AutosegProgress {
-    msg: Mutex<String>,
-    /// f32 bits of the overall progress fraction (0..=1).
-    frac: AtomicU32,
-    cancel: AtomicBool,
-    /// Current phase window mapped onto the overall fraction.
-    phase_base: AtomicU32,
-    phase_span: AtomicU32,
-}
-
-impl AutosegProgress {
-    pub fn set(&self, msg: impl Into<String>) {
-        *self.msg.lock().unwrap_or_else(|e| e.into_inner()) = msg.into();
-    }
-    pub fn get(&self) -> String {
-        self.msg.lock().unwrap_or_else(|e| e.into_inner()).clone()
-    }
-    pub fn frac(&self) -> f32 {
-        f32::from_bits(self.frac.load(Ordering::Relaxed))
-    }
-    pub fn cancel(&self) {
-        self.cancel.store(true, Ordering::Relaxed);
-    }
-    pub fn cancelled(&self) -> bool {
-        self.cancel.load(Ordering::Relaxed)
-    }
-    /// Map subsequent `report(frac in 0..1)` calls onto
-    /// `[base, base+span]` of the overall progress bar.
-    fn set_phase(&self, base: f32, span: f32) {
-        self.phase_base.store(base.to_bits(), Ordering::Relaxed);
-        self.phase_span.store(span.to_bits(), Ordering::Relaxed);
-        self.frac.store(base.to_bits(), Ordering::Relaxed);
-    }
-}
-
-impl ProgressSink for AutosegProgress {
-    fn report(&self, frac: f32, msg: &str) {
-        let base = f32::from_bits(self.phase_base.load(Ordering::Relaxed));
-        let span = f32::from_bits(self.phase_span.load(Ordering::Relaxed));
-        self.frac.store(
-            (base + span * frac.clamp(0.0, 1.0)).to_bits(),
-            Ordering::Relaxed,
-        );
-        self.set(msg);
-    }
-    fn cancelled(&self) -> bool {
-        self.cancelled()
-    }
-}
+pub use crate::nn::device::DevicePref;
 
 /// One detected organ in the result.
 #[derive(Clone, Debug)]
@@ -162,24 +101,6 @@ pub struct AutosegResult {
     pub volume_dims: [usize; 3],
 }
 
-/// Default model cache directory: `autoseg_models/` next to the executable
-/// (falls back to the current directory).
-pub fn default_models_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("autoseg_models")
-}
-
-/// True when every model of the variant is already downloaded + converted.
-pub fn variant_cached(variant: Variant, parts: [bool; 5], models_dir: &Path) -> bool {
-    variant
-        .specs(parts)
-        .iter()
-        .all(|s| weights::is_cached(s, models_dir))
-}
-
 /// Total download size (bytes) still needed for the variant.
 pub fn download_needed(variant: Variant, parts: [bool; 5], models_dir: &Path) -> u64 {
     variant
@@ -195,25 +116,9 @@ pub fn download_needed(variant: Variant, parts: [bool; 5], models_dir: &Path) ->
 /// Boxed patch-forward closure: normalized patch → logits.
 type ForwardFn<'a> = Box<dyn Fn(&[f32]) -> Result<Vec<f32>> + Sync + 'a>;
 
-enum Engine {
-    Cpu,
-    #[cfg(feature = "gpu")]
-    Gpu(gpu::GpuContext),
-}
-
-impl Engine {
-    fn describe(&self) -> String {
-        match self {
-            Engine::Cpu => format!("CPU ({} threads)", rayon::current_num_threads()),
-            #[cfg(feature = "gpu")]
-            Engine::Gpu(ctx) => format!("GPU ({})", ctx.adapter_name()),
-        }
-    }
-}
-
 struct Hooks<'a> {
     forward: ForwardFn<'a>,
-    progress: &'a AutosegProgress,
+    progress: &'a Progress,
     /// (model index, model count) for progress text.
     model: (usize, usize),
     label: &'static str,
@@ -251,7 +156,7 @@ pub fn run(
     device: DevicePref,
     parts: [bool; 5],
     models_dir: &Path,
-    progress: &AutosegProgress,
+    progress: &Progress,
 ) -> Result<AutosegResult> {
     let t_start = std::time::Instant::now();
     let specs = variant.specs(parts);
@@ -270,7 +175,7 @@ pub fn run(
         progress.set_phase(i as f32 * dl_span, dl_span);
         let m = weights::ensure_model(spec, models_dir, progress)?;
         if progress.cancelled() {
-            bail!("cancelled");
+            bail!(CANCELLED);
         }
         models.push(m);
     }
@@ -284,8 +189,13 @@ pub fn run(
     let target = spacing[0];
 
     // ---- engine ----------------------------------------------------------
-    let engine = resolve_engine(device, progress)?;
-    let device_desc = engine.describe();
+    progress.set("Choosing the compute device…");
+    let gpu = device.resolve()?;
+    let device_desc = gpu
+        .as_ref()
+        .map(|ctx| ctx.describe())
+        .unwrap_or_else(crate::nn::device::describe_cpu);
+    progress.set_device(&device_desc);
 
     // ---- preprocess ------------------------------------------------------
     progress.set_phase(0.15, 0.05);
@@ -293,7 +203,7 @@ pub fn run(
     let map = preprocess::SarMap::new(volume, target);
     let vol_model = preprocess::resample_to_model(volume, &map);
     if progress.cancelled() {
-        bail!("cancelled");
+        bail!(CANCELLED);
     }
 
     // ---- inference per model, merged into global labels ------------------
@@ -304,8 +214,8 @@ pub fn run(
         let unet = net::UNet::build(model.config.clone(), &model.tensors)
             .with_context(|| format!("assemble network ({})", model.spec.label))?;
         let classes = unet.num_classes();
-        let forward: ForwardFn = match &engine {
-            Engine::Cpu => {
+        let forward: ForwardFn = match &gpu {
+            None => {
                 let unet_ref = &unet;
                 let p = unet.cfg.patch_size;
                 Box::new(move |patch: &[f32]| {
@@ -316,15 +226,17 @@ pub fn run(
                         w: p[2],
                         data: patch.to_vec(),
                     };
-                    Ok(unet_ref.forward_cpu(x).data)
+                    Ok(unet_ref.forward_cpu(&x).data)
                 })
             }
             #[cfg(feature = "gpu")]
-            Engine::Gpu(ctx) => {
+            Some(ctx) => {
                 let gnet = gpu::GpuNet::new(ctx, &unet)?;
                 let p = unet.cfg.patch_size;
                 Box::new(move |patch: &[f32]| gnet.forward(patch, p))
             }
+            #[cfg(not(feature = "gpu"))]
+            Some(ctx) => ctx.unreachable(),
         };
         let hooks = Hooks {
             forward,
@@ -337,7 +249,7 @@ pub fn run(
             map.model_dims,
             classes,
             &unet.cfg,
-            variant.step_frac(),
+            STEP_FRAC,
             &hooks,
         )
         .with_context(|| format!("inference ({})", model.spec.label))?;
@@ -385,33 +297,4 @@ pub fn run(
         frame_of_reference_uid: volume.frame_of_reference_uid.clone(),
         volume_dims: volume.dims,
     })
-}
-
-#[cfg_attr(not(feature = "gpu"), allow(unused_variables))]
-fn resolve_engine(device: DevicePref, progress: &AutosegProgress) -> Result<Engine> {
-    match device {
-        DevicePref::Cpu => Ok(Engine::Cpu),
-        DevicePref::Gpu => {
-            #[cfg(feature = "gpu")]
-            {
-                progress.set("Initializing GPU…");
-                match gpu::GpuContext::try_new() {
-                    Ok(ctx) => Ok(Engine::Gpu(ctx)),
-                    Err(e) => bail!("GPU requested but not available: {e}"),
-                }
-            }
-            #[cfg(not(feature = "gpu"))]
-            bail!("this build has no GPU support (compiled without the 'gpu' feature)")
-        }
-        DevicePref::Auto => {
-            #[cfg(feature = "gpu")]
-            {
-                progress.set("Looking for a GPU…");
-                if let Ok(ctx) = gpu::GpuContext::try_new() {
-                    return Ok(Engine::Gpu(ctx));
-                }
-            }
-            Ok(Engine::Cpu)
-        }
-    }
 }

@@ -22,10 +22,13 @@
 //! pure-Rust CPU backend when there is no usable adapter — one implementation,
 //! two backends, unlike the SegVol engine's split CPU/GPU pair.
 //!
-//! Status: phases P0-P3 of `docs/medsam2-plan.md` — checkpoint layout and
-//! acquisition, the image encoder, the prompt encoder and mask decoder, and
-//! the memory pair. Slice-to-slice propagation, preprocessing and the user
-//! interface (P4-P6) are not here yet.
+//! The port follows `docs/medsam2-plan.md` and is complete: checkpoint
+//! layout and acquisition ([`layout`], [`weights`]), the image encoder
+//! ([`hiera`], [`neck`]), the prompt encoder and mask decoder ([`prompt`],
+//! [`decoder`], [`sam`]), the memory pair ([`memory`], [`memattn`]),
+//! slice-to-slice propagation ([`track`], [`infer`]), preprocessing
+//! ([`preprocess`], [`resample`]) and the one entry point the application
+//! calls ([`engine`]). The user interface is `app::box_seg`.
 
 pub mod config;
 pub mod decoder;

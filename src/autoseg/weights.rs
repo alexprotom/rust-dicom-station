@@ -18,12 +18,8 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 use super::config::ModelConfig;
-use crate::nn::cache::{self, StoreDtype};
-use crate::nn::pickle::PthReader;
-
-// The download / cache plumbing lives in `crate::nn` now; re-exported so
-// `autoseg::weights` stays the one import site for callers of this module.
-pub use crate::nn::cache::{ProgressSink, WTensor};
+use crate::nn::cache::{self, ConvertSpec, WTensor};
+use crate::progress::{ProgressSink, CANCELLED};
 
 /// One downloadable nnU-Net model.
 #[derive(Clone, Copy, Debug)]
@@ -108,17 +104,29 @@ pub fn ensure_model(
     sink: &dyn ProgressSink,
 ) -> Result<LoadedModel> {
     let dir = models_dir.join(spec.key);
-    let st_path = dir.join("model.safetensors");
-    let plans_path = dir.join("plans.json");
-    if !(st_path.is_file() && plans_path.is_file()) {
-        download_and_convert(spec, &dir, sink)
-            .with_context(|| format!("prepare model '{}'", spec.label))?;
-    }
-    sink.report(0.0, &format!("Loading model ({})…", spec.label));
+    let st_path = dir.join(CACHE_NAME);
+    let plans_path = dir.join(PLANS_NAME);
+    // `decoder.encoder.*` and `*.all_modules.*` are duplicate registrations
+    // of the same storages; drop them.
+    let convert = ConvertSpec {
+        top_key: "network_weights",
+        keep: &|name, _| !name.starts_with("decoder.encoder.") && !name.contains(".all_modules."),
+        rename: &|name| name.to_string(),
+        label: spec.label,
+    };
+    let tensors = cache::ensure_converted(
+        &st_path,
+        &convert,
+        || {
+            download_and_unpack(spec, &dir, sink)
+                .with_context(|| format!("prepare model '{}'", spec.label))
+        },
+        sink,
+    )?;
     let plans_text = std::fs::read_to_string(&plans_path)
         .with_context(|| format!("read {}", plans_path.display()))?;
     let config = ModelConfig::from_plans_json(&plans_text)?;
-    let tensors = cache::load_safetensors(&st_path)?;
+    let _ = std::fs::remove_file(dir.join(CHECKPOINT_TMP));
     Ok(LoadedModel {
         spec: *spec,
         config,
@@ -126,13 +134,25 @@ pub fn ensure_model(
     })
 }
 
+/// Converted-weight cache and the nnU-Net plan, written per model.
+const CACHE_NAME: &str = "model.safetensors";
+const PLANS_NAME: &str = "plans.json";
+/// The checkpoint extracted from the release zip; deleted after conversion.
+const CHECKPOINT_TMP: &str = "checkpoint.tmp.pth";
+
 /// True when the model's converted cache is already present.
 pub fn is_cached(spec: &ModelSpec, models_dir: &Path) -> bool {
     let dir = models_dir.join(spec.key);
-    dir.join("model.safetensors").is_file() && dir.join("plans.json").is_file()
+    dir.join(CACHE_NAME).is_file() && dir.join(PLANS_NAME).is_file()
 }
 
-fn download_and_convert(spec: &ModelSpec, dir: &Path, sink: &dyn ProgressSink) -> Result<()> {
+/// Download the release zip and pull `plans.json` and the fold-0 checkpoint
+/// out of it. Returns the checkpoint's path, ready for conversion.
+fn download_and_unpack(
+    spec: &ModelSpec,
+    dir: &Path,
+    sink: &dyn ProgressSink,
+) -> Result<std::path::PathBuf> {
     std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     let zip_tmp = dir.join("download.zip.tmp");
     // ---- download --------------------------------------------------------
@@ -145,7 +165,7 @@ fn download_and_convert(spec: &ModelSpec, dir: &Path, sink: &dyn ProgressSink) -
     )?;
     // ---- extract the two files we need ----------------------------------
     sink.report(0.0, &format!("Unpacking weights ({})…", spec.label));
-    let ckpt_tmp = dir.join("checkpoint.tmp.pth");
+    let ckpt_tmp = dir.join(CHECKPOINT_TMP);
     {
         let file = std::fs::File::open(&zip_tmp)?;
         let mut zip = zip::ZipArchive::new(file).context("weights zip")?;
@@ -170,7 +190,7 @@ fn download_and_convert(spec: &ModelSpec, dir: &Path, sink: &dyn ProgressSink) -
             .context("read plans.json")?;
         // Validate before persisting anything.
         ModelConfig::from_plans_json(&plans)?;
-        std::fs::write(dir.join("plans.json"), &plans)?;
+        std::fs::write(dir.join(PLANS_NAME), &plans)?;
         let mut ckpt_entry = zip.by_name(&ckpt_name)?;
         let mut out = std::io::BufWriter::new(std::fs::File::create(&ckpt_tmp)?);
         let total = ckpt_entry.size();
@@ -178,7 +198,7 @@ fn download_and_convert(spec: &ModelSpec, dir: &Path, sink: &dyn ProgressSink) -
         let mut done: u64 = 0;
         loop {
             if sink.cancelled() {
-                bail!("cancelled");
+                bail!(CANCELLED);
             }
             let n = ckpt_entry.read(&mut buf).context("unpack checkpoint")?;
             if n == 0 {
@@ -194,43 +214,5 @@ fn download_and_convert(spec: &ModelSpec, dir: &Path, sink: &dyn ProgressSink) -
         out.flush().ok();
     }
     let _ = std::fs::remove_file(&zip_tmp);
-    // ---- parse the torch checkpoint, keep only what inference needs ------
-    sink.report(0.0, &format!("Converting weights ({})…", spec.label));
-    {
-        let mut reader = PthReader::open(&ckpt_tmp, "network_weights")?;
-        let metas: Vec<(String, crate::nn::pickle::TensorMeta)> = reader
-            .tensors
-            .iter()
-            .filter(|(name, _)| {
-                // `decoder.encoder.*` and `*.all_modules.*` are duplicate
-                // registrations of the same storages; drop them.
-                !name.starts_with("decoder.encoder.") && !name.contains(".all_modules.")
-            })
-            .cloned()
-            .collect();
-        if metas.is_empty() {
-            bail!("checkpoint: no usable tensors after filtering");
-        }
-        let mut named: Vec<(String, Vec<usize>, Vec<f32>)> = Vec::with_capacity(metas.len());
-        let n = metas.len();
-        for (i, (name, meta)) in metas.iter().enumerate() {
-            if sink.cancelled() {
-                bail!("cancelled");
-            }
-            let data = reader
-                .read_f32(meta)
-                .with_context(|| format!("read tensor {name}"))?;
-            named.push((name.clone(), meta.shape.clone(), data));
-            sink.report(
-                i as f32 / n as f32,
-                &format!("Converting weights ({})…", spec.label),
-            );
-        }
-        // F32: the auto-segmentation engine is validated against the
-        // reference implementation, so the cache must reproduce the
-        // checkpoint exactly.
-        cache::save_safetensors(&dir.join("model.safetensors"), &named, StoreDtype::F32)?;
-    }
-    let _ = std::fs::remove_file(&ckpt_tmp);
-    Ok(())
+    Ok(ckpt_tmp)
 }

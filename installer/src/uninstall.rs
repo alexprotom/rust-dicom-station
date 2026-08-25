@@ -67,7 +67,8 @@ pub fn relaunch_from_temp(target: &Target, extra_args: &[&str]) -> Result<std::p
         .with_context(|| format!("start {}", tmp.display()))
 }
 
-/// Remove the installation. `remove_models` also deletes the weight cache.
+/// Remove the installation. `remove_models` also deletes the model root —
+/// every engine's downloads, not only what the installer fetched.
 pub fn run(target: &Target, remove_models: bool, sink: Sink) -> Result<()> {
     let log = |s: String| sink(Event::Log(s));
     let step = |f: f32, s: &str| sink(Event::Progress(f, s.to_string()));
@@ -165,9 +166,9 @@ pub fn run(target: &Target, remove_models: bool, sink: Sink) -> Result<()> {
         let _ = std::fs::remove_dir(&d);
     }
 
-    // ---- model cache ------------------------------------------------------
+    // ---- model folder -----------------------------------------------------
     if remove_models && !m.models_dir.as_os_str().is_empty() && m.models_dir.exists() {
-        step(0.75, "Removing the model cache…");
+        step(0.75, "Removing the model folder…");
         match std::fs::remove_dir_all(&m.models_dir) {
             Ok(()) => log(format!("Removed {}", m.models_dir.display())),
             Err(e) => log(format!("Could not remove {}: {e}", m.models_dir.display())),
@@ -180,7 +181,7 @@ pub fn run(target: &Target, remove_models: bool, sink: Sink) -> Result<()> {
             prune_empty_parents(&m.models_dir);
         } else {
             log(format!(
-                "Kept the model cache in {}",
+                "Kept the model folder in {}",
                 m.models_dir.display()
             ));
         }

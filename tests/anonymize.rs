@@ -5,7 +5,8 @@
 
 use rust_dicom_station::anonymize::{self, ApplyParams};
 use rust_dicom_station::gen_test_data::{self, GenParams};
-use rust_dicom_station::loader::{self, Progress};
+use rust_dicom_station::loader;
+use rust_dicom_station::progress::Progress;
 
 #[test]
 fn anonymize_roundtrip() {

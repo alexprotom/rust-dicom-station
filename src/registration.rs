@@ -16,13 +16,13 @@
 //! coordinates → moving-image patient coordinates** (the resampling
 //! convention used by elastix/ITK).
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use rayon::prelude::*;
 
 use crate::geometry::Vec3;
+use crate::progress::Progress;
 use crate::volume::Volume;
 
 // ---------------------------------------------------------------------------
@@ -62,28 +62,6 @@ impl Default for RegParams {
             grid_spacing_mm: 32.0,
             fixed_threshold: -500.0,
         }
-    }
-}
-
-/// Shared progress/cancel handle for the background registration thread.
-#[derive(Default)]
-pub struct RegProgress {
-    msg: Mutex<String>,
-    cancel: AtomicBool,
-}
-
-impl RegProgress {
-    pub fn set(&self, s: impl Into<String>) {
-        *self.msg.lock().unwrap() = s.into();
-    }
-    pub fn get(&self) -> String {
-        self.msg.lock().unwrap().clone()
-    }
-    pub fn cancel(&self) {
-        self.cancel.store(true, Ordering::Relaxed);
-    }
-    pub fn cancelled(&self) -> bool {
-        self.cancel.load(Ordering::Relaxed)
     }
 }
 
@@ -194,10 +172,6 @@ impl RigidTransform {
     /// `[rx, ry, rz, tx, ty, tz]` (radians / mm).
     pub fn params(&self) -> [f64; 6] {
         self.params
-    }
-
-    pub fn center(&self) -> Vec3 {
-        self.center
     }
 
     #[inline]
@@ -679,7 +653,7 @@ fn asgd(
     mut params: Vec<f64>,
     eval: &GradFn,
     cfg: &AsgdConfig,
-    progress: &RegProgress,
+    progress: &Progress,
     label: &str,
     metric_out: &mut f64,
 ) -> Option<(Vec<f64>, usize)> {
@@ -812,7 +786,7 @@ pub fn register(
     fixed_vol: &Volume,
     moving_vol: &Volume,
     params: &RegParams,
-    progress: &RegProgress,
+    progress: &Progress,
 ) -> Result<RegistrationResult> {
     let t_start = std::time::Instant::now();
     progress.set("Building image pyramids…");

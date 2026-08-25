@@ -199,12 +199,9 @@ impl Bpe {
                     }
                 }
             }
-            let Some((_, rank)) = best else { break };
+            let Some((i, _)) = best else { break };
             // merge every non-overlapping occurrence of that pair
-            let (pa, pb) = {
-                let (i, _) = best.unwrap();
-                (word[i].clone(), word[i + 1].clone())
-            };
+            let (pa, pb) = (word[i].clone(), word[i + 1].clone());
             let mut merged = Vec::with_capacity(word.len());
             let mut i = 0;
             while i < word.len() {
@@ -217,7 +214,6 @@ impl Bpe {
                 }
             }
             word = merged;
-            let _ = rank;
             if word.len() == 1 {
                 break;
             }

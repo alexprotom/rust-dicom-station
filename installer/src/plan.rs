@@ -18,6 +18,14 @@ pub const MANIFEST_FILE: &str = "install-manifest.txt";
 /// Written next to the executable by the viewer itself; the installer only
 /// pre-seeds it when the program folder is not user-writable.
 pub const SETTINGS_FILE: &str = "viewer_settings.txt";
+/// The settings key naming the model root. Must match
+/// `rust_dicom_station::settings::MODELS_DIR_KEY` (asserted by a test when
+/// the viewer is linked in).
+pub const SETTINGS_MODELS_KEY: &str = "models_dir";
+/// The viewer's model root folder name, `models/` next to its executable;
+/// each engine keeps its own sub-folder in it. Must match
+/// `rust_dicom_station::models::DIR_NAME`.
+pub const MODELS_DIR_NAME: &str = "models";
 /// Official Microsoft download for the x64 Visual C++ 2015-2022 runtime.
 pub const VCREDIST_URL: &str = "https://aka.ms/vs/17/release/vc_redist.x64.exe";
 
@@ -86,7 +94,8 @@ impl Models {
 pub struct Options {
     pub scope: Scope,
     pub dir: PathBuf,
-    /// Model cache location; see [`default_models_dir`].
+    /// The model root — every engine's weights live in a sub-folder of it;
+    /// see [`default_models_dir`].
     pub models_dir: PathBuf,
     pub models: Models,
     pub start_menu_shortcut: bool,
@@ -131,7 +140,7 @@ impl Options {
         self.dir.join(MANIFEST_FILE)
     }
 
-    /// Change the destination folder, keeping a still-default model cache
+    /// Change the destination folder, keeping a still-default model folder
     /// pointed next to the new location.
     pub fn set_dir(&mut self, dir: PathBuf) {
         if self.models_dir == default_models_dir(self.scope, &self.dir) {
@@ -156,7 +165,7 @@ impl Options {
 }
 
 /// `%LOCALAPPDATA%\Programs\Rust DICOM Station` or `%ProgramFiles%\Rust DICOM
-/// Viewer`, with a plain-C: fallback should the shell folder lookup fail.
+/// Station`, with a plain-C: fallback should the shell folder lookup fail.
 pub fn default_install_dir(scope: Scope) -> PathBuf {
     match scope {
         Scope::CurrentUser => crate::win::local_app_data()
@@ -169,19 +178,32 @@ pub fn default_install_dir(scope: Scope) -> PathBuf {
     }
 }
 
-/// Where the TotalSegmentator weight cache goes.
+/// Where the model root goes — the folder all three engines download into
+/// (`models/totalsegmentator`, `models/segvol`, `models/medsam2`).
 ///
-/// The viewer defaults to `autoseg_models/` next to its executable, which is
-/// exactly right for a per-user install. A machine-wide install lands in
-/// `Program Files`, which normal users cannot write to, so the cache moves to
+/// The viewer defaults to `models/` next to its executable, which is exactly
+/// right for a per-user install. A machine-wide install lands in
+/// `Program Files`, which normal users cannot write to, so the root moves to
 /// `%LOCALAPPDATA%` and the installer records that in `viewer_settings.txt`.
 pub fn default_models_dir(scope: Scope, install_dir: &Path) -> PathBuf {
     match scope {
-        Scope::CurrentUser => install_dir.join("autoseg_models"),
+        Scope::CurrentUser => install_dir.join(MODELS_DIR_NAME),
         Scope::AllUsers => crate::win::local_app_data()
             .unwrap_or_else(|_| install_dir.to_path_buf())
             .join(PRODUCT_ID)
-            .join("autoseg_models"),
+            .join(MODELS_DIR_NAME),
+    }
+}
+
+#[cfg(all(test, feature = "prefetch-models"))]
+mod tests {
+    #[test]
+    fn the_viewer_and_the_installer_agree_on_the_model_layout() {
+        assert_eq!(
+            super::SETTINGS_MODELS_KEY,
+            rust_dicom_station::settings::MODELS_DIR_KEY
+        );
+        assert_eq!(super::MODELS_DIR_NAME, rust_dicom_station::models::DIR_NAME);
     }
 }
 

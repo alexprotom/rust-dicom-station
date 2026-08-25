@@ -2,17 +2,14 @@
 //! network can be verified numerically against PyTorch/nnU-Net.
 //!
 //! cargo run --release --example autoseg_probe -- <dicom_dir> <models_dir> <spec_key> <out_prefix>
+//!
+//! `<models_dir>` is the engine's folder, normally `models/totalsegmentator/`
+//! next to the executable.
 
 use rust_dicom_station::autoseg::{config::ModelConfig, cpu, net, preprocess, weights};
 use rust_dicom_station::loader;
+use rust_dicom_station::progress::{Progress, Stderr};
 use std::path::PathBuf;
-
-struct Quiet;
-impl weights::ProgressSink for Quiet {
-    fn report(&self, _f: f32, m: &str) {
-        eprintln!("{m}");
-    }
-}
 
 fn main() -> anyhow::Result<()> {
     let mut a = std::env::args().skip(1);
@@ -25,9 +22,9 @@ fn main() -> anyhow::Result<()> {
         .chain(weights::SPECS_15MM)
         .find(|s| s.key == key)
         .expect("unknown spec key");
-    let study = loader::load_directory(&dicom, &loader::Progress::default())?;
+    let study = loader::load_directory(&dicom, &Progress::default())?;
     let vol = &study.volume;
-    let model = weights::ensure_model(&spec, &models, &Quiet)?;
+    let model = weights::ensure_model(&spec, &models, &Stderr)?;
     let cfg: &ModelConfig = &model.config;
     let unet = net::UNet::build(cfg.clone(), &model.tensors)?;
     eprintln!(
@@ -66,7 +63,7 @@ fn main() -> anyhow::Result<()> {
         data: patch.clone(),
     };
     let t = std::time::Instant::now();
-    let logits = unet.forward_cpu(x);
+    let logits = unet.forward_cpu(&x);
     eprintln!(
         "forward {:.1}s -> [{} classes]",
         t.elapsed().as_secs_f64(),

@@ -56,8 +56,7 @@ impl ViewerApp {
                         ui.close();
                     }
                     ui.separator();
-                    #[allow(clippy::needless_range_loop)] // `slot` also indexes `self.slots`
-                    for slot in 0..2 {
+                    for (slot, slot_name) in SLOT_NAMES.iter().enumerate() {
                         if slot == 1 && !self.comparison && self.slots[1].study.is_none() {
                             continue;
                         }
@@ -65,12 +64,13 @@ impl ViewerApp {
                             .add_enabled(
                                 self.slots[slot].study.is_some(),
                                 egui::Button::new(format!(
-                                    "💾 Export dataset {} as DICOM…",
-                                    SLOT_NAMES[slot]
+                                    "💾 Export dataset {slot_name} as DICOM…"
                                 )),
                             )
                             .on_hover_text(
-                                "Write the displayed volume, structure sets, dose grids                                  and plans as DICOM files — with the patient / study /                                  equipment tags reviewed and edited first",
+                                "Write the displayed volume, structure sets, dose grids \
+                                 and plans as DICOM files — with the patient / study / \
+                                 equipment tags reviewed and edited first",
                             )
                             .clicked()
                         {
@@ -127,8 +127,7 @@ impl ViewerApp {
                 ui.menu_button("Registration", |ui| {
                     // Quick actions only — direction, parameters, fusion and
                     // cancel/clear live in the sidebar Registration section.
-                    let both =
-                        self.slots[0].study.is_some() && self.slots[1].study.is_some();
+                    let both = self.slots[0].study.is_some() && self.slots[1].study.is_some();
                     let running = self.reg_job.is_some();
                     let moving = SLOT_NAMES[1 - self.reg_fixed_slot.min(1)];
                     let fixed = SLOT_NAMES[self.reg_fixed_slot.min(1)];
@@ -167,74 +166,57 @@ impl ViewerApp {
                     }
                 });
                 ui.menu_button("Tools", |ui| {
-                    let auto_free = self.autoseg_job.is_none();
-                    for (slot, slot_name) in SLOT_NAMES.iter().enumerate() {
+                    // The three segmentation engines, one block per dataset:
+                    // the same three entries, in the same order, for A and B.
+                    let tools: [(&ToolInfo, &str); 3] = [
+                        (
+                            &AUTOSEG,
+                            "Automatic multi-organ segmentation of the displayed CT \
+                             (TotalSegmentator's nnU-Net models, re-implemented natively \
+                             in Rust; runs locally on CPU or GPU)",
+                        ),
+                        (
+                            &PROMPT_SEG,
+                            "Segment whatever you point at — a box, a click or a \
+                             structure name (SegVol, re-implemented natively in Rust). \
+                             Covers the lesions and targets a fixed-class model cannot.",
+                        ),
+                        (
+                            &SLICE_PROP,
+                            "Box a structure on one slice and follow it through the \
+                             stack at full in-plane resolution (MedSAM2, re-implemented \
+                             natively in Rust).",
+                        ),
+                    ];
+                    let mut open_tool: Option<(usize, &ToolInfo)> = None;
+                    for slot in 0..SLOT_NAMES.len() {
                         if slot == 1 && !self.comparison {
                             continue;
                         }
+                        if slot == 1 {
+                            ui.separator();
+                        }
                         let loaded = self.slots[slot].study.is_some();
-                        if ui
-                            .add_enabled(
-                                loaded && auto_free,
-                                egui::Button::new(format!(
-                                    "🤖 Auto-segment dataset {slot_name}…"
-                                )),
-                            )
-                            .on_hover_text(
-                                "Automatic multi-organ segmentation of the displayed CT \
-                                 (TotalSegmentator's nnU-Net models, re-implemented \
-                                 natively in Rust; runs locally on CPU or GPU)",
-                            )
-                            .clicked()
-                        {
-                            self.open_autoseg_dialog(slot);
-                            ui.close();
+                        for (tool, hint) in tools {
+                            if ui
+                                .add_enabled(loaded, egui::Button::new(tool.menu_entry(slot)))
+                                .on_hover_text(hint)
+                                .clicked()
+                            {
+                                open_tool = Some((slot, tool));
+                                ui.close();
+                            }
                         }
                     }
-                    ui.separator();
-                    for (slot, slot_name) in SLOT_NAMES.iter().enumerate() {
-                        if slot == 1 && !self.comparison {
-                            continue;
+                    match open_tool {
+                        Some((slot, t)) if t.glyph == AUTOSEG.glyph => {
+                            self.open_autoseg_dialog(slot)
                         }
-                        let loaded = self.slots[slot].study.is_some();
-                        if ui
-                            .add_enabled(
-                                loaded && self.segvol_job.is_none(),
-                                egui::Button::new(format!(
-                                    "🧠 Prompt-segment dataset {slot_name}…"
-                                )),
-                            )
-                            .on_hover_text(
-                                "Segment whatever you point at — a box, a click or a \
-                                 structure name (SegVol, re-implemented natively in Rust). \
-                                 Covers the lesions and targets a fixed-class model cannot.",
-                            )
-                            .clicked()
-                        {
-                            self.open_segvol_dialog(slot);
-                            ui.close();
+                        Some((slot, t)) if t.glyph == PROMPT_SEG.glyph => {
+                            self.open_segvol_dialog(slot)
                         }
-                    }
-                    for (slot, slot_name) in SLOT_NAMES.iter().enumerate() {
-                        if slot == 1 && !self.comparison {
-                            continue;
-                        }
-                        let loaded = self.slots[slot].study.is_some();
-                        if ui
-                            .add_enabled(
-                                loaded && self.medsam2_job.is_none(),
-                                egui::Button::new(format!(
-                                    "🧠 Propagate from a slice, dataset {slot_name}…"
-                                )),
-                            )
-                            .on_hover_text(
-                                "Box or click a structure on one slice and follow it through                                  the stack at full in-plane resolution (MedSAM2,                                  re-implemented natively in Rust). An existing contour can                                  be propagated the same way.",
-                            )
-                            .clicked()
-                        {
-                            self.open_medsam2_panel(slot);
-                            ui.close();
-                        }
+                        Some((slot, _)) => self.open_medsam2_panel(slot),
+                        None => {}
                     }
                     ui.separator();
                     if ui
@@ -265,6 +247,15 @@ impl ViewerApp {
                     ui.weak("Shift + wheel, or [ ] — brush radius");
                     ui.weak("Ctrl + Z — undo the last stroke");
                     ui.weak("Esc — cancel the running region grow");
+                    ui.separator();
+                    ui.label(format!(
+                        "{} (the box takes over the left button in its view):",
+                        SLICE_PROP.name
+                    ));
+                    ui.weak(
+                        "Left drag — draw the box; drag a corner to resize, the middle to move",
+                    );
+                    ui.weak("Left click — an include / exclude point, with ➕ / ➖ chosen");
                     ui.separator();
                     ui.label("Buttons:");
                     ui.weak("⟲ (view corner) — reset that view's zoom, pan and slice");
@@ -366,8 +357,7 @@ impl ViewerApp {
 
                     ui.separator();
                     // 3D structure rendering windows.
-                    #[allow(clippy::needless_range_loop)] // `slot` also indexes `self.slots`
-                    for slot in 0..2 {
+                    for (slot, slot_name) in SLOT_NAMES.iter().enumerate() {
                         let has_3d = self.slots[slot]
                             .study
                             .as_ref()
@@ -378,14 +368,10 @@ impl ViewerApp {
                             continue;
                         }
                         if ui
-                            .add_enabled(
-                                has_3d,
-                                egui::Button::new(format!("3D {}", SLOT_NAMES[slot])),
-                            )
+                            .add_enabled(has_3d, egui::Button::new(format!("3D {slot_name}")))
                             .on_hover_text(format!(
-                                "Open a 3D surface rendering of dataset {}'s structures \
-                                 and segmentations",
-                                SLOT_NAMES[slot]
+                                "Open a 3D surface rendering of dataset {slot_name}'s structures \
+                                 and segmentations"
                             ))
                             .clicked()
                         {
@@ -510,8 +496,7 @@ impl ViewerApp {
                     ui.weak("No data loaded");
                     return;
                 }
-                #[allow(clippy::needless_range_loop)] // `slot` also indexes `self.slots`
-                for slot in 0..2 {
+                for (slot, slot_name) in SLOT_NAMES.iter().enumerate() {
                     if slot == 1 && !self.comparison {
                         // Study B is hidden while comparison mode is off.
                         continue;
@@ -523,7 +508,7 @@ impl ViewerApp {
                     let p = v.voxel_to_patient(c[0], c[1], c[2]);
                     let both = self.comparison && self.slots[1].study.is_some();
                     let prefix = if both {
-                        format!("{}: ", SLOT_NAMES[slot])
+                        format!("{slot_name}: ")
                     } else {
                         String::new()
                     };

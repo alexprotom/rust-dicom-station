@@ -35,7 +35,7 @@ use crate::nn::linalg::linear;
 use crate::nn::tensor::{Act, Mat};
 
 use super::config::*;
-use super::params::Params;
+use crate::nn::params::Params;
 
 /// Number of Fourier feature pairs; the encoding is `[sin; cos]`, so the
 /// output width is twice this.

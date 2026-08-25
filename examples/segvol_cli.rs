@@ -2,46 +2,33 @@
 //!
 //! ```text
 //! cargo run --release --example segvol_cli -- <DICOM_DIR> \
-//!     [--models DIR] [--box z0,y0,x0,z1,y1,x1] [--point z,y,x]... \
+//!     [--models DIR] [--device auto|gpu|cpu] [--box z0,y0,x0,z1,y1,x1] \
+//!     [--point z,y,x]... [--negative-point z,y,x]... [--text STRUCTURE] \
 //!     [--no-zoom-in] [--fast-box] [--threshold F] [--out FILE]
 //! ```
 //!
-//! Box and point coordinates are in the **prepared** grid — canonically
-//! oriented `[S, A, R]` and cropped to the foreground — which is what the
-//! network sees. `--out` writes a raw `u8` mask on the original volume's grid,
-//! one byte per voxel in `Volume::data` order.
+//! `--models` is the engine's folder, `models/segvol/` next to the executable
+//! by default. Box and point coordinates are in the **prepared** grid —
+//! canonically oriented `[S, A, R]` and cropped to the foreground — which is
+//! what the network sees. `--out` writes a raw `u8` mask on the original
+//! volume's grid, one byte per voxel in `Volume::data` order.
 
-use std::io::Write;
 use std::path::PathBuf;
 
 use rust_dicom_station::loader;
-use rust_dicom_station::nn::cache::{load_safetensors, ProgressSink};
-use rust_dicom_station::segvol::infer::{self, Config, Hooks};
-use rust_dicom_station::segvol::params::Params;
+use rust_dicom_station::models::{self, Engine};
+use rust_dicom_station::nn::device::DevicePref;
+use rust_dicom_station::progress::{Progress, Stderr};
+use rust_dicom_station::segvol::infer::{self, Config};
 use rust_dicom_station::segvol::prompt::{BBox, Point};
 use rust_dicom_station::segvol::{
     bpe::Bpe, clip::TextEncoder, net::SegVolNet, preprocess, weights,
 };
 
-struct Stderr;
-impl ProgressSink for Stderr {
-    fn report(&self, _f: f32, m: &str) {
-        eprint!("\r\x1b[K{m}");
-        std::io::stderr().flush().ok();
-    }
-}
-impl Hooks for Stderr {
-    fn report(&self, _f: f32, m: &str) {
-        eprint!("\r\x1b[K{m}");
-        std::io::stderr().flush().ok();
-    }
-}
+mod common;
 
 fn triple(s: &str) -> [f32; 3] {
-    let v: Vec<f32> = s
-        .split(',')
-        .map(|x| x.trim().parse().expect("number"))
-        .collect();
+    let v = common::numbers(s);
     assert_eq!(v.len(), 3, "expected three comma-separated numbers");
     [v[0], v[1], v[2]]
 }
@@ -55,17 +42,16 @@ fn main() -> anyhow::Result<()> {
     let mut points: Vec<Point> = Vec::new();
     let mut cfg = Config::default();
     let mut text_prompt: Option<String> = None;
+    let mut device = DevicePref::Auto;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--models" => models = Some(PathBuf::from(args.next().unwrap())),
+            "--device" => {
+                device = DevicePref::from_key(&args.next().unwrap()).expect("auto, gpu or cpu")
+            }
             "--out" => out = Some(PathBuf::from(args.next().unwrap())),
             "--box" => {
-                let v: Vec<f32> = args
-                    .next()
-                    .unwrap()
-                    .split(',')
-                    .map(|x| x.trim().parse().expect("number"))
-                    .collect();
+                let v = common::numbers(&args.next().unwrap());
                 assert_eq!(v.len(), 6, "--box needs six comma-separated numbers");
                 boxes.push([v[0], v[1], v[2], v[3], v[4], v[5]]);
             }
@@ -77,9 +63,10 @@ fn main() -> anyhow::Result<()> {
             "--threshold" => cfg.threshold = args.next().unwrap().parse()?,
             "-h" | "--help" => {
                 eprintln!(
-                    "usage: segvol_cli <DICOM_DIR> [--models DIR] [--box z0,y0,x0,z1,y1,x1] \
-                     [--point z,y,x] [--text STRUCTURE] [--no-zoom-in] [--fast-box] \
-                     [--threshold F] [--out FILE]"
+                    "usage: segvol_cli <DICOM_DIR> [--models DIR] [--device auto|gpu|cpu] \
+                     [--box z0,y0,x0,z1,y1,x1] [--point z,y,x] [--negative-point z,y,x] \
+                     [--text STRUCTURE] [--no-zoom-in] [--fast-box] [--threshold F] \
+                     [--out FILE]"
                 );
                 return Ok(());
             }
@@ -87,10 +74,11 @@ fn main() -> anyhow::Result<()> {
         }
     }
     let dicom = dicom.expect("a DICOM directory is required");
-    let models = models.unwrap_or_else(weights::default_models_dir);
+    let models =
+        models.unwrap_or_else(|| models::engine_dir(&models::default_root(), Engine::SegVol));
 
     eprintln!("loading {}", dicom.display());
-    let study = loader::load_directory(&dicom, &loader::Progress::default())?;
+    let study = loader::load_directory(&dicom, &Progress::default())?;
     let vol = &study.volume;
     eprintln!("volume {:?} spacing {:?}", vol.dims, vol.spacing);
 
@@ -114,65 +102,37 @@ fn main() -> anyhow::Result<()> {
         eprintln!("no prompt given; using the whole prepared extent as a box");
     }
 
-    // The converted-weight cache lives beside the checkpoint.
-    let cache = models.join("segvol.safetensors");
-    if !cache.is_file() {
-        eprintln!("converting the checkpoint into {} …", cache.display());
-        let path = weights::ensure_file(&weights::CHECKPOINT, &models, &Stderr)?;
-        let mut reader = weights::open_checkpoint(&path)?;
-        let metas: Vec<_> = reader
-            .tensors
-            .iter()
-            .filter(|(n, _)| !rust_dicom_station::segvol::layout::is_dead_weight(n))
-            .cloned()
-            .collect();
-        let mut named = Vec::with_capacity(metas.len());
-        for (i, (name, meta)) in metas.iter().enumerate() {
-            if !matches!(
-                meta.dtype,
-                rust_dicom_station::nn::pickle::Dtype::F32
-                    | rust_dicom_station::nn::pickle::Dtype::F16
-                    | rust_dicom_station::nn::pickle::Dtype::F64
-            ) {
-                continue; // CLIP's integer position_ids buffer
-            }
-            named.push((
-                rust_dicom_station::segvol::layout::normalize_key(name).to_string(),
-                meta.shape.clone(),
-                reader.read_f32(meta)?,
-            ));
-            <Stderr as ProgressSink>::report(
-                &Stderr,
-                0.0,
-                &format!("converting {}/{}", i + 1, metas.len()),
-            );
+    // Download, convert and cache on first use; load the cache after that.
+    let params = weights::load(&models, &Stderr)?;
+    #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
+    let mut net = SegVolNet::build(&params)?;
+    let on = match device.resolve()? {
+        #[cfg(feature = "gpu")]
+        Some(ctx) => {
+            net.attach_gpu(rust_dicom_station::segvol::gpu::GpuVit::new(&ctx, &params)?);
+            ctx.describe()
         }
-        std::fs::create_dir_all(&models)?;
-        rust_dicom_station::nn::cache::save_safetensors(
-            &cache,
-            &named,
-            rust_dicom_station::nn::cache::StoreDtype::F32,
-        )?;
-        eprintln!("\rwrote {}", cache.display());
-    }
-
-    eprintln!("loading weights …");
-    let params = Params::new(load_safetensors(&cache)?);
-    let net = SegVolNet::build(&params)?;
-    eprintln!("network ready ({} tensors)", params.len());
+        #[cfg(not(feature = "gpu"))]
+        Some(ctx) => ctx.unreachable(),
+        None => rust_dicom_station::nn::device::describe_cpu(),
+    };
+    eprintln!(
+        "\rnetwork ready ({} tensors), image encoder on {on}",
+        params.len()
+    );
 
     // A text prompt needs the tokenizer's two data files and the text tower.
     let text: Option<Vec<f32>> = match &text_prompt {
         None => None,
         Some(name) => {
-            for f in [weights::CLIP_VOCAB, weights::CLIP_MERGES] {
-                weights::ensure_file(&f, &models, &Stderr)?;
+            for f in &weights::CLIP_FILES {
+                f.ensure(&models, &Stderr)?;
             }
             let bpe = Bpe::from_dir(&models)?;
             let enc = TextEncoder::build(&params)?;
-            let ids = bpe.encode(&rust_dicom_station::segvol::bpe::prompt_for(name));
-            eprintln!("text prompt {:?} -> {} tokens", name, ids.len());
-            Some(enc.encode_ids(&ids))
+            let v = enc.encode_structure(&bpe, name);
+            eprintln!("text prompt {name:?} encoded");
+            Some(v)
         }
     };
 
@@ -187,15 +147,5 @@ fn main() -> anyhow::Result<()> {
     );
 
     let full = prep.mask_to_volume_grid(&seg.mask, vol);
-    let cm3 = full.iter().filter(|v| **v != 0).count() as f64
-        * vol.spacing[0]
-        * vol.spacing[1]
-        * vol.spacing[2]
-        / 1000.0;
-    eprintln!("{cm3:.1} cm3 on the original grid");
-    if let Some(p) = out {
-        std::fs::write(&p, &full)?;
-        eprintln!("wrote {} ({} bytes)", p.display(), full.len());
-    }
-    Ok(())
+    common::finish_mask(&full, vol, out.as_deref())
 }

@@ -121,10 +121,9 @@ impl ViewerApp {
                         t[2].to_degrees()
                     ));
                     ui.checkbox(&mut self.fusion_on, format!("Fusion overlay on {fixed}"));
-                    let resp = ui.add(
+                    ui.add(
                         egui::Slider::new(&mut self.fusion_weight, 0.0..=1.0).text("Fusion blend"),
                     );
-                    let _ = resp;
                     if ui.button("Clear registration").clicked() {
                         clear_reg = true;
                     }
@@ -485,7 +484,9 @@ impl ViewerApp {
             // No RTSTRUCT in this study — show nothing.
             return;
         }
-        let mut changed = false;
+        // ROI visibility feeds the contour cache key directly
+        // (`contour_settings_hash`), so no generation counter is bumped here —
+        // that would also rebuild the dose and fusion overlays for nothing.
         let mut new_active: Option<usize> = None;
         {
             let StudySlot {
@@ -549,11 +550,9 @@ impl ViewerApp {
                     ui.horizontal(|ui| {
                         if ui.small_button("All").clicked() {
                             roi_visible.iter_mut().for_each(|v| *v = true);
-                            changed = true;
                         }
                         if ui.small_button("None").clicked() {
                             roi_visible.iter_mut().for_each(|v| *v = false);
-                            changed = true;
                         }
                         ui.weak(&ss.label);
                     });
@@ -578,9 +577,6 @@ impl ViewerApp {
                                     }
                                 ),
                             );
-                            if resp.changed() {
-                                changed = true;
-                            }
                             resp.on_hover_text(format!(
                                 "ROI {} · {} contour(s)",
                                 roi.number,
@@ -599,26 +595,20 @@ impl ViewerApp {
                 .map(|st| st.structure_sets[i].rois.len())
                 .unwrap_or(0);
             s.roi_visible = vec![true; n];
-            changed = true;
-        }
-        if changed {
-            self.settings_gen += 1;
         }
     }
 
     pub(super) fn segmentation_section(&mut self, ui: &mut egui::Ui, slot: usize) {
         let mut make_new = false;
-        let mut open_auto = false;
-        let mut cancel_auto = false;
+        let mut open_tool: Option<&ToolInfo> = None;
+        let mut cancel_tool = false;
         let mut delete: Option<usize> = None;
         let mut to_struct: Option<usize> = None;
-        // Auto-segmentation status for this slot (read before the slot borrow).
-        let auto_state = self
-            .autoseg_job
-            .as_ref()
-            .filter(|_| self.autoseg_slot == slot)
-            .map(|job| (job.progress.get(), job.progress.frac()));
-        let auto_enabled = self.autoseg_job.is_none();
+        // Whichever engine is running on this slot (read before the slot
+        // borrow): its glyph, message and fraction.
+        let running = self
+            .running_tool(slot)
+            .map(|(tool, p)| (tool.glyph, p.get(), p.frac()));
         {
             let StudySlot {
                 study,
@@ -633,32 +623,51 @@ impl ViewerApp {
                 .default_open(true)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        if ui.small_button("➕ New").clicked() {
-                            make_new = true;
-                        }
                         if ui
-                            .add_enabled(auto_enabled, egui::Button::new("🤖 Auto…").small())
+                            .small_button("➕ New")
                             .on_hover_text(
-                                "Automatic multi-organ segmentation \
-                                 (TotalSegmentator, 117 structures, re-implemented \
-                                 natively in Rust — runs locally on CPU or GPU)",
+                                "An empty segmentation to paint with 🖌 / ✨ in the views",
                             )
                             .clicked()
                         {
-                            open_auto = true;
+                            make_new = true;
                         }
-                        ui.weak("drawn with 🖌 / ✨ in the views");
+                        for (tool, hint) in [
+                            (
+                                &AUTOSEG,
+                                "Automatic multi-organ segmentation (TotalSegmentator, \
+                                 117 structures)",
+                            ),
+                            (
+                                &PROMPT_SEG,
+                                "Segment whatever the crosshair points at — a box, a click \
+                                 or a structure name (SegVol)",
+                            ),
+                            (
+                                &SLICE_PROP,
+                                "Box a structure on one slice and follow it through the \
+                                 stack (MedSAM2)",
+                            ),
+                        ] {
+                            if ui
+                                .add(egui::Button::new(tool.short_button()).small())
+                                .on_hover_text(hint)
+                                .clicked()
+                            {
+                                open_tool = Some(tool);
+                            }
+                        }
                     });
-                    if let Some((msg, frac)) = &auto_state {
+                    if let Some((glyph, msg, frac)) = &running {
                         ui.horizontal(|ui| {
-                            ui.spinner();
+                            ui.label(*glyph);
                             ui.add(
                                 egui::ProgressBar::new(*frac)
                                     .desired_width(120.0)
                                     .show_percentage(),
                             );
                             if ui.small_button("Cancel").clicked() {
-                                cancel_auto = true;
+                                cancel_tool = true;
                             }
                         });
                         ui.weak(msg);
@@ -709,12 +718,15 @@ impl ViewerApp {
         if make_new {
             self.create_seg(slot);
         }
-        if open_auto {
-            self.open_autoseg_dialog(slot);
+        match open_tool.map(|t| t.glyph) {
+            Some(g) if g == AUTOSEG.glyph => self.open_autoseg_dialog(slot),
+            Some(g) if g == PROMPT_SEG.glyph => self.open_segvol_dialog(slot),
+            Some(_) => self.open_medsam2_panel(slot),
+            None => {}
         }
-        if cancel_auto {
-            if let Some(job) = &self.autoseg_job {
-                job.progress.cancel();
+        if cancel_tool {
+            if let Some((_, p)) = self.running_tool(slot) {
+                p.cancel();
             }
         }
         if let Some(i) = delete {

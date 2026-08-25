@@ -66,7 +66,7 @@ pub fn run_uninstall(target: Target, mut remove_models: bool, silent: bool) -> R
         if !remove_models && target.manifest.models_dir.exists() {
             remove_models = ask_yes_no(
                 &format!(
-                    "Also delete the model weights in {}?",
+                    "Also delete every downloaded model in {}?",
                     target.manifest.models_dir.display()
                 ),
                 false,
