@@ -9,6 +9,7 @@ pub mod extras;
 pub mod gen_test_data;
 pub mod geometry;
 pub mod loader;
+pub mod medsam2;
 pub mod mesh3d;
 pub mod nn;
 pub mod registration;

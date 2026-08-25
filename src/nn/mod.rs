@@ -14,11 +14,15 @@
 //! routine every part of the network shares. Convolutions specific to a
 //! U-Net remain in [`crate::autoseg::cpu`].
 //!
+//! [`params`] is the shape-checked view of a loaded state dict every engine
+//! assembles itself from.
+//!
 //! [`autoseg`]: crate::autoseg
 
 pub mod attention;
 pub mod cache;
 pub mod half;
 pub mod linalg;
+pub mod params;
 pub mod pickle;
 pub mod tensor;
