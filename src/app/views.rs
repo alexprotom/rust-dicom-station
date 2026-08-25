@@ -217,6 +217,10 @@ impl ViewerApp {
         let vol = &study.volume;
         let view = &slot_state.views[idx];
 
+        // The MedSAM2 box is drawn in whichever view the network's slices run
+        // along, and while it is live the left button belongs to it.
+        let medsam2_show = self.medsam2_showing_in(slot, plane);
+        let medsam2_box = self.medsam2_drawing_in(slot, plane);
         let [w_px, h_px] = vol.plane_dims(plane);
         let [sx, sy] = vol.plane_spacing(plane);
         let w_mm = (w_px as f64 * sx) as f32;
@@ -364,6 +368,50 @@ impl ViewerApp {
 
         // Crosshair.
         if self.show_crosshair {
+        // ---- the MedSAM2 prompt ----
+        if medsam2_show {
+            if let Some(b) = &self.medsam2.prompt {
+                if b.plane == plane {
+                    let here = b.slice == view.slice;
+                    let base = Color32::from_rgb(255, 205, 60);
+                    let col = if here {
+                        base
+                    } else {
+                        // On other slices the box is a reminder of where it
+                        // is, not something to grab.
+                        Color32::from_rgba_unmultiplied(255, 205, 60, 70)
+                    };
+                    let (lo, hi) = b.rect();
+                    let r = Rect::from_two_pos(px_to_screen(lo), px_to_screen(hi));
+                    painter.rect_stroke(
+                        r,
+                        0.0,
+                        Stroke::new(if here { 2.0 } else { 1.0 }, col),
+                        egui::StrokeKind::Middle,
+                    );
+                    if here {
+                        for c in b.corners() {
+                            painter.rect_filled(
+                                Rect::from_center_size(px_to_screen(c), Vec2::splat(7.0)),
+                                1.0,
+                                col,
+                            );
+                        }
+                        for (p, include) in &b.points {
+                            let at = px_to_screen(*p);
+                            let c = if *include {
+                                Color32::from_rgb(90, 220, 130)
+                            } else {
+                                Color32::from_rgb(240, 95, 95)
+                            };
+                            painter.circle_filled(at, 4.5, c);
+                            painter.circle_stroke(at, 4.5, Stroke::new(1.0, Color32::BLACK));
+                        }
+                    }
+                }
+            }
+        }
+
             let cp = vol.voxel_to_plane_pixel(plane, slot_state.cursor);
             let c = px_to_screen([cp[0] as f32, cp[1] as f32]);
             let col = Color32::from_rgba_unmultiplied(120, 255, 120, 110);
@@ -631,6 +679,7 @@ impl ViewerApp {
         // change only by scrolling the hovered view.
         if self.show_crosshair
             && !seg_active
+            && !medsam2_box
             && (resp.dragged_by(egui::PointerButton::Primary) || resp.clicked())
             && !over_buttons
         {
@@ -684,6 +733,29 @@ impl ViewerApp {
                 SegTool::None => {}
             }
         }
+        // The MedSAM2 box: press to start, grab a corner or move it; drag to
+        // size it; release to commit. Include / exclude clicks go through the
+        // same press.
+        let mut box_press: Option<([f32; 2], f32)> = None;
+        let mut box_drag: Option<[f32; 2]> = None;
+        let mut box_release = false;
+        if medsam2_box && !over_buttons {
+            if resp.drag_started_by(egui::PointerButton::Primary) || resp.clicked() {
+                if let Some(mp) = resp.interact_pointer_pos() {
+                    // The grab tolerance is a screen distance, so it has to be
+                    // converted into the pixel units the box is kept in.
+                    let tol = medsam2_seg::HANDLE_GRAB / (sx as f32 * zoom).max(1e-3);
+                    box_press = Some((screen_to_px(mp), tol));
+                }
+            } else if resp.dragged_by(egui::PointerButton::Primary) {
+                if let Some(mp) = resp.interact_pointer_pos() {
+                    box_drag = Some(screen_to_px(mp));
+                }
+            }
+            if resp.drag_stopped_by(egui::PointerButton::Primary) || resp.clicked() {
+                box_release = true;
+            }
+        }
         if resp.dragged_by(egui::PointerButton::Secondary) {
             let d = resp.drag_delta();
             wl_delta = Some((d.x, d.y));
@@ -732,6 +804,15 @@ impl ViewerApp {
         }
         if let Some(r) = new_brush {
             self.brush_radius_mm = r;
+        }
+        if let Some((p, tol)) = box_press {
+            self.medsam2_press(plane, cur_slice, p, tol);
+        }
+        if let Some(p) = box_drag {
+            self.medsam2_drag(p);
+        }
+        if box_release {
+            self.medsam2_release([w_px, h_px]);
         }
         if let Some((vxl, erase)) = paint_to {
             self.apply_brush(slot, plane, cur_slice, vxl, erase);

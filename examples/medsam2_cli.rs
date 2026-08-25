@@ -4,7 +4,8 @@
 //! cargo run --release --example medsam2_cli -- <DICOM_DIR> \
 //!     [--models DIR] [--variant latest|ct-lesion|mri-liver-lesion|base-2411] \
 //!     [--slice N] [--box r0,c0,r1,c1] [--point r,c] \
-//!     [--window LO,HI] [--preset NAME] [--max-slices N] [--forward-only] \
+//!     [--window LO,HI] [--preset NAME] [--range FIRST,LAST] [--max-slices N] \
+//!     [--forward-only] \
 //!     [--threshold F] [--no-cleanup] [--cpu] [--out FILE]
 //! ```
 //!
@@ -94,6 +95,10 @@ fn main() -> anyhow::Result<()> {
                 );
             }
             "--max-slices" => cfg.max_slices = Some(args.next().unwrap().parse()?),
+            "--range" => {
+                let v = numbers(&args.next().unwrap(), 2, "--range");
+                cfg.range = Some((v[0] as usize, v[1] as usize));
+            }
             "--all-slices" => cfg.max_slices = None,
             "--forward-only" => cfg.reverse_pass = false,
             "--threshold" => cfg.threshold = args.next().unwrap().parse()?,
@@ -103,7 +108,8 @@ fn main() -> anyhow::Result<()> {
                 eprintln!(
                     "usage: medsam2_cli <DICOM_DIR> [--models DIR] [--variant NAME] \
                      [--slice N] [--box r0,c0,r1,c1] [--point r,c] [--window LO,HI] \
-                     [--preset NAME] [--max-slices N] [--all-slices] [--forward-only] \
+                     [--preset NAME] [--range FIRST,LAST] [--max-slices N] [--all-slices] \
+                     [--forward-only] \
                      [--threshold F] [--no-cleanup] [--cpu] [--out FILE]"
                 );
                 return Ok(());

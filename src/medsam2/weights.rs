@@ -255,6 +255,11 @@ mod tests {
     fn the_payload_estimate_matches_the_derived_inventory() {
         // 38,962,754 f32 elements is the 156 MB the model card advertises.
         assert_eq!(layout::PAYLOAD_BYTES, 155_851_016);
-        assert!(layout::PAYLOAD_BYTES < 160_000_000);
+        // A guard on the derived layout, not on this expression: if the
+        // inventory ever grows past the published file, something is wrong.
+        #[allow(clippy::assertions_on_constants)]
+        {
+            assert!(layout::PAYLOAD_BYTES < 160_000_000);
+        }
     }
 }

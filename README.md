@@ -59,10 +59,14 @@ holds the registration controls and both dataset trees.*
   no-CUDA wgpu GPU path, results landing as ordinary editable
   segmentations, convertible to RTSTRUCT.
 * **Slice propagation** - MedSAM2 (2025) rebuilt natively: SAM 2.1 with its
-  memory bank, so a box, a click or an existing contour on **one** slice
-  follows the structure through the rest of the stack at the slice's own
-  resolution - no in-plane resampling at all on 512x512 CT. Validated against
-  the reference implementation module by module and over a full propagation.
+  memory bank, so a structure boxed on **one** slice is followed through the
+  rest of the stack at the slice's own resolution - no in-plane resampling at
+  all on 512x512 CT. The box is **drawn in the image and stays there** with
+  handles to resize and move it; the prompted slice previews on its own and
+  takes include / exclude clicks until it is right, and a slice that drifts is
+  corrected by boxing it again and re-running into the same segmentation.
+  Validated against the reference implementation module by module and over a
+  full propagation.
 * **Tools** - DICOM export with an editable patient/study tag table
   (CT + RTSTRUCT + RTDOSE + RTPLAN), an interactive folder anonymizer with
   consistent UID regeneration, and a synthetic RT-study generator; 140+

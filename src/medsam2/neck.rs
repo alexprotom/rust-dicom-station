@@ -37,7 +37,10 @@ pub fn sine_pos_embed<B: Backend>(
     channels: usize,
     dev: &B::Device,
 ) -> Tensor<B, 4> {
-    assert!(channels % 4 == 0, "channels must be a multiple of four");
+    assert!(
+        channels.is_multiple_of(4),
+        "channels must be a multiple of four"
+    );
     let half = channels / 2;
     let scale = 2.0 * std::f64::consts::PI;
     let dim_t: Vec<f64> = (0..half)

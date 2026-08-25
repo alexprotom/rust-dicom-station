@@ -19,43 +19,78 @@ sharp as the image.
 
 ## Using it
 
-**Tools ▶ 🧠 Propagate from a slice…**
+**Tools ▶ 🧠 Propagate from a slice…** opens the panel. The workflow is the
+one the [MedSAM2 extension for 3D
+Slicer](https://github.com/bowang-lab/MedSAMSlicer/tree/MedSAM2) established
+— box the structure on one slice, check that slice, then propagate — with
+the round trips taken out: there is no server to configure, and the network
+stays loaded between steps.
 
-Put the crosshair on the structure first, on a slice where it is clearly
-visible; the prompt is anchored to it.
+1. **Draw the box.** Scroll to a slice where the structure is clear and drag
+   a rectangle around it, directly in the image. The box stays where you put
+   it: drag a **corner** to resize, drag the **middle** to move it, drag
+   anywhere else to start a new one. It belongs to the slice it was drawn on
+   and is shown faintly on the others, so you can see where it sits while you
+   scroll. It is drawn in the view whose slices the network propagates through
+   — the axial one for an ordinary CT — and the panel names it.
+2. **Look at that one slice.** *Preview this slice* segments the prompted
+   slice alone. With **automatically** ticked (it is by default) that happens
+   every time the box changes, as soon as you let go of the mouse. The result
+   appears as an ordinary segmentation, so it is shaded in all three views and
+   in 3D.
+3. **Correct it with clicks.** Switch the tool to **➕ Include** or **➖
+   Exclude** and click: green points say *this is the structure*, red ones say
+   *this is not*. Both go to the network together with the box, which is how
+   SAM was trained to be corrected. The slice is only encoded once, so each
+   click costs the prompt path alone — milliseconds on a GPU.
+4. **Set the range and propagate.** The range starts as ±32 slices around the
+   box and follows it until you set it yourself; *from* / *to* take the slice
+   you are looking at, and *Whole study* is one click. **▶ Propagate** then
+   follows the structure through that range.
 
-| Prompt | What it does | Best for |
-|---|---|---|
-| **Box** | A box centred on the crosshair, with a half-extent in millimetres | Lesions, targets — the prompt the model was mostly trained with |
-| **Click** | One positive click at the crosshair | Compact, well-separated structures |
-| **Existing contour** | The active segmentation's mask on that slice | Turning one drawn slice into a volume |
+The crosshair is not involved anywhere in this: while the panel is open the
+left button in the drawing view belongs to the box, and the other two views
+navigate as usual.
 
-The result arrives as an ordinary segmentation: editable with the brush and
-eraser, visible in the 3D window, and convertible to RTSTRUCT — so the usual
-loop is *prompt, fix by hand, export*.
+### Correcting a slice that drifted
 
-### Options
+Propagation is a chain, and a long one eventually loses its grip — a thin
+neck between two lobes, a slice where the structure nearly disappears.
+Scroll to the slice where it went wrong, draw a fresh box there, and
+propagate again with **Add to what is already there** ticked (the default
+once there is a result): the new run is unioned into the segmentation
+instead of replacing it, so a correction fixes the tail without discarding
+the part that was right.
 
-* **Window** — the intensity window the model sees. The default is the
-  viewport's own window/level, so what you see is what it segments; the
-  paper's presets (brain, abdomen, bone, lung, mediastinum) are there too.
-  This matters more than it looks: the window *is* the model's contrast.
-* **Model** — which fine-tune to run. The general model is the default; there
-  are also CT-lesion and MRI-liver-lesion variants.
-* **Limit how far it propagates** — how many slices to track on each side.
-  The reference always runs to both ends of the volume; a lesion spanning
-  twenty slices does not need three hundred sequential steps, and the far end
-  has drifted anyway. 64 each way by default.
-* **Both directions** — off tracks only towards higher slice indices.
-* **Largest connected component** — drops everything but the biggest 26-connected
-  blob, which is usually what you want for a single lesion.
-* **Threshold** — the logit cut, 0 by default (probability 0.5).
+This is *not* the same thing as re-conditioning a single pass on two
+prompted slices, which the architecture would also allow — it is two
+independent propagations, OR-ed. It is the honest, predictable version, and
+it is what the reference pipeline does too (it never uses more than one
+conditioning slice per run).
 
-*Planned:* dragging the box directly in the axial viewport instead of
-anchoring on the crosshair, and re-prompting a drifted slice mid-run so
-propagation resumes from a corrected conditioning slice — the architecture
-supports several conditioning slices, and the reference pipeline never uses
-more than one.
+### What the panel holds
+
+| Control | What it does |
+|---|---|
+| **▭ Box / ➕ Include / ➖ Exclude** | what a left-drag or click in the drawing view does |
+| **Preview this slice**, *automatically* | segment the prompted slice, on demand or after every change |
+| **from / to**, *this slice*, *Whole study* | the slice range to propagate through |
+| **Window** | the intensity window the model sees — the viewport's own by default, so what you see is what it segments, plus the paper's presets |
+| **Model** | which fine-tune to run: general (default), CT-lesion, MRI-liver-lesion, or the 2024-11 base |
+| **Both directions** | off tracks only towards higher slice numbers |
+| **Largest connected component** | drop everything but the biggest 26-connected blob — usually right for a single lesion |
+| **Threshold** | the logit cut, 0 by default (probability 0.5) |
+| **Add to what is already there** | union this run with the current result instead of replacing it |
+| **Name** | what the segmentation is called |
+
+The result is an ordinary segmentation: editable with the brush and eraser,
+visible in the 3D window, convertible to RTSTRUCT. The usual loop is
+*box, preview, correct, propagate, fix by hand, export*.
+
+The window matters more than it looks — it **is** the model's contrast, and
+changing it rebuilds the prepared stack. Everything else (the weights, and
+the encoded prompted slice) survives between runs, so only the first run of
+a session pays for loading.
 
 ## Headless
 
@@ -63,8 +98,9 @@ more than one.
 cargo run --release --example medsam2_cli -- <DICOM_DIR> \
     [--variant latest|ct-lesion|mri-liver-lesion|base-2411] \
     [--slice N] [--box r0,c0,r1,c1] [--point r,c] \
-    [--window LO,HI] [--preset Abdomen] [--max-slices N] [--all-slices] \
-    [--forward-only] [--threshold F] [--no-cleanup] [--cpu] [--out mask.raw]
+    [--window LO,HI] [--preset Abdomen] [--range FIRST,LAST] \
+    [--max-slices N] [--all-slices] [--forward-only] [--threshold F] \
+    [--no-cleanup] [--cpu] [--out mask.raw]
 ```
 
 Coordinates are in the *prepared* stack — axial slices in reading order,
@@ -103,10 +139,19 @@ to the beginning, and OR the two results.
 
 Everything runs through `burn`: the whole graph is on the GPU with the `gpu`
 feature (wgpu — Vulkan, DX12 or Metal, no CUDA toolkit), and on a pure-Rust
-CPU backend otherwise. The dialog reports which one it got. Expect roughly
+CPU backend otherwise. The panel reports which one it got. Expect roughly
 48 G multiply-accumulates per slice, about half of it in the strictly
 sequential memory path — which is why the propagation range is bounded by
 default.
+
+What makes the interactive loop work is that **a prompt is cheap and a slice
+is not**. Encoding a slice is the expensive half; the prompt encoder and mask
+decoder that turn a box into a mask are a small fraction of it. So the engine
+keeps the prompted slice's encoder output, and previewing after moving the box
+or adding a click re-runs only that fraction — measured at roughly half the
+cost of a cold preview on the CPU backend, and proportionally far less where
+the encoder is fast. Nothing else is cached: the propagation itself is a fresh
+walk each time, because its memory bank depends on the prompt.
 
 ## Preprocessing, and why it is not the other engines'
 
@@ -131,9 +176,12 @@ radiologist reads them: rows anterior to posterior, columns right to left.
 
 ## Divergences from the reference
 
-Three, all deliberate, all visible in the dialog:
+Three, all deliberate, all visible in the panel:
 
-1. **The propagation range is bounded** (see the options above).
+1. **The propagation range is bounded.** The reference always runs to both
+   ends of the volume; a lesion spanning twenty slices does not need three
+   hundred sequential steps, and the far end has drifted anyway. The range
+   starts at ±32 slices around the box.
 2. **The largest-component cleanup is per segmentation.** The reference
    accumulates every lesion of a study into one array and then keeps the
    largest connected component of the *union*, which silently deletes all but

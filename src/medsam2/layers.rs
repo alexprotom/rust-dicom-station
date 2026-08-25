@@ -166,6 +166,7 @@ pub struct Conv<B: Backend> {
 }
 
 impl<B: Backend> Conv<B> {
+    #[allow(clippy::too_many_arguments)]
     pub fn load(
         p: &Params,
         prefix: &str,

@@ -96,7 +96,39 @@ pub struct Prepared {
 
 /// Axial axes: the superior axis for slices, then anterior-to-posterior rows
 /// and right-to-left columns.
-fn axial_axes(vol: &Volume) -> ([usize; 3], [bool; 3]) {
+/// Where a volume voxel lands in the oriented stack.
+fn reorient_index(
+    voxel: [usize; 3],
+    perm: [usize; 3],
+    flip: [bool; 3],
+    dims: [usize; 3],
+) -> [usize; 3] {
+    let mut out = [0usize; 3];
+    for a in 0..3 {
+        let v = voxel[perm[a]];
+        out[a] = if flip[a] { dims[a] - 1 - v } else { v };
+    }
+    out
+}
+
+/// The same, for a volume that has not been prepared yet.
+///
+/// The user interface needs this to turn a box drawn on screen into slice and
+/// pixel numbers *before* paying for [`Prepared::prepare`] — and it agrees
+/// with [`Prepared::from_volume_index`] by construction, since both are
+/// [`reorient_index`].
+pub fn volume_index_to_prepared(vol: &Volume, voxel: [usize; 3]) -> [usize; 3] {
+    let (perm, flip) = axial_axes(vol);
+    let dims = [vol.dims[perm[0]], vol.dims[perm[1]], vol.dims[perm[2]]];
+    reorient_index(voxel, perm, flip, dims)
+}
+
+/// Which volume axis becomes which prepared axis, and whether it is reversed.
+///
+/// Exposed because the user interface needs to know *before* anything is
+/// prepared which of the three views a prompt has to be drawn in: the one
+/// whose slices are the ones the network will propagate through.
+pub fn axial_axes(vol: &Volume) -> ([usize; 3], [bool; 3]) {
     let (perm, mut flip) = canonical_axes(vol);
     // `canonical_axes` targets [S, A, R]; reading order is [S, P, L].
     flip[1] = !flip[1];
@@ -199,16 +231,7 @@ impl Prepared {
 
     /// The oriented index of a volume voxel `[i, j, k]`.
     pub fn from_volume_index(&self, voxel: [usize; 3]) -> [usize; 3] {
-        let mut out = [0usize; 3];
-        for a in 0..3 {
-            let v = voxel[self.perm[a]];
-            out[a] = if self.flip[a] {
-                self.dims[a] - 1 - v
-            } else {
-                v
-            };
-        }
-        out
+        reorient_index(voxel, self.perm, self.flip, self.dims)
     }
 
     /// Scatter per-slice masks back onto the volume's own grid.
@@ -385,7 +408,8 @@ mod tests {
             .iter()
             .all(|x| *x == 0));
         // which for this identity orientation is volume voxel (3, 2, 1)
-        assert_eq!(grid[1 * 4 * 3 + 2 * 4 + 3], 1);
+        // k * nx * ny + j * nx + i, with k = 1, j = 2, i = 3
+        assert_eq!(grid[12 + 8 + 3], 1);
         assert_eq!(p.from_volume_index([3, 2, 1]), [1, 2, 3]);
     }
 

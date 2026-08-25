@@ -33,6 +33,9 @@ pub struct Config {
     /// How many slices to track on each side of the prompt. `None` runs to
     /// both ends of the volume, as the reference does.
     pub max_slices: Option<usize>,
+    /// Explicit inclusive bounds in stack indices, which win over
+    /// `max_slices` when set. The prompted slice is always included.
+    pub range: Option<(usize, usize)>,
     /// Track towards lower indices as well as higher ones.
     pub reverse_pass: bool,
     /// Logit threshold. The reference uses 0, which is the probability 0.5
@@ -46,6 +49,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             max_slices: Some(64),
+            range: None,
             reverse_pass: true,
             threshold: 0.0,
             largest_component: true,
@@ -111,6 +115,28 @@ pub fn propagate<B: Backend>(
     config: &Config,
     hooks: &dyn Hooks,
 ) -> Result<Segmentation> {
+    if prompt_slice >= slices.len() {
+        bail!(
+            "slice {prompt_slice} is outside a stack of {}",
+            slices.len()
+        );
+    }
+    hooks.report(0.0, "Encoding the prompted slice");
+    let anchor = model.encode_slice(slices.slice(prompt_slice));
+    propagate_from(model, slices, prompt_slice, &anchor, prompt, config, hooks)
+}
+
+/// The same, with the prompted slice already encoded — which is what makes
+/// re-running an adjusted prompt on the same slice cheap.
+pub fn propagate_from<B: Backend>(
+    model: &Medsam2<B>,
+    slices: &dyn Slices<B>,
+    prompt_slice: usize,
+    anchor: &SliceFeatures<B>,
+    prompt: &Prompt<B>,
+    config: &Config,
+    hooks: &dyn Hooks,
+) -> Result<Segmentation> {
     let n = slices.len();
     if n == 0 {
         bail!("the stack is empty");
@@ -118,12 +144,28 @@ pub fn propagate<B: Backend>(
     if prompt_slice >= n {
         bail!("slice {prompt_slice} is outside a stack of {n}");
     }
-    let reach = config.max_slices.unwrap_or(n);
-    let last = (prompt_slice + reach).min(n - 1);
-    let first = if config.reverse_pass {
-        prompt_slice.saturating_sub(reach)
-    } else {
-        prompt_slice
+    let (first, last) = match config.range {
+        // Explicit bounds, as the Slicer extension's start/end slices: the
+        // prompted slice is always inside them.
+        Some((a, b)) => (
+            if config.reverse_pass {
+                a.min(prompt_slice)
+            } else {
+                prompt_slice
+            },
+            b.max(prompt_slice).min(n - 1),
+        ),
+        None => {
+            let reach = config.max_slices.unwrap_or(n);
+            (
+                if config.reverse_pass {
+                    prompt_slice.saturating_sub(reach)
+                } else {
+                    prompt_slice
+                },
+                (prompt_slice + reach).min(n - 1),
+            )
+        }
     };
     let total = last - first + 1;
     let size = slices.out_size();
@@ -135,10 +177,8 @@ pub fn propagate<B: Backend>(
     };
 
     // ---- the prompted slice ------------------------------------------------
-    hooks.report(0.0, "Encoding the prompted slice");
-    let anchor: SliceFeatures<B> = model.encode_slice(slices.slice(prompt_slice));
     let mut forward = Tracker::new(model, n);
-    let out = forward.prompt(prompt_slice, &anchor, prompt);
+    let out = forward.prompt(prompt_slice, anchor, prompt);
     store(prompt_slice, &out, &mut masks);
     visited += 1;
 
@@ -163,7 +203,7 @@ pub fn propagate<B: Backend>(
         let mut reverse = Tracker::new(model, n);
         // The same prompt on the same slice: the reference re-prompts after
         // resetting rather than reusing the forward pass's memory.
-        reverse.prompt(prompt_slice, &anchor, prompt);
+        reverse.prompt(prompt_slice, anchor, prompt);
         for index in (first..prompt_slice).rev() {
             if hooks.cancelled() {
                 bail!("cancelled");
@@ -193,6 +233,41 @@ pub fn propagate<B: Backend>(
         slices_visited: visited,
         voxels,
     })
+}
+
+/// Segment **only** the prompted slice.
+///
+/// This is the interactive half of the Slicer-style workflow: draw a box, look
+/// at what the network makes of it on that one slice, adjust, and only then
+/// pay for the propagation. No memory is involved, so it costs one encode —
+/// and none at all when the caller already has the slice's features.
+pub fn preview<B: Backend>(
+    model: &Medsam2<B>,
+    anchor: &SliceFeatures<B>,
+    prompt: &Prompt<B>,
+    size: [usize; 2],
+    threshold: f32,
+) -> Vec<u8> {
+    // The prompted slice's own computation, with none of the bookkeeping that
+    // only a later slice would need: no memory is encoded and no bank is
+    // built, so this is exactly `Tracker::prompt` minus the parts a
+    // single-slice answer never reads.
+    let pix_feat = model.without_memory(anchor);
+    let low_res = match prompt {
+        Prompt::Points(points) => {
+            let multimask = super::sam::SamHead::<B>::use_multimask(points.len());
+            model
+                .head
+                .forward(pix_feat, &anchor.high_res, points, None, multimask)
+                .low_res_masks
+        }
+        Prompt::Mask(mask) => {
+            model
+                .mask_as_output(&pix_feat, anchor, mask.clone())
+                .low_res_masks
+        }
+    };
+    threshold_mask(low_res, size, threshold)
 }
 
 /// Resize the network's `128 x 128` logits onto the slice's own grid and cut

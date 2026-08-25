@@ -8,7 +8,8 @@ inference, DICOM writing. Where a capability normally means binding a
 C/C++ library (elastix, ITK, ONNX Runtime, CUDA), the algorithms are
 re-implemented natively instead. The only system interface is the GPU,
 reached twice through `wgpu` (Vulkan / DX12 / Metal): once by `eframe` to
-blit the UI, once (optionally) by `burn` for auto-segmentation inference —
+blit the UI, once (optionally) by `burn` for neural-network inference —
+auto-segmentation, SegVol's image encoder, and the whole MedSAM2 graph —
 no vendor SDKs either way.
 
 **CPU-side algorithms, GPU-side pixels.** All image processing runs on
@@ -46,6 +47,9 @@ src/
     tree.rs          dataset-tree copy / move / remove
     seg.rs           interactive segmentation state machine
     prompt_seg.rs    prompt-driven segmentation: dialog, worker, result
+    medsam2_seg.rs   slice propagation: the box drawn in the viewport, the
+                     preview / refine / propagate loop, and the session that
+                     keeps the network and the prepared stack alive
   loader.rs        directory scan, classification, parallel volume
                    loading, dataset merging
   volume.rs        3D volume, patient-space geometry, slice extraction
@@ -76,6 +80,8 @@ src/
     linalg.rs        gemm-backed linear/matmul, layer norm, softmax,
                      GELU / ReLU / QuickGELU
     attention.rs     multi-head attention, optionally causally masked
+    params.rs        shape-checked view of a loaded state dict, shared by
+                     every ported architecture
   segvol/          promptable segmentation (pure-Rust SegVol) — box, point
                    and text prompts, for the structures a fixed-class model
                    cannot cover
@@ -94,6 +100,38 @@ src/
     bpe.rs           CLIP byte-pair tokenizer
     clip.rs          CLIP text tower + dim_align, with a prompt cache
     gpu.rs           image encoder on wgpu via burn (cargo feature `gpu`)
+  medsam2/         slice propagation (pure-Rust MedSAM2 — SAM 2.1 fine-tuned
+                   on medical images): prompt one slice, follow the structure
+                   through the stack at the slice's own resolution. Every
+                   module is generic over a `burn` backend, so one
+                   implementation runs on the GPU and on the CPU
+    weights.rs       the four published variants, download and conversion,
+                     and the research-only licence that governs them
+    layout.rs        the checkpoint's tensor layout, and the checks that
+                     verify a file really is this model
+    config.rs        the fixed dimensions: 512 input, 7 memories, 16 pointers
+    ops.rs           the tensor helpers the port needs on top of burn
+    layers.rs        conv, layer norm, MLP, the small shared pieces
+    hiera.rs         Hiera-T image encoder: 4 stages, windowed attention
+    neck.rs          FPN neck to 256 channels + the sine position encoding
+    prompt.rs        SAM's prompt encoder: points, boxes, mask prompts
+    decoder.rs       two-way transformer, hypernetwork mask filters, IoU and
+                     object-presence heads
+    sam.rs           the SAM head assembled: prompt -> masks for one slice
+    memory.rs        memory encoder: mask downsampler + ConvNeXt fuser
+    memattn.rs       memory attention: 4 layers, 2-D axial RoPE
+    model.rs         the whole network, and the two ways a slice is
+                     conditioned (a prompt, or the memory bank)
+    track.rs         the memory bank and the slice-to-slice state machine:
+                     temporal indices, object pointers, reverse tracking
+    infer.rs         one-slice preview, the two propagation passes, the
+                     slice range, thresholding, largest-component cleanup
+    preprocess.rs    window, quantize to u8, orient; the prompt's and the
+                     mask's way between the study grid and the network's
+    resample.rs      PIL's resampling kernels, including the 8-bit
+                     fixed-point arithmetic the reference depends on
+    engine.rs        backend choice (wgpu, else CPU), the encoded-slice
+                     cache, and the one call the user interface makes
   autoseg/         automatic segmentation (pure-Rust TotalSegmentator)
     mod.rs           public API, engine selection, progress/cancel
     classes.rs       117-class table, sub-model maps, organ colors
@@ -105,8 +143,8 @@ src/
     preprocess.rs    canonical reorientation, resampling, back-mapping
     infer.rs         Gaussian sliding window, streaming argmax
 tests/             integration suites (see Testing below)
-examples/          autoseg_cli, autoseg_probe, segvol_cli, segvol_probe
-                   (headless dev tools)
+examples/          autoseg_cli, autoseg_probe, segvol_cli, segvol_probe,
+                   medsam2_cli, medsam2_probe (headless dev tools)
 ```
 
 ## UI architecture
@@ -185,7 +223,7 @@ optionally `burn` (wgpu compute backend, cargo feature `gpu`, default on).
 
 ## Testing
 
-Six integration suites plus in-module unit tests run against the same
+Eight integration suites plus in-module unit tests run against the same
 code paths the GUI uses, with no external data or tooling:
 
 * **synthetic_study** — generate the analytic phantom, reload, verify
@@ -212,6 +250,19 @@ code paths the GUI uses, with no external data or tooling:
   the network assembles and runs a genuine forward pass in CI without the
   724 MB download; `#[ignore]`d tests cover the real file and the full
   181 M-parameter image-encoder pass.
+* **medsam2** — the same synthesized-checkpoint trick assembles the real
+  471-tensor network and runs genuine forward passes in CI: a slice through
+  the engine with the documented shapes, a box prompt propagated through a
+  small stack, an existing contour as the prompt, and the one-slice preview
+  agreeing with the propagation's first step while proving the encoded
+  slice is reused;
+* **reference** — bit-level parity with the Python implementation. A
+  randomly initialized SAM 2.1-T is built with `sam2` and PyTorch by
+  `tools/gen_reference_activations.py`, which dumps every module's inputs
+  and outputs *and* a ten-slice run of SAM 2's own video predictor; the
+  suite reproduces all of it (worst 5.4e-6 relative). It skips when the
+  dump is absent, so CI stays self-contained:
+  `MEDSAM2_REF=/tmp/ref cargo test --release --test reference`.
 
 Beyond the automated tests, the auto-segmentation implementation was
 validated against the reference implementation directly — exact

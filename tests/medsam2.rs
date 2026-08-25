@@ -287,3 +287,55 @@ fn an_existing_contour_can_be_the_prompt() {
     assert!(out[20 * 48 + 24] != 0, "inside the contour");
     assert!(out[2 * 48 + 2] == 0, "far outside it");
 }
+
+#[test]
+fn a_preview_agrees_with_the_prompted_slice_and_reuses_its_features() {
+    use rust_dicom_station::medsam2::engine::{Engine, EnginePrompt, PixelPrompt};
+    use rust_dicom_station::medsam2::infer::{Config, Quiet};
+    use rust_dicom_station::medsam2::preprocess::{Prepared, Window};
+    use std::time::Instant;
+
+    let engine = Engine::load(&synthetic_params(), false).expect("cpu engine");
+    let vol = phantom([48, 40, 3]);
+    let prepared = Prepared::prepare(&vol, Window::new(-100.0, 300.0));
+    let prompt = EnginePrompt::Points(PixelPrompt::box_corners(10.0, 12.0, 30.0, 36.0));
+    let cfg = Config {
+        range: Some((1, 1)),
+        reverse_pass: false,
+        largest_component: false,
+        ..Config::default()
+    };
+
+    let t0 = Instant::now();
+    let preview = engine.preview(&prepared, 1, &prompt, &cfg).expect("preview");
+    let cold = t0.elapsed();
+    assert_eq!(preview.len(), 40 * 48);
+
+    // The same prompt through the full path must decide that slice the same
+    // way — the preview is the propagation's first step, not an approximation.
+    let full = engine
+        .propagate(&prepared, 1, &prompt, &cfg, &Quiet)
+        .expect("propagate");
+    assert_eq!(full.masks[1], preview);
+    assert_eq!(full.slices_visited, 1);
+
+    // And the second call skipped the encoder entirely.
+    let t1 = Instant::now();
+    let again = engine
+        .preview(
+            &prepared,
+            1,
+            &EnginePrompt::Points(PixelPrompt::box_corners(8.0, 8.0, 32.0, 40.0)),
+            &cfg,
+        )
+        .expect("preview");
+    let warm = t1.elapsed();
+    assert_eq!(again.len(), 40 * 48);
+    assert!(
+        warm * 2 < cold,
+        "a cached slice should re-prompt far faster: {cold:?} then {warm:?}"
+    );
+    eprintln!("preview: {cold:?} cold, {warm:?} warm");
+
+    engine.clear_cache();
+}

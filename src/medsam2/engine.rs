@@ -12,6 +12,8 @@
 //! is the fallback; without it there is only the CPU backend, which is still
 //! pure Rust.
 
+use std::sync::Mutex;
+
 use anyhow::Result;
 use burn::tensor::backend::Backend;
 use burn::tensor::Tensor;
@@ -20,8 +22,8 @@ use crate::nn::params::Params;
 use crate::volume::Volume;
 
 use super::config;
-use super::infer::{self, Config, Hooks, Segmentation};
-use super::model::Medsam2;
+use super::infer::{self, Config, Hooks, Segmentation, Slices};
+use super::model::{Medsam2, SliceFeatures};
 use super::ops;
 use super::preprocess::Prepared;
 use super::prompt::Point;
@@ -61,6 +63,14 @@ impl PixelPrompt {
         }
     }
 
+    pub fn negative(row: f32, column: f32) -> PixelPrompt {
+        PixelPrompt {
+            row,
+            column,
+            label: super::prompt::LABEL_NEGATIVE,
+        }
+    }
+
     /// The two corners of a box, in prepared pixel coordinates.
     pub fn box_corners(row0: f32, col0: f32, row1: f32, col1: f32) -> Vec<PixelPrompt> {
         vec![
@@ -78,10 +88,17 @@ impl PixelPrompt {
     }
 }
 
+/// The last encoded slice, kept so that adjusting a prompt on it — the whole
+/// point of an interactive box — costs no encoder pass at all.
+struct Cache<B: Backend> {
+    slice: usize,
+    features: SliceFeatures<B>,
+}
+
 enum Inner {
-    Cpu(Box<Medsam2<Cpu>>),
+    Cpu(Box<Medsam2<Cpu>>, Mutex<Option<Cache<Cpu>>>),
     #[cfg(feature = "gpu")]
-    Gpu(Box<Medsam2<Gpu>>),
+    Gpu(Box<Medsam2<Gpu>>, Mutex<Option<Cache<Gpu>>>),
 }
 
 /// The loaded network, on whichever backend was chosen.
@@ -117,14 +134,20 @@ impl Engine {
         if prefer_gpu && gpu_available() {
             let device = burn::tensor::Device::<Gpu>::default();
             return Ok(Engine {
-                inner: Inner::Gpu(Box::new(Medsam2::<Gpu>::load(params, &device)?)),
+                inner: Inner::Gpu(
+                    Box::new(Medsam2::<Gpu>::load(params, &device)?),
+                    Mutex::new(None),
+                ),
                 device: "GPU (wgpu)",
             });
         }
         let _ = prefer_gpu;
         let device = burn::tensor::Device::<Cpu>::default();
         Ok(Engine {
-            inner: Inner::Cpu(Box::new(Medsam2::<Cpu>::load(params, &device)?)),
+            inner: Inner::Cpu(
+                Box::new(Medsam2::<Cpu>::load(params, &device)?),
+                Mutex::new(None),
+            ),
             device: "CPU",
         })
     }
@@ -144,9 +167,38 @@ impl Engine {
         hooks: &dyn Hooks,
     ) -> Result<Segmentation> {
         match &self.inner {
-            Inner::Cpu(model) => run(model, prepared, slice, prompt, config, hooks),
+            Inner::Cpu(model, cache) => run(model, cache, prepared, slice, prompt, config, hooks),
             #[cfg(feature = "gpu")]
-            Inner::Gpu(model) => run(model, prepared, slice, prompt, config, hooks),
+            Inner::Gpu(model, cache) => run(model, cache, prepared, slice, prompt, config, hooks),
+        }
+    }
+
+    /// Segment **one** slice, for the interactive loop: draw, look, adjust.
+    ///
+    /// The mask comes back at the prepared slice's own size, `rows * columns`
+    /// bytes. Repeated calls on the same slice reuse its encoded features, so
+    /// only the prompt path — a few milliseconds of it — runs again.
+    pub fn preview(
+        &self,
+        prepared: &Prepared,
+        slice: usize,
+        prompt: &EnginePrompt,
+        config: &Config,
+    ) -> Result<Vec<u8>> {
+        match &self.inner {
+            Inner::Cpu(model, cache) => run_preview(model, cache, prepared, slice, prompt, config),
+            #[cfg(feature = "gpu")]
+            Inner::Gpu(model, cache) => run_preview(model, cache, prepared, slice, prompt, config),
+        }
+    }
+
+    /// Forget the cached slice — call this whenever the prepared stack itself
+    /// changes (a different study, or a different intensity window).
+    pub fn clear_cache(&self) {
+        match &self.inner {
+            Inner::Cpu(_, cache) => *cache.lock().unwrap() = None,
+            #[cfg(feature = "gpu")]
+            Inner::Gpu(_, cache) => *cache.lock().unwrap() = None,
         }
     }
 
@@ -166,17 +218,13 @@ impl Engine {
     }
 }
 
-fn run<B: Backend>(
-    model: &Medsam2<B>,
+/// The prompt, in the network's coordinates and on its device.
+fn to_prompt<B: Backend>(
     prepared: &Prepared,
-    slice: usize,
     prompt: &EnginePrompt,
-    config: &Config,
-    hooks: &dyn Hooks,
-) -> Result<Segmentation> {
-    let device = model.device().clone();
-    let native = prepared.size();
-    let prompt = match prompt {
+    device: &B::Device,
+) -> Prompt<B> {
+    match prompt {
         EnginePrompt::Points(points) => Prompt::Points(
             points
                 .iter()
@@ -196,13 +244,81 @@ fn run<B: Backend>(
             // grid, so it is resampled to the network's first.
             let bytes: Vec<f32> = mask.iter().map(|v| f32::from(*v)).collect();
             let size = config::IMAGE_SIZE;
-            let scaled = resample::resize(&bytes, native, [size, size], Filter::Triangle, true);
+            let scaled = resample::resize(
+                &bytes,
+                prepared.size(),
+                [size, size],
+                Filter::Triangle,
+                true,
+            );
             let binary: Vec<f32> = scaled.into_iter().map(|v| f32::from(v > 0.5)).collect();
-            Prompt::Mask(ops::from_slice(&binary, [1, 1, size, size], &device))
+            Prompt::Mask(ops::from_slice(&binary, [1, 1, size, size], device))
         }
-    };
+    }
+}
+
+/// The encoded prompted slice, from the cache when it is the same one.
+fn anchor<B: Backend>(
+    model: &Medsam2<B>,
+    cache: &Mutex<Option<Cache<B>>>,
+    stack: &dyn Slices<B>,
+    slice: usize,
+) -> SliceFeatures<B> {
+    if let Some(hit) = cache.lock().unwrap().as_ref() {
+        if hit.slice == slice {
+            return hit.features.clone();
+        }
+    }
+    let features = model.encode_slice(stack.slice(slice));
+    *cache.lock().unwrap() = Some(Cache {
+        slice,
+        features: features.clone(),
+    });
+    features
+}
+
+fn run<B: Backend>(
+    model: &Medsam2<B>,
+    cache: &Mutex<Option<Cache<B>>>,
+    prepared: &Prepared,
+    slice: usize,
+    prompt: &EnginePrompt,
+    config: &Config,
+    hooks: &dyn Hooks,
+) -> Result<Segmentation> {
+    let device = model.device().clone();
+    let prompt = to_prompt::<B>(prepared, prompt, &device);
     let stack = prepared.stack::<B>(device);
-    infer::propagate(model, &stack, slice, &prompt, config, hooks)
+    if slice >= stack.len() {
+        anyhow::bail!("slice {slice} is outside a stack of {}", stack.len());
+    }
+    hooks.report(0.0, "Encoding the prompted slice");
+    let anchor = anchor(model, cache, &stack, slice);
+    infer::propagate_from(model, &stack, slice, &anchor, &prompt, config, hooks)
+}
+
+fn run_preview<B: Backend>(
+    model: &Medsam2<B>,
+    cache: &Mutex<Option<Cache<B>>>,
+    prepared: &Prepared,
+    slice: usize,
+    prompt: &EnginePrompt,
+    config: &Config,
+) -> Result<Vec<u8>> {
+    let device = model.device().clone();
+    let prompt = to_prompt::<B>(prepared, prompt, &device);
+    let stack = prepared.stack::<B>(device);
+    if slice >= stack.len() {
+        anyhow::bail!("slice {slice} is outside a stack of {}", stack.len());
+    }
+    let anchor = anchor(model, cache, &stack, slice);
+    Ok(infer::preview(
+        model,
+        &anchor,
+        &prompt,
+        stack.out_size(),
+        config.threshold,
+    ))
 }
 
 #[cfg(test)]

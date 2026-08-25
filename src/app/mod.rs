@@ -241,6 +241,16 @@ impl ViewState {
     }
 }
 
+/// Which of the three view slots shows a plane — the order `fresh_views`
+/// builds them in.
+fn plane_index(plane: ViewPlane) -> usize {
+    match plane {
+        ViewPlane::Axial => 0,
+        ViewPlane::Sagittal => 1,
+        ViewPlane::Coronal => 2,
+    }
+}
+
 fn fresh_views() -> [ViewState; 3] {
     [
         ViewState::new(ViewPlane::Axial),
@@ -600,18 +610,13 @@ pub struct ViewerApp {
     /// One-line summary of the last finished run.
     segvol_status: Option<String>,
 
-    // Slice-propagating segmentation (MedSAM2 re-implementation).
+    // Slice-propagating segmentation (MedSAM2 re-implementation): the drawn
+    // box, the loaded engine and the prepared stack all live in one struct.
     #[allow(clippy::type_complexity)]
     medsam2_job: Option<
-        Job<
-            (usize, anyhow::Result<medsam2_seg::Medsam2Result>),
-            medsam2_seg::Medsam2Progress,
-        >,
+        Job<(usize, anyhow::Result<medsam2_seg::Medsam2Done>), medsam2_seg::Medsam2Progress>,
     >,
-    medsam2_slot: usize,
-    medsam2_dialog: Option<medsam2_seg::Medsam2Dialog>,
-    medsam2_models_dir: String,
-    medsam2_status: Option<String>,
+    medsam2: medsam2_seg::Medsam2State,
 
     dose_mode: DoseMode,
     dose_opacity: f32,
@@ -713,12 +718,7 @@ impl ViewerApp {
                 .to_string(),
             segvol_status: None,
             medsam2_job: None,
-            medsam2_slot: 0,
-            medsam2_dialog: None,
-            medsam2_models_dir: crate::medsam2::weights::default_models_dir()
-                .display()
-                .to_string(),
-            medsam2_status: None,
+            medsam2: Default::default(),
             autoseg_models_dir: prefs
                 .autoseg_dir
                 .clone()

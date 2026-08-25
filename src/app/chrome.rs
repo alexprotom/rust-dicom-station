@@ -232,7 +232,7 @@ impl ViewerApp {
                             )
                             .clicked()
                         {
-                            self.open_medsam2_dialog(slot);
+                            self.open_medsam2_panel(slot);
                             ui.close();
                         }
                     }
