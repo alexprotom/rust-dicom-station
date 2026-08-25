@@ -68,11 +68,7 @@ impl<B: Backend> SamHead<B> {
                 &[D_MODEL, D_MODEL, D_MODEL, D_MODEL],
                 dev,
             )?,
-            no_obj_ptr: ops::from_slice(
-                p.get("no_obj_ptr", &[1, D_MODEL])?,
-                [1, D_MODEL],
-                dev,
-            ),
+            no_obj_ptr: ops::from_slice(p.get("no_obj_ptr", &[1, D_MODEL])?, [1, D_MODEL], dev),
             mask_downsample: Conv::load(p, "mask_downsample", 1, 1, 4, 4, 0, 1, dev)?,
         })
     }

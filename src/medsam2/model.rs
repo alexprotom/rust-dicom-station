@@ -74,10 +74,7 @@ impl<B: Backend> Medsam2<B> {
                 dev,
             ),
             maskmem_tpos_enc: ops::from_slice(
-                p.get(
-                    "maskmem_tpos_enc",
-                    &[config::NUM_MASKMEM, 1, 1, MEM_DIM],
-                )?,
+                p.get("maskmem_tpos_enc", &[config::NUM_MASKMEM, 1, 1, MEM_DIM])?,
                 [config::NUM_MASKMEM, MEM_DIM],
                 dev,
             ),
@@ -165,16 +162,15 @@ impl<B: Backend> Medsam2<B> {
             let mut sin = Vec::with_capacity(half);
             let mut cos = Vec::with_capacity(half);
             for i in 0..half {
-                let dim_t = f64::from(config::PE_TEMPERATURE)
-                    .powf(2.0 * ((i / 2) as f64) / half as f64);
+                let dim_t =
+                    f64::from(config::PE_TEMPERATURE).powf(2.0 * ((i / 2) as f64) / half as f64);
                 sin.push((p / dim_t).sin() as f32);
                 cos.push((p / dim_t).cos() as f32);
             }
             data.extend(sin);
             data.extend(cos);
         }
-        let pe: Tensor<B, 3> =
-            ops::from_slice(&data, [1, offsets.len(), D_MODEL], &self.device);
+        let pe: Tensor<B, 3> = ops::from_slice(&data, [1, offsets.len(), D_MODEL], &self.device);
         self.obj_ptr_tpos_proj.apply(pe)
     }
 

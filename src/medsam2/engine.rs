@@ -16,7 +16,6 @@ use std::sync::Mutex;
 
 use anyhow::Result;
 use burn::tensor::backend::Backend;
-use burn::tensor::Tensor;
 
 use crate::nn::params::Params;
 use crate::volume::Volume;
@@ -112,7 +111,7 @@ pub struct Engine {
 /// they are caught rather than propagated.
 #[cfg(feature = "gpu")]
 pub fn gpu_available() -> bool {
-    use burn::tensor::TensorData;
+    use burn::tensor::{Tensor, TensorData};
     std::panic::catch_unwind(|| {
         let device = burn::tensor::Device::<Gpu>::default();
         let t = Tensor::<Gpu, 1>::from_data(TensorData::new(vec![1.0f32, 2.0, 3.0], [3]), &device);

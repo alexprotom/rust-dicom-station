@@ -206,10 +206,7 @@ fn pad_hw<B: Backend>(x: Tensor<B, 4>, pad_h: usize, pad_w: usize) -> Tensor<B, 
 ///
 /// Returns the tiles as `[B * tiles, window, window, C]` and the padded grid,
 /// which the caller needs to put them back.
-pub fn window_partition<B: Backend>(
-    x: Tensor<B, 4>,
-    window: usize,
-) -> (Tensor<B, 4>, [usize; 2]) {
+pub fn window_partition<B: Backend>(x: Tensor<B, 4>, window: usize) -> (Tensor<B, 4>, [usize; 2]) {
     let [b, h, w, c] = x.dims();
     let pad_h = (window - h % window) % window;
     let pad_w = (window - w % window) % window;
@@ -353,11 +350,7 @@ mod tests {
         let x = get::<1>(&f, "gelu.x");
         same(activation::gelu(x.clone()), get::<1>(&f, "gelu.y"), "gelu");
         same(activation::relu(x.clone()), get::<1>(&f, "relu.y"), "relu");
-        same(
-            activation::sigmoid(x),
-            get::<1>(&f, "sigmoid.y"),
-            "sigmoid",
-        );
+        same(activation::sigmoid(x), get::<1>(&f, "sigmoid.y"), "sigmoid");
     }
 
     #[test]
@@ -443,7 +436,10 @@ mod tests {
         let (win, pad) = window_partition(x.clone(), 2);
         assert_eq!(pad, [4, 4]);
         // window 0 is the top-left 2 x 2 block
-        assert_eq!(to_vec(win.clone().slice([0..1, 0..2, 0..2, 0..1])), vec![0.0, 1.0, 4.0, 5.0]);
+        assert_eq!(
+            to_vec(win.clone().slice([0..1, 0..2, 0..2, 0..1])),
+            vec![0.0, 1.0, 4.0, 5.0]
+        );
         assert_eq!(to_vec(window_unpartition(win, 2, pad, [4, 4])), data);
     }
 }

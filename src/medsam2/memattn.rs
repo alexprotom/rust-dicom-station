@@ -77,7 +77,12 @@ impl<B: Backend> Rope<B> {
     /// same spatial encoding.
     pub fn apply(&self, x: Tensor<B, 4>, repeat: usize) -> Tensor<B, 4> {
         let [b, heads, n, dim] = x.dims();
-        assert_eq!(n, repeat * self.tokens, "rope covers {} tokens", self.tokens);
+        assert_eq!(
+            n,
+            repeat * self.tokens,
+            "rope covers {} tokens",
+            self.tokens
+        );
         let pairs = dim / 2;
         let (cos, sin) = if repeat == 1 {
             (self.cos.clone(), self.sin.clone())
@@ -116,15 +121,7 @@ impl<B: Backend> RopeAttention<B> {
         dev: &B::Device,
     ) -> Result<RopeAttention<B>> {
         Ok(RopeAttention {
-            attn: SamAttention::load(
-                p,
-                prefix,
-                D_MODEL,
-                config::MEM_ATTN_HEADS,
-                1,
-                kv_in,
-                dev,
-            )?,
+            attn: SamAttention::load(p, prefix, D_MODEL, config::MEM_ATTN_HEADS, 1, kv_in, dev)?,
             rope: Rope::new(
                 D_MODEL / config::MEM_ATTN_HEADS,
                 config::EMBED_GRID,
@@ -162,10 +159,7 @@ impl<B: Backend> RopeAttention<B> {
             rotated
         } else {
             Tensor::cat(
-                vec![
-                    rotated,
-                    k.slice([0..b, 0..heads, n_rope..n_k, 0..dim]),
-                ],
+                vec![rotated, k.slice([0..b, 0..heads, n_rope..n_k, 0..dim])],
                 2,
             )
         };
@@ -188,13 +182,7 @@ pub struct MemoryAttentionLayer<B: Backend> {
 impl<B: Backend> MemoryAttentionLayer<B> {
     fn load(p: &Params, prefix: &str, dev: &B::Device) -> Result<MemoryAttentionLayer<B>> {
         Ok(MemoryAttentionLayer {
-            self_attn: RopeAttention::load(
-                p,
-                &format!("{prefix}.self_attn"),
-                D_MODEL,
-                false,
-                dev,
-            )?,
+            self_attn: RopeAttention::load(p, &format!("{prefix}.self_attn"), D_MODEL, false, dev)?,
             cross_attn: RopeAttention::load(
                 p,
                 &format!("{prefix}.cross_attn_image"),
@@ -205,8 +193,20 @@ impl<B: Backend> MemoryAttentionLayer<B> {
             norm1: Norm::load(p, &format!("{prefix}.norm1"), D_MODEL, dev)?,
             norm2: Norm::load(p, &format!("{prefix}.norm2"), D_MODEL, dev)?,
             norm3: Norm::load(p, &format!("{prefix}.norm3"), D_MODEL, dev)?,
-            linear1: Lin::load(p, &format!("{prefix}.linear1"), config::MEM_MLP, D_MODEL, dev)?,
-            linear2: Lin::load(p, &format!("{prefix}.linear2"), D_MODEL, config::MEM_MLP, dev)?,
+            linear1: Lin::load(
+                p,
+                &format!("{prefix}.linear1"),
+                config::MEM_MLP,
+                D_MODEL,
+                dev,
+            )?,
+            linear2: Lin::load(
+                p,
+                &format!("{prefix}.linear2"),
+                D_MODEL,
+                config::MEM_MLP,
+                dev,
+            )?,
         })
     }
 

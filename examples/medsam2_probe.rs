@@ -59,12 +59,7 @@ fn main() -> anyhow::Result<()> {
     let dir = dir.unwrap_or_else(weights::default_models_dir);
 
     let file = variant.file();
-    eprintln!(
-        "{} ({}) in {}",
-        file.name,
-        variant.label(),
-        dir.display()
-    );
+    eprintln!("{} ({}) in {}", file.name, variant.label(), dir.display());
     let path = weights::ensure_file(&file, &dir, &Stderr)?;
     eprintln!();
 
@@ -84,7 +79,10 @@ fn main() -> anyhow::Result<()> {
         })
         .collect();
 
-    let elements: usize = actual.iter().map(|t| t.shape.iter().product::<usize>()).sum();
+    let elements: usize = actual
+        .iter()
+        .map(|t| t.shape.iter().product::<usize>())
+        .sum();
     println!("{} tensors, {elements} elements", actual.len());
     for (group, total) in layout::group_totals() {
         println!("  {group:18} {total:>12}");

@@ -125,7 +125,13 @@ pub fn expected() -> BTreeMap<String, Vec<usize>> {
         format!("{t}.pos_embed_window"),
         vec![1, EMBED_DIM, POS_EMBED_WINDOW, POS_EMBED_WINDOW],
     );
-    b.conv(&format!("{t}.patch_embed.proj"), EMBED_DIM, 3, PATCH_KERNEL, 1);
+    b.conv(
+        &format!("{t}.patch_embed.proj"),
+        EMBED_DIM,
+        3,
+        PATCH_KERNEL,
+        1,
+    );
     for (i, blk) in blocks().iter().enumerate() {
         let p = format!("{t}.blocks.{i}");
         b.norm(&format!("{p}.norm1"), blk.dim_in);
@@ -206,12 +212,7 @@ pub fn expected() -> BTreeMap<String, Vec<usize>> {
         vec![NUM_MASK_TOKENS, D_MODEL],
     );
     b.put(format!("{d}.obj_score_token.weight"), vec![1, D_MODEL]);
-    b.conv_t(
-        &format!("{d}.output_upscaling.0"),
-        D_MODEL / 4,
-        D_MODEL,
-        2,
-    );
+    b.conv_t(&format!("{d}.output_upscaling.0"), D_MODEL / 4, D_MODEL, 2);
     b.norm(&format!("{d}.output_upscaling.1"), D_MODEL / 4);
     b.conv_t(
         &format!("{d}.output_upscaling.3"),
@@ -259,7 +260,13 @@ pub fn expected() -> BTreeMap<String, Vec<usize>> {
         ch = out;
     }
     assert_eq!(ch, D_MODEL);
-    b.conv(&format!("{e}.{}", 3 * MASK_DOWN_LAYERS), D_MODEL, D_MODEL, 1, 1);
+    b.conv(
+        &format!("{e}.{}", 3 * MASK_DOWN_LAYERS),
+        D_MODEL,
+        D_MODEL,
+        1,
+        1,
+    );
     b.conv("memory_encoder.pix_feat_proj", D_MODEL, D_MODEL, 1, 1);
     for i in 0..FUSER_LAYERS {
         let l = format!("memory_encoder.fuser.layers.{i}");
@@ -275,10 +282,7 @@ pub fn expected() -> BTreeMap<String, Vec<usize>> {
     b.mlp("obj_ptr_proj", &[D_MODEL, D_MODEL, D_MODEL, D_MODEL]);
     b.linear("obj_ptr_tpos_proj", MEM_DIM, D_MODEL);
     b.conv("mask_downsample", 1, 1, 4, 1);
-    b.put(
-        "maskmem_tpos_enc".into(),
-        vec![NUM_MASKMEM, 1, 1, MEM_DIM],
-    );
+    b.put("maskmem_tpos_enc".into(), vec![NUM_MASKMEM, 1, 1, MEM_DIM]);
     b.put("no_mem_embed".into(), vec![1, 1, D_MODEL]);
     b.put("no_mem_pos_enc".into(), vec![1, 1, D_MODEL]);
     b.put("no_obj_ptr".into(), vec![1, D_MODEL]);

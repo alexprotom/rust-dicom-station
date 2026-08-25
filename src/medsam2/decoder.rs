@@ -244,7 +244,13 @@ impl<B: Backend> MaskDecoder<B> {
             obj_score_token: token(&format!("{d}.obj_score_token.weight"), 1)?,
             iou_token: token(&format!("{d}.iou_token.weight"), 1)?,
             mask_tokens: token(&format!("{d}.mask_tokens.weight"), NUM_MASK_TOKENS)?,
-            up0: ConvT2x::load(p, &format!("{d}.output_upscaling.0"), D_MODEL / 4, D_MODEL, dev)?,
+            up0: ConvT2x::load(
+                p,
+                &format!("{d}.output_upscaling.0"),
+                D_MODEL / 4,
+                D_MODEL,
+                dev,
+            )?,
             up_norm: Norm::load6(p, &format!("{d}.output_upscaling.1"), D_MODEL / 4, dev)?,
             up1: ConvT2x::load(
                 p,
@@ -267,8 +273,20 @@ impl<B: Backend> MaskDecoder<B> {
                 &[D_MODEL, D_MODEL, D_MODEL, 1],
                 dev,
             )?,
-            conv_s0: Conv::load_1x1(p, &format!("{d}.conv_s0"), config::HIGH_RES_S0_CH, D_MODEL, dev)?,
-            conv_s1: Conv::load_1x1(p, &format!("{d}.conv_s1"), config::HIGH_RES_S1_CH, D_MODEL, dev)?,
+            conv_s0: Conv::load_1x1(
+                p,
+                &format!("{d}.conv_s0"),
+                config::HIGH_RES_S0_CH,
+                D_MODEL,
+                dev,
+            )?,
+            conv_s1: Conv::load_1x1(
+                p,
+                &format!("{d}.conv_s1"),
+                config::HIGH_RES_S1_CH,
+                D_MODEL,
+                dev,
+            )?,
         })
     }
 
@@ -305,35 +323,40 @@ impl<B: Backend> MaskDecoder<B> {
         let (hs, keys) = self.transformer.forward(src, image_pe, tokens);
         // token 0 is the object score, 1 the IoU, 2..6 the masks
         let iou_token_out = hs.clone().slice([0..b, 1..2, 0..D_MODEL]);
-        let mask_tokens_out = hs
-            .clone()
-            .slice([0..b, 2..2 + NUM_MASK_TOKENS, 0..D_MODEL]);
+        let mask_tokens_out = hs.clone().slice([0..b, 2..2 + NUM_MASK_TOKENS, 0..D_MODEL]);
         let obj_token_out = hs.slice([0..b, 0..1, 0..D_MODEL]);
 
         // upscale, fusing the high-resolution features in between
         let src = keys.swap_dims(1, 2).reshape([b, c, h, w]);
-        let up = gelu(self.up_norm.apply_2d(self.up0.apply(src) + high_res[1].clone()));
+        let up = gelu(
+            self.up_norm
+                .apply_2d(self.up0.apply(src) + high_res[1].clone()),
+        );
         let up = gelu(self.up1.apply(up) + high_res[0].clone());
         let [_, uc, uh, uw] = up.dims();
 
         // one filter per mask token, applied as a matrix product
         let filters: Vec<Tensor<B, 3>> = (0..NUM_MASK_TOKENS)
             .map(|i| {
-                self.hypernetworks[i].apply(
-                    mask_tokens_out
-                        .clone()
-                        .slice([0..b, i..i + 1, 0..D_MODEL]),
-                )
+                self.hypernetworks[i].apply(mask_tokens_out.clone().slice([
+                    0..b,
+                    i..i + 1,
+                    0..D_MODEL,
+                ]))
             })
             .collect();
         let hyper = Tensor::cat(filters, 1);
-        let masks = hyper
-            .matmul(up.reshape([b, uc, uh * uw]))
-            .reshape([b, NUM_MASK_TOKENS, uh, uw]);
+        let masks =
+            hyper
+                .matmul(up.reshape([b, uc, uh * uw]))
+                .reshape([b, NUM_MASK_TOKENS, uh, uw]);
 
         Decoded {
             masks,
-            ious: self.iou_head.apply(iou_token_out).reshape([b, NUM_MASK_TOKENS]),
+            ious: self
+                .iou_head
+                .apply(iou_token_out)
+                .reshape([b, NUM_MASK_TOKENS]),
             mask_tokens: mask_tokens_out,
             object_score_logits: self.obj_score_head.apply(obj_token_out).reshape([b, 1]),
         }
@@ -351,9 +374,7 @@ impl<B: Backend> MaskDecoder<B> {
             return Selected {
                 masks: d.masks.slice([0..b, 1..NUM_MASK_TOKENS, 0..h, 0..w]),
                 ious: d.ious.slice([0..b, 1..NUM_MASK_TOKENS]),
-                sam_tokens: d
-                    .mask_tokens
-                    .slice([0..b, 1..NUM_MASK_TOKENS, 0..D_MODEL]),
+                sam_tokens: d.mask_tokens.slice([0..b, 1..NUM_MASK_TOKENS, 0..D_MODEL]),
                 object_score_logits: d.object_score_logits,
             };
         }

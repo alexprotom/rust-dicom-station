@@ -236,9 +236,7 @@ mod tests {
         for (i, w) in want.iter().enumerate() {
             let g = b[i];
             assert_eq!(
-                (
-                    g.dim_in, g.dim_out, g.heads, g.window, g.q_stride, g.grid_in, g.grid_out
-                ),
+                (g.dim_in, g.dim_out, g.heads, g.window, g.q_stride, g.grid_in, g.grid_out),
                 *w,
                 "block {i}"
             );

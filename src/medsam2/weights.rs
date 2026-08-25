@@ -106,10 +106,7 @@ impl Variant {
 
     /// Name of the converted-weight cache written beside the checkpoint.
     pub fn cache_name(self) -> String {
-        format!(
-            "{}.safetensors",
-            self.file().name.trim_end_matches(".pt")
-        )
+        format!("{}.safetensors", self.file().name.trim_end_matches(".pt"))
     }
 }
 

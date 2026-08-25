@@ -47,7 +47,7 @@ src/
     tree.rs          dataset-tree copy / move / remove
     seg.rs           interactive segmentation state machine
     prompt_seg.rs    prompt-driven segmentation: dialog, worker, result
-    medsam2_seg.rs   slice propagation: the box drawn in the viewport, the
+    box_seg.rs       slice propagation: the box drawn in the viewport, the
                      preview / refine / propagate loop, and the session that
                      keeps the network and the prepared stack alive
   loader.rs        directory scan, classification, parallel volume

@@ -158,11 +158,14 @@ fn main() -> anyhow::Result<()> {
     eprintln!("loading {} …", variant.file().name);
     let params = weights::load(variant, &models, &Stderr)?;
     let engine = Engine::load(&params, prefer_gpu)?;
-    eprintln!("\rnetwork ready on {} ({} tensors)", engine.device(), params.len());
+    eprintln!(
+        "\rnetwork ready on {} ({} tensors)",
+        engine.device(),
+        params.len()
+    );
 
     let t0 = std::time::Instant::now();
-    let (mask, seg) =
-        engine.propagate_to_volume(&prepared, vol, slice, &prompt, &cfg, &Stderr)?;
+    let (mask, seg) = engine.propagate_to_volume(&prepared, vol, slice, &prompt, &cfg, &Stderr)?;
     let span = match seg.extent() {
         Some((a, b)) => format!("slices {a}..={b}"),
         None => "nothing".to_string(),

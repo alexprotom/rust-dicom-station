@@ -40,7 +40,6 @@ use super::infer::Slices;
 use super::ops;
 use super::resample::{self, Filter};
 
-
 /// An intensity window, in the volume's own units (HU for CT).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Window {
@@ -140,11 +139,7 @@ impl Prepared {
     /// Window, quantize and orient. This is the whole of steps 1 and 2.
     pub fn prepare(vol: &Volume, window: Window) -> Prepared {
         let (perm, flip) = axial_axes(vol);
-        let dims = [
-            vol.dims[perm[0]],
-            vol.dims[perm[1]],
-            vol.dims[perm[2]],
-        ];
+        let dims = [vol.dims[perm[0]], vol.dims[perm[1]], vol.dims[perm[2]]];
 
         // The reference min-maxes the clipped volume, which is not quite the
         // window itself: a study that never reaches the window's ends maps its
@@ -194,12 +189,7 @@ impl Prepared {
     /// — the inverse of [`Self::mask_to_volume_grid`], for one slice.
     ///
     /// This is what turns "the contour I already drew" into a mask prompt.
-    pub fn slice_from_volume_mask(
-        &self,
-        mask: &[u8],
-        vol: &Volume,
-        slice: usize,
-    ) -> Vec<u8> {
+    pub fn slice_from_volume_mask(&self, mask: &[u8], vol: &Volume, slice: usize) -> Vec<u8> {
         let (nx, ny) = (vol.dims[0], vol.dims[1]);
         let [d0, d1, d2] = self.dims;
         let mut out = vec![0u8; d1 * d2];
@@ -364,7 +354,11 @@ mod tests {
         // reading orientation is then the acquisition one.
         let v = volume([4, 3, 2], vec![0; 24]);
         let (perm, flip) = axial_axes(&v);
-        assert_eq!(perm, [2, 1, 0], "slices along k, rows along j, columns along i");
+        assert_eq!(
+            perm,
+            [2, 1, 0],
+            "slices along k, rows along j, columns along i"
+        );
         assert_eq!(flip, [false, false, false]);
     }
 

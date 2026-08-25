@@ -26,13 +26,13 @@ use crate::settings::{self, Settings};
 use crate::simulate::{self, SimParams};
 use crate::volume::{ViewPlane, Volume};
 
+mod box_seg;
 mod chrome;
 mod d3;
 mod dialogs;
 mod jobs;
 mod panels;
 mod planar;
-mod medsam2_seg;
 mod prompt_seg;
 mod seg;
 mod theme;
@@ -613,10 +613,9 @@ pub struct ViewerApp {
     // Slice-propagating segmentation (MedSAM2 re-implementation): the drawn
     // box, the loaded engine and the prepared stack all live in one struct.
     #[allow(clippy::type_complexity)]
-    medsam2_job: Option<
-        Job<(usize, anyhow::Result<medsam2_seg::Medsam2Done>), medsam2_seg::Medsam2Progress>,
-    >,
-    medsam2: medsam2_seg::Medsam2State,
+    medsam2_job:
+        Option<Job<(usize, anyhow::Result<box_seg::Medsam2Done>), box_seg::Medsam2Progress>>,
+    medsam2: box_seg::Medsam2State,
 
     dose_mode: DoseMode,
     dose_opacity: f32,
@@ -911,12 +910,7 @@ impl eframe::App for ViewerApp {
         }
 
         // Poll background slice propagation.
-        match poll_job(
-            &mut self.medsam2_job,
-            &ctx,
-            "Propagation",
-            &mut self.error,
-        ) {
+        match poll_job(&mut self.medsam2_job, &ctx, "Propagation", &mut self.error) {
             Some((slot, Ok(result))) => self.on_medsam2_done(slot, result),
             Some((_, Err(e))) => {
                 let msg = format!("{e:#}");

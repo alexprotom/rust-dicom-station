@@ -324,11 +324,7 @@ pub fn keep_largest_component(masks: &mut [Vec<u8>], size: [usize; 2]) {
                                 if dz == 0 && dy == 0 && dx == 0 {
                                     continue;
                                 }
-                                let (nz, ny, nx) = (
-                                    cz as i32 + dz,
-                                    cy as i32 + dy,
-                                    cx as i32 + dx,
-                                );
+                                let (nz, ny, nx) = (cz as i32 + dz, cy as i32 + dy, cx as i32 + dx);
                                 if nz < 0
                                     || ny < 0
                                     || nx < 0
@@ -351,10 +347,7 @@ pub fn keep_largest_component(masks: &mut [Vec<u8>], size: [usize; 2]) {
         }
     }
 
-    let Some(best) = (1..sizes.len())
-        .max_by_key(|i| sizes[*i])
-        .map(|i| i as u32)
-    else {
+    let Some(best) = (1..sizes.len()).max_by_key(|i| sizes[*i]).map(|i| i as u32) else {
         return;
     };
     for z in 0..depth {
@@ -385,11 +378,7 @@ mod tests {
     fn the_largest_component_survives_and_the_rest_do_not() {
         let size = [5, 5];
         // a three-voxel blob at the front, a single voxel at the back
-        let mut m = volume(
-            3,
-            size,
-            &[(0, 1, 1), (0, 1, 2), (1, 1, 1), (2, 4, 4)],
-        );
+        let mut m = volume(3, size, &[(0, 1, 1), (0, 1, 2), (1, 1, 1), (2, 4, 4)]);
         keep_largest_component(&mut m, size);
         assert_eq!(m[0].iter().filter(|v| **v != 0).count(), 2);
         assert_eq!(m[1].iter().filter(|v| **v != 0).count(), 1);
@@ -403,7 +392,9 @@ mod tests {
         let mut m = volume(2, size, &[(0, 0, 0), (1, 1, 1)]);
         keep_largest_component(&mut m, size);
         assert_eq!(
-            m.iter().map(|s| s.iter().filter(|v| **v != 0).count()).sum::<usize>(),
+            m.iter()
+                .map(|s| s.iter().filter(|v| **v != 0).count())
+                .sum::<usize>(),
             2,
             "a diagonal neighbour is still connected"
         );

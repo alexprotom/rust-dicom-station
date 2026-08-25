@@ -33,13 +33,7 @@ impl<B: Backend> Norm<B> {
         Self::load_eps(p, prefix, n, EPS_6, dev)
     }
 
-    fn load_eps(
-        p: &Params,
-        prefix: &str,
-        n: usize,
-        eps: f64,
-        dev: &B::Device,
-    ) -> Result<Norm<B>> {
+    fn load_eps(p: &Params, prefix: &str, n: usize, eps: f64, dev: &B::Device) -> Result<Norm<B>> {
         let (w, b) = p.norm(prefix, n)?;
         Ok(Norm {
             weight: ops::from_slice(w, [n], dev),
@@ -65,7 +59,13 @@ pub struct Lin<B: Backend> {
 }
 
 impl<B: Backend> Lin<B> {
-    pub fn load(p: &Params, prefix: &str, out: usize, inp: usize, dev: &B::Device) -> Result<Lin<B>> {
+    pub fn load(
+        p: &Params,
+        prefix: &str,
+        out: usize,
+        inp: usize,
+        dev: &B::Device,
+    ) -> Result<Lin<B>> {
         let (w, b) = p.linear(prefix, out, inp)?;
         Ok(Lin {
             weight: ops::from_slice(w, [out, inp], dev),

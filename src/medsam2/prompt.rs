@@ -135,7 +135,17 @@ impl<B: Backend> PromptEncoder<B> {
             point_embeddings,
             not_a_point: embed(&format!("{e}.not_a_point_embed.weight"))?,
             no_mask: embed(&format!("{e}.no_mask_embed.weight"))?,
-            mask_conv0: Conv::load(p, &format!("{e}.mask_downscaling.0"), c / 4, 1, 2, 2, 0, 1, dev)?,
+            mask_conv0: Conv::load(
+                p,
+                &format!("{e}.mask_downscaling.0"),
+                c / 4,
+                1,
+                2,
+                2,
+                0,
+                1,
+                dev,
+            )?,
             mask_norm0: Norm::load6(p, &format!("{e}.mask_downscaling.1"), c / 4, dev)?,
             mask_conv1: Conv::load(
                 p,
@@ -157,10 +167,7 @@ impl<B: Backend> PromptEncoder<B> {
     /// `_pe_encoding`: `[sin, cos]` of `2π (2c - 1) G`, concatenated.
     fn fourier(&self, x_norm: f32, y_norm: f32) -> Vec<f32> {
         let half = config::PE_GAUSSIAN;
-        let (cx, cy) = (
-            2.0 * f64::from(x_norm) - 1.0,
-            2.0 * f64::from(y_norm) - 1.0,
-        );
+        let (cx, cy) = (2.0 * f64::from(x_norm) - 1.0, 2.0 * f64::from(y_norm) - 1.0);
         let mut out = vec![0f32; 2 * half];
         for j in 0..half {
             let g0 = f64::from(self.gaussian[j]);

@@ -89,7 +89,9 @@ fn weights(src: usize, dst: usize, filter: Filter, antialias: bool) -> Weights {
     for i in 0..dst {
         let center = (i as f64 + 0.5) * scale;
         let lo = ((center - support + 0.5).floor().max(0.0)) as usize;
-        let hi = ((center + support + 0.5).floor() as usize).min(src).max(lo + 1);
+        let hi = ((center + support + 0.5).floor() as usize)
+            .min(src)
+            .max(lo + 1);
         let mut sum = 0.0;
         for k in lo..hi.min(lo + taps) {
             let w = filter.eval((k as f64 + 0.5 - center) / filter_scale);

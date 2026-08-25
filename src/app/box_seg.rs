@@ -1,4 +1,4 @@
-//! MedSAM2: drawing the prompt, and the loop around it.
+//! Box-driven segmentation: drawing the prompt, and the loop around it.
 //!
 //! The engine below ([`crate::medsam2`]) segments one slice from a prompt and
 //! follows it through the stack. This module is the part the user touches, and
@@ -142,7 +142,11 @@ impl BoxPrompt {
             Some(Grab::Corner)
         } else if self.contains(p) {
             let (lo, hi) = self.rect();
-            Some(Grab::Move { at: p, min: lo, max: hi })
+            Some(Grab::Move {
+                at: p,
+                min: lo,
+                max: hi,
+            })
         } else {
             self.a = p;
             self.b = p;
@@ -297,9 +301,7 @@ fn run_job(
         Some(pair) => pair,
         None => {
             progress.set("Preparing the study…");
-            let volume = Arc::new(
-                fresh.ok_or_else(|| anyhow::anyhow!("no volume to prepare"))?,
-            );
+            let volume = Arc::new(fresh.ok_or_else(|| anyhow::anyhow!("no volume to prepare"))?);
             let prepared = Arc::new(Prepared::prepare(&volume, window));
             (prepared, volume)
         }
@@ -469,7 +471,8 @@ impl Medsam2State {
         let (lo, hi) = bx.rect();
         let a = to_prepared(lo);
         let b = to_prepared(hi);
-        let mut points = PixelPrompt::box_corners(a[1] as f32, a[2] as f32, b[1] as f32, b[2] as f32);
+        let mut points =
+            PixelPrompt::box_corners(a[1] as f32, a[2] as f32, b[1] as f32, b[2] as f32);
         for (p, include) in &bx.points {
             let q = to_prepared(*p);
             points.push(if *include {
@@ -607,8 +610,7 @@ impl ViewerApp {
                 if !self.medsam2.range_pinned {
                     // Until the range is set by hand it follows the box, which
                     // is nearly always what a first run wants.
-                    self.medsam2.range =
-                        Some((slice.saturating_sub(32), slice + 32));
+                    self.medsam2.range = Some((slice.saturating_sub(32), slice + 32));
                 }
             }
         }
@@ -624,7 +626,9 @@ impl ViewerApp {
             return;
         };
         let window = match self.medsam2.window {
-            WindowSource::Viewport => Window::from_width_level(self.window_width, self.window_center),
+            WindowSource::Viewport => {
+                Window::from_width_level(self.window_width, self.window_center)
+            }
             WindowSource::Preset(i) => {
                 let (_, w, l) = Window::PRESETS[i];
                 Window::from_width_level(w, l)
@@ -685,8 +689,7 @@ impl ViewerApp {
     /// A run finished.
     pub(super) fn on_medsam2_done(&mut self, slot: usize, done: Medsam2Done) {
         let valid = self.slots[slot].study.as_ref().is_some_and(|st| {
-            st.volume.dims == done.key.dims
-                && st.volume.frame_of_reference_uid == done.key.uid
+            st.volume.dims == done.key.dims && st.volume.frame_of_reference_uid == done.key.uid
         });
         // Keep the expensive parts whatever happened to the result.
         self.medsam2.engine = Some(done.engine);
@@ -741,9 +744,9 @@ impl ViewerApp {
             _ => {
                 let color = segmentation::SEG_PALETTE
                     [self.slots[slot].segs.len() % segmentation::SEG_PALETTE.len()];
-                self.slots[slot].segs.push(Segmentation::from_label_map(
-                    name, color, dims, &r.mask, 1,
-                ));
+                self.slots[slot]
+                    .segs
+                    .push(Segmentation::from_label_map(name, color, dims, &r.mask, 1));
                 self.slots[slot].segs.len() - 1
             }
         };
@@ -1129,9 +1132,21 @@ mod tests {
             data: vec![0i16; dims[0] * dims[1] * dims[2]],
             dims,
             spacing: [1.0, 1.0, 2.0],
-            origin: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
-            row_dir: Vec3 { x: 1.0, y: 0.0, z: 0.0 },
-            col_dir: Vec3 { x: 0.0, y: 1.0, z: 0.0 },
+            origin: Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            row_dir: Vec3 {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            col_dir: Vec3 {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
             normal: Vec3 {
                 x: 0.0,
                 y: 0.0,

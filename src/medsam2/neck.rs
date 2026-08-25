@@ -44,9 +44,7 @@ pub fn sine_pos_embed<B: Backend>(
     let half = channels / 2;
     let scale = 2.0 * std::f64::consts::PI;
     let dim_t: Vec<f64> = (0..half)
-        .map(|i| {
-            f64::from(config::PE_TEMPERATURE).powf(2.0 * ((i / 2) as f64) / half as f64)
-        })
+        .map(|i| f64::from(config::PE_TEMPERATURE).powf(2.0 * ((i / 2) as f64) / half as f64))
         .collect();
 
     let mut data = vec![0f32; channels * h * w];
@@ -108,7 +106,9 @@ impl<B: Backend> Neck<B> {
             prev = Some(current.clone());
             out[i] = Some(current);
         }
-        out.into_iter().map(|o| o.expect("every level set")).collect()
+        out.into_iter()
+            .map(|o| o.expect("every level set"))
+            .collect()
     }
 }
 

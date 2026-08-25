@@ -202,9 +202,7 @@ mod tests {
                 data: vec![0.0; 2],
             },
         );
-        let p = Params::with_keys(m, |k| {
-            k.strip_prefix("module.").unwrap_or(k).to_string()
-        });
+        let p = Params::with_keys(m, |k| k.strip_prefix("module.").unwrap_or(k).to_string());
         assert!(p.contains("x"));
         assert_eq!(p.len(), 1);
         assert_eq!(p.keys().count(), 1);

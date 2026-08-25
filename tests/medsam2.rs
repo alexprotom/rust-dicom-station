@@ -10,8 +10,8 @@ use std::collections::HashMap;
 
 use burn::tensor::{Device, Tensor};
 use rust_dicom_station::medsam2::{
-    config, hiera::Hiera, layout, memattn::MemoryAttention, memory::MemoryEncoder, neck::Neck,
-    ops, prompt::Point, sam::SamHead,
+    config, hiera::Hiera, layout, memattn::MemoryAttention, memory::MemoryEncoder, neck::Neck, ops,
+    prompt::Point, sam::SamHead,
 };
 use rust_dicom_station::nn::cache::WTensor;
 use rust_dicom_station::nn::params::Params;
@@ -115,14 +115,11 @@ fn a_slice_flows_through_the_engine_with_the_documented_shapes() {
     // ---- prompt it with a box -------------------------------------------
     let corners = Point::box_corners(100.0, 120.0, 300.0, 340.0);
     assert!(!SamHead::<B>::use_multimask(corners.len()));
-    let out = head.forward(
-        levels[2].clone(),
-        &high_res,
-        &corners,
-        None,
-        false,
+    let out = head.forward(levels[2].clone(), &high_res, &corners, None, false);
+    assert_eq!(
+        out.low_res_masks.dims(),
+        [1, 1, config::LOW_RES, config::LOW_RES]
     );
-    assert_eq!(out.low_res_masks.dims(), [1, 1, config::LOW_RES, config::LOW_RES]);
     assert_eq!(out.high_res_masks.dims(), [1, 1, size, size]);
     assert_eq!(out.obj_ptr.dims(), [1, config::D_MODEL]);
     assert_eq!(out.object_score_logits.dims(), [1, 1]);
@@ -146,7 +143,10 @@ fn a_slice_flows_through_the_engine_with_the_documented_shapes() {
     let frame = flat(memory.features.clone(), config::MEM_DIM);
     let frame_pos = flat(memory.pos.clone(), config::MEM_DIM);
     // one object pointer, split into four 64-wide sub-tokens
-    let ptr = out.obj_ptr.clone().reshape([1, config::PTR_TOKENS, config::MEM_DIM]);
+    let ptr = out
+        .obj_ptr
+        .clone()
+        .reshape([1, config::PTR_TOKENS, config::MEM_DIM]);
     let bank = Tensor::cat(vec![frame.clone(), frame.clone(), ptr.clone()], 1);
     let bank_pos = Tensor::cat(
         vec![
@@ -156,7 +156,10 @@ fn a_slice_flows_through_the_engine_with_the_documented_shapes() {
         ],
         1,
     );
-    assert_eq!(bank.dims(), [1, 2 * tokens + config::PTR_TOKENS, config::MEM_DIM]);
+    assert_eq!(
+        bank.dims(),
+        [1, 2 * tokens + config::PTR_TOKENS, config::MEM_DIM]
+    );
 
     let curr = flat(levels[2].clone(), config::D_MODEL);
     let curr_pos = flat(
@@ -204,10 +207,26 @@ fn phantom(dims: [usize; 3]) -> rust_dicom_station::volume::Volume {
         data,
         dims,
         spacing: [1.0, 1.0, 2.0],
-        origin: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
-        row_dir: Vec3 { x: 1.0, y: 0.0, z: 0.0 },
-        col_dir: Vec3 { x: 0.0, y: 1.0, z: 0.0 },
-        normal: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
+        origin: Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        row_dir: Vec3 {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        col_dir: Vec3 {
+            x: 0.0,
+            y: 1.0,
+            z: 0.0,
+        },
+        normal: Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        },
         frame_of_reference_uid: "1.2.3".into(),
         min_value: -1000,
         max_value: 300,
@@ -307,7 +326,9 @@ fn a_preview_agrees_with_the_prompted_slice_and_reuses_its_features() {
     };
 
     let t0 = Instant::now();
-    let preview = engine.preview(&prepared, 1, &prompt, &cfg).expect("preview");
+    let preview = engine
+        .preview(&prepared, 1, &prompt, &cfg)
+        .expect("preview");
     let cold = t0.elapsed();
     assert_eq!(preview.len(), 40 * 48);
 
