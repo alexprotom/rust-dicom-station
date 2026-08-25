@@ -29,13 +29,19 @@
 
 pub mod config;
 pub mod decoder;
+pub mod engine;
 pub mod hiera;
+pub mod infer;
 pub mod layers;
 pub mod layout;
 pub mod memattn;
 pub mod memory;
+pub mod model;
 pub mod neck;
 pub mod ops;
+pub mod preprocess;
 pub mod prompt;
+pub mod resample;
 pub mod sam;
+pub mod track;
 pub mod weights;

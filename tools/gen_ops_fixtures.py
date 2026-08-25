@@ -11,6 +11,7 @@ engine's kernels can be asserted against them.
 
 import sys
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from safetensors.torch import save_file
@@ -104,6 +105,49 @@ put(
     k=k,
     v=v,
     y=F.scaled_dot_product_attention(q, k, v),
+)
+
+
+# --- resampling: PIL's own kernel, and PyTorch's antialiased one ----------
+# MedSAM2 preprocesses with `PIL.Image.resize`, whose default is a bicubic
+# kernel with a = -0.5 and a support that widens when shrinking; the mask
+# prompt path uses `F.interpolate(..., antialias=True)`.
+from PIL import Image  # noqa: E402
+
+x = rnd(7, 5)
+arr = x.numpy().astype("float32")
+up = Image.fromarray(arr, mode="F").resize((13, 16))  # (width, height)
+put("pil_up", x=x, y=torch.from_numpy(np.array(up)))
+
+x = rnd(32, 32)
+arr = x.numpy().astype("float32")
+down = Image.fromarray(arr, mode="F").resize((12, 12))
+put("pil_down", x=x, y=torch.from_numpy(np.array(down)))
+
+x = rnd(1, 1, 16, 16)
+put(
+    "torch_bilinear_aa",
+    x=x,
+    y=F.interpolate(x, size=(4, 4), mode="bilinear", align_corners=False, antialias=True),
+)
+
+
+# --- the preprocessing pipeline, on one windowed slice --------------------
+# `resize_grayscale_to_rgb_and_resize` then /255 and the ImageNet statistics,
+# at a size that fits in a fixture rather than at 512.
+slice_u8 = (torch.rand(40, 36, generator=torch.Generator().manual_seed(7)) * 255).to(
+    torch.uint8
+)
+_target = 64
+_img = Image.fromarray(slice_u8.numpy()).convert("RGB").resize((_target, _target))
+_arr = np.array(_img).transpose(2, 0, 1).astype("float64") / 255.0
+_arr -= np.array([0.485, 0.456, 0.406])[:, None, None]
+_arr /= np.array([0.229, 0.224, 0.225])[:, None, None]
+put(
+    "preprocess",
+    u8=slice_u8.to(torch.float32),
+    pil_u8=torch.from_numpy(np.array(_img)[:, :, 0].astype("float32")),
+    y=torch.from_numpy(_arr[None]).float(),
 )
 
 path = sys.argv[1] if len(sys.argv) > 1 else "medsam2-ops.safetensors"

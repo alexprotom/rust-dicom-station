@@ -10,9 +10,11 @@ three-view layout, with a second dataset row for comparison, built-in
 elastix-style **image registration**, **interactive
 segmentation**, a live **3D structure view**, **automatic multi-organ
 segmentation** (a pure-Rust re-implementation of TotalSegmentator, 117
-structures, CPU or any GPU), and **prompt-driven segmentation** (a
+structures, CPU or any GPU), **prompt-driven segmentation** (a
 pure-Rust re-implementation of SegVol — point at anything with a box, a
-click or a structure name, and get an editable mask back).
+click or a structure name, and get an editable mask back), and **slice
+propagation** (a pure-Rust re-implementation of MedSAM2 — mark a structure
+on one slice and follow it through the whole stack).
 
 ![overview](docs/screenshot_overview.png)
 
@@ -56,6 +58,11 @@ holds the registration controls and both dataset trees.*
   Two-pass zoom-out / zoom-in inference, the image encoder on the same
   no-CUDA wgpu GPU path, results landing as ordinary editable
   segmentations, convertible to RTSTRUCT.
+* **Slice propagation** - MedSAM2 (2025) rebuilt natively: SAM 2.1 with its
+  memory bank, so a box, a click or an existing contour on **one** slice
+  follows the structure through the rest of the stack at the slice's own
+  resolution - no in-plane resampling at all on 512x512 CT. Validated against
+  the reference implementation module by module and over a full propagation.
 * **Tools** - DICOM export with an editable patient/study tag table
   (CT + RTSTRUCT + RTDOSE + RTPLAN), an interactive folder anonymizer with
   consistent UID regeneration, and a synthetic RT-study generator; 140+
@@ -117,6 +124,7 @@ ships a real two-phase 4DCT (see
 | [docs/registration.md](docs/registration.md) | Rigid + B-spline registration, fusion, simulator, verification |
 | [docs/segmentation.md](docs/segmentation.md) | Brush / eraser / region growing, 3D view, mask → RTSTRUCT |
 | [docs/segvol.md](docs/segvol.md) | Prompt-driven segmentation: box / point / text, the SegVol re-implementation |
+| [docs/medsam2.md](docs/medsam2.md) | Propagating a prompt through a stack: the MedSAM2 re-implementation |
 | [docs/auto-segmentation.md](docs/auto-segmentation.md) | The pure-Rust TotalSegmentator: models, pipeline, engines, validation, classes, licensing |
 | [docs/export-and-tools.md](docs/export-and-tools.md) | DICOM export, anonymizer, test-data generator |
 | [docs/architecture.md](docs/architecture.md) | Design, module map, threading, conventions, testing |

@@ -52,6 +52,13 @@ def main(stem):
     )
     model.eval()
 
+    # With random weights the object-score head sits near zero and usually
+    # comes out negative, which makes `_forward_sam_heads` blank every logit
+    # to NO_OBJ_SCORE and leaves the whole mask path untested. Biasing the
+    # head positive puts the model on the "object present" branch; the
+    # modified weights are what gets dumped, so both sides see it.
+    model.sam_mask_decoder.pred_obj_score_head.layers[-1].bias.data.fill_(3.0)
+
     state = {k: v.detach().clone().float().contiguous() for k, v in model.state_dict().items()}
     save_file(state, f"{stem}-weights.safetensors")
     n = sum(v.numel() for v in state.values())
@@ -290,6 +297,14 @@ def main(stem):
             is_mask_from_pts=False,
         )
         put("memenc.features_rand_soft", f_soft)
+        f_absent, _ = model._encode_new_memory(
+            current_vision_feats=vision_feats,
+            feat_sizes=feat_sizes,
+            pred_masks_high_res=rand_mask,
+            object_score_logits=torch.tensor([[-1.0]]),
+            is_mask_from_pts=True,
+        )
+        put("memenc.features_absent", f_absent)
 
     save_file(acts, f"{stem}-acts.safetensors")
     print(f"activations: {len(acts)} tensors")
@@ -297,5 +312,116 @@ def main(stem):
         print(f"  {k:32s} {tuple(v.shape)}")
 
 
+
+
+# ---------------------------------------------------------------------------
+# Propagation: the reference tracker over a stack of slices.
+#
+# This is what phase P4 is validated against — the memory bank, the temporal
+# encodings, the object pointers and the forward/reverse passes, end to end.
+# ---------------------------------------------------------------------------
+
+
+def init_state_from_frames(predictor, images, height, width):
+    """`SAM2VideoPredictor.init_state` without the JPEG loader.
+
+    MedSAM2 ships exactly this as its NPZ predictor's `init_state`: the video
+    is already a normalized `[frames, 3, 512, 512]` tensor.
+    """
+    from collections import OrderedDict
+
+    s = {
+        "images": images,
+        "num_frames": len(images),
+        "offload_video_to_cpu": False,
+        "offload_state_to_cpu": False,
+        "video_height": height,
+        "video_width": width,
+        "device": torch.device("cpu"),
+        "storage_device": torch.device("cpu"),
+        "point_inputs_per_obj": {},
+        "mask_inputs_per_obj": {},
+        "cached_features": {},
+        "constants": {},
+        "obj_id_to_idx": OrderedDict(),
+        "obj_idx_to_id": OrderedDict(),
+        "obj_ids": [],
+        "output_dict_per_obj": {},
+        "temp_output_dict_per_obj": {},
+        "frames_tracked_per_obj": {},
+    }
+    predictor._get_image_feature(s, frame_idx=0, batch_size=1)
+    return s
+
+
+def propagation(stem, frames=10, prompt_frame=1):
+    from sam2.build_sam import build_sam2_video_predictor
+
+    torch.manual_seed(SEED)
+    predictor = build_sam2_video_predictor(
+        "configs/sam2.1/sam2.1_hiera_t.yaml",
+        ckpt_path=None,
+        device="cpu",
+        mode="eval",
+        hydra_overrides_extra=[
+            f"++model.image_size={IMAGE_SIZE}",
+            "++model.memory_attention.layer.self_attention.feat_sizes=[32,32]",
+            "++model.memory_attention.layer.cross_attention.feat_sizes=[32,32]",
+        ],
+        apply_postprocessing=True,
+    )
+    predictor.eval()
+    predictor.sam_mask_decoder.pred_obj_score_head.layers[-1].bias.data.fill_(3.0)
+
+    out = {}
+    # The weights have to be the ones this run used, so they are written again
+    # rather than assumed to match the module dump's.
+    state = {
+        k: v.detach().clone().float().contiguous()
+        for k, v in predictor.state_dict().items()
+    }
+    save_file(state, f"{stem}-track-weights.safetensors")
+
+    g = torch.Generator().manual_seed(SEED + 7)
+    # A stack that drifts slowly from slice to slice, the way a volume does.
+    base = torch.randn(1, 3, IMAGE_SIZE, IMAGE_SIZE, generator=g) * 0.5
+    stack = torch.cat(
+        [
+            base * (1.0 - 0.05 * i)
+            + torch.randn(1, 3, IMAGE_SIZE, IMAGE_SIZE, generator=g) * 0.15
+            for i in range(frames)
+        ],
+        dim=0,
+    )
+    out["frames"] = stack.clone().contiguous()
+    box = torch.tensor([[150.0, 170.0], [330.0, 350.0]])
+
+    with torch.no_grad():
+        s = init_state_from_frames(predictor, stack, IMAGE_SIZE, IMAGE_SIZE)
+        predictor.add_new_points_or_box(
+            inference_state=s, frame_idx=prompt_frame, obj_id=1, box=box
+        )
+        for idx, _, masks in predictor.propagate_in_video(s):
+            out[f"fwd.{idx}"] = masks[0].detach().clone().float().contiguous()
+        predictor.reset_state(s)
+        predictor.add_new_points_or_box(
+            inference_state=s, frame_idx=prompt_frame, obj_id=1, box=box
+        )
+        for idx, _, masks in predictor.propagate_in_video(s, reverse=True):
+            out[f"rev.{idx}"] = masks[0].detach().clone().float().contiguous()
+
+    out["box"] = box.clone()
+    out["prompt_frame"] = torch.tensor([float(prompt_frame)])
+    save_file(out, f"{stem}-track-acts.safetensors")
+    print(f"propagation: {len(out)} tensors over {frames} frames")
+
+
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "/tmp/ref")
+    stem = "/tmp/ref"
+    for a in sys.argv[1:]:
+        if not a.startswith("--"):
+            stem = a
+    if "--only-propagation" not in sys.argv:
+        main(stem)
+    if "--no-propagation" not in sys.argv:
+        propagation(stem)

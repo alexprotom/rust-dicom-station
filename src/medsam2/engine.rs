@@ -1,0 +1,224 @@
+//! Picking a backend, and the one call the rest of the program makes.
+//!
+//! The network below this module is generic over a `burn` backend, which is
+//! what lets it run on the GPU and on the CPU from a single implementation —
+//! but a generic type is awkward to hold in a UI struct or hand to a
+//! background thread. [`Engine`] erases it: it owns whichever backend was
+//! chosen and exposes a prompt-in, mask-out call that knows nothing about
+//! tensors.
+//!
+//! The choice is made once, when the weights are loaded. With the `gpu`
+//! feature (on by default) a wgpu adapter is tried first and the CPU backend
+//! is the fallback; without it there is only the CPU backend, which is still
+//! pure Rust.
+
+use anyhow::Result;
+use burn::tensor::backend::Backend;
+use burn::tensor::Tensor;
+
+use crate::nn::params::Params;
+use crate::volume::Volume;
+
+use super::config;
+use super::infer::{self, Config, Hooks, Segmentation};
+use super::model::Medsam2;
+use super::ops;
+use super::preprocess::Prepared;
+use super::prompt::Point;
+use super::resample::{self, Filter};
+use super::track::Prompt;
+
+/// The pure-Rust CPU backend.
+pub type Cpu = burn::backend::NdArray;
+/// Vulkan / DX12 / Metal, with no CUDA toolkit involved.
+#[cfg(feature = "gpu")]
+pub type Gpu = burn::backend::Wgpu;
+
+/// A prompt, in terms the caller can produce without touching a tensor.
+pub enum EnginePrompt {
+    /// Clicks or box corners, in **prepared** pixel coordinates
+    /// (`row`, `column` of the oriented slice).
+    Points(Vec<PixelPrompt>),
+    /// A binary mask over one prepared slice, `rows * columns` bytes — an
+    /// existing contour, propagated.
+    Mask(Vec<u8>),
+}
+
+/// One click or box corner, in prepared pixel coordinates.
+#[derive(Clone, Copy, Debug)]
+pub struct PixelPrompt {
+    pub row: f32,
+    pub column: f32,
+    pub label: i32,
+}
+
+impl PixelPrompt {
+    pub fn positive(row: f32, column: f32) -> PixelPrompt {
+        PixelPrompt {
+            row,
+            column,
+            label: super::prompt::LABEL_POSITIVE,
+        }
+    }
+
+    /// The two corners of a box, in prepared pixel coordinates.
+    pub fn box_corners(row0: f32, col0: f32, row1: f32, col1: f32) -> Vec<PixelPrompt> {
+        vec![
+            PixelPrompt {
+                row: row0.min(row1),
+                column: col0.min(col1),
+                label: super::prompt::LABEL_BOX_MIN,
+            },
+            PixelPrompt {
+                row: row0.max(row1),
+                column: col0.max(col1),
+                label: super::prompt::LABEL_BOX_MAX,
+            },
+        ]
+    }
+}
+
+enum Inner {
+    Cpu(Box<Medsam2<Cpu>>),
+    #[cfg(feature = "gpu")]
+    Gpu(Box<Medsam2<Gpu>>),
+}
+
+/// The loaded network, on whichever backend was chosen.
+pub struct Engine {
+    inner: Inner,
+    device: &'static str,
+}
+
+/// Try to bring up a wgpu device, proving it works before anything depends on
+/// it. Backend initialization failures surface as panics inside `burn`, so
+/// they are caught rather than propagated.
+#[cfg(feature = "gpu")]
+pub fn gpu_available() -> bool {
+    use burn::tensor::TensorData;
+    std::panic::catch_unwind(|| {
+        let device = burn::tensor::Device::<Gpu>::default();
+        let t = Tensor::<Gpu, 1>::from_data(TensorData::new(vec![1.0f32, 2.0, 3.0], [3]), &device);
+        let s: f32 = t.sum().into_scalar();
+        (s - 6.0).abs() < 1e-3
+    })
+    .unwrap_or(false)
+}
+
+#[cfg(not(feature = "gpu"))]
+pub fn gpu_available() -> bool {
+    false
+}
+
+impl Engine {
+    /// Build the network from a loaded state dict.
+    pub fn load(params: &Params, prefer_gpu: bool) -> Result<Engine> {
+        #[cfg(feature = "gpu")]
+        if prefer_gpu && gpu_available() {
+            let device = burn::tensor::Device::<Gpu>::default();
+            return Ok(Engine {
+                inner: Inner::Gpu(Box::new(Medsam2::<Gpu>::load(params, &device)?)),
+                device: "GPU (wgpu)",
+            });
+        }
+        let _ = prefer_gpu;
+        let device = burn::tensor::Device::<Cpu>::default();
+        Ok(Engine {
+            inner: Inner::Cpu(Box::new(Medsam2::<Cpu>::load(params, &device)?)),
+            device: "CPU",
+        })
+    }
+
+    /// What to show the user: which backend is actually running.
+    pub fn device(&self) -> &'static str {
+        self.device
+    }
+
+    /// Segment one structure: prompt one slice, propagate through the stack.
+    pub fn propagate(
+        &self,
+        prepared: &Prepared,
+        slice: usize,
+        prompt: &EnginePrompt,
+        config: &Config,
+        hooks: &dyn Hooks,
+    ) -> Result<Segmentation> {
+        match &self.inner {
+            Inner::Cpu(model) => run(model, prepared, slice, prompt, config, hooks),
+            #[cfg(feature = "gpu")]
+            Inner::Gpu(model) => run(model, prepared, slice, prompt, config, hooks),
+        }
+    }
+
+    /// Segment, and land the mask on the volume's own grid.
+    pub fn propagate_to_volume(
+        &self,
+        prepared: &Prepared,
+        volume: &Volume,
+        slice: usize,
+        prompt: &EnginePrompt,
+        config: &Config,
+        hooks: &dyn Hooks,
+    ) -> Result<(Vec<u8>, Segmentation)> {
+        let seg = self.propagate(prepared, slice, prompt, config, hooks)?;
+        let grid = prepared.mask_to_volume_grid(&seg.masks, volume);
+        Ok((grid, seg))
+    }
+}
+
+fn run<B: Backend>(
+    model: &Medsam2<B>,
+    prepared: &Prepared,
+    slice: usize,
+    prompt: &EnginePrompt,
+    config: &Config,
+    hooks: &dyn Hooks,
+) -> Result<Segmentation> {
+    let device = model.device().clone();
+    let native = prepared.size();
+    let prompt = match prompt {
+        EnginePrompt::Points(points) => Prompt::Points(
+            points
+                .iter()
+                .map(|p| {
+                    let (x, y) = prepared.to_network(p.row, p.column);
+                    Point {
+                        x,
+                        y,
+                        label: p.label,
+                    }
+                })
+                .collect(),
+        ),
+        EnginePrompt::Mask(mask) => {
+            // The reference takes a mask at the video's resolution and lets
+            // the prompt encoder shrink it; here it arrives on the study's
+            // grid, so it is resampled to the network's first.
+            let bytes: Vec<f32> = mask.iter().map(|v| f32::from(*v)).collect();
+            let size = config::IMAGE_SIZE;
+            let scaled = resample::resize(&bytes, native, [size, size], Filter::Triangle, true);
+            let binary: Vec<f32> = scaled.into_iter().map(|v| f32::from(v > 0.5)).collect();
+            Prompt::Mask(ops::from_slice(&binary, [1, 1, size, size], &device))
+        }
+    };
+    let stack = prepared.stack::<B>(device);
+    infer::propagate(model, &stack, slice, &prompt, config, hooks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_box_prompt_is_ordered_and_labelled() {
+        let c = PixelPrompt::box_corners(30.0, 40.0, 10.0, 20.0);
+        assert_eq!((c[0].row, c[0].column), (10.0, 20.0));
+        assert_eq!((c[1].row, c[1].column), (30.0, 40.0));
+        assert_eq!(c[0].label, super::super::prompt::LABEL_BOX_MIN);
+        assert_eq!(c[1].label, super::super::prompt::LABEL_BOX_MAX);
+        assert_eq!(
+            PixelPrompt::positive(1.0, 2.0).label,
+            super::super::prompt::LABEL_POSITIVE
+        );
+    }
+}

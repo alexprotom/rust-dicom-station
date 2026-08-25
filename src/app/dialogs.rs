@@ -37,6 +37,7 @@ impl ViewerApp {
         self.export_window(ctx);
         self.autoseg_run_window(ctx);
         self.segvol_window(ctx);
+        self.medsam2_window(ctx);
         self.autoseg_result_window(ctx);
         if let Some(err) = self.error.clone() {
             egui::Window::new("Error")

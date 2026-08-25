@@ -32,6 +32,7 @@ mod dialogs;
 mod jobs;
 mod panels;
 mod planar;
+mod medsam2_seg;
 mod prompt_seg;
 mod seg;
 mod theme;
@@ -599,6 +600,19 @@ pub struct ViewerApp {
     /// One-line summary of the last finished run.
     segvol_status: Option<String>,
 
+    // Slice-propagating segmentation (MedSAM2 re-implementation).
+    #[allow(clippy::type_complexity)]
+    medsam2_job: Option<
+        Job<
+            (usize, anyhow::Result<medsam2_seg::Medsam2Result>),
+            medsam2_seg::Medsam2Progress,
+        >,
+    >,
+    medsam2_slot: usize,
+    medsam2_dialog: Option<medsam2_seg::Medsam2Dialog>,
+    medsam2_models_dir: String,
+    medsam2_status: Option<String>,
+
     dose_mode: DoseMode,
     dose_opacity: f32,
     dose_threshold_pct: f32,
@@ -698,6 +712,13 @@ impl ViewerApp {
                 .display()
                 .to_string(),
             segvol_status: None,
+            medsam2_job: None,
+            medsam2_slot: 0,
+            medsam2_dialog: None,
+            medsam2_models_dir: crate::medsam2::weights::default_models_dir()
+                .display()
+                .to_string(),
+            medsam2_status: None,
             autoseg_models_dir: prefs
                 .autoseg_dir
                 .clone()
@@ -884,6 +905,23 @@ impl eframe::App for ViewerApp {
                 let msg = format!("{e:#}");
                 if !msg.contains("cancelled") {
                     self.error = Some(format!("Auto-segmentation failed: {msg}"));
+                }
+            }
+            None => {}
+        }
+
+        // Poll background slice propagation.
+        match poll_job(
+            &mut self.medsam2_job,
+            &ctx,
+            "Propagation",
+            &mut self.error,
+        ) {
+            Some((slot, Ok(result))) => self.on_medsam2_done(slot, result),
+            Some((_, Err(e))) => {
+                let msg = format!("{e:#}");
+                if !msg.contains("cancelled") {
+                    self.error = Some(format!("Propagation failed: {msg}"));
                 }
             }
             None => {}

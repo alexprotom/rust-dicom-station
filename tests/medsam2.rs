@@ -187,3 +187,103 @@ fn the_engine_accepts_a_mask_prompt_at_either_resolution() {
         [1, 1, config::MASK_PROMPT_SIZE, config::MASK_PROMPT_SIZE]
     );
 }
+
+/// A small study with a bright blob in the middle of every slice.
+fn phantom(dims: [usize; 3]) -> rust_dicom_station::volume::Volume {
+    use rust_dicom_station::geometry::Vec3;
+    let [nx, ny, nz] = dims;
+    let mut data = vec![-1000i16; nx * ny * nz];
+    for k in 0..nz {
+        for j in ny / 3..2 * ny / 3 {
+            for i in nx / 3..2 * nx / 3 {
+                data[k * nx * ny + j * nx + i] = 300;
+            }
+        }
+    }
+    rust_dicom_station::volume::Volume {
+        data,
+        dims,
+        spacing: [1.0, 1.0, 2.0],
+        origin: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+        row_dir: Vec3 { x: 1.0, y: 0.0, z: 0.0 },
+        col_dir: Vec3 { x: 0.0, y: 1.0, z: 0.0 },
+        normal: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
+        frame_of_reference_uid: "1.2.3".into(),
+        min_value: -1000,
+        max_value: 300,
+    }
+}
+
+#[test]
+fn a_box_prompt_propagates_through_a_small_stack() {
+    use rust_dicom_station::medsam2::engine::{Engine, EnginePrompt, PixelPrompt};
+    use rust_dicom_station::medsam2::infer::{Config, Quiet};
+    use rust_dicom_station::medsam2::preprocess::{Prepared, Window};
+
+    let engine = Engine::load(&synthetic_params(), false).expect("cpu engine");
+    assert_eq!(engine.device(), "CPU");
+    let vol = phantom([48, 40, 5]);
+    let prepared = Prepared::prepare(&vol, Window::new(-100.0, 300.0));
+    assert_eq!(prepared.dims, [5, 40, 48]);
+    assert_eq!(prepared.spacing, [2.0, 1.0, 1.0]);
+
+    let prompt = EnginePrompt::Points(PixelPrompt::box_corners(10.0, 12.0, 30.0, 36.0));
+    let cfg = Config {
+        // one slice each way, to keep the test to three encodes
+        max_slices: Some(1),
+        ..Config::default()
+    };
+    let seg = engine
+        .propagate(&prepared, 2, &prompt, &cfg, &Quiet)
+        .expect("propagate");
+    assert_eq!(seg.masks.len(), 5, "one entry per slice");
+    assert_eq!(seg.size, [40, 48]);
+    assert_eq!(seg.slices_visited, 3, "the prompt, one forwards, one back");
+    for (i, m) in seg.masks.iter().enumerate() {
+        if (1..=3).contains(&i) {
+            assert_eq!(m.len(), 40 * 48, "slice {i} was visited");
+        } else {
+            assert!(m.is_empty(), "slice {i} was outside the range");
+        }
+    }
+    let grid = prepared.mask_to_volume_grid(&seg.masks, &vol);
+    assert_eq!(grid.len(), 48 * 40 * 5);
+    assert_eq!(
+        grid.iter().filter(|v| **v != 0).count() as u64,
+        seg.voxels,
+        "mapping back onto the volume grid preserves the count"
+    );
+}
+
+#[test]
+fn an_existing_contour_can_be_the_prompt() {
+    use rust_dicom_station::medsam2::engine::{Engine, EnginePrompt};
+    use rust_dicom_station::medsam2::infer::{Config, Quiet};
+    use rust_dicom_station::medsam2::preprocess::{Prepared, Window};
+
+    let engine = Engine::load(&synthetic_params(), false).expect("cpu engine");
+    let vol = phantom([48, 40, 3]);
+    let prepared = Prepared::prepare(&vol, Window::new(-100.0, 300.0));
+
+    // a contour over the blob, on the prompted slice only
+    let mut contour = vec![0u8; 40 * 48];
+    for row in 14..26 {
+        for col in 16..32 {
+            contour[row * 48 + col] = 1;
+        }
+    }
+    let cfg = Config {
+        max_slices: Some(0),
+        reverse_pass: false,
+        ..Config::default()
+    };
+    let seg = engine
+        .propagate(&prepared, 1, &EnginePrompt::Mask(contour), &cfg, &Quiet)
+        .expect("propagate");
+    assert_eq!(seg.slices_visited, 1);
+    // `use_mask_input_as_output_without_sam` means the prompt *is* the answer
+    // on that slice, so it comes back essentially unchanged.
+    let out = &seg.masks[1];
+    assert!(out[20 * 48 + 24] != 0, "inside the contour");
+    assert!(out[2 * 48 + 2] == 0, "far outside it");
+}

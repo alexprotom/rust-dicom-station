@@ -28,9 +28,19 @@ struct Reference {
 }
 
 fn reference() -> Option<Reference> {
+    reference_at("")
+}
+
+/// The propagation dump, which is a second model instance with its own
+/// weights (see `propagation()` in the generator).
+fn track_reference() -> Option<Reference> {
+    reference_at("-track")
+}
+
+fn reference_at(suffix: &str) -> Option<Reference> {
     let stem = std::env::var("MEDSAM2_REF").ok()?;
-    let weights = PathBuf::from(format!("{stem}-weights.safetensors"));
-    let acts = PathBuf::from(format!("{stem}-acts.safetensors"));
+    let weights = PathBuf::from(format!("{stem}{suffix}-weights.safetensors"));
+    let acts = PathBuf::from(format!("{stem}{suffix}-acts.safetensors"));
     if !weights.is_file() || !acts.is_file() {
         eprintln!("skipping: {} not found", weights.display());
         return None;
@@ -40,6 +50,18 @@ fn reference() -> Option<Reference> {
         acts: load_safetensors(&acts).expect("reference activations"),
         device: Default::default(),
     })
+}
+
+macro_rules! track_reference_or_skip {
+    () => {
+        match track_reference() {
+            Some(r) => r,
+            None => {
+                eprintln!("skipping: set MEDSAM2_REF to a reference dump");
+                return;
+            }
+        }
+    };
 }
 
 macro_rules! reference_or_skip {
@@ -287,14 +309,9 @@ fn the_memory_encoder_matches_the_reference() {
     let soft = enc.encode(pix_feat.clone(), mask, false, true);
     worst = worst.max(r.compare(soft.features, "memenc.features_rand_soft"));
 
-    // and the absent-object path, which adds `no_obj_embed_spatial`
-    let blanked = enc.encode(
-        pix_feat,
-        r.act::<4>("sam_box.high_res_masks"),
-        true,
-        false,
-    );
-    worst = worst.max(r.compare(blanked.features, "memenc.features"));
+    // and the absent-object path, which adds `no_obj_embed_spatial` on top
+    let absent = enc.encode(pix_feat, r.act::<4>("memenc.mask_rand"), true, false);
+    worst = worst.max(r.compare(absent.features, "memenc.features_absent"));
     assert!(worst < 1e-3, "worst deviation {worst:e}");
 }
 
@@ -325,5 +342,48 @@ fn the_memory_attention_matches_the_reference() {
         0,
     );
     worst = worst.max(r.compare(out.swap_dims(0, 1), "memattn1.out"));
+    assert!(worst < 1e-3, "worst deviation {worst:e}");
+}
+
+#[test]
+fn the_tracker_reproduces_the_reference_propagation() {
+    use rust_dicom_station::medsam2::model::Medsam2;
+    use rust_dicom_station::medsam2::prompt::Point;
+    use rust_dicom_station::medsam2::track::{Prompt, Tracker};
+
+    let r = track_reference_or_skip!();
+    let model = Medsam2::<B>::load(&r.params, &r.device).expect("build the network");
+
+    let frames = r.act::<4>("frames");
+    let n = frames.dims()[0];
+    let size = config::IMAGE_SIZE;
+    let frame = |i: usize| frames.clone().slice([i..i + 1, 0..3, 0..size, 0..size]);
+    let prompt_slice = ops::to_vec(r.act::<1>("prompt_frame"))[0] as usize;
+    let b = ops::to_vec(r.act::<2>("box"));
+    let prompt = Prompt::Points(Point::box_corners(b[0], b[1], b[2], b[3]).to_vec());
+
+    // The prompted slice is encoded once and used by both passes, exactly as
+    // `infer::propagate` does.
+    let anchor = model.encode_slice(frame(prompt_slice));
+    let mut worst = 0.0f32;
+    // the reference yields `[objects, height, width]` per frame
+    let as_ref_shape = |m: Tensor<B, 4>| m.reshape([1, size, size]);
+
+    let mut forward = Tracker::new(&model, n);
+    let out = forward.prompt(prompt_slice, &anchor, &prompt);
+    worst = worst.max(r.compare(as_ref_shape(out.high_res_masks), &format!("fwd.{prompt_slice}")));
+    for i in prompt_slice + 1..n {
+        let feats = model.encode_slice(frame(i));
+        let out = forward.track(i, &feats, false);
+        worst = worst.max(r.compare(as_ref_shape(out.high_res_masks), &format!("fwd.{i}")));
+    }
+
+    let mut reverse = Tracker::new(&model, n);
+    reverse.prompt(prompt_slice, &anchor, &prompt);
+    for i in (0..prompt_slice).rev() {
+        let feats = model.encode_slice(frame(i));
+        let out = reverse.track(i, &feats, true);
+        worst = worst.max(r.compare(as_ref_shape(out.high_res_masks), &format!("rev.{i}")));
+    }
     assert!(worst < 1e-3, "worst deviation {worst:e}");
 }

@@ -215,6 +215,27 @@ impl ViewerApp {
                             ui.close();
                         }
                     }
+                    for (slot, slot_name) in SLOT_NAMES.iter().enumerate() {
+                        if slot == 1 && !self.comparison {
+                            continue;
+                        }
+                        let loaded = self.slots[slot].study.is_some();
+                        if ui
+                            .add_enabled(
+                                loaded && self.medsam2_job.is_none(),
+                                egui::Button::new(format!(
+                                    "🧠 Propagate from a slice, dataset {slot_name}…"
+                                )),
+                            )
+                            .on_hover_text(
+                                "Box or click a structure on one slice and follow it through                                  the stack at full in-plane resolution (MedSAM2,                                  re-implemented natively in Rust). An existing contour can                                  be propagated the same way.",
+                            )
+                            .clicked()
+                        {
+                            self.open_medsam2_dialog(slot);
+                            ui.close();
+                        }
+                    }
                     ui.separator();
                     if ui
                         .button("🔏 Anonymize DICOM folder…")
