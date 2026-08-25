@@ -1,20 +1,47 @@
-//! Pure-Rust 3D image registration following the elastix framework
-//! (<https://elastix.dev>): multi-resolution Gaussian pyramids, random
-//! coordinate sampling, a mean-squared-difference metric, an Euler rigid
-//! transform and a cubic B-spline free-form deformation, all driven by the
-//! Adaptive Stochastic Gradient Descent (ASGD) optimizer of Klein et al.
-//! (IJCV 2009) — elastix's default optimizer.
+//! Pure-Rust 3-D image registration.
 //!
-//! elastix itself is a C++ / ITK toolbox; this module re-implements its core
-//! algorithms natively in Rust so the application keeps a single-language,
-//! dependency-light build. Parameter names in [`RegParams`] mirror the
-//! elastix parameter file vocabulary (NumberOfResolutions,
-//! MaximumNumberOfIterations, NumberOfSpatialSamples,
-//! FinalGridSpacingInPhysicalUnits).
+//! Two independent intensity-based engines and one geometric one, all
+//! re-implemented natively so the application keeps a single-language,
+//! dependency-light build:
+//!
+//! * [`elastix`] — the [elastix](https://elastix.dev) framework: multi-
+//!   resolution Gaussian pyramids, *random coordinate* sampling, a mean-
+//!   squared-difference metric, an Euler rigid transform and a cubic
+//!   B-spline free-form deformation, all driven by the Adaptive Stochastic
+//!   Gradient Descent optimizer of Klein et al. (IJCV 2009) — elastix's
+//!   default. Stochastic, fast, tolerant of a poor starting point.
+//! * [`plastimatch`] — the [plastimatch](https://plastimatch.org) B-spline
+//!   registration of Shackleford et al.: centre-of-gravity alignment, then a
+//!   *dense* cost over every eligible fixed voxel with the exact analytic
+//!   gradient scattered onto the control lattice, a bending-energy
+//!   regularizer, mean-squared error **or** Mattes mutual information, and a
+//!   quasi-Newton (L-BFGS) optimizer with a line search. Deterministic,
+//!   smoother, and the multi-modal option.
+//! * [`landmark`] — plastimatch's `landmark_warp`: a radial-basis
+//!   deformation interpolating paired points, with the thin-plate spline,
+//!   Gaussian and Wendland kernels.
+//!
+//! elastix and plastimatch are C++ / ITK toolboxes; nothing of either is
+//! linked here. Parameter names mirror their vocabularies
+//! (`NumberOfResolutions`, `MaximumNumberOfIterations`,
+//! `NumberOfSpatialSamples`, `FinalGridSpacingInPhysicalUnits`;
+//! `grid_spacing`, `young_modulus`, `max_its`) so a parameter file from
+//! either toolbox reads across.
+//!
+//! Any of them can be restricted to a [`RegionMask`] — a structure or a
+//! segmentation with a margin — which is what "register this tumour, not
+//! the whole patient" means; see [`analysis`] for what comes back and
+//! [`dvf`] for the vector field.
 //!
 //! Convention: the recovered transform maps **fixed-image patient
 //! coordinates → moving-image patient coordinates** (the resampling
-//! convention used by elastix/ITK).
+//! convention used by elastix, ITK and plastimatch alike).
+
+pub mod analysis;
+pub mod dvf;
+pub mod elastix;
+pub mod landmark;
+pub mod plastimatch;
 
 use std::sync::Arc;
 
@@ -25,42 +52,367 @@ use crate::geometry::Vec3;
 use crate::progress::Progress;
 use crate::volume::Volume;
 
+pub use analysis::{Dof6, JacobianStats, RegAnalysis, VectorStats};
+pub use dvf::{FieldStyle, VectorField};
+pub use landmark::{LandmarkKernel, LandmarkPair, LandmarkParams, RbfWarp};
+
 // ---------------------------------------------------------------------------
-// Parameters & progress
+// Methods, metrics and parameters
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum RegKind {
-    Rigid,
-    /// Rigid pre-alignment followed by cubic B-spline FFD.
-    Deformable,
+/// Which algorithm recovers the transform.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RegMethod {
+    /// elastix Euler 6-DOF rigid, ASGD over stochastic samples.
+    ElastixRigid,
+    /// elastix rigid pre-alignment + cubic B-spline FFD, ASGD.
+    ElastixBSpline,
+    /// plastimatch B-spline: dense analytic gradient, bending-energy
+    /// regularization, L-BFGS.
+    PlastimatchBSpline,
+    /// plastimatch `landmark_warp`: a radial-basis warp through paired
+    /// points — no image intensities involved.
+    PlastimatchLandmark,
 }
 
-#[derive(Clone, Copy)]
+impl RegMethod {
+    pub const ALL: [RegMethod; 4] = [
+        RegMethod::ElastixRigid,
+        RegMethod::ElastixBSpline,
+        RegMethod::PlastimatchBSpline,
+        RegMethod::PlastimatchLandmark,
+    ];
+
+    /// Full name, as the result panel writes it.
+    pub fn label(self) -> &'static str {
+        match self {
+            RegMethod::ElastixRigid => "Rigid — Euler 6-DOF (elastix, ASGD)",
+            RegMethod::ElastixBSpline => "Deformable — rigid + B-spline FFD (elastix, ASGD)",
+            RegMethod::PlastimatchBSpline => "Deformable — B-spline (plastimatch, L-BFGS)",
+            RegMethod::PlastimatchLandmark => "Deformable — landmark warp (plastimatch, RBF)",
+        }
+    }
+
+    /// Name for a button or a menu entry.
+    pub fn short(self) -> &'static str {
+        match self {
+            RegMethod::ElastixRigid => "Rigid (elastix)",
+            RegMethod::ElastixBSpline => "B-spline (elastix)",
+            RegMethod::PlastimatchBSpline => "B-spline (plastimatch)",
+            RegMethod::PlastimatchLandmark => "Landmarks (plastimatch)",
+        }
+    }
+
+    /// The tooltip that explains when to reach for it.
+    pub fn hint(self) -> &'static str {
+        match self {
+            RegMethod::ElastixRigid => {
+                "6-DOF Euler transform about the fixed-image centre. Stochastic \
+                 sampling and the ASGD optimizer — seconds, and tolerant of a poor \
+                 starting alignment."
+            }
+            RegMethod::ElastixBSpline => {
+                "Rigid pre-alignment, then a cubic B-spline free-form deformation, \
+                 both optimized by ASGD on random samples. Fast; the displacement \
+                 inside uniform regions is interpolated from the lattice."
+            }
+            RegMethod::PlastimatchBSpline => {
+                "Centre-of-gravity alignment, then a B-spline deformation optimized \
+                 over every eligible voxel with the exact analytic gradient and a \
+                 bending-energy penalty (L-BFGS). Deterministic and smoother than the \
+                 stochastic engine, and the only one with mutual information — so also \
+                 the CT–MR option. Slower."
+            }
+            RegMethod::PlastimatchLandmark => {
+                "A deformation interpolating the landmark pairs you place — thin-plate \
+                 spline, Gaussian or Wendland kernel. Image intensities are not used at \
+                 all, so it works across modalities and where an intensity metric has \
+                 nothing to lock onto."
+            }
+        }
+    }
+
+    /// Which toolbox the algorithm comes from.
+    pub fn family(self) -> &'static str {
+        match self {
+            RegMethod::ElastixRigid | RegMethod::ElastixBSpline => "elastix",
+            RegMethod::PlastimatchBSpline | RegMethod::PlastimatchLandmark => "plastimatch",
+        }
+    }
+
+    /// True when the result carries a deformation, not just a rigid body.
+    pub fn is_deformable(self) -> bool {
+        self != RegMethod::ElastixRigid
+    }
+
+    /// True when image intensities drive the result.
+    pub fn is_intensity_based(self) -> bool {
+        self != RegMethod::PlastimatchLandmark
+    }
+}
+
+/// What the plastimatch engine minimizes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Metric {
+    /// Mean squared intensity difference — mono-modal (CT–CT).
+    MeanSquares,
+    /// Mattes mutual information — multi-modal (CT–MR, CT–CBCT).
+    MutualInformation,
+}
+
+impl Metric {
+    pub const ALL: [Metric; 2] = [Metric::MeanSquares, Metric::MutualInformation];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Metric::MeanSquares => "Mean squares",
+            Metric::MutualInformation => "Mutual information",
+        }
+    }
+
+    /// Short name used in the metric readout ("MSD 9700 ▶ 1800").
+    pub fn tag(self) -> &'static str {
+        match self {
+            Metric::MeanSquares => "MSD",
+            Metric::MutualInformation => "−MI",
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            Metric::MeanSquares => {
+                "Mean squared HU difference. Right when the two images measure the same \
+                 thing (CT–CT); meaningless when they do not."
+            }
+            Metric::MutualInformation => {
+                "Mattes mutual information over a 32 × 32 joint histogram with cubic \
+                 B-spline Parzen windows. Needs no intensity correspondence, so it is \
+                 what CT–MR and CT–CBCT need. Slower and less sharply peaked."
+            }
+        }
+    }
+}
+
+/// Everything a run needs beyond the two volumes.
+#[derive(Clone)]
 pub struct RegParams {
-    pub kind: RegKind,
-    /// elastix: NumberOfResolutions.
+    pub method: RegMethod,
+    /// elastix: NumberOfResolutions / plastimatch: number of stages.
     pub levels: usize,
     /// elastix: MaximumNumberOfIterations (per resolution level).
     pub iterations: usize,
     /// elastix: NumberOfSpatialSamples (new samples every iteration).
+    /// Unused by the plastimatch engine, which is dense.
     pub samples: usize,
-    /// elastix: FinalGridSpacingInPhysicalUnits (B-spline control grid, mm).
+    /// elastix: FinalGridSpacingInPhysicalUnits / plastimatch: grid_spacing
+    /// (B-spline control lattice, mm).
     pub grid_spacing_mm: f64,
     /// Sample only fixed-image voxels above this value (crude body mask; use
     /// a very low value to disable). Comparable to a fixed-image mask.
     pub fixed_threshold: f32,
+    /// plastimatch: `young_modulus`, the weight of the bending-energy
+    /// penalty on the control lattice (0 = off).
+    pub regularization: f64,
+    /// plastimatch: which metric to minimize.
+    pub metric: Metric,
+    /// plastimatch: keep every `stride`-th eligible voxel (1 = all of them).
+    /// The cost is dense either way; this bounds it on large volumes.
+    pub stride: usize,
+    /// Kernel and stiffness of the landmark warp.
+    pub landmark: LandmarkParams,
+    /// The paired points the landmark method interpolates.
+    pub landmarks: Vec<LandmarkPair>,
+    /// Restrict the fixed-image samples and the control lattice to a region —
+    /// what makes a registration *local*.
+    pub region: Option<Arc<RegionMask>>,
+    /// An alignment to start from and refine rather than replace.
+    ///
+    /// A deformable run with a start recovers a *correction*: the moving
+    /// image is sampled through `start` plus the new deformation, and the
+    /// result is the two composed. That is what makes a local refinement
+    /// behave the way a physicist expects — the structure is realigned while
+    /// the rest of the patient keeps the global result, because a lattice
+    /// covering only the structure is exactly zero outside it.
+    pub start: Option<Arc<Transform3>>,
 }
 
 impl Default for RegParams {
     fn default() -> Self {
         RegParams {
-            kind: RegKind::Rigid,
+            method: RegMethod::ElastixRigid,
             levels: 3,
             iterations: 300,
             samples: 3000,
             grid_spacing_mm: 32.0,
             fixed_threshold: -500.0,
+            regularization: 0.02,
+            metric: Metric::MeanSquares,
+            stride: 2,
+            landmark: LandmarkParams::default(),
+            landmarks: Vec::new(),
+            region: None,
+            start: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Region of interest (local registration)
+// ---------------------------------------------------------------------------
+
+/// The part of the fixed image a registration is restricted to.
+///
+/// Local registration — "align this tumour, not the whole patient" — needs
+/// two things from a structure: the samples must come from inside it, and
+/// the B-spline lattice must cover it rather than the entire volume. Both
+/// come from this mask, which is the structure's own voxel mask dilated by a
+/// margin, so the deformation is driven by the structure *and the tissue
+/// immediately around it* — without that margin nothing constrains the
+/// boundary.
+pub struct RegionMask {
+    /// What the region is, for the result summary.
+    pub name: String,
+    /// One byte per fixed-volume voxel, 1 inside.
+    mask: Vec<u8>,
+    dims: [usize; 3],
+    spacing: [f64; 3],
+    origin: Vec3,
+    axes: [Vec3; 3],
+    /// Inclusive voxel bounding box of the dilated mask.
+    lo: [usize; 3],
+    hi: [usize; 3],
+    /// Voxels inside.
+    count: usize,
+}
+
+impl RegionMask {
+    /// Build a region from a voxel mask on the fixed volume's own grid,
+    /// dilated by `margin_mm`. Returns `None` when the mask is empty or does
+    /// not match the volume.
+    pub fn from_mask(vol: &Volume, mask: &[u8], name: String, margin_mm: f64) -> Option<Self> {
+        let dims = vol.dims;
+        if mask.len() != dims[0] * dims[1] * dims[2] || mask.is_empty() {
+            return None;
+        }
+        let mut m = mask.to_vec();
+        // Separable box dilation: one pass per axis, radius from that axis'
+        // own spacing so a millimetre margin is a millimetre on every axis.
+        for axis in 0..3 {
+            let r = (margin_mm / vol.spacing[axis]).round() as usize;
+            if r > 0 {
+                dilate_axis(&mut m, dims, axis, r);
+            }
+        }
+        let [nx, ny, _] = dims;
+        let mut lo = [usize::MAX; 3];
+        let mut hi = [0usize; 3];
+        let mut count = 0usize;
+        for (o, &v) in m.iter().enumerate() {
+            if v == 0 {
+                continue;
+            }
+            count += 1;
+            let k = o / (nx * ny);
+            let rem = o - k * nx * ny;
+            for (a, c) in [rem % nx, rem / nx, k].into_iter().enumerate() {
+                lo[a] = lo[a].min(c);
+                hi[a] = hi[a].max(c);
+            }
+        }
+        if count == 0 {
+            return None;
+        }
+        Some(RegionMask {
+            name,
+            mask: m,
+            dims,
+            spacing: vol.spacing,
+            origin: vol.origin,
+            axes: [vol.row_dir, vol.col_dir, vol.normal],
+            lo,
+            hi,
+            count,
+        })
+    }
+
+    /// Voxels inside the dilated region.
+    pub fn voxels(&self) -> usize {
+        self.count
+    }
+
+    /// Volume of the region in cm³.
+    pub fn cm3(&self) -> f64 {
+        self.count as f64 * self.spacing[0] * self.spacing[1] * self.spacing[2] / 1000.0
+    }
+
+    /// Is this patient-space point inside (nearest-neighbour lookup)?
+    #[inline]
+    pub fn contains(&self, p: Vec3) -> bool {
+        let d = p - self.origin;
+        let mut idx = [0usize; 3];
+        for (a, slot) in idx.iter_mut().enumerate() {
+            let u = (d.dot(self.axes[a]) / self.spacing[a]).round();
+            if u < 0.0 || u >= self.dims[a] as f64 {
+                return false;
+            }
+            *slot = u as usize;
+        }
+        self.mask[idx[2] * self.dims[0] * self.dims[1] + idx[1] * self.dims[0] + idx[0]] != 0
+    }
+
+    /// Inclusive voxel bounding box of the dilated region.
+    pub fn bbox(&self) -> ([usize; 3], [usize; 3]) {
+        (self.lo, self.hi)
+    }
+}
+
+/// In-place box dilation of a 0/1 mask along one axis.
+fn dilate_axis(mask: &mut [u8], dims: [usize; 3], axis: usize, radius: usize) {
+    let [nx, ny, nz] = dims;
+    let (n, stride) = match axis {
+        0 => (nx, 1usize),
+        1 => (ny, nx),
+        _ => (nz, nx * ny),
+    };
+    if n == 0 {
+        return;
+    }
+    // Start index of every line along `axis`.
+    let lines: Vec<usize> = match axis {
+        0 => (0..ny * nz).map(|l| l * nx).collect(),
+        1 => (0..nx * nz)
+            .map(|l| (l / nx) * nx * ny + (l % nx))
+            .collect(),
+        _ => (0..nx * ny).collect(),
+    };
+    let src = mask.to_vec();
+    // Each line is an independent 1-D dilation over a running count of set
+    // voxels in the window, so the whole pass is O(voxels) whatever radius.
+    let done: Vec<(usize, Vec<u8>)> = lines
+        .par_iter()
+        .map(|&base| {
+            let mut line = vec![0u8; n];
+            let mut acc = 0usize;
+            for u in 0..=radius.min(n - 1) {
+                acc += (src[base + u * stride] != 0) as usize;
+            }
+            for (t, slot) in line.iter_mut().enumerate() {
+                if t > 0 {
+                    if t + radius < n {
+                        acc += (src[base + (t + radius) * stride] != 0) as usize;
+                    }
+                    if t > radius {
+                        acc -= (src[base + (t - radius - 1) * stride] != 0) as usize;
+                    }
+                }
+                *slot = (acc > 0) as u8;
+            }
+            (base, line)
+        })
+        .collect();
+    for (base, line) in done {
+        for (t, v) in line.into_iter().enumerate() {
+            mask[base + t * stride] = v;
         }
     }
 }
@@ -71,10 +423,10 @@ impl Default for RegParams {
 
 /// 3×3 rotation matrix (row-major).
 #[derive(Clone, Copy)]
-struct Mat3([f64; 9]);
+pub(crate) struct Mat3(pub(crate) [f64; 9]);
 
 impl Mat3 {
-    fn mul_vec(&self, v: Vec3) -> Vec3 {
+    pub(crate) fn mul_vec(&self, v: Vec3) -> Vec3 {
         let m = &self.0;
         Vec3::new(
             m[0] * v.x + m[1] * v.y + m[2] * v.z,
@@ -174,6 +526,16 @@ impl RigidTransform {
         self.params
     }
 
+    /// The point rotations are taken about.
+    pub fn center(&self) -> Vec3 {
+        self.center
+    }
+
+    /// The rotation matrix, row-major.
+    pub fn matrix(&self) -> [f64; 9] {
+        self.rot.0
+    }
+
     #[inline]
     pub fn map(&self, p: Vec3) -> Vec3 {
         self.rot.mul_vec(p - self.center) + self.center + self.t
@@ -183,6 +545,27 @@ impl RigidTransform {
     #[inline]
     pub fn unmap(&self, q: Vec3) -> Vec3 {
         self.rot_t.mul_vec(q - self.center - self.t) + self.center
+    }
+
+    /// The same mapping, expressed about a different centre of rotation.
+    ///
+    /// `R(p − c₁) + c₁ + t₁ ≡ R(p − c₂) + c₂ + t₂` with
+    /// `t₂ = R(c₂ − c₁) + c₁ + t₁ − c₂`, so a transform recovered globally
+    /// can seed a local run about the structure's own centre without moving
+    /// a single voxel.
+    pub fn recentered(&self, center: Vec3) -> RigidTransform {
+        let t2 = self.rot.mul_vec(center - self.center) + self.center + self.t - center;
+        RigidTransform::new(
+            [
+                self.params[0],
+                self.params[1],
+                self.params[2],
+                t2.x,
+                t2.y,
+                t2.z,
+            ],
+            center,
+        )
     }
 
     /// ∂T/∂param_i evaluated at fixed point `p` (3-vectors per parameter).
@@ -202,7 +585,8 @@ impl RigidTransform {
 
 /// Cubic B-spline free-form deformation on a regular control-point grid
 /// aligned with the fixed image axes. Displacements are patient-space
-/// vectors; the grid covers the fixed image domain plus a one-cell margin.
+/// vectors; the grid covers the fixed image domain (or the region) plus a
+/// one-cell margin.
 #[derive(Clone)]
 pub struct BSplineTransform {
     /// Control-point displacement coefficients, `[3 * (ix + nx*(iy + ny*iz))]`.
@@ -252,6 +636,40 @@ impl BSplineTransform {
             spacing: spacing_mm,
             axes,
         }
+    }
+
+    /// The lattice a run should use: the whole volume, or just the region's
+    /// bounding box when the registration is local. A local lattice is what
+    /// makes a small structure affordable at a fine spacing — it covers the
+    /// structure, not the patient.
+    pub fn for_region(fixed: &Volume, region: Option<&RegionMask>, spacing_mm: f64) -> Self {
+        let Some(r) = region else {
+            return Self::new(fixed, spacing_mm);
+        };
+        let (lo, hi) = r.bbox();
+        let axes = [fixed.row_dir, fixed.col_dir, fixed.normal];
+        let corner = fixed.voxel_to_patient(lo[0] as f64, lo[1] as f64, lo[2] as f64);
+        let mut grid_dims = [0usize; 3];
+        for a in 0..3 {
+            let extent = (hi[a] - lo[a]) as f64 * fixed.spacing[a];
+            grid_dims[a] = (extent / spacing_mm).ceil() as usize + 4;
+        }
+        let grid_origin = corner
+            - axes[0] * (1.5 * spacing_mm)
+            - axes[1] * (1.5 * spacing_mm)
+            - axes[2] * (1.5 * spacing_mm);
+        BSplineTransform {
+            coeffs: vec![0.0; 3 * grid_dims[0] * grid_dims[1] * grid_dims[2]],
+            grid_dims,
+            grid_origin,
+            spacing: spacing_mm,
+            axes,
+        }
+    }
+
+    /// Control points on the lattice.
+    pub fn control_points(&self) -> usize {
+        self.grid_dims[0] * self.grid_dims[1] * self.grid_dims[2]
     }
 
     /// A copy carrying only the grid geometry, with no coefficients.
@@ -306,31 +724,127 @@ impl BSplineTransform {
     }
 }
 
+/// The deformable part of a recovered mapping.
+#[derive(Clone)]
+pub enum Warp {
+    /// Rigid body only.
+    None,
+    /// Cubic B-spline free-form deformation on a regular lattice.
+    BSpline(BSplineTransform),
+    /// Radial-basis warp through paired landmarks.
+    Rbf(RbfWarp),
+    /// A displacement field on a regular lattice, trilinearly interpolated
+    /// — what a DICOM Deformable Spatial Registration carries, and what a
+    /// result read back from one becomes.
+    Field(Arc<VectorField>),
+    /// Several warps added together — what a refinement produces: the
+    /// deformation that was already there, plus the correction just
+    /// recovered on top of it.
+    Composite(Vec<Warp>),
+}
+
+impl Warp {
+    /// Displacement at a fixed-image point (zero when there is no warp).
+    #[inline]
+    pub fn displacement(&self, p: Vec3) -> Vec3 {
+        match self {
+            Warp::None => Vec3::ZERO,
+            Warp::BSpline(b) => b.displacement(p),
+            Warp::Rbf(r) => r.displacement(p),
+            Warp::Field(f) => f.sample_patient(p),
+            Warp::Composite(parts) => parts.iter().fold(Vec3::ZERO, |a, w| a + w.displacement(p)),
+        }
+    }
+
+    pub fn is_none(&self) -> bool {
+        match self {
+            Warp::None => true,
+            Warp::Composite(parts) => parts.iter().all(Warp::is_none),
+            _ => false,
+        }
+    }
+
+    /// `a` then `b`, flattened so a chain of refinements stays one list.
+    pub fn combined(a: Warp, b: Warp) -> Warp {
+        let mut parts = Vec::new();
+        for w in [a, b] {
+            match w {
+                Warp::None => {}
+                Warp::Composite(inner) => parts.extend(inner),
+                other => parts.push(other),
+            }
+        }
+        match parts.len() {
+            0 => Warp::None,
+            1 => parts.pop().unwrap(),
+            _ => Warp::Composite(parts),
+        }
+    }
+
+    /// One line describing the deformation model, for the result panel.
+    pub fn describe(&self) -> String {
+        match self {
+            Warp::None => "rigid body only".to_string(),
+            Warp::BSpline(b) => format!(
+                "B-spline lattice {}×{}×{} at {:.0} mm ({} control points)",
+                b.grid_dims[0],
+                b.grid_dims[1],
+                b.grid_dims[2],
+                b.spacing,
+                b.control_points()
+            ),
+            Warp::Rbf(r) => r.describe(),
+            Warp::Field(f) => format!("displacement field — {}", f.describe()),
+            Warp::Composite(parts) => parts
+                .iter()
+                .map(Warp::describe)
+                .collect::<Vec<_>>()
+                .join(" + "),
+        }
+    }
+}
+
 /// The full recovered mapping: fixed patient point → moving patient point.
-/// Deformable results compose as `T(p) = T_rigid(p) + d_bspline(p)`
+/// Deformable results compose as `T(p) = T_rigid(p) + d_warp(p)`
 /// (displacement parameterized on the fixed domain, elastix "compose" style).
 #[derive(Clone)]
 pub struct Transform3 {
     pub rigid: RigidTransform,
-    pub bspline: Option<BSplineTransform>,
+    pub warp: Warp,
 }
 
 impl Transform3 {
-    pub fn map(&self, p: Vec3) -> Vec3 {
-        let q = self.rigid.map(p);
-        match &self.bspline {
-            Some(b) => q + b.displacement(p),
-            None => q,
+    /// A rigid-body-only mapping.
+    pub fn rigid_only(rigid: RigidTransform) -> Self {
+        Transform3 {
+            rigid,
+            warp: Warp::None,
         }
     }
 
+    #[inline]
+    pub fn map(&self, p: Vec3) -> Vec3 {
+        let q = self.rigid.map(p);
+        match &self.warp {
+            Warp::None => q,
+            w => q + w.displacement(p),
+        }
+    }
+
+    /// Displacement `T(p) − p` at a fixed-image point: what the vector field
+    /// draws and what the analytics measure.
+    #[inline]
+    pub fn displacement(&self, p: Vec3) -> Vec3 {
+        self.map(p) - p
+    }
+
     /// Inverse mapping (moving → fixed). Exact for rigid; fixed-point
-    /// iteration for the deformable part (adequate for the smooth,
-    /// moderate deformations B-spline grids produce).
+    /// iteration for the deformable part (adequate for the smooth, moderate
+    /// deformations these models produce).
     pub fn unmap(&self, q: Vec3) -> Vec3 {
-        match &self.bspline {
-            None => self.rigid.unmap(q),
-            Some(_) => {
+        match &self.warp {
+            Warp::None => self.rigid.unmap(q),
+            _ => {
                 let mut x = self.rigid.unmap(q);
                 for _ in 0..12 {
                     let err = q - self.map(x);
@@ -350,11 +864,31 @@ impl Transform3 {
 /// Registration output with quality statistics.
 pub struct RegistrationResult {
     pub transform: Arc<Transform3>,
-    pub kind: RegKind,
+    pub method: RegMethod,
+    /// Which metric the numbers below are in.
+    pub metric: Metric,
     pub initial_metric: f64,
     pub final_metric: f64,
     pub iterations_run: usize,
     pub elapsed_secs: f64,
+    /// Name of the region a *local* registration was restricted to.
+    pub region: Option<String>,
+    /// Displacement, rotation and Jacobian statistics of the result.
+    pub analysis: RegAnalysis,
+}
+
+impl RegistrationResult {
+    /// `MSD 9700 ▶ 1800  (900 iters, 20.1 s)`.
+    pub fn metric_line(&self) -> String {
+        format!(
+            "{} {:.1} ▶ {:.1}  ({} iters, {:.1} s)",
+            self.metric.tag(),
+            self.initial_metric,
+            self.final_metric,
+            self.iterations_run,
+            self.elapsed_secs
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -367,10 +901,11 @@ pub struct RegImage {
     spacing: [f64; 3],
     origin: Vec3,
     axes: [Vec3; 3],
-    /// Flat indices of voxels eligible for random sampling (value above the
-    /// fixed-image threshold), built once per pyramid level by
-    /// [`RegImage::prepare_sampling`]. Sampling draws from this list instead
-    /// of rejecting random draws, which keeps every draw a hit.
+    /// Flat indices of voxels eligible for sampling (value above the
+    /// fixed-image threshold and, when the run is local, inside the region),
+    /// built once per pyramid level by [`RegImage::prepare_sampling`].
+    /// Random sampling draws from this list instead of rejecting random
+    /// draws, which keeps every draw a hit; the dense engine walks it.
     eligible: Vec<u32>,
 }
 
@@ -386,10 +921,10 @@ impl RegImage {
         }
     }
 
-    /// Build the eligible-voxel list for random sampling. Voxels on the far
-    /// boundary are excluded so a jittered sample always has a full
-    /// interpolation neighbourhood.
-    fn prepare_sampling(&mut self, threshold: f32) {
+    /// Build the eligible-voxel list. Voxels on the far boundary are
+    /// excluded so a jittered sample always has a full interpolation
+    /// neighbourhood.
+    fn prepare_sampling(&mut self, threshold: f32, region: Option<&RegionMask>) {
         let [nx, ny, nz] = self.dims;
         if nx < 2 || ny < 2 || nz < 2 {
             self.eligible.clear();
@@ -405,12 +940,51 @@ impl RegImage {
                 })
             })
             .filter(|&o| self.data[o as usize] >= threshold)
+            .filter(|&o| match region {
+                None => true,
+                Some(r) => {
+                    let o = o as usize;
+                    let k = o / (nx * ny);
+                    let rem = o - k * nx * ny;
+                    r.contains(self.index_to_patient(
+                        (rem % nx) as f64,
+                        (rem / nx) as f64,
+                        k as f64,
+                    ))
+                }
+            })
             .collect();
+    }
+
+    /// Fixed-image points of every eligible voxel, thinned by `stride`, with
+    /// the image value there — the sample set the dense (plastimatch) engine
+    /// works on. Deterministic: the same volume always yields the same set.
+    fn dense_samples(&self, stride: usize) -> Vec<(Vec3, f32)> {
+        let stride = stride.max(1);
+        let [nx, ny, _] = self.dims;
+        self.eligible
+            .par_iter()
+            .step_by(stride)
+            .map(|&o| {
+                let o = o as usize;
+                let k = o / (nx * ny);
+                let rem = o - k * nx * ny;
+                (
+                    self.index_to_patient((rem % nx) as f64, (rem / nx) as f64, k as f64),
+                    self.data[o],
+                )
+            })
+            .collect()
     }
 
     #[inline]
     fn at(&self, i: usize, j: usize, k: usize) -> f32 {
         self.data[k * self.dims[0] * self.dims[1] + j * self.dims[0] + i]
+    }
+
+    /// The largest voxel dimension of this level, mm.
+    fn max_spacing(&self) -> f64 {
+        self.spacing.iter().cloned().fold(0.0f64, f64::max)
     }
 
     /// [1 2 1]/4 smoothing + factor-2 decimation along axes with ≥ 8 voxels.
@@ -558,6 +1132,21 @@ impl RegImage {
             + self.axes[2] * (dw as f64 / self.spacing[2]);
         Some((val, grad))
     }
+
+    /// Intensity range over the eligible voxels — what the mutual-
+    /// information histogram is binned over.
+    fn eligible_range(&self) -> (f32, f32) {
+        if self.eligible.is_empty() {
+            return (0.0, 1.0);
+        }
+        self.eligible
+            .par_iter()
+            .map(|&o| {
+                let v = self.data[o as usize];
+                (v, v)
+            })
+            .reduce(|| (f32::MAX, f32::MIN), |a, b| (a.0.min(b.0), a.1.max(b.1)))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -566,7 +1155,7 @@ impl RegImage {
 // with NewSamplesEveryIteration=true)
 // ---------------------------------------------------------------------------
 
-struct XorShift(u64);
+pub(crate) struct XorShift(u64);
 
 impl XorShift {
     #[inline]
@@ -632,118 +1221,6 @@ fn draw_samples(fixed: &RegImage, n: usize, rng: &mut XorShift) -> Vec<(Vec3, f3
 }
 
 // ---------------------------------------------------------------------------
-// ASGD optimizer (Klein et al. 2009) over a generic parametric problem
-// ---------------------------------------------------------------------------
-
-/// Metric value + gradient callback: given parameters, fill `grad` (scaled
-/// space) and return (metric, valid_sample_fraction).
-type GradFn<'a> = dyn Fn(&[f64], &mut [f64], &mut XorShift) -> (f64, f64) + Sync + 'a;
-
-struct AsgdConfig {
-    iterations: usize,
-    /// elastix SP_A.
-    big_a: f64,
-    /// Target initial step in scaled-parameter units (≈ mm).
-    delta: f64,
-}
-
-/// Run ASGD; returns (final params, last metric, iterations done) or None if
-/// cancelled.
-fn asgd(
-    mut params: Vec<f64>,
-    eval: &GradFn,
-    cfg: &AsgdConfig,
-    progress: &Progress,
-    label: &str,
-    metric_out: &mut f64,
-) -> Option<(Vec<f64>, usize)> {
-    let n = params.len();
-    let mut rng = XorShift(0x9E3779B97F4A7C15 ^ (n as u64));
-    let mut grad = vec![0.0; n];
-    let mut prev_grad = vec![0.0; n];
-
-    // Estimate the gain factor `a` so the first steps are ~delta: use the
-    // median gradient norm of three independent sample draws (a lightweight
-    // stand-in for elastix's AutomaticParameterEstimation, robust against a
-    // single unlucky near-zero draw).
-    let mut norms = [0.0f64; 3];
-    let mut m0 = 0.0;
-    for norm in &mut norms {
-        let (m, _) = eval(&params, &mut grad, &mut rng);
-        m0 = m;
-        *norm = grad.iter().map(|g| g * g).sum::<f64>().sqrt();
-    }
-    norms.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let g0 = norms[1];
-    if g0 < 1e-20 {
-        *metric_out = m0;
-        return Some((params, 0));
-    }
-    let a = cfg.delta * (cfg.big_a + 1.0) / g0;
-    // Trust region: no single step may move the (scaled) parameter vector by
-    // more than 2·delta, whatever the current gradient magnitude is. This
-    // guards against gain over-estimation when the initial gradient is small.
-    let step_cap = 2.0 * cfg.delta;
-    let mut t = 0.0f64;
-    let mut metric = m0;
-
-    // Track the best parameters seen (stochastic metric, but effective as a
-    // divergence guard).
-    let mut best_params = params.clone();
-    let mut best_metric = m0;
-
-    for it in 0..cfg.iterations {
-        if progress.cancelled() {
-            return None;
-        }
-        let mut gamma = a / (t + cfg.big_a);
-        let gnorm: f64 = grad.iter().map(|g| g * g).sum::<f64>().sqrt();
-        if gnorm * gamma > step_cap {
-            gamma = step_cap / gnorm;
-        }
-        for i in 0..n {
-            params[i] -= gamma * grad[i];
-        }
-        prev_grad.copy_from_slice(&grad);
-        let (m, valid) = eval(&params, &mut grad, &mut rng);
-        metric = m;
-        if valid < 0.25 {
-            // Too few samples map into the moving image — undo the step and
-            // damp (comparable to elastix's RequiredRatioOfValidSamples).
-            for i in 0..n {
-                params[i] += gamma * prev_grad[i];
-            }
-            grad.copy_from_slice(&prev_grad);
-            t += 2.0;
-            continue;
-        }
-        if m < best_metric {
-            best_metric = m;
-            best_params.copy_from_slice(&params);
-        }
-        // Klein et al. time update: t += sigmoid(-<g_k, g_{k-1}>);
-        // near-step sigmoid with f_max = 1, f_min = -0.8.
-        let dot: f64 = grad.iter().zip(prev_grad.iter()).map(|(a, b)| a * b).sum();
-        t = (t + if dot > 0.0 { -0.8 } else { 1.0 }).max(0.0);
-
-        if it % 25 == 0 {
-            progress.set(format!(
-                "{label}: iter {}/{}  MSD {:.1}",
-                it, cfg.iterations, m
-            ));
-        }
-    }
-    // Return the best parameters rather than the last ones if the last
-    // iterations drifted (stochastic gradients on noisy problems).
-    if best_metric < metric {
-        params = best_params;
-        metric = best_metric;
-    }
-    *metric_out = metric;
-    Some((params, cfg.iterations))
-}
-
-// ---------------------------------------------------------------------------
 // Metric evaluation (mean squared difference, elastix AdvancedMeanSquares)
 // ---------------------------------------------------------------------------
 
@@ -766,7 +1243,7 @@ fn msd_value(fixed: &RegImage, moving: &RegImage, t: &Transform3, n: usize) -> f
 }
 
 // ---------------------------------------------------------------------------
-// Top-level: rigid and deformable registration
+// Top-level: build the pyramids and dispatch to an engine
 // ---------------------------------------------------------------------------
 
 fn build_pyramid(img: RegImage, levels: usize) -> Vec<RegImage> {
@@ -780,6 +1257,33 @@ fn build_pyramid(img: RegImage, levels: usize) -> Vec<RegImage> {
     pyr
 }
 
+/// Everything an engine gets: the two pyramids, the rotation centre, the
+/// fixed volume and the run's parameters.
+pub(crate) struct RegSetup<'a> {
+    pub fixed: Vec<RegImage>,
+    pub moving: Vec<RegImage>,
+    /// Fixed-image (or region) centre — the point rotations are taken about
+    /// and the anchor of the parameter scaling.
+    pub center: Vec3,
+    pub fixed_vol: &'a Volume,
+    pub params: &'a RegParams,
+}
+
+impl RegSetup<'_> {
+    /// Index of the full-resolution level.
+    fn finest(&self) -> usize {
+        self.fixed.len() - 1
+    }
+}
+
+/// What an engine hands back before the analytics are computed.
+pub(crate) struct EngineOutput {
+    pub transform: Transform3,
+    pub iterations: usize,
+    /// The engine's own final cost, in whatever units it minimizes.
+    pub final_metric: f64,
+}
+
 /// Register `moving` onto `fixed`. Returns the transform mapping fixed
 /// patient coordinates to moving patient coordinates.
 pub fn register(
@@ -789,292 +1293,231 @@ pub fn register(
     progress: &Progress,
 ) -> Result<RegistrationResult> {
     let t_start = std::time::Instant::now();
-    progress.set("Building image pyramids…");
 
+    // The landmark warp never looks at a voxel, so it skips the pyramids
+    // entirely — building them for a geometric interpolation would be
+    // several seconds of pure waste on a 512³ study.
+    if params.method == RegMethod::PlastimatchLandmark {
+        progress.set("Solving the landmark system…");
+        let out = landmark::run(params)?;
+        let transform = Arc::new(out.transform);
+        progress.set("Measuring the deformation…");
+        let analysis = analysis::analyse(fixed_vol, &transform, params.region.as_deref());
+        progress.set("done");
+        return Ok(RegistrationResult {
+            transform,
+            method: params.method,
+            metric: params.metric,
+            initial_metric: out.final_metric,
+            final_metric: out.final_metric,
+            iterations_run: out.iterations,
+            elapsed_secs: t_start.elapsed().as_secs_f64(),
+            region: params.region.as_ref().map(|r| r.name.clone()),
+            analysis,
+        });
+    }
+
+    progress.set("Building image pyramids…");
     let fixed_full = RegImage::from_volume(fixed_vol);
     let moving_full = RegImage::from_volume(moving_vol);
 
-    // Fixed-image center of rotation (elastix AutomaticTransformInitialization
-    // with CenterOfGravity would be similar; geometric center is robust here).
-    let center = fixed_full.index_to_patient(
-        (fixed_full.dims[0] as f64 - 1.0) * 0.5,
-        (fixed_full.dims[1] as f64 - 1.0) * 0.5,
-        (fixed_full.dims[2] as f64 - 1.0) * 0.5,
-    );
+    // Centre of rotation: the fixed image's geometric centre, or the
+    // region's when the run is local — rotating a tumour about the patient's
+    // centre would put the whole recovered angle into the translation.
+    let center = match params.region.as_deref() {
+        None => fixed_full.index_to_patient(
+            (fixed_full.dims[0] as f64 - 1.0) * 0.5,
+            (fixed_full.dims[1] as f64 - 1.0) * 0.5,
+            (fixed_full.dims[2] as f64 - 1.0) * 0.5,
+        ),
+        Some(r) => {
+            let (lo, hi) = r.bbox();
+            fixed_vol.voxel_to_patient(
+                (lo[0] + hi[0]) as f64 * 0.5,
+                (lo[1] + hi[1]) as f64 * 0.5,
+                (lo[2] + hi[2]) as f64 * 0.5,
+            )
+        }
+    };
 
     let mut fixed_pyr = build_pyramid(fixed_full, params.levels);
     let moving_pyr = build_pyramid(moving_full, params.levels);
 
-    // Eligible-voxel lists (the fixed-image mask) are built once per level
-    // instead of being re-derived by rejection on every iteration.
+    // Eligible-voxel lists (the fixed-image mask, intersected with the region
+    // when the run is local) are built once per level instead of being
+    // re-derived by rejection on every iteration.
     for img in &mut fixed_pyr {
-        img.prepare_sampling(params.fixed_threshold);
+        img.prepare_sampling(params.fixed_threshold, params.region.as_deref());
     }
     if fixed_pyr.iter().all(|i| i.eligible.is_empty()) {
-        bail!("no fixed-image voxels above the sampling threshold — lower it and retry");
-    }
-
-    let initial_metric = msd_value(
-        &fixed_pyr[params.levels - 1],
-        &moving_pyr[params.levels - 1],
-        &Transform3 {
-            rigid: RigidTransform::identity(center),
-            bspline: None,
-        },
-        params.samples.max(2000),
-    );
-
-    // Rotation parameter scale (elastix AutomaticScalesEstimation analogue):
-    // 1 rad of rotation moves a typical point by ~r mm.
-    let ext = [
-        fixed_vol.dims[0] as f64 * fixed_vol.spacing[0],
-        fixed_vol.dims[1] as f64 * fixed_vol.spacing[1],
-        fixed_vol.dims[2] as f64 * fixed_vol.spacing[2],
-    ];
-    let rot_scale = 0.25 * (ext[0] + ext[1] + ext[2]) / 3.0 * 2.0; // ≈ half mean extent
-
-    // ---------------- Rigid stage (always runs) ----------------
-    let mut rigid = RigidTransform::identity(center);
-    let mut total_iters = 0usize;
-    let mut last_metric = initial_metric;
-
-    for level in 0..params.levels {
-        if progress.cancelled() {
-            bail!("registration cancelled");
-        }
-        let fixed = &fixed_pyr[level];
-        let moving = &moving_pyr[level];
-        let delta = fixed.spacing.iter().cloned().fold(0.0f64, f64::max);
-        let n_samples = params.samples;
-        let label = format!("Rigid L{}/{}", level + 1, params.levels);
-
-        let center_l = center;
-        let eval = move |p: &[f64], grad: &mut [f64], rng: &mut XorShift| -> (f64, f64) {
-            let tr = RigidTransform::new(
-                [
-                    p[0] / rot_scale,
-                    p[1] / rot_scale,
-                    p[2] / rot_scale,
-                    p[3],
-                    p[4],
-                    p[5],
-                ],
-                center_l,
-            );
-            let samples = draw_samples(fixed, n_samples, rng);
-            let n_total = samples.len().max(1);
-            let (g, sum, cnt) = samples
-                .par_iter()
-                .map(|&(x, fval)| {
-                    let mut gl = [0.0f64; 6];
-                    match moving.sample_grad(tr.map(x)) {
-                        Some((mval, mg)) => {
-                            let diff = (mval - fval) as f64;
-                            let jac = tr.jacobian(x);
-                            for (pi, j) in jac.iter().enumerate() {
-                                gl[pi] = 2.0 * diff * mg.dot(*j);
-                            }
-                            // chain rule into scaled space
-                            gl[0] /= rot_scale;
-                            gl[1] /= rot_scale;
-                            gl[2] /= rot_scale;
-                            (gl, diff * diff, 1usize)
-                        }
-                        None => (gl, 0.0, 0usize),
-                    }
-                })
-                .reduce(
-                    || ([0.0; 6], 0.0, 0),
-                    |a, b| {
-                        let mut g = a.0;
-                        for (x, y) in g.iter_mut().zip(b.0) {
-                            *x += y;
-                        }
-                        (g, a.1 + b.1, a.2 + b.2)
-                    },
-                );
-            let cntf = cnt.max(1) as f64;
-            for i in 0..6 {
-                grad[i] = g[i] / cntf;
+        match &params.region {
+            Some(r) => bail!(
+                "no fixed-image voxels inside '{}' above the sampling threshold — \
+                 lower the threshold or widen the margin",
+                r.name
+            ),
+            None => {
+                bail!("no fixed-image voxels above the sampling threshold — lower it and retry")
             }
-            (sum / cntf, cnt as f64 / n_total as f64)
-        };
-
-        let rp = rigid.params();
-        let scaled0 = vec![
-            rp[0] * rot_scale,
-            rp[1] * rot_scale,
-            rp[2] * rot_scale,
-            rp[3],
-            rp[4],
-            rp[5],
-        ];
-        let mut mlast = last_metric;
-        let Some((scaled, iters)) = asgd(
-            scaled0,
-            &eval,
-            &AsgdConfig {
-                iterations: params.iterations,
-                big_a: 20.0,
-                delta,
-            },
-            progress,
-            &label,
-            &mut mlast,
-        ) else {
-            bail!("registration cancelled");
-        };
-        rigid = RigidTransform::new(
-            [
-                scaled[0] / rot_scale,
-                scaled[1] / rot_scale,
-                scaled[2] / rot_scale,
-                scaled[3],
-                scaled[4],
-                scaled[5],
-            ],
-            center,
-        );
-        total_iters += iters;
-        last_metric = mlast;
+        }
     }
 
-    let mut transform = Transform3 {
-        rigid: rigid.clone(),
-        bspline: None,
+    let setup = RegSetup {
+        fixed: fixed_pyr,
+        moving: moving_pyr,
+        center,
+        fixed_vol,
+        params,
     };
 
-    // ---------------- B-spline stage (deformable only) ----------------
-    if params.kind == RegKind::Deformable {
-        let mut bspline = BSplineTransform::new(fixed_vol, params.grid_spacing_mm);
-        let n_coeffs = bspline.coeffs.len();
-        let [gnx, gny, _] = bspline.grid_dims;
-
-        for level in 0..params.levels {
-            if progress.cancelled() {
-                bail!("registration cancelled");
-            }
-            let fixed = &fixed_pyr[level];
-            let moving = &moving_pyr[level];
-            let delta = 0.5 * fixed.spacing.iter().cloned().fold(0.0f64, f64::max);
-            let n_samples = params.samples;
-            let label = format!("B-spline L{}/{}", level + 1, params.levels);
-            let rigid_l = rigid.clone();
-            // Grid geometry only - the coefficients come from `p` on every
-            // call, so the coefficient vector itself is not carried along.
-            let grid = bspline.geometry();
-
-            let eval = move |p: &[f64], grad: &mut [f64], rng: &mut XorShift| -> (f64, f64) {
-                let samples = draw_samples(fixed, n_samples, rng);
-                let n_total = samples.len().max(1);
-                // One dense gradient accumulator per worker chunk, scattered
-                // into directly. The previous shape built a 192-entry sparse
-                // Vec for every sample (one heap allocation per sample) and
-                // let rayon allocate an `n_coeffs` accumulator per split,
-                // so the gradient reduction cost far more than the metric.
-                let chunk = samples
-                    .len()
-                    .div_ceil(rayon::current_num_threads().max(1))
-                    .max(1);
-                let (gsum, sum, cnt) = samples
-                    .par_chunks(chunk)
-                    .fold(
-                        || (vec![0.0f64; n_coeffs], 0.0f64, 0usize),
-                        |acc, part| {
-                            part.iter().fold(acc, |mut acc, &(x, fval)| {
-                                let Some((base, w)) = grid.support(x) else {
-                                    return acc;
-                                };
-                                let mut disp = Vec3::ZERO;
-                                let mut touched = [(0usize, 0.0f64); 64];
-                                let mut ti = 0;
-                                for kz in 0..4 {
-                                    let iz = (base[2] + kz as i64) as usize;
-                                    for (ky, wy) in w[1].iter().enumerate() {
-                                        let iy = (base[1] + ky as i64) as usize;
-                                        let wyz = wy * w[2][kz];
-                                        let row = 3 * (base[0] as usize + gnx * (iy + gny * iz));
-                                        for (kx, wx) in w[0].iter().enumerate() {
-                                            let wt = wx * wyz;
-                                            let o = row + 3 * kx;
-                                            disp.x += wt * p[o];
-                                            disp.y += wt * p[o + 1];
-                                            disp.z += wt * p[o + 2];
-                                            touched[ti] = (o, wt);
-                                            ti += 1;
-                                        }
-                                    }
-                                }
-                                let Some((mval, mg)) = moving.sample_grad(rigid_l.map(x) + disp)
-                                else {
-                                    return acc;
-                                };
-                                let diff = (mval - fval) as f64;
-                                for &(o, wt) in &touched[..ti] {
-                                    let c = 2.0 * diff * wt;
-                                    acc.0[o] += c * mg.x;
-                                    acc.0[o + 1] += c * mg.y;
-                                    acc.0[o + 2] += c * mg.z;
-                                }
-                                acc.1 += diff * diff;
-                                acc.2 += 1;
-                                acc
-                            })
-                        },
-                    )
-                    .reduce(
-                        || (vec![0.0f64; n_coeffs], 0.0f64, 0usize),
-                        |mut a, b| {
-                            for (x, y) in a.0.iter_mut().zip(b.0.iter()) {
-                                *x += y;
-                            }
-                            (a.0, a.1 + b.1, a.2 + b.2)
-                        },
-                    );
-                let cntf = cnt.max(1) as f64;
-                for i in 0..n_coeffs {
-                    grad[i] = gsum[i] / cntf;
-                }
-                (sum / cntf, cnt as f64 / n_total as f64)
-            };
-
-            let mut mlast = last_metric;
-            let Some((coeffs, iters)) = asgd(
-                bspline.coeffs.clone(),
-                &eval,
-                &AsgdConfig {
-                    iterations: params.iterations,
-                    big_a: 20.0,
-                    delta,
-                },
-                progress,
-                &label,
-                &mut mlast,
-            ) else {
-                bail!("registration cancelled");
-            };
-            bspline.coeffs = coeffs;
-            total_iters += iters;
-            last_metric = mlast;
-        }
-        transform.bspline = Some(bspline);
-    }
-
-    // Final metric on the full-resolution images.
-    let final_metric = msd_value(
-        &fixed_pyr[params.levels - 1],
-        &moving_pyr[params.levels - 1],
-        &transform,
+    let identity = Transform3::rigid_only(RigidTransform::identity(center));
+    let finest = setup.finest();
+    let initial_msd = msd_value(
+        &setup.fixed[finest],
+        &setup.moving[finest],
+        &identity,
         params.samples.max(2000),
     );
+
+    let out = match params.method {
+        RegMethod::ElastixRigid | RegMethod::ElastixBSpline => elastix::run(&setup, progress)?,
+        RegMethod::PlastimatchBSpline => plastimatch::run(&setup, progress)?,
+        RegMethod::PlastimatchLandmark => unreachable!("handled above"),
+    };
+
+    // Whatever the engine minimized, the reported before/after pair is in
+    // the same units — otherwise the two numbers cannot be compared.
+    let (initial_metric, final_metric) = match params.metric {
+        Metric::MeanSquares => (
+            initial_msd,
+            msd_value(
+                &setup.fixed[finest],
+                &setup.moving[finest],
+                &out.transform,
+                params.samples.max(2000),
+            ),
+        ),
+        Metric::MutualInformation => (
+            plastimatch::mi_value(&setup, &identity),
+            plastimatch::mi_value(&setup, &out.transform),
+        ),
+    };
+
+    let transform = Arc::new(out.transform);
+    progress.set("Measuring the deformation…");
+    let analysis = analysis::analyse(fixed_vol, &transform, params.region.as_deref());
 
     progress.set("done");
     Ok(RegistrationResult {
-        transform: Arc::new(transform),
-        kind: params.kind,
+        transform,
+        method: params.method,
+        metric: params.metric,
         initial_metric,
         final_metric,
-        iterations_run: total_iters,
+        iterations_run: out.iterations,
         elapsed_secs: t_start.elapsed().as_secs_f64(),
+        region: params.region.as_ref().map(|r| r.name.clone()),
+        analysis,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cube(dims: [usize; 3]) -> Volume {
+        Volume {
+            data: vec![0i16; dims[0] * dims[1] * dims[2]],
+            dims,
+            spacing: [2.0, 2.0, 2.0],
+            origin: Vec3::ZERO,
+            row_dir: Vec3::new(1.0, 0.0, 0.0),
+            col_dir: Vec3::new(0.0, 1.0, 0.0),
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            frame_of_reference_uid: String::new(),
+            min_value: 0,
+            max_value: 1,
+        }
+    }
+
+    #[test]
+    fn a_region_dilates_by_the_requested_margin() {
+        let dims = [20, 20, 20];
+        let vol = cube(dims);
+        let mut mask = vec![0u8; dims[0] * dims[1] * dims[2]];
+        mask[10 * dims[0] * dims[1] + 10 * dims[0] + 10] = 1;
+        let bare = RegionMask::from_mask(&vol, &mask, "seed".into(), 0.0).unwrap();
+        assert_eq!(bare.voxels(), 1);
+        assert_eq!(bare.bbox(), ([10, 10, 10], [10, 10, 10]));
+        assert!(bare.contains(vol.voxel_to_patient(10.0, 10.0, 10.0)));
+        assert!(!bare.contains(vol.voxel_to_patient(11.0, 10.0, 10.0)));
+
+        // 4 mm at 2 mm voxels = two voxels each way: a 5×5×5 block.
+        let grown = RegionMask::from_mask(&vol, &mask, "grown".into(), 4.0).unwrap();
+        assert_eq!(grown.voxels(), 125);
+        assert_eq!(grown.bbox(), ([8, 8, 8], [12, 12, 12]));
+        assert!(grown.contains(vol.voxel_to_patient(12.0, 10.0, 10.0)));
+        assert!(!grown.contains(vol.voxel_to_patient(13.0, 10.0, 10.0)));
+        assert!((grown.cm3() - 125.0 * 8.0 / 1000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn an_empty_or_mismatched_mask_is_not_a_region() {
+        let vol = cube([8, 8, 8]);
+        assert!(RegionMask::from_mask(&vol, &vec![0u8; 8 * 8 * 8], "empty".into(), 5.0).is_none());
+        assert!(RegionMask::from_mask(&vol, &[1u8; 4], "wrong size".into(), 0.0).is_none());
+    }
+
+    #[test]
+    fn a_local_control_lattice_covers_the_region_not_the_volume() {
+        let dims = [64, 64, 64];
+        let vol = cube(dims);
+        let mut mask = vec![0u8; dims[0] * dims[1] * dims[2]];
+        for k in 30..34 {
+            for j in 30..34 {
+                for i in 30..34 {
+                    mask[k * dims[0] * dims[1] + j * dims[0] + i] = 1;
+                }
+            }
+        }
+        let region = RegionMask::from_mask(&vol, &mask, "roi".into(), 0.0).unwrap();
+        let global = BSplineTransform::for_region(&vol, None, 8.0);
+        let local = BSplineTransform::for_region(&vol, Some(&region), 8.0);
+        assert!(
+            local.control_points() < global.control_points() / 8,
+            "{} vs {}",
+            local.control_points(),
+            global.control_points()
+        );
+        // The lattice must still support every point of the region.
+        for (i, j, k) in [(30, 30, 30), (33, 33, 33), (31, 32, 33)] {
+            let p = vol.voxel_to_patient(i as f64, j as f64, k as f64);
+            assert!(local.support(p).is_some(), "{i},{j},{k} unsupported");
+        }
+    }
+
+    #[test]
+    fn methods_are_labelled_and_grouped_by_toolbox() {
+        assert_eq!(RegMethod::ALL.len(), 4);
+        for m in RegMethod::ALL {
+            assert!(!m.label().is_empty() && !m.short().is_empty() && !m.hint().is_empty());
+            assert!(matches!(m.family(), "elastix" | "plastimatch"));
+        }
+        assert!(!RegMethod::ElastixRigid.is_deformable());
+        assert!(RegMethod::PlastimatchBSpline.is_deformable());
+        assert!(!RegMethod::PlastimatchLandmark.is_intensity_based());
+        assert_eq!(Metric::MeanSquares.tag(), "MSD");
+    }
+
+    #[test]
+    fn a_rigid_transform_round_trips_and_reports_its_displacement() {
+        let c = Vec3::new(10.0, 20.0, 30.0);
+        let t = Transform3::rigid_only(RigidTransform::new([0.1, -0.05, 0.2, 3.0, -2.0, 1.0], c));
+        let p = Vec3::new(15.0, 25.0, 35.0);
+        let q = t.map(p);
+        assert!((t.unmap(q) - p).length() < 1e-9);
+        assert!((t.displacement(p) - (q - p)).length() < 1e-12);
+        assert!(t.warp.is_none());
+        assert_eq!(t.warp.describe(), "rigid body only");
+    }
 }

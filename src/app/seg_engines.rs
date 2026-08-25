@@ -114,6 +114,20 @@ impl ViewerApp {
         mask: &[u8],
     ) -> usize {
         let color = self.next_seg_color();
+        self.add_colored_segmentation(slot, name, color, dims, mask)
+    }
+
+    /// [`Self::add_segmentation`] keeping a colour the caller already has —
+    /// a propagated structure should arrive in the colour it left in, not in
+    /// the next one off the palette.
+    pub(super) fn add_colored_segmentation(
+        &mut self,
+        slot: usize,
+        name: String,
+        color: [u8; 3],
+        dims: [usize; 3],
+        mask: &[u8],
+    ) -> usize {
         let s = &mut self.slots[slot];
         s.segs
             .push(Segmentation::from_label_map(name, color, dims, mask, 1));
@@ -166,9 +180,9 @@ pub(super) fn device_row(ui: &mut egui::Ui, pref: &mut DevicePref) {
     });
 }
 
-/// `Model folder: [ ... ] 📁` with a hint naming the engine's sub-folder.
+/// `Model folder: [ ... ] 📁` — the root every engine downloads into.
 /// Returns true when the browse button was clicked.
-pub(super) fn models_dir_row(ui: &mut egui::Ui, models_dir: &mut String, engine: Engine) -> bool {
+pub(super) fn models_root_row(ui: &mut egui::Ui, models_dir: &mut String) -> bool {
     let mut browse = false;
     ui.horizontal(|ui| {
         ui.label("Model folder:");
@@ -184,12 +198,52 @@ pub(super) fn models_dir_row(ui: &mut egui::Ui, models_dir: &mut String, engine:
             browse = true;
         }
     });
+    browse
+}
+
+/// [`models_root_row`] with a hint naming the engine's sub-folder.
+pub(super) fn models_dir_row(ui: &mut egui::Ui, models_dir: &mut String, engine: Engine) -> bool {
+    let browse = models_root_row(ui, models_dir);
     ui.weak(format!(
         "This engine's files go to {}/{}/",
         models::DIR_NAME,
         engine.subdir()
     ));
     browse
+}
+
+/// The tool window each engine belongs to — the glyph and name the model
+/// manager labels its rows with.
+pub(super) fn tool_of(engine: Engine) -> &'static ToolInfo {
+    match engine {
+        Engine::TotalSegmentator => &AUTOSEG,
+        Engine::SegVol => &PROMPT_SEG,
+        Engine::MedSam2 => &SLICE_PROP,
+    }
+}
+
+/// What an engine's published weights are licensed as, and whether that
+/// needs highlighting. Kept here so the tool windows and the model manager
+/// say the same thing.
+pub(super) fn weights_licence(engine: Engine) -> (&'static str, bool) {
+    match engine {
+        Engine::TotalSegmentator => (
+            "Weights: TotalSegmentator 'total' task (Apache-2.0), downloaded once from the \
+             official GitHub release.",
+            false,
+        ),
+        Engine::SegVol => (
+            "Weights: no licence declaration in the model repository, training corpus \
+             partly non-commercial — downloaded to this machine at your request only, \
+             never redistributed.",
+            true,
+        ),
+        Engine::MedSam2 => (
+            "Weights: CC-BY-SA-4.0 with a 'research and education only' model card — \
+             downloaded to this machine at your request only, never redistributed.",
+            true,
+        ),
+    }
 }
 
 /// The licence line every tool ends with, before its buttons.
@@ -236,5 +290,18 @@ mod tests {
         glyphs.sort();
         glyphs.dedup();
         assert_eq!(glyphs.len(), 3, "every tool has its own glyph");
+    }
+
+    #[test]
+    fn every_engine_maps_to_a_tool_and_a_licence_line() {
+        for engine in Engine::ALL {
+            let tool = tool_of(engine);
+            assert!(!tool.name.is_empty());
+            let (note, _) = weights_licence(engine);
+            assert!(note.starts_with("Weights:"), "{note}");
+        }
+        assert_eq!(tool_of(Engine::SegVol).glyph, PROMPT_SEG.glyph);
+        assert!(!weights_licence(Engine::TotalSegmentator).1, "Apache-2.0");
+        assert!(weights_licence(Engine::MedSam2).1, "research-only weights");
     }
 }

@@ -683,6 +683,101 @@ pub fn fill_holes_slicewise(voxels: &mut Vec<u32>, dims: [usize; 3]) {
 }
 
 // ---------------------------------------------------------------------------
+// RTSTRUCT contours → mask
+// ---------------------------------------------------------------------------
+
+/// Rasterize an RTSTRUCT ROI onto a volume's own voxel grid.
+///
+/// The inverse of [`mask_to_roi`], and the bridge every feature that works
+/// on *voxels* needs when the user points at a *contour*: restricting a
+/// registration to one structure, propagating a structure through a
+/// deformation, measuring how far a structure moved.
+///
+/// Contours are grouped by the slice they fall on and each slice is filled
+/// once with the even–odd rule over **all** of that slice's contours
+/// together — which is what makes a doughnut a doughnut rather than a disc,
+/// since RTSTRUCT expresses a hole as a second contour inside the first.
+/// Returns `None` when the ROI has no planar contour inside the volume.
+pub fn rasterize_roi(vol: &Volume, roi: &Roi) -> Option<Vec<u8>> {
+    let [nx, ny, nz] = vol.dims;
+    // Slice index → the contours drawn on it, in voxel (i, j) coordinates.
+    let mut by_slice: Vec<Vec<Vec<[f64; 2]>>> = vec![Vec::new(); nz];
+    for c in &roi.contours {
+        if c.geometric_type == "POINT" || c.points.len() < 3 {
+            continue;
+        }
+        let idx: Vec<[f64; 3]> = c.points.iter().map(|p| vol.patient_to_voxel(*p)).collect();
+        // A planar contour lies in one slice; take the nearest one.
+        let mean_k = idx.iter().map(|v| v[2]).sum::<f64>() / idx.len() as f64;
+        let k = mean_k.round();
+        if k < 0.0 || k >= nz as f64 {
+            continue;
+        }
+        by_slice[k as usize].push(idx.iter().map(|v| [v[0], v[1]]).collect());
+    }
+    if by_slice.iter().all(|s| s.is_empty()) {
+        return None;
+    }
+
+    let mut mask = vec![0u8; nx * ny * nz];
+    let mut any = false;
+    let mut crossings: Vec<f64> = Vec::new();
+    for (k, polys) in by_slice.iter().enumerate() {
+        if polys.is_empty() {
+            continue;
+        }
+        // Rows the contours of this slice can possibly touch.
+        let (mut j0, mut j1) = (f64::MAX, f64::MIN);
+        for poly in polys {
+            for p in poly {
+                j0 = j0.min(p[1]);
+                j1 = j1.max(p[1]);
+            }
+        }
+        let j_start = j0.floor().max(0.0) as usize;
+        let j_end = (j1.ceil() as i64).clamp(0, ny as i64 - 1) as usize;
+        let base = k * nx * ny;
+        for j in j_start..=j_end {
+            // Scanline through the *centre* of the row, so a voxel counts as
+            // inside when its centre is — the rule `mask_to_roi` reverses,
+            // and the one every planning system uses.
+            let y = j as f64;
+            crossings.clear();
+            for poly in polys {
+                let n = poly.len();
+                for a in 0..n {
+                    let p = poly[a];
+                    let q = poly[(a + 1) % n];
+                    // Half-open edge test: a vertex exactly on the scanline
+                    // is counted once, never twice, so the parity holds.
+                    if (p[1] <= y) != (q[1] <= y) {
+                        let t = (y - p[1]) / (q[1] - p[1]);
+                        crossings.push(p[0] + t * (q[0] - p[0]));
+                    }
+                }
+            }
+            if crossings.len() < 2 {
+                continue;
+            }
+            crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            for span in crossings.chunks_exact(2) {
+                let from = span[0].ceil().max(0.0) as i64;
+                let to = (span[1].floor() as i64).min(nx as i64 - 1);
+                if from > to {
+                    continue;
+                }
+                let row = base + j * nx;
+                for i in from..=to {
+                    mask[row + i as usize] = 1;
+                    any = true;
+                }
+            }
+        }
+    }
+    any.then_some(mask)
+}
+
+// ---------------------------------------------------------------------------
 // Mask → RTSTRUCT contours
 // ---------------------------------------------------------------------------
 

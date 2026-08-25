@@ -33,8 +33,8 @@ windows are built on top of them and hold only what is theirs.
 
 ## Functional overview
 
-What the program does, by category. Every leaf exists in the code today
-unless marked *planned*; the module map below says where.
+What the program does, by category. Every leaf exists in the code today; the
+module map below says where.
 
 ```
 rust-dicom-station
@@ -46,10 +46,12 @@ rust-dicom-station
 │   │   spatial registrations, treatment records, warnings)
 │   ├── Views: 1 × 3 or 2 × 3 (comparison) linked MPR viewports, crosshair,
 │   │   zoom / pan / W-L interaction, maximize, per-view caches
-│   ├── Floating windows: 3D structures, planar image viewers
+│   ├── Floating windows: 3D structures (both datasets through the registration,
+│   │   per-dataset opacity, vector-field glyphs), planar image viewers
 │   ├── Data tree operations: copy / move / remove patient · study · series across datasets
 │   ├── Tool windows: auto-segmentation, prompt segmentation, slice propagation,
-│   │   export, anonymizer, test-data generator (one shared skeleton)
+│   │   model manager, structure propagation, DRR, export, anonymizer,
+│   │   test-data generator (one shared skeleton)
 │   ├── Background jobs: one progress handle, one poll loop
 │   ├── Settings: theme, model folder (viewer_settings.txt)
 │   └── Theme: dark / light / system, accent colors
@@ -63,7 +65,8 @@ rust-dicom-station
 │   │   ├── RTDOSE (grids, trilinear patient-space sampling, plan reference)
 │   │   ├── RTPLAN / RT Ion Plan (beams, control points, prescriptions)
 │   │   ├── RTIMAGE (DRR / portal, as planar image)
-│   │   ├── REG (spatial registration matrices, apply as rigid transform)
+│   │   ├── REG (spatial registration matrices and deformable grids, applied as
+│   │   │   the active registration; a recovered field written back out)
 │   │   └── RT (Ion) Beams Treatment Record (delivered metersets)
 │   ├── Export: CT series + RTSTRUCT + RTDOSE + RTPLAN with an editable tag table
 │   └── Anonymizer: scan, review every identifying tag, rewrite with consistent UID remap
@@ -71,18 +74,31 @@ rust-dicom-station
 ├── Data simulation
 │   ├── Synthetic RT phantom study (CT, RTSTRUCT, RTDOSE, RTPLAN, DX, RTIMAGE, REG, RTRECORD)
 │   ├── Known-transform study generator (rigid + Gaussian deformation, registration QA)
-│   └── Digitally reconstructed radiograph generation — planned
+│   └── Digitally reconstructed radiographs: exact Siddon ray tracing (plastimatch)
+│       and interpolating ray-casting (ITK), IEC cone-beam geometry, beam's-eye view
+│       from an RTPLAN beam, side-by-side difference
 │
 ├── Image registration
 │   ├── elastix-style rigid (6-DOF Euler, ASGD, pyramids, stochastic sampling)
 │   ├── elastix-style deformable (rigid pre-alignment + cubic B-spline FFD)
+│   ├── plastimatch-style deformable (align_center, dense analytic gradient,
+│   │   bending-energy regularization, L-BFGS, mean squares or Mattes mutual information)
+│   ├── plastimatch-style landmark warp (thin-plate spline, Gaussian, Wendland)
+│   ├── Local registration: any method restricted to a structure with a margin;
+│   │   refinement composed on top of an existing result
+│   ├── Analytics: 6-DOF Procrustes fit, displacement statistics, Jacobian
+│   │   determinant and folding, per-structure displacement
+│   ├── Vector field: lattice sampling, arrows / deformed grid in the MPR views,
+│   │   3-D glyphs, both datasets in one 3-D scene with per-dataset opacity
 │   ├── Fusion overlay (magenta / green blend on the fixed dataset)
-│   ├── DICOM REG matrices applied as the active registration
-│   └── Plastimatch-style B-spline and landmark registration — planned
+│   └── DICOM REG matrices and Deformable Spatial Registration grids applied as the
+│       active registration; the recovered field written back out as one
 │
 ├── Segmentation
 │   ├── Voxel masks: brush / eraser (2D, 3D), geodesic region growing, undo,
-│   │   slice overlays, hole filling, mask ▶ RTSTRUCT contours
+│   │   slice overlays, hole filling, mask ▶ RTSTRUCT contours, RTSTRUCT ▶ mask
+│   ├── Propagation: structures and segmentations carried across a registration,
+│   │   globally or refined on an enclosing structure first
 │   ├── Surfaces: contour and mask ▶ meshes (scanline fill, surface nets, smoothing)
 │   ├── Auto-segmentation — TotalSegmentator (nnU-Net), 117 classes,
 │   │   3 mm / 1.5 mm × 5 / 6 mm models, CPU (im2col + SIMD GEMM) or GPU (burn/wgpu)
@@ -93,6 +109,8 @@ rust-dicom-station
 │
 ├── Neural-network infrastructure (shared by every engine)
 │   ├── Model folder: <exe>/models/{totalsegmentator, segvol, medsam2}, legacy migration
+│   ├── Model manager: one inventory of every downloadable model, its state and size;
+│   │   download / update / remove one or all, free redundant source checkpoints
 │   ├── Weights: download (rustls), torch pickle reader, safetensors cache, conversion
 │   ├── Device: Auto / GPU / CPU preference, one validated wgpu context, panic guard
 │   ├── Parameters: shape-checked view of a state dict
@@ -117,10 +135,12 @@ rust-dicom-station
 Nothing in the tree above is bound as a library; each of the heavy
 algorithms is a native re-implementation of a published reference, and the
 reference is what the tests compare against. Registration follows
-[elastix](https://elastix.dev/) (rigid and B-spline, ASGD, pyramids); the
-*planned* B-spline and landmark registration would follow
-[Plastimatch](https://plastimatch.org/), which is also the reference for the
-planned DRR generation. Auto-segmentation re-implements
+[elastix](https://elastix.dev/) (rigid and B-spline, ASGD, pyramids) and
+[plastimatch](https://plastimatch.org/) (dense B-spline with L-BFGS and a
+bending-energy penalty, and the `landmark_warp` radial-basis kernels); the
+mutual-information metric follows Mattes et al. (IEEE TMI 2003). The two DRR
+projectors follow plastimatch's exact Siddon tracer and ITK's
+`RayCastInterpolateImageFunction`. Auto-segmentation re-implements
 [TotalSegmentator](https://github.com/wasserth/TotalSegmentator) on its
 [nnU-Net](https://github.com/MIC-DKFZ/nnUNet) models; prompt segmentation
 re-implements [SegVol](https://github.com/BAAI-DCAI/SegVol); slice
@@ -142,7 +162,9 @@ src/
   lib.rs            library root — every module is public, so the integration
                     tests and the examples drive the same code as the GUI
   progress.rs       the one progress handle + ProgressSink, Quiet, Stderr         Core
-  models.rs         the model folder: root, per-engine sub-folders, migration     NN
+  models.rs         the model folder: root, per-engine sub-folders, migration,
+                    and the inventory of every downloadable model (state, size,
+                    download / update / remove / free)                            NN
   settings.rs       persisted preferences (theme, model folder)                   App
 
   app/              egui application, split by concern; every submodule is a
@@ -157,10 +179,15 @@ src/
     d3.rs             live 3D structure window
     planar.rs         floating DX / CR / RTIMAGE viewers
     tree.rs           dataset-tree copy / move / remove with reference chains
-    jobs.rs           loading, registration, simulation, export, generator,
-                      anonymizer and auto-segmentation job starts
+    jobs.rs           loading, simulation, export, generator, anonymizer and
+                      auto-segmentation job starts
     dialogs.rs        auto-segmentation window + results, generator, anonymizer,
                       export, error dialog
+    reg_panel.rs      the Registration section: method, region, parameters,
+                      landmarks, the run, the analytics, the vector field
+    models_win.rs     the model manager window
+    propagate_win.rs  structure propagation window and worker
+    drr_win.rs        the DRR window: geometry, projectors, comparison
     seg.rs            interactive segmentation state machine, mask ▶ RTSTRUCT,
                       landing an auto-segmentation result
     seg_engines.rs    what the three engine windows share: names and glyphs,
@@ -180,15 +207,29 @@ src/
   rtstruct.rs       RT Structure Set parsing                                     DICOM
   rtdose.rs         RT Dose parsing + trilinear patient-space sampling           DICOM
   rtplan.rs         RT Plan / RT Ion Plan parsing                                DICOM
-  extras.rs         DX / CR / RTIMAGE planar images, REG, RTRECORD               DICOM
-  dicom_export.rs   DICOM writer (CT series, RTSTRUCT, RTDOSE, RTPLAN)           DICOM
+  extras.rs         DX / CR / RTIMAGE planar images, REG (matrices and
+                    deformation grids), RTRECORD                                 DICOM
+  dicom_export.rs   DICOM writer (CT series, RTSTRUCT, RTDOSE, RTPLAN, and the
+                    Deformable Spatial Registration a recovered field becomes)   DICOM
   anonymize.rs      interactive DICOM anonymizer engine                          DICOM
   gen_test_data.rs  synthetic RT phantom study generator                         Sim
   simulate.rs       known-transform study generator (registration QA)           Sim
-  registration.rs   elastix-style rigid + B-spline registration
-                    (ASGD, pyramids, stochastic sampling)                        Reg
+  registration.rs   parameters, transforms (rigid, B-spline, RBF, field,
+                    composite), region masks, the image pyramid and the
+                    samplers, and the engine dispatch                            Reg
+    elastix.rs        stochastic sampling + ASGD, rigid and B-spline stages
+    plastimatch.rs    align_center, dense analytic gradient, bending energy,
+                      Mattes mutual information, L-BFGS
+    landmark.rs       thin-plate / Gaussian / Wendland RBF warp, dense solve
+    analysis.rs       6-DOF Procrustes fit, displacement and Jacobian statistics
+    dvf.rs            vector-field sampling and its view-plane / 3-D glyphs
+  propagate.rs      structures across a registration: pull-back with a cached
+                    mapping lattice                                              Reg
+  drr.rs            digitally reconstructed radiographs: IEC cone-beam geometry,
+                    Siddon exact tracing and ITK-style interpolating ray-casting  Sim
   segmentation.rs   voxel masks: brush, geodesic grow, undo, overlays,
-                    label map ▶ segmentations, mask ▶ RTSTRUCT contours          Seg
+                    label map ▶ segmentations, mask ▶ RTSTRUCT contours and
+                    RTSTRUCT contours ▶ mask                                     Seg
   mesh3d.rs         contour / mask ▶ surface meshes (scanline fill,
                     surface nets, Laplacian smoothing)                           Seg
 

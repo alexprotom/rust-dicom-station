@@ -63,8 +63,22 @@ registration** in either direction, with an optional inversion — a
 TPS-exported registration then immediately drives the fusion overlay and
 the cross-study crosshair link without running the optimizer. The matrix is
 validated (orthonormality, no reflection/scale) before being accepted.
-Deformable REG objects are recognized and their rigid components read;
-deformation grids are not applied.
+
+**Deformable Spatial Registration** objects are read the same way, grid
+included: the displacement lattice becomes a transform that can be applied
+in either direction, after which everything downstream — fusion, the
+crosshair link, the analytics, the vector-field display, structure
+propagation — works on it without knowing where it came from. The panel
+reports the lattice size, its spacing and its largest displacement, and says
+which loaded dataset the grid's own frame of reference matches, so applying
+it the wrong way round is a deliberate act rather than an accident.
+
+A registration recovered here can be written back out as a Deformable
+Spatial Registration (*Registration ▶ Vector field ▶ 💾 Save as DICOM…*).
+The IOD applies its grid after a pre-deformation matrix and before a
+post-deformation one; both are written as the identity and the grid carries
+the whole mapping, so another system has no composition rule to get wrong.
+See [registration.md](registration.md).
 
 ## RTRECORD — treatment records
 

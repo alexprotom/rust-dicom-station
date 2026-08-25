@@ -29,120 +29,6 @@ impl ViewerApp {
             });
     }
 
-    pub(super) fn registration_section(&mut self, ui: &mut egui::Ui) {
-        let both = self.slots[0].study.is_some() && self.slots[1].study.is_some();
-        if !both && self.registration.is_none() && self.reg_job.is_none() {
-            return;
-        }
-        let mut do_reg: Option<RegKind> = None;
-        let mut cancel_reg = false;
-        let mut clear_reg = false;
-        egui::CollapsingHeader::new(egui::RichText::new("Registration").strong())
-            .default_open(true)
-            .show(ui, |ui| {
-                if let Some(job) = &self.reg_job {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(job.progress.get());
-                    });
-                    if ui.button("Cancel").clicked() {
-                        cancel_reg = true;
-                    }
-                    return;
-                }
-
-                ui.horizontal(|ui| {
-                    ui.label("Direction");
-                    ui.selectable_value(&mut self.reg_fixed_slot, 0, "B ▶ A")
-                        .on_hover_text("B is deformed/moved onto A; fusion shown on A");
-                    ui.selectable_value(&mut self.reg_fixed_slot, 1, "A ▶ B")
-                        .on_hover_text("A is deformed/moved onto B; fusion shown on B");
-                });
-
-                ui.horizontal(|ui| {
-                    ui.label("Iterations/level");
-                    ui.add(
-                        egui::DragValue::new(&mut self.reg_iterations)
-                            .speed(10)
-                            .range(50..=5000),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Samples/iter");
-                    ui.add(
-                        egui::DragValue::new(&mut self.reg_samples)
-                            .speed(100)
-                            .range(500..=50000),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.label("B-spline grid");
-                    ui.add(
-                        egui::DragValue::new(&mut self.reg_grid_mm)
-                            .speed(1.0)
-                            .range(8.0..=128.0)
-                            .suffix(" mm"),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(both, egui::Button::new("▶ Rigid")).clicked() {
-                        do_reg = Some(RegKind::Rigid);
-                    }
-                    if ui
-                        .add_enabled(both, egui::Button::new("▶ Deformable"))
-                        .clicked()
-                    {
-                        do_reg = Some(RegKind::Deformable);
-                    }
-                });
-
-                if let Some(reg) = &self.registration {
-                    ui.separator();
-                    let res = &reg.result;
-                    let kind = match res.kind {
-                        RegKind::Rigid => "Rigid (Euler 6-DOF)",
-                        RegKind::Deformable => "Rigid + B-spline FFD",
-                    };
-                    let moving = SLOT_NAMES[1 - reg.fixed_slot];
-                    let fixed = SLOT_NAMES[reg.fixed_slot];
-                    ui.label(format!("✔ {kind}  ({moving} ▶ {fixed})"));
-                    ui.weak(format!(
-                        "MSD {:.1} ▶ {:.1}  ({} iters, {:.1} s)",
-                        res.initial_metric, res.final_metric, res.iterations_run, res.elapsed_secs
-                    ));
-                    let t = res.transform.rigid.params();
-                    ui.weak(format!(
-                        "t = ({:.1}, {:.1}, {:.1}) mm  r = ({:.2}, {:.2}, {:.2})°",
-                        t[3],
-                        t[4],
-                        t[5],
-                        t[0].to_degrees(),
-                        t[1].to_degrees(),
-                        t[2].to_degrees()
-                    ));
-                    ui.checkbox(&mut self.fusion_on, format!("Fusion overlay on {fixed}"));
-                    ui.add(
-                        egui::Slider::new(&mut self.fusion_weight, 0.0..=1.0).text("Fusion blend"),
-                    );
-                    if ui.button("Clear registration").clicked() {
-                        clear_reg = true;
-                    }
-                }
-            });
-        ui.separator();
-        if let Some(kind) = do_reg {
-            self.start_registration(kind);
-        }
-        if cancel_reg {
-            if let Some(job) = &self.reg_job {
-                job.progress.cancel();
-            }
-        }
-        if clear_reg {
-            self.clear_registration();
-        }
-    }
-
     /// Study transform simulator: apply a known rigid motion + optional
     /// Gaussian deformation to a study and generate the result into the
     /// other slot (the generated study is exportable via *File ▶ Export*).
@@ -1044,6 +930,7 @@ impl ViewerApp {
         }
         let both = self.slots[0].study.is_some() && self.slots[1].study.is_some();
         let mut apply: Option<(registration::RigidTransform, usize)> = None;
+        let mut apply_grid: Option<(usize, usize)> = None;
         {
             let study = self.slots[slot].study.as_ref().unwrap();
             // Frame-of-reference UIDs of the loaded volumes for hints.
@@ -1168,6 +1055,47 @@ impl ViewerApp {
                                 }
                             }
                         }
+                        // A Deformable Spatial Registration's displacement
+                        // lattice applies exactly as a matrix does.
+                        if let Some(grid) = &reg.grid {
+                            ui.weak(format!("· deformation grid: {}", grid.describe()));
+                            let src_hint = if !for_a.is_empty()
+                                && reg.grid_source_for_uid == for_a
+                            {
+                                Some(0usize)
+                            } else if !for_b.is_empty() && reg.grid_source_for_uid == for_b {
+                                Some(1usize)
+                            } else {
+                                None
+                            };
+                            ui.horizontal(|ui| {
+                                for fixed in 0..2 {
+                                    let label = format!(
+                                        "Apply grid as {} ▶ {}",
+                                        SLOT_NAMES[1 - fixed],
+                                        SLOT_NAMES[fixed]
+                                    );
+                                    let hint = match src_hint {
+                                        Some(s) if s == fixed => {
+                                            "The grid's own frame of reference matches this                                              dataset — this is the direction the file means"
+                                        }
+                                        Some(_) => {
+                                            "The grid's frame of reference matches the *other*                                              dataset; applying it this way round inverts what                                              the file says"
+                                        }
+                                        None => {
+                                            "Neither loaded dataset matches the grid's frame of                                              reference — check that this is the right pair"
+                                        }
+                                    };
+                                    if ui
+                                        .add_enabled(both, egui::Button::new(label))
+                                        .on_hover_text(hint)
+                                        .clicked()
+                                    {
+                                        apply_grid = Some((ri, fixed));
+                                    }
+                                }
+                            });
+                        }
                         if ri + 1 < study.registrations.len() {
                             ui.separator();
                         }
@@ -1177,6 +1105,25 @@ impl ViewerApp {
         }
         if let Some((rigid, fixed_slot)) = apply {
             self.apply_external_rigid(rigid, fixed_slot);
+        }
+        if let Some((ri, fixed_slot)) = apply_grid {
+            if let Some(field) = self.slots[slot]
+                .study
+                .as_ref()
+                .and_then(|s| s.registrations.get(ri))
+                .and_then(|r| r.grid.clone())
+            {
+                let center = field.origin;
+                let transform = Transform3 {
+                    rigid: registration::RigidTransform::identity(center),
+                    warp: registration::Warp::Field(Arc::new(field)),
+                };
+                self.apply_external_transform(
+                    transform,
+                    registration::RegMethod::PlastimatchBSpline,
+                    fixed_slot,
+                );
+            }
         }
     }
 

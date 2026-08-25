@@ -90,6 +90,23 @@ pub const SPECS_15MM: [ModelSpec; 5] = [
     },
 ];
 
+/// Every published model, in the order the interface lists them: the fast
+/// single model, the five full-resolution sub-models, the preview model.
+///
+/// The inventory in [`crate::models`] walks this list; nothing else needs to
+/// know that the 1.5 mm variant is five downloads rather than one.
+pub fn all_specs() -> Vec<ModelSpec> {
+    let mut v = vec![SPEC_3MM];
+    v.extend(SPECS_15MM);
+    v.push(SPEC_6MM);
+    v
+}
+
+/// The published model a cache key names, if any.
+pub fn spec_by_key(key: &str) -> Option<ModelSpec> {
+    all_specs().into_iter().find(|s| s.key == key)
+}
+
 /// A ready-to-run model: architecture config + named weight tensors.
 pub struct LoadedModel {
     pub spec: ModelSpec,
@@ -135,10 +152,12 @@ pub fn ensure_model(
 }
 
 /// Converted-weight cache and the nnU-Net plan, written per model.
-const CACHE_NAME: &str = "model.safetensors";
-const PLANS_NAME: &str = "plans.json";
+pub const CACHE_NAME: &str = "model.safetensors";
+pub const PLANS_NAME: &str = "plans.json";
 /// The checkpoint extracted from the release zip; deleted after conversion.
-const CHECKPOINT_TMP: &str = "checkpoint.tmp.pth";
+pub const CHECKPOINT_TMP: &str = "checkpoint.tmp.pth";
+/// The release zip while it is being fetched; deleted after unpacking.
+pub const DOWNLOAD_TMP: &str = "download.zip.tmp";
 
 /// True when the model's converted cache is already present.
 pub fn is_cached(spec: &ModelSpec, models_dir: &Path) -> bool {
@@ -154,7 +173,7 @@ fn download_and_unpack(
     sink: &dyn ProgressSink,
 ) -> Result<std::path::PathBuf> {
     std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-    let zip_tmp = dir.join("download.zip.tmp");
+    let zip_tmp = dir.join(DOWNLOAD_TMP);
     // ---- download --------------------------------------------------------
     cache::download_to_file(
         spec.url,

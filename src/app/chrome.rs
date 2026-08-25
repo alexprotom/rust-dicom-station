@@ -9,8 +9,11 @@ impl ViewerApp {
         let mut open_b = false;
         let mut close_b = false;
         let mut reset_views = false;
-        let mut do_reg: Option<RegKind> = None;
+        let mut do_reg: Option<(RegMethod, bool)> = None;
         let mut open_gen = false;
+        let mut open_models = false;
+        let mut open_propagate = false;
+        let mut open_drr = false;
         let mut open_export: Option<usize> = None;
         let mut new_theme: Option<egui::ThemePreference> = None;
 
@@ -125,40 +128,49 @@ impl ViewerApp {
                     }
                 });
                 ui.menu_button("Registration", |ui| {
-                    // Quick actions only — direction, parameters, fusion and
-                    // cancel/clear live in the sidebar Registration section.
+                    // Quick actions only — direction, region, parameters,
+                    // landmarks, analytics, fusion and the vector field live
+                    // in the sidebar Registration section.
                     let both = self.slots[0].study.is_some() && self.slots[1].study.is_some();
                     let running = self.reg_job.is_some();
                     let moving = SLOT_NAMES[1 - self.reg_fixed_slot.min(1)];
                     let fixed = SLOT_NAMES[self.reg_fixed_slot.min(1)];
-                    if ui
-                        .add_enabled(
-                            both && !running,
-                            egui::Button::new(format!("Rigid: register {moving} ▶ {fixed}")),
-                        )
-                        .on_hover_text(
-                            "6-DOF Euler transform, ASGD optimizer (elastix-style), \
-                             3 resolution levels",
-                        )
-                        .clicked()
-                    {
-                        do_reg = Some(RegKind::Rigid);
-                        ui.close();
+                    ui.weak(format!("Register {moving} onto {fixed}:"));
+                    for method in RegMethod::ALL {
+                        if ui
+                            .add_enabled(
+                                both && !running,
+                                egui::Button::new(format!(
+                                    "{} — {}",
+                                    method.family(),
+                                    method.short()
+                                )),
+                            )
+                            .on_hover_text(method.hint())
+                            .clicked()
+                        {
+                            do_reg = Some((method, false));
+                            ui.close();
+                        }
                     }
+                    ui.separator();
+                    let can_refine = self
+                        .registration
+                        .as_ref()
+                        .is_some_and(|r| r.fixed_slot == self.reg_fixed_slot.min(1));
                     if ui
                         .add_enabled(
-                            both && !running,
-                            egui::Button::new(format!(
-                                "Deformable: register {moving} ▶ {fixed} (B-spline)"
-                            )),
+                            both && !running && can_refine,
+                            egui::Button::new("Refine the active registration"),
                         )
                         .on_hover_text(
-                            "Rigid pre-alignment + cubic B-spline free-form deformation, \
-                             ASGD optimizer (elastix-style)",
+                            "Recover a correction on top of the active result with the \
+                             method and region chosen in the sidebar, and add the two \
+                             together",
                         )
                         .clicked()
                     {
-                        do_reg = Some(RegKind::Deformable);
+                        do_reg = Some((self.reg_method, true));
                         ui.close();
                     }
                     if !both {
@@ -219,6 +231,46 @@ impl ViewerApp {
                         None => {}
                     }
                     ui.separator();
+                    let both = self.slots[0].study.is_some() && self.slots[1].study.is_some();
+                    if ui
+                        .add_enabled(both, egui::Button::new("⇄ Propagate structures…"))
+                        .on_hover_text(
+                            "Carry contours and segmentations from one dataset to the \
+                             other through the active registration — globally, or refined \
+                             on an enclosing structure first",
+                        )
+                        .clicked()
+                    {
+                        open_propagate = true;
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            self.slots[0].study.is_some() || self.slots[1].study.is_some(),
+                            egui::Button::new("☢ Digitally reconstructed radiograph…"),
+                        )
+                        .on_hover_text(
+                            "Forward-project the CT onto a flat detector — two \
+                             independent projectors, an exact ray tracer and an \
+                             interpolating one, with the difference between them",
+                        )
+                        .clicked()
+                    {
+                        open_drr = true;
+                        ui.close();
+                    }
+                    if ui
+                        .button("📦 Downloaded models…")
+                        .on_hover_text(
+                            "What every segmentation engine has downloaded, how much disk \
+                             it costs, and the buttons to download, update or remove it — \
+                             one model at a time or all of them",
+                        )
+                        .clicked()
+                    {
+                        open_models = true;
+                        ui.close();
+                    }
                     if ui
                         .button("🔏 Anonymize DICOM folder…")
                         .on_hover_text(
@@ -291,11 +343,27 @@ impl ViewerApp {
         if reset_views {
             self.reset_all_views();
         }
-        if let Some(kind) = do_reg {
-            self.start_registration(kind);
+        if let Some((method, refine)) = do_reg {
+            self.reg_method = method;
+            self.start_registration(refine);
         }
         if open_gen {
             self.gen_open = true;
+        }
+        if open_models {
+            self.open_models_window();
+        }
+        if open_drr {
+            let slot = usize::from(self.slots[0].study.is_none());
+            self.open_drr_window(slot);
+        }
+        if open_propagate {
+            let src = self
+                .registration
+                .as_ref()
+                .map(|r| r.fixed_slot)
+                .unwrap_or(0);
+            self.open_propagate_window(src);
         }
         if let Some(slot) = open_export {
             self.open_export_dialog(slot);

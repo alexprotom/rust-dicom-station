@@ -7,7 +7,9 @@ loads a full radiotherapy study: image series (CT/MRI/PET), RT Structure
 Set, RT Dose, RT Plan (photon and ion/proton), planar images, spatial
 registrations, treatment records; and displays it in the classic
 three-view layout, with a second dataset row for comparison, built-in
-elastix-style **image registration**, **interactive
+**image registration** (elastix- and plastimatch-style, rigid, deformable
+and landmark-based, with analytics and a deformation vector field),
+**structure propagation**, **DRR generation**, **interactive
 segmentation**, a live **3D structure view**, **automatic multi-organ
 segmentation** (a pure-Rust re-implementation of TotalSegmentator, 117
 structures, CPU or any GPU), **prompt-driven segmentation** (a
@@ -37,11 +39,35 @@ holds the registration controls and both dataset trees.*
 * **Datasets** - a patient ▶ study ▶ series tree per dataset, folder
   merging, copy/move/remove with correct reference-chain semantics,
   six-view comparison mode with patient-space crosshair linking.
-* **Registration** - rigid (6-DOF) and deformable (cubic B-spline)
-  registration re-implemented from elastix (multi-resolution pyramids,
-  stochastic sampling, ASGD optimizer), magenta/green fusion overlay,
-  DICOM REG support, a known-transform simulator for QA, sub-millimeter
-  verified accuracy.
+* **Registration** - four engines, none of them a binding: rigid (6-DOF)
+  and deformable (cubic B-spline) re-implemented from **elastix**
+  (multi-resolution pyramids, stochastic sampling, ASGD); a dense
+  **plastimatch** B-spline with the exact analytic gradient, a
+  bending-energy regularizer, L-BFGS and a choice of mean squares or
+  **Mattes mutual information** for CT-MR; and plastimatch's **landmark
+  warp** (thin-plate spline, Gaussian, Wendland). Any of them can be
+  restricted to a single structure, or refined on top of an existing
+  result - a local deformation is provably zero outside its region.
+  Every run reports its **six degrees of freedom**, displacement
+  statistics, Jacobian determinant and folding, and per-structure
+  displacement; the **deformation vector field** draws as arrows or a
+  deformed grid in all views and as glyphs in 3D, where both datasets can
+  stand in one scene with independent opacity. Magenta/green fusion
+  overlay, DICOM REG *and* Deformable Spatial Registration read and
+  written, a known-transform simulator for QA, sub-millimeter verified
+  accuracy.
+* **Structure propagation** - contours and segmentations carried between
+  datasets through any registration, pulled back per destination voxel
+  (no holes, sub-voxel boundaries, any two grids), with an optional local
+  refinement on the enclosing structure first - which is what makes a
+  small structure inside a larger one land where it belongs. Results
+  arrive as ordinary editable segmentations, convertible to RTSTRUCT.
+* **DRR generation** - two independent forward projectors on one IEC
+  cone-beam geometry (beam's-eye view straight from an RTPLAN beam):
+  plastimatch's **exact Siddon** voxel-intersection ray tracing, and
+  ITK's **interpolating ray-cast**. Side by side with a signed difference
+  image and its statistics - the honest measure of what either one costs
+  you.
 * **Segmentation** - spacing-aware 2D/3D brush and eraser, geodesic
   region growing with live preview, per-stroke undo, real-time 3D surface
   view, mask → RTSTRUCT conversion.
@@ -68,10 +94,13 @@ holds the registration controls and both dataset trees.*
   Validated against the reference implementation module by module and over a
   full propagation.
 * **Tools** - DICOM export with an editable patient/study tag table
-  (CT + RTSTRUCT + RTDOSE + RTPLAN), an interactive folder anonymizer with
-  consistent UID regeneration, and a synthetic RT-study generator; 250+
-  tests across nine integration suites assert the whole stack against an
-  analytically known phantom, on Linux and Windows in CI.
+  (CT + RTSTRUCT + RTDOSE + RTPLAN), a **model manager** showing every
+  downloadable network weight with its state and size and the buttons to
+  download, update, remove or free one or all of them, an interactive
+  folder anonymizer with consistent UID regeneration, and a synthetic
+  RT-study generator; 280+ tests across nine integration suites assert the
+  whole stack against an analytically known phantom, on Linux and Windows
+  in CI.
 
 ## Architecture
 
@@ -79,7 +108,9 @@ One language, one binary. Every algorithm - DICOM parsing, volume
 reconstruction, rendering primitives, registration, meshing, neural-net
 inference, DICOM writing - is implemented in Rust; where a feature
 usually means binding a C/C++ library (ITK/elastix, ONNX Runtime, CUDA),
-it is re-implemented natively instead. Image processing runs CPU-side
+it is re-implemented natively instead - elastix and plastimatch
+registration, ITK forward projection, TotalSegmentator, SegVol and MedSAM2
+inference all included. Image processing runs CPU-side
 with `rayon` and aggressive caching; the GPU (via `wgpu`) only blits the
 UI and, optionally, runs the segmentation networks. Long operations run on
 background threads with progress and cancellation. The full module map,
@@ -127,12 +158,14 @@ ships a real two-phase 4DCT (see
 |---|---|
 | [docs/viewer.md](docs/viewer.md) | Loading, MPR views, dataset tree, comparison mode, interaction reference |
 | [docs/rt-objects.md](docs/rt-objects.md) | RTSTRUCT, RTDOSE, RTPLAN, REG, RTRECORD, reference chains |
-| [docs/registration.md](docs/registration.md) | Rigid + B-spline registration, fusion, simulator, verification |
+| [docs/registration.md](docs/registration.md) | The four registration engines, local registration, analytics, vector fields, fusion, simulator, verification |
+| [docs/propagation.md](docs/propagation.md) | Carrying contours and segmentations across a registration |
+| [docs/drr.md](docs/drr.md) | Digitally reconstructed radiographs: the two projectors and the geometry |
 | [docs/segmentation.md](docs/segmentation.md) | Brush / eraser / region growing, 3D view, mask → RTSTRUCT |
 | [docs/segvol.md](docs/segvol.md) | Prompt-driven segmentation: box / point / text, the SegVol re-implementation |
 | [docs/medsam2.md](docs/medsam2.md) | Propagating a prompt through a stack: the MedSAM2 re-implementation |
 | [docs/auto-segmentation.md](docs/auto-segmentation.md) | The pure-Rust TotalSegmentator: models, pipeline, engines, validation, classes, licensing |
-| [docs/export-and-tools.md](docs/export-and-tools.md) | DICOM export, anonymizer, test-data generator |
+| [docs/export-and-tools.md](docs/export-and-tools.md) | DICOM export, the model manager, anonymizer, test-data generator |
 | [docs/architecture.md](docs/architecture.md) | Design, functional overview, module map, threading, the model folder, conventions, testing |
 | [docs/example-data.md](docs/example-data.md) | Bundled patient data, source and citations |
 | [installer/README.md](installer/README.md) | The Windows installer: building it, what it installs, silent switches |

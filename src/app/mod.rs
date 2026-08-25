@@ -17,11 +17,15 @@ use crate::autoseg;
 use crate::dicom_export;
 use crate::extras;
 use crate::gen_test_data::{self, GenParams};
+use crate::geometry::Vec3;
 use crate::loader::{self, LoadedStudy};
 use crate::mesh3d::{self, GridGeom, RoiMesh};
 use crate::models;
 use crate::progress::{self, Progress};
-use crate::registration::{self, RegKind, RegParams, RegistrationResult, Transform3};
+use crate::registration::{
+    self, dvf, FieldStyle, LandmarkPair, LandmarkParams, Metric, RegMethod, RegionMask,
+    RegistrationResult, Transform3, VectorField,
+};
 use crate::render;
 use crate::segmentation::{self, GrowState, Segmentation};
 use crate::settings::{self, Settings};
@@ -32,16 +36,23 @@ mod box_seg;
 mod chrome;
 mod d3;
 mod dialogs;
+mod drr_win;
 mod jobs;
+mod models_win;
 mod panels;
 mod planar;
 mod prompt_seg;
+mod propagate_win;
+mod reg_panel;
 mod seg;
 mod seg_engines;
 mod theme;
 mod tree;
 mod views;
 
+use drr_win::DrrDialog;
+use propagate_win::{PropOutcome, PropagateDialog};
+use reg_panel::{RegOutcome, RegRoi};
 use seg_engines::*;
 use theme::*;
 
@@ -210,6 +221,12 @@ struct ViewState {
     fusion_key: Option<u64>,
     seg_tex: Option<TextureHandle>,
     seg_key: Option<u64>,
+    /// Identity of the vector-field geometry cached below.
+    field_key: Option<u64>,
+    /// Arrows of the deformation field on this slice, display-pixel space.
+    field_arrows: Vec<registration::dvf::Glyph>,
+    /// The deformed lattice of this slice, display-pixel space.
+    field_lines: Vec<Vec<[f32; 2]>>,
 }
 
 impl ViewState {
@@ -233,6 +250,9 @@ impl ViewState {
             fusion_key: None,
             seg_tex: None,
             seg_key: None,
+            field_key: None,
+            field_arrows: Vec::new(),
+            field_lines: Vec::new(),
         }
     }
 
@@ -242,6 +262,7 @@ impl ViewState {
         self.contour_key = None;
         self.fusion_key = None;
         self.seg_key = None;
+        self.field_key = None;
     }
 }
 
@@ -413,6 +434,19 @@ struct D3Window {
     seg_job: Option<Job<Vec<RoiMesh>>>,
     /// Hash of the segmentation state `seg_meshes` was built from.
     seg_built: u64,
+    /// Also draw the *other* dataset's structures, mapped through the active
+    /// registration — the two anatomies in one scene is what makes a
+    /// deformable result readable at all.
+    show_other: bool,
+    /// Opacity of that second dataset, independent of this one's.
+    other_opacity: f32,
+    other_meshes: Option<Arc<Vec<RoiMesh>>>,
+    other_job: Option<Job<Vec<RoiMesh>>>,
+    /// Identity of the (structure set, registration) `other_meshes` were
+    /// built from.
+    other_key: u64,
+    /// Draw the deformation field as arrows in the scene.
+    show_field: bool,
     /// Cached projected geometry for the current camera.
     frame: D3Frame,
 }
@@ -513,6 +547,12 @@ struct ActiveRegistration {
     /// coordinates into the other (moving) slot's. The fusion overlay is
     /// drawn on this slot's views.
     fixed_slot: usize,
+    /// The displacement field sampled from the transform, so the views draw
+    /// a lattice lookup instead of evaluating the transform per pixel.
+    field: Arc<VectorField>,
+    /// The region the run was restricted to, kept so the field can be
+    /// re-sampled at a different lattice without rebuilding the mask.
+    region: Option<Arc<RegionMask>>,
 }
 
 // Application
@@ -534,16 +574,53 @@ pub struct ViewerApp {
     // Registration (direction selectable: either study can be the fixed one).
     registration: Option<ActiveRegistration>,
     /// The payload carries the slot that was used as the fixed image.
-    reg_job: Option<SegJob<RegistrationResult>>,
+    reg_job: Option<SegJob<RegOutcome>>,
     /// Fixed-image slot for the *next* registration run (0 = A, 1 = B).
     reg_fixed_slot: usize,
     fusion_on: bool,
     fusion_weight: f32,
     /// Bumped when the registration result changes → fusion cache rebuild.
     reg_gen: u64,
+    /// Which algorithm the next run uses.
+    reg_method: RegMethod,
+    /// What the plastimatch engine minimizes.
+    reg_metric: Metric,
+    reg_levels: usize,
     reg_iterations: usize,
     reg_samples: usize,
     reg_grid_mm: f64,
+    /// Sampling threshold (a crude body mask), HU.
+    reg_threshold: f32,
+    /// plastimatch bending-energy weight.
+    reg_regularization: f64,
+    /// Kernel, stiffness and reach of the landmark warp.
+    reg_landmark: LandmarkParams,
+    /// The paired points the landmark warp interpolates.
+    reg_landmarks: Vec<LandmarkPair>,
+    /// Which structure of the fixed dataset restricts the next run.
+    reg_roi: RegRoi,
+    /// Margin the region is grown by, mm.
+    reg_margin_mm: f64,
+
+    // The deformation vector field of the active registration.
+    field_on: bool,
+    field_style: FieldStyle,
+    field_step_mm: f64,
+    /// Arrows are drawn this many times their true length.
+    field_scale: f32,
+    field_color: bool,
+    /// A re-sampling of the field after the lattice step changed.
+    field_job: Option<Job<VectorField>>,
+
+    // Tools ▶ DRR.
+    drr_dialog: Option<DrrDialog>,
+    drr_job: Option<Job<anyhow::Result<Vec<crate::drr::DrrImage>>>>,
+
+    // Tools ▶ Propagate structures.
+    /// The window, when open.
+    propagate_dialog: Option<PropagateDialog>,
+    /// The payload carries the destination slot.
+    propagate_job: Option<SegJob<PropOutcome>>,
 
     // Study transform simulator (registration QA).
     sim_source: usize,
@@ -632,6 +709,16 @@ pub struct ViewerApp {
     /// engines (persisted in the settings file; blank = the default).
     models_dir: String,
 
+    // Tools ▶ Downloaded models: the inventory window.
+    models_open: bool,
+    /// The inventory with each model's state, re-read at most twice a second.
+    models_scan: Vec<(models::ModelAsset, models::AssetStatus)>,
+    /// `ctx` time the scan above was taken at.
+    models_scan_at: f64,
+    /// A download / update batch in flight; its payload is the summary line.
+    models_job: Option<Job<anyhow::Result<String>>>,
+    models_result: Option<String>,
+
     // Auto-segmentation (TotalSegmentator re-implementation, see `autoseg`).
     /// The payload carries the slot the volume came from.
     autoseg_job: Option<SegJob<autoseg::AutosegResult>>,
@@ -715,9 +802,28 @@ impl ViewerApp {
             fusion_on: false,
             fusion_weight: 1.0,
             reg_gen: 0,
+            reg_method: RegMethod::ElastixRigid,
+            reg_metric: Metric::MeanSquares,
+            reg_levels: 3,
             reg_iterations: 300,
             reg_samples: 3000,
             reg_grid_mm: 32.0,
+            reg_threshold: -500.0,
+            reg_regularization: 0.02,
+            reg_landmark: LandmarkParams::default(),
+            reg_landmarks: Vec::new(),
+            reg_roi: RegRoi::Whole,
+            reg_margin_mm: 10.0,
+            field_on: false,
+            field_style: FieldStyle::Arrows,
+            field_step_mm: 12.0,
+            field_scale: 3.0,
+            field_color: true,
+            field_job: None,
+            drr_dialog: None,
+            drr_job: None,
+            propagate_dialog: None,
+            propagate_job: None,
             sim_source: 0,
             sim_params: SimParams::default(),
             sim_job: None,
@@ -757,6 +863,11 @@ impl ViewerApp {
             show_labels: true,
             show_isocenters: true,
             models_dir,
+            models_open: false,
+            models_scan: Vec::new(),
+            models_scan_at: f64::NEG_INFINITY,
+            models_job: None,
+            models_result: None,
             autoseg_job: None,
             autoseg_slot: 0,
             autoseg_dialog: None,
@@ -933,6 +1044,9 @@ impl eframe::App for ViewerApp {
             None => {}
         }
 
+        // Poll a model download / update batch.
+        self.poll_models_job(&ctx);
+
         // Poll the three segmentation engines.
         if let Some((slot, result)) =
             poll_tool_job(&mut self.autoseg_job, &ctx, AUTOSEG.name, &mut self.error)
@@ -954,15 +1068,47 @@ impl eframe::App for ViewerApp {
         }
 
         // Poll background registration.
-        if let Some((fixed_slot, result)) =
+        if let Some((fixed_slot, out)) =
             poll_tool_job(&mut self.reg_job, &ctx, "Registration", &mut self.error)
         {
-            self.registration = Some(ActiveRegistration { result, fixed_slot });
+            self.registration = Some(ActiveRegistration {
+                result: out.result,
+                fixed_slot,
+                field: Arc::new(out.field),
+                region: out.region,
+            });
             self.fusion_on = true;
             self.reg_gen += 1;
             // Re-propagate the crosshair through the new transform.
             let cursor = self.slots[fixed_slot].cursor;
             self.set_cursor(fixed_slot, cursor, usize::MAX);
+        }
+
+        // Poll a DRR rendering.
+        match poll_job(&mut self.drr_job, &ctx, "DRR", &mut self.error) {
+            Some(Ok(images)) => self.on_drr_done(images),
+            // A cancelled render is what the user asked for, not a failure.
+            Some(Err(e)) if !progress::is_cancellation(&e) => {
+                self.error = Some(format!("DRR failed: {e:#}"));
+            }
+            _ => {}
+        }
+
+        // Poll a structure propagation.
+        if let Some((dst_slot, out)) = poll_tool_job(
+            &mut self.propagate_job,
+            &ctx,
+            "Propagation",
+            &mut self.error,
+        ) {
+            self.on_propagation_done(dst_slot, out);
+        }
+
+        // Poll a vector-field re-sampling.
+        if let Some(field) = poll_job(&mut self.field_job, &ctx, "Vector field", &mut self.error) {
+            if let Some(reg) = &mut self.registration {
+                reg.field = Arc::new(field);
+            }
         }
 
         // Global segmentation shortcuts (skipped while a text field is

@@ -3,8 +3,9 @@
 //! * planar projection images — DX / CR digital radiographs and RTIMAGE
 //!   (DRRs, portal / setup images), shown in floating viewer windows;
 //! * REG — Spatial Registration objects (rigid 4×4 frame-of-reference
-//!   transformation matrices; deformable REG objects are recognized and
-//!   their matrices read, but deformation grids are not applied);
+//!   transformation matrices, and Deformable Spatial Registration objects
+//!   with their displacement grids, both of which can be applied as the
+//!   active registration);
 //! * RTRECORD — RT (Ion) Beams Treatment Records with per-beam specified vs
 //!   delivered metersets and termination status.
 
@@ -16,7 +17,7 @@ use dicom_pixeldata::{ConvertOptions, ModalityLutOption, PixelDecoder};
 
 use crate::geometry::Vec3;
 use crate::loader::{f64_of, f64s_of, i32_of, items_of, str_of};
-use crate::registration::RigidTransform;
+use crate::registration::{RigidTransform, VectorField};
 
 // ---------------------------------------------------------------------------
 // Planar images (DX / CR / RTIMAGE)
@@ -170,12 +171,18 @@ pub struct RegMatrixItem {
 #[derive(Clone)]
 pub struct SpatialReg {
     pub label: String,
-    /// True for Deformable Spatial Registration Storage (grids not applied).
+    /// True for Deformable Spatial Registration Storage.
     pub deformable: bool,
     /// Frame of Reference of the registration instance itself (the frame
     /// the matrices transform *into*).
     pub frame_of_reference_uid: String,
     pub items: Vec<RegMatrixItem>,
+    /// The displacement lattice of a Deformable Spatial Registration, when
+    /// the object carries one — it can be applied as the active
+    /// registration exactly like a matrix.
+    pub grid: Option<VectorField>,
+    /// Frame of Reference the grid's own lattice lives in.
+    pub grid_source_for_uid: String,
 }
 
 const SOP_SPATIAL_REG: &str = "1.2.840.10008.5.1.4.1.1.66.1";
@@ -232,15 +239,97 @@ pub fn load_reg(path: &Path) -> Result<SpatialReg> {
             }
         }
     }
-    if items.is_empty() {
-        bail!("REG object contains no transformation matrices");
+    let (grid, grid_source_for_uid) = if deformable {
+        read_deformation_grid(&obj)
+    } else {
+        (None, String::new())
+    };
+    if items.is_empty() && grid.is_none() {
+        bail!("REG object contains no transformation matrices and no deformation grid");
     }
     Ok(SpatialReg {
         label,
         deformable,
         frame_of_reference_uid,
         items,
+        grid,
+        grid_source_for_uid,
     })
+}
+
+// The Deformable Spatial Registration IOD's own tags, by number so the
+// reader does not depend on which release of the data dictionary is linked.
+const TAG_DEFORMABLE_REGISTRATION_SEQ: dicom_core::Tag = dicom_core::Tag(0x0064, 0x0002);
+const TAG_SOURCE_FRAME_OF_REFERENCE_UID: dicom_core::Tag = dicom_core::Tag(0x0064, 0x0003);
+const TAG_DEFORMABLE_REGISTRATION_GRID_SEQ: dicom_core::Tag = dicom_core::Tag(0x0064, 0x0005);
+const TAG_GRID_DIMENSIONS: dicom_core::Tag = dicom_core::Tag(0x0064, 0x0007);
+const TAG_GRID_RESOLUTION: dicom_core::Tag = dicom_core::Tag(0x0064, 0x0008);
+const TAG_VECTOR_GRID_DATA: dicom_core::Tag = dicom_core::Tag(0x0064, 0x0009);
+
+/// Read the displacement lattice of a Deformable Spatial Registration.
+///
+/// Everything is optional and everything is checked: a file whose grid does
+/// not describe itself consistently is simply reported as having no grid,
+/// which leaves its matrices usable rather than failing the whole load.
+fn read_deformation_grid(obj: &dicom_object::DefaultDicomObject) -> (Option<VectorField>, String) {
+    let Some(regs) = items_of(obj, TAG_DEFORMABLE_REGISTRATION_SEQ) else {
+        return (None, String::new());
+    };
+    for r in regs {
+        let source = str_of(r, TAG_SOURCE_FRAME_OF_REFERENCE_UID).unwrap_or_default();
+        let Some(grids) = items_of(r, TAG_DEFORMABLE_REGISTRATION_GRID_SEQ) else {
+            continue;
+        };
+        for g in grids {
+            let dims: Vec<usize> = match f64s_of(g, TAG_GRID_DIMENSIONS) {
+                Some(v) if v.len() >= 3 => v[..3].iter().map(|x| *x as usize).collect(),
+                _ => continue,
+            };
+            let res: Vec<f64> = match f64s_of(g, TAG_GRID_RESOLUTION) {
+                Some(v) if v.len() >= 3 => v[..3].to_vec(),
+                _ => continue,
+            };
+            let Some(pos) = f64s_of(g, tags::IMAGE_POSITION_PATIENT).filter(|v| v.len() >= 3)
+            else {
+                continue;
+            };
+            let Some(orient) = f64s_of(g, tags::IMAGE_ORIENTATION_PATIENT).filter(|v| v.len() >= 6)
+            else {
+                continue;
+            };
+            let Some(raw) = g
+                .element(TAG_VECTOR_GRID_DATA)
+                .ok()
+                .and_then(|e| e.value().to_multi_float32().ok())
+            else {
+                continue;
+            };
+            let n = dims[0] * dims[1] * dims[2];
+            if n == 0 || raw.len() < 3 * n {
+                continue;
+            }
+            let row = Vec3::from_slice(&orient[0..3]).normalized();
+            let col = Vec3::from_slice(&orient[3..6]).normalized();
+            let data: Vec<Vec3> = raw[..3 * n]
+                .chunks_exact(3)
+                .map(|c| Vec3::new(c[0] as f64, c[1] as f64, c[2] as f64))
+                .collect();
+            let max_mag = data.iter().map(|v| v.length()).fold(0.0f64, f64::max);
+            return (
+                Some(VectorField {
+                    dims: [dims[0], dims[1], dims[2]],
+                    spacing: [res[0], res[1], res[2]],
+                    origin: Vec3::from_slice(&pos[0..3]),
+                    axes: [row, col, row.cross(col).normalized()],
+                    data,
+                    max_mag,
+                    region: None,
+                }),
+                source,
+            );
+        }
+    }
+    (None, String::new())
 }
 
 /// Convert a rigid 4×4 DICOM frame-of-reference matrix into our Euler-

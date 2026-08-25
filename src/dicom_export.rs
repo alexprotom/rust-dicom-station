@@ -817,3 +817,212 @@ pub fn export_study(
 fn truncate(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
+
+// ---------------------------------------------------------------------------
+// Deformable Spatial Registration
+// ---------------------------------------------------------------------------
+
+/// SOP Class UID of the Deformable Spatial Registration IOD.
+pub const SOP_DEFORMABLE_REG: &str = "1.2.840.10008.5.1.4.1.1.66.3";
+
+// The IOD's own tags. Written by number rather than by dictionary name so
+// the file does not depend on which release of the data dictionary is
+// linked — these five have not moved since Supplement 73.
+const TAG_DEFORMABLE_REGISTRATION_SEQ: Tag = Tag(0x0064, 0x0002);
+const TAG_SOURCE_FRAME_OF_REFERENCE_UID: Tag = Tag(0x0064, 0x0003);
+const TAG_DEFORMABLE_REGISTRATION_GRID_SEQ: Tag = Tag(0x0064, 0x0005);
+const TAG_GRID_DIMENSIONS: Tag = Tag(0x0064, 0x0007);
+const TAG_GRID_RESOLUTION: Tag = Tag(0x0064, 0x0008);
+const TAG_VECTOR_GRID_DATA: Tag = Tag(0x0064, 0x0009);
+const TAG_PRE_DEFORMATION_MATRIX_SEQ: Tag = Tag(0x0064, 0x000F);
+const TAG_POST_DEFORMATION_MATRIX_SEQ: Tag = Tag(0x0064, 0x0010);
+const TAG_MATRIX_SEQ: Tag = Tag(0x0070, 0x030A);
+const TAG_MATRIX_TYPE: Tag = Tag(0x0070, 0x030C);
+
+fn put_ul(o: &mut InMemDicomObject, tag: Tag, vals: &[u32]) {
+    o.put(DataElement::new(
+        tag,
+        VR::UL,
+        PrimitiveValue::U32(C::from_vec(vals.to_vec())),
+    ));
+}
+
+fn put_fd(o: &mut InMemDicomObject, tag: Tag, vals: &[f64]) {
+    o.put(DataElement::new(
+        tag,
+        VR::FD,
+        PrimitiveValue::F64(C::from_vec(vals.to_vec())),
+    ));
+}
+
+fn put_of(o: &mut InMemDicomObject, tag: Tag, vals: Vec<f32>) {
+    o.put(DataElement::new(
+        tag,
+        VR::OF,
+        PrimitiveValue::F32(C::from_vec(vals)),
+    ));
+}
+
+/// An identity 4 × 4 matrix registration item — the pre- and post-
+/// deformation slots of the IOD, which this writer never uses because the
+/// grid it writes already carries the *total* displacement.
+fn identity_matrix_item() -> InMemDicomObject {
+    let mut m = InMemDicomObject::new_empty();
+    put_str(&mut m, TAG_MATRIX_TYPE, VR::CS, "RIGID");
+    put_ds(
+        &mut m,
+        tags::FRAME_OF_REFERENCE_TRANSFORMATION_MATRIX,
+        &[
+            1.0, 0.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0, 0.0, //
+            0.0, 0.0, 1.0, 0.0, //
+            0.0, 0.0, 0.0, 1.0,
+        ],
+    );
+    let mut item = InMemDicomObject::new_empty();
+    put_seq(&mut item, TAG_MATRIX_SEQ, vec![m]);
+    item
+}
+
+/// Everything a Deformable Spatial Registration needs besides the field.
+pub struct DvfExport<'a> {
+    /// Frame of Reference the field's own lattice lives in — the *fixed*
+    /// dataset, since that is the domain a recovered transform is
+    /// parameterized on.
+    pub source_for_uid: &'a str,
+    /// Frame of Reference the displacements point into — the *moving*
+    /// dataset.
+    pub target_for_uid: &'a str,
+    pub study_uid: &'a str,
+    pub patient_name: &'a str,
+    pub patient_id: &'a str,
+    /// Content label, e.g. the method that produced it.
+    pub label: &'a str,
+    pub description: &'a str,
+}
+
+/// Write a recovered deformation as a DICOM Deformable Spatial Registration.
+///
+/// The IOD applies its grid *after* a pre-deformation matrix and *before* a
+/// post-deformation one; both are written as the identity here and the grid
+/// carries the whole mapping, `T(p) − p`, exactly as
+/// [`crate::registration::VectorField`] holds it. That is the least
+/// surprising thing to hand another system: the file says what the transform
+/// does with no composition rule to get wrong.
+pub fn write_deformable_registration(
+    path: &Path,
+    field: &crate::registration::VectorField,
+    meta: &DvfExport,
+) -> Result<()> {
+    if field.is_empty() {
+        anyhow::bail!("the vector field is empty");
+    }
+    let now = SystemTime::now();
+    let _ = now;
+    let mut grid = InMemDicomObject::new_empty();
+    put_ds(
+        &mut grid,
+        tags::IMAGE_POSITION_PATIENT,
+        &[field.origin.x, field.origin.y, field.origin.z],
+    );
+    put_ds(
+        &mut grid,
+        tags::IMAGE_ORIENTATION_PATIENT,
+        &[
+            field.axes[0].x,
+            field.axes[0].y,
+            field.axes[0].z,
+            field.axes[1].x,
+            field.axes[1].y,
+            field.axes[1].z,
+        ],
+    );
+    put_ul(
+        &mut grid,
+        TAG_GRID_DIMENSIONS,
+        &[
+            field.dims[0] as u32,
+            field.dims[1] as u32,
+            field.dims[2] as u32,
+        ],
+    );
+    put_fd(&mut grid, TAG_GRID_RESOLUTION, &field.spacing);
+    // Column-fastest, then rows, then planes — the order the lattice is
+    // already stored in, and the one the standard prescribes.
+    let mut data = Vec::with_capacity(field.data.len() * 3);
+    for v in &field.data {
+        data.push(v.x as f32);
+        data.push(v.y as f32);
+        data.push(v.z as f32);
+    }
+    put_of(&mut grid, TAG_VECTOR_GRID_DATA, data);
+
+    let mut reg = InMemDicomObject::new_empty();
+    put_str(
+        &mut reg,
+        TAG_SOURCE_FRAME_OF_REFERENCE_UID,
+        VR::UI,
+        meta.source_for_uid,
+    );
+    put_seq(
+        &mut reg,
+        TAG_PRE_DEFORMATION_MATRIX_SEQ,
+        vec![identity_matrix_item()],
+    );
+    put_seq(
+        &mut reg,
+        TAG_POST_DEFORMATION_MATRIX_SEQ,
+        vec![identity_matrix_item()],
+    );
+    put_seq(&mut reg, TAG_DEFORMABLE_REGISTRATION_GRID_SEQ, vec![grid]);
+
+    let mut o = InMemDicomObject::new_empty();
+    put_str(&mut o, tags::SPECIFIC_CHARACTER_SET, VR::CS, "ISO_IR 100");
+    put_str(&mut o, tags::SOP_CLASS_UID, VR::UI, SOP_DEFORMABLE_REG);
+    put_str(&mut o, tags::SOP_INSTANCE_UID, VR::UI, new_uid());
+    put_str(&mut o, tags::MODALITY, VR::CS, "REG");
+    put_str(&mut o, tags::PATIENT_NAME, VR::PN, meta.patient_name);
+    put_str(&mut o, tags::PATIENT_ID, VR::LO, meta.patient_id);
+    put_str(&mut o, tags::STUDY_INSTANCE_UID, VR::UI, meta.study_uid);
+    put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, new_uid());
+    put_is(&mut o, tags::SERIES_NUMBER, 1);
+    put_is(&mut o, tags::INSTANCE_NUMBER, 1);
+    // The Frame of Reference of the *instance* is where the displacements
+    // point: the moving dataset.
+    put_str(
+        &mut o,
+        tags::FRAME_OF_REFERENCE_UID,
+        VR::UI,
+        meta.target_for_uid,
+    );
+    put_str(&mut o, tags::CONTENT_LABEL, VR::CS, sanitize_cs(meta.label));
+    put_str(&mut o, tags::CONTENT_DESCRIPTION, VR::LO, meta.description);
+    put_str(&mut o, tags::SERIES_DESCRIPTION, VR::LO, meta.description);
+    let (date, time) = today();
+    put_str(&mut o, tags::CONTENT_DATE, VR::DA, date.clone());
+    put_str(&mut o, tags::CONTENT_TIME, VR::TM, time.clone());
+    put_str(&mut o, tags::SERIES_DATE, VR::DA, date);
+    put_str(&mut o, tags::SERIES_TIME, VR::TM, time);
+    put_seq(&mut o, TAG_DEFORMABLE_REGISTRATION_SEQ, vec![reg]);
+
+    write_object(o, SOP_DEFORMABLE_REG, path)
+}
+
+/// A Content Label is CS: uppercase, 16 characters, a restricted alphabet.
+fn sanitize_cs(s: &str) -> String {
+    let mut out: String = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    out.truncate(16);
+    if out.is_empty() {
+        out.push_str("REGISTRATION");
+    }
+    out
+}

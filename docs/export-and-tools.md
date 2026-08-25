@@ -1,8 +1,13 @@
-# DICOM export, anonymizer and test-data generator
+# DICOM export, model manager, anonymizer and test-data generator
 
-Three tools round out the workflow: writing datasets back out as DICOM,
-anonymizing folders on disk, and generating a fully synthetic RT study for
-testing.
+Four tools round out the workflow: writing datasets back out as DICOM,
+managing the downloaded network weights, anonymizing folders on disk, and
+generating a fully synthetic RT study for testing. (The *Tools* menu also
+holds the three segmentation engines — see
+[auto-segmentation.md](auto-segmentation.md), [segvol.md](segvol.md) and
+[medsam2.md](medsam2.md) — plus structure
+[propagation](propagation.md) and [DRR generation](drr.md), which have their
+own documents.)
 
 ## DICOM export
 
@@ -37,6 +42,47 @@ pair; switching it off generates a fresh frame of reference.
 
 The exports round-trip through this viewer and pydicom; they are
 QA/research objects, not guaranteed-complete clinical IODs.
+
+## Model manager
+
+The three segmentation engines each download their own weights on first use,
+which is convenient right up to the moment somebody asks what is actually on
+this machine, how much disk it costs, or wants a checkpoint re-fetched after
+a bad download. *Tools ▶ 📦 Downloaded models…* answers all three from one
+inventory.
+
+Every model of every engine gets a row: its state (ready / partly downloaded
+/ missing), what it occupies on disk or would cost to fetch, and the buttons
+that act on it.
+
+| | |
+|---|---|
+| ⬇ | download and convert this model |
+| ⟳ | remove it and fetch it again — the published files carry no version, so an update *is* a fresh download |
+| 🧹 | delete the source checkpoint the converted cache was made from; the model keeps running |
+| 🗑 | delete every file of this model |
+
+and, over the whole inventory, **⬇ Download all missing**, **⟳ Update all**
+and **🧹 Free …**, which reports how much the redundant source checkpoints
+are costing before you drop them. The model folder itself is editable here
+(it is the same setting the three tool windows show) and the header reports
+how many models are ready and how much the lot occupies.
+
+Two details worth knowing:
+
+* Preparing a model runs the **engine's own first-use path** — the same
+  download, the same native checkpoint conversion, the same cache. A model
+  fetched here is bit for bit the one a run would have fetched; there is no
+  second download route to keep in step.
+* Removal only ever deletes the file names the inventory lists, never a
+  whole folder, so a model folder you also keep something else in survives
+  intact. The model's own sub-folder is removed afterwards if it came out
+  empty.
+
+The licence of each engine's weights is stated above its rows, because it
+differs: TotalSegmentator's are Apache-2.0, SegVol's carry no licence
+declaration at all, and MedSAM2's are CC-BY-SA-4.0 with a research-only
+model card. None of them is ever redistributed with the program.
 
 ## DICOM anonymizer
 

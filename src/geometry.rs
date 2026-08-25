@@ -1,6 +1,6 @@
 //! Minimal 3D vector math for DICOM patient-coordinate geometry.
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Vec3 {
     pub x: f64,
     pub y: f64,

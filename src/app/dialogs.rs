@@ -41,6 +41,9 @@ impl ViewerApp {
     pub(super) fn modals(&mut self, ctx: &egui::Context) {
         self.generator_window(ctx);
         self.anonymize_window(ctx);
+        self.models_window(ctx);
+        self.propagate_window(ctx);
+        self.drr_window(ctx);
         self.export_window(ctx);
         self.autoseg_run_window(ctx);
         self.segvol_window(ctx);

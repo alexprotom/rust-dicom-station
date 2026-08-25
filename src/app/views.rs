@@ -337,6 +337,69 @@ impl ViewerApp {
             }
         }
 
+        // Deformation vector field.
+        if self.field_on
+            && self
+                .registration
+                .as_ref()
+                .is_some_and(|r| r.fixed_slot == slot)
+        {
+            let max = self
+                .registration
+                .as_ref()
+                .map(|r| r.field.max_mag as f32)
+                .unwrap_or(1.0)
+                .max(1e-6);
+            let scale = self.field_scale;
+            let colored = self.field_color;
+            let color_of = |mag: f32| -> Color32 {
+                if colored {
+                    let c = render::dose_colormap((mag / max).clamp(0.0, 1.0));
+                    Color32::from_rgba_unmultiplied(c[0], c[1], c[2], 235)
+                } else {
+                    Color32::from_rgba_unmultiplied(255, 235, 130, 215)
+                }
+            };
+            for g in &view.field_arrows {
+                let a = px_to_screen(g.from);
+                let tip = px_to_screen([
+                    g.from[0] + (g.to[0] - g.from[0]) * scale,
+                    g.from[1] + (g.to[1] - g.from[1]) * scale,
+                ]);
+                let col = color_of(g.magnitude);
+                let d = tip - a;
+                let len = d.length();
+                if len < 1.5 {
+                    // Almost all of this displacement leaves the plane, and a
+                    // 2-D arrow cannot say so: draw a disc whose size is the
+                    // out-of-plane component instead of a stub nobody can read.
+                    let r = 1.5 + (g.out_of_plane.abs() / max * 3.5).min(3.5);
+                    painter.circle_filled(a, r, col);
+                } else {
+                    let stroke = Stroke::new(1.3, col);
+                    painter.line_segment([a, tip], stroke);
+                    let n = d / len;
+                    let perp = Vec2::new(-n.y, n.x);
+                    let head = (len * 0.32).min(7.0);
+                    painter.line_segment([tip, tip - n * head + perp * head * 0.45], stroke);
+                    painter.line_segment([tip, tip - n * head - perp * head * 0.45], stroke);
+                }
+            }
+            if !view.field_lines.is_empty() {
+                let col = if colored {
+                    let c = render::dose_colormap(0.55);
+                    Color32::from_rgba_unmultiplied(c[0], c[1], c[2], 170)
+                } else {
+                    Color32::from_rgba_unmultiplied(255, 235, 130, 160)
+                };
+                let stroke = Stroke::new(1.0, col);
+                for line in &view.field_lines {
+                    let pts: Vec<Pos2> = line.iter().map(|p| px_to_screen(*p)).collect();
+                    painter.add(egui::Shape::line(pts, stroke));
+                }
+            }
+        }
+
         // Isocenter markers.
         if self.show_isocenters {
             let mut seen: Vec<[i64; 3]> = Vec::new();
@@ -1087,7 +1150,69 @@ impl ViewerApp {
             views[idx].seg_key = None;
         }
 
+        self.refresh_field_cache(slot, idx);
         self.refresh_fusion_cache(ctx, slot, idx);
+    }
+
+    /// Rebuild the vector-field geometry of one view.
+    ///
+    /// The field is a lattice of displacements; what a view needs is arrows
+    /// (or a deformed lattice) in *its* display-pixel space, which changes
+    /// only when the slice, the style or the field itself does — not on
+    /// every repaint, and certainly not on every pan.
+    pub(super) fn refresh_field_cache(&mut self, slot: usize, idx: usize) {
+        let showing = self.field_on
+            && self.field_style != FieldStyle::None
+            && self
+                .registration
+                .as_ref()
+                .is_some_and(|r| r.fixed_slot == slot);
+        if !showing {
+            let view = &mut self.slots[slot].views[idx];
+            if view.field_key.is_some() {
+                view.field_arrows = Vec::new();
+                view.field_lines = Vec::new();
+                view.field_key = None;
+            }
+            return;
+        }
+        let Some(field) = self.registration.as_ref().map(|r| r.field.clone()) else {
+            return;
+        };
+        let Some(vol) = self.slots[slot].study.as_ref().map(|s| s.volume.clone()) else {
+            return;
+        };
+        let style = self.field_style;
+        let step = self.field_step_mm;
+        let gen = self.reg_gen;
+        let view = &mut self.slots[slot].views[idx];
+        let plane = view.plane;
+        let slice = view.slice;
+        let mut key: u64 = 0xA5A5_5A5A_A5A5_5A5A;
+        for v in [
+            gen,
+            slice as u64,
+            style as u64,
+            step.to_bits(),
+            Arc::as_ptr(&field) as u64,
+        ] {
+            key = (key ^ v).wrapping_mul(0x100000001b3);
+        }
+        if view.field_key == Some(key) {
+            return;
+        }
+        view.field_arrows = Vec::new();
+        view.field_lines = Vec::new();
+        match style {
+            FieldStyle::Arrows => {
+                view.field_arrows = dvf::glyphs_on_plane(&field, &vol, plane, slice, step);
+            }
+            FieldStyle::Grid => {
+                view.field_lines = dvf::deformed_grid_on_plane(&field, &vol, plane, slice, step);
+            }
+            FieldStyle::None => {}
+        }
+        view.field_key = Some(key);
     }
 
     /// Rebuild the magenta/green fusion texture of a fixed-study view: the
