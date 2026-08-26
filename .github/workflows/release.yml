@@ -1,0 +1,344 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ==========================================================================
+  # Determine application version
+  # ==========================================================================
+  version:
+    name: Determine version
+    runs-on: ubuntu-latest
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Read version from Cargo.toml
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -n 1)
+
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not determine version from Cargo.toml"
+            exit 1
+          fi
+
+          TAG="v${VERSION}"
+
+          echo "Version: $VERSION"
+          echo "Tag:     $TAG"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Check that release tag does not already exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::GitHub Release $TAG already exists."
+            echo "::error::Update the version in Cargo.toml before merging a new release into main."
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::Git tag $TAG already exists."
+            echo "::error::Update the version in Cargo.toml before merging a new release into main."
+            exit 1
+          fi
+
+          echo "Tag $TAG is available."
+
+  # ==========================================================================
+  # Windows release
+  # ==========================================================================
+  windows:
+    name: Windows installer
+    needs: version
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            installer
+
+      # The viewer is a separate Cargo package/workspace from the installer.
+      - name: Build viewer
+        run: cargo build --release
+
+      # Build rds-setup.exe and rds-pack.exe.
+      - name: Build installer
+        working-directory: installer
+        run: cargo build --release
+
+      # rds-pack combines rds-setup.exe with the viewer and payload.
+      - name: Package Windows installer
+        working-directory: installer
+        run: cargo run --release --bin rds-pack
+
+      - name: Rename installer
+        shell: pwsh
+        run: |
+          $source = "installer/dist/rust-dicom-station-setup.exe"
+          $destination = "rust-dicom-station-${{ needs.version.outputs.version }}-windows-x86_64.exe"
+
+          if (!(Test-Path $source)) {
+            Write-Error "Expected installer not found: $source"
+            exit 1
+          }
+
+          Move-Item $source $destination
+
+          Write-Host "Created $destination"
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: rust-dicom-station-${{ needs.version.outputs.version }}-windows-x86_64.exe
+          if-no-files-found: error
+
+  # ==========================================================================
+  # Linux AppImage
+  # ==========================================================================
+  linux:
+    name: Linux AppImage
+    needs: version
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            libfuse2 \
+            file \
+            wget
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build viewer
+        run: cargo build --release
+
+      # ----------------------------------------------------------------------
+      # AppImage AppDir
+      #
+      # Models are intentionally NOT included.
+      #
+      # The application downloads them at runtime to:
+      #
+      #   ~/.local/share/RustDICOMStation/models
+      # ----------------------------------------------------------------------
+      - name: Prepare AppDir
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/share/applications
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+
+
+          cp target/release/rust-dicom-station \
+             AppDir/usr/bin/rust-dicom-station
+          
+          cp assets/rust-dicom-station.png \
+             AppDir/usr/share/icons/hicolor/256x256/apps/rust-dicom-station.png
+
+          cat > AppDir/usr/share/applications/rust-dicom-station.desktop <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Rust DICOM Station
+          Comment=DICOM / RT DICOM viewer
+          Exec=rust-dicom-station
+          Icon=rust-dicom-station
+          Terminal=false
+          Categories=Graphics;
+          EOF
+
+          cat > AppDir/AppRun <<'EOF'
+          #!/bin/sh
+          HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+          exec "$HERE/usr/bin/rust-dicom-station" "$@"
+          EOF
+
+          chmod +x AppDir/AppRun
+
+      # ----------------------------------------------------------------------
+      # Download linuxdeploy
+      # ----------------------------------------------------------------------
+      - name: Download linuxdeploy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          wget -q \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage \
+            -O linuxdeploy.AppImage
+
+          chmod +x linuxdeploy.AppImage
+
+      # ----------------------------------------------------------------------
+      # Build AppImage
+      # ----------------------------------------------------------------------
+      - name: Build AppImage
+        shell: bash
+        env:
+          NO_STRIP: 1
+        run: |
+          set -euo pipefail
+
+          ./linuxdeploy.AppImage \
+            --appdir AppDir \
+            --output appimage
+
+      - name: Rename AppImage
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APPIMAGE=$(find . -maxdepth 1 \
+            -type f \
+            -name '*.AppImage' \
+            ! -name 'linuxdeploy.AppImage' \
+            -print -quit)
+
+          if [ -z "$APPIMAGE" ]; then
+            echo "::error::AppImage was not generated"
+            exit 1
+          fi
+
+          OUTPUT="rust-dicom-station-${{ needs.version.outputs.version }}-linux-x86_64.AppImage"
+
+          mv "$APPIMAGE" "$OUTPUT"
+          chmod +x "$OUTPUT"
+
+          echo "Created $OUTPUT"
+
+      - name: Validate AppImage
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OUTPUT="rust-dicom-station-${{ needs.version.outputs.version }}-linux-x86_64.AppImage"
+
+          file "$OUTPUT"
+
+          if [ ! -x "$OUTPUT" ]; then
+            echo "::error::AppImage is not executable"
+            exit 1
+          fi
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: rust-dicom-station-${{ needs.version.outputs.version }}-linux-x86_64.AppImage
+          if-no-files-found: error
+
+  # ==========================================================================
+  # Create GitHub Release
+  # ==========================================================================
+  release:
+    name: Create GitHub Release
+    needs:
+      - version
+      - windows
+      - linux
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: windows-release
+          path: release
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: linux-release
+          path: release
+
+      - name: List release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -lh release
+
+      - name: Generate SHA256 checksums
+        working-directory: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sha256sum \
+            rust-dicom-station-*.exe \
+            rust-dicom-station-*.AppImage \
+            > SHA256SUMS
+
+          cat SHA256SUMS
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh release create \
+            "${{ needs.version.outputs.tag }}" \
+            release/* \
+            --repo "${{ github.repository }}" \
+            --title "Rust DICOM Station ${{ needs.version.outputs.version }}" \
+            --generate-notes
