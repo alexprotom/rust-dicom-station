@@ -121,9 +121,8 @@ impl Default for GenParams {
     }
 }
 
-/// Default output directory: `test_data/` inside the application folder.
 pub fn default_output_dir() -> PathBuf {
-    settings::app_dir().join("test_data")
+    settings::data_dir().join("test_data")
 }
 
 /// Names of the files this generator writes (for UI hints and cleanup).
