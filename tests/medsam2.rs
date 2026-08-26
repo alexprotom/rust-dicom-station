@@ -329,22 +329,43 @@ fn a_preview_agrees_with_the_prompted_slice_and_reuses_its_features() {
         ..Config::default()
     };
 
+    // What "reuses its features" means is that the *image encoder* — the
+    // expensive half — runs once and once only. Counting the encodes says
+    // that exactly; timing the calls would only say how loaded the machine
+    // is, which on a shared CI runner is not a property of this code.
+    assert_eq!(
+        engine.encode_count(),
+        0,
+        "nothing encoded before the first prompt"
+    );
+
     let t0 = Instant::now();
     let preview = engine
         .preview(&prepared, 1, &prompt, &cfg)
         .expect("preview");
     let cold = t0.elapsed();
     assert_eq!(preview.len(), 40 * 48);
+    assert_eq!(
+        engine.encode_count(),
+        1,
+        "the first prompt encodes its slice"
+    );
 
     // The same prompt through the full path must decide that slice the same
-    // way — the preview is the propagation's first step, not an approximation.
+    // way — the preview is the propagation's first step, not an approximation
+    // — and must take the encoded slice from the cache rather than redo it.
     let full = engine
         .propagate(&prepared, 1, &prompt, &cfg, &Quiet)
         .expect("propagate");
     assert_eq!(full.masks[1], preview);
     assert_eq!(full.slices_visited, 1);
+    assert_eq!(
+        engine.encode_count(),
+        1,
+        "propagating reused the cached slice"
+    );
 
-    // And the second call skipped the encoder entirely.
+    // And so does a second, different prompt on that same slice.
     let t1 = Instant::now();
     let again = engine
         .preview(
@@ -356,11 +377,22 @@ fn a_preview_agrees_with_the_prompted_slice_and_reuses_its_features() {
         .expect("preview");
     let warm = t1.elapsed();
     assert_eq!(again.len(), 40 * 48);
-    assert!(
-        warm * 2 < cold,
-        "a cached slice should re-prompt far faster: {cold:?} then {warm:?}"
-    );
+    assert_eq!(engine.encode_count(), 1, "re-prompting must not re-encode");
     eprintln!("preview: {cold:?} cold, {warm:?} warm");
+
+    // Clearing the cache is what makes the next prompt pay for the encoder
+    // again — otherwise the count above would prove nothing.
+    engine.clear_cache();
+    engine
+        .preview(&prepared, 1, &prompt, &cfg)
+        .expect("preview");
+    assert_eq!(engine.encode_count(), 2, "a cleared cache re-encodes");
+
+    // A different slice is a different cache entry.
+    engine
+        .preview(&prepared, 0, &prompt, &cfg)
+        .expect("preview");
+    assert_eq!(engine.encode_count(), 3, "another slice encodes on its own");
 
     engine.clear_cache();
 }

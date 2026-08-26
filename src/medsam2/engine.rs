@@ -177,6 +177,19 @@ impl Engine {
         }
     }
 
+    /// Slices the image encoder has processed since this engine was loaded.
+    ///
+    /// Re-prompting a cached slice must leave this unchanged — that is what
+    /// makes the interactive loop interactive, and the one honest way to
+    /// assert it, since how *long* a re-prompt takes depends on the machine.
+    pub fn encode_count(&self) -> usize {
+        match &self.inner {
+            Inner::Cpu(model, _) => model.encode_count(),
+            #[cfg(feature = "gpu")]
+            Inner::Gpu(model, _) => model.encode_count(),
+        }
+    }
+
     /// Forget the cached slice — call this whenever the prepared stack itself
     /// changes (a different study, or a different intensity window).
     pub fn clear_cache(&self) {
