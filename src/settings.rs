@@ -1,16 +1,10 @@
-//! Persistent user preferences.
-//!
-//! Stored as a tiny `key = value` text file next to the executable
-//! (`viewer_settings.txt`) — no extra dependencies, trivially inspectable and
-//! safe to delete by hand. Unknown keys and malformed lines are ignored, so
-//! the file format can grow without breaking older or newer builds.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use egui::ThemePreference;
 
 const FILE_NAME: &str = "viewer_settings.txt";
+const APP_NAME: &str = "RustDICOMStation";
 
 /// Settings key of the model root; the installer writes it too.
 pub const MODELS_DIR_KEY: &str = "models_dir";
@@ -20,8 +14,11 @@ pub const MODELS_DIR_KEY: &str = "models_dir";
 pub struct Settings {
     /// Light / dark / follow-the-system appearance.
     pub theme: ThemePreference,
-    /// Root of the downloaded network weights (None = default: `models/`
-    /// next to the executable, see [`crate::models`]).
+
+    /// Root of the downloaded network weights.
+    ///
+    /// `None` means use the platform-specific default returned by
+    /// [`default_models_dir`].
     pub models_dir: Option<PathBuf>,
 }
 
@@ -45,9 +42,121 @@ pub fn app_dir() -> PathBuf {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
+/// Return the platform-specific directory used for persistent application
+/// configuration.
+///
+/// Linux:
+///   $XDG_CONFIG_HOME/RustDICOMStation
+///   or ~/.config/RustDICOMStation
+///
+/// Windows:
+///   %LOCALAPPDATA%\RustDICOMStation
+///
+/// macOS:
+///   ~/Library/Application Support/RustDICOMStation
+pub fn config_dir() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME") {
+            if !dir.is_empty() {
+                return PathBuf::from(dir).join(APP_NAME);
+            }
+        }
+
+        if let Some(home) = home_dir() {
+            return home.join(".config").join(APP_NAME);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
+            if !dir.is_empty() {
+                return PathBuf::from(dir).join(APP_NAME);
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = home_dir() {
+            return home
+                .join("Library")
+                .join("Application Support")
+                .join(APP_NAME);
+        }
+    }
+
+    // Fallback for unsupported platforms or unusual environments.
+    app_dir()
+}
+
+/// Return the platform-specific directory used for persistent application
+/// data such as downloaded model weights.
+///
+/// Linux:
+///   $XDG_DATA_HOME/RustDICOMStation
+///   or ~/.local/share/RustDICOMStation
+///
+/// Windows:
+///   %LOCALAPPDATA%\RustDICOMStation
+///
+/// macOS:
+///   ~/Library/Application Support/RustDICOMStation
+pub fn data_dir() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(dir) = std::env::var_os("XDG_DATA_HOME") {
+            if !dir.is_empty() {
+                return PathBuf::from(dir).join(APP_NAME);
+            }
+        }
+
+        if let Some(home) = home_dir() {
+            return home.join(".local").join("share").join(APP_NAME);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
+            if !dir.is_empty() {
+                return PathBuf::from(dir).join(APP_NAME);
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = home_dir() {
+            return home
+                .join("Library")
+                .join("Application Support")
+                .join(APP_NAME);
+        }
+    }
+
+    // Fallback for unsupported platforms or unusual environments.
+    app_dir()
+}
+
+/// Default root directory for downloaded model weights.
+pub fn default_models_dir() -> PathBuf {
+    data_dir().join("models")
+}
+
+/// Best-effort home directory lookup used only as a fallback for platforms
+/// where the relevant standard environment variable is not available.
+#[cfg(not(windows))]
+fn home_dir() -> Option<PathBuf> {
+    {
+        std::env::var_os("HOME").map(PathBuf::from)
+    }
+}
+
 /// Full path of the settings file.
 pub fn settings_path() -> PathBuf {
-    app_dir().join(FILE_NAME)
+    config_dir().join(FILE_NAME)
 }
 
 fn theme_to_str(t: ThemePreference) -> &'static str {
@@ -75,11 +184,17 @@ pub fn load() -> Settings {
     }
 }
 
-/// Write the settings file. Best-effort: the application folder can
-/// legitimately be read-only (e.g. an install under `Program Files`), so
-/// callers report failures non-fatally instead of blocking the UI.
+/// Write the settings file.
+///
+/// The configuration directory is created on demand because it normally does
+/// not exist on a first run.
 pub fn save(s: &Settings) -> Result<()> {
     let path = settings_path();
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+
     std::fs::write(&path, render(s)).with_context(|| format!("write {}", path.display()))
 }
 
