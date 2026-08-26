@@ -760,7 +760,7 @@ pub fn rasterize_roi(vol: &Volume, roi: &Roi) -> Option<Vec<u8>> {
                 continue;
             }
             crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            for span in crossings.chunks_exact(2) {
+            for span in crossings.as_chunks::<2>().0 {
                 let from = span[0].ceil().max(0.0) as i64;
                 let to = (span[1].floor() as i64).min(nx as i64 - 1);
                 if from > to {

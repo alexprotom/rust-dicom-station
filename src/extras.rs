@@ -311,7 +311,9 @@ fn read_deformation_grid(obj: &dicom_object::DefaultDicomObject) -> (Option<Vect
             let row = Vec3::from_slice(&orient[0..3]).normalized();
             let col = Vec3::from_slice(&orient[3..6]).normalized();
             let data: Vec<Vec3> = raw[..3 * n]
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .map(|c| Vec3::new(c[0] as f64, c[1] as f64, c[2] as f64))
                 .collect();
             let max_mag = data.iter().map(|v| v.length()).fold(0.0f64, f64::max);
