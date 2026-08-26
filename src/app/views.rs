@@ -510,7 +510,7 @@ impl ViewerApp {
                             Color32::from_rgba_unmultiplied(255, 90, 90, 200)
                         } else {
                             let c = slot_state
-                                .segs
+                                .segs()
                                 .get(slot_state.active_seg)
                                 .map(|s| s.color)
                                 .unwrap_or([140, 255, 140]);
@@ -977,6 +977,7 @@ impl ViewerApp {
         let dose_hash = self.dose_settings_hash(slot);
         let contour_hash = self.contour_settings_hash(slot);
         let seg_hash = self.seg_overlay_hash(slot);
+        let seg_idx = self.slots[slot].seg_series_idx();
         let grow_here = self.grow.as_ref().is_some_and(|g| g.slot == slot);
         let wc = self.window_center;
         let ww = self.window_width;
@@ -990,11 +991,17 @@ impl ViewerApp {
             active_structs,
             active_dose,
             dose_reference,
-            segs,
             ..
         } = &mut self.slots[slot];
         let study = study.as_ref().unwrap();
         let vol = &study.volume;
+        // Segments of the active segmentation series, when they live on this
+        // volume's lattice — see `StudySlot::segs`.
+        let segs: &[Segmentation] = seg_idx
+            .map(|i| &study.seg_series[i])
+            .filter(|sr| sr.grid.dims == vol.dims)
+            .map(|sr| sr.segs.as_slice())
+            .unwrap_or(&[]);
         let plane = views[idx].plane;
         let n_slices = vol.plane_slice_count(plane);
         if views[idx].slice >= n_slices {

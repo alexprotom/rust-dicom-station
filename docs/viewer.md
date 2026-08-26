@@ -115,6 +115,47 @@ plans — nothing else. Study and patient selections additionally take the
 RT objects filed under the same studies. Right-clicking a dataset header
 offers *Clear dataset*.
 
+## Structures and segmentations in the tree
+
+Below the image series, each dataset lists its **RT structures** and its
+**Segmentations** as series nodes — one per RT structure set, one per
+DICOM Segmentation series — each showing the image series it is drawn on
+(`▶ CT chest`, or `▶ (unlinked)`). Clicking a node makes it the active
+one; the items of the active node are listed underneath.
+
+*➕ New series* creates an empty structure set / segmentation series bound
+to the displayed image series. **Right-clicking a series node** offers:
+
+* *🔗 Connect to image series ▶* — re-point the series at any image series
+  of the dataset (● marks the current one). Contours are in patient
+  coordinates and simply follow; a segmentation series is resampled onto
+  the new series' lattice the next time that series is displayed.
+* *Copy / Move series to dataset A/B*.
+* *💾 Export as DICOM SEG…* (segmentation series only) — writes this one
+  series as a single SEG file.
+* *🗑 Remove this RT structure set / segmentation series*.
+
+Each item's **check box is both its visibility and its selection**, so
+*All* / *None* tick everything or nothing and the right-click actions
+operate on whatever is ticked. **Right-clicking a structure or segment**
+offers:
+
+* *Copy … to ▶* / *Move … to ▶* — a submenu of every structure set and
+  segmentation series in **both** datasets, plus *➕ a new RT structure
+  set* / *➕ a new segmentation series* as destinations. Right-clicking a
+  ticked row acts on all ticked rows at once; right-clicking an unticked
+  row acts on that row alone.
+* *🗑 Remove …* — the same single-or-selected rule.
+
+Crossing between the two kinds is a conversion, done on transfer: a
+structure moved into a segmentation series is rasterized onto that series'
+lattice (even–odd fill, so a doughnut stays a doughnut), a segment moved
+into a structure set becomes closed planar contours (marching squares),
+and a segment moved between two segmentation series on different lattices
+is resampled. Anything that cannot cross — a contour outside the
+destination volume, a mask that does not overlap it — is reported in the
+dataset's *Warnings* section instead of arriving empty.
+
 ## Comparison mode
 
 ![comparison mode](screenshot_comparison.png)

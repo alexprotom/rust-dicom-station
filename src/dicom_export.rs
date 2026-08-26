@@ -19,6 +19,7 @@ use dicom_dictionary_std::tags;
 use dicom_object::meta::FileMetaTableBuilder;
 use dicom_object::InMemDicomObject;
 
+use crate::dicomseg;
 use crate::loader::LoadedStudy;
 use crate::progress::Progress;
 
@@ -248,7 +249,7 @@ impl ExportParams {
 
     /// Write every enabled field except SeriesDescription, which is a
     /// per-series attribute and only belongs on the image series.
-    fn write_common(&self, o: &mut InMemDicomObject) {
+    pub(crate) fn write_common(&self, o: &mut InMemDicomObject) {
         for f in self.fields.iter().filter(|f| f.enabled) {
             if f.tag == tags::SERIES_DESCRIPTION {
                 continue;
@@ -533,6 +534,33 @@ pub fn export_study(
         put_seq(&mut o, tags::RTROI_OBSERVATIONS_SEQUENCE, obs);
 
         write_object(o, SOP_RTSTRUCT, &dir.join(format!("RS_export_{si}.dcm")))?;
+        n_files += 1;
+    }
+
+    // ---- SEG (one Segmentation Storage object per segmentation series) ----
+    for (gi, ser) in study.seg_series.iter().enumerate() {
+        if ser.segs.iter().all(|s| s.count == 0) {
+            continue;
+        }
+        progress.set(format!(
+            "Writing SEG {}/{}…",
+            gi + 1,
+            study.seg_series.len()
+        ));
+        // The exported image slices may only be claimed as the source of a
+        // series that actually sits on their lattice.
+        let same_grid = ser.grid.matches(&vol.grid());
+        let seg_ctx = dicomseg::SegWriteCtx {
+            study_uid: &ctx.study_uid,
+            for_uid: &ctx.for_uid,
+            date: &ctx.date,
+            time: &ctx.time,
+            series_number: 20 + gi as i64,
+            image_series_uid: if same_grid { &series_uid } else { "" },
+            image_sop_uids: if same_grid { &ct_sop_uids } else { &[] },
+            params,
+        };
+        dicomseg::write(ser, &seg_ctx, &dir.join(format!("SEG_export_{gi}.dcm")))?;
         n_files += 1;
     }
 

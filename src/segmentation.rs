@@ -15,7 +15,7 @@ use rayon::prelude::*;
 use crate::geometry::Vec3;
 use crate::render;
 use crate::rtstruct::{Contour, Roi};
-use crate::volume::{ViewPlane, Volume};
+use crate::volume::{Grid, ViewPlane, Volume};
 
 /// Colors handed out to newly created segmentations.
 pub const SEG_PALETTE: &[[u8; 3]] = &[
@@ -37,6 +37,7 @@ const UNDO_DEPTH: usize = 64;
 pub type MeshGrid = (Vec<bool>, [usize; 3], [usize; 3], usize);
 
 /// A binary label mask over a study's volume.
+#[derive(Clone)]
 pub struct Segmentation {
     pub name: String,
     pub color: [u8; 3],
@@ -72,6 +73,44 @@ impl Segmentation {
             undo: Vec::new(),
             pending: Vec::new(),
         }
+    }
+
+    /// Adopt a ready-made mask — a DICOM SEG frame stack, a resampling onto
+    /// another lattice, a propagated structure. The count and bounding box
+    /// are recomputed in one pass; no undo history is carried, because the
+    /// voxels it would refer to were never edited here.
+    pub fn from_mask(name: String, color: [u8; 3], dims: [usize; 3], mask: Vec<u8>) -> Self {
+        let mut seg = Segmentation::new(name, color, dims);
+        let [nx, ny, _] = dims;
+        let mut bbox: Option<([usize; 3], [usize; 3])> = None;
+        let mut count = 0usize;
+        for (row, chunk) in mask.chunks(nx.max(1)).enumerate() {
+            let (j, k) = (row % ny.max(1), row / ny.max(1));
+            for (i, v) in chunk.iter().enumerate() {
+                if *v == 0 {
+                    continue;
+                }
+                count += 1;
+                bbox = Some(match bbox {
+                    None => ([i, j, k], [i, j, k]),
+                    Some((lo, hi)) => (
+                        [lo[0].min(i), lo[1].min(j), lo[2].min(k)],
+                        [hi[0].max(i), hi[1].max(j), hi[2].max(k)],
+                    ),
+                });
+            }
+        }
+        seg.mask = mask;
+        seg.mask.resize(dims[0] * dims[1] * dims[2], 0);
+        seg.count = count;
+        seg.bbox = bbox;
+        seg
+    }
+
+    /// Builder form of [`Segmentation::visible`], for the rebind path.
+    pub fn with_visible(mut self, visible: bool) -> Self {
+        self.visible = visible;
+        self
     }
 
     /// Segmented volume in cm³ for the given voxel spacing (mm).
@@ -698,15 +737,15 @@ pub fn fill_holes_slicewise(voxels: &mut Vec<u32>, dims: [usize; 3]) {
 /// together — which is what makes a doughnut a doughnut rather than a disc,
 /// since RTSTRUCT expresses a hole as a second contour inside the first.
 /// Returns `None` when the ROI has no planar contour inside the volume.
-pub fn rasterize_roi(vol: &Volume, roi: &Roi) -> Option<Vec<u8>> {
-    let [nx, ny, nz] = vol.dims;
+pub fn rasterize_roi(grid: &Grid, roi: &Roi) -> Option<Vec<u8>> {
+    let [nx, ny, nz] = grid.dims;
     // Slice index → the contours drawn on it, in voxel (i, j) coordinates.
     let mut by_slice: Vec<Vec<Vec<[f64; 2]>>> = vec![Vec::new(); nz];
     for c in &roi.contours {
         if c.geometric_type == "POINT" || c.points.len() < 3 {
             continue;
         }
-        let idx: Vec<[f64; 3]> = c.points.iter().map(|p| vol.patient_to_voxel(*p)).collect();
+        let idx: Vec<[f64; 3]> = c.points.iter().map(|p| grid.patient_to_voxel(*p)).collect();
         // A planar contour lies in one slice; take the nearest one.
         let mean_k = idx.iter().map(|v| v[2]).sum::<f64>() / idx.len() as f64;
         let k = mean_k.round();
@@ -784,7 +823,7 @@ pub fn rasterize_roi(vol: &Volume, roi: &Roi) -> Option<Vec<u8>> {
 /// Convert a segmentation mask into an RTSTRUCT ROI: marching squares on
 /// every axial slice (padded so border voxels close), stitched into closed
 /// loops, collinear points merged, mapped to patient coordinates.
-pub fn mask_to_roi(seg: &Segmentation, vol: &Volume, number: i32) -> Roi {
+pub fn mask_to_roi(seg: &Segmentation, grid: &Grid, number: i32) -> Roi {
     let [nx, ny, _] = seg.dims;
     let mut contours = Vec::new();
     if let Some((lo, hi)) = seg.bbox {
@@ -812,7 +851,7 @@ pub fn mask_to_roi(seg: &Segmentation, vol: &Volume, number: i32) -> Roi {
                 }
                 let points: Vec<Vec3> = pts
                     .iter()
-                    .map(|p| vol.voxel_to_patient(p[0] as f64 - 1.0, p[1] as f64 - 1.0, k as f64))
+                    .map(|p| grid.voxel_to_patient(p[0] as f64 - 1.0, p[1] as f64 - 1.0, k as f64))
                     .collect();
                 contours.push(Contour {
                     points,

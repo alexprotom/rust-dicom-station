@@ -49,7 +49,7 @@ impl ViewerApp {
                 }
             }
         }
-        for (i, seg) in self.slots[slot].segs.iter().enumerate() {
+        for (i, seg) in self.slots[slot].segs().iter().enumerate() {
             if seg.count > 0 {
                 out.push((RegRoi::Segmentation(i), format!("✎ {}", seg.name)));
             }
@@ -90,7 +90,7 @@ impl ViewerApp {
                         .active_structures()
                         .and_then(|ss| ss.rois.get(i))
                         .ok_or_else(|| anyhow!("the selected structure is gone"))?;
-                    let m = segmentation::rasterize_roi(vol, roi).ok_or_else(|| {
+                    let m = segmentation::rasterize_roi(&vol.grid(), roi).ok_or_else(|| {
                         anyhow!(
                             "'{}' has no planar contour inside the displayed volume",
                             roi.name
@@ -100,7 +100,7 @@ impl ViewerApp {
                 }
                 RegRoi::Segmentation(i) => {
                     let seg = self.slots[slot]
-                        .segs
+                        .segs()
                         .get(i)
                         .ok_or_else(|| anyhow!("the selected segmentation is gone"))?;
                     (seg.mask.clone(), seg.name.clone())

@@ -128,10 +128,14 @@ impl ViewerApp {
         dims: [usize; 3],
         mask: &[u8],
     ) -> usize {
+        if self.ensure_seg_series(slot).is_none() {
+            return 0;
+        }
         let s = &mut self.slots[slot];
-        s.segs
-            .push(Segmentation::from_label_map(name, color, dims, mask, 1));
-        s.active_seg = s.segs.len() - 1;
+        let Some(segs) = s.segs_mut() else { return 0 };
+        segs.push(Segmentation::from_label_map(name, color, dims, mask, 1));
+        let n = segs.len();
+        s.active_seg = n - 1;
         s.active_seg
     }
 

@@ -187,7 +187,7 @@ fn mask_converts_to_closed_rtstruct_contours() {
     let mut seg = Segmentation::new("disk".into(), [0, 255, 0], vol.dims);
     let c = [20.0, 20.0, 5.0];
     seg.paint_capsule(&vol, c, c, 5.0, false, Some((ViewPlane::Axial, 5)));
-    let roi = segmentation::mask_to_roi(&seg, &vol, 7);
+    let roi = segmentation::mask_to_roi(&seg, &vol.grid(), 7);
     assert_eq!(roi.number, 7);
     assert_eq!(roi.contours.len(), 1, "one disk → one closed contour");
     let contour = &roi.contours[0];

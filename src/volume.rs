@@ -32,6 +32,71 @@ impl ViewPlane {
     }
 }
 
+/// The voxel lattice of a 3-D object in patient space, without its data.
+///
+/// A [`Volume`] carries one; so does every DICOM Segmentation object, whose
+/// frames may sit on a grid of their own. Keeping the geometry separable is
+/// what lets a segmentation be resampled from the grid it arrived on onto
+/// the grid of whatever image series it is shown against
+/// (`crate::dicomseg::SegSeries::rebind`).
+#[derive(Clone, PartialEq)]
+pub struct Grid {
+    /// Dimensions `[nx, ny, nz]` = [columns, rows, slices].
+    pub dims: [usize; 3],
+    /// Voxel spacing `[sx, sy, sz]` in mm along i / j / k.
+    pub spacing: [f64; 3],
+    /// Patient coordinates of the center of voxel (0, 0, 0).
+    pub origin: Vec3,
+    /// Direction of increasing column index i (unit vector, patient coords).
+    pub row_dir: Vec3,
+    /// Direction of increasing row index j (unit vector, patient coords).
+    pub col_dir: Vec3,
+    /// Direction of increasing slice index k (unit vector, patient coords).
+    pub normal: Vec3,
+    /// Frame of Reference UID the coordinates above are expressed in.
+    pub frame_of_reference_uid: String,
+}
+
+impl Grid {
+    pub fn voxel_count(&self) -> usize {
+        self.dims[0] * self.dims[1] * self.dims[2]
+    }
+
+    /// Map fractional voxel indices to patient coordinates (mm).
+    #[inline]
+    pub fn voxel_to_patient(&self, i: f64, j: f64, k: f64) -> Vec3 {
+        self.origin
+            + self.row_dir * (i * self.spacing[0])
+            + self.col_dir * (j * self.spacing[1])
+            + self.normal * (k * self.spacing[2])
+    }
+
+    /// Map patient coordinates (mm) to fractional voxel indices.
+    #[inline]
+    pub fn patient_to_voxel(&self, p: Vec3) -> [f64; 3] {
+        let d = p - self.origin;
+        [
+            d.dot(self.row_dir) / self.spacing[0],
+            d.dot(self.col_dir) / self.spacing[1],
+            d.dot(self.normal) / self.spacing[2],
+        ]
+    }
+
+    /// Same lattice to within a fraction of a voxel — the test that decides
+    /// whether a mask can be reused as it is instead of being resampled.
+    pub fn matches(&self, other: &Grid) -> bool {
+        if self.dims != other.dims {
+            return false;
+        }
+        let tol = self.spacing.iter().fold(f64::MAX, |a, b| a.min(*b)) * 0.01;
+        (0..3).all(|a| (self.spacing[a] - other.spacing[a]).abs() < tol)
+            && (self.origin - other.origin).length() < tol
+            && (self.row_dir - other.row_dir).length() < 1e-4
+            && (self.col_dir - other.col_dir).length() < 1e-4
+            && (self.normal - other.normal).length() < 1e-4
+    }
+}
+
 /// A scalar image volume in HU (or raw modality units), i16 storage.
 #[derive(Clone)]
 pub struct Volume {
@@ -97,6 +162,19 @@ impl Volume {
             d.dot(self.col_dir) / self.spacing[1],
             d.dot(self.normal) / self.spacing[2],
         ]
+    }
+
+    /// This volume's lattice, for objects that must be resampled onto it.
+    pub fn grid(&self) -> Grid {
+        Grid {
+            dims: self.dims,
+            spacing: self.spacing,
+            origin: self.origin,
+            row_dir: self.row_dir,
+            col_dir: self.col_dir,
+            normal: self.normal,
+            frame_of_reference_uid: self.frame_of_reference_uid.clone(),
+        }
     }
 
     /// Number of slices along the scroll axis of a view plane.

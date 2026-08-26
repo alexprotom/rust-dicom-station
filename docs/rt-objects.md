@@ -1,9 +1,9 @@
 # RT DICOM objects
 
 The viewer loads a complete radiotherapy study: alongside the image series
-it parses RT Structure Sets, RT Dose, RT Plans (photon and ion/proton),
-Spatial Registration objects and RT treatment records, and resolves the
-DICOM reference chains between them.
+it parses RT Structure Sets, DICOM Segmentation objects, RT Dose, RT Plans
+(photon and ion/proton), Spatial Registration objects and RT treatment
+records, and resolves the DICOM reference chains between them.
 
 ## RTSTRUCT — structure sets
 
@@ -22,6 +22,36 @@ phase) and selectable; the set that references the active image series
 (RTReferencedSeriesSequence) is chosen automatically and follows series
 switches. Structure sets also feed the 3D surface view — see
 [segmentation.md](segmentation.md).
+
+## SEG — DICOM Segmentation objects
+
+A Segmentation instance is a multi-frame image whose frames are binary
+masks, one per (segment, slice) pair, placed in patient space by the
+per-frame functional groups rather than by a slice index. Reading one
+therefore means rebuilding a lattice from the frame positions: the frames
+are grouped into slice levels along the stack normal, the slice spacing is
+the median level distance, and the in-plane geometry comes from
+`PixelMeasuresSequence` / `PlaneOrientationSequence` (shared group first,
+first per-frame group as a fallback).
+
+Supported: `BINARY` (1 bit per pixel, packed across *all* frames as one
+continuous stream) and `FRACTIONAL` (8 bit, thresholded at half
+`MaximumFractionalValue`). Segment labels come from `SegmentSequence`, and
+segment colors from `RecommendedDisplayCIELabValue`, converted through
+CIELab → XYZ (D65) → sRGB; segments without a stored color fall back to the
+8-color segmentation palette. Compressed (encapsulated) Pixel Data is
+reported as a load warning rather than guessed at.
+
+Each SEG file becomes one **segmentation series** in the data tree, linked
+to the image series named in `ReferencedSeriesSequence`. The masks keep the
+lattice they arrived on and are resampled onto the displayed volume only
+when their own image series is the one being shown, so a study can carry
+segmentations of several series at once without any of them being silently
+reinterpreted on the wrong grid.
+
+Writing is the same shape in reverse: only the slices a segment actually
+occupies become frames, so a ten-slice structure on a 200-slice CT costs
+ten frames. See [export-and-tools.md](export-and-tools.md#dicom-export).
 
 ## RTDOSE — dose grids
 

@@ -341,6 +341,10 @@ pub fn generate_transformed_study(
         active_series: 0,
         volume: Arc::new(volume),
         structure_sets,
+        // Segmentations are voxel masks on the *source* lattice; the
+        // simulator only warps geometry it can express analytically, so the
+        // generated study starts without them.
+        seg_series: Vec::new(),
         doses,
         plans,
         // Planar images / registrations / records are carried over unchanged

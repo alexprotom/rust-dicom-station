@@ -14,6 +14,7 @@ use dicom_object::{InMemDicomObject, OpenFileOptions};
 use dicom_pixeldata::{ConvertOptions, ModalityLutOption, PixelDecoder};
 use rayon::prelude::*;
 
+use crate::dicomseg::{self, SegSeries};
 use crate::extras::{self, PlanarImage, SpatialReg, TreatRecord};
 use crate::geometry::Vec3;
 use crate::progress::Progress;
@@ -135,6 +136,10 @@ pub struct LoadedStudy {
     /// All RT Structure Sets found in the folder (e.g. one per 4DCT phase).
     /// The application selects the active one per study slot.
     pub structure_sets: Vec<StructureSet>,
+    /// DICOM Segmentation series — imported SEG objects and everything the
+    /// interactive tools paint. Each keeps the voxel lattice it was made on
+    /// and names the image series it belongs to.
+    pub seg_series: Vec<SegSeries>,
     pub doses: Vec<DoseGrid>,
     pub plans: Vec<PlanInfo>,
     /// DX / CR radiographs and RTIMAGE (DRR / portal) planar images.
@@ -235,6 +240,7 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
     // Classify.
     let mut image_series: Vec<SeriesInfo> = Vec::new();
     let mut rtstruct_files = Vec::new();
+    let mut seg_files = Vec::new();
     let mut rtdose_files = Vec::new();
     let mut rtplan_files = Vec::new();
     let mut planar_files = Vec::new();
@@ -256,6 +262,7 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
             || s.modality == "RTIONPLAN"
             || s.sop_class == SOP_RTPLAN
             || s.sop_class == SOP_RTIONPLAN;
+        let is_seg = s.modality == "SEG" || s.sop_class == dicomseg::SOP_SEG;
         let is_reg = s.modality == "REG" || extras::is_reg_sop(&s.sop_class);
         let is_record = s.modality == "RTRECORD" || extras::is_record_sop(&s.sop_class);
         let is_planar = PLANAR_MODALITIES.contains(&s.modality.as_str())
@@ -265,6 +272,8 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
 
         if is_rt_struct {
             rtstruct_files.push(s.path.clone());
+        } else if is_seg {
+            seg_files.push(s.path.clone());
         } else if is_rt_dose {
             rtdose_files.push(s.path.clone());
         } else if is_rt_plan {
@@ -322,6 +331,14 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
         progress,
         &mut warnings,
         rtstruct::load,
+    );
+    let seg_series = parse_group(
+        &seg_files,
+        "SEG",
+        "Parsing segmentations (SEG)…",
+        progress,
+        &mut warnings,
+        dicomseg::load,
     );
     let doses = parse_group(
         &rtdose_files,
@@ -382,6 +399,18 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
             ));
         }
     }
+    for sr in &seg_series {
+        if !sr.grid.frame_of_reference_uid.is_empty()
+            && !volume.frame_of_reference_uid.is_empty()
+            && sr.grid.frame_of_reference_uid != volume.frame_of_reference_uid
+        {
+            warnings.push(format!(
+                "SEG {} frame of reference differs from the image volume — \
+                 the segments may be misaligned",
+                sr.file_name
+            ));
+        }
+    }
     for d in &doses {
         if !d.frame_of_reference_uid.is_empty()
             && !volume.frame_of_reference_uid.is_empty()
@@ -400,6 +429,7 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
         active_series,
         volume: Arc::new(volume),
         structure_sets,
+        seg_series,
         doses,
         plans,
         planar_images,
@@ -642,6 +672,17 @@ pub fn merge_study(dest: &mut LoadedStudy, src: LoadedStudy) -> Vec<String> {
         });
         if !dup {
             dest.structure_sets.push(ss);
+        }
+    }
+    for sr in src.seg_series {
+        let dup = dest.seg_series.iter().any(|d| {
+            (!sr.sop_instance_uid.is_empty() && d.sop_instance_uid == sr.sop_instance_uid)
+                || (sr.sop_instance_uid.is_empty()
+                    && !sr.file_name.is_empty()
+                    && d.file_name == sr.file_name)
+        });
+        if !dup {
+            dest.seg_series.push(sr);
         }
     }
     for p in src.plans {

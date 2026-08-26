@@ -13,10 +13,13 @@ own documents.)
 
 Any loaded dataset — original, simulated or with converted segmentations —
 can be exported as a set of DICOM files via *File ▶ 💾 Export dataset A/B as
-DICOM…*: one CT Image Storage file per slice plus RTSTRUCT, RTDOSE (16-bit
-with `DoseGridScaling`) and an RTPLAN skeleton (photon or ion), written with
+DICOM…*: one CT Image Storage file per slice plus RTSTRUCT, one binary
+Segmentation (SEG) object per segmentation series, RTDOSE (16-bit with
+`DoseGridScaling`) and an RTPLAN skeleton (photon or ion), written with
 `dicom-rs` in Explicit VR Little Endian and preserving the RTSTRUCT ▶ series,
-RTDOSE ▶ RTPLAN ▶ RTSTRUCT reference chain. Fresh `2.25.…` UIDs are generated
+SEG ▶ series and RTDOSE ▶ RTPLAN ▶ RTSTRUCT reference chains. A SEG only
+claims the exported image slices as its source when it sits on their
+lattice. Fresh `2.25.…` UIDs are generated
 for the new objects. Export runs on a background thread with progress.
 
 The dialog first shows what will be written, in the same shape as the
@@ -39,6 +42,10 @@ entirely. *StudyDate* / *StudyTime* also stamp the RTSTRUCT and RTPLAN
 date/time. **Keep the source Frame of Reference UID** (on by default) keeps
 the export spatially linked to its source, so the two load as a comparable
 pair; switching it off generates a fresh frame of reference.
+
+A single segmentation series can also be written on its own, without
+exporting the dataset around it: right-click the series in the data tree and
+choose *💾 Export as DICOM SEG…*.
 
 The exports round-trip through this viewer and pydicom; they are
 QA/research objects, not guaranteed-complete clinical IODs.

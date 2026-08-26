@@ -64,7 +64,7 @@ impl ViewerApp {
             .map(|ss| ss.rois.len())
             .unwrap_or(0);
         d.structs.resize(n_struct, false);
-        d.segs.resize(self.slots[d.src_slot].segs.len(), false);
+        d.segs.resize(self.slots[d.src_slot].segs().len(), false);
     }
 
     /// Collect the masks of everything ticked.
@@ -80,7 +80,7 @@ impl ViewerApp {
                 if !d.structs.get(i).copied().unwrap_or(false) {
                     continue;
                 }
-                match segmentation::rasterize_roi(vol, roi) {
+                match segmentation::rasterize_roi(&vol.grid(), roi) {
                     Some(mask) => out.push(Subject {
                         name: roi.name.clone(),
                         color: roi.color,
@@ -95,7 +95,7 @@ impl ViewerApp {
                 }
             }
         }
-        for (i, seg) in self.slots[slot].segs.iter().enumerate() {
+        for (i, seg) in self.slots[slot].segs().iter().enumerate() {
             if d.segs.get(i).copied().unwrap_or(false) && seg.count > 0 {
                 out.push(Subject {
                     name: seg.name.clone(),
@@ -284,7 +284,7 @@ impl ViewerApp {
                 .map(|s| s.volume.spacing)
                 .unwrap_or([1.0; 3]);
             self.slots[src_slot]
-                .segs
+                .segs()
                 .iter()
                 .map(|s| (s.name.clone(), s.color, s.volume_cm3(spacing)))
                 .collect()

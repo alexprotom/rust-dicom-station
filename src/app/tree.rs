@@ -53,6 +53,7 @@ impl ViewerApp {
             return SubsetMasks {
                 series: sel.to_vec(),
                 structs: vec![true; study.structure_sets.len()],
+                seg_series: vec![true; study.seg_series.len()],
                 doses: vec![true; study.doses.len()],
                 plans: vec![true; study.plans.len()],
                 take_extras,
@@ -81,6 +82,16 @@ impl ViewerApp {
                     || (study_scope
                         && !ss.study_uid.is_empty()
                         && stuids.contains(&ss.study_uid.as_str()))
+            })
+            .collect();
+        let seg_series: Vec<bool> = study
+            .seg_series
+            .iter()
+            .map(|sr| {
+                suids.contains(&sr.referenced_series_uid.as_str())
+                    || (study_scope
+                        && !sr.study_uid.is_empty()
+                        && stuids.contains(&sr.study_uid.as_str()))
             })
             .collect();
         let struct_sops: Vec<&str> = study
@@ -122,6 +133,7 @@ impl ViewerApp {
         SubsetMasks {
             series: sel.to_vec(),
             structs,
+            seg_series,
             doses,
             plans,
             take_extras,
@@ -173,6 +185,10 @@ impl ViewerApp {
             structure_sets: pick(&masks.structs, study.structure_sets.len())
                 .iter()
                 .map(|&i| study.structure_sets[i].clone())
+                .collect(),
+            seg_series: pick(&masks.seg_series, study.seg_series.len())
+                .iter()
+                .map(|&i| study.seg_series[i].clone())
                 .collect(),
             doses: pick(&masks.doses, study.doses.len())
                 .iter()
@@ -313,6 +329,12 @@ impl ViewerApp {
                 k
             });
             let mut i = 0;
+            st.seg_series.retain(|_| {
+                let k = !masks.seg_series.get(i).copied().unwrap_or(false);
+                i += 1;
+                k
+            });
+            let mut i = 0;
             st.doses.retain(|_| {
                 let k = !masks.doses.get(i).copied().unwrap_or(false);
                 i += 1;
@@ -369,6 +391,10 @@ impl ViewerApp {
                 }
                 if s.active_dose >= st.doses.len() {
                     s.active_dose = 0;
+                }
+                if s.active_seg_series >= st.seg_series.len() {
+                    s.active_seg_series = 0;
+                    s.active_seg = 0;
                 }
             }
         }
@@ -474,6 +500,7 @@ mod tree_tests {
                 structset("ss1", "se1", "st1"),
                 structset("ss2", "se2", "st2"),
             ],
+            seg_series: Vec::new(),
             doses: vec![dose("pl1", "st1"), dose("pl2", "st2")],
             plans: vec![plan("pl1", "ss1", "st1"), plan("pl2", "ss2", "st2")],
             planar_images: Vec::new(),

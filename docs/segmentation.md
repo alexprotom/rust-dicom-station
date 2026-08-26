@@ -8,13 +8,25 @@ same editable masks described here.
 
 ## Segmentation masks
 
-A segmentation is a per-voxel label mask on the active volume's grid
-(one byte per voxel, same index order as the volume), with a name, display
-color, visibility flag, voxel count / volume readout and a per-stroke undo
-journal. Any number of masks per dataset are managed in the sidebar
-*Segmentations* section: visibility, color, active selection, volume in
-cm³, per-stroke undo (**Ctrl+Z**), delete, and conversion to RTSTRUCT
-(**→RS**, below).
+A segmentation is a per-voxel label mask (one byte per voxel, same index
+order as the volume), with a name, display color, visibility flag, voxel
+count / volume readout and a per-stroke undo journal.
+
+Masks are grouped into **segmentation series**, which are what a DICOM SEG
+file is and what one exports as. A series lives in the study — not in the
+view state — and names the image series it is drawn on, so painted work
+survives a series switch, travels with tree copy/move, and can be
+re-pointed at a different image series later. Its masks keep the lattice
+they were made on and are resampled onto the displayed volume when their
+own image series is shown; a series belonging to another image series
+stays intact and simply reports that it is not editable here.
+
+The sidebar *Segmentations* section shows the series as tree nodes and,
+below the active one, its segments: visibility, color, active selection,
+volume in cm³, per-stroke undo (**Ctrl+Z**), delete, and conversion to
+RTSTRUCT (**→RS**, below). *All* / *None* tick every segment or none, and
+the tick doubles as the selection the right-click actions work on — see
+[viewer.md](viewer.md#structures-and-segmentations-in-the-tree).
 
 ## Tools
 

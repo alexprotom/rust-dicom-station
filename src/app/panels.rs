@@ -360,88 +360,345 @@ impl ViewerApp {
         }
     }
 
+    // -- Structure sets and segmentation series ----------------------------
+
+    /// Right-click menu of a series node: what image series it is drawn on,
+    /// where it goes, and whether it stays.
+    fn set_context_menu(&self, ui: &mut egui::Ui, here: SetRef, out: &mut Option<SetAction>) {
+        let other = SLOT_NAMES[1 - here.slot];
+        ui.menu_button("🔗 Connect to image series", |ui| {
+            let Some(study) = self.slots[here.slot].study.as_ref() else {
+                return;
+            };
+            let current = match here.kind {
+                SetKind::Structures => study
+                    .structure_sets
+                    .get(here.idx)
+                    .map(|s| s.referenced_series_uid.clone()),
+                SetKind::Segmentations => study
+                    .seg_series
+                    .get(here.idx)
+                    .map(|s| s.referenced_series_uid.clone()),
+            }
+            .unwrap_or_default();
+            for se in &study.series {
+                let label = format!(
+                    "{} {} {} ({} sl.)",
+                    if se.uid == current { "●" } else { "  " },
+                    se.modality,
+                    if se.description.is_empty() {
+                        "series"
+                    } else {
+                        &se.description
+                    },
+                    se.files.len()
+                );
+                if ui.button(label).clicked() {
+                    *out = Some(SetAction::Connect(here, se.uid.clone()));
+                    ui.close();
+                }
+            }
+        });
+        ui.separator();
+        if ui
+            .button(format!("Copy series to dataset {other}"))
+            .clicked()
+        {
+            *out = Some(SetAction::Transfer {
+                from: here,
+                copy: true,
+            });
+            ui.close();
+        }
+        if ui
+            .button(format!("Move series to dataset {other}"))
+            .clicked()
+        {
+            *out = Some(SetAction::Transfer {
+                from: here,
+                copy: false,
+            });
+            ui.close();
+        }
+        if here.kind == SetKind::Segmentations {
+            ui.separator();
+            if ui
+                .button("💾 Export as DICOM SEG…")
+                .on_hover_text("Write this series as one DICOM Segmentation file")
+                .clicked()
+            {
+                *out = Some(SetAction::ExportSeg(here));
+                ui.close();
+            }
+        }
+        ui.separator();
+        if ui
+            .button(format!("🗑 Remove this {}", here.kind.series_name()))
+            .clicked()
+        {
+            *out = Some(SetAction::Remove(here));
+            ui.close();
+        }
+    }
+
+    /// Every structure set and segmentation series of both datasets, as the
+    /// destinations of a *Copy to ▶* / *Move to ▶* submenu — plus the two
+    /// "make me a new one" entries, so a transfer never needs preparing.
+    fn destination_menu(&self, ui: &mut egui::Ui, from: SetRef) -> Option<SetRef> {
+        let mut picked = None;
+        for (slot, slot_name) in SLOT_NAMES.iter().enumerate() {
+            let Some(study) = self.slots[slot].study.as_ref() else {
+                continue;
+            };
+            ui.label(egui::RichText::new(format!("Dataset {slot_name}")).strong());
+            for (i, ss) in study.structure_sets.iter().enumerate() {
+                let here = SetRef {
+                    slot,
+                    kind: SetKind::Structures,
+                    idx: i,
+                };
+                if here == from {
+                    continue;
+                }
+                let name = if ss.label.is_empty() {
+                    &ss.file_name
+                } else {
+                    &ss.label
+                };
+                if ui
+                    .button(format!("▣ {name} ({} ROIs)", ss.rois.len()))
+                    .clicked()
+                {
+                    picked = Some(here);
+                    ui.close();
+                }
+            }
+            for (i, sr) in study.seg_series.iter().enumerate() {
+                let here = SetRef {
+                    slot,
+                    kind: SetKind::Segmentations,
+                    idx: i,
+                };
+                if here == from {
+                    continue;
+                }
+                if ui
+                    .button(format!("✎ {} ({} segments)", sr.label, sr.segs.len()))
+                    .clicked()
+                {
+                    picked = Some(here);
+                    ui.close();
+                }
+            }
+            if ui.button("▣ ➕ a new RT structure set").clicked() {
+                picked = Some(SetRef {
+                    slot,
+                    kind: SetKind::Structures,
+                    idx: SetRef::NEW,
+                });
+                ui.close();
+            }
+            if ui.button("✎ ➕ a new segmentation series").clicked() {
+                picked = Some(SetRef {
+                    slot,
+                    kind: SetKind::Segmentations,
+                    idx: SetRef::NEW,
+                });
+                ui.close();
+            }
+            ui.separator();
+        }
+        picked
+    }
+
+    /// Right-click menu of one structure / segment. `selection` is what is
+    /// ticked in the list: right-clicking a ticked row acts on all of them,
+    /// right-clicking an unticked one acts on that row alone.
+    fn item_context_menu(
+        &self,
+        ui: &mut egui::Ui,
+        from: SetRef,
+        clicked: usize,
+        label: &str,
+        selection: &[usize],
+        out: &mut Option<ItemAction>,
+    ) {
+        let items: Vec<usize> = if selection.len() > 1 && selection.contains(&clicked) {
+            selection.to_vec()
+        } else {
+            vec![clicked]
+        };
+        let what = if items.len() > 1 {
+            format!(
+                "the {} ticked {}",
+                items.len(),
+                from.kind.item_name(items.len())
+            )
+        } else {
+            format!("'{label}'")
+        };
+        ui.menu_button(format!("Copy {what} to"), |ui| {
+            if let Some(to) = self.destination_menu(ui, from) {
+                *out = Some(ItemAction::Transfer {
+                    from,
+                    items: items.clone(),
+                    to,
+                    copy: true,
+                });
+            }
+        });
+        ui.menu_button(format!("Move {what} to"), |ui| {
+            if let Some(to) = self.destination_menu(ui, from) {
+                *out = Some(ItemAction::Transfer {
+                    from,
+                    items: items.clone(),
+                    to,
+                    copy: false,
+                });
+            }
+        });
+        ui.separator();
+        if ui.button(format!("🗑 Remove {what}")).clicked() {
+            *out = Some(ItemAction::Remove {
+                from,
+                items: items.clone(),
+            });
+            ui.close();
+        }
+    }
+
+    /// The image series a set is drawn on, as a tree suffix.
+    fn series_suffix(study: &LoadedStudy, uid: &str) -> String {
+        study
+            .series
+            .iter()
+            .find(|se| se.uid == uid)
+            .map(|se| {
+                format!(
+                    " ▶ {} {}",
+                    se.modality,
+                    if se.description.is_empty() {
+                        "series"
+                    } else {
+                        &se.description
+                    }
+                )
+            })
+            .unwrap_or_else(|| " ▶ (unlinked)".to_string())
+    }
+
+    /// RT structure sets: one node per set, then the ROIs of the active one.
+    ///
+    /// A ROI's check box is both its visibility and its selection, so *All* /
+    /// *None* tick everything or nothing and the right-click actions operate
+    /// on whatever is ticked.
     pub(super) fn structures_section(&mut self, ui: &mut egui::Ui, slot: usize) {
-        let n_sets = self.slots[slot]
-            .study
-            .as_ref()
-            .map(|s| s.structure_sets.len())
-            .unwrap_or(0);
-        if n_sets == 0 {
-            // No RTSTRUCT in this study — show nothing.
+        if self.slots[slot].study.is_none() {
             return;
         }
-        // ROI visibility feeds the contour cache key directly
-        // (`contour_settings_hash`), so no generation counter is bumped here —
-        // that would also rebuild the dose and fusion overlays for nothing.
+        // Rendering runs behind a shared borrow of `self` (the context menus
+        // need to list the other dataset's series), so the one piece of
+        // mutable state in the list is edited on a copy and written back.
+        let mut vis = std::mem::take(&mut self.slots[slot].roi_visible);
         let mut new_active: Option<usize> = None;
+        let mut set_act: Option<SetAction> = None;
+        let mut item_act: Option<ItemAction> = None;
         {
-            let StudySlot {
-                study,
-                roi_visible,
-                active_structs,
-                ..
-            } = &mut self.slots[slot];
-            let study = study.as_ref().unwrap();
-            let active_set = (*active_structs).min(n_sets - 1);
-            let ss = &study.structure_sets[active_set];
-            let n_vis = roi_visible.iter().filter(|v| **v).count();
-            egui::CollapsingHeader::new(format!("Structures ({}/{})", n_vis, ss.rois.len()))
+            let me = &*self;
+            let study = me.slots[slot].study.as_ref().unwrap();
+            let sets = &study.structure_sets;
+            let active_set = me.slots[slot]
+                .active_structs
+                .min(sets.len().saturating_sub(1));
+            let n_rois = sets.get(active_set).map(|ss| ss.rois.len()).unwrap_or(0);
+            vis.resize(n_rois, true);
+            let n_vis = vis.iter().filter(|v| **v).count();
+            egui::CollapsingHeader::new(format!("RT structures ({n_vis}/{n_rois})"))
                 .id_salt(("structs", slot))
                 .default_open(true)
                 .show(ui, |ui| {
-                    // Structure-set selector with links to the referenced
-                    // image series (one set per 4DCT phase, replans, …).
-                    if n_sets > 1 {
-                        for (i, set) in study.structure_sets.iter().enumerate() {
-                            let series_ref = study
-                                .series
-                                .iter()
-                                .find(|se| se.uid == set.referenced_series_uid)
-                                .map(|se| {
-                                    format!(
-                                        " ▶ {} {}",
-                                        se.modality,
-                                        if se.description.is_empty() {
-                                            "series"
-                                        } else {
-                                            &se.description
-                                        }
-                                    )
-                                })
-                                .unwrap_or_default();
-                            let resp = ui.selectable_label(
-                                i == active_set,
-                                format!(
-                                    "{} ({} ROIs){}",
-                                    if set.label.is_empty() {
-                                        &set.file_name
-                                    } else {
-                                        &set.label
-                                    },
-                                    set.rois.len(),
-                                    series_ref
-                                ),
-                            );
-                            if resp.clicked() && i != active_set {
-                                new_active = Some(i);
-                            }
-                            resp.on_hover_text(format!(
-                                "{}\nreferences series …{}",
-                                set.file_name,
-                                tail(&set.referenced_series_uid)
-                            ));
-                        }
-                        ui.separator();
-                    }
                     ui.horizontal(|ui| {
-                        if ui.small_button("All").clicked() {
-                            roi_visible.iter_mut().for_each(|v| *v = true);
+                        if ui
+                            .small_button("➕ New series")
+                            .on_hover_text(
+                                "An empty RT structure set, drawn on the displayed image series",
+                            )
+                            .clicked()
+                        {
+                            set_act = Some(SetAction::New(SetRef {
+                                slot,
+                                kind: SetKind::Structures,
+                                idx: SetRef::NEW,
+                            }));
+                        }
+                        ui.weak(match sets.len() {
+                            0 => "no structure sets".to_string(),
+                            1 => "1 series".to_string(),
+                            n => format!("{n} series"),
+                        });
+                    });
+                    for (i, set) in sets.iter().enumerate() {
+                        let here = SetRef {
+                            slot,
+                            kind: SetKind::Structures,
+                            idx: i,
+                        };
+                        let name = if set.label.is_empty() {
+                            &set.file_name
+                        } else {
+                            &set.label
+                        };
+                        let resp = ui.selectable_label(
+                            i == active_set,
+                            format!(
+                                "▣ {name} ({} ROIs){}",
+                                set.rois.len(),
+                                Self::series_suffix(study, &set.referenced_series_uid)
+                            ),
+                        );
+                        if resp.clicked() && i != active_set {
+                            new_active = Some(i);
+                        }
+                        resp.context_menu(|ui| me.set_context_menu(ui, here, &mut set_act));
+                        resp.on_hover_text(format!(
+                            "{}\nreferences series …{}\nright-click: connect to another image \
+                             series, copy / move to the other dataset, remove",
+                            if set.file_name.is_empty() {
+                                "created here"
+                            } else {
+                                &set.file_name
+                            },
+                            tail(&set.referenced_series_uid)
+                        ));
+                    }
+                    let Some(ss) = sets.get(active_set) else {
+                        return;
+                    };
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui
+                            .small_button("All")
+                            .on_hover_text("Show and select every structure")
+                            .clicked()
+                        {
+                            vis.iter_mut().for_each(|v| *v = true);
                         }
                         if ui.small_button("None").clicked() {
-                            roi_visible.iter_mut().for_each(|v| *v = false);
+                            vis.iter_mut().for_each(|v| *v = false);
                         }
                         ui.weak(&ss.label);
                     });
+                    let selection: Vec<usize> = vis
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, v)| **v)
+                        .map(|(i, _)| i)
+                        .collect();
+                    let here = SetRef {
+                        slot,
+                        kind: SetKind::Structures,
+                        idx: active_set,
+                    };
                     for (i, roi) in ss.rois.iter().enumerate() {
                         ui.horizontal(|ui| {
                             let (rect, _) =
@@ -452,7 +709,7 @@ impl ViewerApp {
                                 Color32::from_rgb(roi.color[0], roi.color[1], roi.color[2]),
                             );
                             let resp = ui.checkbox(
-                                &mut roi_visible[i],
+                                &mut vis[i],
                                 format!(
                                     "{}{}",
                                     roi.name,
@@ -463,8 +720,19 @@ impl ViewerApp {
                                     }
                                 ),
                             );
+                            resp.context_menu(|ui| {
+                                me.item_context_menu(
+                                    ui,
+                                    here,
+                                    i,
+                                    &roi.name,
+                                    &selection,
+                                    &mut item_act,
+                                )
+                            });
                             resp.on_hover_text(format!(
-                                "ROI {} · {} contour(s)",
+                                "ROI {} · {} contour(s)\nright-click: copy / move / remove — \
+                                 every ticked structure at once",
                                 roi.number,
                                 roi.contours.len()
                             ));
@@ -472,6 +740,7 @@ impl ViewerApp {
                     }
                 });
         }
+        self.slots[slot].roi_visible = vis;
         if let Some(i) = new_active {
             let s = &mut self.slots[slot];
             s.active_structs = i;
@@ -482,41 +751,83 @@ impl ViewerApp {
                 .unwrap_or(0);
             s.roi_visible = vec![true; n];
         }
+        if set_act.is_some() {
+            self.set_action = set_act;
+        }
+        if item_act.is_some() {
+            self.item_action = item_act;
+        }
     }
 
+    /// Segmentation series: one node per series, then the segments of the
+    /// active one with the tools that edit them.
     pub(super) fn segmentation_section(&mut self, ui: &mut egui::Ui, slot: usize) {
-        let mut make_new = false;
-        let mut open_tool: Option<&ToolInfo> = None;
-        let mut cancel_tool = false;
-        let mut delete: Option<usize> = None;
-        let mut to_struct: Option<usize> = None;
-        // Whichever engine is running on this slot (read before the slot
-        // borrow): its glyph, message and fraction.
+        if self.slots[slot].study.is_none() {
+            return;
+        }
+        // Whichever engine is running on this slot: its glyph, message and
+        // fraction, read before the section borrows anything.
         let running = self
             .running_tool(slot)
             .map(|(tool, p)| (tool.glyph, p.get(), p.frac()));
+        // (name, colour, visible, cm³, can undo) of the active series'
+        // segments — the editable columns live on this copy, see
+        // `structures_section`.
+        let mut rows: Vec<(String, [u8; 3], bool, f64, bool)> = {
+            let s = &self.slots[slot];
+            let spacing = s
+                .study
+                .as_ref()
+                .map(|st| st.volume.spacing)
+                .unwrap_or([1.0; 3]);
+            s.segs()
+                .iter()
+                .map(|g| {
+                    (
+                        g.name.clone(),
+                        g.color,
+                        g.visible,
+                        g.volume_cm3(spacing),
+                        g.can_undo(),
+                    )
+                })
+                .collect()
+        };
+        let before: Vec<([u8; 3], bool)> = rows.iter().map(|r| (r.1, r.2)).collect();
+        let mut make_new = false;
+        let mut new_series = false;
+        let mut open_tool: Option<&ToolInfo> = None;
+        let mut cancel_tool = false;
+        let mut set_all: Option<bool> = None;
+        let mut new_active_series: Option<usize> = None;
+        let mut activate: Option<usize> = None;
+        let mut undo: Option<usize> = None;
+        let mut delete: Option<usize> = None;
+        let mut to_struct: Option<usize> = None;
+        let mut set_act: Option<SetAction> = None;
+        let mut item_act: Option<ItemAction> = None;
         {
-            let StudySlot {
-                study,
-                segs,
-                active_seg,
-                ..
-            } = &mut self.slots[slot];
-            let Some(study) = study.as_ref() else { return };
-            let spacing = study.volume.spacing;
-            egui::CollapsingHeader::new(format!("Segmentations ({})", segs.len()))
+            let me = &*self;
+            let study = me.slots[slot].study.as_ref().unwrap();
+            let series = &study.seg_series;
+            let active_series = me.slots[slot].seg_series_idx();
+            let active_seg = me.slots[slot].active_seg;
+            let n_vis = rows.iter().filter(|r| r.2).count();
+            let n_segs = active_series.map(|i| series[i].segs.len()).unwrap_or(0);
+            egui::CollapsingHeader::new(format!("Segmentations ({n_vis}/{n_segs})"))
                 .id_salt(("segs", slot))
                 .default_open(true)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         if ui
-                            .small_button("➕ New")
+                            .small_button("➕ New series")
                             .on_hover_text(
-                                "An empty segmentation to paint with 🖌 / ✨ in the views",
+                                "An empty segmentation series, drawn on the displayed image \
+                                 series — exports as one DICOM SEG file",
                             )
                             .clicked()
                         {
-                            make_new = true;
+                            new_series = true;
                         }
                         for (tool, hint) in [
                             (
@@ -544,6 +855,71 @@ impl ViewerApp {
                             }
                         }
                     });
+                    for (i, sr) in series.iter().enumerate() {
+                        let here = SetRef {
+                            slot,
+                            kind: SetKind::Segmentations,
+                            idx: i,
+                        };
+                        let resp = ui.selectable_label(
+                            Some(i) == active_series,
+                            format!(
+                                "✎ {} ({} segments){}",
+                                sr.label,
+                                sr.segs.len(),
+                                Self::series_suffix(study, &sr.referenced_series_uid)
+                            ),
+                        );
+                        if resp.clicked() && Some(i) != active_series {
+                            new_active_series = Some(i);
+                        }
+                        resp.context_menu(|ui| me.set_context_menu(ui, here, &mut set_act));
+                        resp.on_hover_text(format!(
+                            "{}\nright-click: connect to another image series, copy / move \
+                             to the other dataset, export as DICOM SEG, remove",
+                            if sr.file_name.is_empty() {
+                                "created here"
+                            } else {
+                                &sr.file_name
+                            }
+                        ));
+                    }
+                    let Some(active_series) = active_series else {
+                        ui.weak("no segmentation series yet — ➕ New series, or just paint");
+                        return;
+                    };
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui
+                            .small_button("➕ New")
+                            .on_hover_text(
+                                "An empty segmentation to paint with 🖌 / ✨ in the views",
+                            )
+                            .clicked()
+                        {
+                            make_new = true;
+                        }
+                        if ui
+                            .small_button("All")
+                            .on_hover_text("Show and select every segmentation")
+                            .clicked()
+                        {
+                            set_all = Some(true);
+                        }
+                        if ui.small_button("None").clicked() {
+                            set_all = Some(false);
+                        }
+                        ui.weak(&series[active_series].label);
+                    });
+                    // Masks of a series drawn on another image series are on
+                    // that series' lattice — nothing here can index them.
+                    if series[active_series].grid.dims != study.volume.dims {
+                        ui.weak(
+                            "drawn on another image series — display that series to see and \
+                             edit these segments",
+                        );
+                        return;
+                    }
                     if let Some((glyph, msg, frac)) = &running {
                         ui.horizontal(|ui| {
                             ui.label(*glyph);
@@ -558,26 +934,39 @@ impl ViewerApp {
                         });
                         ui.weak(msg);
                     }
-                    for (i, seg) in segs.iter_mut().enumerate() {
+                    let selection: Vec<usize> = rows
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, r)| r.2)
+                        .map(|(i, _)| i)
+                        .collect();
+                    let here = SetRef {
+                        slot,
+                        kind: SetKind::Segmentations,
+                        idx: active_series,
+                    };
+                    for (i, row) in rows.iter_mut().enumerate() {
+                        let name = row.0.clone();
                         ui.horizontal(|ui| {
-                            ui.color_edit_button_srgb(&mut seg.color);
-                            ui.checkbox(&mut seg.visible, "")
-                                .on_hover_text("Show / hide this segmentation");
-                            let resp = ui
-                                .selectable_label(i == *active_seg, &seg.name)
-                                .on_hover_text(
-                                    "Click to make this the segmentation the tools edit",
-                                );
+                            ui.color_edit_button_srgb(&mut row.1);
+                            ui.checkbox(&mut row.2, "")
+                                .on_hover_text("Show / select this segmentation");
+                            let resp = ui.selectable_label(i == active_seg, &name).on_hover_text(
+                                "Click to make this the segmentation the tools edit",
+                            );
                             if resp.clicked() {
-                                *active_seg = i;
+                                activate = Some(i);
                             }
-                            ui.weak(format!("{:.1} cm³", seg.volume_cm3(spacing)));
+                            resp.context_menu(|ui| {
+                                me.item_context_menu(ui, here, i, &name, &selection, &mut item_act)
+                            });
+                            ui.weak(format!("{:.1} cm³", row.3));
                             if ui
-                                .add_enabled(seg.can_undo(), egui::Button::new("↶").small())
+                                .add_enabled(row.4, egui::Button::new("↶").small())
                                 .on_hover_text("Undo the last stroke (Ctrl+Z)")
                                 .clicked()
                             {
-                                seg.undo_last();
+                                undo = Some(i);
                             }
                             if ui
                                 .small_button("→RS")
@@ -601,6 +990,38 @@ impl ViewerApp {
                     }
                 });
         }
+        if let Some(v) = set_all {
+            rows.iter_mut().for_each(|r| r.2 = v);
+        }
+        let edited: Vec<(usize, [u8; 3], bool)> = rows
+            .iter()
+            .enumerate()
+            .zip(&before)
+            .filter(|((_, r), b)| (r.1, r.2) != **b)
+            .map(|((i, r), _)| (i, r.1, r.2))
+            .collect();
+        if !edited.is_empty() {
+            if let Some(segs) = self.slots[slot].segs_mut() {
+                for (i, color, visible) in edited {
+                    if let Some(seg) = segs.get_mut(i) {
+                        seg.color = color;
+                        seg.visible = visible;
+                    }
+                }
+            }
+        }
+        if new_series {
+            self.new_set(slot, SetKind::Segmentations);
+        }
+        if let Some(i) = new_active_series {
+            let s = &mut self.slots[slot];
+            s.active_seg_series = i;
+            s.active_seg = 0;
+            self.settings_gen += 1;
+        }
+        if let Some(i) = activate {
+            self.slots[slot].active_seg = i;
+        }
         if make_new {
             self.create_seg(slot);
         }
@@ -615,17 +1036,33 @@ impl ViewerApp {
                 p.cancel();
             }
         }
+        if let Some(i) = undo {
+            let s = &mut self.slots[slot];
+            if let Some(seg) = s.segs_mut().and_then(|g| g.get_mut(i)) {
+                seg.undo_last();
+            }
+        }
         if let Some(i) = delete {
             let s = &mut self.slots[slot];
-            if i < s.segs.len() {
-                s.segs.remove(i);
-                if s.active_seg >= s.segs.len() {
-                    s.active_seg = s.segs.len().saturating_sub(1);
+            let active = s.active_seg;
+            if let Some(segs) = s.segs_mut() {
+                if i < segs.len() {
+                    segs.remove(i);
+                    let n = segs.len();
+                    if active >= n {
+                        s.active_seg = n.saturating_sub(1);
+                    }
                 }
             }
         }
         if let Some(i) = to_struct {
             self.seg_to_rtstruct(slot, i);
+        }
+        if set_act.is_some() {
+            self.set_action = set_act;
+        }
+        if item_act.is_some() {
+            self.item_action = item_act;
         }
     }
 

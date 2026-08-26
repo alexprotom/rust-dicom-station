@@ -48,7 +48,9 @@ rust-dicom-station
 │   │   zoom / pan / W-L interaction, maximize, per-view caches
 │   ├── Floating windows: 3D structures (both datasets through the registration,
 │   │   per-dataset opacity, vector-field glyphs), planar image viewers
-│   ├── Data tree operations: copy / move / remove patient · study · series across datasets
+│   ├── Data tree operations: copy / move / remove patient · study · series across datasets;
+│   │   create / connect / copy / move / remove RT structure sets and segmentation
+│   │   series; copy / move / remove single or selected structures and segments
 │   ├── Tool windows: auto-segmentation, prompt segmentation, slice propagation,
 │   │   model manager, structure propagation, DRR, export, anonymizer,
 │   │   test-data generator (one shared skeleton)
@@ -62,13 +64,15 @@ rust-dicom-station
 │   │   └── Planar images: DX, CR, RTIMAGE, MG, XA, RF, PX
 │   ├── RT objects
 │   │   ├── RTSTRUCT (structure sets, contours, reference chain)
+│   │   ├── SEG (DICOM Segmentation: binary / fractional multi-frame masks,
+│   │   │   frame-position lattice, CIELab colors, read and written)
 │   │   ├── RTDOSE (grids, trilinear patient-space sampling, plan reference)
 │   │   ├── RTPLAN / RT Ion Plan (beams, control points, prescriptions)
 │   │   ├── RTIMAGE (DRR / portal, as planar image)
 │   │   ├── REG (spatial registration matrices and deformable grids, applied as
 │   │   │   the active registration; a recovered field written back out)
 │   │   └── RT (Ion) Beams Treatment Record (delivered metersets)
-│   ├── Export: CT series + RTSTRUCT + RTDOSE + RTPLAN with an editable tag table
+│   ├── Export: CT series + RTSTRUCT + SEG + RTDOSE + RTPLAN with an editable tag table
 │   └── Anonymizer: scan, review every identifying tag, rewrite with consistent UID remap
 │
 ├── Data simulation
@@ -96,7 +100,9 @@ rust-dicom-station
 │
 ├── Segmentation
 │   ├── Voxel masks: brush / eraser (2D, 3D), geodesic region growing, undo,
-│   │   slice overlays, hole filling, mask ▶ RTSTRUCT contours, RTSTRUCT ▶ mask
+│   │   slice overlays, hole filling, mask ▶ RTSTRUCT contours, RTSTRUCT ▶ mask,
+│   │   grouped into segmentation series that live in the study and bind to an
+│   │   image series (resampled onto its lattice when it is displayed)
 │   ├── Propagation: structures and segmentations carried across a registration,
 │   │   globally or refined on an enclosing structure first
 │   ├── Surfaces: contour and mask ▶ meshes (scanline fill, surface nets, smoothing)
@@ -179,6 +185,10 @@ src/
     d3.rs             live 3D structure window
     planar.rs         floating DX / CR / RTIMAGE viewers
     tree.rs           dataset-tree copy / move / remove with reference chains
+    sets.rs           structure sets and segmentation series as tree nodes:
+                      create, connect to an image series, copy / move / remove
+                      whole series, and move single structures / segments
+                      between any two of them (contour ⇄ mask conversion)
     jobs.rs           loading, simulation, export, generator, anonymizer and
                       auto-segmentation job starts
     dialogs.rs        auto-segmentation window + results, generator, anonymizer,
@@ -205,12 +215,16 @@ src/
   render.rs         window / level, dose colorwash, marching-squares isodose,
                     contour / plane intersection                                 Core
   rtstruct.rs       RT Structure Set parsing                                     DICOM
+  dicomseg.rs       DICOM Segmentation: the segmentation-series model, SEG
+                    reading (binary / fractional, frame-position lattice),
+                    resampling between lattices, the SEG writer               DICOM
   rtdose.rs         RT Dose parsing + trilinear patient-space sampling           DICOM
   rtplan.rs         RT Plan / RT Ion Plan parsing                                DICOM
   extras.rs         DX / CR / RTIMAGE planar images, REG (matrices and
                     deformation grids), RTRECORD                                 DICOM
-  dicom_export.rs   DICOM writer (CT series, RTSTRUCT, RTDOSE, RTPLAN, and the
-                    Deformable Spatial Registration a recovered field becomes)   DICOM
+  dicom_export.rs   DICOM writer (CT series, RTSTRUCT, SEG, RTDOSE, RTPLAN, and
+                    the Deformable Spatial Registration a recovered field
+                    becomes)                                                     DICOM
   anonymize.rs      interactive DICOM anonymizer engine                          DICOM
   gen_test_data.rs  synthetic RT phantom study generator                         Sim
   simulate.rs       known-transform study generator (registration QA)           Sim

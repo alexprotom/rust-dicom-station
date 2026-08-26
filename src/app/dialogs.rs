@@ -49,6 +49,19 @@ impl ViewerApp {
         self.segvol_window(ctx);
         self.medsam2_window(ctx);
         self.autoseg_result_window(ctx);
+        if let Some(msg) = self.notice.clone() {
+            egui::Window::new("Done")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.label(&msg);
+                    ui.add_space(8.0);
+                    if ui.button("OK").clicked() {
+                        self.notice = None;
+                    }
+                });
+        }
         if let Some(err) = self.error.clone() {
             egui::Window::new("Error")
                 .collapsible(false)
@@ -743,7 +756,8 @@ impl ViewerApp {
             .show(ctx, |ui| {
                 ui.label(
                     "Writes the displayed volume (one file per slice) plus every \
-                     structure set, dose grid and plan as DICOM objects. The \
+                     structure set, segmentation series (as DICOM SEG), dose grid \
+                     and plan as DICOM objects. The \
                      attributes below are pre-filled from the loaded study and \
                      written into every exported file; SOP / series / study instance \
                      UIDs are always freshly generated, with the cross-references \

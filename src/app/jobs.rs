@@ -113,10 +113,20 @@ impl ViewerApp {
             v.pan = Vec2::ZERO;
             v.invalidate();
         }
-        // Segmentations were painted on the previous volume grid.
-        s.segs.clear();
+        // Default to the segmentation series of the active image series,
+        // the same rule the structure sets follow above.
         s.active_seg = 0;
+        s.active_seg_series = active_uid
+            .as_deref()
+            .and_then(|uid| {
+                study
+                    .seg_series
+                    .iter()
+                    .position(|sr| sr.referenced_series_uid == uid)
+            })
+            .unwrap_or(0);
         s.study = Some(study);
+        self.rebind_seg_series(slot);
         self.cancel_grow();
         self.paint_last = None;
         if slot == 1 {
@@ -162,6 +172,14 @@ impl ViewerApp {
                         s.roi_visible = vec![true; study.structure_sets[i].rois.len()];
                     }
                 }
+                // Same for the segmentations drawn on the new series.
+                if let Some(i) = study
+                    .seg_series
+                    .iter()
+                    .position(|sr| sr.referenced_series_uid == uid)
+                {
+                    s.active_seg_series = i;
+                }
             }
             let dims = study.volume.dims;
             s.cursor = [
@@ -179,10 +197,9 @@ impl ViewerApp {
                 v.pan = Vec2::ZERO;
                 v.invalidate();
             }
-            // Segmentations were painted on the previous volume grid.
-            s.segs.clear();
             s.active_seg = 0;
             self.cancel_grow();
+            self.rebind_seg_series(slot);
             self.paint_last = None;
             self.clear_registration();
             self.settings_gen += 1;

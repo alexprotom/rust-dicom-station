@@ -38,7 +38,11 @@ holds the registration controls and both dataset trees.*
   plan summaries, planar images (DX/CR/RTIMAGE), dark/light themes.
 * **Datasets** - a patient ▶ study ▶ series tree per dataset, folder
   merging, copy/move/remove with correct reference-chain semantics,
-  six-view comparison mode with patient-space crosshair linking.
+  RT structure sets and segmentation series as tree nodes (create one,
+  connect it to another image series, move whole series or single
+  structures / segments between any two of them - contours and masks
+  converting as they cross), six-view comparison mode with patient-space
+  crosshair linking.
 * **Registration** - four engines, none of them a binding: rigid (6-DOF)
   and deformable (cubic B-spline) re-implemented from **elastix**
   (multi-resolution pyramids, stochastic sampling, ASGD); a dense
@@ -70,7 +74,9 @@ holds the registration controls and both dataset trees.*
   you.
 * **Segmentation** - spacing-aware 2D/3D brush and eraser, geodesic
   region growing with live preview, per-stroke undo, real-time 3D surface
-  view, mask → RTSTRUCT conversion.
+  view, mask → RTSTRUCT conversion, and **DICOM SEG** import and export
+  (binary and fractional multi-frame masks, read onto their own lattice
+  and resampled onto whichever image series they belong to).
 * **Auto-segmentation** - TotalSegmentator v2 inference rebuilt natively:
   official nnU-Net weights downloaded once and converted
   without Python, hand-written SIMD CPU engine and a wgpu GPU path
@@ -94,7 +100,7 @@ holds the registration controls and both dataset trees.*
   Validated against the reference implementation module by module and over a
   full propagation.
 * **Tools** - DICOM export with an editable patient/study tag table
-  (CT + RTSTRUCT + RTDOSE + RTPLAN), a **model manager** showing every
+  (CT + RTSTRUCT + SEG + RTDOSE + RTPLAN), a **model manager** showing every
   downloadable network weight with its state and size and the buttons to
   download, update, remove or free one or all of them, an interactive
   folder anonymizer with consistent UID regeneration, and a synthetic

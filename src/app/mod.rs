@@ -46,6 +46,7 @@ mod propagate_win;
 mod reg_panel;
 mod seg;
 mod seg_engines;
+mod sets;
 mod theme;
 mod tree;
 mod views;
@@ -296,9 +297,9 @@ struct StudySlot {
     active_structs: usize,
     active_dose: usize,
     dose_reference: f32,
-    /// Painted segmentations on this slot's volume.
-    segs: Vec<Segmentation>,
-    /// Index of the segmentation the tools edit.
+    /// Index of the active segmentation series within `study.seg_series`.
+    active_seg_series: usize,
+    /// Index of the segment the tools edit, within that series.
     active_seg: usize,
 }
 
@@ -308,6 +309,35 @@ impl StudySlot {
         self.study
             .as_ref()
             .and_then(|s| s.structure_sets.get(self.active_structs))
+    }
+
+    /// Index of the segmentation series the tools edit, clamped to what the
+    /// study actually holds.
+    fn seg_series_idx(&self) -> Option<usize> {
+        let st = self.study.as_ref()?;
+        (!st.seg_series.is_empty()).then(|| self.active_seg_series.min(st.seg_series.len() - 1))
+    }
+
+    /// Segments of the active segmentation series — empty unless they live
+    /// on the displayed volume's lattice, because every overlay, brush
+    /// stroke and mesh indexes them with that volume's dimensions. A series
+    /// drawn on another image series simply has nothing to show here.
+    fn segs(&self) -> &[Segmentation] {
+        match (self.study.as_ref(), self.seg_series_idx()) {
+            (Some(st), Some(i)) if st.seg_series[i].grid.dims == st.volume.dims => {
+                &st.seg_series[i].segs
+            }
+            _ => &[],
+        }
+    }
+
+    /// [`Self::segs`] for editing; `None` when there is nothing editable.
+    fn segs_mut(&mut self) -> Option<&mut Vec<Segmentation>> {
+        let i = self.seg_series_idx()?;
+        let st = self.study.as_mut()?;
+        let dims = st.volume.dims;
+        let ser = &mut st.seg_series[i];
+        (ser.grid.dims == dims).then_some(&mut ser.segs)
     }
 }
 
@@ -321,7 +351,7 @@ impl StudySlot {
             active_structs: 0,
             active_dose: 0,
             dose_reference: 1.0,
-            segs: Vec::new(),
+            active_seg_series: 0,
             active_seg: 0,
         }
     }
@@ -517,12 +547,90 @@ struct TreeAction {
     op: TreeOp,
 }
 
+/// Which of a dataset's two kinds of segmented series an action addresses.
+///
+/// The data tree treats them alike — both are series drawn on an image
+/// series, both hold named, coloured items — even though one stores contours
+/// and the other voxel masks. Conversions between the two happen on
+/// transfer (`ViewerApp::apply_item_action`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SetKind {
+    /// RT Structure Set: contours.
+    Structures,
+    /// DICOM Segmentation series: binary voxel masks.
+    Segmentations,
+}
+
+impl SetKind {
+    /// "structure" / "segment", pluralized for `n`.
+    fn item_name(self, n: usize) -> &'static str {
+        match (self, n) {
+            (SetKind::Structures, 1) => "structure",
+            (SetKind::Structures, _) => "structures",
+            (SetKind::Segmentations, 1) => "segment",
+            (SetKind::Segmentations, _) => "segments",
+        }
+    }
+    fn series_name(self) -> &'static str {
+        match self {
+            SetKind::Structures => "RT structure set",
+            SetKind::Segmentations => "segmentation series",
+        }
+    }
+}
+
+/// One structure set / segmentation series of one dataset.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SetRef {
+    slot: usize,
+    kind: SetKind,
+    /// Index into that dataset's list, or [`SetRef::NEW`] for a series that
+    /// does not exist yet — what the *New …* transfer destinations mean.
+    idx: usize,
+}
+
+impl SetRef {
+    const NEW: usize = usize::MAX;
+}
+
+/// Deferred right-click action on a whole series node of the data tree.
+enum SetAction {
+    New(SetRef),
+    Remove(SetRef),
+    /// Re-point the series at the image series with this Series Instance UID.
+    Connect(SetRef, String),
+    /// Copy (`copy`) or move the whole series to the other dataset.
+    Transfer {
+        from: SetRef,
+        copy: bool,
+    },
+    /// Write one segmentation series as a standalone DICOM SEG file.
+    ExportSeg(SetRef),
+}
+
+/// Deferred right-click action on individual structures / segments.
+enum ItemAction {
+    /// Copy (`copy`) or move `items` of `from` into the series `to`.
+    Transfer {
+        from: SetRef,
+        items: Vec<usize>,
+        to: SetRef,
+        copy: bool,
+    },
+    Remove {
+        from: SetRef,
+        items: Vec<usize>,
+    },
+}
+
 /// Which parts of a `LoadedStudy` a tree selection covers: the selected
 /// series plus the RT objects linked to them via the DICOM reference chain
 /// (RTSTRUCT ▶ series, RTPLAN ▶ RTSTRUCT, RTDOSE ▶ RTPLAN).
 struct SubsetMasks {
     series: Vec<bool>,
     structs: Vec<bool>,
+    /// Segmentation series drawn on the selected image series.
+    seg_series: Vec<bool>,
     doses: Vec<bool>,
     plans: Vec<bool>,
     /// Planar images / REG objects / treatment records are only carried when
@@ -570,6 +678,8 @@ pub struct ViewerApp {
     /// A load queued behind the one in flight (slot, directory).
     pending_load: Option<(usize, PathBuf)>,
     error: Option<String>,
+    /// A one-line confirmation shown in a small modal (e.g. a written file).
+    notice: Option<String>,
 
     // Registration (direction selectable: either study can be the fixed one).
     registration: Option<ActiveRegistration>,
@@ -672,6 +782,10 @@ pub struct ViewerApp {
     d3_windows: Vec<D3Window>,
     /// Deferred right-click action from the study tree.
     tree_action: Option<TreeAction>,
+    /// Deferred right-click action on a structure set / segmentation series.
+    set_action: Option<SetAction>,
+    /// Deferred right-click action on structures / segments.
+    item_action: Option<ItemAction>,
     /// When set, this single (slot, view) fills the whole central area.
     maximized: Option<(usize, usize)>,
     /// Invert REG matrices before applying them as the active registration.
@@ -796,6 +910,7 @@ impl ViewerApp {
             loading: None,
             pending_load: None,
             error: None,
+            notice: None,
             registration: None,
             reg_job: None,
             reg_fixed_slot: 0,
@@ -854,6 +969,8 @@ impl ViewerApp {
             planar_windows: Vec::new(),
             d3_windows: Vec::new(),
             tree_action: None,
+            set_action: None,
+            item_action: None,
             maximized: None,
             reg_apply_invert: false,
             window_center: 40.0,
@@ -1149,6 +1266,12 @@ impl eframe::App for ViewerApp {
         self.d3_windows_ui(&ctx);
         if let Some(action) = self.tree_action.take() {
             self.apply_tree_action(action);
+        }
+        if let Some(action) = self.set_action.take() {
+            self.apply_set_action(action);
+        }
+        if let Some(action) = self.item_action.take() {
+            self.apply_item_action(action);
         }
         self.modals(&ctx);
     }

@@ -71,9 +71,10 @@ impl ViewerApp {
                                 )),
                             )
                             .on_hover_text(
-                                "Write the displayed volume, structure sets, dose grids \
-                                 and plans as DICOM files — with the patient / study / \
-                                 equipment tags reviewed and edited first",
+                                "Write the displayed volume, structure sets, \
+                                 segmentation series (DICOM SEG), dose grids and plans \
+                                 as DICOM files — with the patient / study / equipment \
+                                 tags reviewed and edited first",
                             )
                             .clicked()
                         {
@@ -431,7 +432,7 @@ impl ViewerApp {
                             .as_ref()
                             .map(|s| !s.structure_sets.is_empty())
                             .unwrap_or(false)
-                            || !self.slots[slot].segs.is_empty();
+                            || !self.slots[slot].segs().is_empty();
                         if slot == 1 && self.slots[1].study.is_none() {
                             continue;
                         }

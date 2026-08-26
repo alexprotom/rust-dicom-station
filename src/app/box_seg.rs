@@ -691,10 +691,12 @@ impl ViewerApp {
         let index = match self.medsam2.target_seg {
             // Replace the previous preview or result in place, so the list
             // does not fill up with attempts.
-            Some(i) if i < self.slots[slot].segs.len() => {
-                let color = self.slots[slot].segs[i].color;
-                self.slots[slot].segs[i] =
-                    Segmentation::from_label_map(name, color, dims, &r.mask, 1);
+            Some(i) if i < self.slots[slot].segs().len() => {
+                let color = self.slots[slot].segs()[i].color;
+                let made = Segmentation::from_label_map(name, color, dims, &r.mask, 1);
+                if let Some(segs) = self.slots[slot].segs_mut() {
+                    segs[i] = made;
+                }
                 i
             }
             _ => self.add_segmentation(slot, name, dims, &r.mask),

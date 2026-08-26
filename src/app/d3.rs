@@ -27,7 +27,7 @@ impl ViewerApp {
             }
         }
         let ss = self.slots[slot].active_structures().cloned();
-        if ss.is_none() && self.slots[slot].segs.is_empty() {
+        if ss.is_none() && self.slots[slot].segs().is_empty() {
             return;
         }
         // Initial auto-fit from the volume extents; replaced by the meshes'
@@ -140,7 +140,7 @@ impl ViewerApp {
                     if let Some(study) = &self.slots[w.slot].study {
                         let geom = GridGeom::of(&study.volume);
                         let snaps: Vec<_> = self.slots[w.slot]
-                            .segs
+                            .segs()
                             .iter()
                             .enumerate()
                             .filter_map(|(i, s)| s.mesh_grid().map(|g| (i, s.color, g)))
@@ -255,7 +255,7 @@ impl ViewerApp {
             let visible: &[bool] = &self.slots[w.slot].roi_visible;
             // Snapshot of segmentation display state (visibility + live color).
             let seg_disp: Vec<(bool, [u8; 3])> = self.slots[w.slot]
-                .segs
+                .segs()
                 .iter()
                 .map(|s| (s.visible, s.color))
                 .collect();
