@@ -45,6 +45,7 @@ impl ViewerApp {
         self.propagate_window(ctx);
         self.drr_window(ctx);
         self.export_window(ctx);
+        self.rename_window(ctx);
         self.autoseg_run_window(ctx);
         self.segvol_window(ctx);
         self.medsam2_window(ctx);

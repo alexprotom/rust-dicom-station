@@ -159,6 +159,7 @@ impl ViewerApp {
         let mut act_series: Option<TreeAction> = None;
         let mut act_study: Option<TreeAction> = None;
         let mut act_patient: Option<TreeAction> = None;
+        let mut rename: Option<RenameTarget> = None;
         {
             let study = self.slots[slot].study.as_ref().unwrap();
             let active = study.active_series;
@@ -243,6 +244,12 @@ impl ViewerApp {
                                             switch_to = Some(i);
                                         }
                                         resp.context_menu(|ui| {
+                                            if ui.button("✎ Rename series…").clicked() {
+                                                rename =
+                                                    Some(RenameTarget::Series { slot, idx: i });
+                                                ui.close();
+                                            }
+                                            ui.separator();
                                             if ui
                                                 .button(format!("Copy series to dataset {other}"))
                                                 .clicked()
@@ -276,13 +283,21 @@ impl ViewerApp {
                                             }
                                         });
                                         resp.on_hover_text(format!(
-                                            "Series UID …{}\nright-click: copy / move to \
-                                             dataset {other}, or remove",
+                                            "Series UID …{}\nright-click: rename, copy / move \
+                                             to dataset {other}, or remove",
                                             tail(&s.uid)
                                         ));
                                     }
                                 });
                             sch.header_response.context_menu(|ui| {
+                                if ui.button("✎ Rename study…").clicked() {
+                                    rename = Some(RenameTarget::Study {
+                                        slot,
+                                        uid: study_uid.to_string(),
+                                    });
+                                    ui.close();
+                                }
+                                ui.separator();
                                 if ui
                                     .button(format!("Copy study to dataset {other}"))
                                     .clicked()
@@ -318,6 +333,14 @@ impl ViewerApp {
                         }
                     });
                 pch.header_response.context_menu(|ui| {
+                    if ui.button("✎ Rename patient…").clicked() {
+                        rename = Some(RenameTarget::Patient {
+                            slot,
+                            key: pkey.to_string(),
+                        });
+                        ui.close();
+                    }
+                    ui.separator();
                     if ui
                         .button(format!("Copy patient to dataset {other}"))
                         .clicked()
@@ -355,6 +378,9 @@ impl ViewerApp {
         if let Some(a) = act_series.or(act_study).or(act_patient) {
             self.tree_action = Some(a);
         }
+        if rename.is_some() {
+            self.rename_request = rename;
+        }
         if let Some(i) = switch_to {
             self.start_series_switch(slot, i);
         }
@@ -366,6 +392,11 @@ impl ViewerApp {
     /// where it goes, and whether it stays.
     fn set_context_menu(&self, ui: &mut egui::Ui, here: SetRef, out: &mut Option<SetAction>) {
         let other = SLOT_NAMES[1 - here.slot];
+        if ui.button("✎ Rename series…").clicked() {
+            *out = Some(SetAction::Rename(here));
+            ui.close();
+        }
+        ui.separator();
         ui.menu_button("🔗 Connect to image series", |ui| {
             let Some(study) = self.slots[here.slot].study.as_ref() else {
                 return;
@@ -537,6 +568,11 @@ impl ViewerApp {
         } else {
             format!("'{label}'")
         };
+        if ui.button(format!("✎ Rename '{label}'…")).clicked() {
+            *out = Some(ItemAction::Rename { from, idx: clicked });
+            ui.close();
+        }
+        ui.separator();
         ui.menu_button(format!("Copy {what} to"), |ui| {
             if let Some(to) = self.destination_menu(ui, from) {
                 *out = Some(ItemAction::Transfer {
@@ -1079,6 +1115,7 @@ impl ViewerApp {
         let mut mode = self.dose_mode;
         let mut opacity = self.dose_opacity;
         let mut threshold = self.dose_threshold_pct;
+        let mut rename: Option<RenameTarget> = None;
         {
             let StudySlot {
                 study,
@@ -1088,7 +1125,7 @@ impl ViewerApp {
             } = &mut self.slots[slot];
             let doses = &study.as_ref().unwrap().doses;
             let plans = &study.as_ref().unwrap().plans;
-            egui::CollapsingHeader::new("Dose")
+            let dose_hdr = egui::CollapsingHeader::new("Dose")
                 .id_salt(("dose", slot))
                 .default_open(true)
                 .show(ui, |ui| {
@@ -1156,6 +1193,20 @@ impl ViewerApp {
                     ui.add(egui::Slider::new(&mut opacity, 0.0..=1.0).text("Opacity"));
                     ui.add(egui::Slider::new(&mut threshold, 0.0..=100.0).text("Threshold %"));
                 });
+            let sel = (*active_dose).min(doses.len() - 1);
+            dose_hdr.header_response.context_menu(|ui| {
+                if ui
+                    .button("✎ Rename this dose…")
+                    .on_hover_text(format!("Renames '{}'", doses[sel].label))
+                    .clicked()
+                {
+                    rename = Some(RenameTarget::Dose { slot, idx: sel });
+                    ui.close();
+                }
+            });
+        }
+        if rename.is_some() {
+            self.rename_request = rename;
         }
         self.dose_mode = mode;
         self.dose_opacity = opacity;
@@ -1187,121 +1238,133 @@ impl ViewerApp {
     }
 
     pub(super) fn plan_section(&mut self, ui: &mut egui::Ui, slot: usize) {
-        let Some(study) = &self.slots[slot].study else {
-            return;
-        };
-        if study.plans.is_empty() {
-            // No RTPLAN in this study — show nothing.
-            return;
-        }
-        for (pi, plan) in study.plans.iter().enumerate() {
-            egui::CollapsingHeader::new(format!(
-                "Plan: {}",
-                if plan.label.is_empty() {
-                    "unnamed"
-                } else {
-                    &plan.label
-                }
-            ))
-            .id_salt(("plan", slot, pi))
-            .default_open(pi == 0)
-            .show(ui, |ui| {
-                if !plan.name.is_empty() && plan.name != plan.label {
-                    ui.weak(format!("Name: {}", plan.name));
-                }
-                if !plan.plan_kind.is_empty() {
-                    ui.weak(format!("Type: {}", plan.plan_kind));
-                }
-                if let Some(fx) = plan.n_fractions {
-                    ui.weak(format!("Fractions: {fx}"));
-                }
-                if let Some(rx) = plan.target_prescription_dose {
-                    ui.weak(format!("Prescription: {rx:.2} Gy"));
-                }
-                if !plan.date.is_empty() {
-                    ui.weak(format!("Date: {}", plan.date));
-                }
-                // DICOM cross-reference: the structure set the plan was
-                // created on.
-                if !plan.referenced_structset_uid.is_empty() {
-                    if let Some(ss) = study
-                        .structure_sets
-                        .iter()
-                        .find(|s| s.sop_instance_uid == plan.referenced_structset_uid)
-                    {
-                        ui.weak(format!(
-                            "▶ structures {}",
-                            if ss.label.is_empty() {
-                                &ss.file_name
-                            } else {
-                                &ss.label
-                            }
-                        ));
+        let mut rename: Option<RenameTarget> = None;
+        {
+            let Some(study) = &self.slots[slot].study else {
+                return;
+            };
+            if study.plans.is_empty() {
+                // No RTPLAN in this study — show nothing.
+                return;
+            }
+            for (pi, plan) in study.plans.iter().enumerate() {
+                let plan_hdr = egui::CollapsingHeader::new(format!(
+                    "Plan: {}",
+                    if plan.label.is_empty() {
+                        "unnamed"
+                    } else {
+                        &plan.label
                     }
-                }
-                if !plan.beams.is_empty() {
-                    egui::Grid::new(("beam_grid", slot, pi))
-                        .striped(true)
-                        .min_col_width(10.0)
-                        .show(ui, |ui| {
-                            ui.strong("Beam");
-                            ui.strong("Type");
-                            ui.strong("G°");
-                            ui.strong("C°");
-                            ui.strong("E (MeV)");
-                            ui.strong("MU");
-                            ui.strong("CPs");
-                            ui.end_row();
-                            for b in &plan.beams {
-                                ui.label(&b.name).on_hover_text(format!(
-                                    "Beam {} · {} · dose/fx {}",
-                                    b.number,
-                                    if b.delivery_type.is_empty() {
-                                        "TREATMENT"
-                                    } else {
-                                        &b.delivery_type
-                                    },
-                                    b.beam_dose
-                                        .map(|d| format!("{d:.2} Gy"))
-                                        .unwrap_or_else(|| "n/a".into()),
-                                ));
-                                ui.label(format!(
-                                    "{}{}",
-                                    b.radiation_type,
-                                    if b.scan_mode.is_empty() {
-                                        String::new()
-                                    } else {
-                                        format!("/{}", b.scan_mode)
-                                    }
-                                ));
-                                ui.label(
-                                    b.gantry_angle
-                                        .map(|g| format!("{g:.0}"))
-                                        .unwrap_or_else(|| "–".into()),
-                                );
-                                ui.label(
-                                    b.couch_angle
-                                        .map(|c| format!("{c:.0}"))
-                                        .unwrap_or_else(|| "–".into()),
-                                );
-                                ui.label(match (b.energy_min, b.energy_max) {
-                                    (Some(a), Some(bb)) if (a - bb).abs() > 0.01 => {
-                                        format!("{a:.0}–{bb:.0}")
-                                    }
-                                    (Some(a), _) => format!("{a:.0}"),
-                                    _ => "–".into(),
-                                });
-                                ui.label(
-                                    b.meterset
-                                        .map(|m| format!("{m:.1}"))
-                                        .unwrap_or_else(|| "–".into()),
-                                );
-                                ui.label(format!("{}", b.n_control_points));
+                ))
+                .id_salt(("plan", slot, pi))
+                .default_open(pi == 0)
+                .show(ui, |ui| {
+                    if !plan.name.is_empty() && plan.name != plan.label {
+                        ui.weak(format!("Name: {}", plan.name));
+                    }
+                    if !plan.plan_kind.is_empty() {
+                        ui.weak(format!("Type: {}", plan.plan_kind));
+                    }
+                    if let Some(fx) = plan.n_fractions {
+                        ui.weak(format!("Fractions: {fx}"));
+                    }
+                    if let Some(rx) = plan.target_prescription_dose {
+                        ui.weak(format!("Prescription: {rx:.2} Gy"));
+                    }
+                    if !plan.date.is_empty() {
+                        ui.weak(format!("Date: {}", plan.date));
+                    }
+                    // DICOM cross-reference: the structure set the plan was
+                    // created on.
+                    if !plan.referenced_structset_uid.is_empty() {
+                        if let Some(ss) = study
+                            .structure_sets
+                            .iter()
+                            .find(|s| s.sop_instance_uid == plan.referenced_structset_uid)
+                        {
+                            ui.weak(format!(
+                                "▶ structures {}",
+                                if ss.label.is_empty() {
+                                    &ss.file_name
+                                } else {
+                                    &ss.label
+                                }
+                            ));
+                        }
+                    }
+                    if !plan.beams.is_empty() {
+                        egui::Grid::new(("beam_grid", slot, pi))
+                            .striped(true)
+                            .min_col_width(10.0)
+                            .show(ui, |ui| {
+                                ui.strong("Beam");
+                                ui.strong("Type");
+                                ui.strong("G°");
+                                ui.strong("C°");
+                                ui.strong("E (MeV)");
+                                ui.strong("MU");
+                                ui.strong("CPs");
                                 ui.end_row();
-                            }
-                        });
-                }
-            });
+                                for b in &plan.beams {
+                                    ui.label(&b.name).on_hover_text(format!(
+                                        "Beam {} · {} · dose/fx {}",
+                                        b.number,
+                                        if b.delivery_type.is_empty() {
+                                            "TREATMENT"
+                                        } else {
+                                            &b.delivery_type
+                                        },
+                                        b.beam_dose
+                                            .map(|d| format!("{d:.2} Gy"))
+                                            .unwrap_or_else(|| "n/a".into()),
+                                    ));
+                                    ui.label(format!(
+                                        "{}{}",
+                                        b.radiation_type,
+                                        if b.scan_mode.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!("/{}", b.scan_mode)
+                                        }
+                                    ));
+                                    ui.label(
+                                        b.gantry_angle
+                                            .map(|g| format!("{g:.0}"))
+                                            .unwrap_or_else(|| "–".into()),
+                                    );
+                                    ui.label(
+                                        b.couch_angle
+                                            .map(|c| format!("{c:.0}"))
+                                            .unwrap_or_else(|| "–".into()),
+                                    );
+                                    ui.label(match (b.energy_min, b.energy_max) {
+                                        (Some(a), Some(bb)) if (a - bb).abs() > 0.01 => {
+                                            format!("{a:.0}–{bb:.0}")
+                                        }
+                                        (Some(a), _) => format!("{a:.0}"),
+                                        _ => "–".into(),
+                                    });
+                                    ui.label(
+                                        b.meterset
+                                            .map(|m| format!("{m:.1}"))
+                                            .unwrap_or_else(|| "–".into()),
+                                    );
+                                    ui.label(format!("{}", b.n_control_points));
+                                    ui.end_row();
+                                }
+                            });
+                    }
+                });
+                plan_hdr.header_response.context_menu(|ui| {
+                    if ui.button("✎ Rename plan…").clicked() {
+                        rename = Some(RenameTarget::Plan { slot, idx: pi });
+                        ui.close();
+                    }
+                });
+            }
+        }
+        if rename.is_some() {
+            self.rename_request = rename;
         }
     }
 
@@ -1316,6 +1379,7 @@ impl ViewerApp {
             return;
         }
         let mut open_idx = None;
+        let mut rename: Option<RenameTarget> = None;
         {
             let study = self.slots[slot].study.as_ref().unwrap();
             egui::CollapsingHeader::new(format!("Planar images ({n})"))
@@ -1325,13 +1389,24 @@ impl ViewerApp {
                     for (i, img) in study.planar_images.iter().enumerate() {
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(format!("[{}]", img.modality)).weak());
-                            ui.label(&img.label);
+                            let resp = ui
+                                .label(&img.label)
+                                .on_hover_text("right-click: rename this image");
+                            resp.context_menu(|ui| {
+                                if ui.button("✎ Rename image…").clicked() {
+                                    rename = Some(RenameTarget::Planar { slot, idx: i });
+                                    ui.close();
+                                }
+                            });
                             if ui.small_button("View").clicked() {
                                 open_idx = Some(i);
                             }
                         });
                     }
                 });
+        }
+        if rename.is_some() {
+            self.rename_request = rename;
         }
         if let Some(i) = open_idx {
             if let Some(w) = self
@@ -1368,6 +1443,7 @@ impl ViewerApp {
         let both = self.slots[0].study.is_some() && self.slots[1].study.is_some();
         let mut apply: Option<(registration::RigidTransform, usize)> = None;
         let mut apply_grid: Option<(usize, usize)> = None;
+        let mut rename: Option<RenameTarget> = None;
         {
             let study = self.slots[slot].study.as_ref().unwrap();
             // Frame-of-reference UIDs of the loaded volumes for hints.
@@ -1387,14 +1463,26 @@ impl ViewerApp {
                 .default_open(false)
                 .show(ui, |ui| {
                     for (ri, reg) in study.registrations.iter().enumerate() {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{}{}",
-                                reg.label,
-                                if reg.deformable { "  [deformable: matrices only]" } else { "" }
-                            ))
-                            .strong(),
-                        );
+                        let resp = ui
+                            .label(
+                                egui::RichText::new(format!(
+                                    "{}{}",
+                                    reg.label,
+                                    if reg.deformable {
+                                        "  [deformable: matrices only]"
+                                    } else {
+                                        ""
+                                    }
+                                ))
+                                .strong(),
+                            )
+                            .on_hover_text("right-click: rename this registration");
+                        resp.context_menu(|ui| {
+                            if ui.button("✎ Rename registration…").clicked() {
+                                rename = Some(RenameTarget::Registration { slot, idx: ri });
+                                ui.close();
+                            }
+                        });
                         for (ii, item) in reg.items.iter().enumerate() {
                             if item.is_identity {
                                 ui.weak(format!("· item {}: identity ({})", ii + 1, item.matrix_type));
@@ -1540,6 +1628,9 @@ impl ViewerApp {
                 });
             self.reg_apply_invert = invert;
         }
+        if rename.is_some() {
+            self.rename_request = rename;
+        }
         if let Some((rigid, fixed_slot)) = apply {
             self.apply_external_rigid(rigid, fixed_slot);
         }
@@ -1566,33 +1657,46 @@ impl ViewerApp {
 
     /// RT (Ion) Beams Treatment Records: per-beam delivered metersets.
     pub(super) fn records_section(&mut self, ui: &mut egui::Ui, slot: usize) {
-        let Some(study) = &self.slots[slot].study else {
-            return;
-        };
-        if study.treat_records.is_empty() {
-            return;
-        }
-        egui::CollapsingHeader::new(format!("Treatment records ({})", study.treat_records.len()))
+        let mut rename: Option<RenameTarget> = None;
+        {
+            let Some(study) = &self.slots[slot].study else {
+                return;
+            };
+            if study.treat_records.is_empty() {
+                return;
+            }
+            egui::CollapsingHeader::new(format!(
+                "Treatment records ({})",
+                study.treat_records.len()
+            ))
             .id_salt(("records", slot))
             .default_open(false)
             .show(ui, |ui| {
                 for (ri, rec) in study.treat_records.iter().enumerate() {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{}{}{}{}",
-                            rec.label,
-                            if rec.ion { "  [ion]" } else { "" },
-                            rec.fraction
-                                .map(|f| format!("  fx {f}"))
-                                .unwrap_or_default(),
-                            if rec.date.is_empty() {
-                                String::new()
-                            } else {
-                                format!("  {}", rec.date)
-                            }
-                        ))
-                        .strong(),
-                    );
+                    let resp = ui
+                        .label(
+                            egui::RichText::new(format!(
+                                "{}{}{}{}",
+                                rec.label,
+                                if rec.ion { "  [ion]" } else { "" },
+                                rec.fraction
+                                    .map(|f| format!("  fx {f}"))
+                                    .unwrap_or_default(),
+                                if rec.date.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!("  {}", rec.date)
+                                }
+                            ))
+                            .strong(),
+                        )
+                        .on_hover_text("right-click: rename this record");
+                    resp.context_menu(|ui| {
+                        if ui.button("✎ Rename record…").clicked() {
+                            rename = Some(RenameTarget::Record { slot, idx: ri });
+                            ui.close();
+                        }
+                    });
                     if !rec.machine.is_empty() {
                         ui.weak(format!("Machine: {}", rec.machine));
                     }
@@ -1648,6 +1752,10 @@ impl ViewerApp {
                         });
                 }
             });
+        }
+        if rename.is_some() {
+            self.rename_request = rename;
+        }
     }
 
     pub(super) fn warnings_section(&mut self, ui: &mut egui::Ui, slot: usize) {

@@ -48,7 +48,9 @@ rust-dicom-station
 │   │   zoom / pan / W-L interaction, maximize, per-view caches
 │   ├── Floating windows: 3D structures (both datasets through the registration,
 │   │   per-dataset opacity, vector-field glyphs), planar image viewers
-│   ├── Data tree operations: copy / move / remove patient · study · series across datasets;
+│   ├── Data tree operations: rename every level (patient, study, series, sets,
+│   │   structures, segments, dose, plan, planar, REG, records);
+│   │   copy / move / remove patient · study · series across datasets;
 │   │   create / connect / copy / move / remove RT structure sets and segmentation
 │   │   series; copy / move / remove single or selected structures and segments
 │   ├── Tool windows: auto-segmentation, prompt segmentation, slice propagation,
@@ -185,6 +187,8 @@ src/
     d3.rs             live 3D structure window
     planar.rs         floating DX / CR / RTIMAGE viewers
     tree.rs           dataset-tree copy / move / remove with reference chains
+    rename.rs         renaming every level of the data tree: the targets, the
+                      one-field dialog, and the study-only rename itself
     sets.rs           structure sets and segmentation series as tree nodes:
                       create, connect to an image series, copy / move / remove
                       whole series, and move single structures / segments

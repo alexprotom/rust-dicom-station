@@ -66,6 +66,7 @@ impl ViewerApp {
                 self.settings_gen += 1;
             }
             SetAction::Remove(r) => self.remove_set(r),
+            SetAction::Rename(r) => self.rename_request = Some(RenameTarget::Set(r)),
             SetAction::Connect(r, uid) => self.connect_set(r, &uid),
             SetAction::Transfer { from, copy } => self.transfer_set(from, copy),
             SetAction::ExportSeg(r) => self.export_seg_series(r),
@@ -272,6 +273,9 @@ impl ViewerApp {
     pub(super) fn apply_item_action(&mut self, act: ItemAction) {
         match act {
             ItemAction::Remove { from, items } => self.remove_items(from, &items),
+            ItemAction::Rename { from, idx } => {
+                self.rename_request = Some(RenameTarget::Item { set: from, idx })
+            }
             ItemAction::Transfer {
                 from,
                 items,

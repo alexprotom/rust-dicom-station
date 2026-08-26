@@ -44,6 +44,7 @@ mod planar;
 mod prompt_seg;
 mod propagate_win;
 mod reg_panel;
+mod rename;
 mod seg;
 mod seg_engines;
 mod sets;
@@ -54,6 +55,7 @@ mod views;
 use drr_win::DrrDialog;
 use propagate_win::{PropOutcome, PropagateDialog};
 use reg_panel::{RegOutcome, RegRoi};
+use rename::{RenameDialog, RenameTarget};
 use seg_engines::*;
 use theme::*;
 
@@ -597,6 +599,8 @@ impl SetRef {
 enum SetAction {
     New(SetRef),
     Remove(SetRef),
+    /// Open the rename dialog on the series.
+    Rename(SetRef),
     /// Re-point the series at the image series with this Series Instance UID.
     Connect(SetRef, String),
     /// Copy (`copy`) or move the whole series to the other dataset.
@@ -620,6 +624,11 @@ enum ItemAction {
     Remove {
         from: SetRef,
         items: Vec<usize>,
+    },
+    /// Open the rename dialog on the clicked item alone.
+    Rename {
+        from: SetRef,
+        idx: usize,
     },
 }
 
@@ -786,6 +795,11 @@ pub struct ViewerApp {
     set_action: Option<SetAction>,
     /// Deferred right-click action on structures / segments.
     item_action: Option<ItemAction>,
+    /// The rename dialog, when open.
+    rename: Option<RenameDialog>,
+    /// A rename requested from a context menu, opened after the frame's
+    /// borrows are released.
+    rename_request: Option<RenameTarget>,
     /// When set, this single (slot, view) fills the whole central area.
     maximized: Option<(usize, usize)>,
     /// Invert REG matrices before applying them as the active registration.
@@ -971,6 +985,8 @@ impl ViewerApp {
             tree_action: None,
             set_action: None,
             item_action: None,
+            rename: None,
+            rename_request: None,
             maximized: None,
             reg_apply_invert: false,
             window_center: 40.0,
@@ -1272,6 +1288,9 @@ impl eframe::App for ViewerApp {
         }
         if let Some(action) = self.item_action.take() {
             self.apply_item_action(action);
+        }
+        if let Some(target) = self.rename_request.take() {
+            self.open_rename(target);
         }
         self.modals(&ctx);
     }

@@ -41,8 +41,9 @@ holds the registration controls and both dataset trees.*
   RT structure sets and segmentation series as tree nodes (create one,
   connect it to another image series, move whole series or single
   structures / segments between any two of them - contours and masks
-  converting as they cross), six-view comparison mode with patient-space
-  crosshair linking.
+  converting as they cross), renaming at every level from patient down to a
+  single segment, six-view comparison mode with patient-space crosshair
+  linking.
 * **Registration** - four engines, none of them a binding: rigid (6-DOF)
   and deformable (cubic B-spline) re-implemented from **elastix**
   (multi-resolution pyramids, stochastic sampling, ASGD); a dense

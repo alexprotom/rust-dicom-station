@@ -105,7 +105,7 @@ for (ReferencedRTPlanSequence), and each plan the structure set it was
 created on (ReferencedStructureSetSequence).
 
 **Right-clicking** any level of the tree — patient, study or series —
-opens a context menu to **copy**, **move** or **remove** it. Copy/move
+opens a context menu to **rename**, **copy**, **move** or **remove** it. Copy/move
 transfer the selection into the other dataset (A ▶ B or B ▶ A), merging it
 with whatever is already loaded there and switching comparison mode on;
 move and remove then delete the selection from its source. A single series
@@ -134,6 +134,7 @@ to the displayed image series. **Right-clicking a series node** offers:
 * *💾 Export as DICOM SEG…* (segmentation series only) — writes this one
   series as a single SEG file.
 * *🗑 Remove this RT structure set / segmentation series*.
+* *✎ Rename series…*.
 
 Each item's **check box is both its visibility and its selection**, so
 *All* / *None* tick everything or nothing and the right-click actions
@@ -146,6 +147,7 @@ offers:
   ticked row acts on all ticked rows at once; right-clicking an unticked
   row acts on that row alone.
 * *🗑 Remove …* — the same single-or-selected rule.
+* *✎ Rename …* — always the row you clicked, never the whole selection.
 
 Crossing between the two kinds is a conversion, done on transfer: a
 structure moved into a segmentation series is rasterized onto that series'
@@ -155,6 +157,26 @@ and a segment moved between two segmentation series on different lattices
 is resampled. Anything that cannot cross — a contour outside the
 destination volume, a mask that does not overlap it — is reported in the
 dataset's *Warnings* section instead of arriving empty.
+
+## Renaming
+
+Everything the tree names can be renamed from its own right-click menu:
+patients, studies, image series, RT structure sets, segmentation series,
+individual structures and segments, dose grids, plans, planar images,
+spatial registrations and treatment records. The dialog is a single text
+field — Enter applies, Esc cancels, an empty name is not accepted — and it
+says which DICOM attribute the text lands in.
+
+A patient and a study are *groupings* rather than objects, so renaming one
+writes `PatientName` / `StudyDescription` into **every** series filed under
+it; the tree would otherwise split into an old and a new node. Everything
+else writes the one attribute it shows: `SeriesDescription`,
+`StructureSetLabel`, `ROIName`, `SegmentLabel`, `RTPlanLabel`, and the
+labels of the remaining objects.
+
+Renames are in-memory. They change what the tree, the overlays and the 3D
+view call things, and they are what a DICOM export writes out; the files a
+study was loaded from are never modified.
 
 ## Comparison mode
 
