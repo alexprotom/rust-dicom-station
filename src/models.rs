@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::progress::ProgressSink;
-use crate::settings::app_dir;
+use crate::settings::{app_dir, default_models_dir};
 use crate::{autoseg, medsam2, segvol};
 
 /// Name of the root folder.
@@ -63,7 +63,7 @@ impl Engine {
 
 /// The default root: `models/` next to the executable.
 pub fn default_root() -> PathBuf {
-    app_dir().join(DIR_NAME)
+    default_models_dir()
 }
 
 /// An engine's folder under `root`.
