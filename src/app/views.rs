@@ -432,52 +432,54 @@ impl ViewerApp {
             }
         }
 
-        // Crosshair.
-        if self.show_crosshair {
-            // ---- the MedSAM2 prompt ----
-            if medsam2_show {
-                if let Some(b) = &self.medsam2.prompt {
-                    if b.plane == plane {
-                        let here = b.slice == view.slice;
-                        let base = Color32::from_rgb(255, 205, 60);
-                        let col = if here {
-                            base
-                        } else {
-                            // On other slices the box is a reminder of where it
-                            // is, not something to grab.
-                            Color32::from_rgba_unmultiplied(255, 205, 60, 70)
-                        };
-                        let (lo, hi) = b.rect();
-                        let r = Rect::from_two_pos(px_to_screen(lo), px_to_screen(hi));
-                        painter.rect_stroke(
-                            r,
-                            0.0,
-                            Stroke::new(if here { 2.0 } else { 1.0 }, col),
-                            egui::StrokeKind::Middle,
-                        );
-                        if here {
-                            for c in b.corners() {
-                                painter.rect_filled(
-                                    Rect::from_center_size(px_to_screen(c), Vec2::splat(7.0)),
-                                    1.0,
-                                    col,
-                                );
-                            }
-                            for (p, include) in &b.points {
-                                let at = px_to_screen(*p);
-                                let c = if *include {
-                                    Color32::from_rgb(90, 220, 130)
-                                } else {
-                                    Color32::from_rgb(240, 95, 95)
-                                };
-                                painter.circle_filled(at, 4.5, c);
-                                painter.circle_stroke(at, 4.5, Stroke::new(1.0, Color32::BLACK));
-                            }
+        // The MedSAM2 prompt: the box belongs to the tool, not to the
+        // crosshair, so it stays visible with ⌖ off — which is exactly how
+        // it is drawn, with left-click navigation out of the way.
+        if medsam2_show {
+            if let Some(b) = &self.medsam2.prompt {
+                if b.plane == plane {
+                    let here = b.slice == view.slice;
+                    let base = Color32::from_rgb(255, 205, 60);
+                    let col = if here {
+                        base
+                    } else {
+                        // On other slices the box is a reminder of where it
+                        // is, not something to grab.
+                        Color32::from_rgba_unmultiplied(255, 205, 60, 70)
+                    };
+                    let (lo, hi) = b.rect();
+                    let r = Rect::from_two_pos(px_to_screen(lo), px_to_screen(hi));
+                    painter.rect_stroke(
+                        r,
+                        0.0,
+                        Stroke::new(if here { 2.0 } else { 1.0 }, col),
+                        egui::StrokeKind::Middle,
+                    );
+                    if here {
+                        for c in b.corners() {
+                            painter.rect_filled(
+                                Rect::from_center_size(px_to_screen(c), Vec2::splat(7.0)),
+                                1.0,
+                                col,
+                            );
+                        }
+                        for (p, include) in &b.points {
+                            let at = px_to_screen(*p);
+                            let c = if *include {
+                                Color32::from_rgb(90, 220, 130)
+                            } else {
+                                Color32::from_rgb(240, 95, 95)
+                            };
+                            painter.circle_filled(at, 4.5, c);
+                            painter.circle_stroke(at, 4.5, Stroke::new(1.0, Color32::BLACK));
                         }
                     }
                 }
             }
+        }
 
+        // Crosshair.
+        if self.show_crosshair {
             let cp = vol.voxel_to_plane_pixel(plane, slot_state.cursor);
             let c = px_to_screen([cp[0] as f32, cp[1] as f32]);
             let col = Color32::from_rgba_unmultiplied(120, 255, 120, 110);

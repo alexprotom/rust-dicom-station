@@ -59,7 +59,9 @@ slices — and **⛶ / ❐** maximizes the view to fill the window and restores
 the layout again. The toolbar holds a global **⟲** (the same reset for
 every view of both datasets), the **⌖** crosshair toggle (while hidden,
 left-click navigation is disabled entirely and slices change only by
-scrolling), the **3D A / 3D B** buttons and the segmentation tools.
+scrolling), the **🔗** crosshair-sync toggle next to it (shown while the
+crosshair is on, active with two datasets loaded), the **3D A / 3D B**
+buttons and the segmentation tools.
 
 **Window/level.** Right-drag on any view adjusts interactively
 (x = width, y = center); the toolbar offers the numeric fields and the
@@ -73,8 +75,8 @@ Window/level is shared between datasets A and B so both CTs are windowed
 identically.
 
 **Status bar.** Patient coordinates, voxel indices, HU and dose (Gy and %
-of the reference dose) at the crosshair; in comparison mode the readouts
-for A and B are shown side by side.
+of the reference dose) at the crosshair; in comparison mode both datasets
+report the full set side by side, each at its own crosshair.
 
 **The left panel.** *View ▶ Left panel*, the **F9** key and the arrow on
 the window's left edge hide and show it; dragging its inner edge past the
@@ -198,15 +200,16 @@ study was loaded from are never modified.
 ![comparison mode](screenshot_comparison.png)
 
 *Two opposite breathing phases of the same 4DCT as datasets A and B, each
-with its phase-specific structure set; the linked crosshair pins all six
+with its phase-specific structure set; the synced crosshair pins all six
 views to the same patient-space point inside the tumor.*
 
 Load a second dataset (menu, tree copy/move, or two directories on the
 command line) and the window splits into two rows of three views — dataset
 A on top, dataset B below. Each dataset keeps its own structures, dose and
 plan panels in the sidebar; window/level and dose display settings are
-shared. The crosshair is linked between the datasets through **patient
-coordinates** (toggleable via *View ▶ Link crosshairs between datasets*);
+shared. The crosshair is synced between the datasets through **patient
+coordinates** (the toolbar's **🔗**, or *View ▶ Sync crosshairs between
+datasets* — both appear only while the crosshair itself is on);
 when a registration is active, the link maps through the recovered
 transform instead — see [registration.md](registration.md).
 

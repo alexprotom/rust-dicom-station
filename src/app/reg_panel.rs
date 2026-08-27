@@ -450,7 +450,7 @@ impl ViewerApp {
                                 .on_hover_text(
                                     "Take the crosshair of each dataset as one pair. Put \
                                      both crosshairs on the same anatomy first — and turn \
-                                     off View ▶ Link crosshairs, or they move together.",
+                                     off View ▶ Sync crosshairs, or they move together.",
                                 )
                                 .clicked()
                             {
