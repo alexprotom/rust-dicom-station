@@ -9,8 +9,25 @@
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
+/// How the model wants its input scaled — nnU-Net's `normalization_schemes`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Norm {
+    /// `CTNormalization`: clip to the training set's [p0.5, p99.5] window,
+    /// then z-score with the dataset fingerprint's mean and standard
+    /// deviation. Every constant comes from `plans.json`, so the same CT
+    /// always normalizes the same way.
+    Ct,
+    /// `ZScoreNormalization`: subtract *this image's* mean and divide by
+    /// *this image's* standard deviation. MR has no absolute scale, so the
+    /// MR models use it — and it is why an MR run fills its normalization
+    /// constants in only after resampling ([`ModelConfig::apply_image_norm`]).
+    ZScore,
+}
+
 #[derive(Clone, Debug)]
 pub struct ModelConfig {
+    /// Which scheme [`Self::clip_lo`] … [`Self::std`] are to be read under.
+    pub norm: Norm,
     /// Sliding-window patch size per spatial axis.
     pub patch_size: [usize; 3],
     /// Target voxel spacing (mm) per spatial axis (isotropic for these models).
@@ -25,7 +42,8 @@ pub struct ModelConfig {
     pub n_conv_per_stage: Vec<usize>,
     /// Convs per decoder stage.
     pub n_conv_per_stage_decoder: Vec<usize>,
-    /// CT normalization: clip bounds (HU) then z-score.
+    /// Clip bounds then z-score. For [`Norm::ZScore`] the bounds are
+    /// infinite and the mean/std belong to the image, not the dataset.
     pub clip_lo: f32,
     pub clip_hi: f32,
     pub mean: f32,
@@ -35,6 +53,30 @@ pub struct ModelConfig {
 impl ModelConfig {
     pub fn n_stages(&self) -> usize {
         self.features.len()
+    }
+
+    /// Fill the normalization constants from the resampled image itself, as
+    /// `ZScoreNormalization` requires. A no-op for CT models, whose
+    /// constants are fixed by the training set.
+    pub fn apply_image_norm(&mut self, voxels: &[f32]) {
+        if self.norm != Norm::ZScore || voxels.is_empty() {
+            return;
+        }
+        let n = voxels.len() as f64;
+        let mean = voxels.iter().map(|&v| v as f64).sum::<f64>() / n;
+        let var = voxels
+            .iter()
+            .map(|&v| {
+                let d = v as f64 - mean;
+                d * d
+            })
+            .sum::<f64>()
+            / n;
+        // nnU-Net: `image -= mean; image /= (std + 1e-8)`.
+        self.clip_lo = f32::NEG_INFINITY;
+        self.clip_hi = f32::INFINITY;
+        self.mean = mean as f32;
+        self.std = var.sqrt() as f32 + 1e-8;
     }
 
     pub fn from_plans_json(text: &str) -> Result<ModelConfig> {
@@ -60,9 +102,11 @@ impl ModelConfig {
             .pointer("/normalization_schemes/0")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        if norm != "CTNormalization" {
-            bail!("plans.json: unsupported normalization scheme {norm:?}");
-        }
+        let norm = match norm {
+            "CTNormalization" => Norm::Ct,
+            "ZScoreNormalization" => Norm::ZScore,
+            other => bail!("plans.json: unsupported normalization scheme {other:?}"),
+        };
         let usize3 = |v: &Value, what: &str| -> Result<[usize; 3]> {
             let a: Vec<usize> = v
                 .as_array()
@@ -129,16 +173,28 @@ impl ModelConfig {
         if n_conv_per_stage.len() != n_stages || n_conv_per_stage_decoder.len() != n_stages - 1 {
             bail!("plans.json: conv-per-stage lengths do not match stage count");
         }
-        let fg = root
-            .pointer("/foreground_intensity_properties_per_channel/0")
-            .context("plans.json: intensity properties missing")?;
+        // A z-score model never reads these: its constants come from the
+        // image in `apply_image_norm`. The values left here are the
+        // identity, so a model that somehow skips that step is merely
+        // un-normalized rather than scaled by nonsense.
+        let fg = root.pointer("/foreground_intensity_properties_per_channel/0");
         let f = |key: &str| -> Result<f32> {
-            fg.get(key)
+            if norm == Norm::ZScore {
+                return Ok(match key {
+                    "percentile_00_5" => f32::NEG_INFINITY,
+                    "percentile_99_5" => f32::INFINITY,
+                    "std" => 1.0,
+                    _ => 0.0,
+                });
+            }
+            fg.context("plans.json: intensity properties missing")?
+                .get(key)
                 .and_then(|v| v.as_f64())
                 .map(|v| v as f32)
                 .with_context(|| format!("plans.json: intensity {key}"))
         };
         Ok(ModelConfig {
+            norm,
             patch_size,
             spacing,
             features,

@@ -148,7 +148,7 @@ impl ViewerApp {
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.label(
-                    "Every model the three segmentation engines can fetch. Weights are \
+                    "Every model the segmentation tools can fetch. Weights are \
                      downloaded once, converted to a cache beside them, and never touched \
                      again — this window is where that inventory is managed.",
                 );

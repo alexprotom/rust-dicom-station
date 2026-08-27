@@ -17,7 +17,7 @@ use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
 
 use super::config::ModelConfig;
-use super::cpu::{concat, conv3d, conv_transpose3d_2x, instance_norm_lrelu, Act};
+use super::cpu::{concat, conv3d, conv_transpose3d_stride, instance_norm_lrelu, Act};
 use crate::nn::cache::WTensor;
 
 /// One Conv3d → InstanceNorm → LeakyReLU block.
@@ -37,6 +37,10 @@ pub struct TranspConv {
     pub b: Vec<f32>,
     pub cin: usize,
     pub cout: usize,
+    /// Kernel = stride of this upsampling step — the encoder stride it
+    /// undoes. `[2, 2, 2]` for every isotropic model; the MR models plan
+    /// `[1, 2, 2]` where the through-plane spacing is already coarse.
+    pub stride: [usize; 3],
 }
 
 pub struct SegHead {
@@ -89,13 +93,16 @@ impl UNet {
         for t in 0..n - 1 {
             let c_below = cfg.features[n - 1 - t];
             let c_skip = cfg.features[n - 2 - t];
+            // Decoder step `t` undoes the stride of encoder stage n-1-t.
+            let stride = cfg.strides[n - 1 - t];
             let tw = take(tensors, &format!("decoder.transpconvs.{t}.weight"))?;
             let tb = take(tensors, &format!("decoder.transpconvs.{t}.bias"))?;
-            if tw.shape != [c_below, c_skip, 2, 2, 2] {
+            let want = [c_below, c_skip, stride[0], stride[1], stride[2]];
+            if tw.shape != want {
                 bail!(
                     "decoder.transpconvs.{t}.weight has shape {:?}, expected {:?}",
                     tw.shape,
-                    [c_below, c_skip, 2, 2, 2]
+                    want
                 );
             }
             transp.push(TranspConv {
@@ -103,6 +110,7 @@ impl UNet {
                 b: tb.data.clone(),
                 cin: c_below,
                 cout: c_skip,
+                stride,
             });
             let mut blocks = Vec::new();
             let stage_kernel = cfg.kernels[n - 2 - t];
@@ -170,7 +178,7 @@ impl UNet {
         }
         let mut cur = skips.pop().unwrap();
         for (t, tc) in self.transp.iter().enumerate() {
-            let up = conv_transpose3d_2x(&cur, &tc.w, &tc.b, tc.cout);
+            let up = conv_transpose3d_stride(&cur, &tc.w, &tc.b, tc.cout, tc.stride);
             let skip = skips.pop().unwrap();
             cur = concat(&up, &skip);
             for blk in &self.dec[t] {

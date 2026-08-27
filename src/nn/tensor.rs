@@ -170,6 +170,103 @@ impl SendPtr {
 /// Transposed 3D convolution with kernel = stride = 2: every input voxel
 /// projects to a disjoint 2x2x2 output block. `weight`: `[cin, cout, 2, 2, 2]`
 /// — PyTorch's `ConvTranspose3d` layout.
+/// Transposed 3-D convolution with `kernel = stride`, for any stride.
+///
+/// The 2× case has its own hand-tuned routine below; this is the general
+/// one, used by the models whose decoder upsamples anisotropically (the MR
+/// body model halves two axes at a time and leaves the third alone). Since
+/// kernel equals stride the output tiles are disjoint — no overlap-add,
+/// just a GEMM that expands every input voxel into its `s0·s1·s2` outputs
+/// and a scatter.
+pub fn conv_transpose3d_stride(
+    x: &Act,
+    weight: &[f32],
+    bias: &[f32],
+    cout: usize,
+    stride: [usize; 3],
+) -> Act {
+    let [s0, s1, s2] = stride;
+    if stride == [2, 2, 2] {
+        return conv_transpose3d_2x(x, weight, bias, cout);
+    }
+    let (cin, d, h, w) = (x.c, x.d, x.h, x.w);
+    let ks = s0 * s1 * s2;
+    debug_assert_eq!(weight.len(), cin * cout * ks);
+    let (od, oh, ow) = (d * s0, h * s1, w * s2);
+    // Repack the weight as [cout*ks, cin] for a row-major GEMM.
+    let mut wt = vec![0f32; cout * ks * cin];
+    for ci in 0..cin {
+        for co in 0..cout {
+            for t in 0..ks {
+                wt[(co * ks + t) * cin + ci] = weight[(ci * cout + co) * ks + t];
+            }
+        }
+    }
+    let hw = h * w;
+    let ohw = oh * ow;
+    let mut out = Act::zeros(cout, od, oh, ow);
+    let out_ptr = SendPtr(out.data.as_mut_ptr());
+    let od_stride = od * ohw;
+    // Input slice z writes output slices z*s0 .. z*s0+s0, disjoint across z.
+    (0..d).into_par_iter().for_each(|z| {
+        let mut xin = vec![0f32; cin * hw];
+        for c in 0..cin {
+            let src = &x.data[c * d * hw + z * hw..c * d * hw + (z + 1) * hw];
+            xin[c * hw..(c + 1) * hw].copy_from_slice(src);
+        }
+        let mut tmp = vec![0f32; cout * ks * hw];
+        unsafe {
+            gemm::gemm(
+                cout * ks,
+                hw,
+                cin,
+                tmp.as_mut_ptr(),
+                1,
+                hw as isize,
+                false,
+                wt.as_ptr(),
+                1,
+                cin as isize,
+                xin.as_ptr(),
+                1,
+                hw as isize,
+                0.0f32,
+                1.0f32,
+                false,
+                false,
+                false,
+                gemm::Parallelism::None,
+            );
+        }
+        for co in 0..cout {
+            let bv = bias[co];
+            for dz in 0..s0 {
+                let obase = co * od_stride + (z * s0 + dz) * ohw;
+                for dy in 0..s1 {
+                    for dx in 0..s2 {
+                        let t = (dz * s1 + dy) * s2 + dx;
+                        let src = &tmp[(co * ks + t) * hw..(co * ks + t + 1) * hw];
+                        for y in 0..h {
+                            let orow = obase + (y * s1 + dy) * ow + dx;
+                            let dst = unsafe {
+                                std::slice::from_raw_parts_mut(
+                                    out_ptr.get().add(orow),
+                                    (w - 1) * s2 + 1,
+                                )
+                            };
+                            let srow = &src[y * w..(y + 1) * w];
+                            for (xi, sv) in srow.iter().enumerate() {
+                                dst[xi * s2] = sv + bv;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+    out
+}
+
 pub fn conv_transpose3d_2x(x: &Act, weight: &[f32], bias: &[f32], cout: usize) -> Act {
     let (cin, d, h, w) = (x.c, x.d, x.h, x.w);
     debug_assert_eq!(weight.len(), cin * cout * 8);

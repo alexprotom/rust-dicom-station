@@ -52,6 +52,38 @@ pub const SPEC_6MM: ModelSpec = ModelSpec {
     global_offset: 0,
 };
 
+/// The body-outline task's models. Same nnU-Net architecture, same open
+/// Apache-2.0 licence, a different question: two classes, trunk and
+/// extremities, whose union is the patient. They are what the body-contour
+/// tool's model-assisted method uses to tell patient from equipment — see
+/// [`crate::bodymask`].
+pub const SPEC_BODY_15MM: ModelSpec = ModelSpec {
+    key: "body_1_5mm",
+    label: "body 1.5 mm",
+    url: "https://github.com/wasserth/TotalSegmentator/releases/download/v2.0.0-weights/Dataset299_body_1559subj.zip",
+    zip_bytes: 233_211_222,
+    global_offset: 0,
+};
+
+pub const SPEC_BODY_6MM: ModelSpec = ModelSpec {
+    key: "body_6mm",
+    label: "body 6 mm",
+    url: "https://github.com/wasserth/TotalSegmentator/releases/download/v2.0.0-weights/Dataset300_body_6mm_1559subj.zip",
+    zip_bytes: 124_286_256,
+    global_offset: 0,
+};
+
+/// The MR counterpart (TotalSegmentator v2.5 weights). Plans a z-score
+/// normalization and an anisotropic 3.0 × 1.19 × 0.99 mm grid, which is why
+/// the engine carries both.
+pub const SPEC_BODY_MR: ModelSpec = ModelSpec {
+    key: "body_mr",
+    label: "body MR",
+    url: "https://github.com/wasserth/TotalSegmentator/releases/download/v2.5.0-weights/Dataset597_mri_body_139subj.zip",
+    zip_bytes: 229_810_326,
+    global_offset: 0,
+};
+
 pub const SPECS_15MM: [ModelSpec; 5] = [
     ModelSpec {
         key: "total_part1_organs",
@@ -99,6 +131,7 @@ pub fn all_specs() -> Vec<ModelSpec> {
     let mut v = vec![SPEC_3MM];
     v.extend(SPECS_15MM);
     v.push(SPEC_6MM);
+    v.extend([SPEC_BODY_15MM, SPEC_BODY_6MM, SPEC_BODY_MR]);
     v
 }
 

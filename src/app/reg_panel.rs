@@ -227,6 +227,9 @@ impl ViewerApp {
         let Some(study) = &self.slots[fixed_slot].study else {
             return;
         };
+        // A transform installed from elsewhere (a REG object in the tree, a
+        // propagation) needs the section that shows and clears it.
+        self.module_registration = true;
         let vol = study.volume.clone();
         let analysis = analysis::analyse(&vol, &transform, None);
         let field = VectorField::sample(&vol, &transform, None, self.field_step_mm);
@@ -314,6 +317,17 @@ impl ViewerApp {
         // result is on display, and while a run is in flight — the last one
         // because that is where its progress and its Cancel button live.
         if !both && self.registration.is_none() && self.reg_job.is_none() {
+            // The module is switched on, so the section says what it is
+            // waiting for rather than leaving an empty panel.
+            egui::CollapsingHeader::new(egui::RichText::new("Image registration").strong())
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.weak(
+                        "Load a second dataset (File ▶ Add DICOM folder to B…) — \
+                         registration aligns one onto the other",
+                    );
+                });
+            ui.separator();
             return;
         }
         let mut run: Option<bool> = None;
@@ -325,7 +339,7 @@ impl ViewerApp {
         let mut clear_landmarks = false;
         let mut save_field = false;
 
-        egui::CollapsingHeader::new(egui::RichText::new("Registration").strong())
+        egui::CollapsingHeader::new(egui::RichText::new("Image registration").strong())
             .default_open(true)
             .show(ui, |ui| {
                 if let Some(job) = &self.reg_job {

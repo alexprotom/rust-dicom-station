@@ -101,6 +101,11 @@ rust-dicom-station
 │       active registration; the recovered field written back out as one
 │
 ├── Segmentation
+│   ├── Body / EXTERNAL contour: thresholding by modality (HU, or MR after bias
+│   │   flattening), spacing-aware opening, extruded-equipment removal along all
+│   │   three axes, component selection by volume, thin-anatomy recovery,
+│   │   slice-wise filling — classically, or guided by TotalSegmentator's body
+│   │   network (CT 6 / 1.5 mm, MR)
 │   ├── Voxel masks: brush / eraser (2D, 3D), geodesic region growing, undo,
 │   │   slice overlays, hole filling, mask ▶ RTSTRUCT contours, RTSTRUCT ▶ mask,
 │   │   grouped into segmentation series that live in the study and bind to an
@@ -182,7 +187,8 @@ src/
                       plumbing (Job::spawn, poll_job, poll_tool_job), per-frame driver
     theme.rs          theme-dependent colors
     chrome.rs         menu bar, toolbar, status bar, help
-    panels.rs         side panel and its per-dataset sections
+    panels.rs         left panel: its show / hide, the optional modules and
+                      the per-dataset Data tree sections
     views.rs          central MPR viewports, interaction, texture caches
     d3.rs             live 3D structure window
     planar.rs         floating DX / CR / RTIMAGE viewers
@@ -197,14 +203,16 @@ src/
                       auto-segmentation job starts
     dialogs.rs        auto-segmentation window + results, generator, anonymizer,
                       export, error dialog
-    reg_panel.rs      the Registration section: method, region, parameters,
+    reg_panel.rs      the Image registration section: method, region, parameters,
                       landmarks, the run, the analytics, the vector field
     models_win.rs     the model manager window
     propagate_win.rs  structure propagation window and worker
     drr_win.rs        the DRR window: geometry, projectors, comparison
     seg.rs            interactive segmentation state machine, mask ▶ RTSTRUCT,
                       landing an auto-segmentation result
-    seg_engines.rs    what the three engine windows share: names and glyphs,
+    body_win.rs       the body-contour window: method choice, the modality's
+                      own threshold row, the classical / model-assisted split
+    seg_engines.rs    what the four tool windows share: names and glyphs,
                       device / model-folder / licence / progress rows,
                       result landing, the "still the same dataset" check
     prompt_seg.rs     prompt segmentation window and worker (SegVol)
@@ -248,6 +256,15 @@ src/
   segmentation.rs   voxel masks: brush, geodesic grow, undo, overlays,
                     label map ▶ segmentations, mask ▶ RTSTRUCT contours and
                     RTSTRUCT contours ▶ mask                                     Seg
+  morphology.rs     binary-mask geometry, in millimetres: the exact
+                    anisotropic Euclidean distance transform and the
+                    erode / dilate / open / close it powers, 6-connected
+                    components, slice-wise and 3-D hole filling, the
+                    extruded-equipment test, box-blur smoothing              Core
+  bodymask.rs       the body / EXTERNAL contour: foreground by modality (HU,
+                    or bias-flattened MR), equipment removal, component
+                    selection, thin-anatomy recovery, filling — classically
+                    or guided by the body network                                Seg
   mesh3d.rs         contour / mask ▶ surface meshes (scanline fill,
                     surface nets, Laplacian smoothing)                           Seg
 
@@ -261,12 +278,15 @@ src/
     params.rs         shape-checked view of a loaded state dict
     half.rs           binary16 ↔ binary32 conversion
     tensor.rs         Mat [rows, cols] and Act [c, d, h, w]; transposed conv
+                      (a hand-tuned 2× and a general kernel = stride form)
     linalg.rs         gemm-backed linear / matmul, layer norm, softmax,
                       GELU / ReLU / QuickGELU
     attention.rs      multi-head attention, optionally causally masked
 
   autoseg/          automatic segmentation (pure-Rust TotalSegmentator)         Seg
-    mod.rs            public API: variants, run(), progress phases
+    mod.rs            public API: variants, run(), run_specs() (the engine
+                      minus the question, shared with the body contour),
+                      progress phases
     classes.rs        117-class table, sub-model maps, organ colors
     config.rs         nnU-Net plans.json parsing
     weights.rs        which models exist, where they are published, the
@@ -354,14 +374,15 @@ those: a ROI visibility toggle, for instance, is part of the contour key
 alone and leaves the dose and fusion textures untouched. Repaints are
 demand-driven; while background jobs run, the UI polls at 10 Hz.
 
-### The three engine windows
+### The segmentation tool windows
 
-Auto-segmentation, prompt segmentation and slice propagation are different
-conversations — a batch run with a result-selection dialog, a one-shot
-prompt, an interactive box loop — but they are the same kind of tool, and
-`app/seg_engines.rs` makes them look and behave alike:
+Body contouring, auto-segmentation, prompt segmentation and slice
+propagation are different conversations — a parameterised geometric run, a
+batch run with a result-selection dialog, a one-shot prompt, an interactive
+box loop — but they are the same kind of tool, and `app/seg_engines.rs`
+makes them look and behave alike:
 
-* one `ToolInfo` per engine gives the glyph (🤖 🧠 ⏩), the window title
+* one `ToolInfo` per tool gives the glyph (👤 🤖 🧠 ⏩), the window title
   (`🤖 Auto-segmentation — dataset A`, the same pattern as
   `3D structures — dataset A`), the menu entry (`🤖 Auto-segment dataset A…`)
   and the small sidebar button (`🤖 Auto…`);
@@ -374,8 +395,11 @@ prompt, an interactive box loop — but they are the same kind of tool, and
   engine, the tool's own inputs, `Name`, a collapsed **Options** header
   holding the engine's settings plus the shared `Compute: Auto / GPU / CPU`
   and `Model folder` rows, one small licence line ("… Research / QA use —
-  not a medical device."), then `▶ Segment` / `▶ Propagate` and `Close`,
-  and a status line summarising the last result;
+  not a medical device."), then `▶ Segment` / `▶ Propagate` / `▶ Contour`
+  and `Close`, and a status line summarising the last result;
+* what a tool does not have, it does not show: the body contour's classical
+  method needs no device, no model and no download, so those rows appear
+  only when its method is the model-assisted one;
 * results land the same way — `add_segmentation` with the next palette
   colour — and a run that finishes after the dataset was replaced is
   discarded with the same message.

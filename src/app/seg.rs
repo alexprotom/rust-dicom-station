@@ -299,7 +299,12 @@ impl ViewerApp {
     /// Convert a segmentation into RTSTRUCT contours: appends a ROI to the
     /// slot's active structure set (creating an in-memory set if the study
     /// has none), so it displays like any ROI and rides the DICOM export.
-    pub(super) fn seg_to_rtstruct(&mut self, slot: usize, seg_idx: usize) {
+    ///
+    /// `roi_type` is the RT ROI Interpreted Type the ROI is filed under.
+    /// Everything painted by hand is an `ORGAN`; the body contour is the
+    /// one thing that has to be an `EXTERNAL`, because that is the tag a
+    /// planning system looks for to find the patient surface.
+    pub(super) fn seg_to_rtstruct(&mut self, slot: usize, seg_idx: usize, roi_type: &str) {
         // The contours are built first, under a shared borrow, because the
         // segments now live inside the very study the ROI is appended to.
         let s = &self.slots[slot];
@@ -315,7 +320,8 @@ impl ViewerApp {
             .get(s.active_structs)
             .map(|ss| ss.rois.iter().map(|r| r.number).max().unwrap_or(0) + 1)
             .unwrap_or(1);
-        let roi = segmentation::mask_to_roi(seg, &vol.grid(), number);
+        let mut roi = segmentation::mask_to_roi(seg, &vol.grid(), number);
+        roi.roi_type = roi_type.to_string();
 
         let StudySlot {
             study,
@@ -390,7 +396,7 @@ impl ViewerApp {
         s.active_seg = first_new;
         if p.also_rs {
             for i in first_new..first_new + added {
-                self.seg_to_rtstruct(slot, i);
+                self.seg_to_rtstruct(slot, i, "ORGAN");
             }
         }
     }

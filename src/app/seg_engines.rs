@@ -44,6 +44,14 @@ pub(super) const SLICE_PROP: ToolInfo = ToolInfo {
     name: "Slice propagation",
     verb: "Propagate through",
 };
+/// The fourth tool. Its glyph is a person because that is what it outlines,
+/// and because it is one of the few figures egui's bundled emoji font
+/// actually carries.
+pub(super) const BODY_CONTOUR: ToolInfo = ToolInfo {
+    glyph: "👤",
+    name: "Body contour",
+    verb: "Body-contour",
+};
 
 impl ToolInfo {
     /// `🤖 Auto-segmentation — dataset A`, the window title.
@@ -162,6 +170,9 @@ impl ViewerApp {
             .filter(|_| self.medsam2.slot == slot)
         {
             return Some((&SLICE_PROP, &job.progress));
+        }
+        if let Some(job) = self.body_job.as_ref().filter(|_| self.body_slot == slot) {
+            return Some((&BODY_CONTOUR, &job.progress));
         }
         None
     }
@@ -290,10 +301,16 @@ mod tests {
         assert_eq!(AUTOSEG.short_button(), "🤖 Auto…");
         assert_eq!(PROMPT_SEG.short_button(), "🧠 Prompt…");
         assert_eq!(SLICE_PROP.short_button(), "⏩ Propagate…");
-        let mut glyphs = vec![AUTOSEG.glyph, PROMPT_SEG.glyph, SLICE_PROP.glyph];
+        assert_eq!(BODY_CONTOUR.menu_entry(0), "👤 Body-contour dataset A…");
+        let mut glyphs = vec![
+            AUTOSEG.glyph,
+            PROMPT_SEG.glyph,
+            SLICE_PROP.glyph,
+            BODY_CONTOUR.glyph,
+        ];
         glyphs.sort();
         glyphs.dedup();
-        assert_eq!(glyphs.len(), 3, "every tool has its own glyph");
+        assert_eq!(glyphs.len(), 4, "every tool has its own glyph");
     }
 
     #[test]

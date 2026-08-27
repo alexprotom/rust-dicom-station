@@ -14,6 +14,7 @@ use rayon::prelude::*;
 
 use crate::anonymize;
 use crate::autoseg;
+use crate::bodymask;
 use crate::dicom_export;
 use crate::extras;
 use crate::gen_test_data::{self, GenParams};
@@ -32,6 +33,7 @@ use crate::settings::{self, Settings};
 use crate::simulate::{self, SimParams};
 use crate::volume::{ViewPlane, Volume};
 
+mod body_win;
 mod box_seg;
 mod chrome;
 mod d3;
@@ -857,6 +859,13 @@ pub struct ViewerApp {
     /// Finished result awaiting organ selection.
     autoseg_pending: Option<AutosegPending>,
 
+    // Body / External contouring (see `bodymask`) — the one tool that can
+    // answer with no network at all.
+    body_job: Option<SegJob<bodymask::BodyResult>>,
+    body_slot: usize,
+    /// The tool window, when open; it stays open across runs.
+    body_dialog: Option<body_win::BodyDialog>,
+
     // Prompt-driven segmentation (SegVol re-implementation, see `segvol`).
     segvol_job: Option<SegJob<prompt_seg::SegVolResult>>,
     segvol_slot: usize,
@@ -875,6 +884,21 @@ pub struct ViewerApp {
 
     /// Bumped whenever ROI visibility / dose settings change → cache rebuild.
     settings_gen: u64,
+
+    /// The CT window preset last picked from the toolbar list (an index into
+    /// [`WL_PRESETS`]), so the closed combo can name it instead of reading
+    /// "CT presets". Dropped as soon as the window no longer matches it.
+    wl_preset: Option<usize>,
+
+    /// *Modules ▶ Image registration*: the registration section is part of
+    /// the side panel. Persisted between runs.
+    module_registration: bool,
+    /// *Modules ▶ Image simulation*: the simulation section is part of the
+    /// side panel. Persisted between runs.
+    module_simulation: bool,
+    /// The side panel is expanded (View ▶ Left panel, F9, or the arrow on
+    /// the panel edge). Collapsed, the views have the whole window.
+    side_open: bool,
 
     /// Light / dark / follow-the-system appearance, persisted between runs.
     theme: egui::ThemePreference,
@@ -1005,6 +1029,10 @@ impl ViewerApp {
             autoseg_slot: 0,
             autoseg_dialog: None,
             autoseg_pending: None,
+            body_job: None,
+            body_slot: 0,
+            body_dialog: None,
+
             segvol_job: None,
             segvol_slot: 0,
             segvol_dialog: None,
@@ -1025,6 +1053,10 @@ impl ViewerApp {
             dose_threshold_pct: 15.0,
             iso_levels: default_iso_levels(),
             settings_gen: 0,
+            wl_preset: None,
+            module_registration: prefs.module_registration,
+            module_simulation: prefs.module_simulation,
+            side_open: true,
             theme: prefs.theme,
             settings_error: None,
         };
@@ -1056,6 +1088,8 @@ impl ViewerApp {
         match settings::save(&Settings {
             theme: self.theme,
             models_dir,
+            module_registration: self.module_registration,
+            module_simulation: self.module_simulation,
         }) {
             Ok(()) => self.settings_error = None,
             Err(e) => {
@@ -1199,6 +1233,11 @@ impl eframe::App for ViewerApp {
         {
             self.on_segvol_done(slot, result);
         }
+        if let Some((slot, result)) =
+            poll_tool_job(&mut self.body_job, &ctx, BODY_CONTOUR.name, &mut self.error)
+        {
+            self.on_body_done(slot, result);
+        }
 
         // Poll background registration.
         if let Some((fixed_slot, out)) =
@@ -1248,14 +1287,18 @@ impl eframe::App for ViewerApp {
         // focused): Ctrl+Z undo, Esc cancels a region-grow drag, [ ] resize
         // the brush.
         if !ctx.egui_wants_keyboard_input() {
-            let (undo, esc, smaller, bigger) = ctx.input(|i| {
+            let (undo, esc, smaller, bigger, toggle_side) = ctx.input(|i| {
                 (
                     i.modifiers.command && i.key_pressed(egui::Key::Z),
                     i.key_pressed(egui::Key::Escape),
                     i.key_pressed(egui::Key::OpenBracket),
                     i.key_pressed(egui::Key::CloseBracket),
+                    i.key_pressed(egui::Key::F9),
                 )
             });
+            if toggle_side {
+                self.side_open = !self.side_open;
+            }
             if undo {
                 let slot = self.hovered_slot.min(1);
                 self.undo_active_seg(slot);

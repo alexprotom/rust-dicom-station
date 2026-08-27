@@ -12,13 +12,55 @@ impl ViewerApp {
         if self.slots[0].study.is_none() && self.slots[1].study.is_none() {
             return;
         }
+        // A thin strip along the window edge carries the show / hide arrow.
+        // It stays there when the panel is gone — otherwise nothing on
+        // screen would say how to get it back (View ▶ Left panel and F9 do
+        // the same).
+        let strip = egui::Frame::new()
+            .fill(ui.visuals().panel_fill)
+            .inner_margin(egui::Margin::symmetric(1, 4));
+        egui::Panel::left(egui::Id::new("side_toggle"))
+            .exact_size(22.0)
+            .resizable(false)
+            .frame(strip)
+            .show(ui, |ui| {
+                let (glyph, hint) = if self.side_open {
+                    (
+                        "◀",
+                        "Hide the left panel — the views take the whole window (F9)",
+                    )
+                } else {
+                    ("▶", "Show the left panel (F9)")
+                };
+                if ui
+                    .add(
+                        egui::Button::new(glyph)
+                            .frame(false)
+                            .min_size(egui::vec2(20.0, 22.0)),
+                    )
+                    .on_hover_text(hint)
+                    .clicked()
+                {
+                    self.side_open = !self.side_open;
+                }
+            });
+        // `show_collapsible` also lets the panel be dragged shut and pulled
+        // back open by its edge; it wants the flag by reference, which the
+        // body's `&mut self` cannot share, so it travels via a local.
+        let mut open = self.side_open;
         egui::Panel::left(egui::Id::new("side"))
             .resizable(true)
             .default_size(280.0)
-            .show(ui, |ui| {
+            .show_collapsible(ui, &mut open, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    self.registration_section(ui);
-                    self.simulation_section(ui);
+                    // The two optional modules (Modules menu) come first,
+                    // then one data tree per loaded dataset.
+                    if self.module_registration {
+                        self.registration_section(ui);
+                    }
+                    if self.module_simulation {
+                        self.simulation_section(ui);
+                    }
                     for slot in 0..2 {
                         if self.slots[slot].study.is_none() {
                             continue;
@@ -27,6 +69,55 @@ impl ViewerApp {
                     }
                 });
             });
+        self.side_open = open;
+    }
+
+    /// A tree node whose title wraps over as many lines as it needs.
+    ///
+    /// [`egui::CollapsingHeader`] lays its title out on a single line and
+    /// lets it run past the panel edge, so a long patient name, a long
+    /// study description or a long ID would pin the panel open at that
+    /// width. Only the module headers keep that one-line behaviour.
+    ///
+    /// Returns the title's own response, so the caller can hang the node's
+    /// context menu on it.
+    fn wrapped_node<R>(
+        ui: &mut egui::Ui,
+        id_salt: impl std::hash::Hash + std::fmt::Debug,
+        default_open: bool,
+        title: impl Into<String>,
+        body: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> egui::Response {
+        let id = ui.make_persistent_id(id_salt);
+        let state = egui::collapsing_header::CollapsingState::load_with_default_open(
+            ui.ctx(),
+            id,
+            default_open,
+        );
+        let (_, header, _) = state
+            .show_header(ui, |ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(title.into()).text_style(egui::TextStyle::Button),
+                    )
+                    .wrap()
+                    .sense(egui::Sense::click()),
+                )
+            })
+            .body(body);
+        let resp = header.inner;
+        // Clicking the title opens and closes the node, as it does on a
+        // standard header; the arrow keeps working on its own.
+        if resp.clicked() {
+            let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                id,
+                default_open,
+            );
+            state.toggle(ui);
+            state.store(ui.ctx());
+        }
+        resp
     }
 
     /// Study transform simulator: apply a known rigid motion + optional
@@ -37,7 +128,7 @@ impl ViewerApp {
             return;
         }
         let mut do_generate = false;
-        egui::CollapsingHeader::new(egui::RichText::new("Simulation (registration QA)").strong())
+        egui::CollapsingHeader::new(egui::RichText::new("Image simulation").strong())
             .default_open(false)
             .show(ui, |ui| {
                 if let Some(job) = &self.sim_job {
@@ -114,7 +205,7 @@ impl ViewerApp {
 
     pub(super) fn study_section(&mut self, ui: &mut egui::Ui, slot: usize) {
         // Plain header — the patient(s) always appear as tree nodes below.
-        let header = format!("Dataset {}", SLOT_NAMES[slot]);
+        let header = format!("Data tree {}", SLOT_NAMES[slot]);
         let ch = egui::CollapsingHeader::new(egui::RichText::new(header).strong())
             .id_salt(("study_hdr", slot))
             .default_open(true)
@@ -200,139 +291,139 @@ impl ViewerApp {
                 } else {
                     format!("{} ({})", pname, pinfo.patient_id)
                 };
-                let pch = egui::CollapsingHeader::new(ptitle)
-                    .id_salt(("pat_hdr", slot, pi))
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        // Studies of this patient, in first-seen order.
-                        let mut studies: Vec<&str> = Vec::new();
-                        for s in &study.series {
-                            if s.patient_key() == *pkey && !studies.contains(&s.study_uid.as_str())
-                            {
-                                studies.push(&s.study_uid);
+                let pch = Self::wrapped_node(ui, ("pat_hdr", slot, pi), true, ptitle, |ui| {
+                    // Studies of this patient, in first-seen order.
+                    let mut studies: Vec<&str> = Vec::new();
+                    for s in &study.series {
+                        if s.patient_key() == *pkey && !studies.contains(&s.study_uid.as_str()) {
+                            studies.push(&s.study_uid);
+                        }
+                    }
+                    for (si, study_uid) in studies.iter().enumerate() {
+                        let info = study
+                            .series
+                            .iter()
+                            .find(|s| s.study_uid == *study_uid && s.patient_key() == *pkey)
+                            .unwrap();
+                        let title = format!(
+                            "Study {}{}",
+                            if info.study_date.is_empty() {
+                                format!("{}", si + 1)
+                            } else {
+                                info.study_date.clone()
+                            },
+                            if info.study_description.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" — {}", info.study_description)
                             }
-                        }
-                        for (si, study_uid) in studies.iter().enumerate() {
-                            let info = study
-                                .series
-                                .iter()
-                                .find(|s| s.study_uid == *study_uid && s.patient_key() == *pkey)
-                                .unwrap();
-                            let title = format!(
-                                "Study {}{}",
-                                if info.study_date.is_empty() {
-                                    format!("{}", si + 1)
-                                } else {
-                                    info.study_date.clone()
-                                },
-                                if info.study_description.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!(" — {}", info.study_description)
-                                }
-                            );
-                            let sch = egui::CollapsingHeader::new(title)
-                                .id_salt(("study_tree", slot, pi, si))
-                                .default_open(true)
-                                .show(ui, |ui| {
-                                    for (i, s) in study.series.iter().enumerate() {
-                                        if s.study_uid != *study_uid || s.patient_key() != *pkey {
-                                            continue;
-                                        }
-                                        let resp = ui.selectable_label(i == active, label(s));
-                                        if resp.clicked() && i != active {
-                                            switch_to = Some(i);
-                                        }
-                                        resp.context_menu(|ui| {
-                                            if ui.button("✎ Rename series…").clicked() {
-                                                rename =
-                                                    Some(RenameTarget::Series { slot, idx: i });
-                                                ui.close();
-                                            }
-                                            ui.separator();
-                                            if ui
-                                                .button(format!("Copy series to dataset {other}"))
-                                                .clicked()
-                                            {
-                                                act_series = Some(TreeAction {
-                                                    from: slot,
-                                                    sel: TreeSel::Series(i),
-                                                    op: TreeOp::Copy,
-                                                });
-                                                ui.close();
-                                            }
-                                            if ui
-                                                .button(format!("Move series to dataset {other}"))
-                                                .clicked()
-                                            {
-                                                act_series = Some(TreeAction {
-                                                    from: slot,
-                                                    sel: TreeSel::Series(i),
-                                                    op: TreeOp::Move,
-                                                });
-                                                ui.close();
-                                            }
-                                            ui.separator();
-                                            if ui.button("Remove series").clicked() {
-                                                act_series = Some(TreeAction {
-                                                    from: slot,
-                                                    sel: TreeSel::Series(i),
-                                                    op: TreeOp::Remove,
-                                                });
-                                                ui.close();
-                                            }
-                                        });
-                                        resp.on_hover_text(format!(
-                                            "Series UID …{}\nright-click: rename, copy / move \
-                                             to dataset {other}, or remove",
-                                            tail(&s.uid)
-                                        ));
+                        );
+                        let sch = Self::wrapped_node(
+                            ui,
+                            ("study_tree", slot, pi, si),
+                            true,
+                            title,
+                            |ui| {
+                                for (i, s) in study.series.iter().enumerate() {
+                                    if s.study_uid != *study_uid || s.patient_key() != *pkey {
+                                        continue;
                                     }
+                                    let resp = ui.add(
+                                        egui::Button::selectable(i == active, label(s)).wrap(),
+                                    );
+                                    if resp.clicked() && i != active {
+                                        switch_to = Some(i);
+                                    }
+                                    resp.context_menu(|ui| {
+                                        if ui.button("✎ Rename series…").clicked() {
+                                            rename = Some(RenameTarget::Series { slot, idx: i });
+                                            ui.close();
+                                        }
+                                        ui.separator();
+                                        if ui
+                                            .button(format!("Copy series to dataset {other}"))
+                                            .clicked()
+                                        {
+                                            act_series = Some(TreeAction {
+                                                from: slot,
+                                                sel: TreeSel::Series(i),
+                                                op: TreeOp::Copy,
+                                            });
+                                            ui.close();
+                                        }
+                                        if ui
+                                            .button(format!("Move series to dataset {other}"))
+                                            .clicked()
+                                        {
+                                            act_series = Some(TreeAction {
+                                                from: slot,
+                                                sel: TreeSel::Series(i),
+                                                op: TreeOp::Move,
+                                            });
+                                            ui.close();
+                                        }
+                                        ui.separator();
+                                        if ui.button("Remove series").clicked() {
+                                            act_series = Some(TreeAction {
+                                                from: slot,
+                                                sel: TreeSel::Series(i),
+                                                op: TreeOp::Remove,
+                                            });
+                                            ui.close();
+                                        }
+                                    });
+                                    resp.on_hover_text(format!(
+                                        "Series UID …{}\nright-click: rename, copy / move \
+                                             to dataset {other}, or remove",
+                                        tail(&s.uid)
+                                    ));
+                                }
+                            },
+                        );
+                        sch.context_menu(|ui| {
+                            if ui.button("✎ Rename study…").clicked() {
+                                rename = Some(RenameTarget::Study {
+                                    slot,
+                                    uid: study_uid.to_string(),
                                 });
-                            sch.header_response.context_menu(|ui| {
-                                if ui.button("✎ Rename study…").clicked() {
-                                    rename = Some(RenameTarget::Study {
-                                        slot,
-                                        uid: study_uid.to_string(),
-                                    });
-                                    ui.close();
-                                }
-                                ui.separator();
-                                if ui
-                                    .button(format!("Copy study to dataset {other}"))
-                                    .clicked()
-                                {
-                                    act_study = Some(TreeAction {
-                                        from: slot,
-                                        sel: TreeSel::Study(study_uid.to_string()),
-                                        op: TreeOp::Copy,
-                                    });
-                                    ui.close();
-                                }
-                                if ui
-                                    .button(format!("Move study to dataset {other}"))
-                                    .clicked()
-                                {
-                                    act_study = Some(TreeAction {
-                                        from: slot,
-                                        sel: TreeSel::Study(study_uid.to_string()),
-                                        op: TreeOp::Move,
-                                    });
-                                    ui.close();
-                                }
-                                ui.separator();
-                                if ui.button("Remove study").clicked() {
-                                    act_study = Some(TreeAction {
-                                        from: slot,
-                                        sel: TreeSel::Study(study_uid.to_string()),
-                                        op: TreeOp::Remove,
-                                    });
-                                    ui.close();
-                                }
-                            });
-                        }
-                    });
-                pch.header_response.context_menu(|ui| {
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui
+                                .button(format!("Copy study to dataset {other}"))
+                                .clicked()
+                            {
+                                act_study = Some(TreeAction {
+                                    from: slot,
+                                    sel: TreeSel::Study(study_uid.to_string()),
+                                    op: TreeOp::Copy,
+                                });
+                                ui.close();
+                            }
+                            if ui
+                                .button(format!("Move study to dataset {other}"))
+                                .clicked()
+                            {
+                                act_study = Some(TreeAction {
+                                    from: slot,
+                                    sel: TreeSel::Study(study_uid.to_string()),
+                                    op: TreeOp::Move,
+                                });
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("Remove study").clicked() {
+                                act_study = Some(TreeAction {
+                                    from: slot,
+                                    sel: TreeSel::Study(study_uid.to_string()),
+                                    op: TreeOp::Remove,
+                                });
+                                ui.close();
+                            }
+                        });
+                    }
+                });
+                pch.context_menu(|ui| {
                     if ui.button("✎ Rename patient…").clicked() {
                         rename = Some(RenameTarget::Patient {
                             slot,
@@ -684,13 +775,16 @@ impl ViewerApp {
                         } else {
                             &set.label
                         };
-                        let resp = ui.selectable_label(
-                            i == active_set,
-                            format!(
-                                "▣ {name} ({} ROIs){}",
-                                set.rois.len(),
-                                Self::series_suffix(study, &set.referenced_series_uid)
-                            ),
+                        let resp = ui.add(
+                            egui::Button::selectable(
+                                i == active_set,
+                                format!(
+                                    "▣ {name} ({} ROIs){}",
+                                    set.rois.len(),
+                                    Self::series_suffix(study, &set.referenced_series_uid)
+                                ),
+                            )
+                            .wrap(),
                         );
                         if resp.clicked() && i != active_set {
                             new_active = Some(i);
@@ -867,6 +961,11 @@ impl ViewerApp {
                         }
                         for (tool, hint) in [
                             (
+                                &BODY_CONTOUR,
+                                "Outline the patient without the couch, the chair or the \
+                                 immobilisation (EXTERNAL)",
+                            ),
+                            (
                                 &AUTOSEG,
                                 "Automatic multi-organ segmentation (TotalSegmentator, \
                                  117 structures)",
@@ -897,14 +996,17 @@ impl ViewerApp {
                             kind: SetKind::Segmentations,
                             idx: i,
                         };
-                        let resp = ui.selectable_label(
-                            Some(i) == active_series,
-                            format!(
-                                "✎ {} ({} segments){}",
-                                sr.label,
-                                sr.segs.len(),
-                                Self::series_suffix(study, &sr.referenced_series_uid)
-                            ),
+                        let resp = ui.add(
+                            egui::Button::selectable(
+                                Some(i) == active_series,
+                                format!(
+                                    "✎ {} ({} segments){}",
+                                    sr.label,
+                                    sr.segs.len(),
+                                    Self::series_suffix(study, &sr.referenced_series_uid)
+                                ),
+                            )
+                            .wrap(),
                         );
                         if resp.clicked() && Some(i) != active_series {
                             new_active_series = Some(i);
@@ -987,9 +1089,11 @@ impl ViewerApp {
                             ui.color_edit_button_srgb(&mut row.1);
                             ui.checkbox(&mut row.2, "")
                                 .on_hover_text("Show / select this segmentation");
-                            let resp = ui.selectable_label(i == active_seg, &name).on_hover_text(
-                                "Click to make this the segmentation the tools edit",
-                            );
+                            let resp = ui
+                                .add(egui::Button::selectable(i == active_seg, name.clone()).wrap())
+                                .on_hover_text(
+                                    "Click to make this the segmentation the tools edit",
+                                );
                             if resp.clicked() {
                                 activate = Some(i);
                             }
@@ -1062,6 +1166,7 @@ impl ViewerApp {
             self.create_seg(slot);
         }
         match open_tool.map(|t| t.glyph) {
+            Some(g) if g == BODY_CONTOUR.glyph => self.open_body_dialog(slot),
             Some(g) if g == AUTOSEG.glyph => self.open_autoseg_dialog(slot),
             Some(g) if g == PROMPT_SEG.glyph => self.open_segvol_dialog(slot),
             Some(_) => self.open_medsam2_panel(slot),
@@ -1092,7 +1197,7 @@ impl ViewerApp {
             }
         }
         if let Some(i) = to_struct {
-            self.seg_to_rtstruct(slot, i);
+            self.seg_to_rtstruct(slot, i, "ORGAN");
         }
         if set_act.is_some() {
             self.set_action = set_act;
@@ -1248,114 +1353,117 @@ impl ViewerApp {
                 return;
             }
             for (pi, plan) in study.plans.iter().enumerate() {
-                let plan_hdr = egui::CollapsingHeader::new(format!(
-                    "Plan: {}",
-                    if plan.label.is_empty() {
-                        "unnamed"
-                    } else {
-                        &plan.label
-                    }
-                ))
-                .id_salt(("plan", slot, pi))
-                .default_open(pi == 0)
-                .show(ui, |ui| {
-                    if !plan.name.is_empty() && plan.name != plan.label {
-                        ui.weak(format!("Name: {}", plan.name));
-                    }
-                    if !plan.plan_kind.is_empty() {
-                        ui.weak(format!("Type: {}", plan.plan_kind));
-                    }
-                    if let Some(fx) = plan.n_fractions {
-                        ui.weak(format!("Fractions: {fx}"));
-                    }
-                    if let Some(rx) = plan.target_prescription_dose {
-                        ui.weak(format!("Prescription: {rx:.2} Gy"));
-                    }
-                    if !plan.date.is_empty() {
-                        ui.weak(format!("Date: {}", plan.date));
-                    }
-                    // DICOM cross-reference: the structure set the plan was
-                    // created on.
-                    if !plan.referenced_structset_uid.is_empty() {
-                        if let Some(ss) = study
-                            .structure_sets
-                            .iter()
-                            .find(|s| s.sop_instance_uid == plan.referenced_structset_uid)
-                        {
-                            ui.weak(format!(
-                                "▶ structures {}",
-                                if ss.label.is_empty() {
-                                    &ss.file_name
-                                } else {
-                                    &ss.label
-                                }
-                            ));
+                let plan_hdr = Self::wrapped_node(
+                    ui,
+                    ("plan", slot, pi),
+                    pi == 0,
+                    format!(
+                        "Plan: {}",
+                        if plan.label.is_empty() {
+                            "unnamed"
+                        } else {
+                            &plan.label
                         }
-                    }
-                    if !plan.beams.is_empty() {
-                        egui::Grid::new(("beam_grid", slot, pi))
-                            .striped(true)
-                            .min_col_width(10.0)
-                            .show(ui, |ui| {
-                                ui.strong("Beam");
-                                ui.strong("Type");
-                                ui.strong("G°");
-                                ui.strong("C°");
-                                ui.strong("E (MeV)");
-                                ui.strong("MU");
-                                ui.strong("CPs");
-                                ui.end_row();
-                                for b in &plan.beams {
-                                    ui.label(&b.name).on_hover_text(format!(
-                                        "Beam {} · {} · dose/fx {}",
-                                        b.number,
-                                        if b.delivery_type.is_empty() {
-                                            "TREATMENT"
-                                        } else {
-                                            &b.delivery_type
-                                        },
-                                        b.beam_dose
-                                            .map(|d| format!("{d:.2} Gy"))
-                                            .unwrap_or_else(|| "n/a".into()),
-                                    ));
-                                    ui.label(format!(
-                                        "{}{}",
-                                        b.radiation_type,
-                                        if b.scan_mode.is_empty() {
-                                            String::new()
-                                        } else {
-                                            format!("/{}", b.scan_mode)
-                                        }
-                                    ));
-                                    ui.label(
-                                        b.gantry_angle
-                                            .map(|g| format!("{g:.0}"))
-                                            .unwrap_or_else(|| "–".into()),
-                                    );
-                                    ui.label(
-                                        b.couch_angle
-                                            .map(|c| format!("{c:.0}"))
-                                            .unwrap_or_else(|| "–".into()),
-                                    );
-                                    ui.label(match (b.energy_min, b.energy_max) {
-                                        (Some(a), Some(bb)) if (a - bb).abs() > 0.01 => {
-                                            format!("{a:.0}–{bb:.0}")
-                                        }
-                                        (Some(a), _) => format!("{a:.0}"),
-                                        _ => "–".into(),
-                                    });
-                                    ui.label(
-                                        b.meterset
-                                            .map(|m| format!("{m:.1}"))
-                                            .unwrap_or_else(|| "–".into()),
-                                    );
-                                    ui.label(format!("{}", b.n_control_points));
+                    ),
+                    |ui| {
+                        if !plan.name.is_empty() && plan.name != plan.label {
+                            ui.weak(format!("Name: {}", plan.name));
+                        }
+                        if !plan.plan_kind.is_empty() {
+                            ui.weak(format!("Type: {}", plan.plan_kind));
+                        }
+                        if let Some(fx) = plan.n_fractions {
+                            ui.weak(format!("Fractions: {fx}"));
+                        }
+                        if let Some(rx) = plan.target_prescription_dose {
+                            ui.weak(format!("Prescription: {rx:.2} Gy"));
+                        }
+                        if !plan.date.is_empty() {
+                            ui.weak(format!("Date: {}", plan.date));
+                        }
+                        // DICOM cross-reference: the structure set the plan was
+                        // created on.
+                        if !plan.referenced_structset_uid.is_empty() {
+                            if let Some(ss) = study
+                                .structure_sets
+                                .iter()
+                                .find(|s| s.sop_instance_uid == plan.referenced_structset_uid)
+                            {
+                                ui.weak(format!(
+                                    "▶ structures {}",
+                                    if ss.label.is_empty() {
+                                        &ss.file_name
+                                    } else {
+                                        &ss.label
+                                    }
+                                ));
+                            }
+                        }
+                        if !plan.beams.is_empty() {
+                            egui::Grid::new(("beam_grid", slot, pi))
+                                .striped(true)
+                                .min_col_width(10.0)
+                                .show(ui, |ui| {
+                                    ui.strong("Beam");
+                                    ui.strong("Type");
+                                    ui.strong("G°");
+                                    ui.strong("C°");
+                                    ui.strong("E (MeV)");
+                                    ui.strong("MU");
+                                    ui.strong("CPs");
                                     ui.end_row();
-                                }
-                            });
-                    }
-                });
-                plan_hdr.header_response.context_menu(|ui| {
+                                    for b in &plan.beams {
+                                        ui.label(&b.name).on_hover_text(format!(
+                                            "Beam {} · {} · dose/fx {}",
+                                            b.number,
+                                            if b.delivery_type.is_empty() {
+                                                "TREATMENT"
+                                            } else {
+                                                &b.delivery_type
+                                            },
+                                            b.beam_dose
+                                                .map(|d| format!("{d:.2} Gy"))
+                                                .unwrap_or_else(|| "n/a".into()),
+                                        ));
+                                        ui.label(format!(
+                                            "{}{}",
+                                            b.radiation_type,
+                                            if b.scan_mode.is_empty() {
+                                                String::new()
+                                            } else {
+                                                format!("/{}", b.scan_mode)
+                                            }
+                                        ));
+                                        ui.label(
+                                            b.gantry_angle
+                                                .map(|g| format!("{g:.0}"))
+                                                .unwrap_or_else(|| "–".into()),
+                                        );
+                                        ui.label(
+                                            b.couch_angle
+                                                .map(|c| format!("{c:.0}"))
+                                                .unwrap_or_else(|| "–".into()),
+                                        );
+                                        ui.label(match (b.energy_min, b.energy_max) {
+                                            (Some(a), Some(bb)) if (a - bb).abs() > 0.01 => {
+                                                format!("{a:.0}–{bb:.0}")
+                                            }
+                                            (Some(a), _) => format!("{a:.0}"),
+                                            _ => "–".into(),
+                                        });
+                                        ui.label(
+                                            b.meterset
+                                                .map(|m| format!("{m:.1}"))
+                                                .unwrap_or_else(|| "–".into()),
+                                        );
+                                        ui.label(format!("{}", b.n_control_points));
+                                        ui.end_row();
+                                    }
+                                });
+                        }
+                    },
+                );
+                plan_hdr.context_menu(|ui| {
                     if ui.button("✎ Rename plan…").clicked() {
                         rename = Some(RenameTarget::Plan { slot, idx: pi });
                         ui.close();

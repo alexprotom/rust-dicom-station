@@ -104,7 +104,7 @@ which loaded dataset the grid's own frame of reference matches, so applying
 it the wrong way round is a deliberate act rather than an accident.
 
 A registration recovered here can be written back out as a Deformable
-Spatial Registration (*Registration ▶ Vector field ▶ 💾 Save as DICOM…*).
+Spatial Registration (*Image registration ▶ Vector field ▶ 💾 Save as DICOM…*).
 The IOD applies its grid after a pre-deformation matrix and before a
 post-deformation one; both are written as the identity and the grid carries
 the whole mapping, so another system has no composition rule to get wrong.

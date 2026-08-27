@@ -10,7 +10,9 @@ three-view layout, with a second dataset row for comparison, built-in
 **image registration** (elastix- and plastimatch-style, rigid, deformable
 and landmark-based, with analytics and a deformation vector field),
 **structure propagation**, **DRR generation**, **interactive
-segmentation**, a live **3D structure view**, **automatic multi-organ
+segmentation**, a live **3D structure view**, **automatic body / EXTERNAL
+contouring** (the patient outline without the couch, the chair or the
+immobilisation, on CT and MR), **automatic multi-organ
 segmentation** (a pure-Rust re-implementation of TotalSegmentator, 117
 structures, CPU or any GPU), **prompt-driven segmentation** (a
 pure-Rust re-implementation of SegVol — point at anything with a box, a
@@ -78,6 +80,17 @@ holds the registration controls and both dataset trees.*
   view, mask → RTSTRUCT conversion, and **DICOM SEG** import and export
   (binary and fractional multi-frame masks, read onto their own lattice
   and resampled onto whichever image series they belong to).
+* **Body contouring** - the EXTERNAL structure, found automatically and
+  without the couch, the chair or the immobilisation inside it. Equipment
+  is separated from anatomy by two facts no patient has together: it is
+  thin, and its footprint repeats slice after slice - so an 8 mm opening
+  and a persistence test along **all three** axes catch a supine couch top
+  and an upright chair's seat pan alike, while ears, nose and fingers are
+  given back afterwards. Works on CT by Hounsfield threshold and on MR
+  after flattening the coil shading; optionally guided by
+  TotalSegmentator's openly licensed body network, which is what removes a
+  mask touching the skin with no gap. Lands as an editable mask and as an
+  RTSTRUCT `EXTERNAL`.
 * **Auto-segmentation** - TotalSegmentator v2 inference rebuilt natively:
   official nnU-Net weights downloaded once and converted
   without Python, hand-written SIMD CPU engine and a wgpu GPU path
@@ -169,6 +182,7 @@ ships a real two-phase 4DCT (see
 | [docs/propagation.md](docs/propagation.md) | Carrying contours and segmentations across a registration |
 | [docs/drr.md](docs/drr.md) | Digitally reconstructed radiographs: the two projectors and the geometry |
 | [docs/segmentation.md](docs/segmentation.md) | Brush / eraser / region growing, 3D view, mask → RTSTRUCT |
+| [docs/body-contour.md](docs/body-contour.md) | The body / EXTERNAL contour: the classical and model-assisted methods, CT and MR, verification |
 | [docs/segvol.md](docs/segvol.md) | Prompt-driven segmentation: box / point / text, the SegVol re-implementation |
 | [docs/medsam2.md](docs/medsam2.md) | Propagating a prompt through a stack: the MedSAM2 re-implementation |
 | [docs/auto-segmentation.md](docs/auto-segmentation.md) | The pure-Rust TotalSegmentator: models, pipeline, engines, validation, classes, licensing |

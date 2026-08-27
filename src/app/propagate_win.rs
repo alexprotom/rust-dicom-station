@@ -227,6 +227,9 @@ impl ViewerApp {
                 region: refined.region,
             });
             self.reg_gen += 1;
+            // The refinement is now the active registration — show the
+            // section that reports and clears it.
+            self.module_registration = true;
         }
         let Some(study) = &self.slots[dst_slot].study else {
             return;

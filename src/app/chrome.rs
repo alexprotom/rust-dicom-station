@@ -9,13 +9,14 @@ impl ViewerApp {
         let mut open_b = false;
         let mut close_b = false;
         let mut reset_views = false;
-        let mut do_reg: Option<(RegMethod, bool)> = None;
         let mut open_gen = false;
         let mut open_models = false;
         let mut open_propagate = false;
         let mut open_drr = false;
         let mut open_export: Option<usize> = None;
         let mut new_theme: Option<egui::ThemePreference> = None;
+        // A module was switched on or off — remember it for the next run.
+        let mut modules_changed = false;
 
         egui::Panel::top(egui::Id::new("menu_bar")).show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -113,6 +114,13 @@ impl ViewerApp {
                     ui.checkbox(&mut self.show_labels, "Orientation labels");
                     ui.checkbox(&mut self.show_isocenters, "Isocenters");
                     ui.separator();
+                    ui.checkbox(&mut self.side_open, "Left panel (F9)")
+                        .on_hover_text(
+                            "Hide the left panel and give the whole window to the views. \
+                             The arrow on the window's left edge brings it back, as does \
+                             F9.",
+                        );
+                    ui.separator();
                     ui.label("Appearance:");
                     let before = self.theme;
                     self.theme.radio_buttons(ui);
@@ -128,60 +136,48 @@ impl ViewerApp {
                         ui.close();
                     }
                 });
-                ui.menu_button("Registration", |ui| {
-                    // Quick actions only — direction, region, parameters,
-                    // landmarks, analytics, fusion and the vector field live
-                    // in the sidebar Registration section.
-                    let both = self.slots[0].study.is_some() && self.slots[1].study.is_some();
-                    let running = self.reg_job.is_some();
-                    let moving = SLOT_NAMES[1 - self.reg_fixed_slot.min(1)];
-                    let fixed = SLOT_NAMES[self.reg_fixed_slot.min(1)];
-                    ui.weak(format!("Register {moving} onto {fixed}:"));
-                    for method in RegMethod::ALL {
-                        if ui
-                            .add_enabled(
-                                both && !running,
-                                egui::Button::new(format!(
-                                    "{} — {}",
-                                    method.family(),
-                                    method.short()
-                                )),
+                // This menu is a set of switches, not a list of actions:
+                // it stays open until the pointer leaves it, so both
+                // modules can be turned on in one visit.
+                egui::containers::menu::MenuButton::new("Modules")
+                    .config(
+                        egui::containers::menu::MenuConfig::new()
+                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+                    )
+                    .ui(ui, |ui| {
+                        // Two optional side-panel sections, each one line of the
+                        // menu. Everything they do — direction, method, region,
+                        // parameters, landmarks, analytics, fusion, the vector
+                        // field, the simulated motion — lives in the section
+                        // itself, so the menu only decides whether it is there.
+                        ui.weak("Sections of the left panel:");
+                        modules_changed |= ui
+                            .checkbox(&mut self.module_registration, "Image registration")
+                            .on_hover_text(
+                                "Align two datasets: direction, method, region, parameters, \
+                             landmarks, analysis, fusion and the deformation vector field. \
+                             Needs two loaded datasets to run.",
                             )
-                            .on_hover_text(method.hint())
-                            .clicked()
-                        {
-                            do_reg = Some((method, false));
-                            ui.close();
-                        }
-                    }
-                    ui.separator();
-                    let can_refine = self
-                        .registration
-                        .as_ref()
-                        .is_some_and(|r| r.fixed_slot == self.reg_fixed_slot.min(1));
-                    if ui
-                        .add_enabled(
-                            both && !running && can_refine,
-                            egui::Button::new("Refine the active registration"),
-                        )
-                        .on_hover_text(
-                            "Recover a correction on top of the active result with the \
-                             method and region chosen in the sidebar, and add the two \
-                             together",
-                        )
-                        .clicked()
-                    {
-                        do_reg = Some((self.reg_method, true));
-                        ui.close();
-                    }
-                    if !both {
-                        ui.weak("Load two datasets (comparison mode) first");
-                    }
-                });
+                            .changed();
+                        modules_changed |= ui
+                            .checkbox(&mut self.module_simulation, "Image simulation")
+                            .on_hover_text(
+                                "Registration QA: apply a known rigid motion and Gaussian \
+                             deformation to one dataset and generate the result into the \
+                             other — the ground truth a registration can be measured against.",
+                            )
+                            .changed();
+                    });
                 ui.menu_button("Tools", |ui| {
                     // The three segmentation engines, one block per dataset:
-                    // the same three entries, in the same order, for A and B.
-                    let tools: [(&ToolInfo, &str); 3] = [
+                    // the same four entries, in the same order, for A and B.
+                    let tools: [(&ToolInfo, &str); 4] = [
+                        (
+                            &BODY_CONTOUR,
+                            "Outline the patient and leave the couch, the chair and the \
+                             immobilisation outside — the EXTERNAL structure. Works on CT \
+                             and MR, with or without a network.",
+                        ),
                         (
                             &AUTOSEG,
                             "Automatic multi-organ segmentation of the displayed CT \
@@ -222,6 +218,9 @@ impl ViewerApp {
                         }
                     }
                     match open_tool {
+                        Some((slot, t)) if t.glyph == BODY_CONTOUR.glyph => {
+                            self.open_body_dialog(slot)
+                        }
                         Some((slot, t)) if t.glyph == AUTOSEG.glyph => {
                             self.open_autoseg_dialog(slot)
                         }
@@ -344,10 +343,6 @@ impl ViewerApp {
         if reset_views {
             self.reset_all_views();
         }
-        if let Some((method, refine)) = do_reg {
-            self.reg_method = method;
-            self.start_registration(refine);
-        }
         if open_gen {
             self.gen_open = true;
         }
@@ -371,6 +366,9 @@ impl ViewerApp {
         }
         if let Some(theme) = new_theme {
             self.set_theme(ctx, theme);
+        }
+        if modules_changed {
+            self.persist_settings();
         }
     }
 
@@ -398,17 +396,36 @@ impl ViewerApp {
                             .prefix("W "),
                     );
                     let mut full_range = false;
+                    // The closed combo carries the name of the preset in
+                    // force. Its numbers are dropped there — the two drag
+                    // values to the left already show them — but kept in the
+                    // list, where they are what tells the presets apart.
+                    // Any other window (a drag, a right-drag in a view, the
+                    // full range) is nameless again.
+                    self.wl_preset = self.wl_preset.filter(|i| {
+                        WL_PRESETS.get(*i).is_some_and(|(_, c, w)| {
+                            *c == self.window_center && *w == self.window_width
+                        })
+                    });
+                    let selected = self
+                        .wl_preset
+                        .and_then(|i| WL_PRESETS.get(i))
+                        .map_or("CT presets", |(name, ..)| *name);
+                    let mut pick: Option<usize> = None;
+                    let current = self.wl_preset;
                     egui::ComboBox::from_id_salt("wl_preset")
-                        .selected_text("CT presets")
-                        .width(110.0)
+                        .selected_text(selected)
+                        .width(150.0)
                         .show_ui(ui, |ui| {
-                            for (name, c, w) in WL_PRESETS {
+                            for (i, (name, c, w)) in WL_PRESETS.iter().enumerate() {
                                 if ui
-                                    .button(format!("{name}  (C {c:.0} / W {w:.0})"))
+                                    .selectable_label(
+                                        current == Some(i),
+                                        format!("{name}  (C {c:.0} / W {w:.0})"),
+                                    )
                                     .clicked()
                                 {
-                                    self.window_center = *c;
-                                    self.window_width = *w;
+                                    pick = Some(i);
                                 }
                             }
                             ui.separator();
@@ -416,7 +433,14 @@ impl ViewerApp {
                                 full_range = true;
                             }
                         });
+                    if let Some(i) = pick {
+                        let (_, c, w) = WL_PRESETS[i];
+                        self.window_center = c;
+                        self.window_width = w;
+                        self.wl_preset = Some(i);
+                    }
                     if full_range {
+                        self.wl_preset = None;
                         if let Some(study) = &self.slots[self.hovered_slot.min(1)].study {
                             let v = &study.volume;
                             self.window_center = (v.min_value as f32 + v.max_value as f32) * 0.5;

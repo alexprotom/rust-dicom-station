@@ -274,6 +274,7 @@ mod tests {
             }
         }
         let cfg = ModelConfig {
+            norm: crate::autoseg::config::Norm::Ct,
             patch_size: [8, 8, 8],
             spacing: [3.0, 3.0, 3.0],
             features: vec![],

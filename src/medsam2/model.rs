@@ -12,6 +12,8 @@
 //! memory encoder — is another ~26 G but it is strictly sequential, because
 //! slice *n* needs slice *n-1*'s memory.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use anyhow::Result;
 use burn::tensor::backend::Backend;
 use burn::tensor::Tensor;
@@ -54,6 +56,14 @@ pub struct Medsam2<B: Backend> {
     /// The sine encoding of the image tokens, `[1, tokens, 256]`.
     image_pos: Tensor<B, 3>,
     device: B::Device,
+    /// How many times [`Medsam2::encode_slice`] has run.
+    ///
+    /// The interactive loop's whole premise is the split described at the top
+    /// of this module: re-prompting a slice must *not* re-encode it. Counting
+    /// the encodes is how that stays checkable — in a test, or in a profile —
+    /// without measuring elapsed time, which says as much about the machine
+    /// as about the code.
+    encodes: AtomicUsize,
 }
 
 impl<B: Backend> Medsam2<B> {
@@ -81,7 +91,13 @@ impl<B: Backend> Medsam2<B> {
             obj_ptr_tpos_proj: Lin::load(p, "obj_ptr_tpos_proj", MEM_DIM, D_MODEL, dev)?,
             image_pos,
             device: dev.clone(),
+            encodes: AtomicUsize::new(0),
         })
+    }
+
+    /// Slices encoded since this network was loaded (see [`Self::encodes`]).
+    pub fn encode_count(&self) -> usize {
+        self.encodes.load(Ordering::Relaxed)
     }
 
     pub fn device(&self) -> &B::Device {
@@ -91,6 +107,7 @@ impl<B: Backend> Medsam2<B> {
     /// The image encoder: trunk, neck, and the two high-resolution
     /// projections the decoder needs.
     pub fn encode_slice(&self, image: Tensor<B, 4>) -> SliceFeatures<B> {
+        self.encodes.fetch_add(1, Ordering::Relaxed);
         let stages = self.trunk.forward(image);
         let mut levels = self.neck.forward(&stages);
         // `scalp`: the lowest-resolution level(s) are computed and dropped.
