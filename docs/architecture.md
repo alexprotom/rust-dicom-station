@@ -187,7 +187,8 @@ src/
                       plumbing (Job::spawn, poll_job, poll_tool_job), per-frame driver
     theme.rs          theme-dependent colors
     chrome.rs         menu bar, toolbar, status bar, help
-    panels.rs         side panel and its per-dataset sections
+    panels.rs         left panel: its show / hide, the optional modules and
+                      the per-dataset Data tree sections
     views.rs          central MPR viewports, interaction, texture caches
     d3.rs             live 3D structure window
     planar.rs         floating DX / CR / RTIMAGE viewers
@@ -202,7 +203,7 @@ src/
                       auto-segmentation job starts
     dialogs.rs        auto-segmentation window + results, generator, anonymizer,
                       export, error dialog
-    reg_panel.rs      the Registration section: method, region, parameters,
+    reg_panel.rs      the Image registration section: method, region, parameters,
                       landmarks, the run, the analytics, the vector field
     models_win.rs     the model manager window
     propagate_win.rs  structure propagation window and worker

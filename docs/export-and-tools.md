@@ -149,7 +149,7 @@ matter of generating once more into another folder:
 cargo run --release -- test_data test_data_shifted
 ```
 
-*Registration ▶ Rigid* should then recover the (12, −9, 0) mm shift to
-within a fraction of a millimeter. The whole phantom is analytically
+a rigid run in the *Image registration* module should then recover the
+(12, −9, 0) mm shift to within a fraction of a millimeter. The whole phantom is analytically
 known, which is what the integration tests assert against — see
 [architecture.md](architecture.md#testing).

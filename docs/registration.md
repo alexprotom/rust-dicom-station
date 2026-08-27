@@ -124,10 +124,10 @@ Each pair shows its displacement, and after a run, its residual.
 
 ## Running a registration
 
-With two datasets loaded, the *Registration* menu or the sidebar section
-registers one onto the other — the direction is selectable (**B ▶ A** or
+*Modules ▶ Image registration* puts the section in the left panel. With
+two datasets loaded it registers one onto the other — the direction is selectable (**B ▶ A** or
 **A ▶ B**; the second-named dataset is the fixed image and receives the
-fusion overlay). Everything else lives in the sidebar: method, region,
+fusion overlay). Everything lives in that one section: method, region,
 parameters, landmarks, the result and the vector field. Runs happen on a
 background thread with progress and a **Cancel** button.
 

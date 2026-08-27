@@ -9,6 +9,10 @@ const APP_NAME: &str = "RustDICOMStation";
 /// Settings key of the model root; the installer writes it too.
 pub const MODELS_DIR_KEY: &str = "models_dir";
 
+/// Settings keys of the two optional side-panel modules.
+const MODULE_REG_KEY: &str = "module_image_registration";
+const MODULE_SIM_KEY: &str = "module_image_simulation";
+
 /// User preferences that survive a restart.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
@@ -20,6 +24,14 @@ pub struct Settings {
     /// `None` means use the platform-specific default returned by
     /// [`default_models_dir`].
     pub models_dir: Option<PathBuf>,
+
+    /// *Modules ▶ Image registration*: the registration section is shown in
+    /// the side panel.
+    pub module_registration: bool,
+
+    /// *Modules ▶ Image simulation*: the simulation section is shown in the
+    /// side panel.
+    pub module_simulation: bool,
 }
 
 impl Default for Settings {
@@ -29,6 +41,10 @@ impl Default for Settings {
         Settings {
             theme: ThemePreference::Dark,
             models_dir: None,
+            // Both optional modules start hidden; the Modules menu turns them
+            // on and the choice is remembered.
+            module_registration: false,
+            module_simulation: false,
         }
     }
 }
@@ -167,6 +183,22 @@ fn theme_to_str(t: ThemePreference) -> &'static str {
     }
 }
 
+fn bool_to_str(b: bool) -> &'static str {
+    if b {
+        "on"
+    } else {
+        "off"
+    }
+}
+
+fn bool_from_str(s: &str) -> Option<bool> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "on" | "true" | "yes" | "1" => Some(true),
+        "off" | "false" | "no" | "0" => Some(false),
+        _ => None,
+    }
+}
+
 fn theme_from_str(s: &str) -> Option<ThemePreference> {
     match s.trim().to_ascii_lowercase().as_str() {
         "dark" => Some(ThemePreference::Dark),
@@ -218,6 +250,14 @@ fn parse(text: &str) -> Settings {
             if !v.is_empty() {
                 s.models_dir = Some(PathBuf::from(v));
             }
+        } else if key.eq_ignore_ascii_case(MODULE_REG_KEY) {
+            if let Some(b) = bool_from_str(value) {
+                s.module_registration = b;
+            }
+        } else if key.eq_ignore_ascii_case(MODULE_SIM_KEY) {
+            if let Some(b) = bool_from_str(value) {
+                s.module_simulation = b;
+            }
         }
     }
     s
@@ -233,6 +273,13 @@ fn render(s: &Settings) -> String {
     if let Some(dir) = &s.models_dir {
         out.push_str(&format!("{MODELS_DIR_KEY} = {}\n", dir.display()));
     }
+    out.push_str(&format!(
+        "# optional side-panel modules (Modules menu) = on | off\n\
+         {MODULE_REG_KEY} = {}\n\
+         {MODULE_SIM_KEY} = {}\n",
+        bool_to_str(s.module_registration),
+        bool_to_str(s.module_simulation)
+    ));
     out
 }
 
@@ -249,7 +296,7 @@ mod tests {
         ] {
             let s = Settings {
                 theme,
-                models_dir: None,
+                ..Settings::default()
             };
             assert_eq!(parse(&render(&s)), s, "round trip of {theme:?}");
         }
@@ -265,7 +312,7 @@ mod tests {
             parse("unknown = 3\nTHEME =  Light \n"),
             Settings {
                 theme: ThemePreference::Light,
-                models_dir: None
+                ..Settings::default()
             },
             "case-insensitive key and value, surrounding space ignored"
         );
@@ -273,14 +320,31 @@ mod tests {
             parse("theme = white"),
             Settings {
                 theme: ThemePreference::Light,
-                models_dir: None
+                ..Settings::default()
             },
             "\"white\" accepted as an alias for light"
         );
         let with_dir = Settings {
             theme: ThemePreference::Dark,
             models_dir: Some(PathBuf::from("D:/models")),
+            ..Settings::default()
         };
         assert_eq!(parse(&render(&with_dir)), with_dir, "model dir round trip");
+    }
+
+    #[test]
+    fn round_trips_the_module_flags() {
+        for (reg, sim) in [(false, false), (true, false), (false, true), (true, true)] {
+            let s = Settings {
+                module_registration: reg,
+                module_simulation: sim,
+                ..Settings::default()
+            };
+            assert_eq!(parse(&render(&s)), s, "round trip of ({reg}, {sim})");
+        }
+        assert!(
+            parse(&format!("{MODULE_REG_KEY} = TRUE")).module_registration,
+            "case-insensitive alias"
+        );
     }
 }

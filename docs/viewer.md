@@ -65,12 +65,24 @@ scrolling), the **3D A / 3D B** buttons and the segmentation tools.
 (x = width, y = center); the toolbar offers the numeric fields and the
 common CT presets: brain, subdural, stroke, head/neck soft tissue, temporal
 bone, lungs, mediastinum, abdomen, liver, spine, bone, CT angio, full
-range. Window/level is shared between datasets A and B so both CTs are
-windowed identically.
+range. The list shows each preset's center and width; once one is chosen
+the closed list carries its name alone (*Lungs*, *Liver*, …) — the two
+numeric fields next to it already say what the numbers are. Any other
+window, from a drag or the full range, leaves the list nameless again.
+Window/level is shared between datasets A and B so both CTs are windowed
+identically.
 
 **Status bar.** Patient coordinates, voxel indices, HU and dose (Gy and %
 of the reference dose) at the crosshair; in comparison mode the readouts
 for A and B are shown side by side.
+
+**The left panel.** *View ▶ Left panel*, the **F9** key and the arrow on
+the window's left edge hide and show it; dragging its inner edge past the
+minimum width does the same, and the arrow stays on screen to bring it
+back. Which sections it holds is up to the *Modules* menu: **Image
+registration** and **Image simulation** are off until switched on, and the
+choice is remembered between runs. The data tree of each loaded dataset is
+always there.
 
 ## Interaction reference
 
@@ -95,10 +107,13 @@ accumulated from any number of folders. *File ▶ Add DICOM folder to A/B…*
 merges a scanned folder into the slot without unloading what is already
 there; duplicates (by UID) are skipped and reported.
 
-The sidebar shows each dataset as a full DICOM hierarchy — patient
+The left panel shows each dataset as a **Data tree** — a full DICOM
+hierarchy: patient
 (PatientName/PatientID) ▶ study (StudyInstanceUID, with date and
 description) ▶ image series — with the displayed series marked; clicking
-another series loads it. The standard reference chain is parsed and shown
+another series loads it. Long names, descriptions and IDs wrap over as
+many lines as they need, so the panel can be dragged narrow without
+cutting them off; only the section headers stay on one line. The standard reference chain is parsed and shown
 as links: each structure set displays the image series its contours were
 drawn on (RTReferencedSeriesSequence), each dose the plan it was computed
 for (ReferencedRTPlanSequence), and each plan the structure set it was
