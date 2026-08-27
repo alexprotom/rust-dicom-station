@@ -549,7 +549,10 @@ impl ViewerApp {
                 .on_hover_text("Write this series as one DICOM Segmentation file")
                 .clicked()
             {
-                *out = Some(SetAction::ExportSeg(here));
+                *out = Some(SetAction::ExportSeg {
+                    set: here,
+                    items: Vec::new(),
+                });
                 ui.close();
             }
         }
@@ -684,6 +687,20 @@ impl ViewerApp {
                 });
             }
         });
+        if from.kind == SetKind::Segmentations {
+            ui.separator();
+            if ui
+                .button(format!("💾 Export {what} as DICOM SEG…"))
+                .on_hover_text("Writes just these segments, as a SEG series of their own")
+                .clicked()
+            {
+                *out = Some(ItemAction::ExportSeg {
+                    from,
+                    items: items.clone(),
+                });
+                ui.close();
+            }
+        }
         ui.separator();
         if ui.button(format!("🗑 Remove {what}")).clicked() {
             *out = Some(ItemAction::Remove {
@@ -692,6 +709,70 @@ impl ViewerApp {
             });
             ui.close();
         }
+    }
+
+    /// The *Copy to ▾ / Move to ▾ / Remove / Export* row that acts on whatever
+    /// is ticked, so a multi-item action does not have to be found by
+    /// right-clicking exactly the right row.
+    fn selection_row(
+        &self,
+        ui: &mut egui::Ui,
+        here: SetRef,
+        selection: &[usize],
+        item_act: &mut Option<ItemAction>,
+    ) {
+        let n = selection.len();
+        let what = format!("{n} ticked {}", here.kind.item_name(n));
+        ui.horizontal_wrapped(|ui| {
+            ui.add_enabled_ui(n > 0, |ui| {
+                ui.menu_button("Copy to ▾", |ui| {
+                    if let Some(to) = self.destination_menu(ui, here) {
+                        *item_act = Some(ItemAction::Transfer {
+                            from: here,
+                            items: selection.to_vec(),
+                            to,
+                            copy: true,
+                        });
+                    }
+                })
+                .response
+                .on_hover_text(format!("Copy the {what} into another series"));
+                ui.menu_button("Move to ▾", |ui| {
+                    if let Some(to) = self.destination_menu(ui, here) {
+                        *item_act = Some(ItemAction::Transfer {
+                            from: here,
+                            items: selection.to_vec(),
+                            to,
+                            copy: false,
+                        });
+                    }
+                })
+                .response
+                .on_hover_text(format!("Move the {what} into another series"));
+                if ui
+                    .small_button("🗑")
+                    .on_hover_text(format!("Remove the {what}"))
+                    .clicked()
+                {
+                    *item_act = Some(ItemAction::Remove {
+                        from: here,
+                        items: selection.to_vec(),
+                    });
+                }
+                if here.kind == SetKind::Segmentations
+                    && ui
+                        .small_button("💾")
+                        .on_hover_text(format!("Write the {what} as a DICOM SEG file of their own"))
+                        .clicked()
+                {
+                    *item_act = Some(ItemAction::ExportSeg {
+                        from: here,
+                        items: selection.to_vec(),
+                    });
+                }
+            });
+            ui.weak(format!("{n} selected"));
+        });
     }
 
     /// The image series a set is drawn on, as a tree suffix.
@@ -730,6 +811,8 @@ impl ViewerApp {
         let mut new_active: Option<usize> = None;
         let mut set_act: Option<SetAction> = None;
         let mut item_act: Option<ItemAction> = None;
+        let mut new_anchor: Option<(SetRef, usize)> = None;
+        let shift = ui.input(|i| i.modifiers.shift);
         {
             let me = &*self;
             let study = me.slots[slot].study.as_ref().unwrap();
@@ -829,6 +912,8 @@ impl ViewerApp {
                         kind: SetKind::Structures,
                         idx: active_set,
                     };
+                    me.selection_row(ui, here, &selection, &mut item_act);
+                    let anchor = me.tick_anchor.filter(|(r, _)| *r == here).map(|(_, i)| i);
                     for (i, roi) in ss.rois.iter().enumerate() {
                         ui.horizontal(|ui| {
                             let (rect, _) =
@@ -850,6 +935,9 @@ impl ViewerApp {
                                     }
                                 ),
                             );
+                            if resp.clicked() {
+                                new_anchor = Some((here, apply_tick(&mut vis, i, shift, anchor)));
+                            }
                             resp.context_menu(|ui| {
                                 me.item_context_menu(
                                     ui,
@@ -861,7 +949,8 @@ impl ViewerApp {
                                 )
                             });
                             resp.on_hover_text(format!(
-                                "ROI {} · {} contour(s)\nright-click: copy / move / remove — \
+                                "ROI {} · {} contour(s)\nShift-click: tick or untick the whole \
+                                 range from the last one\nright-click: copy / move / remove — \
                                  every ticked structure at once",
                                 roi.number,
                                 roi.contours.len()
@@ -871,6 +960,9 @@ impl ViewerApp {
                 });
         }
         self.slots[slot].roi_visible = vis;
+        if new_anchor.is_some() {
+            self.tick_anchor = new_anchor;
+        }
         if let Some(i) = new_active {
             let s = &mut self.slots[slot];
             s.active_structs = i;
@@ -936,6 +1028,8 @@ impl ViewerApp {
         let mut to_struct: Option<usize> = None;
         let mut set_act: Option<SetAction> = None;
         let mut item_act: Option<ItemAction> = None;
+        let mut new_anchor: Option<(SetRef, usize)> = None;
+        let shift = ui.input(|i| i.modifiers.shift);
         {
             let me = &*self;
             let study = me.slots[slot].study.as_ref().unwrap();
@@ -1083,12 +1177,22 @@ impl ViewerApp {
                         kind: SetKind::Segmentations,
                         idx: active_series,
                     };
+                    me.selection_row(ui, here, &selection, &mut item_act);
+                    let anchor = me.tick_anchor.filter(|(r, _)| *r == here).map(|(_, i)| i);
+                    // The check boxes are edited on `ticks` so a Shift-range
+                    // can reach rows the loop has already drawn.
+                    let mut ticks: Vec<bool> = rows.iter().map(|r| r.2).collect();
                     for (i, row) in rows.iter_mut().enumerate() {
                         let name = row.0.clone();
                         ui.horizontal(|ui| {
                             ui.color_edit_button_srgb(&mut row.1);
-                            ui.checkbox(&mut row.2, "")
-                                .on_hover_text("Show / select this segmentation");
+                            let tick = ui.checkbox(&mut ticks[i], "").on_hover_text(
+                                "Show / select this segmentation\nShift-click: tick or \
+                                 untick the whole range from the last one",
+                            );
+                            if tick.clicked() {
+                                new_anchor = Some((here, apply_tick(&mut ticks, i, shift, anchor)));
+                            }
                             let resp = ui
                                 .add(egui::Button::selectable(i == active_seg, name.clone()).wrap())
                                 .on_hover_text(
@@ -1128,10 +1232,16 @@ impl ViewerApp {
                             }
                         });
                     }
+                    for (row, on) in rows.iter_mut().zip(ticks) {
+                        row.2 = on;
+                    }
                 });
         }
         if let Some(v) = set_all {
             rows.iter_mut().for_each(|r| r.2 = v);
+        }
+        if new_anchor.is_some() {
+            self.tick_anchor = new_anchor;
         }
         let edited: Vec<(usize, [u8; 3], bool)> = rows
             .iter()
@@ -1883,5 +1993,67 @@ impl ViewerApp {
                 ui.label(egui::RichText::new(w).small());
             }
         });
+    }
+}
+
+/// Apply a check-box click to a visibility/selection list, extending from
+/// `anchor` when Shift is held, and return the new anchor.
+///
+/// egui has already toggled `vis[i]` by the time this runs, so the clicked
+/// row's *new* value is what the span is filled with: tick one row and
+/// Shift-tick a later one and everything between turns on; untick and
+/// Shift-untick and it all turns off. Rows outside the span are never
+/// touched — the box is a visibility toggle as much as a selection, and
+/// silently hiding structures the user did not point at would be worse than
+/// any convenience gained.
+fn apply_tick(vis: &mut [bool], i: usize, shift: bool, anchor: Option<usize>) -> usize {
+    if let (true, Some(a)) = (shift, anchor) {
+        if a < vis.len() && i < vis.len() {
+            let v = vis[i];
+            let (lo, hi) = if a <= i { (a, i) } else { (i, a) };
+            vis[lo..=hi].iter_mut().for_each(|x| *x = v);
+        }
+    }
+    i
+}
+
+#[cfg(test)]
+mod tick_tests {
+    use super::apply_tick;
+
+    /// Without Shift a click is what egui already did to that one row.
+    #[test]
+    fn a_plain_click_touches_only_its_own_row() {
+        let mut v = vec![false, true, false, false];
+        assert_eq!(apply_tick(&mut v, 2, false, Some(0)), 2, "anchor moves");
+        assert_eq!(v, vec![false, true, false, false]);
+    }
+
+    /// Shift fills the span with the clicked row's new value, in either
+    /// direction, and leaves everything outside it alone.
+    #[test]
+    fn shift_fills_the_span_from_the_anchor() {
+        let mut v = vec![false; 6];
+        v[4] = true; // egui toggled the clicked row on
+        assert_eq!(apply_tick(&mut v, 4, true, Some(1)), 4);
+        assert_eq!(v, vec![false, true, true, true, true, false]);
+
+        // Backwards, and unticking: the span follows the clicked row's value.
+        let mut v = vec![true; 6];
+        v[1] = false;
+        apply_tick(&mut v, 1, true, Some(3));
+        assert_eq!(v, vec![true, false, false, false, true, true]);
+    }
+
+    /// A stale anchor (the list shrank, or it belongs to nothing) must not
+    /// panic or reach outside the list.
+    #[test]
+    fn a_stale_anchor_is_ignored() {
+        let mut v = vec![false, true];
+        assert_eq!(apply_tick(&mut v, 1, true, Some(9)), 1);
+        assert_eq!(v, vec![false, true]);
+        let mut v = vec![false, true];
+        assert_eq!(apply_tick(&mut v, 1, true, None), 1);
+        assert_eq!(v, vec![false, true]);
     }
 }

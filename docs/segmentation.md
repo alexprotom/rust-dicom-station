@@ -25,8 +25,10 @@ stays intact and simply reports that it is not editable here.
 The sidebar *Segmentations* section shows the series as tree nodes and,
 below the active one, its segments: visibility, color, active selection,
 volume in cm³, per-stroke undo (**Ctrl+Z**), delete, and conversion to
-RTSTRUCT (**→RS**, below). *All* / *None* tick every segment or none, and
-the tick doubles as the selection the right-click actions work on — see
+RTSTRUCT (**→RS**, below). *All* / *None* tick every segment or none,
+Shift-click extends a range, and the tick doubles as the selection that the
+row of actions beneath it — copy, move, remove, and *💾* to export just
+those segments as a DICOM SEG file — works on. See
 [viewer.md](viewer.md#structures-and-segmentations-in-the-tree).
 
 ## Tools

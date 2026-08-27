@@ -154,9 +154,22 @@ to the displayed image series. **Right-clicking a series node** offers:
 * *✎ Rename series…*.
 
 Each item's **check box is both its visibility and its selection**, so
-*All* / *None* tick everything or nothing and the right-click actions
-operate on whatever is ticked. **Right-clicking a structure or segment**
-offers:
+*All* / *None* tick everything or nothing and the actions operate on
+whatever is ticked. **Shift-click** a check box to tick — or untick — the
+whole range from the last one you clicked: the span is filled with the
+clicked row's new value, and rows outside it are never touched, because the
+box is a visibility toggle as much as a selection and silently hiding
+structures you did not point at would be worse than the convenience.
+
+Under *All* / *None* sits a row that acts on the ticked items without
+hunting for the right row to right-click: **Copy to ▾**, **Move to ▾** (both
+opening the same destination submenu described below), **🗑** to remove
+them, and — for segmentations — **💾** to write just those segments as a
+DICOM SEG file of their own. It reports how many are selected and greys out
+when nothing is.
+
+**Right-clicking a structure or segment** offers the same set for one row or
+the ticked group:
 
 * *Copy … to ▶* / *Move … to ▶* — a submenu of every structure set and
   segmentation series in **both** datasets, plus *➕ a new RT structure
@@ -164,6 +177,11 @@ offers:
   ticked row acts on all ticked rows at once; right-clicking an unticked
   row acts on that row alone.
 * *🗑 Remove …* — the same single-or-selected rule.
+* *💾 Export … as DICOM SEG…* (segments only) — writes the chosen segments
+  as a SEG series in its own right: same lattice, same referenced image
+  series, a fresh SOP Instance UID, and only those segments. Exporting three
+  organs out of twelve therefore needs no special case in the writer, and
+  the file reloads as an ordinary segmentation series.
 * *✎ Rename …* — always the row you clicked, never the whole selection.
 
 Crossing between the two kinds is a conversion, done on transfer: a
@@ -224,8 +242,10 @@ the rows.
 
 ## Planar images (DX / CR / RTIMAGE)
 
-Digital radiographs and RT images (DRRs, portal/setup images) found in the
-study folder are listed in the sidebar and open in floating viewer windows
+Digital radiographs and RT images (portal/setup images) found in the study
+folder — plus any DRR added from the DRR window with *➕ Add to dataset A/B*
+(see [drr.md](drr.md)) — are listed in the sidebar and open in floating
+viewer windows
 with their own window/level (opens at the DICOM default; auto, manual, or
 interactive right-drag exactly like the CT views), correct physical aspect
 ratio (imager / image-plane pixel spacing), MONOCHROME1 inversion, and the

@@ -50,6 +50,8 @@ rust-dicom-station
 │   │   per-dataset opacity, vector-field glyphs), planar image viewers
 │   ├── Data tree operations: rename every level (patient, study, series, sets,
 │   │   structures, segments, dose, plan, planar, REG, records);
+│   │   Shift-click range selection; copy / move / remove / export the ticked
+│   │   items from a button row or the context menu;
 │   │   copy / move / remove patient · study · series across datasets;
 │   │   create / connect / copy / move / remove RT structure sets and segmentation
 │   │   series; copy / move / remove single or selected structures and segments
@@ -82,7 +84,8 @@ rust-dicom-station
 │   ├── Known-transform study generator (rigid + Gaussian deformation, registration QA)
 │   └── Digitally reconstructed radiographs: exact Siddon ray tracing (plastimatch)
 │       and interpolating ray-casting (ITK), IEC cone-beam geometry, beam's-eye view
-│       from an RTPLAN beam, side-by-side difference
+│       from an RTPLAN beam, side-by-side difference, filed into the data tree
+│       as planar RT images with the geometry that produced them
 │
 ├── Image registration
 │   ├── elastix-style rigid (6-DOF Euler, ASGD, pyramids, stochastic sampling)
