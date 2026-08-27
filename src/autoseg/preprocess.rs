@@ -35,20 +35,18 @@ pub struct SarMap {
 }
 
 impl SarMap {
-    pub fn new(vol: &Volume, target_spacing: f64) -> SarMap {
+    /// `target` is the model's voxel spacing in [S, A, R] order. It is an
+    /// array rather than a scalar because not every nnU-Net model is
+    /// isotropic — the MR body model plans 3.0 × 1.19 × 0.99 mm.
+    pub fn new(vol: &Volume, target: [f64; 3]) -> SarMap {
         let (perm, flip) = vol.canonical_axes();
         let dims = [vol.dims[0], vol.dims[1], vol.dims[2]];
         let spac = [vol.spacing[0], vol.spacing[1], vol.spacing[2]];
         let orig_dims = [dims[perm[0]], dims[perm[1]], dims[perm[2]]];
         let orig_spacing = [spac[perm[0]], spac[perm[1]], spac[perm[2]]];
-        let model_dims = [
-            ((orig_dims[0] as f64 * orig_spacing[0] / target_spacing).round_ties_even() as usize)
-                .max(1),
-            ((orig_dims[1] as f64 * orig_spacing[1] / target_spacing).round_ties_even() as usize)
-                .max(1),
-            ((orig_dims[2] as f64 * orig_spacing[2] / target_spacing).round_ties_even() as usize)
-                .max(1),
-        ];
+        let model_dims = std::array::from_fn(|a| {
+            ((orig_dims[a] as f64 * orig_spacing[a] / target[a]).round_ties_even() as usize).max(1)
+        });
         SarMap {
             perm,
             flip,
@@ -231,7 +229,7 @@ mod tests {
     fn standard_axial_mapping() {
         // Standard axial LPS volume: i→+x(L), j→+y(P), k→+z(S).
         let vol = axial_volume([512, 512, 133], [0.9766, 0.9766, 3.0]);
-        let map = SarMap::new(&vol, 3.0);
+        let map = SarMap::new(&vol, [3.0; 3]);
         // S axis = volume z (no flip), A axis = volume y (flip: +y is P),
         // R axis = volume x (flip: +x is L).
         assert_eq!(map.perm, [2, 1, 0]);
@@ -251,7 +249,7 @@ mod tests {
                 }
             }
         }
-        let map = SarMap::new(&vol, 2.0); // same spacing → pure reorientation
+        let map = SarMap::new(&vol, [2.0; 3]); // same spacing → pure reorientation
         assert_eq!(map.model_dims, [10, 20, 20]);
         let res = resample_to_model(&vol, &map);
         // voxel count preserved under pure flips/permutation

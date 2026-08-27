@@ -33,6 +33,7 @@ struct GBlock {
 struct GTransp {
     w: Tensor<B, 5>,
     b: Tensor<B, 1>,
+    stride: [usize; 3],
 }
 
 /// The network with weights resident on the GPU.
@@ -91,8 +92,13 @@ impl GpuNet {
             .transp
             .iter()
             .map(|t| GTransp {
-                w: upload5(d, &t.w, [t.cin, t.cout, 2, 2, 2]),
+                w: upload5(
+                    d,
+                    &t.w,
+                    [t.cin, t.cout, t.stride[0], t.stride[1], t.stride[2]],
+                ),
                 b: upload1(d, &t.b),
+                stride: t.stride,
             })
             .collect();
         let head_w = upload5(d, &unet.head.w, [unet.head.classes, unet.head.cin, 1, 1, 1]);
@@ -130,7 +136,7 @@ impl GpuNet {
                     cur,
                     tc.w.clone(),
                     Some(tc.b.clone()),
-                    ConvTransposeOptions::new([2, 2, 2], [0, 0, 0], [0, 0, 0], [1, 1, 1], 1),
+                    ConvTransposeOptions::new(tc.stride, [0, 0, 0], [0, 0, 0], [1, 1, 1], 1),
                 );
                 let skip = skips.pop().unwrap();
                 cur = Tensor::cat(vec![cur, skip], 1);

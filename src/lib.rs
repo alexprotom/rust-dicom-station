@@ -4,6 +4,7 @@
 pub mod anonymize;
 pub mod app;
 pub mod autoseg;
+pub mod bodymask;
 pub mod dicom_export;
 pub mod dicomseg;
 pub mod drr;
@@ -14,6 +15,7 @@ pub mod loader;
 pub mod medsam2;
 pub mod mesh3d;
 pub mod models;
+pub mod morphology;
 pub mod nn;
 pub mod progress;
 pub mod propagate;

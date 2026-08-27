@@ -185,6 +185,14 @@ pub fn inventory() -> Vec<ModelAsset> {
             "All 117 structures at 3 mm — the fast default."
         } else if spec.key == autoseg::weights::SPEC_6MM.key {
             "Coarse preview quality — the quickest look."
+        } else if spec.key == autoseg::weights::SPEC_BODY_6MM.key {
+            "Patient outline, 6 mm — what the body-contour tool's model-assisted \
+             method uses. Plenty, because it only decides which side of the skin \
+             a voxel is on."
+        } else if spec.key == autoseg::weights::SPEC_BODY_15MM.key {
+            "Patient outline at full resolution; slower, for the same decision."
+        } else if spec.key == autoseg::weights::SPEC_BODY_MR.key {
+            "Patient outline on MR — the body-contour tool's model for MR series."
         } else {
             "Full-resolution sub-model; the five together are the reference quality."
         };

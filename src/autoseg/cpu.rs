@@ -15,7 +15,7 @@ use rayon::prelude::*;
 // SegVol mask decoder, so they live in `nn`; re-exported here because this
 // is where the nnU-Net code has always reached for them.
 use crate::nn::tensor::SendPtr;
-pub use crate::nn::tensor::{conv_transpose3d_2x, Act};
+pub use crate::nn::tensor::{conv_transpose3d_2x, conv_transpose3d_stride, Act};
 
 #[inline]
 fn conv_out(len: usize, k: usize, s: usize) -> usize {

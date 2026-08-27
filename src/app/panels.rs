@@ -867,6 +867,11 @@ impl ViewerApp {
                         }
                         for (tool, hint) in [
                             (
+                                &BODY_CONTOUR,
+                                "Outline the patient without the couch, the chair or the \
+                                 immobilisation (EXTERNAL)",
+                            ),
+                            (
                                 &AUTOSEG,
                                 "Automatic multi-organ segmentation (TotalSegmentator, \
                                  117 structures)",
@@ -1062,6 +1067,7 @@ impl ViewerApp {
             self.create_seg(slot);
         }
         match open_tool.map(|t| t.glyph) {
+            Some(g) if g == BODY_CONTOUR.glyph => self.open_body_dialog(slot),
             Some(g) if g == AUTOSEG.glyph => self.open_autoseg_dialog(slot),
             Some(g) if g == PROMPT_SEG.glyph => self.open_segvol_dialog(slot),
             Some(_) => self.open_medsam2_panel(slot),
@@ -1092,7 +1098,7 @@ impl ViewerApp {
             }
         }
         if let Some(i) = to_struct {
-            self.seg_to_rtstruct(slot, i);
+            self.seg_to_rtstruct(slot, i, "ORGAN");
         }
         if set_act.is_some() {
             self.set_action = set_act;

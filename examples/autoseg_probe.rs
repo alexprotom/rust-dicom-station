@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
         cfg.n_stages()
     );
 
-    let map = preprocess::SarMap::new(vol, cfg.spacing[0]);
+    let map = preprocess::SarMap::new(vol, cfg.spacing);
     let vm = preprocess::resample_to_model(vol, &map);
     eprintln!("model grid {:?}", map.model_dims);
     // extract the corner patch (like the first sliding-window tile)

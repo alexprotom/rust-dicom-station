@@ -10,6 +10,7 @@ covers one area in depth.
 | [rt-objects.md](rt-objects.md) | RT DICOM objects: RTSTRUCT, RTDOSE, RTPLAN, REG spatial registrations, RT treatment records, and how their reference chains are resolved |
 | [registration.md](registration.md) | Rigid and deformable (B-spline) image registration: algorithms, parameters, the fusion overlay, the transform simulator for registration QA, accuracy verification |
 | [segmentation.md](segmentation.md) | Interactive segmentation: 2D/3D brush, eraser, geodesic region growing, the live 3D structure view, mask → RTSTRUCT conversion |
+| [body-contour.md](body-contour.md) | Automatic body / EXTERNAL contouring: why the couch, the chair and the mask are the hard part, the classical threshold-and-morphology method, the model-assisted method built on TotalSegmentator's body network, CT and MR, verification |
 | [auto-segmentation.md](auto-segmentation.md) | Automatic multi-organ segmentation — the pure-Rust TotalSegmentator re-implementation: models, usage, the inference pipeline, CPU/GPU engines, validation, the full 117-class table, licensing |
 | [segvol.md](segvol.md) | Prompt-driven segmentation — the pure-Rust SegVol re-implementation: box / point / text prompts, the two-pass pipeline, weights and licensing, validation status |
 | [export-and-tools.md](export-and-tools.md) | DICOM export, the interactive anonymizer, the synthetic test-data generator |

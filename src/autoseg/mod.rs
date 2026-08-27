@@ -121,6 +121,7 @@ struct Hooks<'a> {
     progress: &'a Progress,
     /// (model index, model count) for progress text.
     model: (usize, usize),
+    /// What the run is called in the progress line.
     label: &'static str,
 }
 
@@ -145,21 +146,25 @@ impl infer::InferHooks for Hooks<'_> {
     }
 }
 
-/// Run auto-segmentation on a CT volume. Blocking — call from a worker
-/// thread; observe/cancel through `progress`.
+/// Run one or more nnU-Net models over a volume and return their merged
+/// labels **on the volume's own grid**, plus the description of the device
+/// the work ran on.
 ///
-/// `parts` selects sub-models for [`Variant::HighRes15mm`]
-/// (organs, vertebrae, cardiac, muscles, ribs) and is ignored otherwise.
-pub fn run(
+/// This is the whole engine minus the question being asked: the 117-class
+/// "total" task ([`run`]) and the two-class body-outline task
+/// ([`crate::bodymask`]) differ in which checkpoints they load and what
+/// they do with the answer, not in how a checkpoint is fetched, converted,
+/// resampled onto, tiled over or mapped back from.
+///
+/// `label` names the run in progress messages.
+pub fn run_specs(
     volume: &Volume,
-    variant: Variant,
+    specs: &[ModelSpec],
+    label: &'static str,
     device: DevicePref,
-    parts: [bool; 5],
     models_dir: &Path,
     progress: &Progress,
-) -> Result<AutosegResult> {
-    let t_start = std::time::Instant::now();
-    let specs = variant.specs(parts);
+) -> Result<(Vec<u8>, String)> {
     if specs.is_empty() {
         bail!("no sub-models selected");
     }
@@ -186,7 +191,6 @@ pub fn run(
             bail!("sub-models disagree on spacing");
         }
     }
-    let target = spacing[0];
 
     // ---- engine ----------------------------------------------------------
     progress.set("Choosing the compute device…");
@@ -199,8 +203,18 @@ pub fn run(
 
     // ---- preprocess ------------------------------------------------------
     progress.set_phase(0.15, 0.05);
-    progress.report(0.0, &format!("Resampling volume to {target} mm…"));
-    let map = preprocess::SarMap::new(volume, target);
+    progress.report(
+        0.0,
+        &format!(
+            "Resampling volume to {} mm…",
+            if spacing[0] == spacing[1] && spacing[1] == spacing[2] {
+                format!("{}", spacing[0])
+            } else {
+                format!("{} × {} × {}", spacing[0], spacing[1], spacing[2])
+            }
+        ),
+    );
+    let map = preprocess::SarMap::new(volume, spacing);
     let vol_model = preprocess::resample_to_model(volume, &map);
     if progress.cancelled() {
         bail!(CANCELLED);
@@ -211,7 +225,11 @@ pub fn run(
     let infer_span = 0.75 / n_models as f32;
     for (mi, model) in models.iter().enumerate() {
         progress.set_phase(0.2 + mi as f32 * infer_span, infer_span);
-        let unet = net::UNet::build(model.config.clone(), &model.tensors)
+        // A z-score model normalizes against this image, so its constants
+        // are only knowable now, with the resampled volume in hand.
+        let mut cfg = model.config.clone();
+        cfg.apply_image_norm(&vol_model);
+        let unet = net::UNet::build(cfg, &model.tensors)
             .with_context(|| format!("assemble network ({})", model.spec.label))?;
         let classes = unet.num_classes();
         let forward: ForwardFn = match &gpu {
@@ -242,7 +260,7 @@ pub fn run(
             forward,
             progress,
             model: (mi, n_models),
-            label: variant.label(),
+            label,
         };
         let local = infer::predict(
             &vol_model,
@@ -262,10 +280,38 @@ pub fn run(
         }
     }
 
-    // ---- back-map to the CT grid + statistics ----------------------------
+    // ---- back-map to the CT grid ----------------------------------------
     progress.set_phase(0.95, 0.05);
     progress.report(0.0, "Mapping labels back to the CT grid…");
     let labels = preprocess::labels_to_volume_grid(&global, &map, volume);
+    Ok((labels, device_desc))
+}
+
+/// Run auto-segmentation on a CT volume. Blocking — call from a worker
+/// thread; observe/cancel through `progress`.
+///
+/// `parts` selects sub-models for [`Variant::HighRes15mm`]
+/// (organs, vertebrae, cardiac, muscles, ribs) and is ignored otherwise.
+pub fn run(
+    volume: &Volume,
+    variant: Variant,
+    device: DevicePref,
+    parts: [bool; 5],
+    models_dir: &Path,
+    progress: &Progress,
+) -> Result<AutosegResult> {
+    let t_start = std::time::Instant::now();
+    let specs = variant.specs(parts);
+    let (labels, device_desc) = run_specs(
+        volume,
+        &specs,
+        variant.label(),
+        device,
+        models_dir,
+        progress,
+    )?;
+
+    // ---- statistics ------------------------------------------------------
     let mut counts = [0u64; 256];
     for l in &labels {
         counts[*l as usize] += 1;

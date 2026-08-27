@@ -180,8 +180,14 @@ impl ViewerApp {
                 });
                 ui.menu_button("Tools", |ui| {
                     // The three segmentation engines, one block per dataset:
-                    // the same three entries, in the same order, for A and B.
-                    let tools: [(&ToolInfo, &str); 3] = [
+                    // the same four entries, in the same order, for A and B.
+                    let tools: [(&ToolInfo, &str); 4] = [
+                        (
+                            &BODY_CONTOUR,
+                            "Outline the patient and leave the couch, the chair and the \
+                             immobilisation outside — the EXTERNAL structure. Works on CT \
+                             and MR, with or without a network.",
+                        ),
                         (
                             &AUTOSEG,
                             "Automatic multi-organ segmentation of the displayed CT \
@@ -222,6 +228,9 @@ impl ViewerApp {
                         }
                     }
                     match open_tool {
+                        Some((slot, t)) if t.glyph == BODY_CONTOUR.glyph => {
+                            self.open_body_dialog(slot)
+                        }
                         Some((slot, t)) if t.glyph == AUTOSEG.glyph => {
                             self.open_autoseg_dialog(slot)
                         }

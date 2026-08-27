@@ -14,6 +14,7 @@ use rayon::prelude::*;
 
 use crate::anonymize;
 use crate::autoseg;
+use crate::bodymask;
 use crate::dicom_export;
 use crate::extras;
 use crate::gen_test_data::{self, GenParams};
@@ -32,6 +33,7 @@ use crate::settings::{self, Settings};
 use crate::simulate::{self, SimParams};
 use crate::volume::{ViewPlane, Volume};
 
+mod body_win;
 mod box_seg;
 mod chrome;
 mod d3;
@@ -857,6 +859,13 @@ pub struct ViewerApp {
     /// Finished result awaiting organ selection.
     autoseg_pending: Option<AutosegPending>,
 
+    // Body / External contouring (see `bodymask`) — the one tool that can
+    // answer with no network at all.
+    body_job: Option<SegJob<bodymask::BodyResult>>,
+    body_slot: usize,
+    /// The tool window, when open; it stays open across runs.
+    body_dialog: Option<body_win::BodyDialog>,
+
     // Prompt-driven segmentation (SegVol re-implementation, see `segvol`).
     segvol_job: Option<SegJob<prompt_seg::SegVolResult>>,
     segvol_slot: usize,
@@ -1005,6 +1014,10 @@ impl ViewerApp {
             autoseg_slot: 0,
             autoseg_dialog: None,
             autoseg_pending: None,
+            body_job: None,
+            body_slot: 0,
+            body_dialog: None,
+
             segvol_job: None,
             segvol_slot: 0,
             segvol_dialog: None,
@@ -1198,6 +1211,11 @@ impl eframe::App for ViewerApp {
             poll_tool_job(&mut self.segvol_job, &ctx, PROMPT_SEG.name, &mut self.error)
         {
             self.on_segvol_done(slot, result);
+        }
+        if let Some((slot, result)) =
+            poll_tool_job(&mut self.body_job, &ctx, BODY_CONTOUR.name, &mut self.error)
+        {
+            self.on_body_done(slot, result);
         }
 
         // Poll background registration.

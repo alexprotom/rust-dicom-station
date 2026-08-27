@@ -48,6 +48,7 @@ impl ViewerApp {
         self.rename_window(ctx);
         self.autoseg_run_window(ctx);
         self.segvol_window(ctx);
+        self.body_window(ctx);
         self.medsam2_window(ctx);
         self.autoseg_result_window(ctx);
         if let Some(msg) = self.notice.clone() {
