@@ -109,17 +109,48 @@ accumulated from any number of folders. *File ▶ Add DICOM folder to A/B…*
 merges a scanned folder into the slot without unloading what is already
 there; duplicates (by UID) are skipped and reported.
 
-The left panel shows each dataset as a **Data tree** — a full DICOM
-hierarchy: patient
-(PatientName/PatientID) ▶ study (StudyInstanceUID, with date and
-description) ▶ image series — with the displayed series marked; clicking
-another series loads it. Long names, descriptions and IDs wrap over as
-many lines as they need, so the panel can be dragged narrow without
-cutting them off; only the section headers stay on one line. The standard reference chain is parsed and shown
-as links: each structure set displays the image series its contours were
-drawn on (RTReferencedSeriesSequence), each dose the plan it was computed
-for (ReferencedRTPlanSequence), and each plan the structure set it was
-created on (ReferencedStructureSetSequence).
+The left panel shows each dataset as a full DICOM hierarchy:
+
+```
+Dataset A
+ └ Doe John (P1)                     patient — PatientName / PatientID
+    └ Study 20260827 — Planning      study — StudyInstanceUID, date, description
+       ├ CT (2)                      modality
+       │   ├ chest (120 sl.)         image series
+       │   └ abdomen (90 sl.)
+       ├ MR (1)
+       ├ RT structures (12/12)
+       │   └ ▣ Approved (12 ROIs) ▶ CT chest
+       ├ Segmentations (8/8)
+       │   └ ✎ TotalSeg (8 segments) ▶ CT chest
+       ├ Dose (1)
+       └ Plan: IMRT
+ Dose display · Planar images · Spatial registrations · Records · Warnings
+```
+
+The modality level (CT / MR / US / PT …) is one DICOM implies but does not
+store as a node; it is grouped from the series' Modality, in first-seen
+order. Everything that carries a StudyInstanceUID — image series, RT
+structure sets, segmentation series, dose grids and plans — sits inside the
+study it belongs to. An RT object whose StudyInstanceUID is blank or names
+a study that is not loaded is filed under the study of the image series it
+references, and failing that under the first study, because an object that
+cannot be reached is worse than one shown a level from where its header
+claims it lives.
+
+What is left below the tree is what has no study to sit under: planar
+images carry no study link at all, spatial registrations and treatment
+records belong to a frame of reference rather than a study, and **Dose
+display** — colorwash, isodose ladder, opacity, threshold — is one setting
+shared by both datasets, so it is shown once.
+
+The displayed series is marked; clicking another loads it. Long names,
+descriptions and IDs wrap over as many lines as they need, so the panel can
+be dragged narrow without cutting them off. The standard reference chain is
+parsed and shown as links: each structure set and segmentation series
+displays the image series it is drawn on, each dose the plan it was
+computed for (ReferencedRTPlanSequence), and each plan the structure set it
+was created on (ReferencedStructureSetSequence).
 
 **Right-clicking** any level of the tree — patient, study or series —
 opens a context menu to **rename**, **copy**, **move** or **remove** it. Copy/move
@@ -161,12 +192,16 @@ clicked row's new value, and rows outside it are never touched, because the
 box is a visibility toggle as much as a selection and silently hiding
 structures you did not point at would be worse than the convenience.
 
-Under *All* / *None* sits a row that acts on the ticked items without
-hunting for the right row to right-click: **Copy to ▾**, **Move to ▾** (both
-opening the same destination submenu described below), **🗑** to remove
-them, and — for segmentations — **💾** to write just those segments as a
-DICOM SEG file of their own. It reports how many are selected and greys out
-when nothing is.
+One row carries the lot: for structures **All · None · Copy to · Move to ·
+🗑 · *n* selected**, and for segmentations **New · All · None · Copy to ·
+Move to · 🗑 · 💾 · *n* selected**. *Copy to* and *Move to* open the same
+destination submenu described below; **💾** writes just the ticked segments
+as a DICOM SEG file of their own. The buttons grey out when nothing is
+ticked.
+
+The per-row buttons a segment used to carry — undo, →RS, delete — are gone:
+Ctrl+Z undoes the last stroke, *Copy to ▶ an RT structure set* is what →RS
+did, and **🗑** deletes whatever is ticked.
 
 **Right-clicking a structure or segment** offers the same set for one row or
 the ticked group:

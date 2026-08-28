@@ -41,9 +41,11 @@ rust-dicom-station
 │
 ├── Application (GUI, egui over wgpu)
 │   ├── Window chrome: menu bar, toolbar (W/L, presets, 3D, crosshair, reset), status bar
-│   ├── Side panel: registration, simulation, per-dataset sections
-│   │   (series tree, structures, segmentations, dose + isodose, plans, planar images,
-│   │   spatial registrations, treatment records, warnings)
+│   ├── Side panel: registration, simulation, and per dataset a DICOM tree —
+│   │   patient ▶ study ▶ modality (CT/MR/US…) ▶ series, with RT structures,
+│   │   segmentations, dose and plans inside their own study — plus the
+│   │   dataset-level dose display, planar images, spatial registrations,
+│   │   treatment records and warnings
 │   ├── Views: 1 × 3 or 2 × 3 (comparison) linked MPR viewports, crosshair,
 │   │   zoom / pan / W-L interaction, maximize, per-view caches
 │   ├── Floating windows: 3D structures (both datasets through the registration,
