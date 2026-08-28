@@ -677,10 +677,9 @@ impl ViewerApp {
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Two full readouts leave little room in comparison mode,
-                    // and the readout is the point of the bar — so the hint
-                    // gives way, truncated to whatever is left, in full on
-                    // hover.
+                    // The readouts are what the bar is for, so the mouse
+                    // bindings fold into a single "?" that the pointer opens
+                    // — always the bindings of the tool in force.
                     let hint = match self.seg_tool {
                         SegTool::None => {
                             "LMB crosshair · RMB W/L · MMB pan · wheel slice · Ctrl+wheel zoom"
@@ -695,7 +694,9 @@ impl ViewerApp {
                             "LMB press seed · drag up/down = grow/shrink · release commit · Esc cancel · Ctrl+Z undo"
                         }
                     };
-                    ui.add(egui::Label::new(egui::RichText::new(hint).weak()).truncate())
+                    // `Sense::hover`: it looks like a button and answers the
+                    // pointer, but there is nothing to click.
+                    ui.add(egui::Button::new("?").small().sense(egui::Sense::hover()))
                         .on_hover_text(hint);
                 });
             });

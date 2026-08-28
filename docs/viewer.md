@@ -52,6 +52,12 @@ oblique acquisitions display consistently but the plane names are nominal —
 the anatomical edge labels (L/R/A/P/S/I) always reflect the true patient
 directions derived from the direction cosines.
 
+The views tile the central area edge to edge — no gaps, no frames — and
+each one carries its own **slice scrubber** along its bottom edge, drawn
+over the image rather than in a strip beneath it. The plane and dataset
+name in the top-left corner is white in every view; the anatomical edge
+labels keep their own colour.
+
 Each viewport carries two corner buttons (both name themselves on hover):
 **⟲** resets that view's zoom and pan and puts the crosshair back at the
 volume center — which returns that dataset's three views to their central
@@ -76,7 +82,9 @@ identically.
 
 **Status bar.** Patient coordinates, voxel indices, HU and dose (Gy and %
 of the reference dose) at the crosshair; in comparison mode both datasets
-report the full set side by side, each at its own crosshair.
+report the full set side by side, each at its own crosshair. The mouse
+bindings of the tool in force are behind the **?** at the right end — hover
+it to read them.
 
 **The left panel.** *View ▶ Left panel*, the **F9** key and the arrow on
 the window's left edge hide and show it; dragging its inner edge past the
