@@ -41,15 +41,19 @@ rust-dicom-station
 │
 ├── Application (GUI, egui over wgpu)
 │   ├── Window chrome: menu bar, toolbar (W/L, presets, 3D, crosshair, reset), status bar
-│   ├── Side panel: registration, simulation, per-dataset sections
-│   │   (series tree, structures, segmentations, dose + isodose, plans, planar images,
-│   │   spatial registrations, treatment records, warnings)
+│   ├── Side panel: registration, simulation, and per dataset a DICOM tree —
+│   │   patient ▶ study ▶ modality (CT/MR/US…) ▶ series, with RT structures,
+│   │   segmentations, dose and plans inside their own study — plus the
+│   │   dataset-level dose display, planar images, spatial registrations,
+│   │   treatment records and warnings
 │   ├── Views: 1 × 3 or 2 × 3 (comparison) linked MPR viewports, crosshair,
 │   │   zoom / pan / W-L interaction, maximize, per-view caches
 │   ├── Floating windows: 3D structures (both datasets through the registration,
 │   │   per-dataset opacity, vector-field glyphs), planar image viewers
 │   ├── Data tree operations: rename every level (patient, study, series, sets,
 │   │   structures, segments, dose, plan, planar, REG, records);
+│   │   Shift-click range selection; copy / move / remove / export the ticked
+│   │   items from a button row or the context menu;
 │   │   copy / move / remove patient · study · series across datasets;
 │   │   create / connect / copy / move / remove RT structure sets and segmentation
 │   │   series; copy / move / remove single or selected structures and segments
@@ -82,7 +86,8 @@ rust-dicom-station
 │   ├── Known-transform study generator (rigid + Gaussian deformation, registration QA)
 │   └── Digitally reconstructed radiographs: exact Siddon ray tracing (plastimatch)
 │       and interpolating ray-casting (ITK), IEC cone-beam geometry, beam's-eye view
-│       from an RTPLAN beam, side-by-side difference
+│       from an RTPLAN beam, side-by-side difference, filed into the data tree
+│       as planar RT images with the geometry that produced them
 │
 ├── Image registration
 │   ├── elastix-style rigid (6-DOF Euler, ASGD, pyramids, stochastic sampling)

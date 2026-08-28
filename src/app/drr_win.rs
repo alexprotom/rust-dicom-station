@@ -122,6 +122,7 @@ impl ViewerApp {
         let mut run = false;
         let mut cancel = false;
         let mut set_iso = false;
+        let mut add_to_tree = false;
         let mut beam_pick: Option<(usize, usize)> = None;
 
         // Read-only facts about the datasets, gathered before the closure.
@@ -343,6 +344,24 @@ impl ViewerApp {
                             {
                                 run = true;
                             }
+                            if ui
+                                .add_enabled(
+                                    !d.images.is_empty(),
+                                    egui::Button::new(format!(
+                                        "➕ Add to dataset {}",
+                                        SLOT_NAMES[d.slot]
+                                    )),
+                                )
+                                .on_hover_text(
+                                    "File the rendering(s) under Planar images in the data \
+                                     tree, with the geometry that produced them — from \
+                                     there they open in their own viewer, rename, and \
+                                     travel with the dataset",
+                                )
+                                .clicked()
+                            {
+                                add_to_tree = true;
+                            }
                             if ui.button("Close").clicked() {
                                 close = true;
                             }
@@ -409,6 +428,9 @@ impl ViewerApp {
                 d.params.geometry = d.params.geometry.from_beam(beam);
             }
         }
+        if add_to_tree {
+            self.add_drr_to_tree(&d);
+        }
         if running || (!close && open) {
             self.drr_dialog = Some(d);
         }
@@ -420,6 +442,36 @@ impl ViewerApp {
         if run {
             self.start_drr();
         }
+    }
+
+    /// File the current rendering(s) under the source dataset's planar
+    /// images. Labels are made unique on the way in, because rendering the
+    /// same geometry twice is exactly what one does while tuning it.
+    fn add_drr_to_tree(&mut self, d: &DrrDialog) {
+        let made: Vec<crate::extras::PlanarImage> = d
+            .images
+            .iter()
+            .map(|im| im.to_planar(&d.params, d.invert))
+            .collect();
+        let Some(study) = self.slots[d.slot].study.as_mut() else {
+            self.error = Some(format!("dataset {} is not loaded", SLOT_NAMES[d.slot]));
+            return;
+        };
+        let n = made.len();
+        for mut img in made {
+            let base = img.label.clone();
+            let mut k = 2;
+            while study.planar_images.iter().any(|e| e.label == img.label) {
+                img.label = format!("{base} #{k}");
+                k += 1;
+            }
+            study.planar_images.push(img);
+        }
+        self.settings_gen += 1;
+        self.notice = Some(format!(
+            "✔ {n} radiograph(s) added to dataset {} — see Planar images in the tree",
+            SLOT_NAMES[d.slot]
+        ));
     }
 
     /// Rebuild the display textures when the images or the window changed.

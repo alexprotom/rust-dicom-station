@@ -75,7 +75,7 @@ impl ToolInfo {
     /// `🤖 Auto…`, the small sidebar button.
     pub fn short_button(&self) -> String {
         let short = self.verb.split(['-', ' ']).next().unwrap_or(self.verb);
-        format!("{} {short}…", self.glyph)
+        format!("{} {short}", self.glyph)
     }
 }
 
@@ -298,9 +298,9 @@ mod tests {
         );
         assert_eq!(PROMPT_SEG.menu_entry(1), "🧠 Prompt-segment dataset B…");
         assert_eq!(SLICE_PROP.menu_entry(0), "⏩ Propagate through dataset A…");
-        assert_eq!(AUTOSEG.short_button(), "🤖 Auto…");
-        assert_eq!(PROMPT_SEG.short_button(), "🧠 Prompt…");
-        assert_eq!(SLICE_PROP.short_button(), "⏩ Propagate…");
+        assert_eq!(AUTOSEG.short_button(), "🤖 Auto");
+        assert_eq!(PROMPT_SEG.short_button(), "🧠 Prompt");
+        assert_eq!(SLICE_PROP.short_button(), "⏩ Propagate");
         assert_eq!(BODY_CONTOUR.menu_entry(0), "👤 Body-contour dataset A…");
         let mut glyphs = vec![
             AUTOSEG.glyph,

@@ -52,6 +52,12 @@ oblique acquisitions display consistently but the plane names are nominal —
 the anatomical edge labels (L/R/A/P/S/I) always reflect the true patient
 directions derived from the direction cosines.
 
+The views tile the central area edge to edge — no gaps, no frames — and
+each one carries its own **slice scrubber** along its bottom edge, drawn
+over the image rather than in a strip beneath it. The plane and dataset
+name in the top-left corner is white in every view; the anatomical edge
+labels keep their own colour.
+
 Each viewport carries two corner buttons (both name themselves on hover):
 **⟲** resets that view's zoom and pan and puts the crosshair back at the
 volume center — which returns that dataset's three views to their central
@@ -59,7 +65,9 @@ slices — and **⛶ / ❐** maximizes the view to fill the window and restores
 the layout again. The toolbar holds a global **⟲** (the same reset for
 every view of both datasets), the **⌖** crosshair toggle (while hidden,
 left-click navigation is disabled entirely and slices change only by
-scrolling), the **3D A / 3D B** buttons and the segmentation tools.
+scrolling), the **🔗** crosshair-sync toggle next to it (shown while the
+crosshair is on, active with two datasets loaded), the **3D A / 3D B**
+buttons and the segmentation tools.
 
 **Window/level.** Right-drag on any view adjusts interactively
 (x = width, y = center); the toolbar offers the numeric fields and the
@@ -73,8 +81,10 @@ Window/level is shared between datasets A and B so both CTs are windowed
 identically.
 
 **Status bar.** Patient coordinates, voxel indices, HU and dose (Gy and %
-of the reference dose) at the crosshair; in comparison mode the readouts
-for A and B are shown side by side.
+of the reference dose) at the crosshair; in comparison mode both datasets
+report the full set side by side, each at its own crosshair. The mouse
+bindings of the tool in force are behind the **?** at the right end — hover
+it to read them.
 
 **The left panel.** *View ▶ Left panel*, the **F9** key and the arrow on
 the window's left edge hide and show it; dragging its inner edge past the
@@ -107,17 +117,48 @@ accumulated from any number of folders. *File ▶ Add DICOM folder to A/B…*
 merges a scanned folder into the slot without unloading what is already
 there; duplicates (by UID) are skipped and reported.
 
-The left panel shows each dataset as a **Data tree** — a full DICOM
-hierarchy: patient
-(PatientName/PatientID) ▶ study (StudyInstanceUID, with date and
-description) ▶ image series — with the displayed series marked; clicking
-another series loads it. Long names, descriptions and IDs wrap over as
-many lines as they need, so the panel can be dragged narrow without
-cutting them off; only the section headers stay on one line. The standard reference chain is parsed and shown
-as links: each structure set displays the image series its contours were
-drawn on (RTReferencedSeriesSequence), each dose the plan it was computed
-for (ReferencedRTPlanSequence), and each plan the structure set it was
-created on (ReferencedStructureSetSequence).
+The left panel shows each dataset as a full DICOM hierarchy:
+
+```
+Dataset A
+ └ Doe John (P1)                     patient — PatientName / PatientID
+    └ Study 20260827 — Planning      study — StudyInstanceUID, date, description
+       ├ CT (2)                      modality
+       │   ├ chest (120 sl.)         image series
+       │   └ abdomen (90 sl.)
+       ├ MR (1)
+       ├ RT structures (12/12)
+       │   └ ▣ Approved (12 ROIs) ▶ CT chest
+       ├ Segmentations (8/8)
+       │   └ ✎ TotalSeg (8 segments) ▶ CT chest
+       ├ Dose (1)
+       └ Plan: IMRT
+ Dose display · Planar images · Spatial registrations · Records · Warnings
+```
+
+The modality level (CT / MR / US / PT …) is one DICOM implies but does not
+store as a node; it is grouped from the series' Modality, in first-seen
+order. Everything that carries a StudyInstanceUID — image series, RT
+structure sets, segmentation series, dose grids and plans — sits inside the
+study it belongs to. An RT object whose StudyInstanceUID is blank or names
+a study that is not loaded is filed under the study of the image series it
+references, and failing that under the first study, because an object that
+cannot be reached is worse than one shown a level from where its header
+claims it lives.
+
+What is left below the tree is what has no study to sit under: planar
+images carry no study link at all, spatial registrations and treatment
+records belong to a frame of reference rather than a study, and **Dose
+display** — colorwash, isodose ladder, opacity, threshold — is one setting
+shared by both datasets, so it is shown once.
+
+The displayed series is marked; clicking another loads it. Long names,
+descriptions and IDs wrap over as many lines as they need, so the panel can
+be dragged narrow without cutting them off. The standard reference chain is
+parsed and shown as links: each structure set and segmentation series
+displays the image series it is drawn on, each dose the plan it was
+computed for (ReferencedRTPlanSequence), and each plan the structure set it
+was created on (ReferencedStructureSetSequence).
 
 **Right-clicking** any level of the tree — patient, study or series —
 opens a context menu to **rename**, **copy**, **move** or **remove** it. Copy/move
@@ -152,9 +193,26 @@ to the displayed image series. **Right-clicking a series node** offers:
 * *✎ Rename series…*.
 
 Each item's **check box is both its visibility and its selection**, so
-*All* / *None* tick everything or nothing and the right-click actions
-operate on whatever is ticked. **Right-clicking a structure or segment**
-offers:
+*All* / *None* tick everything or nothing and the actions operate on
+whatever is ticked. **Shift-click** a check box to tick — or untick — the
+whole range from the last one you clicked: the span is filled with the
+clicked row's new value, and rows outside it are never touched, because the
+box is a visibility toggle as much as a selection and silently hiding
+structures you did not point at would be worse than the convenience.
+
+One row carries the lot: for structures **All · None · Copy to · Move to ·
+🗑 · *n* selected**, and for segmentations **New · All · None · Copy to ·
+Move to · 🗑 · 💾 · *n* selected**. *Copy to* and *Move to* open the same
+destination submenu described below; **💾** writes just the ticked segments
+as a DICOM SEG file of their own. The buttons grey out when nothing is
+ticked.
+
+The per-row buttons a segment used to carry — undo, →RS, delete — are gone:
+Ctrl+Z undoes the last stroke, *Copy to ▶ an RT structure set* is what →RS
+did, and **🗑** deletes whatever is ticked.
+
+**Right-clicking a structure or segment** offers the same set for one row or
+the ticked group:
 
 * *Copy … to ▶* / *Move … to ▶* — a submenu of every structure set and
   segmentation series in **both** datasets, plus *➕ a new RT structure
@@ -162,6 +220,11 @@ offers:
   ticked row acts on all ticked rows at once; right-clicking an unticked
   row acts on that row alone.
 * *🗑 Remove …* — the same single-or-selected rule.
+* *💾 Export … as DICOM SEG…* (segments only) — writes the chosen segments
+  as a SEG series in its own right: same lattice, same referenced image
+  series, a fresh SOP Instance UID, and only those segments. Exporting three
+  organs out of twelve therefore needs no special case in the writer, and
+  the file reloads as an ordinary segmentation series.
 * *✎ Rename …* — always the row you clicked, never the whole selection.
 
 Crossing between the two kinds is a conversion, done on transfer: a
@@ -198,15 +261,16 @@ study was loaded from are never modified.
 ![comparison mode](screenshot_comparison.png)
 
 *Two opposite breathing phases of the same 4DCT as datasets A and B, each
-with its phase-specific structure set; the linked crosshair pins all six
+with its phase-specific structure set; the synced crosshair pins all six
 views to the same patient-space point inside the tumor.*
 
 Load a second dataset (menu, tree copy/move, or two directories on the
 command line) and the window splits into two rows of three views — dataset
 A on top, dataset B below. Each dataset keeps its own structures, dose and
 plan panels in the sidebar; window/level and dose display settings are
-shared. The crosshair is linked between the datasets through **patient
-coordinates** (toggleable via *View ▶ Link crosshairs between datasets*);
+shared. The crosshair is synced between the datasets through **patient
+coordinates** (the toolbar's **🔗**, or *View ▶ Sync crosshairs between
+datasets* — both appear only while the crosshair itself is on);
 when a registration is active, the link maps through the recovered
 transform instead — see [registration.md](registration.md).
 
@@ -221,8 +285,10 @@ the rows.
 
 ## Planar images (DX / CR / RTIMAGE)
 
-Digital radiographs and RT images (DRRs, portal/setup images) found in the
-study folder are listed in the sidebar and open in floating viewer windows
+Digital radiographs and RT images (portal/setup images) found in the study
+folder — plus any DRR added from the DRR window with *➕ Add to dataset A/B*
+(see [drr.md](drr.md)) — are listed in the sidebar and open in floating
+viewer windows
 with their own window/level (opens at the DICOM default; auto, manual, or
 interactive right-drag exactly like the CT views), correct physical aspect
 ratio (imager / image-plane pixel spacing), MONOCHROME1 inversion, and the

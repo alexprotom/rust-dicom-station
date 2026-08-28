@@ -107,10 +107,26 @@ impl ViewerApp {
                     {
                         ui.close();
                     }
-                    ui.checkbox(&mut self.link_studies, "Link crosshairs between datasets");
                     ui.separator();
                     ui.checkbox(&mut self.show_contours, "Contours");
                     ui.checkbox(&mut self.show_crosshair, "Crosshair");
+                    // Syncing is a property of the crosshair, so it sits under
+                    // it and goes away with it.
+                    if self.show_crosshair {
+                        let both = self.slots[0].study.is_some() && self.slots[1].study.is_some();
+                        ui.add_enabled(
+                            both,
+                            egui::Checkbox::new(
+                                &mut self.link_studies,
+                                "Sync crosshairs between datasets",
+                            ),
+                        )
+                        .on_hover_text(
+                            "Move one crosshair and the other follows to the same patient \
+                             point — through the active registration when there is one. \
+                             Off, each dataset is navigated on its own.",
+                        );
+                    }
                     ui.checkbox(&mut self.show_labels, "Orientation labels");
                     ui.checkbox(&mut self.show_isocenters, "Isocenters");
                     ui.separator();
@@ -317,6 +333,7 @@ impl ViewerApp {
                         "⌖ — show / hide the crosshair; hidden, left click no \
                          longer navigates",
                     );
+                    ui.weak("🔗 Sync — sync the crosshairs of A and B (shown while ⌖ is on)");
                     ui.separator();
                     ui.weak(format!(
                         "rust-dicom-station {} — research / QA viewer, not a medical device",
@@ -486,6 +503,27 @@ impl ViewerApp {
                         self.show_crosshair = !self.show_crosshair;
                     }
 
+                    // Crosshair syncing: only meaningful while there is a
+                    // crosshair, so it appears and disappears with it.
+                    if self.show_crosshair {
+                        let both = self.slots[0].study.is_some() && self.slots[1].study.is_some();
+                        if ui
+                            .add_enabled(
+                                both,
+                                egui::Button::selectable(self.link_studies, "🔗 Sync"),
+                            )
+                            .on_hover_text(
+                                "Sync the crosshairs of datasets A and B: move one and the \
+                                 other follows to the same patient point, through the active \
+                                 registration when there is one.\n\
+                                 Off: each dataset is navigated on its own",
+                            )
+                            .clicked()
+                        {
+                            self.link_studies = !self.link_studies;
+                        }
+                    }
+
                     // Reset every view of both datasets.
                     if ui
                         .button("⟲")
@@ -605,20 +643,19 @@ impl ViewerApp {
                     } else {
                         String::new()
                     };
-                    if slot == self.hovered_slot || !both {
-                        ui.monospace(format!(
-                            "{}({:6.1},{:6.1},{:6.1})mm ijk({:3},{:3},{:3})",
-                            prefix,
-                            p.x,
-                            p.y,
-                            p.z,
-                            c[0].round() as i64,
-                            c[1].round() as i64,
-                            c[2].round() as i64
-                        ));
-                    } else {
-                        ui.monospace(prefix.trim_end().to_string());
-                    }
+                    // Both datasets report in full: each one's own cursor is
+                    // a real position in its own volume, whether it was
+                    // clicked there or followed the other one.
+                    ui.monospace(format!(
+                        "{}({:6.1},{:6.1},{:6.1})mm ijk({:3},{:3},{:3})",
+                        prefix,
+                        p.x,
+                        p.y,
+                        p.z,
+                        c[0].round() as i64,
+                        c[1].round() as i64,
+                        c[2].round() as i64
+                    ));
                     if let Some(hu) =
                         v.get(c[0].round() as i64, c[1].round() as i64, c[2].round() as i64)
                     {
@@ -640,7 +677,10 @@ impl ViewerApp {
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.weak(match self.seg_tool {
+                    // The readouts are what the bar is for, so the mouse
+                    // bindings fold into a single "?" that the pointer opens
+                    // — always the bindings of the tool in force.
+                    let hint = match self.seg_tool {
                         SegTool::None => {
                             "LMB crosshair · RMB W/L · MMB pan · wheel slice · Ctrl+wheel zoom"
                         }
@@ -653,7 +693,11 @@ impl ViewerApp {
                         SegTool::Grow => {
                             "LMB press seed · drag up/down = grow/shrink · release commit · Esc cancel · Ctrl+Z undo"
                         }
-                    });
+                    };
+                    // `Sense::hover`: it looks like a button and answers the
+                    // pointer, but there is nothing to click.
+                    ui.add(egui::Button::new("?").small().sense(egui::Sense::hover()))
+                        .on_hover_text(hint);
                 });
             });
         });

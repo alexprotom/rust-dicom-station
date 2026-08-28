@@ -60,12 +60,14 @@ impl ViewerApp {
                 }
                 let two_rows = self.comparison;
                 let full = ui.available_rect_before_wrap();
-                let row_gap = 6.0;
+                // The views tile the central area edge to edge: every pixel
+                // spent on a gap is a pixel of image not shown, and each view
+                // names itself in its own corner.
                 let n_rows = if two_rows { 2.0 } else { 1.0 };
-                let row_h = (full.height() - (n_rows - 1.0) * row_gap) / n_rows;
+                let row_h = full.height() / n_rows;
 
                 for row in 0..(n_rows as usize) {
-                    let y0 = full.top() + row as f32 * (row_h + row_gap);
+                    let y0 = full.top() + row as f32 * row_h;
                     let row_rect = Rect::from_min_size(
                         Pos2::new(full.left(), y0),
                         Vec2::new(full.width(), row_h),
@@ -80,10 +82,9 @@ impl ViewerApp {
     }
 
     pub(super) fn study_row(&mut self, ui: &mut egui::Ui, slot: usize, row_rect: Rect) {
-        let gap = 4.0;
-        let col_w = (row_rect.width() - 2.0 * gap) / 3.0;
+        let col_w = row_rect.width() / 3.0;
         for idx in 0..3 {
-            let x0 = row_rect.left() + idx as f32 * (col_w + gap);
+            let x0 = row_rect.left() + idx as f32 * col_w;
             let col = Rect::from_min_size(
                 Pos2::new(x0, row_rect.top()),
                 Vec2::new(col_w, row_rect.height()),
@@ -92,16 +93,21 @@ impl ViewerApp {
         }
     }
 
-    /// One viewport plus its slice slider inside `cell` (used both by the
-    /// three-in-a-row layout and by the maximized single-view layout).
+    /// The slice slider lies *inside* the viewport, along its bottom edge —
+    /// a scrubber over the image rather than a strip of window furniture
+    /// under it. Returns the rectangle it occupies so the viewport can hand
+    /// pointer activity there over to it.
+    fn slider_strip(cell: Rect) -> Rect {
+        Rect::from_min_max(
+            Pos2::new(cell.left() + 10.0, cell.bottom() - 18.0),
+            Pos2::new(cell.right() - 10.0, cell.bottom() - 5.0),
+        )
+    }
+
+    /// One viewport filling `cell`, with its slice slider drawn on top of it
+    /// (used both by the three-in-a-row layout and by the maximized
+    /// single-view layout).
     pub(super) fn view_cell(&mut self, ui: &mut egui::Ui, slot: usize, idx: usize, cell: Rect) {
-        let slider_h = 26.0;
-        let view_rect = Rect::from_min_max(cell.min, Pos2::new(cell.max.x, cell.max.y - slider_h));
-        let slider_rect = Rect::from_min_max(
-            Pos2::new(cell.min.x + 6.0, cell.max.y - slider_h + 2.0),
-            Pos2::new(cell.max.x - 6.0, cell.max.y - 2.0),
-        );
-        self.one_view(ui, slot, idx, view_rect);
         let max_slice = self.slots[slot]
             .study
             .as_ref()
@@ -111,12 +117,29 @@ impl ViewerApp {
                     .saturating_sub(1)
             })
             .unwrap_or(0);
+        let slider_rect = Self::slider_strip(cell);
+        self.one_view(ui, slot, idx, cell, max_slice > 0);
         if max_slice > 0 {
+            // A dark band under the slider keeps it readable over bright
+            // anatomy without hiding much of it.
+            ui.painter().rect_filled(
+                Rect::from_min_max(
+                    Pos2::new(cell.left(), slider_rect.top() - 4.0),
+                    Pos2::new(cell.right(), cell.bottom()),
+                ),
+                0.0,
+                Color32::from_black_alpha(90),
+            );
             let mut slice = self.slots[slot].views[idx].slice.min(max_slice);
+            // A scrubber spans what it scrubs: the slider's own default width
+            // would leave it a stub in the corner of a wide view.
+            let saved = ui.spacing().slider_width;
+            ui.spacing_mut().slider_width = slider_rect.width();
             let resp = ui.put(
                 slider_rect,
                 egui::Slider::new(&mut slice, 0..=max_slice).show_value(false),
             );
+            ui.spacing_mut().slider_width = saved;
             if resp.changed() {
                 self.slots[slot].views[idx].slice = slice;
             }
@@ -206,7 +229,14 @@ impl ViewerApp {
     }
 
     // -- One viewport -----------------------------------------------------
-    pub(super) fn one_view(&mut self, ui: &mut egui::Ui, slot: usize, idx: usize, rect: Rect) {
+    pub(super) fn one_view(
+        &mut self,
+        ui: &mut egui::Ui,
+        slot: usize,
+        idx: usize,
+        rect: Rect,
+        has_slider: bool,
+    ) {
         let ctx = ui.ctx().clone();
         let plane = self.slots[slot].views[idx].plane;
 
@@ -432,52 +462,54 @@ impl ViewerApp {
             }
         }
 
-        // Crosshair.
-        if self.show_crosshair {
-            // ---- the MedSAM2 prompt ----
-            if medsam2_show {
-                if let Some(b) = &self.medsam2.prompt {
-                    if b.plane == plane {
-                        let here = b.slice == view.slice;
-                        let base = Color32::from_rgb(255, 205, 60);
-                        let col = if here {
-                            base
-                        } else {
-                            // On other slices the box is a reminder of where it
-                            // is, not something to grab.
-                            Color32::from_rgba_unmultiplied(255, 205, 60, 70)
-                        };
-                        let (lo, hi) = b.rect();
-                        let r = Rect::from_two_pos(px_to_screen(lo), px_to_screen(hi));
-                        painter.rect_stroke(
-                            r,
-                            0.0,
-                            Stroke::new(if here { 2.0 } else { 1.0 }, col),
-                            egui::StrokeKind::Middle,
-                        );
-                        if here {
-                            for c in b.corners() {
-                                painter.rect_filled(
-                                    Rect::from_center_size(px_to_screen(c), Vec2::splat(7.0)),
-                                    1.0,
-                                    col,
-                                );
-                            }
-                            for (p, include) in &b.points {
-                                let at = px_to_screen(*p);
-                                let c = if *include {
-                                    Color32::from_rgb(90, 220, 130)
-                                } else {
-                                    Color32::from_rgb(240, 95, 95)
-                                };
-                                painter.circle_filled(at, 4.5, c);
-                                painter.circle_stroke(at, 4.5, Stroke::new(1.0, Color32::BLACK));
-                            }
+        // The MedSAM2 prompt: the box belongs to the tool, not to the
+        // crosshair, so it stays visible with ⌖ off — which is exactly how
+        // it is drawn, with left-click navigation out of the way.
+        if medsam2_show {
+            if let Some(b) = &self.medsam2.prompt {
+                if b.plane == plane {
+                    let here = b.slice == view.slice;
+                    let base = Color32::from_rgb(255, 205, 60);
+                    let col = if here {
+                        base
+                    } else {
+                        // On other slices the box is a reminder of where it
+                        // is, not something to grab.
+                        Color32::from_rgba_unmultiplied(255, 205, 60, 70)
+                    };
+                    let (lo, hi) = b.rect();
+                    let r = Rect::from_two_pos(px_to_screen(lo), px_to_screen(hi));
+                    painter.rect_stroke(
+                        r,
+                        0.0,
+                        Stroke::new(if here { 2.0 } else { 1.0 }, col),
+                        egui::StrokeKind::Middle,
+                    );
+                    if here {
+                        for c in b.corners() {
+                            painter.rect_filled(
+                                Rect::from_center_size(px_to_screen(c), Vec2::splat(7.0)),
+                                1.0,
+                                col,
+                            );
+                        }
+                        for (p, include) in &b.points {
+                            let at = px_to_screen(*p);
+                            let c = if *include {
+                                Color32::from_rgb(90, 220, 130)
+                            } else {
+                                Color32::from_rgb(240, 95, 95)
+                            };
+                            painter.circle_filled(at, 4.5, c);
+                            painter.circle_stroke(at, 4.5, Stroke::new(1.0, Color32::BLACK));
                         }
                     }
                 }
             }
+        }
 
+        // Crosshair.
+        if self.show_crosshair {
             let cp = vol.voxel_to_plane_pixel(plane, slot_state.cursor);
             let c = px_to_screen([cp[0] as f32, cp[1] as f32]);
             let col = Color32::from_rgba_unmultiplied(120, 255, 120, 110);
@@ -565,11 +597,9 @@ impl ViewerApp {
                 Align2::LEFT_TOP,
                 title,
                 FontId::proportional(14.0),
-                if slot == 0 {
-                    Color32::from_rgb(255, 170, 60)
-                } else {
-                    Color32::from_rgb(120, 200, 255)
-                },
+                // Both datasets read the same: the title says which one this
+                // is, so it needs no colour code of its own.
+                Color32::WHITE,
             );
             painter.text(
                 rect.right_top() + Vec2::new(-6.0, 4.0),
@@ -598,7 +628,10 @@ impl ViewerApp {
                 lc,
             );
             painter.text(
-                Pos2::new(rect.center().x, rect.bottom() - 6.0),
+                Pos2::new(
+                    rect.center().x,
+                    rect.bottom() - if has_slider { 26.0 } else { 6.0 },
+                ),
                 Align2::CENTER_BOTTOM,
                 lbl(dy),
                 f.clone(),
@@ -642,8 +675,15 @@ impl ViewerApp {
         let fit_rect = Rect::from_min_size(Pos2::new(max_rect.left() - bsize.x - 4.0, by), bsize);
         let (pointer_pos, any_click) =
             ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_click()));
+        // The slice scrubber along the bottom edge belongs to the same
+        // family: the pointer is over a control, not over the image.
+        let slider_rect = if has_slider {
+            Self::slider_strip(rect).expand2(egui::vec2(0.0, 5.0))
+        } else {
+            Rect::NOTHING
+        };
         let over_buttons = pointer_pos
-            .map(|p| max_rect.contains(p) || fit_rect.contains(p))
+            .map(|p| max_rect.contains(p) || fit_rect.contains(p) || slider_rect.contains(p))
             .unwrap_or(false);
 
         // ---- interaction ----

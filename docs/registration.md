@@ -119,7 +119,7 @@ field and tolerate inconsistent pairs.
 
 Landmarks are placed from the interface: put the crosshair on the same
 anatomy in both datasets and press **➕ Add pair** in the *Landmarks* section
-(turn *View ▶ Link crosshairs* off first, or both crosshairs move together).
+(turn *View ▶ Sync crosshairs* off first, or both crosshairs move together).
 Each pair shows its displacement, and after a run, its residual.
 
 ## Running a registration

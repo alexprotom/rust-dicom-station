@@ -39,6 +39,8 @@
 use anyhow::{bail, Result};
 use rayon::prelude::*;
 
+use crate::extras::PlanarImage;
+
 use crate::geometry::Vec3;
 use crate::progress::{ProgressSink, CANCELLED};
 use crate::rtplan::BeamInfo;
@@ -61,6 +63,14 @@ impl Engine {
         match self {
             Engine::Siddon => "Siddon (plastimatch)",
             Engine::RayCast => "Ray-cast (ITK)",
+        }
+    }
+
+    /// The engine's name without its lineage, for compact labels.
+    pub fn short(self) -> &'static str {
+        match self {
+            Engine::Siddon => "Siddon",
+            Engine::RayCast => "Ray-cast",
         }
     }
 
@@ -289,6 +299,83 @@ impl DrrImage {
             "{} × {} · {:.2} mm/px · range {:.2} – {:.2} · {:.2} s",
             self.dims[0], self.dims[1], self.spacing[0], self.min, self.max, self.elapsed_secs
         )
+    }
+
+    /// File this rendering as a planar image, so it can live in the data tree
+    /// beside the DX / CR / RTIMAGE the study came with — a DRR *is* an RT
+    /// Image, and once it is one it inherits everything the tree already
+    /// does: its own viewer window, renaming, and travelling with the study
+    /// when it is copied or moved.
+    ///
+    /// `invert` stores the greyscale the way the DRR window is showing it.
+    /// A line integral is large where attenuation is large, which on a
+    /// radiograph reads as *dark*; inverting keeps what lands in the tree
+    /// looking like what was on screen. The geometry that produced the image
+    /// is carried along as the info rows the planar viewer lists.
+    pub fn to_planar(&self, params: &DrrParams, invert: bool) -> PlanarImage {
+        let g = &params.geometry;
+        // The inversion maps [min, max] onto itself, so the range and the
+        // default window are the same either way.
+        let data: Vec<f32> = if invert {
+            self.pixels
+                .iter()
+                .map(|v| self.min + self.max - v)
+                .collect()
+        } else {
+            self.pixels.clone()
+        };
+        let mut info = vec![
+            ("Source".into(), format!("DRR — {}", self.engine.label())),
+            (
+                "Geometry".into(),
+                format!(
+                    "SAD {:.0} mm · SID {:.0} mm · gantry {:.1}° · couch {:.1}°",
+                    g.sad, g.sid, g.gantry_deg, g.couch_deg
+                ),
+            ),
+            (
+                "Isocentre".into(),
+                format!(
+                    "({:.1}, {:.1}, {:.1}) mm",
+                    g.isocenter.x, g.isocenter.y, g.isocenter.z
+                ),
+            ),
+            (
+                "Panel".into(),
+                format!("{:.0} × {:.0} mm", g.panel_mm[0], g.panel_mm[1]),
+            ),
+            ("HU model".into(), params.hu.label().into()),
+            ("Threshold".into(), format!("{:.0} HU", params.threshold_hu)),
+        ];
+        if self.engine == Engine::RayCast {
+            info.push(("Step".into(), format!("{:.2} mm", params.step_mm)));
+        }
+        info.push(("Render time".into(), format!("{:.2} s", self.elapsed_secs)));
+        info.push((
+            "Greyscale".into(),
+            if invert {
+                "inverted — dark is high attenuation, as on a radiograph".into()
+            } else {
+                "line integral — bright is high attenuation".into()
+            },
+        ));
+        PlanarImage {
+            label: format!(
+                "DRR {} · G {:.0}° C {:.0}°",
+                self.engine.short(),
+                g.gantry_deg,
+                g.couch_deg
+            ),
+            modality: "RTIMAGE".into(),
+            rows: self.dims[1],
+            cols: self.dims[0],
+            spacing: self.spacing,
+            data,
+            min_value: self.min,
+            max_value: self.max,
+            window: ((self.min + self.max) * 0.5, (self.max - self.min).max(1.0)),
+            info,
+        }
     }
 }
 
@@ -605,6 +692,70 @@ mod tests {
             min_value: -1000,
             max_value: value,
         }
+    }
+
+    /// A hand-built rendering, to check the tree hand-off without paying
+    /// for a projection.
+    fn fake_image(engine: Engine) -> DrrImage {
+        DrrImage {
+            pixels: vec![0.0, 1.0, 3.0, 4.0, 2.0, 0.0],
+            dims: [3, 2],
+            spacing: [0.5, 0.25],
+            min: 0.0,
+            max: 4.0,
+            engine,
+            elapsed_secs: 1.5,
+        }
+    }
+
+    /// The planar image a DRR becomes must describe the same picture: same
+    /// raster, same physical size, same value range — and the greyscale the
+    /// window was showing.
+    #[test]
+    fn a_rendering_becomes_a_planar_image() {
+        let params = DrrParams {
+            geometry: Geometry {
+                gantry_deg: 90.0,
+                couch_deg: 0.0,
+                ..Geometry::default()
+            },
+            engine: Engine::Siddon,
+            ..DrrParams::for_volume(&slab(8, 1.0, 3..5, 0))
+        };
+        let im = fake_image(Engine::Siddon);
+
+        let plain = im.to_planar(&params, false);
+        assert_eq!((plain.cols, plain.rows), (3, 2), "columns × rows");
+        assert_eq!(plain.spacing, [0.5, 0.25]);
+        assert_eq!(plain.modality, "RTIMAGE");
+        assert_eq!(plain.data, im.pixels, "values are the line integral itself");
+        assert_eq!((plain.min_value, plain.max_value), (0.0, 4.0));
+        assert_eq!(plain.window, (2.0, 4.0), "centre and width of the range");
+        assert!(plain.label.contains("Siddon") && plain.label.contains("G 90°"));
+
+        // Inverting mirrors the values about the middle of the range and
+        // leaves the range itself alone.
+        let flipped = im.to_planar(&params, true);
+        assert_eq!(flipped.data, vec![4.0, 3.0, 1.0, 0.0, 2.0, 4.0]);
+        assert_eq!(
+            (flipped.min_value, flipped.max_value),
+            (im.min, im.max),
+            "the range is unchanged by the inversion"
+        );
+
+        // The geometry rides along, and the sampling step is only meaningful
+        // for the engine that has one.
+        let keys: Vec<&str> = plain.info.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(keys.contains(&"Geometry") && keys.contains(&"Isocentre"));
+        assert!(!keys.contains(&"Step"), "the exact tracer has no step");
+        let cast = fake_image(Engine::RayCast).to_planar(
+            &DrrParams {
+                engine: Engine::RayCast,
+                ..params
+            },
+            true,
+        );
+        assert!(cast.info.iter().any(|(k, _)| k == "Step"));
     }
 
     #[test]

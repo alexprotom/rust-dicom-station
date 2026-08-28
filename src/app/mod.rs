@@ -610,8 +610,12 @@ enum SetAction {
         from: SetRef,
         copy: bool,
     },
-    /// Write one segmentation series as a standalone DICOM SEG file.
-    ExportSeg(SetRef),
+    /// Write a segmentation series as a standalone DICOM SEG file. An empty
+    /// `items` means the whole series; otherwise only those segments.
+    ExportSeg {
+        set: SetRef,
+        items: Vec<usize>,
+    },
 }
 
 /// Deferred right-click action on individual structures / segments.
@@ -631,6 +635,11 @@ enum ItemAction {
     Rename {
         from: SetRef,
         idx: usize,
+    },
+    /// Write these segments as a DICOM SEG file of their own.
+    ExportSeg {
+        from: SetRef,
+        items: Vec<usize>,
     },
 }
 
@@ -802,6 +811,9 @@ pub struct ViewerApp {
     /// A rename requested from a context menu, opened after the frame's
     /// borrows are released.
     rename_request: Option<RenameTarget>,
+    /// Anchor of the last check-box click in a structure / segment list, so
+    /// Shift-click can extend a range from it.
+    tick_anchor: Option<(SetRef, usize)>,
     /// When set, this single (slot, view) fills the whole central area.
     maximized: Option<(usize, usize)>,
     /// Invert REG matrices before applying them as the active registration.
@@ -1011,6 +1023,7 @@ impl ViewerApp {
             item_action: None,
             rename: None,
             rename_request: None,
+            tick_anchor: None,
             maximized: None,
             reg_apply_invert: false,
             window_center: 40.0,

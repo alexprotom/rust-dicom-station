@@ -69,7 +69,7 @@ impl ViewerApp {
             SetAction::Rename(r) => self.rename_request = Some(RenameTarget::Set(r)),
             SetAction::Connect(r, uid) => self.connect_set(r, &uid),
             SetAction::Transfer { from, copy } => self.transfer_set(from, copy),
-            SetAction::ExportSeg(r) => self.export_seg_series(r),
+            SetAction::ExportSeg { set, items } => self.export_seg_series(set, &items),
         }
     }
 
@@ -206,16 +206,39 @@ impl ViewerApp {
         self.settings_gen += 1;
     }
 
-    /// Write one segmentation series as a standalone DICOM SEG file.
-    fn export_seg_series(&mut self, r: SetRef) {
+    /// Write a segmentation series — or just the chosen segments of it — as a
+    /// standalone DICOM SEG file.
+    ///
+    /// A subset is written as a series in its own right: same lattice, same
+    /// referenced image series, its own SOP Instance UID, and only the
+    /// segments asked for. That is exactly what a SEG file is, so exporting
+    /// three organs out of twelve needs no special case in the writer.
+    fn export_seg_series(&mut self, r: SetRef, items: &[usize]) {
         let Some(study) = self.slots[r.slot].study.as_ref() else {
             return;
         };
-        let Some(ser) = study.seg_series.get(r.idx) else {
+        let Some(full) = study.seg_series.get(r.idx) else {
             return;
         };
+        let subset;
+        let ser = if items.is_empty() {
+            full
+        } else {
+            let mut picked = items.to_vec();
+            picked.sort_unstable();
+            picked.dedup();
+            let mut s = full.clone();
+            s.segs = picked
+                .iter()
+                .filter_map(|&i| full.segs.get(i).cloned())
+                .collect();
+            s.sop_instance_uid = crate::dicom_export::new_uid();
+            subset = s;
+            &subset
+        };
         if ser.segs.iter().all(|s| s.count == 0) {
-            self.error = Some("this segmentation series is empty — nothing to write".into());
+            self.error =
+                Some("nothing to write — the chosen segmentation(s) have no voxels".into());
             return;
         }
         let stem: String = ser
@@ -223,9 +246,18 @@ impl ViewerApp {
             .chars()
             .map(|c| if c.is_alphanumeric() { c } else { '_' })
             .collect();
+        let suffix = if items.is_empty() {
+            String::new()
+        } else {
+            format!("_{}_of_{}", ser.segs.len(), full.segs.len())
+        };
         let Some(path) = rfd::FileDialog::new()
-            .set_title("Save the segmentation series as DICOM SEG")
-            .set_file_name(format!("SEG_{stem}.dcm"))
+            .set_title(if items.is_empty() {
+                "Save the segmentation series as DICOM SEG"
+            } else {
+                "Save the selected segmentation(s) as DICOM SEG"
+            })
+            .set_file_name(format!("SEG_{stem}{suffix}.dcm"))
             .save_file()
         else {
             return;
@@ -276,6 +308,7 @@ impl ViewerApp {
             ItemAction::Rename { from, idx } => {
                 self.rename_request = Some(RenameTarget::Item { set: from, idx })
             }
+            ItemAction::ExportSeg { from, items } => self.export_seg_series(from, &items),
             ItemAction::Transfer {
                 from,
                 items,

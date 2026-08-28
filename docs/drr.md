@@ -79,6 +79,31 @@ The two renderings are shown side by side with a shared display window
 radiographs are usually read dark-on-light — and a **Difference** view that
 maps the signed difference blue↔red about a grey zero.
 
+## Into the data tree
+
+*➕ Add to dataset A/B* files the current rendering (or both, when the two
+projectors were run together) under **Planar images** in that dataset's
+tree. A DRR *is* an RT Image, so once it is one it inherits everything the
+tree already does: its own viewer window with window/level and the correct
+physical aspect ratio, renaming, and travelling with the dataset when it is
+copied or moved.
+
+The geometry that produced it rides along as the info rows the planar viewer
+lists — engine, SAD/SID, gantry and couch angles, isocentre, panel size, HU
+model, threshold, sampling step (ray-cast only) and render time — so a
+radiograph that has been sitting in the tree for an hour can still say
+exactly what it is. Labels are `DRR Siddon · G 90° C 0°` and are made unique
+on the way in, because rendering the same geometry twice is what one does
+while tuning it.
+
+Whichever greyscale the window is showing is what gets stored: with
+**Invert** on (the default) the values are mirrored about the middle of the
+range so dark is high attenuation, as on a radiograph. The range itself is
+unchanged either way, and the info rows say which convention was used.
+
+Planar images are viewer-side objects: they are not written by
+*File ▶ Export dataset*, which covers CT, RTSTRUCT, SEG, RTDOSE and RTPLAN.
+
 ## Where it fits
 
 DRR generation is a *simulation* feature, not a registration one: it shares
