@@ -227,10 +227,9 @@ fn a_shell_pressed_against_the_skin_is_kept_and_the_cost_is_bounded() {
     let p = phantom();
     let r = contour_body(&p.volume, &params(), nowhere(), &Progress::default()).expect("a body");
     let kept = CONTACT
-        .filter_map(shell_row)
-        .flat_map(|j| (0..NZ).map(move |k| (j, k)))
-        .zip(CONTACT.cycle())
-        .filter(|((j, k), i)| r.mask[idx(*i, *j, *k)] != 0)
+        .filter_map(|i| shell_row(i).map(|j| (i, j)))
+        .flat_map(|(i, j)| (0..NZ).map(move |k| (i, j, k)))
+        .filter(|&(i, j, k)| r.mask[idx(i, j, k)] != 0)
         .count();
     assert!(kept > 0, "the contact patch is expected to survive");
     let extra = r

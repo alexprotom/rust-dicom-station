@@ -29,4 +29,5 @@ pub mod segmentation;
 pub mod segvol;
 pub mod settings;
 pub mod simulate;
+pub mod structops;
 pub mod volume;

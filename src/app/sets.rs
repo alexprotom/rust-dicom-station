@@ -309,6 +309,19 @@ impl ViewerApp {
                 self.rename_request = Some(RenameTarget::Item { set: from, idx })
             }
             ItemAction::ExportSeg { from, items } => self.export_seg_series(from, &items),
+            ItemAction::Combine { from, items } => {
+                // The tree already knows which items were ticked; the window
+                // only has to be told, in the order they were listed.
+                let seed = items
+                    .iter()
+                    .map(|&idx| combine_win::ItemRef {
+                        kind: from.kind,
+                        set: from.idx,
+                        idx,
+                    })
+                    .collect();
+                self.open_combine_dialog(from.slot, seed);
+            }
             ItemAction::Transfer {
                 from,
                 items,

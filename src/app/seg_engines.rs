@@ -52,6 +52,12 @@ pub(super) const BODY_CONTOUR: ToolInfo = ToolInfo {
     name: "Body contour",
     verb: "Body-contour",
 };
+/// The fifth tool, and the only one with no network behind it at all.
+pub(super) const COMBINE: ToolInfo = ToolInfo {
+    glyph: "◧",
+    name: "Combine structures",
+    verb: "Combine structures in",
+};
 
 impl ToolInfo {
     /// `🤖 Auto-segmentation — dataset A`, the window title.
@@ -173,6 +179,13 @@ impl ViewerApp {
         }
         if let Some(job) = self.body_job.as_ref().filter(|_| self.body_slot == slot) {
             return Some((&BODY_CONTOUR, &job.progress));
+        }
+        if let Some(job) = self
+            .combine_job
+            .as_ref()
+            .filter(|_| self.combine_slot == slot)
+        {
+            return Some((&COMBINE, &job.progress));
         }
         None
     }
@@ -307,10 +320,11 @@ mod tests {
             PROMPT_SEG.glyph,
             SLICE_PROP.glyph,
             BODY_CONTOUR.glyph,
+            COMBINE.glyph,
         ];
         glyphs.sort();
         glyphs.dedup();
-        assert_eq!(glyphs.len(), 4, "every tool has its own glyph");
+        assert_eq!(glyphs.len(), 5, "every tool has its own glyph");
     }
 
     #[test]

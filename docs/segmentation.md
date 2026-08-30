@@ -5,7 +5,8 @@ Rust and CPU-side, plus a Slicer-style 3D surface view that follows every
 edit in essentially real time. For the neural-network auto-segmentation
 see [auto-segmentation.md](auto-segmentation.md), and for the patient
 outline [body-contour.md](body-contour.md) — both land as the same editable
-masks described here.
+masks described here. Combining structures with each other is
+[structure-algebra.md](structure-algebra.md).
 
 ## Segmentation masks
 

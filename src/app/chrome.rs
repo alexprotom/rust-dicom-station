@@ -187,8 +187,14 @@ impl ViewerApp {
                     });
                 ui.menu_button("Tools", |ui| {
                     // The three segmentation engines, one block per dataset:
-                    // the same four entries, in the same order, for A and B.
-                    let tools: [(&ToolInfo, &str); 4] = [
+                    // the same five entries, in the same order, for A and B.
+                    let tools: [(&ToolInfo, &str); 5] = [
+                        (
+                            &COMBINE,
+                            "Build one structure out of others: union, intersection, \
+                             subtraction or symmetric difference, with a margin on any of \
+                             them. Contours and segmentations mix freely.",
+                        ),
                         (
                             &BODY_CONTOUR,
                             "Outline the patient and leave the couch, the chair and the \
@@ -235,6 +241,9 @@ impl ViewerApp {
                         }
                     }
                     match open_tool {
+                        Some((slot, t)) if t.glyph == COMBINE.glyph => {
+                            self.open_combine_dialog(slot, Vec::new())
+                        }
                         Some((slot, t)) if t.glyph == BODY_CONTOUR.glyph => {
                             self.open_body_dialog(slot)
                         }

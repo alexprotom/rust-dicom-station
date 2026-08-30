@@ -36,6 +36,7 @@ use crate::volume::{ViewPlane, Volume};
 mod body_win;
 mod box_seg;
 mod chrome;
+mod combine_win;
 mod d3;
 mod dialogs;
 mod drr_win;
@@ -559,7 +560,7 @@ struct TreeAction {
 /// series, both hold named, coloured items — even though one stores contours
 /// and the other voxel masks. Conversions between the two happen on
 /// transfer (`ViewerApp::apply_item_action`).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SetKind {
     /// RT Structure Set: contours.
     Structures,
@@ -637,6 +638,11 @@ enum ItemAction {
     Rename {
         from: SetRef,
         idx: usize,
+    },
+    /// Open the structure-algebra window with these items as its operands.
+    Combine {
+        from: SetRef,
+        items: Vec<usize>,
     },
     /// Write these segments as a DICOM SEG file of their own.
     ExportSeg {
@@ -889,6 +895,11 @@ pub struct ViewerApp {
     /// The tool window, when open; it stays open across runs.
     body_dialog: Option<body_win::BodyDialog>,
 
+    // Structure algebra (see `structops`): combining contours and segments.
+    combine_job: Option<SegJob<combine_win::CombineResult>>,
+    combine_slot: usize,
+    combine_dialog: Option<combine_win::CombineDialog>,
+
     // Prompt-driven segmentation (SegVol re-implementation, see `segvol`).
     segvol_job: Option<SegJob<prompt_seg::SegVolResult>>,
     segvol_slot: usize,
@@ -1064,6 +1075,10 @@ impl ViewerApp {
             body_job: None,
             body_slot: 0,
             body_dialog: None,
+
+            combine_job: None,
+            combine_slot: 0,
+            combine_dialog: None,
 
             segvol_job: None,
             segvol_slot: 0,
@@ -1277,6 +1292,11 @@ impl eframe::App for ViewerApp {
             poll_tool_job(&mut self.body_job, &ctx, BODY_CONTOUR.name, &mut self.error)
         {
             self.on_body_done(slot, result);
+        }
+        if let Some((slot, result)) =
+            poll_tool_job(&mut self.combine_job, &ctx, COMBINE.name, &mut self.error)
+        {
+            self.on_combine_done(slot, result);
         }
 
         // Poll background registration.

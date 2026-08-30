@@ -675,6 +675,21 @@ impl ViewerApp {
                 });
             }
         });
+        ui.separator();
+        if ui
+            .button(format!("◧ Combine {what}…"))
+            .on_hover_text(
+                "Open the structure-algebra window with these as its operands — union, \
+                 intersection, subtraction, margins",
+            )
+            .clicked()
+        {
+            *out = Some(ItemAction::Combine {
+                from,
+                items: items.clone(),
+            });
+            ui.close();
+        }
         if from.kind == SetKind::Segmentations {
             ui.separator();
             if ui
@@ -1050,7 +1065,13 @@ impl ViewerApp {
                     for (tool, hint) in [
                         (
                             &BODY_CONTOUR,
-                            "The patient outline: threshold, largest component, fill",
+                            "Outline the patient without the couch, the chair or the \
+                             immobilisation (EXTERNAL)",
+                        ),
+                        (
+                            &COMBINE,
+                            "Build one structure out of others: union, intersection, \
+                             subtraction, margins",
                         ),
                         (
                             &AUTOSEG,
@@ -1238,6 +1259,7 @@ impl ViewerApp {
             self.create_seg(slot);
         }
         match open_tool.map(|t| t.glyph) {
+            Some(g) if g == COMBINE.glyph => self.open_combine_dialog(slot, Vec::new()),
             Some(g) if g == BODY_CONTOUR.glyph => self.open_body_dialog(slot),
             Some(g) if g == AUTOSEG.glyph => self.open_autoseg_dialog(slot),
             Some(g) if g == PROMPT_SEG.glyph => self.open_segvol_dialog(slot),

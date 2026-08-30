@@ -89,6 +89,14 @@ holds the registration controls and both dataset trees.*
   view, mask → RTSTRUCT conversion, and **DICOM SEG** import and export
   (binary and fractional multi-frame masks, read onto their own lattice
   and resampled onto whichever image series they belong to).
+* **Structure algebra** - union, intersection, subtraction and symmetric
+  difference over any mix of RT structures and segmentations, with a margin
+  on any operand and on the result. Margins are given in **patient**
+  directions - six of them, as an exact ellipsoid - so "8 mm superiorly"
+  means the same on an axial CT and a feet-first MR. A crop is an
+  intersection with a shrunken operand, a ring is the difference of two
+  expansions, and the recipe is printed as one line so a subtraction the
+  wrong way round is visible before it runs.
 * **Body contouring** - the EXTERNAL structure, found automatically and
   without the couch, the chair or the immobilisation inside it. Equipment
   is separated from anatomy by two facts no patient has together: it is
@@ -192,6 +200,7 @@ ships a real two-phase 4DCT (see
 | [docs/propagation.md](docs/propagation.md) | Carrying contours and segmentations across a registration |
 | [docs/drr.md](docs/drr.md) | Digitally reconstructed radiographs: the two projectors and the geometry |
 | [docs/segmentation.md](docs/segmentation.md) | Brush / eraser / region growing, 3D view, mask → RTSTRUCT |
+| [docs/structure-algebra.md](docs/structure-algebra.md) | Combining structures: boolean operations, margins, cropping, cleanup |
 | [docs/body-contour.md](docs/body-contour.md) | The body / EXTERNAL contour: the classical and model-assisted methods, CT and MR, verification |
 | [docs/segvol.md](docs/segvol.md) | Prompt-driven segmentation: box / point / text, the SegVol re-implementation |
 | [docs/medsam2.md](docs/medsam2.md) | Propagating a prompt through a stack: the MedSAM2 re-implementation |

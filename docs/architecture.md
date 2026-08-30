@@ -115,6 +115,10 @@ rust-dicom-station
 │   │   three axes, component selection by volume, thin-anatomy recovery,
 │   │   slice-wise filling — classically, or guided by TotalSegmentator's body
 │   │   network (CT 6 / 1.5 mm, MR)
+│   ├── Structure algebra: union / intersection / subtraction / symmetric
+│   │   difference over any mix of contours and segments, a margin per operand
+│   │   and on the result (six patient directions, exact ellipsoids), crop,
+│   │   fill / smooth / prune, out as either kind
 │   ├── Voxel masks: brush / eraser (2D, 3D), geodesic region growing, undo,
 │   │   slice overlays, hole filling, mask ▶ RTSTRUCT contours, RTSTRUCT ▶ mask,
 │   │   grouped into segmentation series that live in the study and bind to an
@@ -226,6 +230,9 @@ src/
                       landing an auto-segmentation result
     body_win.rs       the body-contour window: method choice, the modality's
                       own threshold row, the classical / model-assisted split
+    combine_win.rs    the structure-algebra window: the ordered operand list,
+                      per-operand and per-direction margins, the recipe line,
+                      and landing the answer as a segment or a contour
     seg_engines.rs    what the four tool windows share: names and glyphs,
                       device / model-folder / licence / progress rows,
                       result landing, the "still the same dataset" check
@@ -271,10 +278,14 @@ src/
                     label map ▶ segmentations, mask ▶ RTSTRUCT contours and
                     RTSTRUCT contours ▶ mask                                     Seg
   morphology.rs     binary-mask geometry, in millimetres: the exact
-                    anisotropic Euclidean distance transform and the
-                    erode / dilate / open / close it powers, 6-connected
-                    components, slice-wise and 3-D hole filling, the
-                    extruded-equipment test, box-blur smoothing              Core
+                    anisotropic Euclidean distance transform (two-sided and
+                    one-sided) and the erode / dilate / open / close it
+                    powers, including per-direction ellipsoidal margins,
+                    6-connected components, slice-wise and 3-D hole filling,
+                    the extruded-equipment test, box-blur smoothing          Core
+  structops.rs      structure algebra: the four boolean operations, margins
+                    in patient directions (per-direction ellipsoids), crop,
+                    fill / smooth / prune, over masks on one lattice          Seg
   bodymask.rs       the body / EXTERNAL contour: foreground by modality (HU,
                     or bias-flattened MR), equipment removal, component
                     selection, thin-anatomy recovery, filling — classically
@@ -390,13 +401,13 @@ demand-driven; while background jobs run, the UI polls at 10 Hz.
 
 ### The segmentation tool windows
 
-Body contouring, auto-segmentation, prompt segmentation and slice
-propagation are different conversations — a parameterised geometric run, a
+Body contouring, structure algebra, auto-segmentation, prompt segmentation
+and slice propagation are different conversations — a parameterised geometric run, a
 batch run with a result-selection dialog, a one-shot prompt, an interactive
 box loop — but they are the same kind of tool, and `app/seg_engines.rs`
 makes them look and behave alike:
 
-* one `ToolInfo` per tool gives the glyph (👤 🤖 🧠 ⏩), the window title
+* one `ToolInfo` per tool gives the glyph (👤 ◧ 🤖 🧠 ⏩), the window title
   (`🤖 Auto-segmentation — dataset A`, the same pattern as
   `3D structures — dataset A`), the menu entry (`🤖 Auto-segment dataset A…`)
   and the small sidebar button (`🤖 Auto…`);
