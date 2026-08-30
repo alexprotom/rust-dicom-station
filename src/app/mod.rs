@@ -41,6 +41,7 @@ mod dialogs;
 mod drr_win;
 mod jobs;
 mod models_win;
+mod pacs_win;
 mod panels;
 mod planar;
 mod prompt_seg;
@@ -55,6 +56,7 @@ mod tree;
 mod views;
 
 use drr_win::DrrDialog;
+use pacs_win::{PacsOutcome, PacsWindow};
 use propagate_win::{PropOutcome, PropagateDialog};
 use reg_panel::{RegOutcome, RegRoi};
 use rename::{RenameDialog, RenameTarget};
@@ -851,6 +853,15 @@ pub struct ViewerApp {
     /// engines (persisted in the settings file; blank = the default).
     models_dir: String,
 
+    /// Root of the local patient archive (persisted; blank = the default).
+    archive_dir: String,
+
+    // Tools ▶ PACS: the patient archive window.
+    /// The window, when open.
+    pacs: Option<PacsWindow>,
+    /// The archive job in flight — a scan, an import, an upload or a removal.
+    pacs_job: Option<Job<anyhow::Result<PacsOutcome>>>,
+
     // Tools ▶ Downloaded models: the inventory window.
     models_open: bool,
     /// The inventory with each model's state, re-read at most twice a second.
@@ -939,6 +950,11 @@ impl ViewerApp {
         cc.egui_ctx.set_theme(prefs.theme);
         let models_dir = prefs
             .models_dir
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let archive_dir = prefs
+            .archive_dir
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
@@ -1033,6 +1049,9 @@ impl ViewerApp {
             show_labels: true,
             show_isocenters: true,
             models_dir,
+            archive_dir,
+            pacs: None,
+            pacs_job: None,
             models_open: false,
             models_scan: Vec::new(),
             models_scan_at: f64::NEG_INFINITY,
@@ -1098,9 +1117,17 @@ impl ViewerApp {
             } else {
                 Some(PathBuf::from(self.models_dir.trim()))
             };
+        let default_archive = crate::archive::default_root().display().to_string();
+        let archive_dir =
+            if self.archive_dir.trim().is_empty() || self.archive_dir.trim() == default_archive {
+                None
+            } else {
+                Some(PathBuf::from(self.archive_dir.trim()))
+            };
         match settings::save(&Settings {
             theme: self.theme,
             models_dir,
+            archive_dir,
             module_registration: self.module_registration,
             module_simulation: self.module_simulation,
         }) {
@@ -1267,6 +1294,13 @@ impl eframe::App for ViewerApp {
             // Re-propagate the crosshair through the new transform.
             let cursor = self.slots[fixed_slot].cursor;
             self.set_cursor(fixed_slot, cursor, usize::MAX);
+        }
+
+        // Poll an archive job — a scan, an import, an upload or a removal.
+        match poll_job(&mut self.pacs_job, &ctx, "Archive", &mut self.error) {
+            Some(Ok(outcome)) => self.on_pacs_done(outcome),
+            Some(Err(e)) => self.error = Some(format!("Archive: {e:#}")),
+            None => {}
         }
 
         // Poll a DRR rendering.

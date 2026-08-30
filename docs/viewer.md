@@ -115,7 +115,10 @@ The two viewer slots are **dataset A** and **dataset B** — each is a
 working set that can hold any number of patients, studies and series
 accumulated from any number of folders. *File ▶ Add DICOM folder to A/B…*
 merges a scanned folder into the slot without unloading what is already
-there; duplicates (by UID) are skipped and reported.
+there; duplicates (by UID) are skipped and reported. *Tools ▶ 🏥 PACS —
+patient archive…* fills a slot the same way from the application's own store
+of studies ([pacs.md](pacs.md)) — an archived study folder is an ordinary
+DICOM folder, so it takes the same path.
 
 The left panel shows each dataset as a full DICOM hierarchy:
 

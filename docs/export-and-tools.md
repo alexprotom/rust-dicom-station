@@ -6,8 +6,12 @@ generating a fully synthetic RT study for testing. (The *Tools* menu also
 holds the three segmentation engines — see
 [auto-segmentation.md](auto-segmentation.md), [segvol.md](segvol.md) and
 [medsam2.md](medsam2.md) — plus structure
-[propagation](propagation.md) and [DRR generation](drr.md), which have their
-own documents.)
+[propagation](propagation.md), [DRR generation](drr.md) and the local
+[patient archive](pacs.md), which have their own documents.)
+
+Export writes a folder; the archive writes into the store the application
+keeps for itself. The two are the same DICOM writer underneath — see
+[pacs.md](pacs.md) for when to reach for which.
 
 ## DICOM export
 
@@ -46,6 +50,10 @@ pair; switching it off generates a fresh frame of reference.
 A single segmentation series can also be written on its own, without
 exporting the dataset around it: right-click the series in the data tree and
 choose *💾 Export as DICOM SEG…*.
+
+To write only what was *drawn* — the structure sets and segmentation series,
+with the images left where they already are — use *📤 Send dataset* in the
+[patient archive](pacs.md) window instead of a full export.
 
 The exports round-trip through this viewer and pydicom; they are
 QA/research objects, not guaranteed-complete clinical IODs.

@@ -42,6 +42,7 @@ impl ViewerApp {
         self.generator_window(ctx);
         self.anonymize_window(ctx);
         self.models_window(ctx);
+        self.pacs_window(ctx);
         self.propagate_window(ctx);
         self.drr_window(ctx);
         self.export_window(ctx);

@@ -3,6 +3,7 @@
 
 pub mod anonymize;
 pub mod app;
+pub mod archive;
 pub mod autoseg;
 pub mod bodymask;
 pub mod dicom_export;

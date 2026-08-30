@@ -58,10 +58,10 @@ rust-dicom-station
 │   │   create / connect / copy / move / remove RT structure sets and segmentation
 │   │   series; copy / move / remove single or selected structures and segments
 │   ├── Tool windows: auto-segmentation, prompt segmentation, slice propagation,
-│   │   model manager, structure propagation, DRR, export, anonymizer,
+│   │   model manager, structure propagation, DRR, PACS, export, anonymizer,
 │   │   test-data generator (one shared skeleton)
 │   ├── Background jobs: one progress handle, one poll loop
-│   ├── Settings: theme, model folder (viewer_settings.txt)
+│   ├── Settings: theme, model folder, archive folder (viewer_settings.txt)
 │   └── Theme: dark / light / system, accent colors
 │
 ├── DICOM
@@ -79,7 +79,11 @@ rust-dicom-station
 │   │   │   the active registration; a recovered field written back out)
 │   │   └── RT (Ion) Beams Treatment Record (delivered metersets)
 │   ├── Export: CT series + RTSTRUCT + SEG + RTDOSE + RTPLAN with an editable tag table
-│   └── Anonymizer: scan, review every identifying tag, rewrite with consistent UID remap
+│   ├── Anonymizer: scan, review every identifying tag, rewrite with consistent UID remap
+│   └── Patient archive: a local store filed patient ▶ study ▶ instance with text
+│       sidecars, import (copy, dedupe by SOP UID), listing without opening a file,
+│       loading a study into a dataset, and derived objects (RTSTRUCT, SEG) sent
+│       back under the original Study and Frame of Reference UIDs
 │
 ├── Data simulation
 │   ├── Synthetic RT phantom study (CT, RTSTRUCT, RTDOSE, RTPLAN, DX, RTIMAGE, REG, RTRECORD)
@@ -141,7 +145,7 @@ rust-dicom-station
 │   ├── Render: window / level, dose colorwash, marching-squares isodose, contour ∩ plane
 │   └── Progress: message, fraction, device, cancel, phase window
 │
-├── Tests: 9 integration suites + in-module unit tests, synthetic phantom, reference dumps
+├── Tests: 12 integration suites + in-module unit tests, synthetic phantom, reference dumps
 ├── Examples: headless CLIs and probes for the three engines (shared examples/common)
 ├── Tools: Python scripts that produce the reference fixtures (never needed at runtime)
 ├── Installer: Windows setup (shortcuts, VC++ runtime, optional weight prefetch, uninstall)
@@ -183,7 +187,10 @@ src/
   models.rs         the model folder: root, per-engine sub-folders, migration,
                     and the inventory of every downloadable model (state, size,
                     download / update / remove / free)                            NN
-  settings.rs       persisted preferences (theme, model folder)                   App
+  settings.rs       persisted preferences (theme, model folder, archive folder)   App
+  archive.rs        the local patient archive: the on-disk layout and its text
+                    sidecars, scanning, importing (copy + dedupe by SOP UID),
+                    rebuilding an index from headers, removal                     DICOM
 
   app/              egui application, split by concern; every submodule is a
                     further `impl ViewerApp` block, so the struct and all its
@@ -213,6 +220,8 @@ src/
     models_win.rs     the model manager window
     propagate_win.rs  structure propagation window and worker
     drr_win.rs        the DRR window: geometry, projectors, comparison
+    pacs_win.rs       the PACS window: the archive root, the patient / study list,
+                      import, load into a dataset, send the derived objects back
     seg.rs            interactive segmentation state machine, mask ▶ RTSTRUCT,
                       landing an auto-segmentation result
     body_win.rs       the body-contour window: method choice, the modality's
@@ -345,7 +354,7 @@ src/
     engine.rs         backend choice, the encoded-slice cache, the one call
                       the user interface makes
 
-tests/             nine integration suites (see Testing)
+tests/             twelve integration suites (see Testing)
 examples/          autoseg_cli, autoseg_probe, segvol_cli, segvol_probe,
                    medsam2_cli, medsam2_probe; common/ holds what they share
 tools/             gen_reference_activations.py, gen_ops_fixtures.py — the
@@ -513,7 +522,7 @@ against it), with the wgpu backend added by the cargo feature `gpu`
 
 ## Testing
 
-Nine integration suites plus in-module unit tests run against the same
+Twelve integration suites plus in-module unit tests run against the same
 code paths the GUI uses, with no external data or tooling:
 
 * **synthetic_study** — generate the analytic phantom, reload, verify
@@ -528,6 +537,15 @@ code paths the GUI uses, with no external data or tooling:
   meshing;
 * **anonymize** — anonymize → reload: identity gone, references intact,
   pixels byte-identical;
+* **dicomseg** — segments built in memory → SEG written → reloaded by the
+  ordinary directory scanner → the masks back voxel for voxel, including the
+  sub-grid the frame positions produce;
+* **body** — the body / EXTERNAL contour on phantoms carrying couch, chair
+  and mask, against the area the analytic phantom prescribes;
+* **archive** — the whole archive round trip: file the phantom study, list it
+  from the sidecars alone, load the archived folder back through the ordinary
+  loader, draw a segmentation, send the derived objects back, and assert they
+  joined the same patient and study under the same Study Instance UID;
 * **autoseg** — miniature network assembly with exact checkpoint naming +
   forward pass; sliding-window steps and resampling conventions pinned to
   nnU-Net/scipy reference values; an `#[ignore]`d end-to-end test against

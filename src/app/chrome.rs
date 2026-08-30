@@ -11,6 +11,7 @@ impl ViewerApp {
         let mut reset_views = false;
         let mut open_gen = false;
         let mut open_models = false;
+        let mut open_pacs = false;
         let mut open_propagate = false;
         let mut open_drr = false;
         let mut open_export: Option<usize> = None;
@@ -276,6 +277,18 @@ impl ViewerApp {
                         ui.close();
                     }
                     if ui
+                        .button("🏥 PACS — patient archive…")
+                        .on_hover_text(
+                            "The local archive: every study filed here, ready to be taken \
+                             into a dataset and given back the structures and \
+                             segmentations drawn on it",
+                        )
+                        .clicked()
+                    {
+                        open_pacs = true;
+                        ui.close();
+                    }
+                    if ui
                         .button("📦 Downloaded models…")
                         .on_hover_text(
                             "What every segmentation engine has downloaded, how much disk \
@@ -362,6 +375,9 @@ impl ViewerApp {
         }
         if open_gen {
             self.gen_open = true;
+        }
+        if open_pacs {
+            self.open_pacs_window();
         }
         if open_models {
             self.open_models_window();

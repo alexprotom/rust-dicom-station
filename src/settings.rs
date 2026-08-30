@@ -9,6 +9,9 @@ const APP_NAME: &str = "RustDICOMStation";
 /// Settings key of the model root; the installer writes it too.
 pub const MODELS_DIR_KEY: &str = "models_dir";
 
+/// Settings key of the patient archive root.
+pub const ARCHIVE_DIR_KEY: &str = "archive_dir";
+
 /// Settings keys of the two optional side-panel modules.
 const MODULE_REG_KEY: &str = "module_image_registration";
 const MODULE_SIM_KEY: &str = "module_image_simulation";
@@ -24,6 +27,12 @@ pub struct Settings {
     /// `None` means use the platform-specific default returned by
     /// [`default_models_dir`].
     pub models_dir: Option<PathBuf>,
+
+    /// Root of the local patient archive.
+    ///
+    /// `None` means the platform-specific default,
+    /// [`crate::archive::default_root`].
+    pub archive_dir: Option<PathBuf>,
 
     /// *Modules ▶ Image registration*: the registration section is shown in
     /// the side panel.
@@ -41,6 +50,7 @@ impl Default for Settings {
         Settings {
             theme: ThemePreference::Dark,
             models_dir: None,
+            archive_dir: None,
             // Both optional modules start hidden; the Modules menu turns them
             // on and the choice is remembered.
             module_registration: false,
@@ -250,6 +260,11 @@ fn parse(text: &str) -> Settings {
             if !v.is_empty() {
                 s.models_dir = Some(PathBuf::from(v));
             }
+        } else if key.eq_ignore_ascii_case(ARCHIVE_DIR_KEY) {
+            let v = value.trim();
+            if !v.is_empty() {
+                s.archive_dir = Some(PathBuf::from(v));
+            }
         } else if key.eq_ignore_ascii_case(MODULE_REG_KEY) {
             if let Some(b) = bool_from_str(value) {
                 s.module_registration = b;
@@ -272,6 +287,9 @@ fn render(s: &Settings) -> String {
     );
     if let Some(dir) = &s.models_dir {
         out.push_str(&format!("{MODELS_DIR_KEY} = {}\n", dir.display()));
+    }
+    if let Some(dir) = &s.archive_dir {
+        out.push_str(&format!("{ARCHIVE_DIR_KEY} = {}\n", dir.display()));
     }
     out.push_str(&format!(
         "# optional side-panel modules (Modules menu) = on | off\n\

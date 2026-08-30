@@ -46,6 +46,15 @@ holds the registration controls and both dataset trees.*
   converting as they cross), renaming at every level from patient down to a
   single segment, six-view comparison mode with patient-space crosshair
   linking.
+* **Patient archive** - a local PACS: a store on disk where every study you
+  file lives between sessions, listed patient by patient without opening a
+  single DICOM file, taken into either dataset with one button, and given back
+  the structures and segmentations you drew on it. Uploads are **derived
+  objects only** - new RTSTRUCT and SEG instances carrying the original Study
+  and Frame of Reference UIDs, so they file themselves under the study they
+  belong to and the images are never re-sent. The layout is folders and files
+  named by their DICOM identifiers with plain-text sidecars, so any other
+  application can read it and nothing is locked in.
 * **Registration** - four engines, none of them a binding: rigid (6-DOF)
   and deformable (cubic B-spline) re-implemented from **elastix**
   (multi-resolution pyramids, stochastic sampling, ASGD); a dense
@@ -114,11 +123,12 @@ holds the registration controls and both dataset trees.*
   Validated against the reference implementation module by module and over a
   full propagation.
 * **Tools** - DICOM export with an editable patient/study tag table
-  (CT + RTSTRUCT + SEG + RTDOSE + RTPLAN), a **model manager** showing every
+  (CT + RTSTRUCT + SEG + RTDOSE + RTPLAN), the **patient archive** window, a
+  **model manager** showing every
   downloadable network weight with its state and size and the buttons to
   download, update, remove or free one or all of them, an interactive
   folder anonymizer with consistent UID regeneration, and a synthetic
-  RT-study generator; 280+ tests across nine integration suites assert the
+  RT-study generator; 280+ tests across twelve integration suites assert the
   whole stack against an analytically known phantom, on Linux and Windows
   in CI.
 
@@ -186,6 +196,7 @@ ships a real two-phase 4DCT (see
 | [docs/segvol.md](docs/segvol.md) | Prompt-driven segmentation: box / point / text, the SegVol re-implementation |
 | [docs/medsam2.md](docs/medsam2.md) | Propagating a prompt through a stack: the MedSAM2 re-implementation |
 | [docs/auto-segmentation.md](docs/auto-segmentation.md) | The pure-Rust TotalSegmentator: models, pipeline, engines, validation, classes, licensing |
+| [docs/pacs.md](docs/pacs.md) | The local patient archive: the window, the on-disk layout, filing, loading, sending changes back |
 | [docs/export-and-tools.md](docs/export-and-tools.md) | DICOM export, the model manager, anonymizer, test-data generator |
 | [docs/architecture.md](docs/architecture.md) | Design, functional overview, module map, threading, the model folder, conventions, testing |
 | [docs/example-data.md](docs/example-data.md) | Bundled patient data, source and citations |
