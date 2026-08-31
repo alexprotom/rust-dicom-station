@@ -273,12 +273,13 @@ impl ViewerApp {
             let registered = self.registration.is_some();
             let title = format!("3D structures — dataset {}", SLOT_NAMES[w.slot]);
             let mut open = w.open;
-            egui::Window::new(title)
-                .id(egui::Id::new(("d3_win", w.slot)))
-                .open(&mut open)
-                .default_size([640.0, 700.0])
-                .resizable(true)
-                .show(ctx, |ui| {
+            detach::tool_window(
+                ctx,
+                &format!("d3_{}", w.slot),
+                title,
+                &mut open,
+                detach::WinOpts::size(640.0, 700.0).no_scroll(),
+                |ui| {
                     if let Some(job) = &w.job {
                         ui.horizontal(|ui| {
                             ui.spinner();
@@ -567,9 +568,7 @@ impl ViewerApp {
                                     (p.x as f32 - c[0], p.y as f32 - c[1], p.z as f32 - c[2]);
                                 let x1 = cy * x - sy * y;
                                 let y1 = sy * x + cy * y;
-                                let y2 = cp * y1 - sp * z;
                                 let z2 = sp * y1 + cp * z;
-                                let _ = y2;
                                 Pos2::new(cx + x1 * scale, cyc - z2 * scale)
                             };
                             let max = field.max_mag.max(1e-6) as f32;
@@ -611,7 +610,8 @@ impl ViewerApp {
                         FontId::proportional(11.0),
                         Color32::GRAY,
                     );
-                });
+                },
+            );
             w.open = open;
         }
         windows.retain(|w| w.open);

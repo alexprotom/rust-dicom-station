@@ -25,19 +25,6 @@ impl Params {
         Params { tensors }
     }
 
-    /// Take ownership of a tensor map, rewriting every key.
-    pub fn with_keys(
-        tensors: HashMap<String, WTensor>,
-        normalize: impl Fn(&str) -> String,
-    ) -> Params {
-        Params {
-            tensors: tensors
-                .into_iter()
-                .map(|(k, v)| (normalize(&k), v))
-                .collect(),
-        }
-    }
-
     pub fn len(&self) -> usize {
         self.tensors.len()
     }
@@ -190,22 +177,6 @@ mod tests {
         assert!(p.conv2d("d", 256, 256, 7, 256).is_ok(), "depthwise");
         assert!(p.conv_transpose2d("t", 64, 256, 2).is_ok());
         assert!(p.conv2d("c", 8, 4, 3, 1).is_err(), "groups must be applied");
-    }
-
-    #[test]
-    fn keys_can_be_rewritten_on_construction() {
-        let mut m = HashMap::new();
-        m.insert(
-            "module.x".to_string(),
-            WTensor {
-                shape: vec![2],
-                data: vec![0.0; 2],
-            },
-        );
-        let p = Params::with_keys(m, |k| k.strip_prefix("module.").unwrap_or(k).to_string());
-        assert!(p.contains("x"));
-        assert_eq!(p.len(), 1);
-        assert_eq!(p.keys().count(), 1);
     }
 
     #[test]

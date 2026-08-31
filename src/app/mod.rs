@@ -17,6 +17,7 @@ use crate::autoseg;
 use crate::bodymask;
 use crate::dicom_export;
 use crate::extras;
+use crate::fourd;
 use crate::gen_test_data::{self, GenParams};
 use crate::geometry::Vec3;
 use crate::loader::{self, LoadedStudy};
@@ -36,11 +37,18 @@ use crate::volume::{ViewPlane, Volume};
 mod body_win;
 mod box_seg;
 mod chrome;
+mod combine_win;
+mod compare_win;
 mod d3;
+mod detach;
 mod dialogs;
 mod drr_win;
+mod dvh_win;
 mod jobs;
 mod models_win;
+mod motion_results;
+mod motion_win;
+mod pacs_win;
 mod panels;
 mod planar;
 mod prompt_seg;
@@ -51,10 +59,12 @@ mod seg;
 mod seg_engines;
 mod sets;
 mod theme;
+mod transfer_win;
 mod tree;
 mod views;
 
 use drr_win::DrrDialog;
+use pacs_win::{PacsOutcome, PacsWindow};
 use propagate_win::{PropOutcome, PropagateDialog};
 use reg_panel::{RegOutcome, RegRoi};
 use rename::{RenameDialog, RenameTarget};
@@ -62,6 +72,46 @@ use seg_engines::*;
 use theme::*;
 
 const SLOT_NAMES: [&str; 2] = ["A", "B"];
+
+/// A 4D-group edit requested from the data tree's context menus, applied
+/// after the frame's borrows are released (the tree renders behind a shared
+/// borrow of the study).
+enum FourDAction {
+    /// Add a series to an existing group, as a phase.
+    Add {
+        slot: usize,
+        group: usize,
+        series: usize,
+    },
+    /// Start a new custom group from one series.
+    New { slot: usize, series: usize },
+    /// Remove one member from a group.
+    RemoveMember {
+        slot: usize,
+        group: usize,
+        member: usize,
+    },
+    /// Move a member one place up (−1) or down (+1).
+    Shift {
+        slot: usize,
+        group: usize,
+        member: usize,
+        delta: isize,
+    },
+    /// Cycle a member's role (phase ▸ AVG ▸ MIP ▸ MinIP).
+    SetRole {
+        slot: usize,
+        group: usize,
+        member: usize,
+        role: fourd::Role,
+    },
+    /// Dissolve the whole group (the series stay).
+    Dissolve { slot: usize, group: usize },
+    /// Re-run automatic detection, keeping custom groups.
+    Redetect { slot: usize },
+    /// Open the 4D motion tool on this group.
+    Analyse { slot: usize, group: usize },
+}
 
 /// The auto-segmentation window: its parameters, and the run they start.
 struct AutosegDialog {
@@ -377,18 +427,17 @@ enum LoadResult {
 /// A unit of work running on a background thread: a shared progress handle
 /// plus the channel its result arrives on. Every background feature in the
 /// app has this shape, and [`poll_job`] drives them all identically.
-struct Job<T, P = Progress> {
-    progress: Arc<P>,
+struct Job<T> {
+    progress: Arc<Progress>,
     rx: mpsc::Receiver<T>,
 }
 
-impl<T, P> Job<T, P> {
+impl<T> Job<T> {
     /// Run `work` on a new thread and return the handle to poll for its
     /// result. The worker gets the progress handle; the caller keeps a clone.
-    fn spawn(progress: Arc<P>, work: impl FnOnce(&P) -> T + Send + 'static) -> Job<T, P>
+    fn spawn(progress: Arc<Progress>, work: impl FnOnce(&Progress) -> T + Send + 'static) -> Job<T>
     where
         T: Send + 'static,
-        P: Send + Sync + 'static,
     {
         let (tx, rx) = mpsc::channel();
         let p = progress.clone();
@@ -402,8 +451,8 @@ impl<T, P> Job<T, P> {
 /// Poll a background job. Returns its result once, clearing the slot; reports
 /// a worker that died without answering into `error`; otherwise schedules the
 /// next poll and returns `None`.
-fn poll_job<T, P>(
-    slot: &mut Option<Job<T, P>>,
+fn poll_job<T>(
+    slot: &mut Option<Job<T>>,
     ctx: &egui::Context,
     what: &str,
     error: &mut Option<String>,
@@ -429,8 +478,8 @@ fn poll_job<T, P>(
 /// [`poll_job`] for the jobs that answer with `(slot, Result)`: a failure is
 /// reported as `"{what} failed: …"`, except a cancellation, which is what
 /// the user asked for and needs no dialog.
-fn poll_tool_job<T, P>(
-    slot: &mut Option<Job<(usize, anyhow::Result<T>), P>>,
+fn poll_tool_job<T>(
+    slot: &mut Option<Job<(usize, anyhow::Result<T>)>>,
     ctx: &egui::Context,
     what: &str,
     error: &mut Option<String>,
@@ -557,7 +606,7 @@ struct TreeAction {
 /// series, both hold named, coloured items — even though one stores contours
 /// and the other voxel masks. Conversions between the two happen on
 /// transfer (`ViewerApp::apply_item_action`).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SetKind {
     /// RT Structure Set: contours.
     Structures,
@@ -635,6 +684,16 @@ enum ItemAction {
     Rename {
         from: SetRef,
         idx: usize,
+    },
+    /// Open the structure-algebra window with these items as its operands.
+    Combine {
+        from: SetRef,
+        items: Vec<usize>,
+    },
+    /// Plot these items' dose–volume histograms.
+    Dvh {
+        from: SetRef,
+        items: Vec<usize>,
     },
     /// Write these segments as a DICOM SEG file of their own.
     ExportSeg {
@@ -851,6 +910,15 @@ pub struct ViewerApp {
     /// engines (persisted in the settings file; blank = the default).
     models_dir: String,
 
+    /// Root of the local patient archive (persisted; blank = the default).
+    archive_dir: String,
+
+    // Tools ▶ PACS: the patient archive window.
+    /// The window, when open.
+    pacs: Option<PacsWindow>,
+    /// The archive job in flight — a scan, an import, an upload or a removal.
+    pacs_job: Option<Job<anyhow::Result<PacsOutcome>>>,
+
     // Tools ▶ Downloaded models: the inventory window.
     models_open: bool,
     /// The inventory with each model's state, re-read at most twice a second.
@@ -877,6 +945,38 @@ pub struct ViewerApp {
     body_slot: usize,
     /// The tool window, when open; it stays open across runs.
     body_dialog: Option<body_win::BodyDialog>,
+
+    // Dose–volume histograms (see `dvh`), in a window of their own.
+    dvh_open: bool,
+    dvh_dialog: Option<dvh_win::DvhDialog>,
+    dvh_job: Option<Job<anyhow::Result<dvh_win::DvhDone>>>,
+
+    // Structure algebra (see `structops`): combining contours and segments.
+    combine_job: Option<SegJob<combine_win::CombineResult>>,
+    combine_slot: usize,
+    combine_dialog: Option<combine_win::CombineDialog>,
+
+    // 4D motion / ITV analysis (see `motion` and `fourd`).
+    motion_job: Option<SegJob<motion_win::MotionOutcome>>,
+    motion_slot: usize,
+    motion_dialog: Option<motion_win::MotionDialog>,
+    /// The last run's settings, re-applicable to another dataset / study.
+    motion_recipe: Option<motion_win::MotionRecipe>,
+    /// Every finished run of this session, newest last.
+    motion_reports: Vec<crate::motion::MotionReport>,
+    /// The results window: visibility, selected run, comparison run.
+    motion_results_open: bool,
+    motion_sel: usize,
+    motion_cmp: Option<usize>,
+
+    // Tools ▶ Transfer by relationship.
+    transfer_dialog: Option<transfer_win::TransferDialog>,
+
+    // Tools ▶ Compare structures.
+    compare_dialog: Option<compare_win::CompareDialog>,
+
+    /// Deferred 4D-group edit from the data tree's context menus.
+    fourd_action: Option<FourDAction>,
 
     // Prompt-driven segmentation (SegVol re-implementation, see `segvol`).
     segvol_job: Option<SegJob<prompt_seg::SegVolResult>>,
@@ -911,6 +1011,10 @@ pub struct ViewerApp {
     /// The side panel is expanded (View ▶ Left panel, F9, or the arrow on
     /// the panel edge). Collapsed, the views have the whole window.
     side_open: bool,
+    /// Tool windows currently living in their own window of the operating
+    /// system. The live set is egui memory (`detach`); this is the copy last
+    /// written to the settings file, so a change can be spotted per frame.
+    detached_windows: std::collections::BTreeSet<String>,
 
     /// Light / dark / follow-the-system appearance, persisted between runs.
     theme: egui::ThemePreference,
@@ -937,8 +1041,19 @@ impl ViewerApp {
     ) -> Self {
         let prefs = settings::load();
         cc.egui_ctx.set_theme(prefs.theme);
+        // The windows the user last pulled out open in their own window
+        // again — `detach` reads the set straight from egui memory.
+        detach::set_detached_ids(
+            &cc.egui_ctx,
+            prefs.detached_windows.iter().cloned().collect(),
+        );
         let models_dir = prefs
             .models_dir
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let archive_dir = prefs
+            .archive_dir
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
@@ -1033,6 +1148,9 @@ impl ViewerApp {
             show_labels: true,
             show_isocenters: true,
             models_dir,
+            archive_dir,
+            pacs: None,
+            pacs_job: None,
             models_open: false,
             models_scan: Vec::new(),
             models_scan_at: f64::NEG_INFINITY,
@@ -1045,6 +1163,25 @@ impl ViewerApp {
             body_job: None,
             body_slot: 0,
             body_dialog: None,
+
+            dvh_open: false,
+            dvh_dialog: None,
+            dvh_job: None,
+
+            combine_job: None,
+            combine_slot: 0,
+            combine_dialog: None,
+            motion_job: None,
+            motion_slot: 0,
+            motion_dialog: None,
+            motion_recipe: None,
+            motion_reports: Vec::new(),
+            motion_results_open: false,
+            motion_sel: 0,
+            motion_cmp: None,
+            transfer_dialog: None,
+            compare_dialog: None,
+            fourd_action: None,
 
             segvol_job: None,
             segvol_slot: 0,
@@ -1070,6 +1207,7 @@ impl ViewerApp {
             module_registration: prefs.module_registration,
             module_simulation: prefs.module_simulation,
             side_open: true,
+            detached_windows: prefs.detached_windows.iter().cloned().collect(),
             theme: prefs.theme,
             settings_error: None,
         };
@@ -1098,11 +1236,20 @@ impl ViewerApp {
             } else {
                 Some(PathBuf::from(self.models_dir.trim()))
             };
+        let default_archive = crate::archive::default_root().display().to_string();
+        let archive_dir =
+            if self.archive_dir.trim().is_empty() || self.archive_dir.trim() == default_archive {
+                None
+            } else {
+                Some(PathBuf::from(self.archive_dir.trim()))
+            };
         match settings::save(&Settings {
             theme: self.theme,
             models_dir,
+            archive_dir,
             module_registration: self.module_registration,
             module_simulation: self.module_simulation,
+            detached_windows: self.detached_windows.iter().cloned().collect(),
         }) {
             Ok(()) => self.settings_error = None,
             Err(e) => {
@@ -1227,7 +1374,7 @@ impl eframe::App for ViewerApp {
         // Poll a model download / update batch.
         self.poll_models_job(&ctx);
 
-        // Poll the three segmentation engines.
+        // Poll the tool windows' workers.
         if let Some((slot, result)) =
             poll_tool_job(&mut self.autoseg_job, &ctx, AUTOSEG.name, &mut self.error)
         {
@@ -1251,6 +1398,23 @@ impl eframe::App for ViewerApp {
         {
             self.on_body_done(slot, result);
         }
+        if let Some((slot, result)) =
+            poll_tool_job(&mut self.combine_job, &ctx, COMBINE.name, &mut self.error)
+        {
+            self.on_combine_done(slot, result);
+        }
+        match poll_job(&mut self.dvh_job, &ctx, "DVH", &mut self.error) {
+            Some(Ok(done)) => self.on_dvh_done(done),
+            Some(Err(e)) if !progress::is_cancellation(&e) => {
+                self.error = Some(format!("DVH failed: {e:#}"));
+            }
+            _ => {}
+        }
+        if let Some((slot, outcome)) =
+            poll_tool_job(&mut self.motion_job, &ctx, MOTION.name, &mut self.error)
+        {
+            self.on_motion_done(slot, outcome);
+        }
 
         // Poll background registration.
         if let Some((fixed_slot, out)) =
@@ -1267,6 +1431,13 @@ impl eframe::App for ViewerApp {
             // Re-propagate the crosshair through the new transform.
             let cursor = self.slots[fixed_slot].cursor;
             self.set_cursor(fixed_slot, cursor, usize::MAX);
+        }
+
+        // Poll an archive job — a scan, an import, an upload or a removal.
+        match poll_job(&mut self.pacs_job, &ctx, "Archive", &mut self.error) {
+            Some(Ok(outcome)) => self.on_pacs_done(outcome),
+            Some(Err(e)) => self.error = Some(format!("Archive: {e:#}")),
+            None => {}
         }
 
         // Poll a DRR rendering.
@@ -1345,9 +1516,19 @@ impl eframe::App for ViewerApp {
         if let Some(action) = self.item_action.take() {
             self.apply_item_action(action);
         }
+        if let Some(action) = self.fourd_action.take() {
+            self.apply_fourd_action(action);
+        }
         if let Some(target) = self.rename_request.take() {
             self.open_rename(target);
         }
         self.modals(&ctx);
+        // A window was pulled out of the main window or pushed back into it:
+        // remember which, so it opens the same way next time the viewer runs.
+        let detached = detach::detached_ids(&ctx);
+        if detached != self.detached_windows {
+            self.detached_windows = detached;
+            self.persist_settings();
+        }
     }
 }

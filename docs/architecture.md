@@ -2,177 +2,180 @@
 
 ## Design philosophy
 
-**One language.** Everything is Rust — DICOM parsing, image
-reconstruction, rendering primitives, registration, meshing, neural-net
-inference, DICOM writing. Where a capability normally means binding a
-C/C++ library (elastix, ITK, ONNX Runtime, CUDA), the algorithms are
-re-implemented natively instead. The only system interface is the GPU,
-reached twice through `wgpu` (Vulkan / DX12 / Metal): once by `eframe` to
-blit the UI, once (optionally) by `burn` for neural-network inference —
-auto-segmentation, SegVol's image encoder, and the whole MedSAM2 graph —
-no vendor SDKs either way.
+**One language.** Everything is Rust — DICOM parsing, image reconstruction,
+rendering primitives, registration, meshing, neural-net inference, DICOM
+writing. Where a capability normally means binding a C/C++ library (elastix,
+ITK, ONNX Runtime, CUDA), the algorithm is re-implemented natively. The only
+system interface is the GPU, reached through `wgpu` (Vulkan / DX12 / Metal)
+by `eframe` to blit the UI and, optionally, by `burn` to run the networks.
 
-**CPU-side algorithms, GPU-side pixels.** All image processing runs on
-the CPU with `rayon` data parallelism and aggressive caching; the GPU
-receives finished textures. This keeps every algorithm debuggable,
-deterministic and portable, and turns out to be fast enough: full study
-load ≈ 40 ms, orthogonal slice extraction ≈ 6 µs, dose-plane resampling
-≈ 0.3 ms (measured on the synthetic study).
+**CPU-side algorithms, GPU-side pixels.** Image processing runs on the CPU
+with `rayon` and aggressive caching; the GPU receives finished textures.
+Every algorithm stays debuggable, deterministic and portable, and it is fast
+enough: study load ≈ 40 ms, orthogonal slice ≈ 6 µs, dose-plane resampling
+≈ 0.3 ms on the synthetic study.
 
-**Long work never blocks the UI.** Anything that can take more than a
-frame — loading, registration, meshing, simulation, export, anonymization,
-the three segmentation engines — runs on a worker thread and reports
-through one shared progress handle (see [Background jobs](#background-jobs)).
+**Long work never blocks the UI.** Anything longer than a frame runs on a
+worker thread and reports through one progress handle
+([Background jobs](#background-jobs)).
 
-**Shared before specific.** What more than one feature needs lives one
-level up: the progress handle, the model folder, the checkpoint
-download / conversion / cache path, the device choice, the shape-checked
-parameter view and the dense CPU kernels are written once in
-`progress.rs`, `models.rs` and `nn/`; the three engines and the three tool
-windows are built on top of them and hold only what is theirs.
+**Shared before specific.** What more than one feature needs lives one level
+up: the progress handle, the model folder, the checkpoint download /
+conversion / cache path, the device choice, the shape-checked parameter view
+and the dense CPU kernels are written once (`progress.rs`, `models.rs`,
+`nn/`); the engines and the tool windows hold only what is theirs.
 
 ## Functional overview
 
-What the program does, by category. Every leaf exists in the code today; the
-module map below says where.
+What the program does, by category; the [module map](#module-map) says
+where each leaf lives.
 
 ```
 rust-dicom-station
 │
 ├── Application (GUI, egui over wgpu)
 │   ├── Window chrome: menu bar, toolbar (W/L, presets, 3D, crosshair, reset), status bar
-│   ├── Side panel: registration, simulation, and per dataset a DICOM tree —
-│   │   patient ▶ study ▶ modality (CT/MR/US…) ▶ series, with RT structures,
-│   │   segmentations, dose and plans inside their own study — plus the
-│   │   dataset-level dose display, planar images, spatial registrations,
-│   │   treatment records and warnings
+│   ├── Side panel: the optional registration and simulation sections, and per
+│   │   dataset a DICOM tree — patient ▶ study ▶ modality ▶ series, with RT
+│   │   structures, segmentations, 4D groups, dose and plans inside their study —
+│   │   plus dose display, planar images, spatial registrations, records, warnings
 │   ├── Views: 1 × 3 or 2 × 3 (comparison) linked MPR viewports, crosshair,
 │   │   zoom / pan / W-L interaction, maximize, per-view caches
-│   ├── Floating windows: 3D structures (both datasets through the registration,
-│   │   per-dataset opacity, vector-field glyphs), planar image viewers
-│   ├── Data tree operations: rename every level (patient, study, series, sets,
-│   │   structures, segments, dose, plan, planar, REG, records);
-│   │   Shift-click range selection; copy / move / remove / export the ticked
-│   │   items from a button row or the context menu;
-│   │   copy / move / remove patient · study · series across datasets;
-│   │   create / connect / copy / move / remove RT structure sets and segmentation
-│   │   series; copy / move / remove single or selected structures and segments
-│   ├── Tool windows: auto-segmentation, prompt segmentation, slice propagation,
-│   │   model manager, structure propagation, DRR, export, anonymizer,
-│   │   test-data generator (one shared skeleton)
+│   ├── Tool windows (one shared skeleton; each can be docked over the views or
+│   │   detached into its own window of the operating system):
+│   │   3D structures, planar viewers, auto-segmentation, prompt segmentation,
+│   │   slice propagation, body contour, structure algebra, structure propagation,
+│   │   4D motion / ITV and its results, structure comparison, transfer by
+│   │   relationship, DVH, DRR, PACS, model manager, export, anonymizer, generator
+│   ├── Data tree operations: rename every level; Shift-click ranges; copy / move /
+│   │   remove / export the ticked items; create / connect / copy / move / remove
+│   │   structure sets and segmentation series; move single structures / segments
 │   ├── Background jobs: one progress handle, one poll loop
-│   ├── Settings: theme, model folder (viewer_settings.txt)
+│   ├── Settings: theme, model folder, archive folder, optional modules,
+│   │   detached windows (viewer_settings.txt in the config folder)
 │   └── Theme: dark / light / system, accent colors
 │
 ├── DICOM
-│   ├── Import: directory scan, classification, patient ▶ study ▶ series tree, dataset merging
-│   │   ├── Volumes: CT, MR, PT, NM, US, OT (parallel decode, compressed syntaxes, geometry)
+│   ├── Import: directory scan, classification, patient ▶ study ▶ series tree, merging
+│   │   ├── Volumes: CT, MR, PT, NM, US, OT (parallel decode, compressed syntaxes)
 │   │   └── Planar images: DX, CR, RTIMAGE, MG, XA, RF, PX
-│   ├── RT objects
-│   │   ├── RTSTRUCT (structure sets, contours, reference chain)
-│   │   ├── SEG (DICOM Segmentation: binary / fractional multi-frame masks,
-│   │   │   frame-position lattice, CIELab colors, read and written)
-│   │   ├── RTDOSE (grids, trilinear patient-space sampling, plan reference)
-│   │   ├── RTPLAN / RT Ion Plan (beams, control points, prescriptions)
-│   │   ├── RTIMAGE (DRR / portal, as planar image)
-│   │   ├── REG (spatial registration matrices and deformable grids, applied as
-│   │   │   the active registration; a recovered field written back out)
-│   │   └── RT (Ion) Beams Treatment Record (delivered metersets)
-│   ├── Export: CT series + RTSTRUCT + SEG + RTDOSE + RTPLAN with an editable tag table
-│   └── Anonymizer: scan, review every identifying tag, rewrite with consistent UID remap
+│   ├── RT objects: RTSTRUCT, SEG (binary / fractional, read and written), RTDOSE,
+│   │   RTPLAN / RT Ion Plan, RTIMAGE, REG (matrices and deformable grids, applied
+│   │   as the active registration, written back out), RT (Ion) Treatment Record
+│   ├── Export: CT + RTSTRUCT + SEG + RTDOSE + RTPLAN with an editable tag table
+│   ├── Anonymizer: scan, review every identifying tag, rewrite with a UID remap
+│   └── Patient archive: a local store filed patient ▶ study ▶ instance with text
+│       sidecars; import with dedupe, listing without opening a file, loading into
+│       a dataset, derived objects (RTSTRUCT, SEG) sent back under the original UIDs
 │
 ├── Data simulation
 │   ├── Synthetic RT phantom study (CT, RTSTRUCT, RTDOSE, RTPLAN, DX, RTIMAGE, REG, RTRECORD)
 │   ├── Known-transform study generator (rigid + Gaussian deformation, registration QA)
-│   └── Digitally reconstructed radiographs: exact Siddon ray tracing (plastimatch)
-│       and interpolating ray-casting (ITK), IEC cone-beam geometry, beam's-eye view
-│       from an RTPLAN beam, side-by-side difference, filed into the data tree
-│       as planar RT images with the geometry that produced them
+│   └── DRR: exact Siddon tracing (plastimatch) and interpolating ray-casting (ITK),
+│       IEC cone-beam geometry, beam's-eye view from an RTPLAN beam, difference image
 │
 ├── Image registration
 │   ├── elastix-style rigid (6-DOF Euler, ASGD, pyramids, stochastic sampling)
 │   ├── elastix-style deformable (rigid pre-alignment + cubic B-spline FFD)
-│   ├── plastimatch-style deformable (align_center, dense analytic gradient,
-│   │   bending-energy regularization, L-BFGS, mean squares or Mattes mutual information)
+│   ├── plastimatch-style deformable (dense analytic gradient, bending energy,
+│   │   L-BFGS, mean squares or Mattes mutual information)
 │   ├── plastimatch-style landmark warp (thin-plate spline, Gaussian, Wendland)
 │   ├── Local registration: any method restricted to a structure with a margin;
 │   │   refinement composed on top of an existing result
 │   ├── Analytics: 6-DOF Procrustes fit, displacement statistics, Jacobian
 │   │   determinant and folding, per-structure displacement
-│   ├── Vector field: lattice sampling, arrows / deformed grid in the MPR views,
-│   │   3-D glyphs, both datasets in one 3-D scene with per-dataset opacity
-│   ├── Fusion overlay (magenta / green blend on the fixed dataset)
-│   └── DICOM REG matrices and Deformable Spatial Registration grids applied as the
-│       active registration; the recovered field written back out as one
+│   ├── Vector field: arrows / deformed grid in the views, 3-D glyphs
+│   ├── Fusion overlay (magenta / green)
+│   └── Structure propagation across any registration, globally or refined on an
+│       enclosing structure first
+│
+├── 4D and motion
+│   ├── 4D groups: phases recognised from descriptions and temporal identifiers,
+│   │   AVG / MIP filed with them, hand-built groups kept across re-detection
+│   ├── Motion pipeline per phase: register (rigid / deformable) ▸ propagate the
+│   │   targets ▸ centroid, volume, peak-to-peak, drift, correlation with a
+│   │   reference structure (Pearson r, p), registration QA
+│   ├── ITV: union over phases with a margin, landed as a segmentation
+│   ├── Results window: charts, tables, CSV, run-vs-run (A/B) comparison
+│   ├── Structure comparison: volumes, centroid offset, Dice, HD95, mean surface distance
+│   └── Transfer by relationship: a structure placed in the other dataset at its
+│       offset from a reference structure
+│
+├── Dose analysis
+│   └── DVH: dose sampled over the structure's own lattice, cumulative and
+│       differential curves, Dx% / Dxcc / Vx metrics, protocol constraints, CSV
 │
 ├── Segmentation
-│   ├── Body / EXTERNAL contour: thresholding by modality (HU, or MR after bias
-│   │   flattening), spacing-aware opening, extruded-equipment removal along all
-│   │   three axes, component selection by volume, thin-anatomy recovery,
-│   │   slice-wise filling — classically, or guided by TotalSegmentator's body
-│   │   network (CT 6 / 1.5 mm, MR)
 │   ├── Voxel masks: brush / eraser (2D, 3D), geodesic region growing, undo,
-│   │   slice overlays, hole filling, mask ▶ RTSTRUCT contours, RTSTRUCT ▶ mask,
-│   │   grouped into segmentation series that live in the study and bind to an
-│   │   image series (resampled onto its lattice when it is displayed)
-│   ├── Propagation: structures and segmentations carried across a registration,
-│   │   globally or refined on an enclosing structure first
+│   │   overlays, hole filling, mask ⇄ RTSTRUCT, segmentation series bound to an
+│   │   image series (resampled onto its lattice for display)
+│   ├── Body / EXTERNAL contour: threshold by modality (HU, or bias-flattened MR),
+│   │   spacing-aware opening, extruded-equipment removal along all three axes,
+│   │   component selection, thin-anatomy recovery — classically, or guided by
+│   │   TotalSegmentator's body network
+│   ├── Structure algebra: union / intersection / subtraction / symmetric difference,
+│   │   a margin per operand and on the result (six patient directions, exact
+│   │   ellipsoids), crop, fill / smooth / prune
 │   ├── Surfaces: contour and mask ▶ meshes (scanline fill, surface nets, smoothing)
-│   ├── Auto-segmentation — TotalSegmentator (nnU-Net), 117 classes,
-│   │   3 mm / 1.5 mm × 5 / 6 mm models, CPU (im2col + SIMD GEMM) or GPU (burn/wgpu)
-│   ├── Prompt segmentation — SegVol, box / point / text prompts,
-│   │   3-D ViT + SAM-style decoder + CLIP text tower, zoom-out / zoom-in passes
-│   └── Slice propagation — MedSAM2 (SAM 2.1 Hiera-T), box drawn in the view,
-│       preview / include-exclude refinement, memory-bank propagation through the stack
+│   ├── Auto-segmentation — TotalSegmentator (nnU-Net), 117 classes, 3 / 1.5 / 6 mm
+│   │   models, CPU (im2col + SIMD GEMM) or GPU (burn / wgpu)
+│   ├── Prompt segmentation — SegVol: box / point / text, 3-D ViT + SAM-style
+│   │   decoder + CLIP text tower, zoom-out / zoom-in passes
+│   └── Slice propagation — MedSAM2 (SAM 2.1 Hiera-T): box drawn in the view,
+│       include / exclude refinement, memory-bank propagation through the stack
 │
 ├── Neural-network infrastructure (shared by every engine)
-│   ├── Model folder: <exe>/models/{totalsegmentator, segvol, medsam2}, legacy migration
-│   ├── Model manager: one inventory of every downloadable model, its state and size;
-│   │   download / update / remove one or all, free redundant source checkpoints
+│   ├── Model folder: <data folder>/models/{totalsegmentator, segvol, medsam2},
+│   │   legacy migration; the model manager's inventory (state, size, download /
+│   │   update / remove / free)
 │   ├── Weights: download (rustls), torch pickle reader, safetensors cache, conversion
-│   ├── Device: Auto / GPU / CPU preference, one validated wgpu context, panic guard
+│   ├── Device: Auto / GPU / CPU, one validated wgpu context, panic guard
 │   ├── Parameters: shape-checked view of a state dict
-│   └── CPU kernels: Mat / Act tensors, gemm linear, layer norm, activations, attention,
-│       transposed conv, f16 ↔ f32
+│   └── CPU kernels: Mat / Act tensors, gemm linear, layer norm, activations,
+│       attention, transposed conv, f16 ↔ f32
 │
 ├── Core services
 │   ├── Volume: patient-space geometry (LPS), slice extraction, sampling, canonical axes
 │   ├── Geometry: Vec3 math, direction labels
+│   ├── Morphology: exact anisotropic distance transform, erode / dilate / open /
+│   │   close, ellipsoidal margins, components, hole filling
 │   ├── Render: window / level, dose colorwash, marching-squares isodose, contour ∩ plane
 │   └── Progress: message, fraction, device, cancel, phase window
 │
-├── Tests: 9 integration suites + in-module unit tests, synthetic phantom, reference dumps
-├── Examples: headless CLIs and probes for the three engines (shared examples/common)
-├── Tools: Python scripts that produce the reference fixtures (never needed at runtime)
+├── Tests: 14 integration suites + in-module unit tests, synthetic phantom, reference dumps
+├── Examples: headless CLIs and probes for the engines (shared examples/common)
+├── Tools: the two PyTorch scripts that produce the MedSAM2 reference fixtures
 ├── Installer: Windows setup (shortcuts, VC++ runtime, optional weight prefetch, uninstall)
-└── CI: fmt, clippy -D warnings, tests on Linux + Windows, CPU-only build, installer build
+└── CI: fmt, clippy -D warnings, tests on Linux + Windows, CPU-only build; every push
+    to main builds the installer and a Linux AppImage into a GitHub release
 ```
 
 ### Sources of the algorithms
 
-Nothing in the tree above is bound as a library; each of the heavy
-algorithms is a native re-implementation of a published reference, and the
-reference is what the tests compare against. Registration follows
-[elastix](https://elastix.dev/) (rigid and B-spline, ASGD, pyramids) and
+Nothing above is bound as a library; each heavy algorithm is a native
+re-implementation of a published reference, and the reference is what the
+tests compare against. Registration follows [elastix](https://elastix.dev/)
+(rigid and B-spline, ASGD, pyramids) and
 [plastimatch](https://plastimatch.org/) (dense B-spline with L-BFGS and a
-bending-energy penalty, and the `landmark_warp` radial-basis kernels); the
-mutual-information metric follows Mattes et al. (IEEE TMI 2003). The two DRR
-projectors follow plastimatch's exact Siddon tracer and ITK's
+bending-energy penalty, and the `landmark_warp` kernels); mutual information
+follows Mattes et al. (IEEE TMI 2003). The DRR projectors follow
+plastimatch's exact Siddon tracer and ITK's
 `RayCastInterpolateImageFunction`. Auto-segmentation re-implements
 [TotalSegmentator](https://github.com/wasserth/TotalSegmentator) on its
 [nnU-Net](https://github.com/MIC-DKFZ/nnUNet) models; prompt segmentation
 re-implements [SegVol](https://github.com/BAAI-DCAI/SegVol); slice
 propagation re-implements [MedSAM2](https://github.com/bowang-lab/MedSAM2),
 i.e. Meta's [SAM 2](https://github.com/facebookresearch/sam2) fine-tuned on
-medical images. The papers to cite, the licences of the weights and the
-numerical validation of each port are in the per-feature documents
-([registration.md](registration.md), [auto-segmentation.md](auto-segmentation.md),
-[segvol.md](segvol.md), [medsam2.md](medsam2.md)).
+medical images. Papers, weight licences and the numerical validation of each
+port are in the per-feature documents ([registration.md](registration.md),
+[auto-segmentation.md](auto-segmentation.md), [segvol.md](segvol.md),
+[medsam2.md](medsam2.md)).
 
 ## Module map
 
-Where each function above lives. The right-hand tag names its functional
-category (**App**, **DICOM**, **Sim**, **Reg**, **Seg**, **NN**, **Core**).
+Where each function lives. The right-hand tag is the functional category
+(**App**, **DICOM**, **Sim**, **Reg**, **4D**, **Dose**, **Seg**, **NN**,
+**Core**).
 
 ```
 src/
@@ -181,48 +184,58 @@ src/
                     tests and the examples drive the same code as the GUI
   progress.rs       the one progress handle + ProgressSink, Quiet, Stderr         Core
   models.rs         the model folder: root, per-engine sub-folders, migration,
-                    and the inventory of every downloadable model (state, size,
-                    download / update / remove / free)                            NN
-  settings.rs       persisted preferences (theme, model folder)                   App
+                    the inventory of every downloadable model                    NN
+  settings.rs       persisted preferences and the config / data folders          App
+  archive.rs        the local patient archive: on-disk layout, sidecars,
+                    scanning, importing, index rebuild, removal                   DICOM
 
   app/              egui application, split by concern; every submodule is a
-                    further `impl ViewerApp` block, so the struct and all its
-                    state stay in one place while the behaviour is grouped:     App
+                    further `impl ViewerApp` block, so the struct and its state
+                    stay in one place while the behaviour is grouped:            App
     mod.rs            ViewerApp and every type it holds, construction, the job
                       plumbing (Job::spawn, poll_job, poll_tool_job), per-frame driver
     theme.rs          theme-dependent colors
     chrome.rs         menu bar, toolbar, status bar, help
-    panels.rs         left panel: its show / hide, the optional modules and
-                      the per-dataset Data tree sections
+    detach.rs         every tool window, docked in the main window or in its
+                      own window of the operating system
+    panels.rs         left panel: show / hide, the per-dataset Data tree sections
+    reg_panel.rs      the Image registration section: method, region, parameters,
+                      landmarks, the run, the analytics, the vector field
     views.rs          central MPR viewports, interaction, texture caches
     d3.rs             live 3D structure window
     planar.rs         floating DX / CR / RTIMAGE viewers
     tree.rs           dataset-tree copy / move / remove with reference chains
-    rename.rs         renaming every level of the data tree: the targets, the
-                      one-field dialog, and the study-only rename itself
+    rename.rs         renaming every level of the data tree
     sets.rs           structure sets and segmentation series as tree nodes:
-                      create, connect to an image series, copy / move / remove
-                      whole series, and move single structures / segments
-                      between any two of them (contour ⇄ mask conversion)
+                      create, connect, copy / move / remove, move single
+                      structures / segments (contour ⇄ mask conversion)
     jobs.rs           loading, simulation, export, generator, anonymizer and
                       auto-segmentation job starts
     dialogs.rs        auto-segmentation window + results, generator, anonymizer,
                       export, error dialog
-    reg_panel.rs      the Image registration section: method, region, parameters,
-                      landmarks, the run, the analytics, the vector field
-    models_win.rs     the model manager window
-    propagate_win.rs  structure propagation window and worker
-    drr_win.rs        the DRR window: geometry, projectors, comparison
     seg.rs            interactive segmentation state machine, mask ▶ RTSTRUCT,
                       landing an auto-segmentation result
-    body_win.rs       the body-contour window: method choice, the modality's
-                      own threshold row, the classical / model-assisted split
-    seg_engines.rs    what the four tool windows share: names and glyphs,
-                      device / model-folder / licence / progress rows,
-                      result landing, the "still the same dataset" check
+    seg_engines.rs    what the tool windows share: names and glyphs, device /
+                      model-folder / licence / progress rows, result landing,
+                      the "still the same dataset" check
+    body_win.rs       the body-contour window
+    combine_win.rs    the structure-algebra window: operands, margins, the recipe
     prompt_seg.rs     prompt segmentation window and worker (SegVol)
     box_seg.rs        slice propagation: the box drawn in the viewport, the
                       preview / refine / propagate loop, the resident session (MedSAM2)
+    propagate_win.rs  structure propagation window and worker
+    motion_win.rs     the 4D motion / ITV window and its per-phase pipeline
+                      worker (register ▸ propagate ▸ measure ▸ ITV)
+    motion_results.rs the motion results window: charts, tables, correlations,
+                      QA, CSV, run-vs-run comparison
+    compare_win.rs    compare structures: volumes, centroid offset, Dice, HD95, MSD
+    transfer_win.rs   transfer by relationship
+    dvh_win.rs        the DVH window: pickers, the plot, the metrics table,
+                      constraints, export
+    drr_win.rs        the DRR window: geometry, projectors, comparison
+    pacs_win.rs       the PACS window: archive root, patient / study list,
+                      import, load, send back
+    models_win.rs     the model manager window
 
   loader.rs         directory scan, classification, parallel volume loading,
                     dataset merging, safe DICOM element helpers                  DICOM
@@ -231,23 +244,25 @@ src/
   geometry.rs       minimal 3D vector math (Vec3, f64, patient mm)               Core
   render.rs         window / level, dose colorwash, marching-squares isodose,
                     contour / plane intersection                                 Core
+  morphology.rs     binary-mask geometry in millimetres: exact anisotropic
+                    distance transform, erode / dilate / open / close,
+                    ellipsoidal margins, components, hole filling, the
+                    extruded-equipment test, box-blur smoothing                  Core
   rtstruct.rs       RT Structure Set parsing                                     DICOM
   dicomseg.rs       DICOM Segmentation: the segmentation-series model, SEG
-                    reading (binary / fractional, frame-position lattice),
-                    resampling between lattices, the SEG writer               DICOM
+                    reading, resampling between lattices, the SEG writer         DICOM
   rtdose.rs         RT Dose parsing + trilinear patient-space sampling           DICOM
   rtplan.rs         RT Plan / RT Ion Plan parsing                                DICOM
-  extras.rs         DX / CR / RTIMAGE planar images, REG (matrices and
-                    deformation grids), RTRECORD                                 DICOM
-  dicom_export.rs   DICOM writer (CT series, RTSTRUCT, SEG, RTDOSE, RTPLAN, and
-                    the Deformable Spatial Registration a recovered field
-                    becomes)                                                     DICOM
+  extras.rs         DX / CR / RTIMAGE planar images, REG, RTRECORD               DICOM
+  dicom_export.rs   DICOM writer (CT, RTSTRUCT, SEG, RTDOSE, RTPLAN, Deformable
+                    Spatial Registration)                                        DICOM
   anonymize.rs      interactive DICOM anonymizer engine                          DICOM
   gen_test_data.rs  synthetic RT phantom study generator                         Sim
   simulate.rs       known-transform study generator (registration QA)           Sim
+  drr.rs            DRR: IEC cone-beam geometry, Siddon exact tracing and
+                    ITK-style interpolating ray-casting                          Sim
   registration.rs   parameters, transforms (rigid, B-spline, RBF, field,
-                    composite), region masks, the image pyramid and the
-                    samplers, and the engine dispatch                            Reg
+                    composite), region masks, pyramid, samplers, dispatch        Reg
     elastix.rs        stochastic sampling + ASGD, rigid and B-spline stages
     plastimatch.rs    align_center, dense analytic gradient, bending energy,
                       Mattes mutual information, L-BFGS
@@ -256,22 +271,21 @@ src/
     dvf.rs            vector-field sampling and its view-plane / 3-D glyphs
   propagate.rs      structures across a registration: pull-back with a cached
                     mapping lattice                                              Reg
-  drr.rs            digitally reconstructed radiographs: IEC cone-beam geometry,
-                    Siddon exact tracing and ITK-style interpolating ray-casting  Sim
+  fourd.rs          4D sub-studies: phase recognition, ordered groups
+                    (phases + AVG / MIP), custom-group rules                     4D
+  motion.rs         motion arithmetic over phases: centroids, peak-to-peak,
+                    drift, Pearson r with p-values, Dice / HD95 / MSD overlap,
+                    ITV unions, the motion report + CSV                          4D
+  dvh.rs            dose–volume histograms: sampling, curves, metrics,
+                    protocol constraints, CSV                                    Dose
   segmentation.rs   voxel masks: brush, geodesic grow, undo, overlays,
-                    label map ▶ segmentations, mask ▶ RTSTRUCT contours and
-                    RTSTRUCT contours ▶ mask                                     Seg
-  morphology.rs     binary-mask geometry, in millimetres: the exact
-                    anisotropic Euclidean distance transform and the
-                    erode / dilate / open / close it powers, 6-connected
-                    components, slice-wise and 3-D hole filling, the
-                    extruded-equipment test, box-blur smoothing              Core
-  bodymask.rs       the body / EXTERNAL contour: foreground by modality (HU,
-                    or bias-flattened MR), equipment removal, component
-                    selection, thin-anatomy recovery, filling — classically
-                    or guided by the body network                                Seg
-  mesh3d.rs         contour / mask ▶ surface meshes (scanline fill,
-                    surface nets, Laplacian smoothing)                           Seg
+                    label map ▶ segmentations, mask ⇄ RTSTRUCT contours          Seg
+  structops.rs      structure algebra: the four boolean operations, margins,
+                    crop, fill / smooth / prune, over masks on one lattice       Seg
+  bodymask.rs       the body / EXTERNAL contour, classically or guided by the
+                    body network                                                 Seg
+  mesh3d.rs         contour / mask ▶ surface meshes (scanline fill, surface
+                    nets, Laplacian smoothing)                                   Seg
 
   nn/               shared neural-network infrastructure — nothing in here
                     knows about a particular architecture                        NN
@@ -283,15 +297,12 @@ src/
     params.rs         shape-checked view of a loaded state dict
     half.rs           binary16 ↔ binary32 conversion
     tensor.rs         Mat [rows, cols] and Act [c, d, h, w]; transposed conv
-                      (a hand-tuned 2× and a general kernel = stride form)
-    linalg.rs         gemm-backed linear / matmul, layer norm, softmax,
-                      GELU / ReLU / QuickGELU
+    linalg.rs         gemm-backed linear / matmul, layer norm, softmax, activations
     attention.rs      multi-head attention, optionally causally masked
 
   autoseg/          automatic segmentation (pure-Rust TotalSegmentator)         Seg
-    mod.rs            public API: variants, run(), run_specs() (the engine
-                      minus the question, shared with the body contour),
-                      progress phases
+    mod.rs            public API: variants, run(), run_specs() (shared with the
+                      body contour), progress phases
     classes.rs        117-class table, sub-model maps, organ colors
     config.rs         nnU-Net plans.json parsing
     weights.rs        which models exist, where they are published, the
@@ -302,9 +313,7 @@ src/
     preprocess.rs     resampling to the model grid and back (scipy conventions)
     infer.rs          Gaussian sliding window, streaming argmax
 
-  segvol/           prompt segmentation (pure-Rust SegVol) — box, point and
-                    text prompts, for the structures a fixed-class model
-                    cannot cover                                                 Seg
+  segvol/           prompt segmentation (pure-Rust SegVol)                       Seg
     weights.rs        the checkpoint and tokenizer files, load(), licensing notes
     layout.rs         the published checkpoint's tensor layout and its checks
     config.rs         the network's fixed dimensions
@@ -319,9 +328,9 @@ src/
     clip.rs           CLIP text tower + dim_align, with a prompt cache
     gpu.rs            image encoder on wgpu via burn (cargo feature `gpu`)
 
-  medsam2/          slice propagation (pure-Rust MedSAM2 — SAM 2.1 fine-tuned
-                    on medical images); every module is generic over a `burn`
-                    backend, so one implementation runs on GPU and CPU          Seg
+  medsam2/          slice propagation (pure-Rust MedSAM2); every module is
+                    generic over a `burn` backend, so one implementation runs
+                    on GPU and CPU                                               Seg
     weights.rs        the four published variants, load(), the research-only licence
     layout.rs         the checkpoint's tensor layout and its checks
     config.rs         the fixed dimensions: 512 input, 7 memories, 16 pointers
@@ -345,220 +354,178 @@ src/
     engine.rs         backend choice, the encoded-slice cache, the one call
                       the user interface makes
 
-tests/             nine integration suites (see Testing)
-examples/          autoseg_cli, autoseg_probe, segvol_cli, segvol_probe,
+tests/             fourteen integration suites (see Testing)
+examples/          autoseg_cli, autoseg_probe, body_cli, segvol_cli, segvol_probe,
                    medsam2_cli, medsam2_probe; common/ holds what they share
-tools/             gen_reference_activations.py, gen_ops_fixtures.py — the
-                   two PyTorch scripts that produce the fixtures and reference
-                   dumps the MedSAM2 tests compare against (never run at
-                   build time; needed only to regenerate them)
-installer/         the Windows installer, its own workspace (see its README)
+tools/             gen_reference_activations.py, gen_ops_fixtures.py — the two
+                   PyTorch scripts that produce the fixtures and reference dumps
+                   the MedSAM2 tests compare against (never run at build time)
+installer/         the Windows installer, its own workspace (see its README);
+                   built by the release workflow
 ```
 
 ## UI architecture
 
-`ViewerApp` is defined in `app/mod.rs` together with every type it holds;
-the sibling modules only add `impl ViewerApp` blocks. Keeping the
-definitions in the parent module is what lets each child reach the struct's
-private fields without widening any visibility beyond `pub(super)`.
+`ViewerApp` is defined in `app/mod.rs` together with every type it holds; the
+sibling modules only add `impl ViewerApp` blocks, so each child reaches the
+struct's private fields without widening any visibility beyond `pub(super)`.
 
 `ViewerApp` owns two `StudySlot`s (datasets A and B). Each slot holds the
-loaded study (series list, the volume behind an `Arc`, structure sets,
-doses, plans, planar images, registrations, records), three `ViewState`s
-(per-plane slice, zoom/pan, and all texture caches), the crosshair, per-ROI
-visibility, and the segmentation masks. Global state covers window/level,
-dose display settings, tool selection, the registration result, the model
-folder, and the theme.
+loaded study (series, the volume behind an `Arc`, structure sets, doses,
+plans, planar images, registrations, records, 4D groups), three `ViewState`s
+(per-plane slice, zoom / pan, texture caches), the crosshair, per-ROI
+visibility and the segmentation masks. Global state covers window / level,
+dose display, tool selection, the registration result, the model folder and
+the theme.
 
-Rendering is cache-driven: each view keeps keyed textures for the
-grayscale slice, dose colorwash, contour polylines, segmentation overlay
-and fusion blend, rebuilt only when their inputs change (slice, W/L, dose
-settings, ROI visibility, mask edits, registration). Invalidation uses
-small generation counters bumped by the owning mutation sites — and only by
-those: a ROI visibility toggle, for instance, is part of the contour key
-alone and leaves the dose and fusion textures untouched. Repaints are
-demand-driven; while background jobs run, the UI polls at 10 Hz.
+Rendering is cache-driven: each view keeps keyed textures for the grayscale
+slice, dose colorwash, contour polylines, segmentation overlay and fusion
+blend, rebuilt only when their inputs change. Invalidation uses generation
+counters bumped by the owning mutation sites — and only by those: a ROI
+visibility toggle is part of the contour key alone and leaves the dose and
+fusion textures untouched. Repaints are demand-driven; while background jobs
+run, the UI polls at 10 Hz.
 
-### The segmentation tool windows
+### The tool windows
 
-Body contouring, auto-segmentation, prompt segmentation and slice
-propagation are different conversations — a parameterised geometric run, a
-batch run with a result-selection dialog, a one-shot prompt, an interactive
-box loop — but they are the same kind of tool, and `app/seg_engines.rs`
-makes them look and behave alike:
+Every secondary window is drawn through `app/detach.rs`: docked, it is an
+`egui::Window` floating over the viewports; detached, the same closure draws
+into a native window of the operating system that can live on another
+monitor. The choice is per window and persisted.
 
-* one `ToolInfo` per tool gives the glyph (👤 🤖 🧠 ⏩), the window title
-  (`🤖 Auto-segmentation — dataset A`, the same pattern as
-  `3D structures — dataset A`), the menu entry (`🤖 Auto-segment dataset A…`)
-  and the small sidebar button (`🤖 Auto…`);
-* every window is floating, collapsible and closable, and stays open while
-  its run is in flight — the button row becomes the progress row (device,
-  bar, message, Cancel); closing it never stops the run, and the sidebar
-  *Segmentations* section shows whichever engine is running on that
-  dataset with the same Cancel;
-* the sections come in the same order: a one-line description naming the
-  engine, the tool's own inputs, `Name`, a collapsed **Options** header
-  holding the engine's settings plus the shared `Compute: Auto / GPU / CPU`
-  and `Model folder` rows, one small licence line ("… Research / QA use —
-  not a medical device."), then `▶ Segment` / `▶ Propagate` / `▶ Contour`
-  and `Close`, and a status line summarising the last result;
-* what a tool does not have, it does not show: the body contour's classical
-  method needs no device, no model and no download, so those rows appear
-  only when its method is the model-assisted one;
-* results land the same way — `add_segmentation` with the next palette
-  colour — and a run that finishes after the dataset was replaced is
-  discarded with the same message.
+The segmentation-type tools — body contour, structure algebra,
+auto-segmentation, prompt segmentation, slice propagation, 4D motion — are
+different conversations but the same kind of tool, and `app/seg_engines.rs`
+makes them alike: one `ToolInfo` per tool gives the glyph, the window title
+(`🤖 Auto-segmentation — dataset A`), the menu entry and the small sidebar
+button; every window stays open while its run is in flight, the button row
+becoming the progress row (device, bar, message, Cancel); the sections come
+in the same order (description, the tool's inputs, `Name`, a collapsed
+**Options** with the shared `Compute` and `Model folder` rows, the licence
+line, `▶ Segment` / `▶ Propagate` / `▶ Contour`, `Close`, status); rows a
+tool has no use for are not shown; and results land the same way
+(`add_segmentation`), a run that finishes after its dataset was replaced
+being discarded with the same message.
 
 ## Background jobs
 
 One pattern serves every long operation:
 
 ```rust
-struct Job<T, P = Progress> { progress: Arc<P>, rx: mpsc::Receiver<T> }
+struct Job<T> { progress: Arc<Progress>, rx: mpsc::Receiver<T> }
 ```
 
 `Job::spawn` snapshots the inputs, starts a `std::thread` and hands the
 worker the progress handle; the UI polls the channel each frame
-(`poll_job`): a received value lands the result, a disconnect means the
-worker died and surfaces as an error. The engines and the registration
-answer with `(slot, Result)`, and `poll_tool_job` turns a failure into an
-error dialog — except a cancellation, which is what the user asked for.
+(`poll_job`): a value lands the result, a disconnect means the worker died
+and surfaces as an error. The tools answer with `(slot, Result)`, and
+`poll_tool_job` turns a failure into an error dialog — except a
+cancellation, which is what the user asked for.
 
-There is one `Progress` type (`progress.rs`): a message, a fraction for
-progress bars, the device label once known, an atomic cancel flag, and a
-phase window that maps a sub-step's own 0‥1 onto its slice of the overall
-bar. Workers see it through the `ProgressSink` trait, which the headless
-examples implement on standard error and the tests with `Quiet`. Workers
-use `rayon` internally for data parallelism; the thread-per-job is only
-the container.
-
-Results are validated on landing where the underlying data could have
-changed meanwhile (every engine checks volume dimensions and
-frame-of-reference UID before applying).
+`Progress` (`progress.rs`) holds a message, a fraction, the device label,
+an atomic cancel flag and a phase window that maps a sub-step's own 0‥1 onto
+its slice of the overall bar. Workers see it through `ProgressSink`, which
+the headless examples implement on standard error and the tests with
+`Quiet`. Workers use `rayon` internally; the thread-per-job is only the
+container. Results are validated on landing where the underlying data could
+have changed meanwhile (volume dimensions, frame-of-reference UID).
 
 ## The model folder
 
 Every engine downloads its published checkpoint on first use and keeps it,
-with the converted `safetensors` cache beside it, under one root that the
-user can move from any of the three tool windows and that is persisted as
-`models_dir` in `viewer_settings.txt`:
+with the converted `safetensors` cache beside it, under one root. The default
+is `models/` in the application's data folder
+(`%LOCALAPPDATA%\RustDICOMStation` on Windows,
+`~/.local/share/RustDICOMStation` on Linux, `~/Library/Application
+Support/RustDICOMStation` on macOS); it can be moved from any tool window
+and is persisted as `models_dir` in `viewer_settings.txt`, which lives in
+the config folder (the same folder on Windows, `~/.config/RustDICOMStation`
+on Linux):
 
 ```
-<folder of the executable>/models/
+<data folder>/models/
   totalsegmentator/<model>/model.safetensors + plans.json
   segvol/pytorch_model.bin, vocab.json, merges.txt, segvol.safetensors
   medsam2/MedSAM2_<variant>.pt + .safetensors
 ```
 
-`models.rs` owns the layout; `nn/cache.rs` owns the path from a URL to a
-loaded tensor map (`RemoteFile::ensure` ▶ `convert_checkpoint` ▶
-`load_safetensors`, wrapped as `ensure_converted`), and each engine's
-`weights.rs` only says which files, which tensors and under what names.
-Installations that predate the single root are migrated at startup: the
-old `autoseg_models/`, `segvol_model/` and `medsam2_model/` folders beside
-the executable are renamed into place, never re-downloaded. The Windows
-installer writes the same key and pre-fetches only the Apache-2.0
-TotalSegmentator weights, into `models/totalsegmentator/`.
+`models.rs` owns the layout and the inventory behind the model manager;
+`nn/cache.rs` owns the path from a URL to a loaded tensor map
+(`RemoteFile::ensure` ▶ `convert_checkpoint` ▶ `load_safetensors`, wrapped as
+`ensure_converted`); each engine's `weights.rs` only says which files, which
+tensors and under what names. Installations that predate the single root are
+migrated at startup: the old `autoseg_models/`, `segvol_model/` and
+`medsam2_model/` folders beside the executable are renamed into place. The
+Windows installer uses the same default, records `models_dir` only when a
+different folder is chosen, and pre-fetches only the Apache-2.0
+TotalSegmentator weights.
 
 ## Geometry conventions
 
-* Patient space is DICOM **LPS**, `f64` millimeters (`Vec3`).
+* Patient space is DICOM **LPS**, `f64` millimetres (`Vec3`).
 * Volume voxels are stored `data[k·nx·ny + j·nx + i]` with dims
   `[nx, ny, nz]` = [columns, rows, slices]; `origin` is the **center** of
-  voxel (0,0,0); `row_dir`/`col_dir`/`normal` are unit vectors, so the
+  voxel (0,0,0); `row_dir` / `col_dir` / `normal` are unit vectors, so the
   code never assumes axis-aligned volumes.
 * `Volume::canonical_axes` finds the permutation and flips onto `[S, A, R]`
-  by direction cosine; all three engines orient through it (MedSAM2 reads
-  the in-plane axes the other way round, as SAM 2 does).
+  by direction cosine; all engines orient through it (MedSAM2 reads the
+  in-plane axes the other way round, as SAM 2 does).
 * Segmentation masks use the identical index order, so mask ↔ volume
   operations are index-parallel.
-* Display convention: sagittal/coronal view rows run superior → inferior
-  (`y = (nz−1) − k`); every producer of view-space pixels honors the same
+* Display: sagittal / coronal view rows run superior → inferior
+  (`y = (nz−1) − k`); every producer of view-space pixels honours the same
   flip (asserted by tests).
-* Interpolation is trilinear unless stated. The engines deliberately keep
-  their reference implementations' resampling conventions — scipy `zoom`
-  (nnU-Net), PyTorch `nearest-exact` / `align_corners=false` (SegVol), PIL
-  antialiased bicubic in 8-bit fixed point (MedSAM2) — because each is
-  validated numerically against that reference; they are not unified.
+* Interpolation is trilinear unless stated. The engines keep their reference
+  implementations' resampling conventions — scipy `zoom` (nnU-Net), PyTorch
+  `nearest-exact` / `align_corners=false` (SegVol), PIL antialiased bicubic
+  in 8-bit fixed point (MedSAM2) — because each is validated numerically
+  against that reference.
 
 ## Error handling and style
 
-`anyhow::Result` with `bail!`/`context` at operation boundaries; missing
-or malformed *individual* DICOM attributes never error — safe extraction
-helpers return `Option` and per-file failures inside a batch become
-warnings shown in the UI. Cancellation is an error whose message contains
-`progress::CANCELLED`, recognised by the application. `rayon` idioms:
-`par_iter` over independent files/ROIs, `par_chunks_mut` over image
-rows/slices, dense per-chunk accumulators. Sums that decide a threshold or
-a normalization stay sequential so a run reproduces itself. Modules open
-with a `//!` block explaining the algorithm and its conventions, usually
-citing the reference implementation (elastix, MITK, 3D Slicer, nnU-Net,
-SAM 2).
+`anyhow::Result` with `bail!` / `context` at operation boundaries; missing or
+malformed *individual* DICOM attributes never error — safe extraction
+helpers return `Option`, and per-file failures inside a batch become
+warnings in the UI. Cancellation is an error whose message contains
+`progress::CANCELLED`. `rayon` idioms: `par_iter` over independent files /
+ROIs, `par_chunks_mut` over rows / slices; sums that decide a threshold or a
+normalization stay sequential so a run reproduces itself. Modules open with
+a `//!` block explaining the algorithm and its conventions, usually citing
+the reference implementation.
 
 Because `lib.rs` makes every module public, `cargo clippy -D warnings`
-cannot see an unused `pub` item; the 2026-08 review found them with a
+cannot see an unused `pub` item; the periodic review finds them with a
 mechanical scan (every `pub` item referenced nowhere outside its own
-tests) — worth repeating occasionally.
+tests).
 
 ## Dependencies
 
-Runtime dependencies are all pure Rust: `dicom-rs` (DICOM, with
-`dicom-pixeldata` for decoding), `egui`/`eframe` (UI over wgpu), `rayon`,
-`rfd` (file dialogs), `walkdir`, `anyhow`; for the engines additionally
-`gemm` (SIMD matrix kernels), `serde_json` (plans.json, vocab.json), `zip`,
-`ureq` (rustls + OS trust store), `safetensors`, and `burn` — always
-compiled with its `ndarray` CPU backend (the MedSAM2 engine is written
-against it), with the wgpu backend added by the cargo feature `gpu`
-(default on).
+All pure Rust: `dicom-rs` (DICOM, with `dicom-pixeldata` for decoding),
+`egui` / `eframe` (UI over wgpu), `rayon`, `rfd` (file dialogs), `walkdir`,
+`anyhow`; for the engines `gemm` (SIMD matrix kernels), `serde_json`, `zip`,
+`ureq` (rustls + OS trust store), `safetensors`, and `burn` — always with
+its `ndarray` CPU backend, with the wgpu backend added by the cargo feature
+`gpu` (default on).
 
 ## Testing
 
-Nine integration suites plus in-module unit tests run against the same
-code paths the GUI uses, with no external data or tooling:
-
-* **synthetic_study** — generate the analytic phantom, reload, verify
-  geometry round-trips, HU values, contour radii, trilinear dose values,
-  isodose radii and plan fields against closed-form expectations;
-* **simulate_export** — simulate a known transform → export DICOM →
-  reload → verify within format tolerances;
-* **registration** — rigid and B-spline recovery of analytically known
-  transforms (sub-voxel assertions);
-* **segmentation** — brush/undo semantics, geodesic-grow no-leak,
-  hole filling, one-pass label-map splitting, mask → RTSTRUCT contours,
-  meshing;
-* **anonymize** — anonymize → reload: identity gone, references intact,
-  pixels byte-identical;
-* **autoseg** — miniature network assembly with exact checkpoint naming +
-  forward pass; sliding-window steps and resampling conventions pinned to
-  nnU-Net/scipy reference values; an `#[ignore]`d end-to-end test against
-  the real 3 mm model;
-* **segvol** — CPU/GPU agreement for the image encoder is `#[ignore]`d, not
-  because it is unimportant but because `WgpuDevice::default()` returns a
-  *software* adapter on CI runners; run it where the hardware is. The
-  published checkpoint's 475-tensor inventory is recorded in
-  `tests/data/segvol-tensors.csv` and asserted module by module. The same
-  fixture synthesizes a checkpoint with the real key names and shapes, so
-  the network assembles and runs a genuine forward pass in CI without the
-  724 MB download; `#[ignore]`d tests cover the real file and the full
-  181 M-parameter image-encoder pass.
-* **medsam2** — the same synthesized-checkpoint trick assembles the real
-  471-tensor network and runs genuine forward passes in CI: a slice through
-  the engine with the documented shapes, a box prompt propagated through a
-  small stack, an existing contour as the prompt, and the one-slice preview
-  agreeing with the propagation's first step while proving the encoded
-  slice is reused;
-* **reference** — bit-level parity with the Python implementation. A
-  randomly initialized SAM 2.1-T is built with `sam2` and PyTorch by
-  `tools/gen_reference_activations.py`, which dumps every module's inputs
-  and outputs *and* a ten-slice run of SAM 2's own video predictor; the
-  suite reproduces all of it (worst 5.4e-6 relative). It skips when the
-  dump is absent, so CI stays self-contained:
-  `MEDSAM2_REF=/tmp/ref cargo test --release --test reference`.
-
-Beyond the automated tests, the auto-segmentation implementation was
-validated against the reference implementation directly — exact
-patch-level logit equivalence and mean Dice 0.9995 end-to-end (details in
-[auto-segmentation.md](auto-segmentation.md#validation)).
+Fourteen integration suites plus in-module unit tests run against the same
+code paths the GUI uses, with no external data or tooling: the analytic
+phantom round trip (**synthetic_study**), simulate → export → reload
+(**simulate_export**), rigid and B-spline recovery of known transforms
+(**registration**), masks, growing, contours and meshing (**segmentation**),
+anonymize → reload (**anonymize**), SEG written and read back voxel for voxel
+(**dicomseg**), the body contour on phantoms with couch, chair and mask
+(**body**), the archive round trip (**archive**), the DVH against an analytic
+Gaussian phantom (**dvh**), structure algebra (**structops**), and the three
+engines assembled and run without a download — a miniature nnU-Net with the
+exact checkpoint naming (**autoseg**), and synthesized checkpoints with the
+real key names and shapes for **segvol** and **medsam2**, so genuine forward
+passes run in CI. **reference** asserts bit-level parity of the
+MedSAM2 port with the Python implementation (worst 5.4e-6 relative) from a
+dump made by `tools/gen_reference_activations.py`, and skips when the dump
+is absent: `MEDSAM2_REF=/tmp/ref cargo test --release --test reference`.
+End-to-end runs against the real weights are `#[ignore]`d.
 
 ```
 cargo test --release

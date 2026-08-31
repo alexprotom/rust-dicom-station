@@ -11,6 +11,7 @@ impl ViewerApp {
         let mut reset_views = false;
         let mut open_gen = false;
         let mut open_models = false;
+        let mut open_pacs = false;
         let mut open_propagate = false;
         let mut open_drr = false;
         let mut open_export: Option<usize> = None;
@@ -185,9 +186,15 @@ impl ViewerApp {
                             .changed();
                     });
                 ui.menu_button("Tools", |ui| {
-                    // The three segmentation engines, one block per dataset:
-                    // the same four entries, in the same order, for A and B.
-                    let tools: [(&ToolInfo, &str); 4] = [
+                    // One block per dataset: the same six tools, in the same
+                    // order, for A and B.
+                    let tools: [(&ToolInfo, &str); 6] = [
+                        (
+                            &COMBINE,
+                            "Build one structure out of others: union, intersection, \
+                             subtraction or symmetric difference, with a margin on any of \
+                             them. Contours and segmentations mix freely.",
+                        ),
                         (
                             &BODY_CONTOUR,
                             "Outline the patient and leave the couch, the chair and the \
@@ -212,6 +219,12 @@ impl ViewerApp {
                              stack at full in-plane resolution (MedSAM2, re-implemented \
                              natively in Rust).",
                         ),
+                        (
+                            &MOTION,
+                            "Register the reference phase of a 4D group to every other \
+                             phase, carry the targets across, and measure their motion — \
+                             trajectories, drift, correlations and the ITV.",
+                        ),
                     ];
                     let mut open_tool: Option<(usize, &ToolInfo)> = None;
                     for slot in 0..SLOT_NAMES.len() {
@@ -234,6 +247,12 @@ impl ViewerApp {
                         }
                     }
                     match open_tool {
+                        Some((slot, t)) if t.glyph == COMBINE.glyph => {
+                            self.open_combine_dialog(slot, Vec::new())
+                        }
+                        Some((slot, t)) if t.glyph == MOTION.glyph => {
+                            self.open_motion_dialog(slot, None)
+                        }
                         Some((slot, t)) if t.glyph == BODY_CONTOUR.glyph => {
                             self.open_body_dialog(slot)
                         }
@@ -260,6 +279,67 @@ impl ViewerApp {
                         open_propagate = true;
                         ui.close();
                     }
+                    let both = self.slots[0].study.is_some() && self.slots[1].study.is_some();
+                    if ui
+                        .add_enabled(both, egui::Button::new("◎ Transfer by relationship…"))
+                        .on_hover_text(
+                            "Place a structure into the other dataset at the same offset \
+                             from a reference structure (e.g. the heart) — the \
+                             target–reference relationship travels, not a registration",
+                        )
+                        .clicked()
+                    {
+                        self.open_transfer_dialog(0);
+                        ui.close();
+                    }
+                    let any = self.slots[0].study.is_some() || self.slots[1].study.is_some();
+                    if ui
+                        .add_enabled(any, egui::Button::new("◑ Compare structures…"))
+                        .on_hover_text(
+                            "Volumes, centroid offset, Dice, HD95 and mean surface \
+                             distance of any two structures — within a dataset or across \
+                             the two",
+                        )
+                        .clicked()
+                    {
+                        self.open_compare_dialog(0);
+                        ui.close();
+                    }
+                    let has_dose = self
+                        .slots
+                        .iter()
+                        .any(|s| s.study.as_ref().is_some_and(|st| !st.doses.is_empty()));
+                    if ui
+                        .add_enabled(has_dose, egui::Button::new("📊 Dose–volume histograms…"))
+                        .on_hover_text(
+                            "Cumulative and differential DVHs of any structures against \
+                             any loaded dose objects, with the metrics table, protocol \
+                             constraint checking and CSV export — in a window that can \
+                             go on its own monitor",
+                        )
+                        .clicked()
+                    {
+                        let slot = usize::from(
+                            self.slots[0].study.is_none()
+                                || self.slots[0]
+                                    .study
+                                    .as_ref()
+                                    .is_some_and(|s| s.doses.is_empty()),
+                        );
+                        self.open_dvh_dialog(slot.min(1), Vec::new());
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.motion_reports.is_empty(),
+                            egui::Button::new("📈 Motion results…"),
+                        )
+                        .on_hover_text("The finished 4D motion runs of this session")
+                        .clicked()
+                    {
+                        self.motion_results_open = true;
+                        ui.close();
+                    }
                     if ui
                         .add_enabled(
                             self.slots[0].study.is_some() || self.slots[1].study.is_some(),
@@ -273,6 +353,18 @@ impl ViewerApp {
                         .clicked()
                     {
                         open_drr = true;
+                        ui.close();
+                    }
+                    if ui
+                        .button("🏥 PACS — patient archive…")
+                        .on_hover_text(
+                            "The local archive: every study filed here, ready to be taken \
+                             into a dataset and given back the structures and \
+                             segmentations drawn on it",
+                        )
+                        .clicked()
+                    {
+                        open_pacs = true;
                         ui.close();
                     }
                     if ui
@@ -362,6 +454,9 @@ impl ViewerApp {
         }
         if open_gen {
             self.gen_open = true;
+        }
+        if open_pacs {
+            self.open_pacs_window();
         }
         if open_models {
             self.open_models_window();

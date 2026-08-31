@@ -6,8 +6,9 @@
 //!     [--parts organs,vertebrae,cardiac,muscles,ribs]
 //! ```
 //!
-//! `--models` is the engine's folder, `models/totalsegmentator/` next to the
-//! executable by default.
+//! `--models` is the engine's folder: by default `totalsegmentator/` in the
+//! viewer's model folder (`~/.local/share/RustDICOMStation/models` on Linux,
+//! `%LOCALAPPDATA%\RustDICOMStation\models` on Windows).
 //!
 //! Writes `<out_prefix>.bin` (u8 labels, `Volume::data` order) and
 //! `<out_prefix>.json` (dims, spacing, origin, orientation, organ table) so

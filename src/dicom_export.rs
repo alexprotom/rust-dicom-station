@@ -294,6 +294,118 @@ pub(crate) fn write_object(obj: InMemDicomObject, sop_class: &str, path: &Path) 
     Ok(())
 }
 
+/// Build the RTSTRUCT object for one structure set.
+///
+/// Split out of [`export_study`] so the archive can write the same object
+/// against the study it already belongs to (`export_derived`) instead of the
+/// fresh one a full export invents.
+fn build_rtstruct(
+    ss: &crate::rtstruct::StructureSet,
+    ctx: &Ctx,
+    series_number: i64,
+    sop_uid: &str,
+) -> InMemDicomObject {
+    let mut o = InMemDicomObject::new_empty();
+    common_elements(&mut o, ctx, "RTSTRUCT");
+    put_str(&mut o, tags::SOP_CLASS_UID, VR::UI, SOP_RTSTRUCT);
+    put_str(&mut o, tags::SOP_INSTANCE_UID, VR::UI, sop_uid.to_string());
+    put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, new_uid());
+    put_is(&mut o, tags::SERIES_NUMBER, series_number);
+    put_str(
+        &mut o,
+        tags::STRUCTURE_SET_LABEL,
+        VR::SH,
+        truncate(&ss.label, 16),
+    );
+    put_str(&mut o, tags::STRUCTURE_SET_DATE, VR::DA, ctx.date.clone());
+    put_str(&mut o, tags::STRUCTURE_SET_TIME, VR::TM, ctx.time.clone());
+
+    // Referenced frame of reference.
+    let mut rfr = InMemDicomObject::new_empty();
+    put_str(
+        &mut rfr,
+        tags::FRAME_OF_REFERENCE_UID,
+        VR::UI,
+        ctx.for_uid.clone(),
+    );
+    put_seq(
+        &mut o,
+        tags::REFERENCED_FRAME_OF_REFERENCE_SEQUENCE,
+        vec![rfr],
+    );
+
+    let mut ssr = Vec::new();
+    let mut rcs = Vec::new();
+    let mut obs = Vec::new();
+    for roi in &ss.rois {
+        let mut s = InMemDicomObject::new_empty();
+        put_is(&mut s, tags::ROI_NUMBER, roi.number as i64);
+        put_str(
+            &mut s,
+            tags::REFERENCED_FRAME_OF_REFERENCE_UID,
+            VR::UI,
+            ctx.for_uid.clone(),
+        );
+        put_str(&mut s, tags::ROI_NAME, VR::LO, roi.name.clone());
+        put_str(&mut s, tags::ROI_GENERATION_ALGORITHM, VR::CS, "AUTOMATIC");
+        ssr.push(s);
+
+        let mut rc = InMemDicomObject::new_empty();
+        put_is(&mut rc, tags::REFERENCED_ROI_NUMBER, roi.number as i64);
+        put_strs(
+            &mut rc,
+            tags::ROI_DISPLAY_COLOR,
+            VR::IS,
+            &[
+                roi.color[0].to_string(),
+                roi.color[1].to_string(),
+                roi.color[2].to_string(),
+            ],
+        );
+        let mut contours = Vec::with_capacity(roi.contours.len());
+        for c in &roi.contours {
+            let mut co = InMemDicomObject::new_empty();
+            put_str(
+                &mut co,
+                tags::CONTOUR_GEOMETRIC_TYPE,
+                VR::CS,
+                c.geometric_type.clone(),
+            );
+            put_is(
+                &mut co,
+                tags::NUMBER_OF_CONTOUR_POINTS,
+                c.points.len() as i64,
+            );
+            let data: Vec<String> = c
+                .points
+                .iter()
+                .flat_map(|p| [fmt_ds(p.x), fmt_ds(p.y), fmt_ds(p.z)])
+                .collect();
+            put_strs(&mut co, tags::CONTOUR_DATA, VR::DS, &data);
+            contours.push(co);
+        }
+        put_seq(&mut rc, tags::CONTOUR_SEQUENCE, contours);
+        rcs.push(rc);
+
+        let mut ob = InMemDicomObject::new_empty();
+        put_is(&mut ob, tags::OBSERVATION_NUMBER, roi.number as i64);
+        put_is(&mut ob, tags::REFERENCED_ROI_NUMBER, roi.number as i64);
+        put_str(
+            &mut ob,
+            tags::RTROI_INTERPRETED_TYPE,
+            VR::CS,
+            roi.roi_type.clone(),
+        );
+        put_str(&mut ob, tags::ROI_INTERPRETER, VR::PN, "");
+        obs.push(ob);
+    }
+    put_seq(&mut o, tags::STRUCTURE_SET_ROI_SEQUENCE, ssr);
+    put_seq(&mut o, tags::ROI_CONTOUR_SEQUENCE, rcs);
+    put_seq(&mut o, tags::RTROI_OBSERVATIONS_SEQUENCE, obs);
+
+    o
+}
+
 /// Export `study` into `dir` as individual DICOM files.
 /// Returns the number of files written.
 pub fn export_study(
@@ -435,104 +547,7 @@ pub fn export_study(
             si + 1,
             study.structure_sets.len()
         ));
-        let mut o = InMemDicomObject::new_empty();
-        common_elements(&mut o, &ctx, "RTSTRUCT");
-        put_str(&mut o, tags::SOP_CLASS_UID, VR::UI, SOP_RTSTRUCT);
-        put_str(&mut o, tags::SOP_INSTANCE_UID, VR::UI, rs_uids[si].clone());
-        put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, new_uid());
-        put_is(&mut o, tags::SERIES_NUMBER, 2 + si as i64);
-        put_str(
-            &mut o,
-            tags::STRUCTURE_SET_LABEL,
-            VR::SH,
-            truncate(&ss.label, 16),
-        );
-        put_str(&mut o, tags::STRUCTURE_SET_DATE, VR::DA, ctx.date.clone());
-        put_str(&mut o, tags::STRUCTURE_SET_TIME, VR::TM, ctx.time.clone());
-
-        // Referenced frame of reference.
-        let mut rfr = InMemDicomObject::new_empty();
-        put_str(
-            &mut rfr,
-            tags::FRAME_OF_REFERENCE_UID,
-            VR::UI,
-            ctx.for_uid.clone(),
-        );
-        put_seq(
-            &mut o,
-            tags::REFERENCED_FRAME_OF_REFERENCE_SEQUENCE,
-            vec![rfr],
-        );
-
-        let mut ssr = Vec::new();
-        let mut rcs = Vec::new();
-        let mut obs = Vec::new();
-        for roi in &ss.rois {
-            let mut s = InMemDicomObject::new_empty();
-            put_is(&mut s, tags::ROI_NUMBER, roi.number as i64);
-            put_str(
-                &mut s,
-                tags::REFERENCED_FRAME_OF_REFERENCE_UID,
-                VR::UI,
-                ctx.for_uid.clone(),
-            );
-            put_str(&mut s, tags::ROI_NAME, VR::LO, roi.name.clone());
-            put_str(&mut s, tags::ROI_GENERATION_ALGORITHM, VR::CS, "AUTOMATIC");
-            ssr.push(s);
-
-            let mut rc = InMemDicomObject::new_empty();
-            put_is(&mut rc, tags::REFERENCED_ROI_NUMBER, roi.number as i64);
-            put_strs(
-                &mut rc,
-                tags::ROI_DISPLAY_COLOR,
-                VR::IS,
-                &[
-                    roi.color[0].to_string(),
-                    roi.color[1].to_string(),
-                    roi.color[2].to_string(),
-                ],
-            );
-            let mut contours = Vec::with_capacity(roi.contours.len());
-            for c in &roi.contours {
-                let mut co = InMemDicomObject::new_empty();
-                put_str(
-                    &mut co,
-                    tags::CONTOUR_GEOMETRIC_TYPE,
-                    VR::CS,
-                    c.geometric_type.clone(),
-                );
-                put_is(
-                    &mut co,
-                    tags::NUMBER_OF_CONTOUR_POINTS,
-                    c.points.len() as i64,
-                );
-                let data: Vec<String> = c
-                    .points
-                    .iter()
-                    .flat_map(|p| [fmt_ds(p.x), fmt_ds(p.y), fmt_ds(p.z)])
-                    .collect();
-                put_strs(&mut co, tags::CONTOUR_DATA, VR::DS, &data);
-                contours.push(co);
-            }
-            put_seq(&mut rc, tags::CONTOUR_SEQUENCE, contours);
-            rcs.push(rc);
-
-            let mut ob = InMemDicomObject::new_empty();
-            put_is(&mut ob, tags::OBSERVATION_NUMBER, roi.number as i64);
-            put_is(&mut ob, tags::REFERENCED_ROI_NUMBER, roi.number as i64);
-            put_str(
-                &mut ob,
-                tags::RTROI_INTERPRETED_TYPE,
-                VR::CS,
-                roi.roi_type.clone(),
-            );
-            put_str(&mut ob, tags::ROI_INTERPRETER, VR::PN, "");
-            obs.push(ob);
-        }
-        put_seq(&mut o, tags::STRUCTURE_SET_ROI_SEQUENCE, ssr);
-        put_seq(&mut o, tags::ROI_CONTOUR_SEQUENCE, rcs);
-        put_seq(&mut o, tags::RTROI_OBSERVATIONS_SEQUENCE, obs);
-
+        let o = build_rtstruct(ss, &ctx, 2 + si as i64, &rs_uids[si]);
         write_object(o, SOP_RTSTRUCT, &dir.join(format!("RS_export_{si}.dcm")))?;
         n_files += 1;
     }
@@ -945,8 +960,6 @@ pub fn write_deformable_registration(
     if field.is_empty() {
         anyhow::bail!("the vector field is empty");
     }
-    let now = SystemTime::now();
-    let _ = now;
     let mut grid = InMemDicomObject::new_empty();
     put_ds(
         &mut grid,
@@ -1053,4 +1066,100 @@ fn sanitize_cs(s: &str) -> String {
         out.push_str("REGISTRATION");
     }
     out
+}
+
+/// Write only the objects this application produces — RT structure sets and
+/// DICOM Segmentation series — into `dir`, keeping the study and frame of
+/// reference each already belongs to.
+///
+/// This is the other half of [`export_study`], and the difference is the
+/// whole point: a full export invents a new study so the result stands on
+/// its own, whereas contours and segments drawn on a study that already
+/// exists must attach *to that study*. Fresh SOP Instance UIDs, original
+/// Study Instance UID and Frame of Reference UID — which is exactly what
+/// sending derived objects back to an archive means.
+///
+/// Returns the number of files written.
+pub fn export_derived(
+    study: &LoadedStudy,
+    dir: &Path,
+    params: &ExportParams,
+    progress: &Progress,
+) -> Result<usize> {
+    std::fs::create_dir_all(dir).with_context(|| format!("create directory {}", dir.display()))?;
+    let (today_date, today_time) = today();
+    let vol_for = study.volume.frame_of_reference_uid.clone();
+    // The study an object belongs to, from the object itself where it says
+    // so and from the series it references otherwise.
+    let study_of = |own: &str, referenced: &str| -> String {
+        if !own.is_empty() {
+            return own.to_string();
+        }
+        study
+            .series
+            .iter()
+            .find(|se| se.uid == referenced)
+            .map(|se| se.study_uid.clone())
+            .or_else(|| study.series.first().map(|se| se.study_uid.clone()))
+            .unwrap_or_default()
+    };
+    let mut n_files = 0usize;
+
+    for (si, ss) in study.structure_sets.iter().enumerate() {
+        if ss.rois.is_empty() {
+            continue;
+        }
+        progress.set(format!(
+            "Writing RTSTRUCT {}/{}…",
+            si + 1,
+            study.structure_sets.len()
+        ));
+        let ctx = Ctx {
+            study_uid: study_of(&ss.study_uid, &ss.referenced_series_uid),
+            for_uid: if ss.frame_of_reference_uid.is_empty() {
+                vol_for.clone()
+            } else {
+                ss.frame_of_reference_uid.clone()
+            },
+            date: today_date.clone(),
+            time: today_time.clone(),
+            params,
+        };
+        let o = build_rtstruct(ss, &ctx, 2 + si as i64, &new_uid());
+        write_object(o, SOP_RTSTRUCT, &dir.join(format!("RS_derived_{si}.dcm")))?;
+        n_files += 1;
+    }
+
+    for (gi, ser) in study.seg_series.iter().enumerate() {
+        if ser.segs.iter().all(|s| s.count == 0) {
+            continue;
+        }
+        progress.set(format!(
+            "Writing SEG {}/{}…",
+            gi + 1,
+            study.seg_series.len()
+        ));
+        let study_uid = study_of(&ser.study_uid, &ser.referenced_series_uid);
+        let for_uid = if ser.grid.frame_of_reference_uid.is_empty() {
+            vol_for.clone()
+        } else {
+            ser.grid.frame_of_reference_uid.clone()
+        };
+        let seg_ctx = dicomseg::SegWriteCtx {
+            study_uid: &study_uid,
+            for_uid: &for_uid,
+            date: &today_date,
+            time: &today_time,
+            series_number: 20 + gi as i64,
+            // The image series it was drawn on is already in the archive, so
+            // naming it is a real cross-reference rather than a claim about
+            // files written beside it.
+            image_series_uid: &ser.referenced_series_uid,
+            image_sop_uids: &[],
+            params,
+        };
+        dicomseg::write(ser, &seg_ctx, &dir.join(format!("SEG_derived_{gi}.dcm")))?;
+        n_files += 1;
+    }
+    Ok(n_files)
 }

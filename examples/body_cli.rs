@@ -107,7 +107,15 @@ fn main() -> anyhow::Result<()> {
     );
 
     // Modality-appropriate defaults, overridden by whatever was asked for.
-    p.foreground = Foreground::for_modality(&modality);
+    // `--bias-sigma` on its own is a modifier, not a mode: it has to survive
+    // this line rather than be overwritten by it.
+    p.foreground = match Foreground::for_modality(&modality) {
+        Foreground::MrRelative { fraction, .. } => Foreground::MrRelative {
+            fraction,
+            sigma_mm: bias_sigma,
+        },
+        other => other,
+    };
     if !model_forced {
         p.model = BodyModel::for_modality(&modality);
     }

@@ -52,12 +52,12 @@ publisher" warning on first run.
   the viewer's own downloader, so the first auto-segmentation run does not
   have to wait for a 135 MB … 1.3 GB download. Skipped by default. They go
   where the viewer keeps every engine's weights: the `totalsegmentator/`
-  sub-folder of the model folder, `models/` next to the executable. A
-  machine-wide install points that folder at
-  `%LOCALAPPDATA%\RustDicomStation\models` (recorded as `models_dir` in
-  `viewer_settings.txt`), because `Program Files` is not user-writable. The
-  SegVol and MedSAM2 weights are never pre-fetched — their licences allow
-  only a download by the user, which the viewer does on first use.
+  sub-folder of the model folder, by default
+  `%LOCALAPPDATA%\RustDICOMStation\models` for either scope. A model folder
+  chosen elsewhere is recorded as `models_dir` in the installing user's
+  `%LOCALAPPDATA%\RustDICOMStation\viewer_settings.txt`. The SegVol and
+  MedSAM2 weights are never pre-fetched — their licences allow only a
+  download by the user, which the viewer does on first use.
 * **Integration** — Start-menu and desktop shortcuts, an
   "Open with Rust DICOM Station" verb on folders (the viewer takes a
   directory), a `.dcm`/`.dicom` entry that is *added* to `OpenWithProgids`

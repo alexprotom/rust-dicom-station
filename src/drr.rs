@@ -385,7 +385,6 @@ impl DrrImage {
 pub struct DrrComparison {
     pub max_abs: f32,
     pub mean_abs: f32,
-    pub rms: f32,
     /// Mean absolute difference as a fraction of the mean image value.
     pub relative: f32,
     /// Pearson correlation of the two images.
@@ -405,13 +404,12 @@ impl DrrComparison {
             sb += *y as f64;
         }
         let (ma, mb) = (sa / n, sb / n);
-        let (mut max_abs, mut sum_abs, mut sum_sq) = (0.0f64, 0.0f64, 0.0f64);
+        let (mut max_abs, mut sum_abs) = (0.0f64, 0.0f64);
         let (mut caa, mut cbb, mut cab) = (0.0f64, 0.0f64, 0.0f64);
         for (x, y) in a.pixels.iter().zip(&b.pixels) {
             let d = (*x - *y) as f64;
             max_abs = max_abs.max(d.abs());
             sum_abs += d.abs();
-            sum_sq += d * d;
             let (da, db) = (*x as f64 - ma, *y as f64 - mb);
             caa += da * da;
             cbb += db * db;
@@ -421,7 +419,6 @@ impl DrrComparison {
         Some(DrrComparison {
             max_abs: max_abs as f32,
             mean_abs: mean_abs as f32,
-            rms: (sum_sq / n).sqrt() as f32,
             relative: if ma.abs() > 1e-9 {
                 (mean_abs / ma.abs()) as f32
             } else {

@@ -193,7 +193,6 @@ impl Level<'_> {
     fn cost_and_gradient(&self, c: &[f64], grad: Option<&mut [f64]>) -> f64 {
         let [gnx, gny, _] = self.grid.grid_dims;
         let grid = &self.grid;
-        let n = self.samples.len().max(1);
 
         // ---- pass 1: where does every sample land, and is it inside? ----
         let mapped: Vec<Option<(f32, Vec3)>> = self
@@ -253,7 +252,7 @@ impl Level<'_> {
                     .collect();
                 (sum / denom, s)
             }
-            Metric::MutualInformation => self.mi_cost_and_scalars(&mapped, n),
+            Metric::MutualInformation => self.mi_cost_and_scalars(&mapped),
         };
 
         let mut total = cost;
@@ -324,7 +323,7 @@ impl Level<'_> {
 
     /// Mattes mutual information: build the joint histogram, then the
     /// per-sample scalar `∂(−MI)/∂I_moving`.
-    fn mi_cost_and_scalars(&self, mapped: &[Option<(f32, Vec3)>], _n: usize) -> (f64, Vec<f64>) {
+    fn mi_cost_and_scalars(&self, mapped: &[Option<(f32, Vec3)>]) -> (f64, Vec<f64>) {
         let nb = MI_BINS;
         // The histogram is a reduction over a few hundred thousand samples
         // into a 1024-entry table; per-thread tables and one merge.
@@ -679,14 +678,13 @@ pub(super) fn mi_value(setup: &RegSetup, t: &Transform3) -> f64 {
         .par_iter()
         .map(|&y| level.moving.sample_grad(y))
         .collect();
-    level.mi_cost_and_scalars(&mapped, 1).0
+    level.mi_cost_and_scalars(&mapped).0
 }
 
 /// Run the plastimatch engine.
 pub(super) fn run(setup: &RegSetup, progress: &Progress) -> Result<EngineOutput> {
     let params = setup.params;
     let levels = setup.fixed.len();
-    let finest = setup.finest();
 
     // ---- stage 1: align_center -----------------------------------------
     // Skipped for a local run and for a refinement — both already start from
@@ -772,7 +770,6 @@ pub(super) fn run(setup: &RegSetup, progress: &Progress) -> Result<EngineOutput>
         bspline.coeffs = coeffs;
         total_evals += evals;
         final_cost = cost;
-        let _ = finest;
     }
 
     Ok(EngineOutput {

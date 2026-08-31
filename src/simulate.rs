@@ -336,6 +336,8 @@ pub fn generate_transformed_study(
                 .map(|s| s.study_date.clone())
                 .unwrap_or_default(),
             study_description: "Simulated".into(),
+            series_number: None,
+            temporal_id: None,
             files: Vec::new(),
         }],
         active_series: 0,
@@ -352,6 +354,7 @@ pub fn generate_transformed_study(
         planar_images: src.planar_images.clone(),
         registrations: src.registrations.clone(),
         treat_records: src.treat_records.clone(),
+        fourd_groups: Vec::new(),
         warnings: vec![format!(
             "Simulated dataset — ground truth: {}",
             params.describe()

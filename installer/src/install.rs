@@ -154,23 +154,34 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
     ));
 
     // ---- settings seed ----------------------------------------------------
-    // The viewer stores its settings next to the executable and, by default,
-    // the model root too. Under Program Files that folder is read-only for
-    // normal users, so point the root somewhere writable up front.
-    if opts.models_dir != default_models_dir(Scope::CurrentUser, &opts.dir) {
-        let settings = opts.dir.join(SETTINGS_FILE);
-        if !settings.exists() {
-            let text = format!(
-                "# rust-dicom-station user settings\n\
-                 # theme = dark | light | system\n\
-                 theme = dark\n\
-                 {SETTINGS_MODELS_KEY} = {}\n",
-                opts.models_dir.display()
-            );
-            std::fs::write(&settings, text)
-                .with_context(|| format!("write {}", settings.display()))?;
-            manifest.files.push(SETTINGS_FILE.to_string());
-            log(format!("Model folder set to {}", opts.models_dir.display()));
+    // The viewer keeps its settings and, by default, its model folder in its
+    // own per-user data folder, so the default needs no recording. A model
+    // folder chosen elsewhere is written into the settings of the user
+    // running the installer (the file is theirs, not the installation's, so
+    // it is not in the manifest); other users of a machine-wide install get
+    // the viewer's default and can move it from any tool window.
+    if opts.models_dir != default_models_dir(opts.scope, &opts.dir) {
+        if let Some(settings) = viewer_settings_path() {
+            if !settings.exists() {
+                if let Some(parent) = settings.parent() {
+                    std::fs::create_dir_all(parent)
+                        .with_context(|| format!("create {}", parent.display()))?;
+                }
+                let text = format!(
+                    "# rust-dicom-station user settings\n\
+                     # theme = dark | light | system\n\
+                     theme = dark\n\
+                     {SETTINGS_MODELS_KEY} = {}\n",
+                    opts.models_dir.display()
+                );
+                std::fs::write(&settings, text)
+                    .with_context(|| format!("write {}", settings.display()))?;
+                log(format!(
+                    "Model folder set to {} in {}",
+                    opts.models_dir.display(),
+                    settings.display()
+                ));
+            }
         }
     }
     std::fs::create_dir_all(&opts.models_dir).ok();

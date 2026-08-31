@@ -166,8 +166,10 @@ pub struct BodyParams {
     /// itself a candidate, and since it repeats slice after slice it is
     /// then indistinguishable from a couch: the whole ribcage goes.
     pub device_thin_mm: f64,
-    /// Run the extruded-equipment test. Off by default in the
-    /// model-assisted method, where the network has already answered.
+    /// Run the extruded-equipment test. On in both methods: it has little
+    /// left to do once a network has answered, but the guide is used
+    /// *dilated*, and a margin that generous can pull a touching rail back
+    /// in.
     pub remove_devices: bool,
     /// How far a device footprint has to repeat to count as extruded.
     pub persist_window_mm: f64,
@@ -233,7 +235,8 @@ impl BodyParams {
     }
 }
 
-/// One piece of the finished contour, for the results line.
+/// One piece of the finished contour — two legs are two pieces — with its
+/// own size, so the status line can say how big each one is.
 #[derive(Clone, Debug)]
 pub struct Piece {
     pub voxels: u64,
@@ -245,7 +248,6 @@ pub struct BodyResult {
     /// 0/1 per voxel, in [`Volume::data`] index order. Omitted from the
     /// `Debug` output, which is otherwise 35 MB of ones and zeros.
     pub mask: Vec<u8>,
-    pub dims: [usize; 3],
     pub voxels: u64,
     pub cm3: f64,
     /// The separate bodies kept — two legs are two pieces, and saying so is
@@ -275,7 +277,6 @@ impl std::fmt::Debug for BodyResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BodyResult")
             .field("mask", &format_args!("<{} voxels>", self.mask.len()))
-            .field("dims", &self.dims)
             .field("voxels", &self.voxels)
             .field("cm3", &self.cm3)
             .field("pieces", &self.pieces)
@@ -314,6 +315,19 @@ pub fn contour_body(
     let t0 = std::time::Instant::now();
     let dims = volume.dims;
     let spacing = volume.spacing;
+    // Everything below measures in millimetres, so a series that declares a
+    // nonsensical geometry has to be refused here rather than producing a
+    // distance transform full of NaNs several minutes later.
+    if spacing.iter().any(|s| !s.is_finite() || *s <= 1e-4) {
+        bail!(
+            "this series declares a voxel spacing of {:?} mm, which no measurement in \
+             millimetres can be made from",
+            spacing
+        );
+    }
+    if dims.contains(&0) {
+        bail!("this series has no voxels");
+    }
     let voxel_cm3 = spacing[0] * spacing[1] * spacing[2] / 1000.0;
 
     // ---- 1. foreground ---------------------------------------------------
@@ -328,7 +342,6 @@ pub fn contour_body(
     let mut device = String::new();
     let mut guide: Option<Vec<u8>> = None;
     if params.method == Method::ModelAssisted {
-        progress.set_phase(0.0, 0.70);
         let spec = params.model.spec();
         let (labels, dev) = crate::autoseg::run_specs(
             volume,
@@ -336,6 +349,7 @@ pub fn contour_body(
             "body outline",
             params.device,
             models_dir,
+            (0.0, 0.70),
             progress,
         )?;
         device = dev;
@@ -347,6 +361,12 @@ pub fn contour_body(
     if progress.cancelled() {
         bail!(CANCELLED);
     }
+
+    // Everything above the threshold, before the network has had its say —
+    // the yardstick the "how much was left out" figure is measured against.
+    // Measuring against the guided foreground instead would report almost
+    // nothing removed in precisely the mode that removes the most.
+    let above_threshold: Vec<u8> = fg.clone();
 
     // The network's answer is coarse by construction — it is planned at
     // 6 mm or 1.5 mm — so it is grown by a margin and used as a *mask* on
@@ -520,11 +540,11 @@ pub fn contour_body(
         body = morph::close_mm(&body, dims, spacing, params.close_mm);
     }
     // Everything above the threshold that is not patient: the equipment the
-    // extrusion test caught, plus every component too small or too detached
-    // to be a body. Counted here, against the original foreground, because
-    // by now the body also contains an interior that was never above the
-    // threshold at all.
-    let rejected: u64 = fg
+    // extrusion test caught, whatever the network excluded, and every
+    // component too small or too detached to be a body. Counted against the
+    // *unguided* foreground, because by now the body also contains an
+    // interior that was never above the threshold at all.
+    let rejected: u64 = above_threshold
         .par_iter()
         .zip(body.par_iter())
         .map(|(&f, &b)| u64::from(f != 0 && b == 0))
@@ -548,7 +568,6 @@ pub fn contour_body(
     progress.report(1.0, "Body contour finished");
     Ok(BodyResult {
         mask: body,
-        dims,
         voxels,
         cm3: voxels as f64 * voxel_cm3,
         pieces,

@@ -4,14 +4,24 @@ use anyhow::{Context, Result};
 use egui::ThemePreference;
 
 const FILE_NAME: &str = "viewer_settings.txt";
-const APP_NAME: &str = "RustDICOMStation";
+
+/// The folder name under the platform's config / data root
+/// (`%LOCALAPPDATA%\RustDICOMStation`, `~/.config/RustDICOMStation`,
+/// `~/.local/share/RustDICOMStation`); the installer must agree with it.
+pub const APP_NAME: &str = "RustDICOMStation";
 
 /// Settings key of the model root; the installer writes it too.
 pub const MODELS_DIR_KEY: &str = "models_dir";
 
+/// Settings key of the patient archive root.
+pub const ARCHIVE_DIR_KEY: &str = "archive_dir";
+
 /// Settings keys of the two optional side-panel modules.
 const MODULE_REG_KEY: &str = "module_image_registration";
 const MODULE_SIM_KEY: &str = "module_image_simulation";
+
+/// Settings key of the tool windows that live in their own window.
+const DETACHED_KEY: &str = "detached_windows";
 
 /// User preferences that survive a restart.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,6 +35,12 @@ pub struct Settings {
     /// [`default_models_dir`].
     pub models_dir: Option<PathBuf>,
 
+    /// Root of the local patient archive.
+    ///
+    /// `None` means the platform-specific default,
+    /// [`crate::archive::default_root`].
+    pub archive_dir: Option<PathBuf>,
+
     /// *Modules ▶ Image registration*: the registration section is shown in
     /// the side panel.
     pub module_registration: bool,
@@ -32,6 +48,11 @@ pub struct Settings {
     /// *Modules ▶ Image simulation*: the simulation section is shown in the
     /// side panel.
     pub module_simulation: bool,
+
+    /// Ids of the tool windows the user has pulled out of the main window
+    /// (see `app::detach`). A reading room that keeps the archive on its
+    /// second monitor gets it there again on the next start.
+    pub detached_windows: Vec<String>,
 }
 
 impl Default for Settings {
@@ -41,10 +62,12 @@ impl Default for Settings {
         Settings {
             theme: ThemePreference::Dark,
             models_dir: None,
+            archive_dir: None,
             // Both optional modules start hidden; the Modules menu turns them
             // on and the choice is remembered.
             module_registration: false,
             module_simulation: false,
+            detached_windows: Vec::new(),
         }
     }
 }
@@ -250,6 +273,11 @@ fn parse(text: &str) -> Settings {
             if !v.is_empty() {
                 s.models_dir = Some(PathBuf::from(v));
             }
+        } else if key.eq_ignore_ascii_case(ARCHIVE_DIR_KEY) {
+            let v = value.trim();
+            if !v.is_empty() {
+                s.archive_dir = Some(PathBuf::from(v));
+            }
         } else if key.eq_ignore_ascii_case(MODULE_REG_KEY) {
             if let Some(b) = bool_from_str(value) {
                 s.module_registration = b;
@@ -258,6 +286,13 @@ fn parse(text: &str) -> Settings {
             if let Some(b) = bool_from_str(value) {
                 s.module_simulation = b;
             }
+        } else if key.eq_ignore_ascii_case(DETACHED_KEY) {
+            s.detached_windows = value
+                .split(',')
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned)
+                .collect();
         }
     }
     s
@@ -273,6 +308,9 @@ fn render(s: &Settings) -> String {
     if let Some(dir) = &s.models_dir {
         out.push_str(&format!("{MODELS_DIR_KEY} = {}\n", dir.display()));
     }
+    if let Some(dir) = &s.archive_dir {
+        out.push_str(&format!("{ARCHIVE_DIR_KEY} = {}\n", dir.display()));
+    }
     out.push_str(&format!(
         "# optional side-panel modules (Modules menu) = on | off\n\
          {MODULE_REG_KEY} = {}\n\
@@ -280,6 +318,13 @@ fn render(s: &Settings) -> String {
         bool_to_str(s.module_registration),
         bool_to_str(s.module_simulation)
     ));
+    if !s.detached_windows.is_empty() {
+        out.push_str(&format!(
+            "# tool windows opened in their own window\n\
+             {DETACHED_KEY} = {}\n",
+            s.detached_windows.join(",")
+        ));
+    }
     out
 }
 
@@ -330,6 +375,26 @@ mod tests {
             ..Settings::default()
         };
         assert_eq!(parse(&render(&with_dir)), with_dir, "model dir round trip");
+    }
+
+    #[test]
+    fn round_trips_the_detached_window_list() {
+        let s = Settings {
+            detached_windows: vec!["pacs".into(), "models".into()],
+            ..Settings::default()
+        };
+        assert_eq!(parse(&render(&s)), s, "list round trip");
+        assert_eq!(
+            parse(&format!("{DETACHED_KEY} = pacs , , drr_0\n")).detached_windows,
+            vec!["pacs".to_owned(), "drr_0".to_owned()],
+            "blank entries and spacing ignored"
+        );
+        assert!(
+            parse(&format!("{DETACHED_KEY} =\n"))
+                .detached_windows
+                .is_empty(),
+            "an empty list is no windows, not one blank id"
+        );
     }
 
     #[test]

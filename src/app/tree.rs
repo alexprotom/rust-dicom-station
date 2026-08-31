@@ -213,6 +213,7 @@ impl ViewerApp {
             } else {
                 Vec::new()
             },
+            fourd_groups: study.fourd_groups.clone(),
             warnings: Vec::new(),
             default_window: study.default_window,
         }
@@ -402,6 +403,11 @@ impl ViewerApp {
             self.tree_clear_slot(slot);
             return;
         }
+        if let Some(st) = self.slots[slot].study.as_mut() {
+            // Groups follow the series they reference; removed series drop
+            // out and a group left empty disappears.
+            st.refresh_fourd();
+        }
         if let Some(i) = reload {
             self.start_series_switch(slot, i);
         }
@@ -427,6 +433,8 @@ mod tree_tests {
             study_uid: study.into(),
             study_date: "20260818".into(),
             study_description: String::new(),
+            series_number: None,
+            temporal_id: None,
             files: vec![std::path::PathBuf::from(format!("{uid}.dcm"))],
         }
     }
@@ -506,6 +514,7 @@ mod tree_tests {
             planar_images: Vec::new(),
             registrations: Vec::new(),
             treat_records: Vec::new(),
+            fourd_groups: Vec::new(),
             warnings: Vec::new(),
             default_window: (40.0, 400.0),
         }

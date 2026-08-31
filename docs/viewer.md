@@ -1,98 +1,89 @@
 # Image viewing, datasets and interaction
 
-This page covers everything about getting image data into the viewer and
-navigating it: the loading pipeline, the three-view MPR layout, the dataset
-tree, comparison mode, planar images, and the complete interaction reference.
-
 ![single dataset](screenshot.png)
 
-*A lung 4DCT phase with its RT Structure Set. The crosshair sits in the
-tumor; the axial view draws the native RTSTRUCT contours,
-sagittal/coronal show reconstructed cross-sections of the same ROIs.*
+*A lung 4DCT phase with its RT Structure Set. The crosshair sits in the tumor;
+the axial view draws the native RTSTRUCT contours, sagittal/coronal show
+reconstructed cross-sections of the same ROIs.*
 
 ## Loading and volume reconstruction
 
 Opening a folder (*File ▶ Add DICOM folder…*, or directory arguments on the
 command line) starts a background scan:
 
-1. **Classification.** Every file in the directory tree is read header-only
-   (up to but excluding pixel data) in parallel. Files are classified by SOP
-   class / modality: image series (CT/MR/PT/…), RTSTRUCT, RTDOSE, RTPLAN,
-   planar images (DX/CR/RTIMAGE), REG spatial registrations, RT treatment
-   records. Unreadable or foreign files become warnings, never errors.
-2. **Series grouping.** Image files are grouped by SeriesInstanceUID and
-   presented in the dataset tree; the largest series is reconstructed first
-   (switchable at any time by clicking another series).
-3. **Volume reconstruction.** Slices of the chosen series are decoded in
-   parallel (`rayon`), including compressed transfer syntaxes (JPEG
-   lossless, RLE, …) via `dicom-rs`'s pure-Rust decoders. Slices are sorted
-   by their projection onto the true slice normal (the cross product of the
-   ImageOrientationPatient row/column vectors), checked for uniform spacing
-   and consistent dimensions, and rescaled to HU with the per-file rescale
-   slope/intercept. The result is a single `i16` volume with full
+1. **Classification.** Every file in the tree is read header-only (no pixel
+   data) in parallel and classified by SOP class / modality: image series
+   (CT/MR/PT/…), RTSTRUCT, RTDOSE, RTPLAN, planar images (DX/CR/RTIMAGE), REG
+   spatial registrations, RT treatment records. Unreadable or foreign files
+   become warnings, never errors.
+2. **Series grouping.** Image files are grouped by SeriesInstanceUID into the
+   dataset tree; the largest series is reconstructed first (click another to
+   switch).
+3. **Volume reconstruction.** Slices are decoded in parallel (`rayon`) —
+   compressed transfer syntaxes (JPEG lossless, RLE, …) via `dicom-rs`'s
+   pure-Rust decoders — sorted by projection onto the true slice normal (cross
+   product of the ImageOrientationPatient row/column vectors), checked for
+   uniform spacing and consistent dimensions, and rescaled to HU with the
+   per-file rescale slope/intercept. The result is one `i16` volume with full
    patient-space geometry (origin at the center of voxel (0,0,0), unit
    direction vectors for the three axes, spacing in mm).
 
-Non-uniform slice spacing is detected and reported as a warning (the median
-spacing is used for display). Duplicate slice positions are collapsed.
-Enhanced multi-frame image series are not yet supported (classic
-single-frame series only).
-
-RT objects found in the folder are parsed alongside and attached to the
-study — see [rt-objects.md](rt-objects.md).
+Non-uniform slice spacing is reported as a warning (the median spacing is used
+for display) and duplicate slice positions are collapsed. Enhanced multi-frame
+image series are not yet supported (classic single-frame only). RT objects
+found in the folder are parsed alongside and attached to the study — see
+[rt-objects.md](rt-objects.md).
 
 ## The three-view MPR layout
 
-The main area shows **axial, sagittal and coronal** planes side by side
-with linked crosshairs: clicking a point in any view moves all three (and,
-in comparison mode, the other dataset's views) to that patient-space
-position. The three planes are extracted in acquisition index space, which
-maps directly onto axial/sagittal/coronal for standard axial acquisitions;
-oblique acquisitions display consistently but the plane names are nominal —
-the anatomical edge labels (L/R/A/P/S/I) always reflect the true patient
-directions derived from the direction cosines.
+The main area shows **axial, sagittal and coronal** planes side by side with
+linked crosshairs: clicking a point in any view moves all three to that
+patient-space position. Planes are extracted in acquisition index space;
+oblique acquisitions display consistently but their plane names are nominal,
+and the anatomical edge labels (L/R/A/P/S/I) always reflect the true patient
+directions from the direction cosines.
 
-The views tile the central area edge to edge — no gaps, no frames — and
-each one carries its own **slice scrubber** along its bottom edge, drawn
-over the image rather than in a strip beneath it. The plane and dataset
-name in the top-left corner is white in every view; the anatomical edge
-labels keep their own colour.
-
-Each viewport carries two corner buttons (both name themselves on hover):
-**⟲** resets that view's zoom and pan and puts the crosshair back at the
-volume center — which returns that dataset's three views to their central
-slices — and **⛶ / ❐** maximizes the view to fill the window and restores
-the layout again. The toolbar holds a global **⟲** (the same reset for
+The views tile the central area edge to edge, each with its own **slice
+scrubber** drawn over its bottom edge; the plane and dataset name in the
+top-left corner is white in every view, the edge labels keep their colour.
+Two corner buttons (named on hover): **⟲** resets the view's zoom and pan and
+re-centers the crosshair in the volume, **⛶ / ❐** maximizes the view and
+restores the layout. The toolbar holds a global **⟲** (the same reset for
 every view of both datasets), the **⌖** crosshair toggle (while hidden,
-left-click navigation is disabled entirely and slices change only by
-scrolling), the **🔗** crosshair-sync toggle next to it (shown while the
-crosshair is on, active with two datasets loaded), the **3D A / 3D B**
-buttons and the segmentation tools.
+left-click navigation is off and slices change only by scrolling), the **🔗**
+crosshair-sync toggle beside it (shown while the crosshair is on, active with
+two datasets loaded), the **3D A / 3D B** buttons and the segmentation
+tools.
 
 **Window/level.** Right-drag on any view adjusts interactively
-(x = width, y = center); the toolbar offers the numeric fields and the
-common CT presets: brain, subdural, stroke, head/neck soft tissue, temporal
-bone, lungs, mediastinum, abdomen, liver, spine, bone, CT angio, full
-range. The list shows each preset's center and width; once one is chosen
-the closed list carries its name alone (*Lungs*, *Liver*, …) — the two
-numeric fields next to it already say what the numbers are. Any other
-window, from a drag or the full range, leaves the list nameless again.
-Window/level is shared between datasets A and B so both CTs are windowed
-identically.
+(x = width, y = center); the toolbar offers numeric fields and the common CT
+presets: brain, subdural, stroke, head/neck soft tissue, temporal bone, lungs,
+mediastinum, abdomen, liver, spine, bone, CT angio, full range. The list
+shows each preset's center and width; the closed list carries only the chosen
+name, and any other window — a drag or the full range — leaves it nameless.
+Window/level is shared between datasets A and B.
 
-**Status bar.** Patient coordinates, voxel indices, HU and dose (Gy and %
-of the reference dose) at the crosshair; in comparison mode both datasets
-report the full set side by side, each at its own crosshair. The mouse
-bindings of the tool in force are behind the **?** at the right end — hover
-it to read them.
+**Tool windows on their own screen.** Every secondary window — the archive,
+the model manager, the DRR, the 3D scenes, the segmentation and motion tools,
+the export and anonymizer dialogs — has a **Detach** button in its top-right
+corner that makes it an operating-system window of its own, to drag onto a
+second or third monitor, resize or maximize there, and keep open beside the
+images while the main window keeps all six viewports; **Dock** puts it back.
+Several can be out at once; each reopens where it was left, on the same
+monitor, and which are detached is remembered between runs
+(`detached_windows` in the settings file). Closing a detached window only
+closes that tool — it opens in its own window again next time.
 
-**The left panel.** *View ▶ Left panel*, the **F9** key and the arrow on
-the window's left edge hide and show it; dragging its inner edge past the
-minimum width does the same, and the arrow stays on screen to bring it
-back. Which sections it holds is up to the *Modules* menu: **Image
-registration** and **Image simulation** are off until switched on, and the
-choice is remembered between runs. The data tree of each loaded dataset is
-always there.
+**Status bar.** Patient coordinates, voxel indices, HU and dose (Gy and % of
+the reference dose) at the crosshair; in comparison mode both datasets report
+the full set side by side, each at its own crosshair. Hover the **?** at the
+right end to read the active tool's mouse bindings.
+
+**The left panel.** *View ▶ Left panel*, **F9** and the arrow on the window's
+left edge hide and show it; dragging its inner edge past the minimum does the
+same, and the arrow brings it back. The *Modules* menu chooses its sections:
+**Image registration** and **Image simulation** are off until switched on,
+remembered between runs. Each dataset's data tree is always there.
 
 ## Interaction reference
 
@@ -104,18 +95,17 @@ always there.
 | Middle drag | Pan |
 | Right drag | Window/level (x = width, y = center) |
 
-With a segmentation tool active the left button paints instead of
-navigating — see [segmentation.md](segmentation.md) for those bindings.
-The bindings of the active tool are always shown in the status bar and in
-full under *Help*.
+With a segmentation tool active the left button paints instead of navigating —
+see [segmentation.md](segmentation.md); the full bindings are under *Help*.
 
 ## Datasets and the patient ▶ study ▶ series tree
 
-The two viewer slots are **dataset A** and **dataset B** — each is a
-working set that can hold any number of patients, studies and series
-accumulated from any number of folders. *File ▶ Add DICOM folder to A/B…*
-merges a scanned folder into the slot without unloading what is already
-there; duplicates (by UID) are skipped and reported.
+The two viewer slots, **dataset A** and **dataset B**, each hold any number of
+patients, studies and series from any number of folders. *File ▶ Add DICOM
+folder to A/B…* merges a scanned folder into the slot without unloading what
+is there; duplicates (by UID) are skipped and reported. *Tools ▶ 🏥 PACS —
+patient archive…* fills a slot the same way from the application's own store
+of studies ([pacs.md](pacs.md)) — an archived study folder is ordinary DICOM.
 
 The left panel shows each dataset as a full DICOM hierarchy:
 
@@ -137,171 +127,141 @@ Dataset A
 ```
 
 The modality level (CT / MR / US / PT …) is one DICOM implies but does not
-store as a node; it is grouped from the series' Modality, in first-seen
-order. Everything that carries a StudyInstanceUID — image series, RT
-structure sets, segmentation series, dose grids and plans — sits inside the
-study it belongs to. An RT object whose StudyInstanceUID is blank or names
-a study that is not loaded is filed under the study of the image series it
-references, and failing that under the first study, because an object that
-cannot be reached is worse than one shown a level from where its header
-claims it lives.
-
-What is left below the tree is what has no study to sit under: planar
-images carry no study link at all, spatial registrations and treatment
-records belong to a frame of reference rather than a study, and **Dose
-display** — colorwash, isodose ladder, opacity, threshold — is one setting
-shared by both datasets, so it is shown once.
+store as a node; it is grouped from the series' Modality in first-seen order.
+Everything with a StudyInstanceUID — image series, RT structure sets,
+segmentation series, dose grids and plans — sits inside its study; an RT
+object whose StudyInstanceUID is blank or names an unloaded study goes under
+the study of the image series it references, failing that under the first
+study. Planar images, spatial registrations and treatment records have no
+study and sit below the tree, as does **Dose display** — colorwash, isodose
+ladder, opacity, threshold — one setting shared by both datasets, shown once.
 
 The displayed series is marked; clicking another loads it. Long names,
-descriptions and IDs wrap over as many lines as they need, so the panel can
-be dragged narrow without cutting them off. The standard reference chain is
-parsed and shown as links: each structure set and segmentation series
-displays the image series it is drawn on, each dose the plan it was
-computed for (ReferencedRTPlanSequence), and each plan the structure set it
-was created on (ReferencedStructureSetSequence).
+descriptions and IDs wrap, so the panel can be dragged narrow. The reference
+chain is shown as links: each structure set and segmentation series shows the
+image series it is drawn on, each dose the plan it was computed for
+(ReferencedRTPlanSequence), each plan the structure set it was created on
+(ReferencedStructureSetSequence).
 
-**Right-clicking** any level of the tree — patient, study or series —
-opens a context menu to **rename**, **copy**, **move** or **remove** it. Copy/move
-transfer the selection into the other dataset (A ▶ B or B ▶ A), merging it
-with whatever is already loaded there and switching comparison mode on;
-move and remove then delete the selection from its source. A single series
-carries exactly its DICOM reference chain: the structure sets drawn on it,
-the plans made on those structure sets, and the doses computed for those
-plans — nothing else. Study and patient selections additionally take the
-RT objects filed under the same studies. Right-clicking a dataset header
-offers *Clear dataset*.
+**Right-clicking** a patient, study or series opens a context menu to
+**rename**, **copy**, **move** or **remove** it. Copy/move transfer the
+selection into the other dataset (A ▶ B or B ▶ A), merging with what is there
+and switching comparison mode on; move and remove then delete it from its
+source. A series carries exactly its DICOM reference chain — the structure
+sets drawn on it, the plans made on those, the doses computed for those
+plans — and study and patient selections also take the RT objects of their
+studies. Right-clicking a dataset header offers *Clear dataset*.
 
 ## Structures and segmentations in the tree
 
-Below the image series, each dataset lists its **RT structures** and its
-**Segmentations** as series nodes — one per RT structure set, one per
-DICOM Segmentation series — each showing the image series it is drawn on
-(`▶ CT chest`, or `▶ (unlinked)`). Clicking a node makes it the active
-one; the items of the active node are listed underneath.
+Below the image series, each dataset lists its **RT structures** and
+**Segmentations** as series nodes — one per RT structure set or DICOM
+Segmentation series — each showing the image series it is drawn on
+(`▶ CT chest`, or `▶ (unlinked)`). Clicking a node makes it active and lists
+its items. *➕ New series* creates an empty structure set / segmentation
+series bound to the displayed series. **Right-clicking a series node**
+offers:
 
-*➕ New series* creates an empty structure set / segmentation series bound
-to the displayed image series. **Right-clicking a series node** offers:
-
-* *🔗 Connect to image series ▶* — re-point the series at any image series
-  of the dataset (● marks the current one). Contours are in patient
-  coordinates and simply follow; a segmentation series is resampled onto
-  the new series' lattice the next time that series is displayed.
+* *🔗 Connect to image series ▶* — re-point the series at any image series of
+  the dataset (● marks the current one); contours are in patient coordinates
+  and simply follow, a segmentation series is resampled onto the new lattice
+  when next displayed.
 * *Copy / Move series to dataset A/B*.
-* *💾 Export as DICOM SEG…* (segmentation series only) — writes this one
-  series as a single SEG file.
+* *💾 Export as DICOM SEG…* (segmentation series only) — writes this one series
+  as a single SEG file.
 * *🗑 Remove this RT structure set / segmentation series*.
 * *✎ Rename series…*.
 
-Each item's **check box is both its visibility and its selection**, so
-*All* / *None* tick everything or nothing and the actions operate on
-whatever is ticked. **Shift-click** a check box to tick — or untick — the
-whole range from the last one you clicked: the span is filled with the
-clicked row's new value, and rows outside it are never touched, because the
-box is a visibility toggle as much as a selection and silently hiding
-structures you did not point at would be worse than the convenience.
+Each item's **check box is both its visibility and its selection**, so *All*
+/ *None* tick everything or nothing and the actions act on whatever is
+ticked. **Shift-click** a check box to tick — or untick — the range from the
+last one you clicked: the span takes the clicked row's new value.
 
-One row carries the lot: for structures **All · None · Copy to · Move to ·
-🗑 · *n* selected**, and for segmentations **New · All · None · Copy to ·
-Move to · 🗑 · 💾 · *n* selected**. *Copy to* and *Move to* open the same
-destination submenu described below; **💾** writes just the ticked segments
-as a DICOM SEG file of their own. The buttons grey out when nothing is
-ticked.
-
-The per-row buttons a segment used to carry — undo, →RS, delete — are gone:
-Ctrl+Z undoes the last stroke, *Copy to ▶ an RT structure set* is what →RS
-did, and **🗑** deletes whatever is ticked.
+One row carries the lot: for structures **All · None · Copy to · Move to · 🗑 ·
+*n* selected**, for segmentations **New · All · None · Copy to · Move to · 🗑 ·
+💾 · *n* selected**. *Copy to* and *Move to* open the destination submenu
+described below; **💾** exports the ticked segments as their own SEG file. The
+buttons grey out when nothing is ticked. The per-row undo, →RS and delete
+buttons are gone: Ctrl+Z undoes the last stroke, *Copy to ▶ an RT structure
+set* is what →RS did, and **🗑** deletes the ticked rows.
 
 **Right-clicking a structure or segment** offers the same set for one row or
 the ticked group:
 
 * *Copy … to ▶* / *Move … to ▶* — a submenu of every structure set and
-  segmentation series in **both** datasets, plus *➕ a new RT structure
-  set* / *➕ a new segmentation series* as destinations. Right-clicking a
-  ticked row acts on all ticked rows at once; right-clicking an unticked
-  row acts on that row alone.
+  segmentation series in **both** datasets, plus *➕ a new RT structure set* /
+  *➕ a new segmentation series*. A ticked row acts on all ticked rows at once;
+  an unticked row acts alone.
 * *🗑 Remove …* — the same single-or-selected rule.
-* *💾 Export … as DICOM SEG…* (segments only) — writes the chosen segments
-  as a SEG series in its own right: same lattice, same referenced image
-  series, a fresh SOP Instance UID, and only those segments. Exporting three
-  organs out of twelve therefore needs no special case in the writer, and
-  the file reloads as an ordinary segmentation series.
+* *💾 Export … as DICOM SEG…* (segments only) — writes the chosen segments as a
+  SEG series of their own: same lattice, same referenced image series, a fresh
+  SOP Instance UID, only those segments; the file reloads as an ordinary
+  segmentation series.
 * *✎ Rename …* — always the row you clicked, never the whole selection.
 
-Crossing between the two kinds is a conversion, done on transfer: a
-structure moved into a segmentation series is rasterized onto that series'
-lattice (even–odd fill, so a doughnut stays a doughnut), a segment moved
-into a structure set becomes closed planar contours (marching squares),
-and a segment moved between two segmentation series on different lattices
-is resampled. Anything that cannot cross — a contour outside the
-destination volume, a mask that does not overlap it — is reported in the
-dataset's *Warnings* section instead of arriving empty.
+Crossing between the two kinds converts on transfer: a structure moved into a
+segmentation series is rasterized onto its lattice (even–odd fill), a segment
+moved into a structure set becomes closed planar contours (marching squares),
+and a segment moved between different lattices is resampled. Anything that
+cannot cross — a contour outside the destination volume, a mask that does not
+overlap it — lands in the dataset's *Warnings* section.
 
 ## Renaming
 
-Everything the tree names can be renamed from its own right-click menu:
-patients, studies, image series, RT structure sets, segmentation series,
-individual structures and segments, dose grids, plans, planar images,
-spatial registrations and treatment records. The dialog is a single text
-field — Enter applies, Esc cancels, an empty name is not accepted — and it
-says which DICOM attribute the text lands in.
+Everything the tree names — patients, studies, image series, RT structure
+sets, segmentation series, structures and segments, dose grids, plans, planar
+images, spatial registrations and treatment records — can be renamed from its
+right-click menu. The dialog is a single text field — Enter applies, Esc
+cancels, empty names are rejected — and names the DICOM attribute it writes.
 
 A patient and a study are *groupings* rather than objects, so renaming one
 writes `PatientName` / `StudyDescription` into **every** series filed under
-it; the tree would otherwise split into an old and a new node. Everything
-else writes the one attribute it shows: `SeriesDescription`,
-`StructureSetLabel`, `ROIName`, `SegmentLabel`, `RTPlanLabel`, and the
-labels of the remaining objects.
-
-Renames are in-memory. They change what the tree, the overlays and the 3D
-view call things, and they are what a DICOM export writes out; the files a
-study was loaded from are never modified.
+it; everything else writes the one attribute it shows: `SeriesDescription`,
+`StructureSetLabel`, `ROIName`, `SegmentLabel`, `RTPlanLabel`, and the labels
+of the remaining objects. Renames are in-memory: they change what the tree,
+the overlays and the 3D view call things and what a DICOM export writes; the
+files a study was loaded from are never modified.
 
 ## Comparison mode
 
 ![comparison mode](screenshot_comparison.png)
 
-*Two opposite breathing phases of the same 4DCT as datasets A and B, each
-with its phase-specific structure set; the synced crosshair pins all six
-views to the same patient-space point inside the tumor.*
+*Two opposite breathing phases of the same 4DCT as datasets A and B, each with
+its phase-specific structure set; the synced crosshair pins all six views to
+the same patient-space point inside the tumor.*
 
-Load a second dataset (menu, tree copy/move, or two directories on the
-command line) and the window splits into two rows of three views — dataset
-A on top, dataset B below. Each dataset keeps its own structures, dose and
-plan panels in the sidebar; window/level and dose display settings are
-shared. The crosshair is synced between the datasets through **patient
-coordinates** (the toolbar's **🔗**, or *View ▶ Sync crosshairs between
-datasets* — both appear only while the crosshair itself is on);
-when a registration is active, the link maps through the recovered
-transform instead — see [registration.md](registration.md).
+Load a second dataset (menu, tree copy/move, or two directories on the command
+line) and the window splits into two rows of three views — dataset A on top,
+dataset B below. Each dataset keeps its own structures, dose and plan panels
+in the sidebar; window/level and dose display are shared. The crosshair is
+synced through **patient coordinates** (the toolbar's **🔗**, or *View ▶ Sync
+crosshairs between datasets* — both appear only while the crosshair itself is
+on); with a registration active, the link maps through the recovered transform
+instead — see [registration.md](registration.md).
 
-A concrete example with the bundled data: load `example_data/` and both
-4DCT phases appear as two series of one study. Right-click
-*CT 4DCT_phase_050* ▶ *Copy series to dataset B* — the phase moves into
-the lower row together with its own phase-specific RTSTRUCT (the reference
-chain picks the correct one automatically), and comparison mode switches
-on. Click the tumor in any view: all six panels jump to that point, and the
-respiratory differences between the phases are read directly by comparing
-the rows.
+With the bundled data: load `example_data/`, and both 4DCT phases appear as
+two series of one study. Right-click *CT 4DCT_phase_050* ▶ *Copy series to
+dataset B* — the phase moves into the lower row with its own phase-specific
+RTSTRUCT and comparison mode switches on. Click the tumor in any view: all six
+panels jump to that point, and the rows show the respiratory differences.
 
 ## Planar images (DX / CR / RTIMAGE)
 
-Digital radiographs and RT images (portal/setup images) found in the study
-folder — plus any DRR added from the DRR window with *➕ Add to dataset A/B*
-(see [drr.md](drr.md)) — are listed in the sidebar and open in floating
-viewer windows
-with their own window/level (opens at the DICOM default; auto, manual, or
-interactive right-drag exactly like the CT views), correct physical aspect
-ratio (imager / image-plane pixel spacing), MONOCHROME1 inversion, and the
-relevant metadata — body part, view and kVp for DX; machine, gantry angle,
-SAD and SID for RTIMAGE.
+Digital radiographs and RT images (portal/setup images) in the study folder —
+plus any DRR added from the DRR window with *➕ Add to dataset A/B* (see
+[drr.md](drr.md)) — are listed in the sidebar and open in floating viewer
+windows with their own window/level (DICOM default at open; auto, manual, or
+right-drag like the CT views), correct physical aspect ratio (imager /
+image-plane pixel spacing), MONOCHROME1 inversion, and metadata — body part,
+view and kVp for DX; machine, gantry angle, SAD and SID for RTIMAGE.
 
 ## Appearance
 
-*View ▶ Appearance* switches between **🌙 Dark**, **☀ Light** and
-**💻 System** (follows the OS setting and updates live). The choice is
-remembered in `viewer_settings.txt` next to the executable — a tiny
-`key = value` text file, safe to edit or delete. The image viewports stay
-black in both themes, as in clinical viewers, so grayscale windowing, the
-dose colorwash and the overlay annotations keep a single calibrated
-appearance; unit tests assert the accent colors clear WCAG AA contrast
-against both backgrounds.
+*View ▶ Appearance* switches between **🌙 Dark**, **☀ Light** and **💻 System**
+(follows the OS setting and updates live). The choice is remembered in
+`viewer_settings.txt` (`%LOCALAPPDATA%\RustDICOMStation` on Windows,
+`~/.config/RustDICOMStation` on Linux), a tiny `key = value` text file, safe
+to edit or delete. The image viewports stay black in both themes so
+windowing, the dose colorwash and the overlays keep one calibrated
+appearance; unit tests assert the accent colors clear WCAG AA contrast on
+both backgrounds.

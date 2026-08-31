@@ -156,19 +156,28 @@ impl infer::InferHooks for Hooks<'_> {
 /// they do with the answer, not in how a checkpoint is fetched, converted,
 /// resampled onto, tiled over or mapped back from.
 ///
-/// `label` names the run in progress messages.
+/// `label` names the run in progress messages, and `window` is the slice of
+/// the overall progress bar this run owns — `(0.0, 1.0)` for the whole of it.
+/// [`Progress::set_phase`] is absolute rather than nested, so a caller that
+/// has its own work to do afterwards has to say so here; otherwise the bar
+/// reaches 100 % and then jumps backwards.
 pub fn run_specs(
     volume: &Volume,
     specs: &[ModelSpec],
     label: &'static str,
     device: DevicePref,
     models_dir: &Path,
+    window: (f32, f32),
     progress: &Progress,
 ) -> Result<(Vec<u8>, String)> {
     if specs.is_empty() {
         bail!("no sub-models selected");
     }
     let n_models = specs.len();
+    let (base, span) = window;
+    // Every phase below is expressed in this run's own 0..1 and mapped onto
+    // the window the caller gave.
+    let phase = |p: &Progress, at: f32, len: f32| p.set_phase(base + span * at, span * len);
 
     // Progress budget: 15% download/convert/load, 5% preprocess,
     // 75% inference, 5% postprocess.
@@ -177,7 +186,7 @@ pub fn run_specs(
     // ---- load models (download + convert on first use) -------------------
     let mut models = Vec::with_capacity(n_models);
     for (i, spec) in specs.iter().enumerate() {
-        progress.set_phase(i as f32 * dl_span, dl_span);
+        phase(progress, i as f32 * dl_span, dl_span);
         let m = weights::ensure_model(spec, models_dir, progress)?;
         if progress.cancelled() {
             bail!(CANCELLED);
@@ -202,7 +211,7 @@ pub fn run_specs(
     progress.set_device(&device_desc);
 
     // ---- preprocess ------------------------------------------------------
-    progress.set_phase(0.15, 0.05);
+    phase(progress, 0.15, 0.05);
     progress.report(
         0.0,
         &format!(
@@ -224,7 +233,7 @@ pub fn run_specs(
     let mut global = vec![0u8; vol_model.len()];
     let infer_span = 0.75 / n_models as f32;
     for (mi, model) in models.iter().enumerate() {
-        progress.set_phase(0.2 + mi as f32 * infer_span, infer_span);
+        phase(progress, 0.2 + mi as f32 * infer_span, infer_span);
         // A z-score model normalizes against this image, so its constants
         // are only knowable now, with the resampled volume in hand.
         let mut cfg = model.config.clone();
@@ -281,7 +290,7 @@ pub fn run_specs(
     }
 
     // ---- back-map to the CT grid ----------------------------------------
-    progress.set_phase(0.95, 0.05);
+    phase(progress, 0.95, 0.05);
     progress.report(0.0, "Mapping labels back to the CT grid…");
     let labels = preprocess::labels_to_volume_grid(&global, &map, volume);
     Ok((labels, device_desc))
@@ -308,6 +317,7 @@ pub fn run(
         variant.label(),
         device,
         models_dir,
+        (0.0, 1.0),
         progress,
     )?;
 

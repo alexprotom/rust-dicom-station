@@ -13,12 +13,8 @@
 //! fraction of the 99th percentile is meaningless on CT. A threshold the
 //! user has edited by hand is left alone.
 
-use std::path::PathBuf;
-use std::sync::Arc;
-
 use crate::bodymask::{self, BodyModel, BodyParams, BodyResult, Foreground, Method};
 use crate::models::Engine as ModelsEngine;
-use crate::progress::Progress;
 
 use super::*;
 
@@ -136,9 +132,19 @@ impl ViewerApp {
         // dialog is borrowed mutably.
         let removed_cm3 = self.voxels_to_cm3(slot, result.removed_voxels);
         let recovered_cm3 = self.voxels_to_cm3(slot, result.recovered_voxels);
+        // `1250 + 980 cm³`: the size of each body when there is more than one.
         let pieces = match result.pieces.len() {
             0 | 1 => String::new(),
-            n => format!(", {n} separate bodies"),
+            n => format!(
+                ", {n} separate bodies ({})",
+                result
+                    .pieces
+                    .iter()
+                    .map(|p| format!("{:.0}", p.cm3))
+                    .collect::<Vec<_>>()
+                    .join(" + ")
+                    + " cm³"
+            ),
         };
         let device = if result.device.is_empty() {
             String::new()
@@ -203,13 +209,13 @@ impl ViewerApp {
         let running = self.body_job.as_ref().filter(|_| self.body_slot == slot);
         let mut open = true;
         let (mut run, mut close, mut browse, mut cancel) = (false, false, false, false);
-        egui::Window::new(BODY_CONTOUR.title(d.slot))
-            .id(egui::Id::new("body_window"))
-            .collapsible(true)
-            .resizable(false)
-            .default_width(430.0)
-            .open(&mut open)
-            .show(ctx, |ui| {
+        detach::tool_window(
+            ctx,
+            "body",
+            BODY_CONTOUR.title(d.slot),
+            &mut open,
+            detach::WinOpts::width(430.0).resizable(false),
+            |ui| {
                 ui.label(
                     "Finds the patient's outer surface and leaves the couch, the chair and \
                      the immobilisation outside it — the EXTERNAL structure everything \
@@ -445,7 +451,8 @@ impl ViewerApp {
                     ui.separator();
                     ui.weak(status);
                 }
-            });
+            },
+        );
         if browse {
             if let Some(dir) = Self::pick_folder("Model folder") {
                 self.models_dir = dir.display().to_string();
@@ -467,6 +474,10 @@ impl ViewerApp {
     }
 }
 
+/// What an MR threshold starts at, and how far the bias estimate reaches.
+const DEFAULT_MR_FRACTION: f32 = 0.12;
+const DEFAULT_BIAS_SIGMA_MM: f64 = 40.0;
+
 /// The threshold row — a different question on CT and on MR, so a different
 /// row rather than one control that means two things.
 fn foreground_row(ui: &mut egui::Ui, fg: &mut Foreground) {
@@ -485,10 +496,15 @@ fn foreground_row(ui: &mut egui::Ui, fg: &mut Foreground) {
         }
         _ => {
             let mut otsu = matches!(fg, Foreground::MrOtsu { .. });
+            // The fraction is remembered across a visit to Otsu and back;
+            // losing a dialled-in threshold to a radio button is the kind of
+            // small betrayal that stops people trying the other option.
+            let id = ui.id().with("mr_fraction");
+            let remembered: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(DEFAULT_MR_FRACTION);
             let (mut fraction, mut sigma) = match *fg {
                 Foreground::MrRelative { fraction, sigma_mm } => (fraction, sigma_mm),
-                Foreground::MrOtsu { sigma_mm } => (0.12, sigma_mm),
-                Foreground::Hu(_) => (0.12, 40.0),
+                Foreground::MrOtsu { sigma_mm } => (remembered, sigma_mm),
+                Foreground::Hu(_) => (remembered, DEFAULT_BIAS_SIGMA_MM),
             };
             ui.horizontal(|ui| {
                 ui.label("Tissue above:");
@@ -521,6 +537,7 @@ fn foreground_row(ui: &mut egui::Ui, fg: &mut Foreground) {
                      shading and leaves every edge intact.",
                 );
             });
+            ui.data_mut(|d| d.insert_temp(id, fraction));
             *fg = if otsu {
                 Foreground::MrOtsu { sigma_mm: sigma }
             } else {

@@ -53,12 +53,27 @@ pub fn dist2_to_foreground(mask: &[u8], dims: [usize; 3], spacing: [f64; 3]) -> 
 /// Three separable passes of the 1-D squared-distance transform.
 fn edt_in_place(f: &mut [f32], dims: [usize; 3], spacing: [f64; 3]) {
     for (axis, step) in spacing.iter().enumerate() {
-        pass_along(f, dims, axis, *step as f32);
+        pass_along(f, dims, axis, *step as f32, Sweep::Both);
     }
 }
 
-/// Stride and length of the lines running along `axis`, and the start index
-/// of each line.
+/// Which sources a pass is allowed to reach back to.
+///
+/// `Both` is the ordinary distance transform. The one-sided forms are what
+/// make an *asymmetric* margin possible: restricted to sources at a lower
+/// index, a pass measures only how far the mask has grown in the `+axis`
+/// direction, so three such passes give the distance within one octant and
+/// eight octants tile the whole neighbourhood — each with its own radius.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Sweep {
+    Both,
+    /// Sources at a lower index only (growth toward `+axis`).
+    Forward,
+    /// Sources at a higher index only (growth toward `−axis`).
+    Backward,
+}
+
+/// Length, stride and the start index of every line running along `axis`.
 fn lines_along(dims: [usize; 3], axis: usize) -> (usize, usize, Vec<usize>) {
     let [nx, ny, nz] = dims;
     match axis {
@@ -74,76 +89,138 @@ fn lines_along(dims: [usize; 3], axis: usize) -> (usize, usize, Vec<usize>) {
     }
 }
 
+/// Per-thread scratch for the 1-D transform, so that a pass over a whole CT
+/// allocates a handful of buffers rather than one per line.
+struct Envelope {
+    d: Vec<f32>,
+    v: Vec<usize>,
+    z: Vec<f32>,
+    out: Vec<f32>,
+}
+
+impl Envelope {
+    fn new(n: usize) -> Envelope {
+        Envelope {
+            d: vec![0.0; n],
+            v: vec![0; n],
+            z: vec![0.0; n + 1],
+            out: vec![0.0; n],
+        }
+    }
+}
+
+/// A pointer to the buffer, handed to each rayon task. Lines along one axis
+/// are disjoint sets of indices, so writing them in parallel is sound; the
+/// alternative — collecting every line and writing back afterwards — costs a
+/// second copy of the volume and one allocation per line, which on a routine
+/// CT is 300 MB and 150 000 allocations per pass.
+#[derive(Clone, Copy)]
+struct LinePtr(*mut f32);
+unsafe impl Send for LinePtr {}
+unsafe impl Sync for LinePtr {}
+impl LinePtr {
+    /// Reached through a method, not the field: closure capture in Rust 2021
+    /// is field-precise, and capturing the bare `*mut f32` would sidestep the
+    /// `Sync` promise made just above.
+    fn get(self) -> *mut f32 {
+        self.0
+    }
+}
+
 /// The 1-D lower envelope of parabolas along one axis, in place.
-fn pass_along(f: &mut [f32], dims: [usize; 3], axis: usize, step: f32) {
+///
+/// Felzenszwalb & Huttenlocher's algorithm: every position contributes a
+/// parabola `f(q) + h²(p − q)²`, and their lower envelope is built in one
+/// left-to-right sweep and read off in another. `Sweep::Forward` reads each
+/// value off the moment its own parabola has been inserted, which is exactly
+/// the minimum over sources at or below that index.
+fn pass_along(f: &mut [f32], dims: [usize; 3], axis: usize, step: f32, sweep: Sweep) {
     let (n, stride, starts) = lines_along(dims, axis);
-    if n == 0 {
+    if n == 0 || !step.is_finite() || step <= 0.0 {
         return;
     }
     let sq = step * step;
-    // Lines along an axis are disjoint, so each can be lifted out, solved
-    // and written back independently.
-    let out: Vec<(usize, Vec<f32>)> = starts
-        .par_iter()
-        .map(|&base| {
-            let mut d = vec![0f32; n];
-            let mut v = vec![0usize; n]; // parabola centres
-            let mut z = vec![0f32; n + 1]; // envelope breakpoints
-            for (q, slot) in d.iter_mut().enumerate() {
-                *slot = f[base + q * stride];
+    let ptr = LinePtr(f.as_mut_ptr());
+    starts.par_iter().for_each_init(
+        || Envelope::new(n),
+        |e, &base| {
+            // Gather the line, reversed for a backward sweep so that the
+            // same forward machinery serves both.
+            for q in 0..n {
+                let src = if sweep == Sweep::Backward {
+                    n - 1 - q
+                } else {
+                    q
+                };
+                e.d[q] = unsafe { *ptr.get().add(base + src * stride) };
             }
             let mut k = 0usize;
-            v[0] = 0;
-            z[0] = f32::NEG_INFINITY;
-            z[1] = f32::INFINITY;
+            e.v[0] = 0;
+            e.z[0] = f32::NEG_INFINITY;
+            e.z[1] = f32::INFINITY;
+            if sweep != Sweep::Both {
+                e.out[0] = e.d[0];
+            }
             for q in 1..n {
-                if d[q].is_infinite() {
-                    // A parabola of infinite height never joins the envelope.
-                    continue;
-                }
-                loop {
-                    let p = v[k];
-                    // Intersection of the parabolas rooted at p and q.
-                    let s = if d[p].is_infinite() {
-                        f32::NEG_INFINITY
-                    } else {
-                        (d[q] + sq * (q * q) as f32 - d[p] - sq * (p * p) as f32)
-                            / (2.0 * sq * (q as f32 - p as f32))
-                    };
-                    if s <= z[k] && k > 0 {
-                        k -= 1;
-                    } else {
-                        k += 1;
-                        v[k] = q;
-                        z[k] = s;
-                        z[k + 1] = f32::INFINITY;
-                        break;
+                if e.d[q].is_finite() {
+                    loop {
+                        let p = e.v[k];
+                        // Where the parabolas rooted at p and q cross.
+                        let s = if e.d[p].is_infinite() {
+                            f32::NEG_INFINITY
+                        } else {
+                            (e.d[q] + sq * (q * q) as f32 - e.d[p] - sq * (p * p) as f32)
+                                / (2.0 * sq * (q as f32 - p as f32))
+                        };
+                        if s <= e.z[k] && k > 0 {
+                            k -= 1;
+                        } else {
+                            k += 1;
+                            e.v[k] = q;
+                            e.z[k] = s;
+                            e.z[k + 1] = f32::INFINITY;
+                            break;
+                        }
                     }
                 }
-            }
-            // Walk the envelope left to right.
-            let mut line = vec![0f32; n];
-            let mut k = 0usize;
-            for (q, slot) in line.iter_mut().enumerate() {
-                while z[k + 1] < q as f32 {
-                    k += 1;
+                if sweep != Sweep::Both {
+                    // Only parabolas up to q are in the envelope, and q sits
+                    // in its last piece — so this is the one-sided minimum.
+                    let p = e.v[k];
+                    e.out[q] = if e.d[p].is_infinite() {
+                        f32::INFINITY
+                    } else {
+                        let dq = (q as f32 - p as f32) * step;
+                        e.d[p] + dq * dq
+                    };
                 }
-                let p = v[k];
-                *slot = if d[p].is_infinite() {
-                    f32::INFINITY
-                } else {
-                    let dq = (q as f32 - p as f32) * step;
-                    d[p] + dq * dq
-                };
             }
-            (base, line)
-        })
-        .collect();
-    for (base, line) in out {
-        for (q, val) in line.into_iter().enumerate() {
-            f[base + q * stride] = val;
-        }
-    }
+            if sweep == Sweep::Both {
+                // Walk the finished envelope left to right.
+                let mut k = 0usize;
+                for (q, slot) in e.out.iter_mut().enumerate() {
+                    while e.z[k + 1] < q as f32 {
+                        k += 1;
+                    }
+                    let p = e.v[k];
+                    *slot = if e.d[p].is_infinite() {
+                        f32::INFINITY
+                    } else {
+                        let dq = (q as f32 - p as f32) * step;
+                        e.d[p] + dq * dq
+                    };
+                }
+            }
+            for q in 0..n {
+                let dst = if sweep == Sweep::Backward {
+                    n - 1 - q
+                } else {
+                    q
+                };
+                unsafe { *ptr.get().add(base + dst * stride) = e.out[q] };
+            }
+        },
+    );
 }
 
 /// Erosion by a ball of `radius_mm`: the voxels further than the radius from
@@ -166,6 +243,111 @@ pub fn dilate_mm(mask: &[u8], dims: [usize; 3], spacing: [f64; 3], radius_mm: f6
     let r2 = (radius_mm * radius_mm) as f32;
     let d = dist2_to_foreground(mask, dims, spacing);
     d.par_iter().map(|&v| u8::from(v <= r2)).collect()
+}
+
+/// A margin in millimetres per array axis and per direction:
+/// `radii[axis] = [toward decreasing index, toward increasing index]`.
+///
+/// The structuring element is the ellipsoid whose semi-axis in each of the
+/// six directions is the corresponding entry — the shape a planning system
+/// means by "5 mm laterally, 8 mm superiorly". Symmetric cases are detected
+/// and take a single distance transform; only a genuinely one-sided margin
+/// pays for the eight-octant form.
+pub type Radii = [[f64; 2]; 3];
+
+/// True when the margin is the same in both directions along every axis, so
+/// the structuring element is centrally symmetric.
+fn symmetric(radii: &Radii) -> bool {
+    radii.iter().all(|r| (r[0] - r[1]).abs() < 1e-9)
+}
+
+/// Largest radius anywhere in the margin.
+fn widest(radii: &Radii) -> f64 {
+    radii.iter().flatten().cloned().fold(0.0, f64::max)
+}
+
+/// Scale factor that turns a physical spacing into "fractions of the radius",
+/// so that thresholding the transform at 1 tests the ellipsoid equation
+/// `Σ (dₐ/rₐ)² ≤ 1`. A radius of zero forbids any offset along that axis,
+/// which a very large scale expresses without a special case.
+fn unit_step(spacing: f64, radius: f64) -> f32 {
+    if radius <= 0.0 {
+        (spacing * 1e6) as f32
+    } else {
+        (spacing / radius) as f32
+    }
+}
+
+/// Dilation by the ellipsoid of [`Radii`].
+///
+/// Dilation distributes over a union of structuring elements, and an
+/// asymmetric ellipsoid is the union of its eight octants — each of which is
+/// an octant of an *ordinary* ellipsoid, and so is reached by three one-sided
+/// passes. Eight of those is the price of a one-sided margin; a symmetric one
+/// costs a single transform.
+pub fn dilate_radii(mask: &[u8], dims: [usize; 3], spacing: [f64; 3], radii: &Radii) -> Vec<u8> {
+    let n = dims[0] * dims[1] * dims[2];
+    debug_assert_eq!(mask.len(), n);
+    if widest(radii) <= 0.0 {
+        return mask.to_vec();
+    }
+    let seed = || -> Vec<f32> {
+        mask.par_iter()
+            .map(|&v| if v == 0 { f32::INFINITY } else { 0.0 })
+            .collect()
+    };
+    if symmetric(radii) {
+        let mut f = seed();
+        for (axis, sp) in spacing.iter().enumerate() {
+            pass_along(
+                &mut f,
+                dims,
+                axis,
+                unit_step(*sp, radii[axis][1]),
+                Sweep::Both,
+            );
+        }
+        return f.par_iter().map(|&v| u8::from(v <= 1.0)).collect();
+    }
+    let mut out = vec![0u8; n];
+    for octant in 0..8u8 {
+        let mut f = seed();
+        for (axis, sp) in spacing.iter().enumerate() {
+            // Bit set = this octant grows toward +axis, so its sources lie
+            // at lower indices and the pass sweeps forward.
+            let positive = octant >> axis & 1 == 1;
+            let r = radii[axis][usize::from(positive)];
+            let sweep = if positive {
+                Sweep::Forward
+            } else {
+                Sweep::Backward
+            };
+            pass_along(&mut f, dims, axis, unit_step(*sp, r), sweep);
+        }
+        out.par_iter_mut()
+            .zip(f.par_iter())
+            .for_each(|(o, &v)| *o |= u8::from(v <= 1.0));
+    }
+    out
+}
+
+/// Erosion by the ellipsoid of [`Radii`] — everything that survives having
+/// the shape swept round the inside of the mask.
+///
+/// Computed as the complement of dilating the complement, which is the
+/// definition; it also inherits the convention that voxels outside the volume
+/// are not background, so anatomy truncated by the field of view is not
+/// eroded at the cut.
+pub fn erode_radii(mask: &[u8], dims: [usize; 3], spacing: [f64; 3], radii: &Radii) -> Vec<u8> {
+    if widest(radii) <= 0.0 {
+        return mask.to_vec();
+    }
+    let inverted: Vec<u8> = mask.par_iter().map(|&v| u8::from(v == 0)).collect();
+    // Reflected: eroding the anterior surface by 5 mm is dilating the
+    // background toward the posterior.
+    let mirrored: Radii = std::array::from_fn(|a| [radii[a][1], radii[a][0]]);
+    let grown = dilate_radii(&inverted, dims, spacing, &mirrored);
+    grown.par_iter().map(|&v| u8::from(v == 0)).collect()
 }
 
 /// Opening — erosion then dilation. Equivalently: the union of every ball of
@@ -219,8 +401,12 @@ impl Component {
     pub fn cm3(&self, spacing: [f64; 3]) -> f64 {
         self.voxels.len() as f64 * spacing[0] * spacing[1] * spacing[2] / 1000.0
     }
-    /// Longest side of the bounding box, in millimetres.
+    /// Longest side of the bounding box, in millimetres. Zero for an empty
+    /// component, whose bounding box is the uninitialised one.
     pub fn extent_mm(&self, spacing: [f64; 3]) -> f64 {
+        if self.voxels.is_empty() {
+            return 0.0;
+        }
         (0..3)
             .map(|a| (self.hi[a] - self.lo[a] + 1) as f64 * spacing[a])
             .fold(0.0, f64::max)
@@ -541,9 +727,17 @@ pub fn blur_mm(src: &[f32], dims: [usize; 3], spacing: [f64; 3], sigma_mm: f64) 
         return buf;
     }
     for (axis, step) in spacing.iter().enumerate() {
+        if !step.is_finite() || *step <= 0.0 {
+            continue;
+        }
         // A box of width w has variance (w² − 1)/12; three of them give 3×.
         let var = sigma_mm * sigma_mm / (step * step) / 3.0;
-        let w = ((12.0 * var + 1.0).sqrt().round() as usize).max(1) | 1;
+        // Capped at the extent of the axis: a window wider than the data
+        // averages the same clamped values over and over, and an unclamped
+        // width from a degenerate spacing (a series that declares a slice
+        // thickness of zero) would run for the age of the universe.
+        let n = dims[axis];
+        let w = ((12.0 * var + 1.0).sqrt().round() as usize).clamp(1, 2 * n.max(1) + 1) | 1;
         if w <= 1 {
             continue;
         }
@@ -642,6 +836,127 @@ mod tests {
                 "{g} vs {w}"
             );
         }
+    }
+
+    /// Brute-force dilation by the asymmetric ellipsoid, straight from the
+    /// definition: p is in iff some set voxel sits within the shape.
+    fn brute_dilate(mask: &[u8], dims: [usize; 3], sp: [f64; 3], r: &Radii) -> Vec<u8> {
+        let [nx, ny, nz] = dims;
+        let mut out = vec![0u8; nx * ny * nz];
+        for k in 0..nz {
+            for j in 0..ny {
+                for i in 0..nx {
+                    let p = [i, j, k];
+                    'search: for kk in 0..nz {
+                        for jj in 0..ny {
+                            for ii in 0..nx {
+                                if mask[kk * nx * ny + jj * nx + ii] == 0 {
+                                    continue;
+                                }
+                                let q = [ii, jj, kk];
+                                let mut sum = 0.0f64;
+                                let mut ok = true;
+                                for a in 0..3 {
+                                    let d = (p[a] as f64 - q[a] as f64) * sp[a];
+                                    // d > 0 means p lies at a higher index
+                                    // than the source: growth toward +axis.
+                                    let rad = if d >= 0.0 { r[a][1] } else { r[a][0] };
+                                    if d == 0.0 {
+                                        continue;
+                                    }
+                                    if rad <= 0.0 {
+                                        ok = false;
+                                        break;
+                                    }
+                                    sum += (d / rad).powi(2);
+                                }
+                                if ok && sum <= 1.0 + 1e-9 {
+                                    out[k * nx * ny + j * nx + i] = 1;
+                                    break 'search;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_directional_margin_matches_the_shape_it_claims() {
+        let dims = [11, 9, 7];
+        let sp = [1.0, 1.5, 2.5];
+        let mut mask = vec![0u8; dims[0] * dims[1] * dims[2]];
+        let at = |i: usize, j: usize, k: usize| k * dims[0] * dims[1] + j * dims[0] + i;
+        mask[at(5, 4, 3)] = 1;
+        mask[at(2, 1, 1)] = 1;
+        for radii in [
+            [[3.0, 3.0], [3.0, 3.0], [3.0, 3.0]], // isotropic
+            [[4.0, 4.0], [2.0, 2.0], [6.0, 6.0]], // symmetric, anisotropic
+            [[0.0, 5.0], [3.0, 1.0], [2.0, 8.0]], // one-sided
+            [[5.0, 0.0], [0.0, 0.0], [0.0, 4.0]], // axes switched off
+        ] {
+            let got = dilate_radii(&mask, dims, sp, &radii);
+            let want = brute_dilate(&mask, dims, sp, &radii);
+            assert_eq!(got, want, "dilation by {radii:?}");
+        }
+    }
+
+    #[test]
+    fn a_symmetric_margin_agrees_with_the_plain_ball() {
+        let dims = [15, 13, 5];
+        let sp = [1.0, 1.0, 3.0];
+        let mut mask = vec![0u8; dims[0] * dims[1] * dims[2]];
+        for k in 1..4 {
+            for j in 4..9 {
+                for i in 5..10 {
+                    mask[k * dims[0] * dims[1] + j * dims[0] + i] = 1;
+                }
+            }
+        }
+        for r in [1.0, 2.5, 4.0] {
+            assert_eq!(
+                dilate_radii(&mask, dims, sp, &[[r; 2]; 3]),
+                dilate_mm(&mask, dims, sp, r),
+                "dilate by {r}"
+            );
+            assert_eq!(
+                erode_radii(&mask, dims, sp, &[[r; 2]; 3]),
+                erode_mm(&mask, dims, sp, r),
+                "erode by {r}"
+            );
+        }
+    }
+
+    #[test]
+    fn eroding_one_side_moves_only_that_surface() {
+        // A slab, shrunk 4 mm from the low-index side of axis 0 alone.
+        let dims = [20, 5, 3];
+        let sp = [2.0, 2.0, 2.0];
+        let at = |i: usize, j: usize, k: usize| k * 100 + j * 20 + i;
+        let mut mask = vec![0u8; 300];
+        for k in 0..3 {
+            for j in 0..5 {
+                for i in 4..16 {
+                    mask[at(i, j, k)] = 1;
+                }
+            }
+        }
+        let out = erode_radii(&mask, dims, sp, &[[4.0, 0.0], [0.0; 2], [0.0; 2]]);
+        assert_eq!(out[at(5, 2, 1)], 0, "the low side moved in");
+        assert_eq!(out[at(6, 2, 1)], 1, "…by 4 mm and no further");
+        assert_eq!(out[at(15, 2, 1)], 1, "the high side did not move");
+    }
+
+    #[test]
+    fn a_blur_wider_than_the_volume_still_terminates() {
+        // A slice thickness of a micron is what a series that declares zero
+        // gets clamped to; the box width must not follow it to infinity.
+        let dims = [8, 4, 2];
+        let src = vec![3.0f32; dims[0] * dims[1] * dims[2]];
+        let out = blur_mm(&src, dims, [1.0, 1.0, 1e-6], 40.0);
+        assert!(out.iter().all(|v| (v - 3.0).abs() < 1e-3));
     }
 
     #[test]

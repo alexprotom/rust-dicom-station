@@ -1,8 +1,8 @@
 //! The side panel and its per-dataset sections.
 //!
 //! Each section renders one kind of loaded object -- series, structures,
-//! segmentations, dose, plan, planar images, registrations, records -- plus
-//! the global registration and simulation controls.
+//! segmentations, dose, plan, planar images, registrations, records. The
+//! optional registration and simulation sections live in `reg_panel.rs`.
 
 use super::*;
 
@@ -383,6 +383,9 @@ impl ViewerApp {
                 me.series_rows(ui, slot, idxs)
             });
         }
+        for &gi in &node.fourd {
+            self.fourd_node(ui, slot, pi, si, gi);
+        }
         self.structures_section(ui, slot, pi, si, &node.structs);
         self.segmentation_section(ui, slot, pi, si, &node.segs);
         self.dose_section(ui, slot, pi, si, &node.doses);
@@ -395,6 +398,18 @@ impl ViewerApp {
         let mut switch_to = None;
         let mut act: Option<TreeAction> = None;
         let mut rename = None;
+        let mut fourd: Option<FourDAction> = None;
+        let group_names: Vec<(usize, String)> = self.slots[slot]
+            .study
+            .as_ref()
+            .map(|st| {
+                st.fourd_groups
+                    .iter()
+                    .enumerate()
+                    .map(|(gi, g)| (gi, g.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
         {
             let Some(study) = self.slots[slot].study.as_ref() else {
                 return;
@@ -437,6 +452,27 @@ impl ViewerApp {
                         }
                     }
                     ui.separator();
+                    ui.menu_button("4D group", |ui| {
+                        for (gi, name) in &group_names {
+                            if ui.button(format!("Add to {name}")).clicked() {
+                                fourd = Some(FourDAction::Add {
+                                    slot,
+                                    group: *gi,
+                                    series: i,
+                                });
+                                ui.close();
+                            }
+                        }
+                        if ui.button("New 4D group from this series").clicked() {
+                            fourd = Some(FourDAction::New { slot, series: i });
+                            ui.close();
+                        }
+                        if ui.button("Re-detect 4D groups").clicked() {
+                            fourd = Some(FourDAction::Redetect { slot });
+                            ui.close();
+                        }
+                    });
+                    ui.separator();
                     if ui.button("Remove series").clicked() {
                         act = Some(TreeAction {
                             from: slot,
@@ -460,8 +496,275 @@ impl ViewerApp {
         if rename.is_some() {
             self.rename_request = rename;
         }
+        if fourd.is_some() {
+            self.fourd_action = fourd;
+        }
         if let Some(i) = switch_to {
             self.start_series_switch(slot, i);
+        }
+    }
+
+    /// One 4D group node: the ordered members, each row switching the
+    /// displayed series like an ordinary series row.
+    fn fourd_node(&mut self, ui: &mut egui::Ui, slot: usize, pi: usize, si: usize, gi: usize) {
+        let Some(study) = self.slots[slot].study.as_ref() else {
+            return;
+        };
+        let Some(group) = study.fourd_groups.get(gi) else {
+            return;
+        };
+        let title = format!("🎞 {}", group.name);
+        let resolved = group.resolve(&study.series);
+        // (member index, series index, row label) for every surviving member.
+        let rows: Vec<(usize, usize, String)> = group
+            .members
+            .iter()
+            .enumerate()
+            .zip(&resolved)
+            .filter_map(|((mi, m), r)| {
+                r.map(|sidx| {
+                    let se = &study.series[sidx];
+                    let tag = m.role.tag();
+                    let label = if tag.is_empty() {
+                        format!("{} — {} ({} sl.)", m.label, se.description, se.files.len())
+                    } else {
+                        format!("{tag} — {} ({} sl.)", se.description, se.files.len())
+                    };
+                    (mi, sidx, label)
+                })
+            })
+            .collect();
+        let n_members = group.members.len();
+        let active = study.active_series;
+
+        let mut switch_to = None;
+        let mut fourd: Option<FourDAction> = None;
+        let mut rename = None;
+        let resp = Self::wrapped_node(ui, ("fourd", slot, pi, si, gi), true, title, |ui| {
+            for (mi, sidx, label) in &rows {
+                let resp = ui.add(egui::Button::selectable(*sidx == active, label).wrap());
+                if resp.clicked() && *sidx != active {
+                    switch_to = Some(*sidx);
+                }
+                resp.context_menu(|ui| {
+                    if ui.button("⬆ Move up").clicked() {
+                        fourd = Some(FourDAction::Shift {
+                            slot,
+                            group: gi,
+                            member: *mi,
+                            delta: -1,
+                        });
+                        ui.close();
+                    }
+                    if ui.button("⬇ Move down").clicked() {
+                        fourd = Some(FourDAction::Shift {
+                            slot,
+                            group: gi,
+                            member: *mi,
+                            delta: 1,
+                        });
+                        ui.close();
+                    }
+                    ui.menu_button("Role", |ui| {
+                        for (role, label) in [
+                            (fourd::Role::Phase, "Phase"),
+                            (fourd::Role::Average, "Average (AVG)"),
+                            (fourd::Role::Mip, "MIP"),
+                            (fourd::Role::MinIp, "MinIP"),
+                        ] {
+                            if ui.button(label).clicked() {
+                                fourd = Some(FourDAction::SetRole {
+                                    slot,
+                                    group: gi,
+                                    member: *mi,
+                                    role,
+                                });
+                                ui.close();
+                            }
+                        }
+                    });
+                    ui.separator();
+                    if ui.button("Remove from group").clicked() {
+                        fourd = Some(FourDAction::RemoveMember {
+                            slot,
+                            group: gi,
+                            member: *mi,
+                        });
+                        ui.close();
+                    }
+                });
+            }
+            if rows.len() < n_members {
+                ui.weak(format!(
+                    "{} member(s) whose series is gone",
+                    n_members - rows.len()
+                ));
+            }
+        });
+        resp.context_menu(|ui| {
+            if ui.button("✎ Rename group…").clicked() {
+                rename = Some(RenameTarget::FourD { slot, idx: gi });
+                ui.close();
+            }
+            if ui.button("📈 Motion / ITV analysis…").clicked() {
+                fourd = Some(FourDAction::Analyse { slot, group: gi });
+                ui.close();
+            }
+            ui.separator();
+            if ui.button("Re-detect 4D groups").clicked() {
+                fourd = Some(FourDAction::Redetect { slot });
+                ui.close();
+            }
+            if ui.button("Dissolve group").clicked() {
+                fourd = Some(FourDAction::Dissolve { slot, group: gi });
+                ui.close();
+            }
+        });
+        resp.on_hover_text(
+            "A 4D sub-study: the phases in temporal order, then the reconstructions.\n\
+             Click a phase to display it; right-click for analysis and edits.",
+        );
+        if fourd.is_some() {
+            self.fourd_action = fourd;
+        }
+        if rename.is_some() {
+            self.rename_request = rename;
+        }
+        if let Some(i) = switch_to {
+            self.start_series_switch(slot, i);
+        }
+    }
+
+    /// Apply a deferred 4D-group edit from the tree's context menus.
+    pub(super) fn apply_fourd_action(&mut self, act: FourDAction) {
+        match act {
+            FourDAction::Analyse { slot, group } => {
+                self.open_motion_dialog(slot, Some(group));
+                return;
+            }
+            FourDAction::Redetect { slot } => {
+                if let Some(study) = self.slots[slot].study.as_mut() {
+                    // An explicit re-detect is the one action that clears
+                    // dissolved tombstones — the user asked for detection.
+                    study.fourd_groups.retain(|g| !g.dissolved);
+                    study.refresh_fourd();
+                }
+                return;
+            }
+            _ => {}
+        }
+        let slot = match act {
+            FourDAction::Add { slot, .. }
+            | FourDAction::New { slot, .. }
+            | FourDAction::RemoveMember { slot, .. }
+            | FourDAction::Shift { slot, .. }
+            | FourDAction::SetRole { slot, .. }
+            | FourDAction::Dissolve { slot, .. } => slot,
+            _ => return,
+        };
+        let Some(study) = self.slots[slot].study.as_mut() else {
+            return;
+        };
+        match act {
+            FourDAction::Add { group, series, .. } => {
+                let Some(se) = study.series.get(series) else {
+                    return;
+                };
+                let member = fourd::member_for(se, {
+                    study
+                        .fourd_groups
+                        .get(group)
+                        .map(|g| g.phase_members().len() + 1)
+                        .unwrap_or(1)
+                });
+                if let Some(g) = study.fourd_groups.get_mut(group) {
+                    if !g.members.iter().any(|m| m.series_uid == member.series_uid) {
+                        g.members.push(member);
+                        g.custom = true;
+                    }
+                }
+            }
+            FourDAction::New { series, .. } => {
+                let Some(se) = study.series.get(series) else {
+                    return;
+                };
+                let member = fourd::member_for(se, 1);
+                let n = study.fourd_groups.len() + 1;
+                study.fourd_groups.push(fourd::FourDGroup {
+                    name: format!("4D group {n}"),
+                    study_uid: se.study_uid.clone(),
+                    members: vec![member],
+                    custom: true,
+                    dissolved: false,
+                });
+            }
+            FourDAction::RemoveMember { group, member, .. } => {
+                if let Some(g) = study.fourd_groups.get_mut(group) {
+                    if g.members.len() == 1 && member == 0 {
+                        // Removing the last member dissolves the group; the
+                        // member stays inside the tombstone so re-detection
+                        // does not immediately rebuild what was taken apart.
+                        g.dissolved = true;
+                        g.custom = true;
+                    } else if member < g.members.len() {
+                        g.members.remove(member);
+                        g.custom = true;
+                    }
+                }
+            }
+            FourDAction::Shift {
+                group,
+                member,
+                delta,
+                ..
+            } => {
+                if let Some(g) = study.fourd_groups.get_mut(group) {
+                    let to = member as isize + delta;
+                    if to >= 0 && (to as usize) < g.members.len() {
+                        g.members.swap(member, to as usize);
+                        g.custom = true;
+                    }
+                }
+            }
+            FourDAction::SetRole {
+                group,
+                member,
+                role,
+                ..
+            } => {
+                if let Some(m) = study
+                    .fourd_groups
+                    .get_mut(group)
+                    .and_then(|g| g.members.get_mut(member))
+                {
+                    m.role = role;
+                    if role != fourd::Role::Phase {
+                        m.label = role.tag().to_string();
+                        m.percent = None;
+                    } else if m.label.is_empty()
+                        || m.label == "AVG"
+                        || m.label == "MIP"
+                        || m.label == "MinIP"
+                    {
+                        m.label = format!("t{}", member + 1);
+                    }
+                }
+                if let Some(g) = study.fourd_groups.get_mut(group) {
+                    g.custom = true;
+                }
+            }
+            FourDAction::Dissolve { group, .. } if group < study.fourd_groups.len() => {
+                // A custom group leaves nothing behind; an auto-detected one
+                // leaves a hidden tombstone so re-detection (on the next
+                // series change) does not resurrect it. *Re-detect 4D
+                // groups* clears tombstones explicitly.
+                if study.fourd_groups[group].custom {
+                    study.fourd_groups.remove(group);
+                } else {
+                    study.fourd_groups[group].dissolved = true;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -675,6 +978,35 @@ impl ViewerApp {
                 });
             }
         });
+        ui.separator();
+        if ui
+            .button(format!("◧ Combine {what}…"))
+            .on_hover_text(
+                "Open the structure-algebra window with these as its operands — union, \
+                 intersection, subtraction, margins",
+            )
+            .clicked()
+        {
+            *out = Some(ItemAction::Combine {
+                from,
+                items: items.clone(),
+            });
+            ui.close();
+        }
+        if ui
+            .button(format!("📊 Plot {what} on a DVH…"))
+            .on_hover_text(
+                "Open the dose–volume histogram window with these structures against \
+                 the loaded dose",
+            )
+            .clicked()
+        {
+            *out = Some(ItemAction::Dvh {
+                from,
+                items: items.clone(),
+            });
+            ui.close();
+        }
         if from.kind == SetKind::Segmentations {
             ui.separator();
             if ui
@@ -1050,7 +1382,13 @@ impl ViewerApp {
                     for (tool, hint) in [
                         (
                             &BODY_CONTOUR,
-                            "The patient outline: threshold, largest component, fill",
+                            "Outline the patient without the couch, the chair or the \
+                             immobilisation (EXTERNAL)",
+                        ),
+                        (
+                            &COMBINE,
+                            "Build one structure out of others: union, intersection, \
+                             subtraction, margins",
                         ),
                         (
                             &AUTOSEG,
@@ -1238,6 +1576,7 @@ impl ViewerApp {
             self.create_seg(slot);
         }
         match open_tool.map(|t| t.glyph) {
+            Some(g) if g == COMBINE.glyph => self.open_combine_dialog(slot, Vec::new()),
             Some(g) if g == BODY_CONTOUR.glyph => self.open_body_dialog(slot),
             Some(g) if g == AUTOSEG.glyph => self.open_autoseg_dialog(slot),
             Some(g) if g == PROMPT_SEG.glyph => self.open_segvol_dialog(slot),
@@ -1963,6 +2302,8 @@ pub(super) struct StudyNode {
     segs: Vec<usize>,
     doses: Vec<usize>,
     plans: Vec<usize>,
+    /// 4D groups of this study — indices into `LoadedStudy::fourd_groups`.
+    fourd: Vec<usize>,
 }
 
 /// One patient node: the studies filed under them.
@@ -1983,6 +2324,17 @@ pub(super) struct PatientNode {
 /// there is: a structure set that cannot be reached is worse than one shown
 /// a level away from where its header claims it lives.
 pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
+    // Series filed under a 4D group render inside that node, not under
+    // their modality — one series, one place in the tree.
+    let mut grouped = vec![false; study.series.len()];
+    for g in &study.fourd_groups {
+        if g.dissolved {
+            continue;
+        }
+        for r in g.resolve(&study.series).into_iter().flatten() {
+            grouped[r] = true;
+        }
+    }
     // Patients and their studies, both in first-seen order.
     let mut patients: Vec<PatientNode> = Vec::new();
     for se in &study.series {
@@ -2032,10 +2384,14 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
                     segs: Vec::new(),
                     doses: Vec::new(),
                     plans: Vec::new(),
+                    fourd: Vec::new(),
                 });
                 p.studies.last_mut().expect("just pushed")
             }
         };
+        if grouped[si] {
+            continue;
+        }
         let modality = if se.modality.is_empty() {
             "Other".to_string()
         } else {
@@ -2044,6 +2400,31 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
         match node.modalities.iter_mut().find(|(m, _)| *m == modality) {
             Some((_, v)) => v.push(si),
             None => node.modalities.push((modality, vec![si])),
+        }
+    }
+
+    // File each 4D group under its study node (falling back to the study of
+    // its first surviving series, then to the first study — same rule as
+    // the RT objects below).
+    for (gi, g) in study.fourd_groups.iter().enumerate() {
+        if g.dissolved {
+            continue;
+        }
+        let resolved = g.resolve(&study.series);
+        let Some(first) = resolved.iter().flatten().next() else {
+            continue; // nothing left of this group
+        };
+        let fallback = &study.series[*first].study_uid;
+        let find = |uid: &str| -> Option<(usize, usize)> {
+            patients.iter().enumerate().find_map(|(pi, p)| {
+                p.studies
+                    .iter()
+                    .position(|st| st.uid == uid)
+                    .map(|si| (pi, si))
+            })
+        };
+        if let Some((pi, si)) = find(&g.study_uid).or_else(|| find(fallback)) {
+            patients[pi].studies[si].fourd.push(gi);
         }
     }
 
@@ -2180,6 +2561,8 @@ mod layout_tests {
             study_uid: study.into(),
             study_date: "20260827".into(),
             study_description: String::new(),
+            series_number: None,
+            temporal_id: None,
             files: vec![std::path::PathBuf::from(format!("{uid}.dcm"))],
         }
     }
@@ -2238,6 +2621,7 @@ mod layout_tests {
             planar_images: Vec::new(),
             registrations: Vec::new(),
             treat_records: Vec::new(),
+            fourd_groups: Vec::new(),
             warnings: Vec::new(),
             default_window: (40.0, 400.0),
         }

@@ -23,17 +23,12 @@
 //! coordinates, and [`Medsam2State::engine_prompt`] is the only place it
 //! becomes network coordinates.
 
-use std::path::PathBuf;
-use std::sync::Arc;
-
 use crate::medsam2::engine::{Engine, EnginePrompt, PixelPrompt};
 use crate::medsam2::infer::Config;
 use crate::medsam2::preprocess::{self, Prepared, Window};
 use crate::medsam2::weights::{self, Variant};
 use crate::models::Engine as ModelsEngine;
 use crate::nn::device::DevicePref;
-use crate::progress::Progress;
-use crate::volume::{ViewPlane, Volume};
 
 use super::*;
 
@@ -758,13 +753,13 @@ impl ViewerApp {
         let mut clear = false;
         let mut browse = false;
 
-        egui::Window::new(SLICE_PROP.title(slot))
-            .id(egui::Id::new("medsam2_window"))
-            .collapsible(true)
-            .resizable(false)
-            .default_width(380.0)
-            .open(&mut open)
-            .show(ctx, |ui| {
+        detach::tool_window(
+            ctx,
+            "medsam2",
+            SLICE_PROP.title(slot),
+            &mut open,
+            detach::WinOpts::width(380.0).resizable(false),
+            |ui| {
                 ui.label(format!(
                     "Follows a structure boxed on one slice through the stack with MedSAM2, \
                      re-implemented natively in Rust. Drag a box around it in the {} view, on a \
@@ -964,7 +959,8 @@ impl ViewerApp {
                     ui.separator();
                     ui.weak(status);
                 }
-            });
+            },
+        );
 
         if browse {
             if let Some(dir) = Self::pick_folder("Model folder") {

@@ -58,8 +58,58 @@ pub struct Grid {
 }
 
 impl Grid {
-    pub fn voxel_count(&self) -> usize {
-        self.dims[0] * self.dims[1] * self.dims[2]
+    /// Find the permutation and flips that carry a lattice's own axes onto the
+    /// canonical `[S, A, R]` order — superior, anterior and right, each
+    /// increasing with the array index.
+    ///
+    /// Every inference engine wants this: it is what `nibabel`'s
+    /// `as_closest_canonical` followed by nnU-Net's axis convention produces, and
+    /// it is also what SegVol's `Orientationd(axcodes="RAS")` plus its
+    /// `DimTranspose` (which swaps the first and last spatial axes) produces.
+    /// Volumes are not assumed to be axis-aligned; the best match is chosen by
+    /// direction cosine.
+    pub fn canonical_axes(&self) -> ([usize; 3], [bool; 3]) {
+        // LPS direction vectors of the three volume axes.
+        let dirs: [Vec3; 3] = [self.row_dir, self.col_dir, self.normal];
+        // Canonical targets in LPS: S = +z, A = -y, R = -x.
+        let targets: [Vec3; 3] = [
+            Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+            },
+            Vec3 {
+                x: 0.0,
+                y: -1.0,
+                z: 0.0,
+            },
+            Vec3 {
+                x: -1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        ];
+        let mut perm = [0usize; 3];
+        let mut flip = [false; 3];
+        let mut used = [false; 3];
+        for a in 0..3 {
+            let mut best = 0usize;
+            let mut best_dot = f64::NEG_INFINITY;
+            for v in 0..3 {
+                if used[v] {
+                    continue;
+                }
+                let dot = dirs[v].dot(targets[a]);
+                if dot.abs() > best_dot {
+                    best_dot = dot.abs();
+                    best = v;
+                }
+            }
+            used[best] = true;
+            perm[a] = best;
+            flip[a] = dirs[best].dot(targets[a]) < 0.0;
+        }
+        (perm, flip)
     }
 
     /// Map fractional voxel indices to patient coordinates (mm).
@@ -321,56 +371,8 @@ impl Volume {
     }
 
     /// Find the permutation and flips that carry a volume's own axes onto the
-    /// canonical `[S, A, R]` order — superior, anterior and right, each
-    /// increasing with the array index.
-    ///
-    /// Every inference engine wants this: it is what `nibabel`'s
-    /// `as_closest_canonical` followed by nnU-Net's axis convention produces, and
-    /// it is also what SegVol's `Orientationd(axcodes="RAS")` plus its
-    /// `DimTranspose` (which swaps the first and last spatial axes) produces.
-    /// Volumes are not assumed to be axis-aligned; the best match is chosen by
-    /// direction cosine.
+    /// canonical `[S, A, R]` order — see [`Grid::canonical_axes`].
     pub fn canonical_axes(&self) -> ([usize; 3], [bool; 3]) {
-        // LPS direction vectors of the three volume axes.
-        let dirs: [Vec3; 3] = [self.row_dir, self.col_dir, self.normal];
-        // Canonical targets in LPS: S = +z, A = -y, R = -x.
-        let targets: [Vec3; 3] = [
-            Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 1.0,
-            },
-            Vec3 {
-                x: 0.0,
-                y: -1.0,
-                z: 0.0,
-            },
-            Vec3 {
-                x: -1.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        ];
-        let mut perm = [0usize; 3];
-        let mut flip = [false; 3];
-        let mut used = [false; 3];
-        for a in 0..3 {
-            let mut best = 0usize;
-            let mut best_dot = f64::NEG_INFINITY;
-            for v in 0..3 {
-                if used[v] {
-                    continue;
-                }
-                let dot = dirs[v].dot(targets[a]);
-                if dot.abs() > best_dot {
-                    best_dot = dot.abs();
-                    best = v;
-                }
-            }
-            used[best] = true;
-            perm[a] = best;
-            flip[a] = dirs[best].dot(targets[a]) < 0.0;
-        }
-        (perm, flip)
+        self.grid().canonical_axes()
     }
 }

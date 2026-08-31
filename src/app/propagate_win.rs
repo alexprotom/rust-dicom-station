@@ -297,185 +297,190 @@ impl ViewerApp {
             .map(|(fixed, _, _)| self.region_choices_for(*fixed))
             .unwrap_or_default();
 
-        egui::Window::new(format!(
-            "⇄ Propagate structures — {} ▶ {}",
-            SLOT_NAMES[src_slot], SLOT_NAMES[dst_slot]
-        ))
-        .id(egui::Id::new("propagate_window"))
-        .collapsible(true)
-        .resizable(true)
-        .default_width(420.0)
-        .open(&mut open)
-        .show(ctx, |ui| {
-            ui.label(
-                "Carries structures and segmentations from one dataset to the other \
+        detach::tool_window(
+            ctx,
+            "propagate",
+            format!(
+                "⇄ Propagate structures — {} ▶ {}",
+                SLOT_NAMES[src_slot], SLOT_NAMES[dst_slot]
+            ),
+            &mut open,
+            detach::WinOpts::width(420.0),
+            |ui| {
+                ui.label(
+                    "Carries structures and segmentations from one dataset to the other \
                  through the active registration. Every destination voxel is asked \
                  where it comes from, so nothing is left with holes.",
-            );
-            ui.separator();
-            match &registered {
-                None => {
-                    ui.colored_label(
-                        alert_color(ui.visuals()),
-                        "No active registration — run one in the sidebar first.",
-                    );
-                }
-                Some((fixed, method, region)) => {
-                    ui.weak(format!(
-                        "Using: {method}{}",
-                        match region {
-                            Some(r) => format!(" · restricted to {r}"),
-                            None => String::new(),
-                        }
-                    ));
-                    ui.weak(format!(
-                        "Fixed image: dataset {} — the transform is inverted \
+                );
+                ui.separator();
+                match &registered {
+                    None => {
+                        ui.colored_label(
+                            alert_color(ui.visuals()),
+                            "No active registration — run one in the sidebar first.",
+                        );
+                    }
+                    Some((fixed, method, region)) => {
+                        ui.weak(format!(
+                            "Using: {method}{}",
+                            match region {
+                                Some(r) => format!(" · restricted to {r}"),
+                                None => String::new(),
+                            }
+                        ));
+                        ui.weak(format!(
+                            "Fixed image: dataset {} — the transform is inverted \
                          automatically for the other direction.",
-                        SLOT_NAMES[*fixed]
-                    ));
-                }
-            }
-            ui.separator();
-
-            ui.horizontal(|ui| {
-                ui.label("From");
-                ui.selectable_value(&mut d.src_slot, 0, "A ▶ B");
-                ui.selectable_value(&mut d.src_slot, 1, "B ▶ A");
-            });
-
-            ui.horizontal(|ui| {
-                if ui.small_button("All").clicked() {
-                    set_all = Some(true);
-                }
-                if ui.small_button("None").clicked() {
-                    set_all = Some(false);
-                }
-                let n = d.structs.iter().filter(|v| **v).count()
-                    + d.segs.iter().filter(|v| **v).count();
-                ui.weak(format!("{n} selected"));
-            });
-
-            egui::ScrollArea::vertical()
-                .max_height(260.0)
-                .show(ui, |ui| {
-                    if !struct_rows.is_empty() {
-                        ui.label(egui::RichText::new("Structures").strong());
-                        for (i, (name, color)) in struct_rows.iter().enumerate() {
-                            ui.horizontal(|ui| {
-                                if let Some(on) = d.structs.get_mut(i) {
-                                    ui.checkbox(on, "");
-                                }
-                                ui.colored_label(
-                                    Color32::from_rgb(color[0], color[1], color[2]),
-                                    "◼",
-                                );
-                                ui.label(name);
-                            });
-                        }
+                            SLOT_NAMES[*fixed]
+                        ));
                     }
-                    if !seg_rows.is_empty() {
-                        ui.add_space(4.0);
-                        ui.label(egui::RichText::new("Segmentations").strong());
-                        for (i, (name, color, cm3)) in seg_rows.iter().enumerate() {
-                            ui.horizontal(|ui| {
-                                if let Some(on) = d.segs.get_mut(i) {
-                                    ui.checkbox(on, "");
-                                }
-                                ui.colored_label(
-                                    Color32::from_rgb(color[0], color[1], color[2]),
-                                    "◼",
-                                );
-                                ui.label(name);
-                                ui.weak(format!("{cm3:.1} cm³"));
-                            });
-                        }
-                    }
-                    if struct_rows.is_empty() && seg_rows.is_empty() {
-                        ui.weak("This dataset has nothing to propagate.");
-                    }
+                }
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    ui.label("From");
+                    ui.selectable_value(&mut d.src_slot, 0, "A ▶ B");
+                    ui.selectable_value(&mut d.src_slot, 1, "B ▶ A");
                 });
 
-            ui.separator();
-            egui::CollapsingHeader::new("Refine locally first")
-                .id_salt("prop_local")
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.label(
-                        "A structure inside a larger one lands where the *larger* one's \
+                ui.horizontal(|ui| {
+                    if ui.small_button("All").clicked() {
+                        set_all = Some(true);
+                    }
+                    if ui.small_button("None").clicked() {
+                        set_all = Some(false);
+                    }
+                    let n = d.structs.iter().filter(|v| **v).count()
+                        + d.segs.iter().filter(|v| **v).count();
+                    ui.weak(format!("{n} selected"));
+                });
+
+                egui::ScrollArea::vertical()
+                    .max_height(260.0)
+                    .show(ui, |ui| {
+                        if !struct_rows.is_empty() {
+                            ui.label(egui::RichText::new("Structures").strong());
+                            for (i, (name, color)) in struct_rows.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    if let Some(on) = d.structs.get_mut(i) {
+                                        ui.checkbox(on, "");
+                                    }
+                                    ui.colored_label(
+                                        Color32::from_rgb(color[0], color[1], color[2]),
+                                        "◼",
+                                    );
+                                    ui.label(name);
+                                });
+                            }
+                        }
+                        if !seg_rows.is_empty() {
+                            ui.add_space(4.0);
+                            ui.label(egui::RichText::new("Segmentations").strong());
+                            for (i, (name, color, cm3)) in seg_rows.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    if let Some(on) = d.segs.get_mut(i) {
+                                        ui.checkbox(on, "");
+                                    }
+                                    ui.colored_label(
+                                        Color32::from_rgb(color[0], color[1], color[2]),
+                                        "◼",
+                                    );
+                                    ui.label(name);
+                                    ui.weak(format!("{cm3:.1} cm³"));
+                                });
+                            }
+                        }
+                        if struct_rows.is_empty() && seg_rows.is_empty() {
+                            ui.weak("This dataset has nothing to propagate.");
+                        }
+                    });
+
+                ui.separator();
+                egui::CollapsingHeader::new("Refine locally first")
+                    .id_salt("prop_local")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        ui.label(
+                            "A structure inside a larger one lands where the *larger* one's \
                          deformation puts it. Refining the registration on the enclosing \
                          structure first is what fixes that — and it only changes the \
                          transform inside that structure.",
-                    );
-                    ui.horizontal(|ui| {
-                        ui.label("Region");
-                        let current = local_choices
-                            .iter()
-                            .find(|(c, _)| *c == d.local)
-                            .map(|(_, l)| l.clone())
-                            .unwrap_or_else(|| "No refinement".into());
-                        egui::ComboBox::from_id_salt("prop_region")
-                            .selected_text(current)
-                            .width(200.0)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut d.local, RegRoi::Whole, "No refinement");
-                                for (choice, label) in &local_choices {
-                                    if *choice == RegRoi::Whole {
-                                        continue;
-                                    }
-                                    ui.selectable_value(&mut d.local, *choice, label);
-                                }
-                            });
-                    });
-                    if d.local != RegRoi::Whole {
-                        ui.horizontal(|ui| {
-                            ui.label("Margin");
-                            ui.add(
-                                egui::DragValue::new(&mut d.local_margin_mm)
-                                    .speed(1.0)
-                                    .range(0.0..=60.0)
-                                    .suffix(" mm"),
-                            );
-                        });
-                        ui.weak(
-                            "The refinement replaces the active registration, so the \
-                             sidebar reports exactly what the propagation used.",
                         );
-                    }
-                });
-
-            ui.separator();
-            match &self.propagate_job {
-                Some(job) => cancel = progress_row(ui, &job.progress),
-                None => {
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(registered.is_some(), egui::Button::new("▶ Propagate"))
-                            .on_hover_text(
-                                "Results land as editable segmentations on the other \
-                                 dataset, convertible to RTSTRUCT like any other",
-                            )
-                            .clicked()
-                        {
-                            run = true;
-                        }
-                        if ui.button("Close").clicked() {
-                            close = true;
+                        ui.horizontal(|ui| {
+                            ui.label("Region");
+                            let current = local_choices
+                                .iter()
+                                .find(|(c, _)| *c == d.local)
+                                .map(|(_, l)| l.clone())
+                                .unwrap_or_else(|| "No refinement".into());
+                            egui::ComboBox::from_id_salt("prop_region")
+                                .selected_text(current)
+                                .width(200.0)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut d.local,
+                                        RegRoi::Whole,
+                                        "No refinement",
+                                    );
+                                    for (choice, label) in &local_choices {
+                                        if *choice == RegRoi::Whole {
+                                            continue;
+                                        }
+                                        ui.selectable_value(&mut d.local, *choice, label);
+                                    }
+                                });
+                        });
+                        if d.local != RegRoi::Whole {
+                            ui.horizontal(|ui| {
+                                ui.label("Margin");
+                                ui.add(
+                                    egui::DragValue::new(&mut d.local_margin_mm)
+                                        .speed(1.0)
+                                        .range(0.0..=60.0)
+                                        .suffix(" mm"),
+                                );
+                            });
+                            ui.weak(
+                                "The refinement replaces the active registration, so the \
+                             sidebar reports exactly what the propagation used.",
+                            );
                         }
                     });
-                }
-            }
-            if !d.summary.is_empty() {
+
                 ui.separator();
-                ui.label(egui::RichText::new("Last run").strong());
-                for line in &d.summary {
-                    ui.monospace(line);
+                match &self.propagate_job {
+                    Some(job) => cancel = progress_row(ui, &job.progress),
+                    None => {
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(registered.is_some(), egui::Button::new("▶ Propagate"))
+                                .on_hover_text(
+                                    "Results land as editable segmentations on the other \
+                                 dataset, convertible to RTSTRUCT like any other",
+                                )
+                                .clicked()
+                            {
+                                run = true;
+                            }
+                            if ui.button("Close").clicked() {
+                                close = true;
+                            }
+                        });
+                    }
                 }
-                ui.weak(
-                    "A volume change is the deformation's doing: it is exactly what the \
+                if !d.summary.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Last run").strong());
+                    for line in &d.summary {
+                        ui.monospace(line);
+                    }
+                    ui.weak(
+                        "A volume change is the deformation's doing: it is exactly what the \
                      Jacobian in the registration panel reports.",
-                );
-            }
-        });
+                    );
+                }
+            },
+        );
 
         if let Some(v) = set_all {
             d.structs.iter_mut().for_each(|s| *s = v);

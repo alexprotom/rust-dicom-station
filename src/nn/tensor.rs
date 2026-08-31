@@ -118,17 +118,8 @@ impl Act {
         self.d * self.h * self.w
     }
 
-    /// View the volume as a `[c, d*h*w]` matrix — channels are rows.
-    pub fn to_mat(&self) -> Mat {
-        Mat {
-            rows: self.c,
-            cols: self.spatial(),
-            data: self.data.clone(),
-        }
-    }
-
-    /// The same view, taking the storage along: the layouts are identical,
-    /// so nothing is copied.
+    /// View the volume as a `[c, d*h*w]` matrix — channels are rows; the
+    /// layouts are identical, so nothing is copied.
     pub fn into_mat(self) -> Mat {
         Mat {
             rows: self.c,
@@ -167,9 +158,6 @@ impl SendPtr {
     }
 }
 
-/// Transposed 3D convolution with kernel = stride = 2: every input voxel
-/// projects to a disjoint 2x2x2 output block. `weight`: `[cin, cout, 2, 2, 2]`
-/// — PyTorch's `ConvTranspose3d` layout.
 /// Transposed 3-D convolution with `kernel = stride`, for any stride.
 ///
 /// The 2× case has its own hand-tuned routine below; this is the general
@@ -267,6 +255,9 @@ pub fn conv_transpose3d_stride(
     out
 }
 
+/// Transposed 3D convolution with kernel = stride = 2: every input voxel
+/// projects to a disjoint 2x2x2 output block. `weight`: `[cin, cout, 2, 2, 2]`
+/// — PyTorch's `ConvTranspose3d` layout.
 pub fn conv_transpose3d_2x(x: &Act, weight: &[f32], bias: &[f32], cout: usize) -> Act {
     let (cin, d, h, w) = (x.c, x.d, x.h, x.w);
     debug_assert_eq!(weight.len(), cin * cout * 8);
@@ -395,6 +386,64 @@ mod tests {
         }
     }
 
+    /// The general `kernel = stride` form against its own definition, at the
+    /// anisotropic strides the MR body model's decoder actually plans. The
+    /// 2× fast path is covered above; without this the general path — the
+    /// only code the MR model runs through — has no test at all.
+    #[test]
+    fn transpose_conv_matches_the_definition_at_any_stride() {
+        for stride in [[1, 2, 2], [2, 2, 1], [1, 1, 2], [3, 2, 1], [1, 1, 1]] {
+            let [s0, s1, s2] = stride;
+            let ks = s0 * s1 * s2;
+            let mut seed = 11u64;
+            let (cin, cout, d, h, w) = (3usize, 2usize, 3usize, 4usize, 2usize);
+            let mut x = Act::zeros(cin, d, h, w);
+            for v in &mut x.data {
+                *v = rngf(&mut seed);
+            }
+            let wt: Vec<f32> = (0..cin * cout * ks).map(|_| rngf(&mut seed)).collect();
+            let b: Vec<f32> = (0..cout).map(|_| rngf(&mut seed)).collect();
+            let y = conv_transpose3d_stride(&x, &wt, &b, cout, stride);
+            assert_eq!(
+                (y.c, y.d, y.h, y.w),
+                (cout, d * s0, h * s1, w * s2),
+                "shape at {stride:?}"
+            );
+            for co in 0..cout {
+                for z in 0..d {
+                    for yy in 0..h {
+                        for xx in 0..w {
+                            for dz in 0..s0 {
+                                for dy in 0..s1 {
+                                    for dx in 0..s2 {
+                                        let mut acc = b[co];
+                                        let t = (dz * s1 + dy) * s2 + dx;
+                                        for ci in 0..cin {
+                                            let xv = x.data[((ci * d + z) * h + yy) * w + xx];
+                                            let wv = wt[(ci * cout + co) * ks + t];
+                                            acc += xv * wv;
+                                        }
+                                        let got = y.data[((co * d * s0 + z * s0 + dz) * h * s1
+                                            + yy * s1
+                                            + dy)
+                                            * w
+                                            * s2
+                                            + xx * s2
+                                            + dx];
+                                        assert!(
+                                            (got - acc).abs() < 1e-4,
+                                            "stride {stride:?} at {co},{z},{yy},{xx}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn tokens_to_volume_transposes() {
         // 2 tokens x 3 channels -> [3,1,1,2]
@@ -402,8 +451,8 @@ mod tests {
         let a = Act::from_tokens(&m, 1, 1, 2);
         assert_eq!((a.c, a.d, a.h, a.w), (3, 1, 1, 2));
         assert_eq!(a.data, vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
-        // and back through to_mat: channels are rows
-        assert_eq!(a.to_mat().data, vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+        // and back through into_mat: channels are rows
+        assert_eq!(a.into_mat().data, vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
     }
 
     #[test]

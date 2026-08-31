@@ -10,11 +10,7 @@
 use anyhow::{anyhow, Result};
 
 use super::*;
-use crate::geometry::Vec3;
-use crate::registration::{
-    analysis, FieldStyle, LandmarkKernel, LandmarkPair, Metric, RegMethod, RegParams, RegionMask,
-    VectorField, Warp,
-};
+use crate::registration::{analysis, LandmarkKernel, RegParams, Warp};
 
 /// What restricts the next registration: everything, or one structure.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
