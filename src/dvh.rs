@@ -308,8 +308,8 @@ pub enum Metric {
 }
 
 impl Metric {
-    /// `D95%`, `V20Gy`, `Dmean` — the column heading, and what the protocol
-    /// file writes.
+    /// `D95%`, `V20`, `Dmean` — the column heading, and what the protocol
+    /// file writes (`V20Gy` is accepted on input).
     pub fn label(&self) -> String {
         match self {
             Metric::Volume => "Volume".into(),

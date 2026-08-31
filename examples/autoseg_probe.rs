@@ -3,8 +3,8 @@
 //!
 //! cargo run --release --example autoseg_probe -- <dicom_dir> <models_dir> <spec_key> <out_prefix>
 //!
-//! `<models_dir>` is the engine's folder, normally `models/totalsegmentator/`
-//! next to the executable.
+//! `<models_dir>` is the engine's folder, normally `totalsegmentator/` in the
+//! viewer's model folder.
 
 use rust_dicom_station::autoseg::{config::ModelConfig, cpu, net, preprocess, weights};
 use rust_dicom_station::loader;

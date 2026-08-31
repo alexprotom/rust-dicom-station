@@ -186,8 +186,8 @@ impl ViewerApp {
                             .changed();
                     });
                 ui.menu_button("Tools", |ui| {
-                    // The three segmentation engines, one block per dataset:
-                    // the same five entries, in the same order, for A and B.
+                    // One block per dataset: the same six tools, in the same
+                    // order, for A and B.
                     let tools: [(&ToolInfo, &str); 6] = [
                         (
                             &COMBINE,

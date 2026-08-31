@@ -52,7 +52,7 @@ use crate::geometry::Vec3;
 use crate::progress::Progress;
 use crate::volume::Volume;
 
-pub use analysis::{Dof6, JacobianStats, RegAnalysis, VectorStats};
+pub use analysis::{RegAnalysis, VectorStats};
 pub use dvf::{FieldStyle, VectorField};
 pub use landmark::{LandmarkKernel, LandmarkPair, LandmarkParams, RbfWarp};
 
@@ -524,11 +524,6 @@ impl RigidTransform {
     /// `[rx, ry, rz, tx, ty, tz]` (radians / mm).
     pub fn params(&self) -> [f64; 6] {
         self.params
-    }
-
-    /// The point rotations are taken about.
-    pub fn center(&self) -> Vec3 {
-        self.center
     }
 
     /// The rotation matrix, row-major.

@@ -28,7 +28,6 @@ use super::*;
 /// Magnitude statistics of a set of vectors, in millimetres.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct VectorStats {
-    pub min: f64,
     pub mean: f64,
     /// 95th percentile — where the bulk of the motion ends.
     pub p95: f64,
@@ -49,7 +48,6 @@ impl VectorStats {
         mags.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let idx = ((mags.len() as f64 * 0.95).ceil() as usize).min(mags.len()) - 1;
         VectorStats {
-            min: mags[0],
             mean,
             p95: mags[idx],
             max: *mags.last().unwrap(),
@@ -102,8 +100,6 @@ pub struct Dof6 {
     /// Euler angles `[rx, ry, rz]` in degrees, `Rz Ry Rx` — the same
     /// convention as [`RigidTransform`].
     pub rotation_deg: [f64; 3],
-    /// The point the rotation is taken about (the sample centroid).
-    pub center: Vec3,
     /// RMS distance between the fit and the real mapping, mm: how much of
     /// the transform the six numbers do not account for.
     pub residual_mm: f64,
@@ -267,7 +263,6 @@ pub fn fit_rigid(from: &[Vec3], to: &[Vec3]) -> Dof6 {
     Dof6 {
         translation: t,
         rotation_deg: [e[0].to_degrees(), e[1].to_degrees(), e[2].to_degrees()],
-        center: pc,
         residual_mm: (sq * inv).sqrt(),
     }
 }

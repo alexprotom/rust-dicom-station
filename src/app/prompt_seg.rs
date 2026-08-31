@@ -19,12 +19,9 @@
 //! [`prompt_from_crosshair`] does that mapping and is the only place it
 //! happens.
 
-use std::path::PathBuf;
-use std::sync::Arc;
-
 use crate::models::{self, Engine as ModelsEngine};
 use crate::nn::device::DevicePref;
-use crate::progress::{Progress, CANCELLED};
+use crate::progress::CANCELLED;
 use crate::segvol::infer::{self, Config};
 use crate::segvol::preprocess::{self, Prepared};
 use crate::segvol::prompt::{BBox, Point};

@@ -13,10 +13,6 @@
 //! round is the most common mistake this tool can make. Hence the ↑ ↓ arrows
 //! and the summary line above the buttons that spells the recipe out.
 
-use std::sync::Arc;
-
-use crate::progress::Progress;
-use crate::segmentation;
 use crate::structops::{self, BoolOp, Cleanup, Combined, Margin, Operand, Recipe};
 use crate::volume::Grid;
 

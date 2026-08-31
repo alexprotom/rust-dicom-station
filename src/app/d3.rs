@@ -568,9 +568,7 @@ impl ViewerApp {
                                     (p.x as f32 - c[0], p.y as f32 - c[1], p.z as f32 - c[2]);
                                 let x1 = cy * x - sy * y;
                                 let y1 = sy * x + cy * y;
-                                let y2 = cp * y1 - sp * z;
                                 let z2 = sp * y1 + cp * z;
-                                let _ = y2;
                                 Pos2::new(cx + x1 * scale, cyc - z2 * scale)
                             };
                             let max = field.max_mag.max(1e-6) as f32;

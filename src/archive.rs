@@ -214,10 +214,6 @@ impl Archive {
         Archive { root: root.into() }
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
     /// Every patient in the archive, with their studies, in name order.
     ///
     /// Reads sidecars only; a study folder without one has it rebuilt from

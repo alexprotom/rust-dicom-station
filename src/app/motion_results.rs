@@ -262,8 +262,8 @@ impl ViewerApp {
         }
     }
 
-    /// Tables and charts of one run. `idx` salts the widget ids — two runs
-    /// can share a name, and both may be on screen.
+    /// Tables and charts of one run. `idx` salts the widget ids, because two
+    /// runs are on screen at once in the A-vs-B comparison.
     fn report_body(ui: &mut egui::Ui, r: &MotionReport, idx: usize) {
         ui.strong(&r.run_name);
         ui.weak(format!(

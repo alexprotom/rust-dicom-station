@@ -14,7 +14,7 @@
 use anyhow::Context;
 
 use super::*;
-use crate::models::{self, AssetStatus, ModelAsset};
+use crate::models::{AssetStatus, ModelAsset};
 
 /// A row's (or the header's) deferred button press.
 ///

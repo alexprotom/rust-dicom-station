@@ -12,7 +12,7 @@
 //! cargo run --release --example medsam2_probe -- [MODELS_DIR] [--variant NAME] [--keys] [--csv FILE]
 //! ```
 //!
-//! `MODELS_DIR` defaults to `models/medsam2/` next to the executable.
+//! `MODELS_DIR` defaults to `medsam2/` in the viewer's model folder.
 //! `--variant` is one of `latest` (the default), `ct-lesion`, `mri-liver` or
 //! `2411`. `--keys` lists every tensor; `--csv` writes the inventory to a
 //! file.

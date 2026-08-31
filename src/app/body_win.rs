@@ -13,12 +13,8 @@
 //! fraction of the 99th percentile is meaningless on CT. A threshold the
 //! user has edited by hand is left alone.
 
-use std::path::PathBuf;
-use std::sync::Arc;
-
 use crate::bodymask::{self, BodyModel, BodyParams, BodyResult, Foreground, Method};
 use crate::models::Engine as ModelsEngine;
-use crate::progress::Progress;
 
 use super::*;
 
@@ -136,9 +132,19 @@ impl ViewerApp {
         // dialog is borrowed mutably.
         let removed_cm3 = self.voxels_to_cm3(slot, result.removed_voxels);
         let recovered_cm3 = self.voxels_to_cm3(slot, result.recovered_voxels);
+        // `1250 + 980 cm³`: the size of each body when there is more than one.
         let pieces = match result.pieces.len() {
             0 | 1 => String::new(),
-            n => format!(", {n} separate bodies"),
+            n => format!(
+                ", {n} separate bodies ({})",
+                result
+                    .pieces
+                    .iter()
+                    .map(|p| format!("{:.0}", p.cm3))
+                    .collect::<Vec<_>>()
+                    .join(" + ")
+                    + " cm³"
+            ),
         };
         let device = if result.device.is_empty() {
             String::new()

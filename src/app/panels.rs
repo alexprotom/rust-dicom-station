@@ -1,8 +1,8 @@
 //! The side panel and its per-dataset sections.
 //!
 //! Each section renders one kind of loaded object -- series, structures,
-//! segmentations, dose, plan, planar images, registrations, records -- plus
-//! the global registration and simulation controls.
+//! segmentations, dose, plan, planar images, registrations, records. The
+//! optional registration and simulation sections live in `reg_panel.rs`.
 
 use super::*;
 

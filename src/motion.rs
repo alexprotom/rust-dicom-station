@@ -84,22 +84,6 @@ pub fn peak_to_peak(points: &[Vec3]) -> f64 {
     best
 }
 
-/// Max − min of each component over the points, in x/y/z order.
-pub fn axis_ranges(points: &[Vec3]) -> [f64; 3] {
-    let mut lo = [f64::INFINITY; 3];
-    let mut hi = [f64::NEG_INFINITY; 3];
-    for p in points {
-        for (a, v) in [p.x, p.y, p.z].into_iter().enumerate() {
-            lo[a] = lo[a].min(v);
-            hi[a] = hi[a].max(v);
-        }
-    }
-    if points.is_empty() {
-        return [0.0; 3];
-    }
-    [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]]
-}
-
 /// In-place union of masks (all on one grid).
 pub fn union_into(acc: &mut [u8], mask: &[u8]) {
     debug_assert_eq!(acc.len(), mask.len());
@@ -475,12 +459,12 @@ pub struct ItvResult {
 /// Everything one 4D motion run measured.
 #[derive(Clone, Debug)]
 pub struct MotionReport {
-    /// `A · 4D CT — Thorax (10 phases)`, the run's identity in the UI.
+    /// `#1 A · 4D CT — Thorax (10 phases) · ref 0%`, the run's identity in
+    /// the UI: numbered, so two runs on the same group stay distinguishable.
     pub run_name: String,
     /// "A" or "B" — which dataset the run analysed.
     pub slot_name: String,
     pub patient: String,
-    pub group: String,
     /// Phase labels in order, e.g. `["0%", "10%", …]`.
     pub phases: Vec<String>,
     /// Label of the reference phase.
@@ -497,7 +481,6 @@ pub struct MotionReport {
     pub correlations: Vec<(String, MotionModel, Vec<AxisCorrelation>)>,
     pub qa: Vec<RegQa>,
     pub itvs: Vec<ItvResult>,
-    pub notes: Vec<String>,
 }
 
 impl MotionReport {
@@ -647,7 +630,6 @@ mod tests {
             Vec3::new(0.0, 4.0, 0.0),
         ];
         assert!((peak_to_peak(&pts) - 5.0).abs() < 1e-12);
-        assert_eq!(axis_ranges(&pts), [1.0, 4.0, 3.0]);
     }
 
     #[test]
@@ -752,7 +734,6 @@ mod tests {
             run_name: "A · test".into(),
             slot_name: "A".into(),
             patient: "P".into(),
-            group: "G".into(),
             phases: vec!["0%".into(), "50%".into()],
             reference: "0%".into(),
             tracks: vec![t],
@@ -775,7 +756,6 @@ mod tests {
                 volume_cm3: 12.5,
                 seg_name: "ITV TV,1".into(),
             }],
-            notes: Vec::new(),
         };
         let csv = rep.csv();
         assert_eq!(csv.lines().count(), 1 + 2 * 2 + 1 + 1 + 1);

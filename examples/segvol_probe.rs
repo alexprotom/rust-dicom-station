@@ -11,7 +11,7 @@
 //! cargo run --release --example segvol_probe -- [MODELS_DIR] [--keys] [--csv FILE]
 //! ```
 //!
-//! `MODELS_DIR` defaults to `models/segvol/` next to the executable. `--keys`
+//! `MODELS_DIR` defaults to `segvol/` in the viewer's model folder. `--keys`
 //! lists every tensor; `--csv` rewrites the recorded inventory.
 
 use std::io::Write;

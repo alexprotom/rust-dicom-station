@@ -308,7 +308,7 @@ pub struct Recipe {
     pub cleanup: Cleanup,
 }
 
-pub use crate::progress::ProgressSink;
+use crate::progress::ProgressSink;
 
 /// What a finished recipe hands back. The mask is named rather than printed
 /// in the `Debug` output, which is otherwise tens of megabytes of ones.

@@ -135,11 +135,6 @@ pub fn all_specs() -> Vec<ModelSpec> {
     v
 }
 
-/// The published model a cache key names, if any.
-pub fn spec_by_key(key: &str) -> Option<ModelSpec> {
-    all_specs().into_iter().find(|s| s.key == key)
-}
-
 /// A ready-to-run model: architecture config + named weight tensors.
 pub struct LoadedModel {
     pub spec: ModelSpec,

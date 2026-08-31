@@ -960,8 +960,6 @@ pub fn write_deformable_registration(
     if field.is_empty() {
         anyhow::bail!("the vector field is empty");
     }
-    let now = SystemTime::now();
-    let _ = now;
     let mut grid = InMemDicomObject::new_empty();
     put_ds(
         &mut grid,

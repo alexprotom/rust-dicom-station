@@ -53,7 +53,6 @@ pub struct SegSeries {
     /// Series description / content label shown in the tree.
     pub label: String,
     pub sop_instance_uid: String,
-    pub series_uid: String,
     /// Study this series belongs to.
     pub study_uid: String,
     /// Image series the segments belong to (ReferencedSeriesSequence).
@@ -76,17 +75,12 @@ impl SegSeries {
         SegSeries {
             label,
             sop_instance_uid: new_uid(),
-            series_uid: new_uid(),
             study_uid,
             referenced_series_uid,
             file_name: String::new(),
             grid,
             segs: Vec::new(),
         }
-    }
-
-    pub fn dims(&self) -> [usize; 3] {
-        self.grid.dims
     }
 
     /// Resample every segment onto `vol`'s lattice, so the overlays, the
@@ -520,7 +514,6 @@ pub fn load(path: &Path) -> Result<SegSeries> {
             .or_else(|| str_of(&obj, tags::CONTENT_DESCRIPTION))
             .unwrap_or_else(|| "Segmentation".into()),
         sop_instance_uid: str_of(&obj, tags::SOP_INSTANCE_UID).unwrap_or_default(),
-        series_uid: str_of(&obj, tags::SERIES_INSTANCE_UID).unwrap_or_default(),
         study_uid: str_of(&obj, tags::STUDY_INSTANCE_UID).unwrap_or_default(),
         referenced_series_uid,
         file_name: path

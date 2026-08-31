@@ -14,8 +14,6 @@
 //! to the next study with two clicks, which is what makes the workflow
 //! practical over a cohort rather than a single case.
 
-use std::sync::Arc;
-
 use crate::dicomseg::{resample_mask, SegSeries};
 use crate::loader::SeriesInfo;
 use crate::morphology;
@@ -996,7 +994,6 @@ fn run_motion(req: MotionRequest, p: &Progress) -> anyhow::Result<MotionOutcome>
         run_name: req.run_name,
         slot_name: req.slot_name,
         patient: req.patient,
-        group: req.group_name.clone(),
         phases: req.phases.iter().map(|(l, _)| l.clone()).collect(),
         reference: req.phases[req.reference].0.clone(),
         tracks,
@@ -1005,7 +1002,6 @@ fn run_motion(req: MotionRequest, p: &Progress) -> anyhow::Result<MotionOutcome>
         correlations,
         qa,
         itvs,
-        notes: Vec::new(),
     };
     Ok(MotionOutcome {
         report,

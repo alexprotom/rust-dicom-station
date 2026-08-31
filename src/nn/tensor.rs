@@ -118,17 +118,8 @@ impl Act {
         self.d * self.h * self.w
     }
 
-    /// View the volume as a `[c, d*h*w]` matrix — channels are rows.
-    pub fn to_mat(&self) -> Mat {
-        Mat {
-            rows: self.c,
-            cols: self.spatial(),
-            data: self.data.clone(),
-        }
-    }
-
-    /// The same view, taking the storage along: the layouts are identical,
-    /// so nothing is copied.
+    /// View the volume as a `[c, d*h*w]` matrix — channels are rows; the
+    /// layouts are identical, so nothing is copied.
     pub fn into_mat(self) -> Mat {
         Mat {
             rows: self.c,
@@ -460,8 +451,8 @@ mod tests {
         let a = Act::from_tokens(&m, 1, 1, 2);
         assert_eq!((a.c, a.d, a.h, a.w), (3, 1, 1, 2));
         assert_eq!(a.data, vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
-        // and back through to_mat: channels are rows
-        assert_eq!(a.to_mat().data, vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+        // and back through into_mat: channels are rows
+        assert_eq!(a.into_mat().data, vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
     }
 
     #[test]

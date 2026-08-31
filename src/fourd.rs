@@ -102,7 +102,8 @@ impl FourDGroup {
             .or_else(|| phases.first().copied())
     }
 
-    /// `4D CT — Thorax 4D (10 phases + AVG)`, the default group name.
+    /// `4D CT — Thorax (10 phases + 1)`, the default group name; the `+ 1`
+    /// counts the AVG / MIP members.
     fn derive_name(modality: &str, stem: &str, n_phases: usize, extras: usize) -> String {
         // Leftover separators around the removed phase number ("4DCT_") are
         // not part of the name.

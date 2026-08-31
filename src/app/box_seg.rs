@@ -23,17 +23,12 @@
 //! coordinates, and [`Medsam2State::engine_prompt`] is the only place it
 //! becomes network coordinates.
 
-use std::path::PathBuf;
-use std::sync::Arc;
-
 use crate::medsam2::engine::{Engine, EnginePrompt, PixelPrompt};
 use crate::medsam2::infer::Config;
 use crate::medsam2::preprocess::{self, Prepared, Window};
 use crate::medsam2::weights::{self, Variant};
 use crate::models::Engine as ModelsEngine;
 use crate::nn::device::DevicePref;
-use crate::progress::Progress;
-use crate::volume::{ViewPlane, Volume};
 
 use super::*;
 

@@ -15,16 +15,19 @@ pub const PRODUCT_ID: &str = "RustDicomStation";
 pub const PROGID: &str = "RustDicomStation.DicomFile";
 pub const UNINSTALLER_EXE: &str = "uninstall.exe";
 pub const MANIFEST_FILE: &str = "install-manifest.txt";
-/// Written next to the executable by the viewer itself; the installer only
-/// pre-seeds it when the program folder is not user-writable.
+/// The viewer's settings file, kept in its data folder; the installer only
+/// pre-seeds it when the chosen model folder is not the viewer's default.
 pub const SETTINGS_FILE: &str = "viewer_settings.txt";
+/// The viewer's per-user folder under `%LOCALAPPDATA%`, where it keeps its
+/// settings and, by default, the model folder. Must match
+/// `rust_dicom_station::settings::APP_NAME`.
+pub const VIEWER_DATA_DIR: &str = "RustDICOMStation";
 /// The settings key naming the model root. Must match
 /// `rust_dicom_station::settings::MODELS_DIR_KEY` (asserted by a test when
 /// the viewer is linked in).
 pub const SETTINGS_MODELS_KEY: &str = "models_dir";
-/// The viewer's model root folder name, `models/` next to its executable;
-/// each engine keeps its own sub-folder in it. Must match
-/// `rust_dicom_station::models::DIR_NAME`.
+/// The viewer's model root folder name; each engine keeps its own sub-folder
+/// in it. Must match `rust_dicom_station::models::DIR_NAME`.
 pub const MODELS_DIR_NAME: &str = "models";
 /// Official Microsoft download for the x64 Visual C++ 2015-2022 runtime.
 pub const VCREDIST_URL: &str = "https://aka.ms/vs/17/release/vc_redist.x64.exe";
@@ -141,7 +144,7 @@ impl Options {
     }
 
     /// Change the destination folder, keeping a still-default model folder
-    /// pointed next to the new location.
+    /// at the default for the new location.
     pub fn set_dir(&mut self, dir: PathBuf) {
         if self.models_dir == default_models_dir(self.scope, &self.dir) {
             self.models_dir = default_models_dir(self.scope, &dir);
@@ -178,21 +181,30 @@ pub fn default_install_dir(scope: Scope) -> PathBuf {
     }
 }
 
+/// The viewer's own data folder, `%LOCALAPPDATA%\RustDICOMStation`.
+pub fn viewer_data_dir() -> Option<PathBuf> {
+    crate::win::local_app_data()
+        .ok()
+        .map(|d| d.join(VIEWER_DATA_DIR))
+}
+
+/// Where the viewer reads its settings from.
+pub fn viewer_settings_path() -> Option<PathBuf> {
+    viewer_data_dir().map(|d| d.join(SETTINGS_FILE))
+}
+
 /// Where the model root goes — the folder all three engines download into
 /// (`models/totalsegmentator`, `models/segvol`, `models/medsam2`).
 ///
-/// The viewer defaults to `models/` next to its executable, which is exactly
-/// right for a per-user install. A machine-wide install lands in
-/// `Program Files`, which normal users cannot write to, so the root moves to
-/// `%LOCALAPPDATA%` and the installer records that in `viewer_settings.txt`.
-pub fn default_models_dir(scope: Scope, install_dir: &Path) -> PathBuf {
-    match scope {
-        Scope::CurrentUser => install_dir.join(MODELS_DIR_NAME),
-        Scope::AllUsers => crate::win::local_app_data()
-            .unwrap_or_else(|_| install_dir.to_path_buf())
-            .join(PRODUCT_ID)
-            .join(MODELS_DIR_NAME),
-    }
+/// The viewer's default is `models/` in its per-user data folder, which is
+/// writable whoever installed the program and wherever it went, so the same
+/// default serves both scopes; only a folder chosen elsewhere has to be
+/// recorded in `viewer_settings.txt`. The install folder is the fallback
+/// when the shell cannot name `%LOCALAPPDATA%`.
+pub fn default_models_dir(_scope: Scope, install_dir: &Path) -> PathBuf {
+    viewer_data_dir()
+        .unwrap_or_else(|| install_dir.to_path_buf())
+        .join(MODELS_DIR_NAME)
 }
 
 #[cfg(all(test, feature = "prefetch-models"))]
@@ -204,6 +216,10 @@ mod tests {
             rust_dicom_station::settings::MODELS_DIR_KEY
         );
         assert_eq!(super::MODELS_DIR_NAME, rust_dicom_station::models::DIR_NAME);
+        assert_eq!(
+            super::VIEWER_DATA_DIR,
+            rust_dicom_station::settings::APP_NAME
+        );
     }
 }
 

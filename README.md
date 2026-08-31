@@ -2,165 +2,83 @@
 
 [![CI](https://github.com/alexprotom/rust-dicom-station/actions/workflows/ci.yml/badge.svg)](https://github.com/alexprotom/rust-dicom-station/actions/workflows/ci.yml)
 
-RDS (Rust DICOM Station) is a fast, robust DICOM / RT DICOM viewer written **entirely in Rust**. It
-loads a full radiotherapy study: image series (CT/MRI/PET), RT Structure
-Set, RT Dose, RT Plan (photon and ion/proton), planar images, spatial
-registrations, treatment records; and displays it in the classic
-three-view layout, with a second dataset row for comparison, built-in
-**image registration** (elastix- and plastimatch-style, rigid, deformable
-and landmark-based, with analytics and a deformation vector field),
-**structure propagation**, **DRR generation**, **interactive
-segmentation**, a live **3D structure view**, **automatic body / EXTERNAL
-contouring** (the patient outline without the couch, the chair or the
-immobilisation, on CT and MR), **automatic multi-organ
-segmentation** (a pure-Rust re-implementation of TotalSegmentator, 117
-structures, CPU or any GPU), **prompt-driven segmentation** (a
-pure-Rust re-implementation of SegVol — point at anything with a box, a
-click or a structure name, and get an editable mask back), and **slice
-propagation** (a pure-Rust re-implementation of MedSAM2 — mark a structure
-on one slice and follow it through the whole stack).
+RDS (Rust DICOM Station) is an open-source DICOM workstation for radiotherapy research, analysis, and QA, **written entirely in Rust**. It loads complete radiotherapy studies (CT, MR and PET series, RTSTRUCT, RTDOSE, photon and ion RTPLAN, DICOM SEG, planar images, spatial and deformable registrations, and treatment records) into an integrated environment for visualization, comparison and quantitative analysis. Beyond the classic linked three-view layout and dual-dataset comparison, RDS provides image registration, structure propagation, DRR generation, dose-volume histograms, 4D motion analysis, interactive and AI-assisted segmentation, 3D visualization, and DICOM editing and export. The entire processing stack is native Rust: functionality normally provided through C/C++ or Python frameworks, including elastix- and plastimatch-style registration, ITK-style ray casting, TotalSegmentator, SegVol, and MedSAM2, is re-implemented directly in Rust without bindings to those frameworks.
 
 ![overview](docs/screenshot_overview.png)
 
-*One session, the bundled 4D-Lung patient: datasets A and B are two
-breathing phases of a 4DCT shown as two rows of linked MPR views with
-their phase-specific RTSTRUCT contours; the crosshair sits in the tumor.
-The floating window is the live 3D view of dataset A — RTSTRUCT surfaces
-(lungs, heart, tumor, cord) together with organs auto-segmented by the
-built-in TotalSegmentator engine, which also fills the Segmentations list
-in the sidebar (aorta, trachea, liver, stomach, spleen, kidneys — with
-volumes, editable as masks, convertible to RTSTRUCT). The sidebar also
-holds the registration controls and both dataset trees.*
+*The bundled 4D-Lung patient: two breathing phases as two rows of linked MPR
+views with their RTSTRUCT contours, and the 3D window showing the RTSTRUCT
+surfaces together with organs auto-segmented by the built-in TotalSegmentator
+engine.*
 
-## Highlights
+## What it does
 
-* **Viewing** - parallel DICOM loading (incl. compressed syntaxes), true
-  patient-space geometry, axial/sagittal/coronal with linked crosshairs,
-  window/level with CT presets, dose colorwash + isodose lines, per-beam
-  plan summaries, planar images (DX/CR/RTIMAGE), dark/light themes.
-* **Datasets** - a patient ▶ study ▶ series tree per dataset, folder
-  merging, copy/move/remove with correct reference-chain semantics,
-  RT structure sets and segmentation series as tree nodes (create one,
-  connect it to another image series, move whole series or single
-  structures / segments between any two of them - contours and masks
-  converting as they cross), renaming at every level from patient down to a
-  single segment, six-view comparison mode with patient-space crosshair
-  linking.
-* **Patient archive** - a local PACS: a store on disk where every study you
-  file lives between sessions, listed patient by patient without opening a
-  single DICOM file, taken into either dataset with one button, and given back
-  the structures and segmentations you drew on it. Uploads are **derived
-  objects only** - new RTSTRUCT and SEG instances carrying the original Study
-  and Frame of Reference UIDs, so they file themselves under the study they
-  belong to and the images are never re-sent. The layout is folders and files
-  named by their DICOM identifiers with plain-text sidecars, so any other
-  application can read it and nothing is locked in.
-* **Registration** - four engines, none of them a binding: rigid (6-DOF)
-  and deformable (cubic B-spline) re-implemented from **elastix**
-  (multi-resolution pyramids, stochastic sampling, ASGD); a dense
-  **plastimatch** B-spline with the exact analytic gradient, a
-  bending-energy regularizer, L-BFGS and a choice of mean squares or
-  **Mattes mutual information** for CT-MR; and plastimatch's **landmark
-  warp** (thin-plate spline, Gaussian, Wendland). Any of them can be
-  restricted to a single structure, or refined on top of an existing
-  result - a local deformation is provably zero outside its region.
-  Every run reports its **six degrees of freedom**, displacement
-  statistics, Jacobian determinant and folding, and per-structure
-  displacement; the **deformation vector field** draws as arrows or a
-  deformed grid in all views and as glyphs in 3D, where both datasets can
-  stand in one scene with independent opacity. Magenta/green fusion
-  overlay, DICOM REG *and* Deformable Spatial Registration read and
-  written, a known-transform simulator for QA, sub-millimeter verified
-  accuracy.
-* **Structure propagation** - contours and segmentations carried between
-  datasets through any registration, pulled back per destination voxel
-  (no holes, sub-voxel boundaries, any two grids), with an optional local
-  refinement on the enclosing structure first - which is what makes a
-  small structure inside a larger one land where it belongs. Results
-  arrive as ordinary editable segmentations, convertible to RTSTRUCT.
-* **DRR generation** - two independent forward projectors on one IEC
-  cone-beam geometry (beam's-eye view straight from an RTPLAN beam):
-  plastimatch's **exact Siddon** voxel-intersection ray tracing, and
-  ITK's **interpolating ray-cast**. Side by side with a signed difference
-  image and its statistics - the honest measure of what either one costs
-  you.
-* **Segmentation** - spacing-aware 2D/3D brush and eraser, geodesic
-  region growing with live preview, per-stroke undo, real-time 3D surface
-  view, mask → RTSTRUCT conversion, and **DICOM SEG** import and export
-  (binary and fractional multi-frame masks, read onto their own lattice
-  and resampled onto whichever image series they belong to).
+* **Viewing** - parallel DICOM loading (compressed syntaxes included), true
+  patient-space geometry, linked axial / sagittal / coronal views, W/L
+  presets, dose colorwash and isodose lines, per-beam plan summaries, planar
+  images (DX / CR / RTIMAGE), dark and light themes.
+* **Datasets** - a patient ▶ study ▶ series tree per dataset; copy / move /
+  remove / rename at every level with the reference chains kept intact; RT
+  structure sets and segmentation series as tree nodes, contours and masks
+  converting as they move between them; six-view comparison mode.
+* **Patient archive** - a local PACS on plain folders and text sidecars:
+  file a study, list patients without opening a DICOM file, load into either
+  dataset, and send the structures and segmentations you drew back as derived
+  objects under the original Study and Frame of Reference UIDs.
+* **Registration** - rigid and B-spline after **elastix** (pyramids,
+  stochastic sampling, ASGD), dense B-spline after **plastimatch** (analytic
+  gradient, bending energy, L-BFGS, mean squares or Mattes mutual
+  information) and plastimatch's **landmark warp**; any of them restricted to
+  one structure or refined on top of a previous result. Every run reports its
+  6 DOF, displacement statistics, Jacobian determinant and folding; the vector
+  field draws in the views and in 3D; fusion overlay; DICOM REG and Deformable
+  Spatial Registration read and written; a known-transform simulator for QA.
+* **Structure propagation** - contours and segmentations carried through a
+  registration by per-voxel pull-back (no holes, any two grids), optionally
+  refined on an enclosing structure first.
+* **4D / motion** - phases recognised into 4D groups; the reference phase
+  registered to every other, targets propagated and their centroids tracked;
+  peak-to-peak, drift, correlation with a reference structure, ITV
+  generation, a results window with run-vs-run comparison and CSV export;
+  structure comparison (Dice, HD95, surface distance) and transfer by
+  relationship.
+* **DRR** - plastimatch's exact Siddon tracer and ITK's interpolating
+  ray-cast on one IEC cone-beam geometry, beam's-eye view from an RTPLAN
+  beam, side by side with their difference.
 * **Dose-volume histograms** - cumulative and differential DVHs of any
-  structures against any loaded dose objects, in a window that can be put on
-  its own monitor. Dose sampled over the *structure's* lattice rather than
-  the dose grid's, so the curve has the structure's resolution; anything
-  falling outside the dose grid is counted and reported rather than silently
-  making a structure look cold. Metrics table with typed columns (`D95%`,
-  `D2cc`, `V20Gy`), constraint checking against a plain-text protocol, and
-  CSV export. Verified against an analytic Gaussian phantom.
-* **Structure algebra** - union, intersection, subtraction and symmetric
-  difference over any mix of RT structures and segmentations, with a margin
-  on any operand and on the result. Margins are given in **patient**
-  directions - six of them, as an exact ellipsoid - so "8 mm superiorly"
-  means the same on an axial CT and a feet-first MR. A crop is an
-  intersection with a shrunken operand, a ring is the difference of two
-  expansions, and the recipe is printed as one line so a subtraction the
-  wrong way round is visible before it runs.
-* **Body contouring** - the EXTERNAL structure, found automatically and
-  without the couch, the chair or the immobilisation inside it. Equipment
-  is separated from anatomy by two facts no patient has together: it is
-  thin, and its footprint repeats slice after slice - so an 8 mm opening
-  and a persistence test along **all three** axes catch a supine couch top
-  and an upright chair's seat pan alike, while ears, nose and fingers are
-  given back afterwards. Works on CT by Hounsfield threshold and on MR
-  after flattening the coil shading; optionally guided by
-  TotalSegmentator's openly licensed body network, which is what removes a
-  mask touching the skin with no gap. Lands as an editable mask and as an
-  RTSTRUCT `EXTERNAL`.
-* **Auto-segmentation** - TotalSegmentator v2 inference rebuilt natively:
-  official nnU-Net weights downloaded once and converted
-  without Python, hand-written SIMD CPU engine and a wgpu GPU path
-  (Vulkan/DX12/Metal, no CUDA), validated to mean Dice 0.9995 against the
-  reference implementation.
-* **Prompt segmentation** - SegVol (NeurIPS 2024) rebuilt natively: a
-  181 M-parameter 3-D ViT with a SAM-style prompt encoder and mask
-  decoder plus a CLIP text tower, prompted with a **box**, a **click**,
-  or **free text** ("liver", "tumor"…) — for the structures no
-  fixed-class model can cover: lesions, targets, post-surgical cavities.
-  Two-pass zoom-out / zoom-in inference, the image encoder on the same
-  no-CUDA wgpu GPU path, results landing as ordinary editable
-  segmentations, convertible to RTSTRUCT.
-* **Slice propagation** - MedSAM2 (2025) rebuilt natively: SAM 2.1 with its
-  memory bank, so a structure boxed on **one** slice is followed through the
-  rest of the stack at the slice's own resolution - no in-plane resampling at
-  all on 512x512 CT. The box is **drawn in the image and stays there** with
-  handles to resize and move it; the prompted slice previews on its own and
-  takes include / exclude clicks until it is right, and a slice that drifts is
-  corrected by boxing it again and re-running into the same segmentation.
-  Validated against the reference implementation module by module and over a
-  full propagation.
-* **Tools** - DICOM export with an editable patient/study tag table
-  (CT + RTSTRUCT + SEG + RTDOSE + RTPLAN), the **patient archive** window, a
-  **model manager** showing every
-  downloadable network weight with its state and size and the buttons to
-  download, update, remove or free one or all of them, an interactive
-  folder anonymizer with consistent UID regeneration, and a synthetic
-  RT-study generator; 280+ tests across twelve integration suites assert the
-  whole stack against an analytically known phantom, on Linux and Windows
-  in CI.
+  structures against any dose, sampled on the structure's own lattice;
+  `D95%` / `D2cc` / `V20Gy` metrics, protocol constraint checking, CSV
+  export; verified against an analytic phantom.
+* **Segmentation** - spacing-aware 2D / 3D brush and eraser, geodesic region
+  growing, undo, live 3D surfaces, mask ⇄ RTSTRUCT, DICOM SEG import and
+  export (binary and fractional).
+* **Structure algebra** - union / intersection / subtraction / symmetric
+  difference with margins in patient directions (exact ellipsoids), crop,
+  ring, cleanup.
+* **Body contour** - the EXTERNAL structure without the couch, the chair or
+  the mask, on CT and MR, classically or guided by TotalSegmentator's body
+  network.
+* **Auto-segmentation** - TotalSegmentator v2 rebuilt natively (117
+  structures): official nnU-Net weights converted without Python, a SIMD CPU
+  engine or a wgpu GPU path (no CUDA), mean Dice 0.9995 against the
+  reference.
+* **Prompt segmentation** - SegVol rebuilt natively: box, click or free-text
+  prompts ("liver", "tumor") for the structures no fixed-class model covers.
+* **Slice propagation** - MedSAM2 (SAM 2.1 with its memory bank) rebuilt
+  natively: box a structure on one slice, refine with include / exclude
+  clicks, follow it through the stack at native resolution.
+* **Tools** - DICOM export with an editable tag table, a model manager for
+  every downloadable weight, a folder anonymizer with consistent UID
+  regeneration, a synthetic RT-study generator; every tool window can be
+  moved to its own monitor.
 
 ## Architecture
 
-One language, one binary. Every algorithm - DICOM parsing, volume
-reconstruction, rendering primitives, registration, meshing, neural-net
-inference, DICOM writing - is implemented in Rust; where a feature
-usually means binding a C/C++ library (ITK/elastix, ONNX Runtime, CUDA),
-it is re-implemented natively instead - elastix and plastimatch
-registration, ITK forward projection, TotalSegmentator, SegVol and MedSAM2
-inference all included. Image processing runs CPU-side
-with `rayon` and aggressive caching; the GPU (via `wgpu`) only blits the
-UI and, optionally, runs the segmentation networks. Long operations run on
-background threads with progress and cancellation. The full module map,
-threading model, geometry conventions and performance numbers are in
+One language, one binary. All image processing runs on the CPU with `rayon`
+and caching; the GPU (`wgpu`: DX12 / Vulkan / Metal) blits the UI and,
+optionally, runs the networks. Long operations run on worker threads with
+progress and cancellation. The module map, threading model, geometry
+conventions and test suites are in
 [docs/architecture.md](docs/architecture.md).
 
 ## Quick start
@@ -169,34 +87,27 @@ Requires a Rust toolchain (<https://rustup.rs>).
 
 ```
 cargo build --release
-
-# open a study, or two studies straight into comparison mode:
 cargo run --release -- example_data/lung_p1_4DCT_phase_000
 cargo run --release -- example_data/lung_p1_4DCT_phase_000 example_data/lung_p1_4DCT_phase_050
-
 cargo test --release
 ```
 
-To try prompt segmentation on the bundled patient: put the crosshair on
-the tumor, then *Tools ▶ 🧠 Prompt-segment dataset A…*, prompt **Box**,
-**▶ Segment**. All three segmentation engines fetch their weights on first
-use into one folder, `models/` next to the executable (one sub-folder per
-engine, movable from any of the tool windows); all three also have
-headless CLIs in [examples/](examples/).
+To try prompt segmentation on the bundled patient: put the crosshair on the
+tumor, *Tools ▶ 🧠 Prompt-segment dataset A…*, prompt **Box**, **▶ Segment**.
+The engines fetch their weights on first use into one model folder
+(`%LOCALAPPDATA%\RustDICOMStation\models` on Windows,
+`~/.local/share/RustDICOMStation/models` on Linux), movable from any tool
+window; each engine also has a headless CLI in [examples/](examples/).
 
-Windows, Linux and macOS are supported; rendering uses `wgpu`
-(DX12/Vulkan/Metal). `--no-default-features` builds a CPU-only viewer
-without the GPU inference backend.
-
-On Windows there is also a proper installer — a single
-`rust-dicom-station-setup.exe` with shortcuts, an "Open with" entry on
-folders, the Visual C++ runtime check, an optional pre-download of the
-auto-segmentation weights, and a clean uninstall. It is a separate Rust
-program in [installer/](installer/README.md) and is *not* built by
-`cargo build --release`; see its README for the three build steps. No data at hand? *File ▶ 🧪 Generate
-test data…* creates a complete synthetic RT study, and `example_data/`
-ships a real two-phase 4DCT (see
-[docs/example-data.md](docs/example-data.md)).
+Windows, Linux and macOS are supported; `--no-default-features` builds a
+CPU-only viewer without the GPU inference backend. Every push to `main`
+publishes a release: a Windows installer
+(`rust-dicom-station-<version>-windows-x86_64.exe` — shortcuts, "Open with"
+on folders, the VC++ runtime check, optional weight prefetch, uninstaller)
+and a Linux AppImage. The installer is its own crate in
+[installer/](installer/README.md). No data at hand? *File ▶ 🧪 Generate test
+data…* writes a complete synthetic RT study, and `example_data/` ships a real
+two-phase 4DCT ([docs/example-data.md](docs/example-data.md)).
 
 ## Documentation
 
@@ -206,33 +117,35 @@ ships a real two-phase 4DCT (see
 | [docs/rt-objects.md](docs/rt-objects.md) | RTSTRUCT, RTDOSE, RTPLAN, REG, RTRECORD, reference chains |
 | [docs/registration.md](docs/registration.md) | The four registration engines, local registration, analytics, vector fields, fusion, simulator, verification |
 | [docs/propagation.md](docs/propagation.md) | Carrying contours and segmentations across a registration |
+| [docs/motion-4d.md](docs/motion-4d.md) | 4D groups, the motion / ITV workflow, results, structure comparison and transfer |
 | [docs/drr.md](docs/drr.md) | Digitally reconstructed radiographs: the two projectors and the geometry |
+| [docs/dvh.md](docs/dvh.md) | Dose-volume histograms: curves, metrics, constraint checking, export |
 | [docs/segmentation.md](docs/segmentation.md) | Brush / eraser / region growing, 3D view, mask → RTSTRUCT |
-| [docs/dvh.md](docs/dvh.md) | Dose–volume histograms: curves, metrics, constraint checking, export |
-| [docs/structure-algebra.md](docs/structure-algebra.md) | Combining structures: boolean operations, margins, cropping, cleanup |
-| [docs/body-contour.md](docs/body-contour.md) | The body / EXTERNAL contour: the classical and model-assisted methods, CT and MR, verification |
-| [docs/segvol.md](docs/segvol.md) | Prompt-driven segmentation: box / point / text, the SegVol re-implementation |
-| [docs/medsam2.md](docs/medsam2.md) | Propagating a prompt through a stack: the MedSAM2 re-implementation |
+| [docs/structure-algebra.md](docs/structure-algebra.md) | Boolean operations, margins, cropping, cleanup |
+| [docs/body-contour.md](docs/body-contour.md) | The body / EXTERNAL contour on CT and MR, verification |
 | [docs/auto-segmentation.md](docs/auto-segmentation.md) | The pure-Rust TotalSegmentator: models, pipeline, engines, validation, classes, licensing |
-| [docs/pacs.md](docs/pacs.md) | The local patient archive: the window, the on-disk layout, filing, loading, sending changes back |
+| [docs/segvol.md](docs/segvol.md) | Prompt-driven segmentation: the SegVol re-implementation |
+| [docs/medsam2.md](docs/medsam2.md) | Propagating a prompt through a stack: the MedSAM2 re-implementation |
+| [docs/pacs.md](docs/pacs.md) | The local patient archive: window, on-disk layout, filing, loading, sending changes back |
 | [docs/export-and-tools.md](docs/export-and-tools.md) | DICOM export, the model manager, anonymizer, test-data generator |
 | [docs/architecture.md](docs/architecture.md) | Design, functional overview, module map, threading, the model folder, conventions, testing |
+| [docs/release-versioning.md](docs/release-versioning.md) | How versions and releases are produced |
 | [docs/example-data.md](docs/example-data.md) | Bundled patient data, source and citations |
 | [installer/README.md](installer/README.md) | The Windows installer: building it, what it installs, silent switches |
 
 ## License and citations
 
 The code is MIT-licensed. The bundled example data is TCIA **4D-Lung**
-patient P102, redistributed under CC BY 3.0 — cite it as described in
-[docs/example-data.md](docs/example-data.md). The auto-segmentation uses
-TotalSegmentator's openly licensed (Apache-2.0) "total"-task weights —
-cite Wasserthal et al. (Radiology AI 2023) and nnU-Net (Isensee et al.,
-Nature Methods 2021) as described in
-[docs/auto-segmentation.md](docs/auto-segmentation.md). Prompt
-segmentation re-implements SegVol (Du et al., NeurIPS 2024); its weights
-carry **no license declaration**, so they are only ever downloaded from
-Hugging Face to your own machine at your request and are never
-redistributed — see [docs/segvol.md](docs/segvol.md).
+patient P102, redistributed under CC BY 3.0 (cite it as described in
+[docs/example-data.md](docs/example-data.md)). Auto-segmentation uses
+TotalSegmentator's Apache-2.0 "total"-task weights (cite Wasserthal et al.
+(Radiology AI 2023) and nnU-Net (Isensee et al., Nature Methods 2021) as
+described in [docs/auto-segmentation.md](docs/auto-segmentation.md)). Prompt
+segmentation re-implements SegVol (Du et al., NeurIPS 2024) and slice
+propagation MedSAM2 (Ma et al., 2025); their weights are only ever
+downloaded from Hugging Face to your own machine at your request and are
+never redistributed; see [docs/segvol.md](docs/segvol.md) and
+[docs/medsam2.md](docs/medsam2.md).
 
-This software is a viewer for research and QA convenience — **not a
-medical device, and not for clinical decision-making.**
+This software is a viewer for research and QA convenience. **Not a medical
+device, and not for clinical decision-making.**

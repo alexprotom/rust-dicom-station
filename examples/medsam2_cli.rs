@@ -8,7 +8,7 @@
 //!     [--all-slices] [--forward-only] [--threshold F] [--no-cleanup] [--out FILE]
 //! ```
 //!
-//! `--models` is the engine's folder, `models/medsam2/` next to the executable
+//! `--models` is the engine's folder, `medsam2/` in the viewer's model folder
 //! by default. Slice, box and point coordinates are in the **prepared** stack
 //! — axial slices in reading order, which for an ordinary head-first-supine
 //! CT is the acquisition order. `--out` writes a raw `u8` mask on the

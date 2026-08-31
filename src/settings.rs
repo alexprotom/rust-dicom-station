@@ -4,7 +4,11 @@ use anyhow::{Context, Result};
 use egui::ThemePreference;
 
 const FILE_NAME: &str = "viewer_settings.txt";
-const APP_NAME: &str = "RustDICOMStation";
+
+/// The folder name under the platform's config / data root
+/// (`%LOCALAPPDATA%\RustDICOMStation`, `~/.config/RustDICOMStation`,
+/// `~/.local/share/RustDICOMStation`); the installer must agree with it.
+pub const APP_NAME: &str = "RustDICOMStation";
 
 /// Settings key of the model root; the installer writes it too.
 pub const MODELS_DIR_KEY: &str = "models_dir";

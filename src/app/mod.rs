@@ -427,18 +427,17 @@ enum LoadResult {
 /// A unit of work running on a background thread: a shared progress handle
 /// plus the channel its result arrives on. Every background feature in the
 /// app has this shape, and [`poll_job`] drives them all identically.
-struct Job<T, P = Progress> {
-    progress: Arc<P>,
+struct Job<T> {
+    progress: Arc<Progress>,
     rx: mpsc::Receiver<T>,
 }
 
-impl<T, P> Job<T, P> {
+impl<T> Job<T> {
     /// Run `work` on a new thread and return the handle to poll for its
     /// result. The worker gets the progress handle; the caller keeps a clone.
-    fn spawn(progress: Arc<P>, work: impl FnOnce(&P) -> T + Send + 'static) -> Job<T, P>
+    fn spawn(progress: Arc<Progress>, work: impl FnOnce(&Progress) -> T + Send + 'static) -> Job<T>
     where
         T: Send + 'static,
-        P: Send + Sync + 'static,
     {
         let (tx, rx) = mpsc::channel();
         let p = progress.clone();
@@ -452,8 +451,8 @@ impl<T, P> Job<T, P> {
 /// Poll a background job. Returns its result once, clearing the slot; reports
 /// a worker that died without answering into `error`; otherwise schedules the
 /// next poll and returns `None`.
-fn poll_job<T, P>(
-    slot: &mut Option<Job<T, P>>,
+fn poll_job<T>(
+    slot: &mut Option<Job<T>>,
     ctx: &egui::Context,
     what: &str,
     error: &mut Option<String>,
@@ -479,8 +478,8 @@ fn poll_job<T, P>(
 /// [`poll_job`] for the jobs that answer with `(slot, Result)`: a failure is
 /// reported as `"{what} failed: …"`, except a cancellation, which is what
 /// the user asked for and needs no dialog.
-fn poll_tool_job<T, P>(
-    slot: &mut Option<Job<(usize, anyhow::Result<T>), P>>,
+fn poll_tool_job<T>(
+    slot: &mut Option<Job<(usize, anyhow::Result<T>)>>,
     ctx: &egui::Context,
     what: &str,
     error: &mut Option<String>,
@@ -1375,7 +1374,7 @@ impl eframe::App for ViewerApp {
         // Poll a model download / update batch.
         self.poll_models_job(&ctx);
 
-        // Poll the three segmentation engines.
+        // Poll the tool windows' workers.
         if let Some((slot, result)) =
             poll_tool_job(&mut self.autoseg_job, &ctx, AUTOSEG.name, &mut self.error)
         {

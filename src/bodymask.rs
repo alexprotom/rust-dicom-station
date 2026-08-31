@@ -235,8 +235,8 @@ impl BodyParams {
     }
 }
 
-/// One piece of the finished contour. Only how many there are is reported,
-/// but a piece knows its own size so that a caller can say which.
+/// One piece of the finished contour — two legs are two pieces — with its
+/// own size, so the status line can say how big each one is.
 #[derive(Clone, Debug)]
 pub struct Piece {
     pub voxels: u64,

@@ -286,8 +286,7 @@ pub fn propagate(
 
         let cache = MapCache::build(dst, lo, hi, &to_src, 3.0);
         let [dnx, dny, dnz] = dst.dims;
-        let _ = dnz;
-        let mut mask = vec![0u8; dnx * dny * dst.dims[2]];
+        let mut mask = vec![0u8; dnx * dny * dnz];
         let src_dims = src.dims;
         let src_mask = &s.mask;
         let rows: Vec<(usize, Vec<u8>)> = (lo[2]..=hi[2])

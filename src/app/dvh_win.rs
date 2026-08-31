@@ -27,10 +27,8 @@
 //! alternative is a dependency whose styling would have to be fought into
 //! agreement with the rest of the interface anyway.
 
-use std::sync::Arc;
-
 use crate::dvh::{self, Constraint, Dvh, DvhParams, Metric};
-use crate::progress::{Progress, ProgressSink};
+use crate::progress::ProgressSink;
 
 use super::combine_win::ItemRef;
 use super::*;
@@ -61,8 +59,6 @@ pub(super) struct DvhDialog {
     pub volume_relative: bool,
     /// What 100 % means on the dose axis.
     pub reference_dose: f64,
-    /// The prescription the reference was taken from, if a plan had one.
-    pub reference_from: String,
     pub metrics: Vec<Metric>,
     /// The text of the "add a column" field.
     pub new_metric: String,
@@ -83,7 +79,6 @@ impl DvhDialog {
             dose_relative: false,
             volume_relative: true,
             reference_dose: 0.0,
-            reference_from: String::new(),
             metrics: dvh::default_metrics(),
             new_metric: String::new(),
             constraints: Vec::new(),
@@ -186,9 +181,8 @@ impl ViewerApp {
     pub(super) fn open_dvh_dialog(&mut self, slot: usize, seed: Vec<ItemRef>) {
         if self.dvh_dialog.is_none() {
             let mut d = DvhDialog::new();
-            if let Some((dose, from)) = self.prescription() {
+            if let Some((dose, _)) = self.prescription() {
                 d.reference_dose = dose;
-                d.reference_from = from;
             }
             self.dvh_dialog = Some(d);
         }
@@ -424,17 +418,12 @@ impl ViewerApp {
                     if rel.clicked() {
                         d.dose_relative = true;
                     }
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut d.reference_dose)
-                                .range(0.0..=1000.0)
-                                .speed(0.1)
-                                .suffix(" Gy"),
-                        )
-                        .changed()
-                    {
-                        d.reference_from = "typed".into();
-                    }
+                    ui.add(
+                        egui::DragValue::new(&mut d.reference_dose)
+                            .range(0.0..=1000.0)
+                            .speed(0.1)
+                            .suffix(" Gy"),
+                    );
                     if let Some((dose, from)) = &prescription {
                         if (d.reference_dose - *dose).abs() > 1e-6
                             && ui
@@ -443,7 +432,6 @@ impl ViewerApp {
                                 .clicked()
                         {
                             d.reference_dose = *dose;
-                            d.reference_from = from.clone();
                         }
                     }
                     ui.separator();

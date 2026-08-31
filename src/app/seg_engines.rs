@@ -11,9 +11,7 @@
 //! model folder, the check that the dataset is still the one the run
 //! started on, and landing a mask as an editable [`Segmentation`].
 
-use std::path::PathBuf;
-
-use crate::models::{self, Engine};
+use crate::models::Engine;
 use crate::nn::device::DevicePref;
 
 use super::*;
@@ -230,9 +228,10 @@ pub(super) fn models_root_row(ui: &mut egui::Ui, models_dir: &mut String) -> boo
     ui.horizontal(|ui| {
         ui.label("Model folder:");
         ui.add(egui::TextEdit::singleline(models_dir).desired_width(220.0))
-            .on_hover_text(
-                "Root folder of all downloaded weights; blank means `models/` next to the program",
-            );
+            .on_hover_text(format!(
+                "Root folder of all downloaded weights; blank means the default, {}",
+                models::default_root().display()
+            ));
         if ui
             .button("📁")
             .on_hover_text("Choose the model folder")

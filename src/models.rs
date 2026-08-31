@@ -4,7 +4,8 @@
 //! together with the converted `safetensors` cache, under one root:
 //!
 //! ```text
-//! <folder of the executable>/models/
+//! <data folder>/models/           (%LOCALAPPDATA%\RustDICOMStation on Windows,
+//!                                  ~/.local/share/RustDICOMStation on Linux)
 //!   totalsegmentator/   the nnU-Net models, one sub-folder per model
 //!   segvol/             pytorch_model.bin, vocab.json, merges.txt, cache
 //!   medsam2/            one .pt per fine-tune, with its cache beside it
@@ -61,7 +62,8 @@ impl Engine {
     }
 }
 
-/// The default root: `models/` next to the executable.
+/// The default root: `models/` in the application's data folder
+/// ([`crate::settings::default_models_dir`]).
 pub fn default_root() -> PathBuf {
     default_models_dir()
 }

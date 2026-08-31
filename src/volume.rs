@@ -112,10 +112,6 @@ impl Grid {
         (perm, flip)
     }
 
-    pub fn voxel_count(&self) -> usize {
-        self.dims[0] * self.dims[1] * self.dims[2]
-    }
-
     /// Map fractional voxel indices to patient coordinates (mm).
     #[inline]
     pub fn voxel_to_patient(&self, i: f64, j: f64, k: f64) -> Vec3 {
