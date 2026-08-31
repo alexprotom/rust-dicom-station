@@ -47,12 +47,13 @@ impl ViewerApp {
 
             let title = format!("{}: {} [{}]", SLOT_NAMES[w.slot], img.label, img.modality);
             let mut open = w.open;
-            egui::Window::new(title)
-                .id(egui::Id::new(("planar_win", w.slot, w.idx)))
-                .open(&mut open)
-                .default_size([560.0, 640.0])
-                .resizable(true)
-                .show(ctx, |ui| {
+            detach::tool_window(
+                ctx,
+                &format!("planar_{}_{}", w.slot, w.idx),
+                title,
+                &mut open,
+                detach::WinOpts::size(560.0, 640.0).no_scroll(),
+                |ui| {
                     ui.horizontal(|ui| {
                         ui.label("W/L:");
                         ui.add(egui::DragValue::new(&mut w.wl.0).speed(4.0).prefix("C "));
@@ -94,7 +95,8 @@ impl ViewerApp {
                     for (k, v) in &img.info {
                         ui.weak(format!("{k}: {v}"));
                     }
-                });
+                },
+            );
             w.open = open;
         }
         windows.retain(|w| w.open);

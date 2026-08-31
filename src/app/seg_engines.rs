@@ -58,6 +58,14 @@ pub(super) const COMBINE: ToolInfo = ToolInfo {
     name: "Combine structures",
     verb: "Combine structures in",
 };
+/// The sixth tool: the 4D motion / ITV pipeline. A chart, because what it
+/// produces is the motion curves and volumes (and the glyph is covered by
+/// egui's bundled emoji fonts, which the quarter-clocks are not).
+pub(super) const MOTION: ToolInfo = ToolInfo {
+    glyph: "📈",
+    name: "4D motion / ITV",
+    verb: "Motion-analyse",
+};
 
 impl ToolInfo {
     /// `🤖 Auto-segmentation — dataset A`, the window title.
@@ -187,6 +195,13 @@ impl ViewerApp {
         {
             return Some((&COMBINE, &job.progress));
         }
+        if let Some(job) = self
+            .motion_job
+            .as_ref()
+            .filter(|_| self.motion_slot == slot)
+        {
+            return Some((&MOTION, &job.progress));
+        }
         None
     }
 }
@@ -315,16 +330,18 @@ mod tests {
         assert_eq!(PROMPT_SEG.short_button(), "🧠 Prompt");
         assert_eq!(SLICE_PROP.short_button(), "⏩ Propagate");
         assert_eq!(BODY_CONTOUR.menu_entry(0), "👤 Body-contour dataset A…");
+        assert_eq!(MOTION.short_button(), "📈 Motion");
         let mut glyphs = vec![
             AUTOSEG.glyph,
             PROMPT_SEG.glyph,
             SLICE_PROP.glyph,
             BODY_CONTOUR.glyph,
             COMBINE.glyph,
+            MOTION.glyph,
         ];
         glyphs.sort();
         glyphs.dedup();
-        assert_eq!(glyphs.len(), 5, "every tool has its own glyph");
+        assert_eq!(glyphs.len(), 6, "every tool has its own glyph");
     }
 
     #[test]

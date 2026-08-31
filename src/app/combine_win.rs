@@ -357,13 +357,13 @@ impl ViewerApp {
         let (mut run, mut close, mut cancel) = (false, false, false);
         let mut move_row: Option<(usize, isize)> = None;
         let mut drop_row: Option<usize> = None;
-        egui::Window::new(COMBINE.title(slot))
-            .id(egui::Id::new("combine_window"))
-            .collapsible(true)
-            .resizable(false)
-            .default_width(470.0)
-            .open(&mut open)
-            .show(ctx, |ui| {
+        detach::tool_window(
+            ctx,
+            "combine",
+            COMBINE.title(slot),
+            &mut open,
+            detach::WinOpts::width(470.0).resizable(false),
+            |ui| {
                 ui.label(
                     "Builds one structure out of others: union, intersection, subtraction \
                      or symmetric difference, with a margin on any of them. Contours and \
@@ -583,7 +583,8 @@ impl ViewerApp {
                     ui.separator();
                     ui.weak(status);
                 }
-            });
+            },
+        );
         if let Some((i, delta)) = move_row {
             let j = (i as isize + delta) as usize;
             if let Some(d) = &mut self.combine_dialog {

@@ -203,6 +203,8 @@ src/
                       plumbing (Job::spawn, poll_job, poll_tool_job), per-frame driver
     theme.rs          theme-dependent colors
     chrome.rs         menu bar, toolbar, status bar, help
+    detach.rs         every tool window, docked in the main window or in its
+                      own window of the operating system (a second monitor)
     panels.rs         left panel: its show / hide, the optional modules and
                       the per-dataset Data tree sections
     views.rs          central MPR viewports, interaction, texture caches
@@ -233,9 +235,19 @@ src/
     combine_win.rs    the structure-algebra window: the ordered operand list,
                       per-operand and per-direction margins, the recipe line,
                       and landing the answer as a segment or a contour
-    seg_engines.rs    what the four tool windows share: names and glyphs,
+    seg_engines.rs    what the six tool windows share: names and glyphs,
                       device / model-folder / licence / progress rows,
                       result landing, the "still the same dataset" check
+    motion_win.rs     the 4D motion / ITV window: group, reference phase,
+                      targets, models, ITV options, and the per-phase pipeline
+                      worker (register ▸ propagate ▸ measure ▸ ITV)
+    motion_results.rs the motion results window: hand-drawn displacement /
+                      amplitude charts, per-phase tables, correlations, QA,
+                      CSV export, and the run-vs-run (A/B) comparison
+    transfer_win.rs   transfer by relationship: a structure lands in the other
+                      dataset at its offset from a reference structure
+    compare_win.rs    compare structures: volumes, centroid offset, Dice,
+                      HD95, mean surface distance
     prompt_seg.rs     prompt segmentation window and worker (SegVol)
     box_seg.rs        slice propagation: the box drawn in the viewport, the
                       preview / refine / propagate loop, the resident session (MedSAM2)
@@ -272,6 +284,12 @@ src/
     dvf.rs            vector-field sampling and its view-plane / 3-D glyphs
   propagate.rs      structures across a registration: pull-back with a cached
                     mapping lattice                                              Reg
+  fourd.rs          4D sub-studies: phase recognition from descriptions and
+                    temporal identifiers, ordered groups (phases + AVG / MIP),
+                    custom-group refresh rules                                   Core
+  motion.rs         motion arithmetic over phases: centroids, peak-to-peak,
+                    drift, Pearson r with p-values, Dice / HD95 / MSD overlap,
+                    ITV unions, the motion report + CSV                          Reg
   drr.rs            digitally reconstructed radiographs: IEC cone-beam geometry,
                     Siddon exact tracing and ITK-style interpolating ray-casting  Sim
   segmentation.rs   voxel masks: brush, geodesic grow, undo, overlays,

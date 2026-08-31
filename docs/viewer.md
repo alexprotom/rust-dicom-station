@@ -80,6 +80,20 @@ window, from a drag or the full range, leaves the list nameless again.
 Window/level is shared between datasets A and B so both CTs are windowed
 identically.
 
+**Tool windows on their own screen.** Every secondary window — the archive,
+the model manager, the DRR, the 3D scenes, the segmentation and motion tools,
+the export and anonymizer dialogs — carries a small **Detach** button in its
+top-right corner. Pressed, the window leaves the main window and becomes a
+window of the operating system in its own right: it can be dragged onto a
+second or third monitor, resized or maximized there, and it stays open beside
+the images while the main window keeps all six viewports. **Dock** puts it
+back. Several windows can be out at once, each on a different screen, and each
+one reopens at the size and place it was left, on the monitor it was left on.
+Which windows are detached is remembered between runs (`detached_windows` in
+the settings file), so a reading room that keeps the archive on the right-hand
+screen finds it there on the next start. Closing a detached window only closes
+that tool — it opens in its own window again next time.
+
 **Status bar.** Patient coordinates, voxel indices, HU and dose (Gy and %
 of the reference dose) at the crosshair; in comparison mode both datasets
 report the full set side by side, each at its own crosshair. The mouse

@@ -273,12 +273,13 @@ impl ViewerApp {
             let registered = self.registration.is_some();
             let title = format!("3D structures — dataset {}", SLOT_NAMES[w.slot]);
             let mut open = w.open;
-            egui::Window::new(title)
-                .id(egui::Id::new(("d3_win", w.slot)))
-                .open(&mut open)
-                .default_size([640.0, 700.0])
-                .resizable(true)
-                .show(ctx, |ui| {
+            detach::tool_window(
+                ctx,
+                &format!("d3_{}", w.slot),
+                title,
+                &mut open,
+                detach::WinOpts::size(640.0, 700.0).no_scroll(),
+                |ui| {
                     if let Some(job) = &w.job {
                         ui.horizontal(|ui| {
                             ui.spinner();
@@ -611,7 +612,8 @@ impl ViewerApp {
                         FontId::proportional(11.0),
                         Color32::GRAY,
                     );
-                });
+                },
+            );
             w.open = open;
         }
         windows.retain(|w| w.open);

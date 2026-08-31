@@ -51,6 +51,10 @@ impl ViewerApp {
         self.segvol_window(ctx);
         self.body_window(ctx);
         self.combine_window(ctx);
+        self.motion_window(ctx);
+        self.motion_results_window(ctx);
+        self.transfer_window(ctx);
+        self.compare_window(ctx);
         self.medsam2_window(ctx);
         self.autoseg_result_window(ctx);
         if let Some(msg) = self.notice.clone() {
@@ -104,13 +108,13 @@ impl ViewerApp {
             &models::root_from_setting(&self.models_dir),
             models::Engine::TotalSegmentator,
         );
-        egui::Window::new(AUTOSEG.title(d.slot))
-            .id(egui::Id::new("autoseg_window"))
-            .collapsible(true)
-            .resizable(false)
-            .default_width(380.0)
-            .open(&mut open)
-            .show(ctx, |ui| {
+        detach::tool_window(
+            ctx,
+            "autoseg",
+            AUTOSEG.title(d.slot),
+            &mut open,
+            detach::WinOpts::width(380.0).resizable(false),
+            |ui| {
                 ui.label(
                     "Segments the CT into up to 117 anatomical structures with \
                      TotalSegmentator's nnU-Net models, re-implemented natively in Rust.",
@@ -197,7 +201,8 @@ impl ViewerApp {
                         });
                     }
                 }
-            });
+            },
+        );
         if browse {
             if let Some(dir) = Self::pick_folder("Model folder") {
                 self.models_dir = dir.display().to_string();
@@ -227,12 +232,13 @@ impl ViewerApp {
         let mut close_clicked = false;
         let mut apply_clicked = false;
         let vol_bytes = p.result.volume_dims[0] * p.result.volume_dims[1] * p.result.volume_dims[2];
-        egui::Window::new(AUTOSEG.titled("results", p.slot))
-            .collapsible(false)
-            .resizable(true)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .open(&mut open)
-            .show(ctx, |ui| {
+        detach::tool_window(
+            ctx,
+            "autoseg_results",
+            AUTOSEG.titled("results", p.slot),
+            &mut open,
+            detach::WinOpts::default().collapsible(false).centered(),
+            |ui| {
                 ui.label(format!(
                     "{} structures found on dataset {} — {} · {:.0} s",
                     p.result.organs.len(),
@@ -299,7 +305,8 @@ impl ViewerApp {
                         close_clicked = true;
                     }
                 });
-            });
+            },
+        );
         if apply_clicked && !close_clicked {
             self.apply_autoseg_selection();
         } else if !open || close_clicked {
@@ -320,12 +327,16 @@ impl ViewerApp {
         let mut reset_dir = false;
         let mut reset_params = false;
 
-        egui::Window::new("🧪 Generate synthetic RT test study")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(ctx, |ui| {
+        detach::tool_window(
+            ctx,
+            "generator",
+            "🧪 Generate synthetic RT test study",
+            &mut open,
+            detach::WinOpts::default()
+                .resizable(false)
+                .collapsible(false)
+                .centered(),
+            |ui| {
                 ui.set_max_width(560.0);
                 ui.label(
                     "Writes a self-contained test study: 40-slice CT water phantom with a \
@@ -449,7 +460,8 @@ impl ViewerApp {
                     ui.add_space(4.0);
                     ui.label(msg);
                 }
-            });
+            },
+        );
 
         self.gen_open = open;
         if browse {
@@ -507,13 +519,15 @@ impl ViewerApp {
         let mut do_scan = false;
         let mut do_apply = false;
 
-        egui::Window::new("🔏 Anonymize DICOM folder")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(true)
-            .default_size([780.0, 560.0])
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(ctx, |ui| {
+        detach::tool_window(
+            ctx,
+            "anonymize",
+            "🔏 Anonymize DICOM folder",
+            &mut open,
+            detach::WinOpts::size(780.0, 560.0)
+                .collapsible(false)
+                .centered(),
+            |ui| {
                 ui.label(
                     "Scans a folder, shows every identifying tag with its current values \
                      and a proposed replacement (editable), then rewrites the files. \
@@ -698,7 +712,8 @@ impl ViewerApp {
                         }
                     });
                 }
-            });
+            },
+        );
 
         if !open {
             // Closing the window forgets everything that was scanned — the
@@ -751,13 +766,15 @@ impl ViewerApp {
         let mut do_export = false;
         let mut reset_all = false;
 
-        egui::Window::new(format!("💾 Export dataset {} as DICOM", SLOT_NAMES[slot]))
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(true)
-            .default_size([720.0, 520.0])
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(ctx, |ui| {
+        detach::tool_window(
+            ctx,
+            "export",
+            format!("💾 Export dataset {} as DICOM", SLOT_NAMES[slot]),
+            &mut open,
+            detach::WinOpts::size(720.0, 520.0)
+                .collapsible(false)
+                .centered(),
+            |ui| {
                 ui.label(
                     "Writes the displayed volume (one file per slice) plus every \
                      structure set, segmentation series (as DICOM SEG), dose grid \
@@ -877,7 +894,8 @@ impl ViewerApp {
                         ui.label(msg);
                     }
                 });
-            });
+            },
+        );
 
         // A running export is not aborted when the window closes — the
         // background thread finishes writing; only its message is dropped.

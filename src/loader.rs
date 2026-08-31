@@ -99,7 +99,20 @@ pub struct SeriesInfo {
     pub study_uid: String,
     pub study_date: String,
     pub study_description: String,
+    /// SeriesNumber (0020,0011), when present.
+    pub series_number: Option<i64>,
+    /// TemporalPositionIdentifier (0020,0100) of the first slice — enhanced
+    /// 4D exports carry the phase here rather than in the description.
+    pub temporal_id: Option<i64>,
     pub files: Vec<PathBuf>,
+}
+
+impl LoadedStudy {
+    /// Re-detect the 4D groups after the series list changed, keeping
+    /// custom groups (see [`crate::fourd::refresh`]).
+    pub fn refresh_fourd(&mut self) {
+        self.fourd_groups = crate::fourd::refresh(&self.fourd_groups, &self.series);
+    }
 }
 
 impl SeriesInfo {
@@ -148,6 +161,8 @@ pub struct LoadedStudy {
     pub registrations: Vec<SpatialReg>,
     /// RT (Ion) Beams Treatment Records.
     pub treat_records: Vec<TreatRecord>,
+    /// 4D sub-studies recognised among (or built by hand from) `series`.
+    pub fourd_groups: Vec<crate::fourd::FourDGroup>,
     pub warnings: Vec<String>,
     pub default_window: (f32, f32),
 }
@@ -189,6 +204,8 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
         series_uid: String,
         series_desc: String,
         study_uid: String,
+        series_number: Option<i64>,
+        temporal_id: Option<i64>,
         has_geometry: bool,
         meta: PatientMeta,
     }
@@ -205,6 +222,8 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
             let series_uid = str_of(&obj, tags::SERIES_INSTANCE_UID).unwrap_or_default();
             let series_desc = str_of(&obj, tags::SERIES_DESCRIPTION).unwrap_or_default();
             let study_uid = str_of(&obj, tags::STUDY_INSTANCE_UID).unwrap_or_default();
+            let series_number = i32_of(&obj, tags::SERIES_NUMBER).map(i64::from);
+            let temporal_id = i32_of(&obj, tags::TEMPORAL_POSITION_IDENTIFIER).map(i64::from);
             let has_geometry = obj.element(tags::IMAGE_POSITION_PATIENT).is_ok()
                 && obj.element(tags::ROWS).is_ok();
             let meta = PatientMeta {
@@ -220,6 +239,8 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
                 series_uid,
                 series_desc,
                 study_uid,
+                series_number,
+                temporal_id,
                 has_geometry,
                 meta,
             })
@@ -302,6 +323,8 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
                         study_uid: s.study_uid.clone(),
                         study_date: s.meta.study_date.clone(),
                         study_description: s.meta.study_description.clone(),
+                        series_number: s.series_number,
+                        temporal_id: s.temporal_id,
                         files: vec![s.path.clone()],
                     });
                 }
@@ -423,6 +446,8 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
         }
     }
 
+    let fourd_groups = crate::fourd::detect(&image_series);
+
     Ok(LoadedStudy {
         meta,
         series: image_series,
@@ -435,6 +460,7 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
         planar_images,
         registrations,
         treat_records,
+        fourd_groups,
         warnings,
         default_window,
     })
@@ -730,6 +756,20 @@ pub fn merge_study(dest: &mut LoadedStudy, src: LoadedStudy) -> Vec<String> {
             dest.treat_records.push(r);
         }
     }
+    // 4D groups: carry over custom groups that don't collide with an
+    // existing one, then re-detect around them for the merged series list.
+    for g in src.fourd_groups {
+        let dup = dest.fourd_groups.iter().any(|d| {
+            d.members
+                .iter()
+                .any(|m| g.members.iter().any(|n| n.series_uid == m.series_uid))
+        });
+        if g.custom && !dup {
+            dest.fourd_groups.push(g);
+        }
+    }
+    dest.refresh_fourd();
+
     dest.warnings.extend(src.warnings);
     notes
 }

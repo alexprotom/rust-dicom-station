@@ -17,6 +17,7 @@ use crate::autoseg;
 use crate::bodymask;
 use crate::dicom_export;
 use crate::extras;
+use crate::fourd;
 use crate::gen_test_data::{self, GenParams};
 use crate::geometry::Vec3;
 use crate::loader::{self, LoadedStudy};
@@ -37,11 +38,15 @@ mod body_win;
 mod box_seg;
 mod chrome;
 mod combine_win;
+mod compare_win;
 mod d3;
+mod detach;
 mod dialogs;
 mod drr_win;
 mod jobs;
 mod models_win;
+mod motion_results;
+mod motion_win;
 mod pacs_win;
 mod panels;
 mod planar;
@@ -53,6 +58,7 @@ mod seg;
 mod seg_engines;
 mod sets;
 mod theme;
+mod transfer_win;
 mod tree;
 mod views;
 
@@ -65,6 +71,46 @@ use seg_engines::*;
 use theme::*;
 
 const SLOT_NAMES: [&str; 2] = ["A", "B"];
+
+/// A 4D-group edit requested from the data tree's context menus, applied
+/// after the frame's borrows are released (the tree renders behind a shared
+/// borrow of the study).
+enum FourDAction {
+    /// Add a series to an existing group, as a phase.
+    Add {
+        slot: usize,
+        group: usize,
+        series: usize,
+    },
+    /// Start a new custom group from one series.
+    New { slot: usize, series: usize },
+    /// Remove one member from a group.
+    RemoveMember {
+        slot: usize,
+        group: usize,
+        member: usize,
+    },
+    /// Move a member one place up (−1) or down (+1).
+    Shift {
+        slot: usize,
+        group: usize,
+        member: usize,
+        delta: isize,
+    },
+    /// Cycle a member's role (phase ▸ AVG ▸ MIP ▸ MinIP).
+    SetRole {
+        slot: usize,
+        group: usize,
+        member: usize,
+        role: fourd::Role,
+    },
+    /// Dissolve the whole group (the series stay).
+    Dissolve { slot: usize, group: usize },
+    /// Re-run automatic detection, keeping custom groups.
+    Redetect { slot: usize },
+    /// Open the 4D motion tool on this group.
+    Analyse { slot: usize, group: usize },
+}
 
 /// The auto-segmentation window: its parameters, and the run they start.
 struct AutosegDialog {
@@ -900,6 +946,28 @@ pub struct ViewerApp {
     combine_slot: usize,
     combine_dialog: Option<combine_win::CombineDialog>,
 
+    // 4D motion / ITV analysis (see `motion` and `fourd`).
+    motion_job: Option<SegJob<motion_win::MotionOutcome>>,
+    motion_slot: usize,
+    motion_dialog: Option<motion_win::MotionDialog>,
+    /// The last run's settings, re-applicable to another dataset / study.
+    motion_recipe: Option<motion_win::MotionRecipe>,
+    /// Every finished run of this session, newest last.
+    motion_reports: Vec<crate::motion::MotionReport>,
+    /// The results window: visibility, selected run, comparison run.
+    motion_results_open: bool,
+    motion_sel: usize,
+    motion_cmp: Option<usize>,
+
+    // Tools ▶ Transfer by relationship.
+    transfer_dialog: Option<transfer_win::TransferDialog>,
+
+    // Tools ▶ Compare structures.
+    compare_dialog: Option<compare_win::CompareDialog>,
+
+    /// Deferred 4D-group edit from the data tree's context menus.
+    fourd_action: Option<FourDAction>,
+
     // Prompt-driven segmentation (SegVol re-implementation, see `segvol`).
     segvol_job: Option<SegJob<prompt_seg::SegVolResult>>,
     segvol_slot: usize,
@@ -933,6 +1001,10 @@ pub struct ViewerApp {
     /// The side panel is expanded (View ▶ Left panel, F9, or the arrow on
     /// the panel edge). Collapsed, the views have the whole window.
     side_open: bool,
+    /// Tool windows currently living in their own window of the operating
+    /// system. The live set is egui memory (`detach`); this is the copy last
+    /// written to the settings file, so a change can be spotted per frame.
+    detached_windows: std::collections::BTreeSet<String>,
 
     /// Light / dark / follow-the-system appearance, persisted between runs.
     theme: egui::ThemePreference,
@@ -959,6 +1031,12 @@ impl ViewerApp {
     ) -> Self {
         let prefs = settings::load();
         cc.egui_ctx.set_theme(prefs.theme);
+        // The windows the user last pulled out open in their own window
+        // again — `detach` reads the set straight from egui memory.
+        detach::set_detached_ids(
+            &cc.egui_ctx,
+            prefs.detached_windows.iter().cloned().collect(),
+        );
         let models_dir = prefs
             .models_dir
             .as_ref()
@@ -1079,6 +1157,17 @@ impl ViewerApp {
             combine_job: None,
             combine_slot: 0,
             combine_dialog: None,
+            motion_job: None,
+            motion_slot: 0,
+            motion_dialog: None,
+            motion_recipe: None,
+            motion_reports: Vec::new(),
+            motion_results_open: false,
+            motion_sel: 0,
+            motion_cmp: None,
+            transfer_dialog: None,
+            compare_dialog: None,
+            fourd_action: None,
 
             segvol_job: None,
             segvol_slot: 0,
@@ -1104,6 +1193,7 @@ impl ViewerApp {
             module_registration: prefs.module_registration,
             module_simulation: prefs.module_simulation,
             side_open: true,
+            detached_windows: prefs.detached_windows.iter().cloned().collect(),
             theme: prefs.theme,
             settings_error: None,
         };
@@ -1145,6 +1235,7 @@ impl ViewerApp {
             archive_dir,
             module_registration: self.module_registration,
             module_simulation: self.module_simulation,
+            detached_windows: self.detached_windows.iter().cloned().collect(),
         }) {
             Ok(()) => self.settings_error = None,
             Err(e) => {
@@ -1298,6 +1389,11 @@ impl eframe::App for ViewerApp {
         {
             self.on_combine_done(slot, result);
         }
+        if let Some((slot, outcome)) =
+            poll_tool_job(&mut self.motion_job, &ctx, MOTION.name, &mut self.error)
+        {
+            self.on_motion_done(slot, outcome);
+        }
 
         // Poll background registration.
         if let Some((fixed_slot, out)) =
@@ -1399,9 +1495,19 @@ impl eframe::App for ViewerApp {
         if let Some(action) = self.item_action.take() {
             self.apply_item_action(action);
         }
+        if let Some(action) = self.fourd_action.take() {
+            self.apply_fourd_action(action);
+        }
         if let Some(target) = self.rename_request.take() {
             self.open_rename(target);
         }
         self.modals(&ctx);
+        // A window was pulled out of the main window or pushed back into it:
+        // remember which, so it opens the same way next time the viewer runs.
+        let detached = detach::detached_ids(&ctx);
+        if detached != self.detached_windows {
+            self.detached_windows = detached;
+            self.persist_settings();
+        }
     }
 }

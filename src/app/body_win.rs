@@ -203,13 +203,13 @@ impl ViewerApp {
         let running = self.body_job.as_ref().filter(|_| self.body_slot == slot);
         let mut open = true;
         let (mut run, mut close, mut browse, mut cancel) = (false, false, false, false);
-        egui::Window::new(BODY_CONTOUR.title(d.slot))
-            .id(egui::Id::new("body_window"))
-            .collapsible(true)
-            .resizable(false)
-            .default_width(430.0)
-            .open(&mut open)
-            .show(ctx, |ui| {
+        detach::tool_window(
+            ctx,
+            "body",
+            BODY_CONTOUR.title(d.slot),
+            &mut open,
+            detach::WinOpts::width(430.0).resizable(false),
+            |ui| {
                 ui.label(
                     "Finds the patient's outer surface and leaves the couch, the chair and \
                      the immobilisation outside it — the EXTERNAL structure everything \
@@ -445,7 +445,8 @@ impl ViewerApp {
                     ui.separator();
                     ui.weak(status);
                 }
-            });
+            },
+        );
         if browse {
             if let Some(dir) = Self::pick_folder("Model folder") {
                 self.models_dir = dir.display().to_string();

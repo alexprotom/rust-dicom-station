@@ -36,6 +36,8 @@ pub(super) enum RenameTarget {
     Registration { slot: usize, idx: usize },
     /// Label of one treatment record.
     Record { slot: usize, idx: usize },
+    /// Name of one 4D group.
+    FourD { slot: usize, idx: usize },
 }
 
 impl RenameTarget {
@@ -48,7 +50,8 @@ impl RenameTarget {
             | RenameTarget::Plan { slot, .. }
             | RenameTarget::Planar { slot, .. }
             | RenameTarget::Registration { slot, .. }
-            | RenameTarget::Record { slot, .. } => *slot,
+            | RenameTarget::Record { slot, .. }
+            | RenameTarget::FourD { slot, .. } => *slot,
             RenameTarget::Set(r) => r.slot,
             RenameTarget::Item { set, .. } => set.slot,
         }
@@ -67,6 +70,7 @@ impl RenameTarget {
             RenameTarget::Planar { .. } => "planar image",
             RenameTarget::Registration { .. } => "spatial registration",
             RenameTarget::Record { .. } => "treatment record",
+            RenameTarget::FourD { .. } => "4D group",
         }
     }
 
@@ -91,6 +95,8 @@ impl RenameTarget {
             RenameTarget::Planar { .. } => "the image label",
             RenameTarget::Registration { .. } => "the registration label",
             RenameTarget::Record { .. } => "the record label",
+            // A 4D group is an application grouping, not a DICOM object.
+            RenameTarget::FourD { .. } => "the group's name (application-side only)",
         }
     }
 }
@@ -141,6 +147,7 @@ impl ViewerApp {
             RenameTarget::Planar { idx, .. } => study.planar_images.get(*idx)?.label.clone(),
             RenameTarget::Registration { idx, .. } => study.registrations.get(*idx)?.label.clone(),
             RenameTarget::Record { idx, .. } => study.treat_records.get(*idx)?.label.clone(),
+            RenameTarget::FourD { idx, .. } => study.fourd_groups.get(*idx)?.name.clone(),
         })
     }
 
@@ -230,6 +237,17 @@ impl ViewerApp {
             }
             RenameTarget::Record { idx, .. } => {
                 set_opt(study.treat_records.get_mut(*idx).map(|r| &mut r.label))
+            }
+            RenameTarget::FourD { idx, .. } => {
+                // A hand-given name is a custom edit: re-detection keeps it.
+                match study.fourd_groups.get_mut(*idx) {
+                    Some(g) => {
+                        g.name = text.to_string();
+                        g.custom = true;
+                        true
+                    }
+                    None => false,
+                }
             }
         }
     }
@@ -328,6 +346,8 @@ mod rename_tests {
             study_uid: study.into(),
             study_date: "20260826".into(),
             study_description: "before".into(),
+            series_number: None,
+            temporal_id: None,
             files: Vec::new(),
         }
     }
@@ -383,6 +403,7 @@ mod rename_tests {
             planar_images: Vec::new(),
             registrations: Vec::new(),
             treat_records: Vec::new(),
+            fourd_groups: Vec::new(),
             warnings: Vec::new(),
             default_window: (40.0, 400.0),
         }

@@ -188,7 +188,7 @@ impl ViewerApp {
                 ui.menu_button("Tools", |ui| {
                     // The three segmentation engines, one block per dataset:
                     // the same five entries, in the same order, for A and B.
-                    let tools: [(&ToolInfo, &str); 5] = [
+                    let tools: [(&ToolInfo, &str); 6] = [
                         (
                             &COMBINE,
                             "Build one structure out of others: union, intersection, \
@@ -219,6 +219,12 @@ impl ViewerApp {
                              stack at full in-plane resolution (MedSAM2, re-implemented \
                              natively in Rust).",
                         ),
+                        (
+                            &MOTION,
+                            "Register the reference phase of a 4D group to every other \
+                             phase, carry the targets across, and measure their motion — \
+                             trajectories, drift, correlations and the ITV.",
+                        ),
                     ];
                     let mut open_tool: Option<(usize, &ToolInfo)> = None;
                     for slot in 0..SLOT_NAMES.len() {
@@ -244,6 +250,9 @@ impl ViewerApp {
                         Some((slot, t)) if t.glyph == COMBINE.glyph => {
                             self.open_combine_dialog(slot, Vec::new())
                         }
+                        Some((slot, t)) if t.glyph == MOTION.glyph => {
+                            self.open_motion_dialog(slot, None)
+                        }
                         Some((slot, t)) if t.glyph == BODY_CONTOUR.glyph => {
                             self.open_body_dialog(slot)
                         }
@@ -268,6 +277,43 @@ impl ViewerApp {
                         .clicked()
                     {
                         open_propagate = true;
+                        ui.close();
+                    }
+                    let both = self.slots[0].study.is_some() && self.slots[1].study.is_some();
+                    if ui
+                        .add_enabled(both, egui::Button::new("◎ Transfer by relationship…"))
+                        .on_hover_text(
+                            "Place a structure into the other dataset at the same offset \
+                             from a reference structure (e.g. the heart) — the \
+                             target–reference relationship travels, not a registration",
+                        )
+                        .clicked()
+                    {
+                        self.open_transfer_dialog(0);
+                        ui.close();
+                    }
+                    let any = self.slots[0].study.is_some() || self.slots[1].study.is_some();
+                    if ui
+                        .add_enabled(any, egui::Button::new("◑ Compare structures…"))
+                        .on_hover_text(
+                            "Volumes, centroid offset, Dice, HD95 and mean surface \
+                             distance of any two structures — within a dataset or across \
+                             the two",
+                        )
+                        .clicked()
+                    {
+                        self.open_compare_dialog(0);
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.motion_reports.is_empty(),
+                            egui::Button::new("📈 Motion results…"),
+                        )
+                        .on_hover_text("The finished 4D motion runs of this session")
+                        .clicked()
+                    {
+                        self.motion_results_open = true;
                         ui.close();
                     }
                     if ui

@@ -140,13 +140,13 @@ impl ViewerApp {
             .sum();
         let spare: u64 = scan.iter().map(|(_, s)| s.spare_bytes).sum();
 
-        egui::Window::new("📦 Downloaded models")
-            .id(egui::Id::new("models_window"))
-            .collapsible(true)
-            .resizable(true)
-            .default_width(560.0)
-            .open(&mut open)
-            .show(ctx, |ui| {
+        detach::tool_window(
+            ctx,
+            "models",
+            "📦 Downloaded models",
+            &mut open,
+            detach::WinOpts::width(560.0),
+            |ui| {
                 ui.label(
                     "Every model the segmentation tools can fetch. Weights are \
                      downloaded once, converted to a cache beside them, and never touched \
@@ -255,7 +255,8 @@ impl ViewerApp {
                     }
                     ui.weak(RESEARCH_NOTE);
                 });
-            });
+            },
+        );
 
         self.models_scan = scan;
 

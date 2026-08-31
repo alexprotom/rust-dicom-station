@@ -155,13 +155,13 @@ impl ViewerApp {
         let running = self.drr_job.is_some();
         self.refresh_drr_textures(ctx, &mut d);
 
-        egui::Window::new(format!("☢ DRR — dataset {}", SLOT_NAMES[d.slot]))
-            .id(egui::Id::new("drr_window"))
-            .collapsible(true)
-            .resizable(true)
-            .default_width(720.0)
-            .open(&mut open)
-            .show(ctx, |ui| {
+        detach::tool_window(
+            ctx,
+            "drr",
+            format!("☢ DRR — dataset {}", SLOT_NAMES[d.slot]),
+            &mut open,
+            detach::WinOpts::width(720.0).no_scroll(),
+            |ui| {
                 ui.label(
                     "A digitally reconstructed radiograph: the line integral of \
                      attenuation from a point source through the CT onto a flat \
@@ -410,7 +410,8 @@ impl ViewerApp {
                         });
                     }
                 });
-            });
+            },
+        );
 
         if set_iso {
             if let Some(study) = &self.slots[d.slot].study {

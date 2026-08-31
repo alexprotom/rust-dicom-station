@@ -221,12 +221,13 @@ impl ViewerApp {
         let loaded: [bool; 2] = [self.slots[0].study.is_some(), self.slots[1].study.is_some()];
         let mut w = self.pacs.take().expect("checked above");
 
-        egui::Window::new("🏥 PACS — patient archive")
-            .id(egui::Id::new("pacs_window"))
-            .open(&mut open)
-            .resizable(true)
-            .default_size([720.0, 520.0])
-            .show(ctx, |ui| {
+        detach::tool_window(
+            ctx,
+            "pacs",
+            "🏥 PACS — patient archive",
+            &mut open,
+            detach::WinOpts::size(720.0, 520.0),
+            |ui| {
                 ui.label(
                     "The local archive: every study filed here, ready to be taken into a \
                      dataset and given back the structures and segmentations drawn on it.",
@@ -398,7 +399,8 @@ impl ViewerApp {
                 if ui.button("Close").clicked() {
                     close = true;
                 }
-            });
+            },
+        );
 
         if let Some(e) = expand {
             w.expanded = e;

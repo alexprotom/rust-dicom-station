@@ -245,13 +245,13 @@ impl ViewerApp {
         let mut close = false;
         let mut browse = false;
         let mut cancel = false;
-        egui::Window::new(PROMPT_SEG.title(d.slot))
-            .id(egui::Id::new("segvol_window"))
-            .collapsible(true)
-            .resizable(false)
-            .default_width(380.0)
-            .open(&mut open)
-            .show(ctx, |ui| {
+        detach::tool_window(
+            ctx,
+            "segvol",
+            PROMPT_SEG.title(d.slot),
+            &mut open,
+            detach::WinOpts::width(380.0).resizable(false),
+            |ui| {
                 ui.label(
                     "Segments whatever the prompt points at — a box, a click or a structure \
                      name — with SegVol, re-implemented natively in Rust. For the lesions and \
@@ -369,7 +369,8 @@ impl ViewerApp {
                     ui.separator();
                     ui.weak(status);
                 }
-            });
+            },
+        );
         if browse {
             if let Some(dir) = Self::pick_folder("Model folder") {
                 self.models_dir = dir.display().to_string();
