@@ -43,6 +43,7 @@ mod d3;
 mod detach;
 mod dialogs;
 mod drr_win;
+mod dvh_win;
 mod jobs;
 mod models_win;
 mod motion_results;
@@ -690,6 +691,11 @@ enum ItemAction {
         from: SetRef,
         items: Vec<usize>,
     },
+    /// Plot these items' dose–volume histograms.
+    Dvh {
+        from: SetRef,
+        items: Vec<usize>,
+    },
     /// Write these segments as a DICOM SEG file of their own.
     ExportSeg {
         from: SetRef,
@@ -941,6 +947,11 @@ pub struct ViewerApp {
     /// The tool window, when open; it stays open across runs.
     body_dialog: Option<body_win::BodyDialog>,
 
+    // Dose–volume histograms (see `dvh`), in a window of their own.
+    dvh_open: bool,
+    dvh_dialog: Option<dvh_win::DvhDialog>,
+    dvh_job: Option<Job<anyhow::Result<dvh_win::DvhDone>>>,
+
     // Structure algebra (see `structops`): combining contours and segments.
     combine_job: Option<SegJob<combine_win::CombineResult>>,
     combine_slot: usize,
@@ -1153,6 +1164,10 @@ impl ViewerApp {
             body_job: None,
             body_slot: 0,
             body_dialog: None,
+
+            dvh_open: false,
+            dvh_dialog: None,
+            dvh_job: None,
 
             combine_job: None,
             combine_slot: 0,
@@ -1388,6 +1403,13 @@ impl eframe::App for ViewerApp {
             poll_tool_job(&mut self.combine_job, &ctx, COMBINE.name, &mut self.error)
         {
             self.on_combine_done(slot, result);
+        }
+        match poll_job(&mut self.dvh_job, &ctx, "DVH", &mut self.error) {
+            Some(Ok(done)) => self.on_dvh_done(done),
+            Some(Err(e)) if !progress::is_cancellation(&e) => {
+                self.error = Some(format!("DVH failed: {e:#}"));
+            }
+            _ => {}
         }
         if let Some((slot, outcome)) =
             poll_tool_job(&mut self.motion_job, &ctx, MOTION.name, &mut self.error)

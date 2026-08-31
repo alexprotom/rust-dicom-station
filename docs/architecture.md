@@ -232,6 +232,9 @@ src/
                       landing an auto-segmentation result
     body_win.rs       the body-contour window: method choice, the modality's
                       own threshold row, the classical / model-assisted split
+    dvh_win.rs        the DVH window: structure and dose pickers across both
+                      datasets, the hand-drawn plot with legend and hover
+                      readout, the metrics table, constraints, export
     combine_win.rs    the structure-algebra window: the ordered operand list,
                       per-operand and per-direction margins, the recipe line,
                       and landing the answer as a segment or a contour
@@ -301,6 +304,9 @@ src/
                     powers, including per-direction ellipsoidal margins,
                     6-connected components, slice-wise and 3-D hole filling,
                     the extruded-equipment test, box-blur smoothing          Core
+  dvh.rs            dose–volume histograms: sampling a dose grid over a mask
+                    on its own lattice, cumulative and differential curves,
+                    metrics (Dx%, Dxcc, Vx), protocol constraints, CSV       RT
   structops.rs      structure algebra: the four boolean operations, margins
                     in patient directions (per-direction ellipsoids), crop,
                     fill / smooth / prune, over masks on one lattice          Seg

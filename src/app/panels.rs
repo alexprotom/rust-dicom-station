@@ -993,6 +993,20 @@ impl ViewerApp {
             });
             ui.close();
         }
+        if ui
+            .button(format!("📊 Plot {what} on a DVH…"))
+            .on_hover_text(
+                "Open the dose–volume histogram window with these structures against \
+                 the loaded dose",
+            )
+            .clicked()
+        {
+            *out = Some(ItemAction::Dvh {
+                from,
+                items: items.clone(),
+            });
+            ui.close();
+        }
         if from.kind == SetKind::Segmentations {
             ui.separator();
             if ui

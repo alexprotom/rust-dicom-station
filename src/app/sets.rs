@@ -322,6 +322,17 @@ impl ViewerApp {
                     .collect();
                 self.open_combine_dialog(from.slot, seed);
             }
+            ItemAction::Dvh { from, items } => {
+                let seed = items
+                    .iter()
+                    .map(|&idx| combine_win::ItemRef {
+                        kind: from.kind,
+                        set: from.idx,
+                        idx,
+                    })
+                    .collect();
+                self.open_dvh_dialog(from.slot, seed);
+            }
             ItemAction::Transfer {
                 from,
                 items,

@@ -89,6 +89,14 @@ holds the registration controls and both dataset trees.*
   view, mask → RTSTRUCT conversion, and **DICOM SEG** import and export
   (binary and fractional multi-frame masks, read onto their own lattice
   and resampled onto whichever image series they belong to).
+* **Dose-volume histograms** - cumulative and differential DVHs of any
+  structures against any loaded dose objects, in a window that can be put on
+  its own monitor. Dose sampled over the *structure's* lattice rather than
+  the dose grid's, so the curve has the structure's resolution; anything
+  falling outside the dose grid is counted and reported rather than silently
+  making a structure look cold. Metrics table with typed columns (`D95%`,
+  `D2cc`, `V20Gy`), constraint checking against a plain-text protocol, and
+  CSV export. Verified against an analytic Gaussian phantom.
 * **Structure algebra** - union, intersection, subtraction and symmetric
   difference over any mix of RT structures and segmentations, with a margin
   on any operand and on the result. Margins are given in **patient**
@@ -200,6 +208,7 @@ ships a real two-phase 4DCT (see
 | [docs/propagation.md](docs/propagation.md) | Carrying contours and segmentations across a registration |
 | [docs/drr.md](docs/drr.md) | Digitally reconstructed radiographs: the two projectors and the geometry |
 | [docs/segmentation.md](docs/segmentation.md) | Brush / eraser / region growing, 3D view, mask → RTSTRUCT |
+| [docs/dvh.md](docs/dvh.md) | Dose–volume histograms: curves, metrics, constraint checking, export |
 | [docs/structure-algebra.md](docs/structure-algebra.md) | Combining structures: boolean operations, margins, cropping, cleanup |
 | [docs/body-contour.md](docs/body-contour.md) | The body / EXTERNAL contour: the classical and model-assisted methods, CT and MR, verification |
 | [docs/segvol.md](docs/segvol.md) | Prompt-driven segmentation: box / point / text, the SegVol re-implementation |

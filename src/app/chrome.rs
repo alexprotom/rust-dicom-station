@@ -305,6 +305,30 @@ impl ViewerApp {
                         self.open_compare_dialog(0);
                         ui.close();
                     }
+                    let has_dose = self
+                        .slots
+                        .iter()
+                        .any(|s| s.study.as_ref().is_some_and(|st| !st.doses.is_empty()));
+                    if ui
+                        .add_enabled(has_dose, egui::Button::new("📊 Dose–volume histograms…"))
+                        .on_hover_text(
+                            "Cumulative and differential DVHs of any structures against \
+                             any loaded dose objects, with the metrics table, protocol \
+                             constraint checking and CSV export — in a window that can \
+                             go on its own monitor",
+                        )
+                        .clicked()
+                    {
+                        let slot = usize::from(
+                            self.slots[0].study.is_none()
+                                || self.slots[0]
+                                    .study
+                                    .as_ref()
+                                    .is_some_and(|s| s.doses.is_empty()),
+                        );
+                        self.open_dvh_dialog(slot.min(1), Vec::new());
+                        ui.close();
+                    }
                     if ui
                         .add_enabled(
                             !self.motion_reports.is_empty(),

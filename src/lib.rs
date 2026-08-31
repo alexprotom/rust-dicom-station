@@ -9,6 +9,7 @@ pub mod bodymask;
 pub mod dicom_export;
 pub mod dicomseg;
 pub mod drr;
+pub mod dvh;
 pub mod extras;
 pub mod fourd;
 pub mod gen_test_data;
