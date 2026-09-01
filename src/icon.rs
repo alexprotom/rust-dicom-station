@@ -40,7 +40,7 @@ mod tests {
             "decoded to something that is not RGBA"
         );
         assert!(
-            icon.rgba.chunks_exact(4).any(|px| px[3] > 0),
+            icon.rgba.as_chunks::<4>().0.iter().any(|px| px[3] > 0),
             "every pixel is transparent: the icon file is blank"
         );
     }
