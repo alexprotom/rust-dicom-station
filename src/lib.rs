@@ -14,6 +14,7 @@ pub mod extras;
 pub mod fourd;
 pub mod gen_test_data;
 pub mod geometry;
+pub mod gfx;
 pub mod icon;
 pub mod loader;
 pub mod medsam2;

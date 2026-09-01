@@ -202,7 +202,12 @@ If you use the auto-segmentation in academic work, cite:
 
 * **"no usable wgpu adapter found"** — no Vulkan/DX12/Metal device
   (headless machine, missing driver). *Auto* silently uses the CPU;
-  forcing *GPU* reports the error.
+  forcing *GPU* reports the error. If the whole program will not start,
+  that is the related and more common failure — a Windows machine
+  advertising a Vulkan driver that cannot create a device; see
+  [viewer.md](viewer.md#graphics-backend). The backend chosen there governs
+  inference too, so a machine forced onto Direct3D 12 runs the networks on
+  Direct3D 12.
 * **Download fails behind a proxy** — the downloader uses the OS trust
   store, so a corporate/clinical inspection proxy's CA installed
   system-wide is honored; fully offline machines, see the air-gapped note

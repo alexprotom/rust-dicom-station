@@ -1032,6 +1032,10 @@ pub struct ViewerApp {
 
     /// Light / dark / follow-the-system appearance, persisted between runs.
     theme: egui::ThemePreference,
+    /// Which graphics backend the *next* run will use. Read at startup by
+    /// `main`, before the window exists, so changing it here only takes
+    /// effect after a restart — which the menu says out loud.
+    graphics_backend: crate::gfx::Backend,
     /// Non-fatal note shown in the View menu if the settings file could not
     /// be written (e.g. a read-only installation folder).
     settings_error: Option<String>,
@@ -1220,6 +1224,7 @@ impl ViewerApp {
             module_simulation: prefs.module_simulation,
             side_open: true,
             theme: prefs.theme,
+            graphics_backend: prefs.graphics_backend,
             settings_error: None,
         };
         if let Some(p) = initial_a {
@@ -1260,6 +1265,7 @@ impl ViewerApp {
             archive_dir,
             module_registration: self.module_registration,
             module_simulation: self.module_simulation,
+            graphics_backend: self.graphics_backend,
         }) {
             Ok(()) => self.settings_error = None,
             Err(e) => {

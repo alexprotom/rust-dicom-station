@@ -15,9 +15,15 @@ pub const PRODUCT_ID: &str = "RustDicomStation";
 pub const PROGID: &str = "RustDicomStation.DicomFile";
 pub const UNINSTALLER_EXE: &str = "uninstall.exe";
 pub const MANIFEST_FILE: &str = "install-manifest.txt";
-/// The viewer's settings file, kept in its data folder; the installer only
-/// pre-seeds it when the chosen model folder is not the viewer's default.
+/// The viewer's settings file, kept in the data folder of whoever runs the
+/// installer. It wins over [`DEFAULTS_FILE`], so the installer updates it
+/// too: re-running the installer to change an answer has to change it.
 pub const SETTINGS_FILE: &str = "viewer_settings.txt";
+/// Machine-wide defaults, written beside the installed executable and read
+/// by every user of the machine before their own settings file. Must match
+/// `rust_dicom_station::settings::DEFAULTS_FILE_NAME` (asserted by a test
+/// when the viewer is linked in).
+pub const DEFAULTS_FILE: &str = "viewer-defaults.txt";
 /// The viewer's per-user folder under `%LOCALAPPDATA%`, where it keeps its
 /// settings and, by default, the model folder. Must match
 /// `rust_dicom_station::settings::APP_NAME`.
@@ -26,6 +32,10 @@ pub const VIEWER_DATA_DIR: &str = "RustDICOMStation";
 /// `rust_dicom_station::settings::MODELS_DIR_KEY` (asserted by a test when
 /// the viewer is linked in).
 pub const SETTINGS_MODELS_KEY: &str = "models_dir";
+/// The settings key naming the graphics backend. Must match
+/// `rust_dicom_station::settings::GRAPHICS_BACKEND_KEY` (asserted by a test
+/// when the viewer is linked in).
+pub const SETTINGS_GRAPHICS_KEY: &str = "graphics_backend";
 /// The viewer's model root folder name; each engine keeps its own sub-folder
 /// in it. Must match `rust_dicom_station::models::DIR_NAME`.
 pub const MODELS_DIR_NAME: &str = "models";
@@ -53,6 +63,77 @@ impl Scope {
         match self {
             Scope::CurrentUser => "Just me (no administrator rights needed)",
             Scope::AllUsers => "All users (requires administrator rights)",
+        }
+    }
+}
+
+/// Which graphics API the viewer should use.
+///
+/// This is asked during installation because the failure it prevents happens
+/// *before* the viewer can ask anything itself: a Windows machine that
+/// advertises a Vulkan driver which cannot create a device gives a program
+/// that dies on start, with no window to change a setting in. The viewer
+/// falls back on its own nowadays, but starting on the right backend is
+/// quicker and quieter than starting on the wrong one twice — and a site
+/// that already knows its machines can set it once here.
+///
+/// The spellings must match `rust_dicom_station::gfx::Backend::key`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Graphics {
+    /// Let the graphics library choose.
+    Auto,
+    /// The default, and the fastest where the driver is sound.
+    Vulkan,
+    /// Windows' own — the answer when Vulkan will not start.
+    Dx12,
+}
+
+impl Graphics {
+    pub const ALL: [Graphics; 3] = [Graphics::Vulkan, Graphics::Dx12, Graphics::Auto];
+
+    /// What the viewer's settings file spells it.
+    pub fn key(self) -> &'static str {
+        match self {
+            Graphics::Auto => "auto",
+            Graphics::Vulkan => "vulkan",
+            Graphics::Dx12 => "dx12",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Graphics> {
+        match key.trim().to_ascii_lowercase().as_str() {
+            "auto" | "default" => Some(Graphics::Auto),
+            "vulkan" | "vk" => Some(Graphics::Vulkan),
+            "dx12" | "d3d12" | "directx" | "directx12" | "dx" => Some(Graphics::Dx12),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Graphics::Auto => "Automatic",
+            Graphics::Vulkan => "Vulkan (recommended)",
+            Graphics::Dx12 => "DirectX 12",
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            Graphics::Auto => {
+                "Let the graphics library pick whichever it finds. Sensible, and the \
+                 same thing older versions did."
+            }
+            Graphics::Vulkan => {
+                "Usually the fastest, and right on almost every machine. A few Windows \
+                 systems advertise a Vulkan driver that does not work; on those the \
+                 viewer now falls back to DirectX 12 by itself, but choosing it here \
+                 saves the first attempt."
+            }
+            Graphics::Dx12 => {
+                "Windows' own graphics API. Present and dependable on every machine \
+                 with Windows 10 or later. Choose this if the viewer has ever failed \
+                 to start on this hardware."
+            }
         }
     }
 }
@@ -109,6 +190,8 @@ pub struct Options {
     /// Install the Microsoft Visual C++ runtime when it is missing.
     pub install_vcredist: bool,
     pub launch_after: bool,
+    /// Which graphics API the viewer should start on.
+    pub graphics: Graphics,
 }
 
 impl Default for Options {
@@ -126,6 +209,10 @@ impl Default for Options {
             file_association: true,
             install_vcredist: true,
             launch_after: true,
+            // Vulkan is the right default: it is the faster backend and it
+            // works on the overwhelming majority of machines. The page
+            // exists for the ones where it does not.
+            graphics: Graphics::Vulkan,
         }
     }
 }
@@ -220,6 +307,30 @@ mod tests {
             super::VIEWER_DATA_DIR,
             rust_dicom_station::settings::APP_NAME
         );
+        assert_eq!(
+            super::DEFAULTS_FILE,
+            rust_dicom_station::settings::DEFAULTS_FILE_NAME
+        );
+    }
+
+    /// The installer writes a backend into the viewer's settings file; if the
+    /// two ever disagreed about how to spell one, the viewer would silently
+    /// ignore the choice the user made during installation.
+    #[test]
+    fn the_viewer_and_the_installer_agree_on_the_graphics_setting() {
+        use rust_dicom_station::gfx::Backend;
+        assert_eq!(
+            super::SETTINGS_GRAPHICS_KEY,
+            rust_dicom_station::settings::GRAPHICS_BACKEND_KEY
+        );
+        for g in super::Graphics::ALL {
+            assert_eq!(
+                Backend::from_key(g.key()).map(|b| b.key()),
+                Some(g.key()),
+                "the viewer reads back '{}' as itself",
+                g.key()
+            );
+        }
     }
 }
 

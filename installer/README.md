@@ -47,6 +47,8 @@ publisher" warning on first run.
   MSVC target links against and installs it from Microsoft when missing.
   Rendering needs Direct3D 12 or Vulkan, which the display driver already
   provides, so there is nothing to install for the GPU.
+* **Graphics backend** — its own page, because a handful of Windows machines
+  advertise a Vulkan driver that cannot start (see below).
 * **Model weights, optionally** — pre-downloads and converts the
   TotalSegmentator weights (6 mm, 3 mm, the 1.5 mm set, or everything) using
   the viewer's own downloader, so the first auto-segmentation run does not
@@ -84,14 +86,55 @@ uninstall.exe --uninstall --silent --remove-models
 rds-setup --help
 ```
 
-`--models` takes `none | 6mm | 3mm | 1.5mm | all`; the other flags are
-`--just-me`, `--models-dir` (the model folder), `--no-start-menu`, `--no-desktop-shortcut`,
+`--models` takes `none | 6mm | 3mm | 1.5mm | all`, `--graphics` takes
+`vulkan | dx12 | auto` (default `vulkan`); the other flags are `--just-me`,
+`--models-dir` (the model folder), `--no-start-menu`, `--no-desktop-shortcut`,
 `--no-file-association`, `--no-vcredist`, `--no-launch`, and `--from` for the
 uninstaller.
 
 Building with `--no-default-features` drops the `prefetch-models` feature,
 and with it the dependency on the viewer library; the option then disappears
 from the wizard and the viewer downloads weights on first use as usual.
+
+## The graphics page
+
+Some Windows machines advertise a Vulkan driver that cannot actually create a
+device. `wgpu` prefers Vulkan, so the viewer would die before drawing
+anything, on a machine where nothing else is wrong — and the only escape was
+knowing to set `WGPU_BACKEND=dx12` before starting it. So the wizard asks,
+between the options page and the installation itself:
+
+* **Vulkan (recommended)** — preselected; right on the overwhelming majority
+  of machines.
+* **DirectX 12** — Windows' own, dependable on everything from Windows 10 on.
+  The answer for a machine where the viewer will not start.
+* **Automatic** — whatever the graphics library picks, which is what older
+  versions did.
+
+Three details make the page do its job rather than merely exist:
+
+* **The installer draws with the same library, on the same machine**, so a
+  broken Vulkan driver takes the setup program down too — and the setup
+  program is where the page that fixes it lives. Its window is therefore
+  attempted rather than opened: the default first, then Direct3D 12, then
+  Vulkan, each attempt catching a panic from inside the driver. If all three
+  fail the text interface takes over, as it already did for a head-less
+  session.
+* **Falling back is itself an answer.** If the wizard's window only appeared
+  on Direct3D 12, the viewer will need Direct3D 12 too, so the page says so
+  and preselects it.
+* **The answer is written twice.** `viewer-defaults.txt` goes beside the
+  installed executable and is read by every user of the machine before their
+  own settings — the only thing that works for an all-users installation,
+  where the administrator's `%LOCALAPPDATA%` is not the one the viewer will
+  run under. The installing user's own `viewer_settings.txt` is updated as
+  well, because it wins over the defaults and would otherwise keep an older
+  answer: someone re-running the installer to change the backend must
+  actually get the change.
+
+None of this is load-bearing for a working machine, and none of it is the
+last line of defence: the viewer falls back between backends on its own too.
+See [docs/viewer.md](../docs/viewer.md#graphics-backend).
 
 ## Source map
 

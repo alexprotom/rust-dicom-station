@@ -312,3 +312,81 @@ to edit or delete. The image viewports stay black in both themes so
 windowing, the dose colorwash and the overlays keep one calibrated
 appearance; unit tests assert the accent colors clear WCAG AA contrast on
 both backgrounds.
+
+## Graphics backend
+
+The viewer draws — and, with the GPU feature, runs the segmentation networks —
+through `wgpu`, which speaks Vulkan, Direct3D 12, Metal or OpenGL depending on
+the machine. Normally there is nothing to think about. The exception is real
+and was the reason this section exists: **some Windows machines advertise a
+Vulkan driver that cannot actually create a device.** `wgpu` prefers Vulkan,
+finds the broken one, and the program dies before drawing anything — on a
+machine where nothing else is wrong. The only escape used to be knowing to
+type
+
+```powershell
+$env:WGPU_BACKEND = "dx12"
+```
+
+before starting it, which is not a thing to ask of a physicist in a clinic.
+
+Three things now decide which backend is used, in this order of authority:
+
+1. **`WGPU_BACKEND`**, if set. It stays the escape hatch and it still wins —
+   someone who set it is debugging something.
+2. **`graphics_backend`** in the settings, which the installer writes from the
+   page it asks on and *View ▶ Graphics backend* changes afterwards. Accepted
+   values: `auto`, `vulkan`, `dx12`, `metal`, `opengl`.
+3. Failing both, whatever `wgpu` picks on its own.
+
+And whichever is chosen, **the program falls back by itself when it does not
+work.** The window is not opened once but attempted: the preferred backend
+first, then Direct3D 12, Vulkan and OpenGL, ending at whatever `wgpu` would
+have chosen. A backend that fails — by returning an error, or by panicking
+somewhere inside the driver, which is the usual shape of this failure — costs
+one line on standard error instead of the program:
+
+```
+rust-dicom-station: Vulkan failed: …
+rust-dicom-station: Vulkan did not work, trying DirectX 12…
+```
+
+So on a machine with a broken Vulkan driver the viewer now starts unaided. The
+setting only saves it the first failed attempt — worth having, because the
+attempt costs a second or two and prints a line that looks alarming.
+
+*View ▸ Graphics backend* lists the backends this platform could have (no
+Direct3D outside Windows, no Metal outside macOS), each with a one-line hint,
+and remembers the choice. It takes effect at the next start: the backend is
+read once before the window exists, and the menu says so. If `WGPU_BACKEND` is
+set in the session, the menu says that too rather than appearing to lie.
+
+### Where the setting is read from
+
+Two files, in increasing order of authority:
+
+* `viewer-defaults.txt` **beside the executable**, written by the installer.
+  A machine-wide installation is made by an administrator whose
+  `%LOCALAPPDATA%` is not the one the viewer will run under, so this is the
+  only place an installer-time answer can reach every user of the machine.
+  Every key in it is a default.
+* `viewer_settings.txt` in the per-user config folder
+  (`%LOCALAPPDATA%\RustDICOMStation`, `~/.config/RustDICOMStation`), which is
+  read afterwards and wins — key by key, so a setting the user has never
+  touched keeps the machine-wide default.
+
+Both are plain `key = value` text, safe to edit or delete. An unreadable value
+leaves the default rather than failing to start: these files are edited by
+hand and by an installer, and a typo in one must not cost someone their
+program.
+
+### Note on the inference backend
+
+The program creates two independent `wgpu` instances: `eframe` draws the
+interface with one, and `burn` runs the networks on another. The first takes
+its backends as a typed argument; the second is several layers down inside
+`cubecl` and takes them only from the environment. So the chosen backend is
+also exported as `WGPU_BACKEND` for this process — once, at the very top of
+`main` before any thread exists, which is both the documented contract for
+writing the environment and exactly the workaround that was already known to
+work. A value the user set themselves is never overwritten.

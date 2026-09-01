@@ -18,6 +18,7 @@ impl ViewerApp {
         let mut open_drr = false;
         let mut open_export: Option<usize> = None;
         let mut new_theme: Option<egui::ThemePreference> = None;
+        let mut save_settings = false;
         // A module was switched on or off — remember it for the next run.
         let mut modules_changed = false;
 
@@ -175,6 +176,41 @@ impl ViewerApp {
                     if self.theme != before {
                         new_theme = Some(self.theme);
                     }
+                    ui.separator();
+                    ui.menu_button("Graphics backend…", |ui| {
+                        ui.label("Which graphics API the program draws and computes with.");
+                        ui.weak("Change this if the program will not start on a machine.");
+                        ui.add_space(4.0);
+                        let before = self.graphics_backend;
+                        for b in crate::gfx::Backend::offered() {
+                            ui.radio_value(&mut self.graphics_backend, b, b.label())
+                                .on_hover_text(b.hint());
+                        }
+                        if self.graphics_backend != before {
+                            save_settings = true;
+                        }
+                        ui.add_space(4.0);
+                        match crate::gfx::from_env() {
+                            // Someone who set the variable is working around
+                            // something; say so rather than let this menu
+                            // appear to be lying.
+                            Some(env) => {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "⚠ {} is set to {} in this session and wins over \
+                                         the choice above.",
+                                        crate::gfx::ENV_VAR,
+                                        env.label()
+                                    ))
+                                    .small()
+                                    .color(warn_color(ui.visuals())),
+                                );
+                            }
+                            None => {
+                                ui.weak("Takes effect the next time the program starts.");
+                            }
+                        }
+                    });
                     if let Some(msg) = &self.settings_error {
                         ui.weak(msg);
                     }
@@ -523,6 +559,9 @@ impl ViewerApp {
         }
         if let Some(theme) = new_theme {
             self.set_theme(ctx, theme);
+        }
+        if save_settings {
+            self.persist_settings();
         }
         if modules_changed {
             self.persist_settings();

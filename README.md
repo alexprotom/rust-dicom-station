@@ -102,6 +102,12 @@ The engines fetch their weights on first use into one model folder
 `~/.local/share/RustDICOMStation/models` on Linux), movable from any tool
 window; each engine also has a headless CLI in [examples/](examples/).
 
+If the program will not start at all, it is almost certainly one thing: a
+Windows machine advertising a Vulkan driver that cannot create a device. It
+now falls back to Direct3D 12 by itself, the installer asks which backend to
+use, and *View ▸ Graphics backend* changes it afterwards — see
+[docs/viewer.md](docs/viewer.md#graphics-backend).
+
 Windows, Linux and macOS are supported; `--no-default-features` builds a
 CPU-only viewer without the GPU inference backend. Every push to `main`
 publishes a release: a Windows installer
@@ -118,7 +124,7 @@ https://alexprotom.github.io/rust-dicom-station/
 
 | | |
 |---|---|
-| [docs/viewer.md](docs/viewer.md) | Loading folders and single files, datasets with no volume, MPR views, dataset tree, comparison mode, interaction reference |
+| [docs/viewer.md](docs/viewer.md) | Loading folders and single files, datasets with no volume, MPR views, dataset tree, comparison mode, interaction reference, the graphics backend |
 | [docs/rt-objects.md](docs/rt-objects.md) | RTSTRUCT, RTDOSE, RTPLAN, REG, RTRECORD, reference chains |
 | [docs/registration.md](docs/registration.md) | The four registration engines, local registration, analytics, vector fields, fusion, simulator, verification |
 | [docs/propagation.md](docs/propagation.md) | Carrying contours and segmentations across a registration |

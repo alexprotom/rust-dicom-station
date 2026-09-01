@@ -33,9 +33,12 @@ pub fn run_install(payload: Payload, mut opts: Options, silent: bool) -> Result<
             }
         );
         println!(
-            "Program files       : {}\n",
+            "Program files       : {}",
             human_size(payload.total_size().unwrap_or(0))
         );
+        println!();
+        opts.graphics = ask_graphics(opts.graphics)?;
+        println!();
         if !ask_yes_no("Proceed with the installation?", true)? {
             println!("Cancelled.");
             return Ok(());
@@ -112,6 +115,66 @@ fn yes_no(b: bool) -> &'static str {
     } else {
         "no"
     }
+}
+
+/// The text-mode equivalent of the wizard's graphics page.
+///
+/// The default is whatever the caller already has — `Vulkan` unless
+/// `--graphics` said otherwise — so pressing Enter is always the right
+/// answer on a machine with nothing wrong with it.
+fn ask_graphics(current: Graphics) -> Result<Graphics> {
+    let choices = Graphics::ALL;
+    let default_at = choices.iter().position(|g| *g == current).unwrap_or(0);
+    println!("Which graphics backend should the viewer start on?");
+    for (i, g) in choices.iter().enumerate() {
+        println!("  {}) {}", i + 1, g.label());
+        for line in wrapped(g.hint(), 68) {
+            println!("     {line}");
+        }
+    }
+    loop {
+        print!("Choice [{}] ", default_at + 1);
+        std::io::stdout().flush()?;
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            return Ok(current);
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            return Ok(current);
+        }
+        // A number from the list, or the name itself — both are things
+        // people type, and neither is worth rejecting.
+        if let Ok(n) = line.parse::<usize>() {
+            if (1..=choices.len()).contains(&n) {
+                return Ok(choices[n - 1]);
+            }
+        }
+        if let Some(g) = Graphics::from_key(line) {
+            return Ok(g);
+        }
+        println!("Please answer with a number from 1 to {}.", choices.len());
+    }
+}
+
+/// Break a sentence into lines no longer than `width`, so a hint written as
+/// one long string does not arrive as one long console line.
+fn wrapped(text: &str, width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_whitespace() {
+        if !cur.is_empty() && cur.len() + 1 + word.len() > width {
+            lines.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push(' ');
+        }
+        cur.push_str(word);
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    lines
 }
 
 fn ask_yes_no(question: &str, default: bool) -> Result<bool> {

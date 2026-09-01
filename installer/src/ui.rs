@@ -22,6 +22,7 @@ use crate::uninstall::{self, Target};
 enum Screen {
     Welcome,
     Options,
+    Graphics,
     Working,
     Done,
     ConfirmUninstall,
@@ -48,6 +49,10 @@ pub struct SetupApp {
     outcome: Arc<Mutex<Option<Result<(), String>>>>,
     cancel: Arc<AtomicBool>,
     error: Option<String>,
+    /// Set when the wizard's own window had to fall back to another graphics
+    /// backend: the same machine will fail the same way for the viewer, so
+    /// the graphics page says so and preselects what actually worked.
+    graphics_note: Option<String>,
     /// Begin immediately instead of showing the first page (used by the
     /// elevated re-launch, which inherits the options on the command line).
     autostart: bool,
@@ -107,31 +112,153 @@ pub fn run_uninstall(target: Target) -> Result<()> {
     launch(app, &format!("{APP_NAME}: Uninstall"))
 }
 
+/// Open the wizard window.
+///
+/// The installer draws with the same library as the viewer, on the same
+/// machine — so the broken Vulkan driver that stops the viewer stops the
+/// setup program too, and the setup program is where the page that fixes it
+/// lives. The window is therefore *attempted* rather than opened: first
+/// whatever `wgpu` would pick on its own (which already honours
+/// `WGPU_BACKEND`), then Direct3D 12, then Vulkan. A backend that fails —
+/// by error or by panicking inside the driver — costs a line on standard
+/// error instead of the installation.
+///
+/// Falling back is also an answer: if this window only appeared on Direct3D
+/// 12, the viewer will need Direct3D 12 as well, so the graphics page says
+/// so and preselects it.
 fn launch(app: SetupApp, title: &str) -> Result<()> {
     // The same picture as the viewer's window icon and as both executables'
     // Windows icon resource (see the two `build.rs`), so the setup program
     // is recognisably the same product before anything is installed.
-    let icon =
+    let icon = Arc::new(
         eframe::icon_data::from_png_bytes(include_bytes!("../../assets/rust-dicom-station.png"))
-            .unwrap_or_default();
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(title)
-            .with_icon(icon)
-            .with_inner_size([760.0, 560.0])
-            .with_min_inner_size([640.0, 460.0]),
-        renderer: eframe::Renderer::Wgpu,
-        ..Default::default()
-    };
-    eframe::run_native(
-        title,
-        options,
-        Box::new(|cc| {
-            cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
-            Ok(Box::new(app))
-        }),
-    )
-    .map_err(|e| anyhow::anyhow!("could not open the installer window: {e}"))
+            .unwrap_or_default(),
+    );
+    // `run_native` consumes the app, so it waits here and the creation
+    // closure takes it out. An attempt that dies before creating anything
+    // never gets that far, and the next one finds it still in place.
+    let slot = Arc::new(Mutex::new(Some(app)));
+    let order = attempts();
+    let mut last = "no graphics backend could open a window".to_string();
+    for (i, attempt) in order.iter().enumerate() {
+        if i > 0 {
+            eprintln!(
+                "{APP_NAME} setup: {} did not work, trying {}…",
+                order[i - 1].label,
+                attempt.label
+            );
+            if let Some(app) = slot.lock().unwrap().as_mut() {
+                // Not after an elevated re-launch: there the choice was
+                // already made in the first window and passed on the command
+                // line, and the page is skipped anyway.
+                if app.is_install() && !app.autostart {
+                    if let Some(choice) = attempt.choice {
+                        app.opts.graphics = choice;
+                        app.graphics_note = Some(format!(
+                            "This window could not open with {}, so {} is preselected below.",
+                            order[i - 1].label,
+                            choice.label()
+                        ));
+                    }
+                }
+            }
+        }
+        match attempt.open(&slot, title, &icon) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                eprintln!("{APP_NAME} setup: {} failed: {e}", attempt.label);
+                last = e;
+            }
+        }
+    }
+    Err(anyhow::anyhow!(
+        "could not open the installer window: {last}"
+    ))
+}
+
+/// One backend to try for the wizard's own window.
+struct Attempt {
+    label: &'static str,
+    /// `None` leaves `wgpu`'s own default in place, which is what an
+    /// unremarkable machine — and anyone who set `WGPU_BACKEND` — should get.
+    bits: Option<eframe::wgpu::Backends>,
+    /// What to preselect on the graphics page when this is the attempt that
+    /// works. `None` for the first try, which says nothing about the machine.
+    choice: Option<Graphics>,
+}
+
+fn attempts() -> Vec<Attempt> {
+    use eframe::wgpu::Backends;
+    vec![
+        Attempt {
+            label: "the default backend",
+            bits: None,
+            choice: None,
+        },
+        Attempt {
+            label: "DirectX 12",
+            bits: Some(Backends::DX12),
+            choice: Some(Graphics::Dx12),
+        },
+        Attempt {
+            label: "Vulkan",
+            bits: Some(Backends::VULKAN),
+            choice: Some(Graphics::Vulkan),
+        },
+    ]
+}
+
+impl Attempt {
+    /// Try to run the wizard to completion on this backend. `Err` carries a
+    /// message for the next attempt to report; the app is left in `slot`
+    /// unless a window was actually created.
+    fn open(
+        &self,
+        slot: &Arc<Mutex<Option<SetupApp>>>,
+        title: &str,
+        icon: &Arc<egui::IconData>,
+    ) -> std::result::Result<(), String> {
+        let mut wgpu_options = eframe::WgpuConfiguration::default();
+        if let Some(bits) = self.bits {
+            if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
+                setup.instance_descriptor.backends = bits;
+            }
+        }
+        let options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_title(title)
+                .with_icon(Arc::clone(icon))
+                .with_inner_size([760.0, 560.0])
+                .with_min_inner_size([640.0, 460.0]),
+            renderer: eframe::Renderer::Wgpu,
+            wgpu_options,
+            ..Default::default()
+        };
+        let slot = slot.clone();
+        // `NativeOptions` holds boxed callbacks that are not `UnwindSafe`,
+        // which is a fair warning in general and irrelevant here: nothing is
+        // read back after a failed attempt — the next one builds its own.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            eframe::run_native(
+                title,
+                options,
+                Box::new(move |cc| {
+                    cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
+                    let app = slot
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .ok_or("the installer window was created twice")?;
+                    Ok(Box::new(app) as Box<dyn eframe::App>)
+                }),
+            )
+        }));
+        match result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(format!("{e}")),
+            Err(_) => Err(format!("the {} driver crashed while starting", self.label)),
+        }
+    }
 }
 
 impl SetupApp {
@@ -159,6 +286,7 @@ impl SetupApp {
             outcome: Arc::new(Mutex::new(None)),
             cancel: Arc::new(AtomicBool::new(false)),
             error: None,
+            graphics_note: None,
             autostart: false,
             quit: false,
         }
@@ -237,7 +365,8 @@ impl eframe::App for SetupApp {
         let screen = self.screen;
         egui::CentralPanel::default_margins().show(ui, |ui| match screen {
             Screen::Welcome => self.welcome(ui),
-            Screen::Options => self.options(ui, &ctx),
+            Screen::Options => self.options(ui),
+            Screen::Graphics => self.graphics(ui, &ctx),
             Screen::Working => self.working(ui),
             Screen::Done => self.done(ui),
             Screen::ConfirmUninstall => self.confirm_uninstall(ui, &ctx),
@@ -282,7 +411,7 @@ impl SetupApp {
         });
     }
 
-    fn options(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn options(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.label(RichText::new("Install for").strong());
             let mut scope = self.opts.scope;
@@ -362,8 +491,9 @@ impl SetupApp {
             }
             ui.label(
                 RichText::new(
-                    "Graphics: rendering uses Direct3D 12 or Vulkan through the installed \
-                     display driver — nothing to install.",
+                    "Graphics: drawing uses Direct3D 12 or Vulkan through the display driver \
+                     already on this machine — nothing to install. The next page chooses \
+                     which one.",
                 )
                 .weak(),
             );
@@ -418,9 +548,66 @@ impl SetupApp {
                 if ui.button("◀  Back").clicked() {
                     self.screen = Screen::Welcome;
                 }
-                if ui.button("Install").clicked() {
+                if ui.button("Next  ▶").clicked() {
                     self.opts.set_dir(PathBuf::from(self.dir_text.trim()));
                     self.opts.models_dir = PathBuf::from(self.models_dir_text.trim());
+                    self.screen = Screen::Graphics;
+                }
+                if ui.button("Cancel").clicked() {
+                    self.quit = true;
+                }
+            });
+            if let Some(err) = &self.error {
+                ui.add_space(6.0);
+                ui.colored_label(Color32::from_rgb(230, 100, 100), err);
+            }
+        });
+    }
+
+    /// The page this whole change exists for: which graphics API the viewer
+    /// should start on.
+    ///
+    /// Vulkan is preselected because it is right on the overwhelming majority
+    /// of machines. The page exists for the rest — and when the installer's
+    /// own window had to fall back to get here, the answer is already known
+    /// and filled in.
+    fn graphics(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.label(RichText::new("Graphics backend").strong());
+            ui.label(
+                "The viewer draws through your display driver. Almost every machine should \
+                 leave this on Vulkan; a few Windows systems advertise a Vulkan driver that \
+                 cannot actually start, and on those the viewer must use DirectX 12 instead.",
+            );
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(
+                    "This is only the starting choice — it can be changed at any time under \
+                     View ▸ Graphics backend, and the viewer falls back on its own if the \
+                     one chosen here does not work.",
+                )
+                .weak(),
+            );
+            if let Some(note) = &self.graphics_note {
+                ui.add_space(8.0);
+                ui.colored_label(Color32::from_rgb(230, 170, 60), note);
+            }
+
+            ui.add_space(10.0);
+            for choice in Graphics::ALL {
+                ui.radio_value(&mut self.opts.graphics, choice, choice.label());
+                ui.indent(choice.key(), |ui| {
+                    ui.label(RichText::new(choice.hint()).weak());
+                });
+                ui.add_space(4.0);
+            }
+
+            ui.add_space(14.0);
+            ui.horizontal(|ui| {
+                if ui.button("◀  Back").clicked() {
+                    self.screen = Screen::Options;
+                }
+                if ui.button("Install").clicked() {
                     if self.opts.scope == Scope::AllUsers && !crate::win::is_elevated() {
                         match crate::win::relaunch_elevated(&crate::args_for_relaunch(&self.opts)) {
                             Ok(()) => self.quit = true,

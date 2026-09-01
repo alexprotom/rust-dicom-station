@@ -5,7 +5,7 @@ each page here covers one area.
 
 | Page | Contents |
 |---|---|
-| [viewer.md](viewer.md) | Loading — folders or individual files, with or without a reconstructable volume — volume reconstruction, the MPR layout, window/level, the patient ▶ study ▶ series tree, comparison mode, planar images, interaction bindings, appearance |
+| [viewer.md](viewer.md) | Loading — folders or individual files, with or without a reconstructable volume — volume reconstruction, the MPR layout, window/level, the patient ▶ study ▶ series tree, comparison mode, planar images, interaction bindings, appearance, the graphics backend |
 | [rt-objects.md](rt-objects.md) | RTSTRUCT, RTDOSE, RTPLAN, REG, RT treatment records, and how their reference chains are resolved |
 | [registration.md](registration.md) | The four registration engines, local registration, analytics, vector fields, fusion, the transform simulator, verification |
 | [propagation.md](propagation.md) | Carrying contours and segmentations across a registration |

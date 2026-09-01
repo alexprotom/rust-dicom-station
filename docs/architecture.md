@@ -191,13 +191,19 @@ Where each function lives. The right-hand tag is the functional category
 
 ```
 src/
-  main.rs           entry point (eframe/wgpu window)                              App
+  main.rs           entry point: opens the eframe/wgpu window, retrying the
+                    other graphics backends when one will not start              App
   lib.rs            library root — every module is public, so the integration
                     tests and the examples drive the same code as the GUI
   progress.rs       the one progress handle + ProgressSink, Quiet, Stderr         Core
   models.rs         the model folder: root, per-engine sub-folders, migration,
                     the inventory of every downloadable model                    NN
-  settings.rs       persisted preferences and the config / data folders          App
+  settings.rs       persisted preferences and the config / data folders — the
+                    machine-wide defaults the installer writes, then the user's
+                    own file on top                                              App
+  gfx.rs            which graphics backend to draw and compute with: the
+                    settings key, the environment override, and the order to
+                    fall back through when one will not start                    App
   archive.rs        the local patient archive: on-disk layout, sidecars,
                     scanning, importing, index rebuild, removal                   DICOM
 
