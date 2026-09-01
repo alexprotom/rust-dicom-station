@@ -59,11 +59,11 @@ missing), its size on disk or to fetch, and the buttons that act on it.
 |---|---|
 | ⬇ | download and convert this model |
 | ⟳ | remove it and fetch it again — the published files carry no version, so an update *is* a fresh download |
-| 🧹 | delete the source checkpoint the converted cache was made from; the model keeps running |
+| ♻ | delete the source checkpoint the converted cache was made from; the model keeps running |
 | 🗑 | delete every file of this model |
 
 and, over the whole inventory, **⬇ Download all missing**, **⟳ Update all**
-and **🧹 Free …**, which reports what the redundant source checkpoints cost
+and **♻ Free …**, which reports what the redundant source checkpoints cost
 before you drop them. The model folder is editable here (the setting the
 three tool windows show); the header counts ready models and total size.
 
@@ -115,7 +115,7 @@ rewritten (UID remapping and private-tag removal do recurse).
 
 ## Synthetic test-data generator
 
-*File ▶ 🧪 Generate test data…* (also offered on the empty start screen) writes
+*File ▶ 📐 Generate test data…* (also offered on the empty start screen) writes
 a complete, analytically known RT study into `test_data/` next to the
 executable and loads it straight away — no Python, no external tooling:
 

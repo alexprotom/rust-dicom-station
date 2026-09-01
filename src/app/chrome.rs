@@ -117,7 +117,7 @@ impl ViewerApp {
                     }
                     ui.separator();
                     if ui
-                        .button("🧪 Generate test data…")
+                        .button("📐 Generate test data…")
                         .on_hover_text(
                             "Write a complete synthetic RT study (CT, RTSTRUCT, RTPLAN, \
                              RTDOSE, DX, RTIMAGE, REG, RTRECORD) into the application folder",
@@ -434,7 +434,7 @@ impl ViewerApp {
                     ui.weak("Middle drag — pan");
                     ui.weak("Right drag — window / level (x = width, y = center)");
                     ui.separator();
-                    ui.label("Segmentation (🖌 ◻ ✨ take over the left button):");
+                    ui.label("Segmentation (🎨 ⊖ ✨ take over the left button):");
                     ui.weak("Left drag — paint / erase");
                     ui.weak("Left press + drag ↑↓ — grow / shrink the region (✨)");
                     ui.weak("Alt — erase while painting");
@@ -453,7 +453,7 @@ impl ViewerApp {
                     ui.separator();
                     ui.label("Buttons:");
                     ui.weak("⟲ (view corner) — reset that view's zoom, pan and slice");
-                    ui.weak("⛶ / ❐ — maximize that view / restore the layout");
+                    ui.weak("⛶ / ⊞ — maximize that view / restore the layout");
                     ui.weak("⟲ (toolbar) — reset every view of both datasets");
                     ui.weak(
                         "⌖ — show / hide the crosshair; hidden, left click no \
@@ -712,14 +712,14 @@ impl ViewerApp {
                     pick(
                         ui,
                         SegTool::Brush,
-                        "🖌 Paint",
+                        "🎨 Paint",
                         "Paint the active segmentation (LMB drag).\n\
                          Hold Alt to erase · Shift+wheel or [ ] resize the brush · Ctrl+Z undo",
                     );
                     pick(
                         ui,
                         SegTool::Erase,
-                        "◻ Erase",
+                        "⊖ Erase",
                         "Erase from the active segmentation (LMB drag)",
                     );
                     pick(

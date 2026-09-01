@@ -380,7 +380,7 @@ impl ViewerApp {
                             .map(|(_, l)| l.clone())
                             .unwrap_or_else(|| "(gone)".into());
                         if ui
-                            .selectable_label(true, format!("{label} ✕"))
+                            .selectable_label(true, format!("{label} ✖"))
                             .on_hover_text("Remove from the plot")
                             .clicked()
                         {
@@ -459,7 +459,7 @@ impl ViewerApp {
                     let mut drop = None;
                     for (i, m) in d.metrics.iter().enumerate() {
                         if ui
-                            .selectable_label(true, format!("{} ✕", m.label()))
+                            .selectable_label(true, format!("{} ✖", m.label()))
                             .clicked()
                         {
                             drop = Some(i);
@@ -473,7 +473,7 @@ impl ViewerApp {
                             .hint_text("D98%, V20Gy, D2cc…")
                             .desired_width(110.0),
                     );
-                    let add = ui.small_button("＋").clicked()
+                    let add = ui.small_button("➕").clicked()
                         || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                     if add {
                         match Metric::parse(&d.new_metric) {

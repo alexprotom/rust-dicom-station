@@ -207,6 +207,8 @@ src/
     mod.rs            ViewerApp and every type it holds, construction, the job
                       plumbing (Job::spawn, poll_job, poll_tool_job), per-frame driver
     theme.rs          theme-dependent colors
+    glyphs.rs         the font stack (Hack as the last proportional fallback)
+                      and the test that fails on a glyph egui cannot draw
     chrome.rs         menu bar, toolbar, status bar, help
     detach.rs         every tool window as a window of the operating system
                       (immediate viewport), titled and placed alike
@@ -398,6 +400,24 @@ visibility toggle is part of the contour key alone and leaves the dose and
 fusion textures untouched. Repaints are demand-driven; while background jobs
 run, the UI polls at 10 Hz.
 
+### Glyphs and the icon
+
+Every non-ASCII character in the interface has to be one of the four fonts
+egui bundles — Ubuntu-Light, Hack, Noto Emoji and a small icon font — or it
+is drawn as an empty box that no compiler and no test would notice.
+`app/glyphs.rs` closes that hole from both ends: `install` appends Hack to
+the *proportional* family (arrows, ∩ ∪ ⊕ ⊖ and half a dozen others live only
+there, which is why they rendered in the monospaced status bar and as boxes
+in menus), and a unit test walks the sources and fails on any character
+outside `ALLOWED`, the list verified against those fonts' `cmap` tables.
+
+The application's picture of itself is one file, `assets/rust-dicom-station.png`
+(with `.ico` beside it for Windows): `src/icon.rs` loads it as the window
+icon of the viewer and the installer, the two `build.rs` compile the `.ico`
+into both executables as a resource — which is what Explorer, the task bar,
+the start-menu shortcut and *Add or remove programs* read — and the release
+workflow copies the PNG into the AppImage as the Linux desktop icon.
+
 ### The tool windows
 
 Every secondary window is drawn through `app/detach.rs::tool_window`, which
@@ -416,7 +436,7 @@ The segmentation-type tools — body contour, structure algebra,
 auto-segmentation, prompt segmentation, slice propagation, 4D motion — are
 different conversations but the same kind of tool, and `app/seg_engines.rs`
 makes them alike: one `ToolInfo` per tool gives the glyph, the window title
-(`🤖 Auto-segmentation — dataset A`), the menu entry and the small sidebar
+(`🔬 Auto-segmentation — dataset A`), the menu entry and the small sidebar
 button; every window stays open while its run is in flight, the button row
 becoming the progress row (device, bar, message, Cancel); the sections come
 in the same order (description, the tool's inputs, `Name`, a collapsed

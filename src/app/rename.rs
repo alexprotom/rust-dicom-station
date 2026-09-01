@@ -267,7 +267,7 @@ impl ViewerApp {
         });
     }
 
-    /// The rename dialog. Enter applies, Esc and ✕ cancel, and an empty name
+    /// The rename dialog. Enter applies, Esc and ✖ cancel, and an empty name
     /// is simply not accepted — every one of these labels is what something
     /// is called somewhere else in the UI.
     pub(super) fn rename_window(&mut self, ctx: &egui::Context) {
@@ -277,7 +277,7 @@ impl ViewerApp {
         let mut open = true;
         let mut apply = false;
         let mut cancel = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-        egui::Window::new(format!("✎ Rename {}", d.target.what()))
+        egui::Window::new(format!("✏ Rename {}", d.target.what()))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)

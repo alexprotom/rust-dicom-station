@@ -47,7 +47,7 @@ impl ViewerApp {
         }
         for (i, seg) in self.slots[slot].segs().iter().enumerate() {
             if seg.count > 0 {
-                out.push((RegRoi::Segmentation(i), format!("✎ {}", seg.name)));
+                out.push((RegRoi::Segmentation(i), format!("✏ {}", seg.name)));
             }
         }
         out

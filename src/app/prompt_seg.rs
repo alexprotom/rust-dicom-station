@@ -334,7 +334,7 @@ impl ViewerApp {
                 ui.separator();
                 let need = weights::download_needed(&models_dir, d.kind == PromptKind::Text);
                 let weights_note = if need == 0 {
-                    "Weights: SegVol (BAAI, no licence declared) — cached ✓.".to_string()
+                    "Weights: SegVol (BAAI, no licence declared) — cached ✔.".to_string()
                 } else {
                     format!(
                         "Weights: SegVol (BAAI, no licence declared) — {} MB downloaded once \

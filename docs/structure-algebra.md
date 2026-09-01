@@ -40,9 +40,9 @@ smoothing option is for.
 
 ## Using it
 
-*Tools ▶ ◧ Combine structures in dataset A…*, the **◧ Combine** button in the
+*Tools ▶ ∪ Combine structures in dataset A…*, the **∪ Combine** button in the
 sidebar, or — usually quickest — tick the structures in the data tree,
-right-click and choose **◧ Combine …**: the window opens with them listed in
+right-click and choose **∪ Combine …**: the window opens with them listed in
 the order ticked.
 
 * **Operation** — union, intersection, subtraction or symmetric difference,

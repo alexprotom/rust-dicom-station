@@ -96,7 +96,7 @@ cargo test --release
 ```
 
 To try prompt segmentation on the bundled patient: put the crosshair on the
-tumor, *Tools ▶ 🧠 Prompt-segment dataset A…*, prompt **Box**, **▶ Segment**.
+tumor, *Tools ▶ 💬 Prompt-segment dataset A…*, prompt **Box**, **▶ Segment**.
 The engines fetch their weights on first use into one model folder
 (`%LOCALAPPDATA%\RustDICOMStation\models` on Windows,
 `~/.local/share/RustDICOMStation/models` on Linux), movable from any tool
@@ -108,7 +108,7 @@ publishes a release: a Windows installer
 (`rust-dicom-station-<version>-windows-x86_64.exe` — shortcuts, "Open with"
 on folders, the VC++ runtime check, optional weight prefetch, uninstaller)
 and a Linux AppImage. The installer is its own crate in
-[installer/](installer/README.md). No data at hand? *File ▶ 🧪 Generate test
+[installer/](installer/README.md). No data at hand? *File ▶ 📐 Generate test
 data…* writes a complete synthetic RT study, and `example_data/` ships a real
 two-phase 4DCT ([docs/example-data.md](docs/example-data.md)).
 

@@ -27,13 +27,19 @@ pub(super) struct ToolInfo {
     pub verb: &'static str,
 }
 
+/// Every glyph in this file — and in the rest of the interface — has to be
+/// one egui's bundled fonts actually carry, or it comes out as an empty box
+/// on the user's screen. The microscope stands for the tool that examines
+/// the whole scan by itself; a robot would have read better and does not
+/// render (see the `glyphs` test module).
 pub(super) const AUTOSEG: ToolInfo = ToolInfo {
-    glyph: "🤖",
+    glyph: "🔬",
     name: "Auto-segmentation",
     verb: "Auto-segment",
 };
+/// The speech balloon is the prompt: this is the tool you tell what to find.
 pub(super) const PROMPT_SEG: ToolInfo = ToolInfo {
-    glyph: "🧠",
+    glyph: "💬",
     name: "Prompt segmentation",
     verb: "Prompt-segment",
 };
@@ -52,7 +58,7 @@ pub(super) const BODY_CONTOUR: ToolInfo = ToolInfo {
 };
 /// The fifth tool, and the only one with no network behind it at all.
 pub(super) const COMBINE: ToolInfo = ToolInfo {
-    glyph: "◧",
+    glyph: "∪",
     name: "Combine structures",
     verb: "Combine structures in",
 };
@@ -66,25 +72,25 @@ pub(super) const MOTION: ToolInfo = ToolInfo {
 };
 
 impl ToolInfo {
-    /// `🤖 Auto-segmentation — dataset A`, the window title.
+    /// `🔬 Auto-segmentation — dataset A`, the window title.
     pub fn title(&self, slot: usize) -> String {
         format!(
             "{} {} — dataset {}",
             self.glyph, self.name, SLOT_NAMES[slot]
         )
     }
-    /// `🤖 Auto-segmentation results — dataset A`, a companion window.
+    /// `🔬 Auto-segmentation results — dataset A`, a companion window.
     pub fn titled(&self, what: &str, slot: usize) -> String {
         format!(
             "{} {} {what} — dataset {}",
             self.glyph, self.name, SLOT_NAMES[slot]
         )
     }
-    /// `🤖 Auto-segment dataset A…`, the menu entry.
+    /// `🔬 Auto-segment dataset A…`, the menu entry.
     pub fn menu_entry(&self, slot: usize) -> String {
         format!("{} {} dataset {}…", self.glyph, self.verb, SLOT_NAMES[slot])
     }
-    /// `🤖 Auto…`, the small sidebar button.
+    /// `🔬 Auto…`, the small sidebar button.
     pub fn short_button(&self) -> String {
         let short = self.verb.split(['-', ' ']).next().unwrap_or(self.verb);
         format!("{} {short}", self.glyph)
@@ -322,15 +328,15 @@ mod tests {
 
     #[test]
     fn titles_menu_entries_and_buttons_follow_one_pattern() {
-        assert_eq!(AUTOSEG.title(0), "🤖 Auto-segmentation — dataset A");
+        assert_eq!(AUTOSEG.title(0), "🔬 Auto-segmentation — dataset A");
         assert_eq!(
             AUTOSEG.titled("results", 1),
-            "🤖 Auto-segmentation results — dataset B"
+            "🔬 Auto-segmentation results — dataset B"
         );
-        assert_eq!(PROMPT_SEG.menu_entry(1), "🧠 Prompt-segment dataset B…");
+        assert_eq!(PROMPT_SEG.menu_entry(1), "💬 Prompt-segment dataset B…");
         assert_eq!(SLICE_PROP.menu_entry(0), "⏩ Propagate through dataset A…");
-        assert_eq!(AUTOSEG.short_button(), "🤖 Auto");
-        assert_eq!(PROMPT_SEG.short_button(), "🧠 Prompt");
+        assert_eq!(AUTOSEG.short_button(), "🔬 Auto");
+        assert_eq!(PROMPT_SEG.short_button(), "💬 Prompt");
         assert_eq!(SLICE_PROP.short_button(), "⏩ Propagate");
         assert_eq!(BODY_CONTOUR.menu_entry(0), "👤 Body-contour dataset A…");
         assert_eq!(MOTION.short_button(), "📈 Motion");

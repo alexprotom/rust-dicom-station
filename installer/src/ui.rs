@@ -83,7 +83,7 @@ pub fn run_install(payload: Payload, opts: Options, autostart: bool) -> Result<(
     // After an elevation re-launch the user has already made every choice in
     // the first window; go straight to work.
     app.autostart = autostart;
-    launch(app, &format!("{APP_NAME} Setup"))
+    launch(app, &format!("{APP_NAME}: Setup"))
 }
 
 /// Show the uninstall confirmation window.
@@ -104,13 +104,20 @@ pub fn run_uninstall(target: Target) -> Result<()> {
         None,
         0,
     );
-    launch(app, &format!("Uninstall {APP_NAME}"))
+    launch(app, &format!("{APP_NAME}: Uninstall"))
 }
 
 fn launch(app: SetupApp, title: &str) -> Result<()> {
+    // The same picture as the viewer's window icon and as both executables'
+    // Windows icon resource (see the two `build.rs`), so the setup program
+    // is recognisably the same product before anything is installed.
+    let icon =
+        eframe::icon_data::from_png_bytes(include_bytes!("../../assets/rust-dicom-station.png"))
+            .unwrap_or_default();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(title)
+            .with_icon(icon)
             .with_inner_size([760.0, 560.0])
             .with_min_inner_size([640.0, 460.0]),
         renderer: eframe::Renderer::Wgpu,

@@ -84,7 +84,7 @@ The views tile the central area edge to edge, each with its own **slice
 scrubber** drawn over its bottom edge; the plane and dataset name in the
 top-left corner is white in every view, the edge labels keep their colour.
 Two corner buttons (named on hover): **⟲** resets the view's zoom and pan and
-re-centers the crosshair in the volume, **⛶ / ❐** maximizes the view and
+re-centers the crosshair in the volume, **⛶ / ⊞** maximizes the view and
 restores the layout. The toolbar holds a global **⟲** (the same reset for
 every view of both datasets), the **⌖** crosshair toggle (while hidden,
 left-click navigation is off and slices change only by scrolling), the **🔗**
@@ -160,7 +160,7 @@ Dataset A
        ├ RT structures (12/12)
        │   └ ▣ Approved (12 ROIs) ▶ CT chest
        ├ Segmentations (8/8)
-       │   └ ✎ TotalSeg (8 segments) ▶ CT chest
+       │   └ ✏ TotalSeg (8 segments) ▶ CT chest
        ├ Dose (1)
        └ Plan: IMRT
  Dose display · Planar images · Spatial registrations · Records · Warnings
@@ -210,7 +210,7 @@ offers:
 * *💾 Export as DICOM SEG…* (segmentation series only) — writes this one series
   as a single SEG file.
 * *🗑 Remove this RT structure set / segmentation series*.
-* *✎ Rename series…*.
+* *✏ Rename series…*.
 
 Each item's **check box is both its visibility and its selection**, so *All*
 / *None* tick everything or nothing and the actions act on whatever is
@@ -237,7 +237,7 @@ the ticked group:
   SEG series of their own: same lattice, same referenced image series, a fresh
   SOP Instance UID, only those segments; the file reloads as an ordinary
   segmentation series.
-* *✎ Rename …* — always the row you clicked, never the whole selection.
+* *✏ Rename …* — always the row you clicked, never the whole selection.
 
 Crossing between the two kinds converts on transfer: a structure moved into a
 segmentation series is rasterized onto its lattice (even–odd fill), a segment

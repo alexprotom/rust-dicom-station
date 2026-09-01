@@ -143,7 +143,7 @@ impl ViewerApp {
                 ] {
                     let need = autoseg::download_needed(variant, d.parts, &models_dir);
                     let note = if need == 0 {
-                        "weights cached ✓".to_string()
+                        "weights cached ✔".to_string()
                     } else {
                         format!("downloads {} MB once", need / 1_000_000)
                     };
@@ -331,7 +331,7 @@ impl ViewerApp {
         detach::tool_window(
             ctx,
             "generator",
-            "🧪 Generate synthetic RT test study",
+            "📐 Generate synthetic RT test study",
             &mut open,
             detach::WinOpts::default(),
             |ui| {

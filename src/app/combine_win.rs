@@ -442,7 +442,7 @@ impl ViewerApp {
                             if ui.button("↓").clicked() && i + 1 < n_rows {
                                 move_row = Some((i, 1));
                             }
-                            if ui.button("✕").clicked() {
+                            if ui.button("✖").clicked() {
                                 drop_row = Some(i);
                             }
                         });
@@ -674,9 +674,9 @@ mod tests {
 
     #[test]
     fn the_tool_names_itself_like_the_others() {
-        assert_eq!(COMBINE.title(0), "◧ Combine structures — dataset A");
-        assert_eq!(COMBINE.menu_entry(1), "◧ Combine structures in dataset B…");
-        assert_eq!(COMBINE.short_button(), "◧ Combine");
+        assert_eq!(COMBINE.title(0), "∪ Combine structures — dataset A");
+        assert_eq!(COMBINE.menu_entry(1), "∪ Combine structures in dataset B…");
+        assert_eq!(COMBINE.short_button(), "∪ Combine");
     }
 
     #[test]

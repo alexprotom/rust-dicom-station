@@ -270,7 +270,7 @@ impl ViewerApp {
             let mut act: Option<TreeAction> = None;
             let mut rename = None;
             resp.context_menu(|ui| {
-                if ui.button("✎ Rename patient…").clicked() {
+                if ui.button("✏ Rename patient…").clicked() {
                     rename = Some(RenameTarget::Patient {
                         slot,
                         key: key.clone(),
@@ -326,7 +326,7 @@ impl ViewerApp {
             let mut act: Option<TreeAction> = None;
             let mut rename = None;
             resp.context_menu(|ui| {
-                if ui.button("✎ Rename study…").clicked() {
+                if ui.button("✏ Rename study…").clicked() {
                     rename = Some(RenameTarget::Study {
                         slot,
                         uid: uid.clone(),
@@ -433,7 +433,7 @@ impl ViewerApp {
                     switch_to = Some(i);
                 }
                 resp.context_menu(|ui| {
-                    if ui.button("✎ Rename series…").clicked() {
+                    if ui.button("✏ Rename series…").clicked() {
                         rename = Some(RenameTarget::Series { slot, idx: i });
                         ui.close();
                     }
@@ -602,7 +602,7 @@ impl ViewerApp {
             }
         });
         resp.context_menu(|ui| {
-            if ui.button("✎ Rename group…").clicked() {
+            if ui.button("✏ Rename group…").clicked() {
                 rename = Some(RenameTarget::FourD { slot, idx: gi });
                 ui.close();
             }
@@ -774,7 +774,7 @@ impl ViewerApp {
     /// where it goes, and whether it stays.
     fn set_context_menu(&self, ui: &mut egui::Ui, here: SetRef, out: &mut Option<SetAction>) {
         let other = SLOT_NAMES[1 - here.slot];
-        if ui.button("✎ Rename series…").clicked() {
+        if ui.button("✏ Rename series…").clicked() {
             *out = Some(SetAction::Rename(here));
             ui.close();
         }
@@ -899,7 +899,7 @@ impl ViewerApp {
                     continue;
                 }
                 if ui
-                    .button(format!("✎ {} ({} segments)", sr.label, sr.segs.len()))
+                    .button(format!("✏ {} ({} segments)", sr.label, sr.segs.len()))
                     .clicked()
                 {
                     picked = Some(here);
@@ -914,7 +914,7 @@ impl ViewerApp {
                 });
                 ui.close();
             }
-            if ui.button("✎ ➕ a new segmentation series").clicked() {
+            if ui.button("✏ ➕ a new segmentation series").clicked() {
                 picked = Some(SetRef {
                     slot,
                     kind: SetKind::Segmentations,
@@ -953,7 +953,7 @@ impl ViewerApp {
         } else {
             format!("'{label}'")
         };
-        if ui.button(format!("✎ Rename '{label}'…")).clicked() {
+        if ui.button(format!("✏ Rename '{label}'…")).clicked() {
             *out = Some(ItemAction::Rename { from, idx: clicked });
             ui.close();
         }
@@ -980,7 +980,7 @@ impl ViewerApp {
         });
         ui.separator();
         if ui
-            .button(format!("◧ Combine {what}…"))
+            .button(format!("∪ Combine {what}…"))
             .on_hover_text(
                 "Open the structure-algebra window with these as its operands — union, \
                  intersection, subtraction, margins",
@@ -1442,7 +1442,7 @@ impl ViewerApp {
                         egui::Button::selectable(
                             active_here == Some(i),
                             format!(
-                                "✎ {} ({} segments){}",
+                                "✏ {} ({} segments){}",
                                 sr.label,
                                 sr.segs.len(),
                                 Self::series_suffix(study, &sr.referenced_series_uid)
@@ -1511,7 +1511,7 @@ impl ViewerApp {
                 ui.horizontal_wrapped(|ui| {
                     if ui
                         .small_button("New")
-                        .on_hover_text("An empty segmentation to paint with 🖌 / ✨ in the views")
+                        .on_hover_text("An empty segmentation to paint with 🎨 / ✨ in the views")
                         .clicked()
                     {
                         make_new = true;
@@ -1704,7 +1704,7 @@ impl ViewerApp {
             );
             *active_dose = picked;
             hdr.context_menu(|ui| {
-                if ui.button("✎ Rename this dose…").clicked() {
+                if ui.button("✏ Rename this dose…").clicked() {
                     rename = Some(RenameTarget::Dose { slot, idx: picked });
                     ui.close();
                 }
@@ -1891,7 +1891,7 @@ impl ViewerApp {
                     },
                 );
                 plan_hdr.context_menu(|ui| {
-                    if ui.button("✎ Rename plan…").clicked() {
+                    if ui.button("✏ Rename plan…").clicked() {
                         rename = Some(RenameTarget::Plan { slot, idx: pi });
                         ui.close();
                     }
@@ -1931,7 +1931,7 @@ impl ViewerApp {
                                 .label(&img.label)
                                 .on_hover_text("right-click: rename this image");
                             resp.context_menu(|ui| {
-                                if ui.button("✎ Rename image…").clicked() {
+                                if ui.button("✏ Rename image…").clicked() {
                                     rename = Some(RenameTarget::Planar { slot, idx: i });
                                     ui.close();
                                 }
@@ -2016,7 +2016,7 @@ impl ViewerApp {
                             )
                             .on_hover_text("right-click: rename this registration");
                         resp.context_menu(|ui| {
-                            if ui.button("✎ Rename registration…").clicked() {
+                            if ui.button("✏ Rename registration…").clicked() {
                                 rename = Some(RenameTarget::Registration { slot, idx: ri });
                                 ui.close();
                             }
@@ -2230,7 +2230,7 @@ impl ViewerApp {
                         )
                         .on_hover_text("right-click: rename this record");
                     resp.context_menu(|ui| {
-                        if ui.button("✎ Rename record…").clicked() {
+                        if ui.button("✏ Rename record…").clicked() {
                             rename = Some(RenameTarget::Record { slot, idx: ri });
                             ui.close();
                         }

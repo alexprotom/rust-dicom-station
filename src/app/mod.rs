@@ -44,6 +44,7 @@ mod detach;
 mod dialogs;
 mod drr_win;
 mod dvh_win;
+mod glyphs;
 mod jobs;
 mod models_win;
 mod motion_results;
@@ -1053,6 +1054,9 @@ impl ViewerApp {
         initial_b: Option<PathBuf>,
     ) -> Self {
         let prefs = settings::load();
+        // Before anything is drawn: the font stack that makes every glyph in
+        // the interface render (see `glyphs`).
+        glyphs::install(&cc.egui_ctx);
         cc.egui_ctx.set_theme(prefs.theme);
         let models_dir = prefs
             .models_dir

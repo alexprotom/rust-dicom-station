@@ -7,7 +7,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use rust_dicom_station::app;
+use rust_dicom_station::{app, icon};
 
 use std::path::PathBuf;
 
@@ -18,6 +18,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Rust DICOM Station: Viewer")
+            .with_icon(icon::window_icon())
             .with_inner_size([1680.0, 940.0])
             .with_min_inner_size([900.0, 520.0]),
         renderer: eframe::Renderer::Wgpu,

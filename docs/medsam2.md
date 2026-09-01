@@ -71,7 +71,7 @@ does too (it never uses more than one conditioning slice per run).
 
 | Control | What it does |
 |---|---|
-| **▭ Box / ➕ Include / ➖ Exclude** | what a left-drag or click in the drawing view does |
+| **⬚ Box / ➕ Include / ➖ Exclude** | what a left-drag or click in the drawing view does |
 | **Preview this slice**, *automatically* | segment the prompted slice, on demand or after every change |
 | **from / to**, *this slice*, *Whole study* | the slice range to propagate through |
 | **Add to what is already there** | union this run with the current result instead of replacing it |

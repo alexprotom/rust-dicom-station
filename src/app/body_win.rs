@@ -257,7 +257,7 @@ impl ViewerApp {
                             });
                         let need = bodymask::download_needed(d.params.model, &models_dir);
                         ui.weak(if need == 0 {
-                            "cached ✓".to_string()
+                            "cached ✔".to_string()
                         } else {
                             format!("{} MB to download once", need / 1_000_000)
                         });

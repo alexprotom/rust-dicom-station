@@ -293,7 +293,7 @@ impl ViewerApp {
                     ui.weak("…or create a synthetic RT study to try the viewer on");
                     ui.add_space(4.0);
                     if ui
-                        .button("🧪 Generate test data…")
+                        .button("📐 Generate test data…")
                         .on_hover_text(
                             "Writes a synthetic CT + RTSTRUCT + RTPLAN + RTDOSE study \
                              into the application folder",
@@ -784,7 +784,7 @@ impl ViewerApp {
         let max_resp = ui
             .put(
                 max_rect,
-                egui::Button::new(if is_max { "❐" } else { "⛶" }).small(),
+                egui::Button::new(if is_max { "⊞" } else { "⛶" }).small(),
             )
             .on_hover_text(if is_max {
                 "Restore the multi-view layout"
