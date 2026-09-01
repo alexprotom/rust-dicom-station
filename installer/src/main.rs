@@ -50,6 +50,8 @@ INSTALL OPTIONS:
     --add-to-path         add the program folder to PATH
     --no-vcredist         do not install the Visual C++ runtime when missing
     --no-launch           do not offer to start the viewer afterwards
+    --graphics <API>      which graphics API the viewer starts on:
+                          vulkan (default) | dx12 | auto
 
 UNINSTALL OPTIONS:
     --uninstall           remove an existing installation
@@ -75,10 +77,18 @@ struct Args {
 }
 
 fn parse_args() -> Result<Args> {
+    parse_from(std::env::args().skip(1))
+}
+
+/// The command line, taken from an iterator so the round trip through
+/// [`args_for_relaunch`] can be tested: everything the user chose in the
+/// first window has to survive the elevated re-launch, and a flag quietly
+/// dropped there loses a choice without any sign of it.
+fn parse_from(args: impl Iterator<Item = String>) -> Result<Args> {
     let mut a = Args::default();
     let mut opts = Options::default();
-    let mut it = std::env::args().skip(1);
-    let next = |it: &mut std::iter::Skip<std::env::Args>, flag: &str| -> Result<String> {
+    let mut it = args;
+    let next = |it: &mut dyn Iterator<Item = String>, flag: &str| -> Result<String> {
         it.next()
             .ok_or_else(|| anyhow::anyhow!("{flag} needs a value"))
     };
@@ -101,6 +111,11 @@ fn parse_args() -> Result<Args> {
             "--add-to-path" => opts.add_to_path = true,
             "--no-vcredist" => opts.install_vcredist = false,
             "--no-launch" => opts.launch_after = false,
+            "--graphics" => {
+                let v = next(&mut it, "--graphics")?;
+                opts.graphics = Graphics::from_key(&v)
+                    .ok_or_else(|| anyhow::anyhow!("unknown --graphics value '{v}'"))?;
+            }
             "--models" => {
                 let v = next(&mut it, "--models")?;
                 opts.models = match v.to_ascii_lowercase().as_str() {
@@ -153,6 +168,9 @@ pub fn args_for_relaunch(o: &Options) -> String {
         Models::Everything => "all",
     };
     s.push_str(&format!(" --models {models}"));
+    // The elevated run writes the settings file, so it has to be told which
+    // backend the user chose on the graphics page.
+    s.push_str(&format!(" --graphics {}", o.graphics.key()));
     // The elevated process must not start the viewer: it would inherit the
     // administrator token. The first (unelevated) window is gone by then, so
     // the user starts it from the shortcut instead.
@@ -275,5 +293,103 @@ fn do_uninstall(args: &Args) -> Result<()> {
             let target = uninstall::discover(args.from.clone())?;
             console::run_uninstall(target, args.remove_models, false)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(line: &str) -> Args {
+        // Good enough for the strings `args_for_relaunch` produces: the only
+        // quoted values are the two paths.
+        let mut words: Vec<String> = Vec::new();
+        let mut cur = String::new();
+        let mut quoted = false;
+        for c in line.chars() {
+            match c {
+                '"' => quoted = !quoted,
+                ' ' if !quoted => {
+                    if !cur.is_empty() {
+                        words.push(std::mem::take(&mut cur));
+                    }
+                }
+                _ => cur.push(c),
+            }
+        }
+        if !cur.is_empty() {
+            words.push(cur);
+        }
+        parse_from(words.into_iter()).expect("the installer must be able to read its own output")
+    }
+
+    /// The user answers every page in the first window; a machine-wide
+    /// installation then throws that window away and starts again as
+    /// administrator with nothing but this command line. Anything missing
+    /// from it is a choice silently lost.
+    #[test]
+    fn every_choice_survives_the_elevated_relaunch() {
+        for graphics in Graphics::ALL {
+            for models in Models::ALL {
+                let before = Options {
+                    dir: PathBuf::from(r"D:\Apps\Rust DICOM Station"),
+                    models_dir: PathBuf::from(r"D:\weights"),
+                    scope: Scope::AllUsers,
+                    start_menu_shortcut: false,
+                    desktop_shortcut: false,
+                    file_association: false,
+                    add_to_path: true,
+                    install_vcredist: false,
+                    launch_after: true,
+                    models,
+                    graphics,
+                };
+                let after = parse(&args_for_relaunch(&before))
+                    .opts
+                    .expect("parse_from always fills in the options");
+                assert_eq!(after.dir, before.dir);
+                assert_eq!(after.models_dir, before.models_dir);
+                assert_eq!(after.scope, before.scope);
+                assert_eq!(after.start_menu_shortcut, before.start_menu_shortcut);
+                assert_eq!(after.desktop_shortcut, before.desktop_shortcut);
+                assert_eq!(after.file_association, before.file_association);
+                assert_eq!(after.add_to_path, before.add_to_path);
+                assert_eq!(after.install_vcredist, before.install_vcredist);
+                assert_eq!(after.models, before.models);
+                assert_eq!(after.graphics, before.graphics, "the graphics page");
+                // The one deliberate difference: the elevated process must
+                // not start the viewer, or it would inherit the token.
+                assert!(!after.launch_after);
+            }
+        }
+    }
+
+    #[test]
+    fn the_graphics_flag_takes_the_spellings_people_type() {
+        for (text, want) in [
+            ("vulkan", Graphics::Vulkan),
+            ("DX12", Graphics::Dx12),
+            ("directx", Graphics::Dx12),
+            ("auto", Graphics::Auto),
+        ] {
+            let a = parse_from(["--graphics".to_string(), text.to_string()].into_iter()).unwrap();
+            assert_eq!(a.opts.unwrap().graphics, want, "--graphics {text}");
+        }
+        assert!(
+            parse_from(["--graphics".to_string(), "opengl".to_string()].into_iter()).is_err(),
+            "a backend the installer does not offer is refused rather than ignored"
+        );
+        assert!(
+            parse_from(["--graphics".to_string()].into_iter()).is_err(),
+            "and the flag needs a value"
+        );
+    }
+
+    /// Without `--graphics` the installer must still pick Vulkan, which is
+    /// what the wizard shows preselected.
+    #[test]
+    fn vulkan_is_the_default() {
+        let a = parse_from(std::iter::empty()).unwrap();
+        assert_eq!(a.opts.unwrap().graphics, Graphics::Vulkan);
     }
 }

@@ -7,6 +7,8 @@ impl ViewerApp {
     pub(super) fn menu_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let mut open_a = false;
         let mut open_b = false;
+        let mut files_a = false;
+        let mut files_b = false;
         let mut close_b = false;
         let mut reset_views = false;
         let mut open_gen = false;
@@ -16,6 +18,7 @@ impl ViewerApp {
         let mut open_drr = false;
         let mut open_export: Option<usize> = None;
         let mut new_theme: Option<egui::ThemePreference> = None;
+        let mut save_settings = false;
         // A module was switched on or off — remember it for the next run.
         let mut modules_changed = false;
 
@@ -44,6 +47,35 @@ impl ViewerApp {
                         open_b = true;
                         ui.close();
                     }
+                    ui.separator();
+                    // Individual files, for the objects that do not come as a
+                    // folder of slices: an RT image, a structure set, a plan,
+                    // a single slice. They merge exactly as a folder does.
+                    if ui
+                        .button("📄 Add DICOM file(s) to A…")
+                        .on_hover_text(
+                            "Open one or more DICOM files directly — RT images, a \
+                             structure set, a plan, single slices. They do not have to \
+                             form an image volume",
+                        )
+                        .clicked()
+                    {
+                        files_a = true;
+                        ui.close();
+                    }
+                    if ui
+                        .button("📄 Add DICOM file(s) to B…")
+                        .on_hover_text(
+                            "Open one or more DICOM files directly — RT images, a \
+                             structure set, a plan, single slices. They do not have to \
+                             form an image volume",
+                        )
+                        .clicked()
+                    {
+                        files_b = true;
+                        ui.close();
+                    }
+                    ui.separator();
                     let has_a = self.slots[0].study.is_some();
                     if ui
                         .add_enabled(has_a, egui::Button::new("Clear dataset A"))
@@ -86,7 +118,7 @@ impl ViewerApp {
                     }
                     ui.separator();
                     if ui
-                        .button("🧪 Generate test data…")
+                        .button("📐 Generate test data…")
                         .on_hover_text(
                             "Write a complete synthetic RT study (CT, RTSTRUCT, RTPLAN, \
                              RTDOSE, DX, RTIMAGE, REG, RTRECORD) into the application folder",
@@ -114,7 +146,7 @@ impl ViewerApp {
                     // Syncing is a property of the crosshair, so it sits under
                     // it and goes away with it.
                     if self.show_crosshair {
-                        let both = self.slots[0].study.is_some() && self.slots[1].study.is_some();
+                        let both = self.slots[0].has_volume() && self.slots[1].has_volume();
                         ui.add_enabled(
                             both,
                             egui::Checkbox::new(
@@ -144,6 +176,41 @@ impl ViewerApp {
                     if self.theme != before {
                         new_theme = Some(self.theme);
                     }
+                    ui.separator();
+                    ui.menu_button("Graphics backend…", |ui| {
+                        ui.label("Which graphics API the program draws and computes with.");
+                        ui.weak("Change this if the program will not start on a machine.");
+                        ui.add_space(4.0);
+                        let before = self.graphics_backend;
+                        for b in crate::gfx::Backend::offered() {
+                            ui.radio_value(&mut self.graphics_backend, b, b.label())
+                                .on_hover_text(b.hint());
+                        }
+                        if self.graphics_backend != before {
+                            save_settings = true;
+                        }
+                        ui.add_space(4.0);
+                        match crate::gfx::from_env() {
+                            // Someone who set the variable is working around
+                            // something; say so rather than let this menu
+                            // appear to be lying.
+                            Some(env) => {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "⚠ {} is set to {} in this session and wins over \
+                                         the choice above.",
+                                        crate::gfx::ENV_VAR,
+                                        env.label()
+                                    ))
+                                    .small()
+                                    .color(warn_color(ui.visuals())),
+                                );
+                            }
+                            None => {
+                                ui.weak("Takes effect the next time the program starts.");
+                            }
+                        }
+                    });
                     if let Some(msg) = &self.settings_error {
                         ui.weak(msg);
                     }
@@ -234,7 +301,10 @@ impl ViewerApp {
                         if slot == 1 {
                             ui.separator();
                         }
-                        let loaded = self.slots[slot].study.is_some();
+                        // Every engine reads voxels: a dataset that holds
+                        // only RT images or RT objects has nothing to give
+                        // them.
+                        let loaded = self.slots[slot].has_volume();
                         for (tool, hint) in tools {
                             if ui
                                 .add_enabled(loaded, egui::Button::new(tool.menu_entry(slot)))
@@ -266,7 +336,7 @@ impl ViewerApp {
                         None => {}
                     }
                     ui.separator();
-                    let both = self.slots[0].study.is_some() && self.slots[1].study.is_some();
+                    let both = self.slots[0].has_volume() && self.slots[1].has_volume();
                     if ui
                         .add_enabled(both, egui::Button::new("⇄ Propagate structures…"))
                         .on_hover_text(
@@ -279,7 +349,7 @@ impl ViewerApp {
                         open_propagate = true;
                         ui.close();
                     }
-                    let both = self.slots[0].study.is_some() && self.slots[1].study.is_some();
+                    let both = self.slots[0].has_volume() && self.slots[1].has_volume();
                     if ui
                         .add_enabled(both, egui::Button::new("◎ Transfer by relationship…"))
                         .on_hover_text(
@@ -292,7 +362,7 @@ impl ViewerApp {
                         self.open_transfer_dialog(0);
                         ui.close();
                     }
-                    let any = self.slots[0].study.is_some() || self.slots[1].study.is_some();
+                    let any = self.slots[0].has_volume() || self.slots[1].has_volume();
                     if ui
                         .add_enabled(any, egui::Button::new("◑ Compare structures…"))
                         .on_hover_text(
@@ -342,7 +412,7 @@ impl ViewerApp {
                     }
                     if ui
                         .add_enabled(
-                            self.slots[0].study.is_some() || self.slots[1].study.is_some(),
+                            self.slots[0].has_volume() || self.slots[1].has_volume(),
                             egui::Button::new("☢ Digitally reconstructed radiograph…"),
                         )
                         .on_hover_text(
@@ -400,7 +470,7 @@ impl ViewerApp {
                     ui.weak("Middle drag — pan");
                     ui.weak("Right drag — window / level (x = width, y = center)");
                     ui.separator();
-                    ui.label("Segmentation (🖌 ◻ ✨ take over the left button):");
+                    ui.label("Segmentation (🎨 ⊖ ✨ take over the left button):");
                     ui.weak("Left drag — paint / erase");
                     ui.weak("Left press + drag ↑↓ — grow / shrink the region (✨)");
                     ui.weak("Alt — erase while painting");
@@ -419,7 +489,7 @@ impl ViewerApp {
                     ui.separator();
                     ui.label("Buttons:");
                     ui.weak("⟲ (view corner) — reset that view's zoom, pan and slice");
-                    ui.weak("⛶ / ❐ — maximize that view / restore the layout");
+                    ui.weak("⛶ / ⊞ — maximize that view / restore the layout");
                     ui.weak("⟲ (toolbar) — reset every view of both datasets");
                     ui.weak(
                         "⌖ — show / hide the crosshair; hidden, left click no \
@@ -446,6 +516,17 @@ impl ViewerApp {
                 self.start_load(1, dir);
             }
         }
+        if files_a {
+            if let Some(paths) = Self::pick_files("Select DICOM file(s) to add to dataset A") {
+                self.start_load_files(0, paths);
+            }
+        }
+        if files_b {
+            if let Some(paths) = Self::pick_files("Select DICOM file(s) to add to dataset B") {
+                self.comparison = true;
+                self.start_load_files(1, paths);
+            }
+        }
         if close_b {
             self.close_comparison();
         }
@@ -462,7 +543,7 @@ impl ViewerApp {
             self.open_models_window();
         }
         if open_drr {
-            let slot = usize::from(self.slots[0].study.is_none());
+            let slot = usize::from(!self.slots[0].has_volume());
             self.open_drr_window(slot);
         }
         if open_propagate {
@@ -478,6 +559,9 @@ impl ViewerApp {
         }
         if let Some(theme) = new_theme {
             self.set_theme(ctx, theme);
+        }
+        if save_settings {
+            self.persist_settings();
         }
         if modules_changed {
             self.persist_settings();
@@ -552,8 +636,14 @@ impl ViewerApp {
                         self.wl_preset = Some(i);
                     }
                     if full_range {
-                        self.wl_preset = None;
-                        if let Some(study) = &self.slots[self.hovered_slot.min(1)].study {
+                        // Read the range off a dataset that has one; an empty
+                        // volume would otherwise set the shared window to the
+                        // degenerate C 0 / W 1 and blank the other dataset.
+                        let src = [self.hovered_slot.min(1), 1 - self.hovered_slot.min(1)]
+                            .into_iter()
+                            .find(|s| self.slots[*s].has_volume());
+                        if let Some(study) = src.and_then(|s| self.slots[s].study.as_ref()) {
+                            self.wl_preset = None;
                             let v = &study.volume;
                             self.window_center = (v.min_value as f32 + v.max_value as f32) * 0.5;
                             self.window_width = (v.max_value as f32 - v.min_value as f32).max(1.0);
@@ -601,7 +691,7 @@ impl ViewerApp {
                     // Crosshair syncing: only meaningful while there is a
                     // crosshair, so it appears and disappears with it.
                     if self.show_crosshair {
-                        let both = self.slots[0].study.is_some() && self.slots[1].study.is_some();
+                        let both = self.slots[0].has_volume() && self.slots[1].has_volume();
                         if ui
                             .add_enabled(
                                 both,
@@ -634,9 +724,17 @@ impl ViewerApp {
                     // Segmentation tools. Selecting a tool takes over the
                     // left mouse button in the MPR views.
                     ui.separator();
+                    // Nothing to paint on in a dataset with no image volume.
+                    let paintable = self.slots.iter().any(|s| s.has_volume());
+                    if !paintable {
+                        self.seg_tool = SegTool::None;
+                    }
                     let mut pick = |ui: &mut egui::Ui, tool: SegTool, label: &str, tip: &str| {
                         if ui
-                            .selectable_label(self.seg_tool == tool, label)
+                            .add_enabled(
+                                paintable,
+                                egui::Button::selectable(self.seg_tool == tool, label),
+                            )
                             .on_hover_text(tip)
                             .clicked()
                         {
@@ -653,14 +751,14 @@ impl ViewerApp {
                     pick(
                         ui,
                         SegTool::Brush,
-                        "🖌 Paint",
+                        "🎨 Paint",
                         "Paint the active segmentation (LMB drag).\n\
                          Hold Alt to erase · Shift+wheel or [ ] resize the brush · Ctrl+Z undo",
                     );
                     pick(
                         ui,
                         SegTool::Erase,
-                        "◻ Erase",
+                        "⊖ Erase",
                         "Erase from the active segmentation (LMB drag)",
                     );
                     pick(
@@ -729,6 +827,16 @@ impl ViewerApp {
                     }
                     let s = &self.slots[slot];
                     let Some(study) = &s.study else { continue };
+                    if !study.has_volume() {
+                        // No voxels, so no position and no value to report.
+                        let prefix = if self.comparison && self.slots[1].study.is_some() {
+                            format!("{slot_name}: ")
+                        } else {
+                            String::new()
+                        };
+                        ui.weak(format!("{prefix}no image volume"));
+                        continue;
+                    }
                     let v = &study.volume;
                     let c = s.cursor;
                     let p = v.voxel_to_patient(c[0], c[1], c[2]);

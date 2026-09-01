@@ -48,7 +48,7 @@ impl ViewerApp {
 
     /// Tools ▶ body contour: open the tool window for `slot`.
     pub(super) fn open_body_dialog(&mut self, slot: usize) {
-        if self.slots[slot].study.is_none() {
+        if !self.slots[slot].has_volume() {
             return;
         }
         let modality = self.slot_modality(slot);
@@ -214,7 +214,7 @@ impl ViewerApp {
             "body",
             BODY_CONTOUR.title(d.slot),
             &mut open,
-            detach::WinOpts::width(430.0).resizable(false),
+            detach::WinOpts::width(430.0),
             |ui| {
                 ui.label(
                     "Finds the patient's outer surface and leaves the couch, the chair and \
@@ -257,7 +257,7 @@ impl ViewerApp {
                             });
                         let need = bodymask::download_needed(d.params.model, &models_dir);
                         ui.weak(if need == 0 {
-                            "cached ✓".to_string()
+                            "cached ✔".to_string()
                         } else {
                             format!("{} MB to download once", need / 1_000_000)
                         });

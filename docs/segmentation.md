@@ -34,7 +34,7 @@ file. See [viewer.md](viewer.md#structures-and-segmentations-in-the-tree).
 
 The toolbar tools take over the left mouse button in the MPR views:
 
-* **🖌 Paint / ◻ Erase** — a spherical, spacing-aware **3D brush** (radius in
+* **🎨 Paint / ⊖ Erase** — a spherical, spacing-aware **3D brush** (radius in
   mm, set via the toolbar, `Shift+wheel` or `[` `]`) paints in any of the
   three views; a **3D** toggle switches to a flat 2D circle confined to the
   displayed slice. Strokes are swept as capsules between pointer samples, so

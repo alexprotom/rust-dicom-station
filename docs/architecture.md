@@ -1,5 +1,12 @@
 # Architecture
 
+An interactive map of the whole program — modules, the data path and the
+background-job fan-out — is in
+[architecture-diagram.html](architecture-diagram.html): open it in a browser,
+click a box to focus it, or use the three guided views along the top. It is
+rendered from [architecture-diagram.archify.json](architecture-diagram.archify.json)
+and exports to PNG or SVG from the *Export* menu.
+
 ## Design philosophy
 
 **One language.** Everything is Rust — DICOM parsing, image reconstruction,
@@ -40,6 +47,8 @@ rust-dicom-station
 │   │   structures, segmentations, 4D groups, dose and plans inside their study —
 │   │   plus dose display, planar images, spatial registrations, records, warnings
 │   ├── Views: 1 × 3 or 2 × 3 (comparison) linked MPR viewports, crosshair,
+│   │   a dataset with no volume says so in place of the panes and holds back
+│   │   the voxel tools;
 │   │   zoom / pan / W-L interaction, maximize, per-view caches
 │   ├── Tool windows (one shared skeleton; each can be docked over the views or
 │   │   detached into its own window of the operating system):
@@ -56,7 +65,10 @@ rust-dicom-station
 │   └── Theme: dark / light / system, accent colors
 │
 ├── DICOM
-│   ├── Import: directory scan, classification, patient ▶ study ▶ series tree, merging
+│   ├── Import: directory *or* file-list scan, classification, patient ▶ study ▶
+│   │   series tree, merging; a selection that reconstructs no volume (RT images,
+│   │   a structure set, a plan) loads as an ordinary dataset with an empty
+│   │   volume, and unpositioned image series open as single images
 │   │   ├── Volumes: CT, MR, PT, NM, US, OT (parallel decode, compressed syntaxes)
 │   │   └── Planar images: DX, CR, RTIMAGE, MG, XA, RF, PX
 │   ├── RT objects: RTSTRUCT, SEG (binary / fractional, read and written), RTDOSE,
@@ -142,7 +154,7 @@ rust-dicom-station
 │   ├── Render: window / level, dose colorwash, marching-squares isodose, contour ∩ plane
 │   └── Progress: message, fraction, device, cancel, phase window
 │
-├── Tests: 14 integration suites + in-module unit tests, synthetic phantom, reference dumps
+├── Tests: 15 integration suites + in-module unit tests, synthetic phantom, reference dumps
 ├── Examples: headless CLIs and probes for the engines (shared examples/common)
 ├── Tools: the two PyTorch scripts that produce the MedSAM2 reference fixtures
 ├── Installer: Windows setup (shortcuts, VC++ runtime, optional weight prefetch, uninstall)
@@ -179,13 +191,19 @@ Where each function lives. The right-hand tag is the functional category
 
 ```
 src/
-  main.rs           entry point (eframe/wgpu window)                              App
+  main.rs           entry point: opens the eframe/wgpu window, retrying the
+                    other graphics backends when one will not start              App
   lib.rs            library root — every module is public, so the integration
                     tests and the examples drive the same code as the GUI
   progress.rs       the one progress handle + ProgressSink, Quiet, Stderr         Core
   models.rs         the model folder: root, per-engine sub-folders, migration,
                     the inventory of every downloadable model                    NN
-  settings.rs       persisted preferences and the config / data folders          App
+  settings.rs       persisted preferences and the config / data folders — the
+                    machine-wide defaults the installer writes, then the user's
+                    own file on top                                              App
+  gfx.rs            which graphics backend to draw and compute with: the
+                    settings key, the environment override, and the order to
+                    fall back through when one will not start                    App
   archive.rs        the local patient archive: on-disk layout, sidecars,
                     scanning, importing, index rebuild, removal                   DICOM
 
@@ -195,9 +213,11 @@ src/
     mod.rs            ViewerApp and every type it holds, construction, the job
                       plumbing (Job::spawn, poll_job, poll_tool_job), per-frame driver
     theme.rs          theme-dependent colors
+    glyphs.rs         the font stack (Hack as the last proportional fallback)
+                      and the test that fails on a glyph egui cannot draw
     chrome.rs         menu bar, toolbar, status bar, help
-    detach.rs         every tool window, docked in the main window or in its
-                      own window of the operating system
+    detach.rs         every tool window as a window of the operating system
+                      (immediate viewport), titled and placed alike
     panels.rs         left panel: show / hide, the per-dataset Data tree sections
     reg_panel.rs      the Image registration section: method, region, parameters,
                       landmarks, the run, the analytics, the vector field
@@ -237,8 +257,8 @@ src/
                       import, load, send back
     models_win.rs     the model manager window
 
-  loader.rs         directory scan, classification, parallel volume loading,
-                    dataset merging, safe DICOM element helpers                  DICOM
+  loader.rs         directory / file-list scan, classification, parallel volume
+                    loading, dataset merging, safe DICOM element helpers         DICOM
   volume.rs         3D volume, patient-space geometry, slice extraction,
                     trilinear sampling, canonical [S, A, R] axes                 Core
   geometry.rs       minimal 3D vector math (Vec3, f64, patient mm)               Core
@@ -354,7 +374,7 @@ src/
     engine.rs         backend choice, the encoded-slice cache, the one call
                       the user interface makes
 
-tests/             fourteen integration suites (see Testing)
+tests/             fifteen integration suites (see Testing)
 examples/          autoseg_cli, autoseg_probe, body_cli, segvol_cli, segvol_probe,
                    medsam2_cli, medsam2_probe; common/ holds what they share
 tools/             gen_reference_activations.py, gen_ops_fixtures.py — the two
@@ -386,18 +406,43 @@ visibility toggle is part of the contour key alone and leaves the dose and
 fusion textures untouched. Repaints are demand-driven; while background jobs
 run, the UI polls at 10 Hz.
 
+### Glyphs and the icon
+
+Every non-ASCII character in the interface has to be one of the four fonts
+egui bundles — Ubuntu-Light, Hack, Noto Emoji and a small icon font — or it
+is drawn as an empty box that no compiler and no test would notice.
+`app/glyphs.rs` closes that hole from both ends: `install` appends Hack to
+the *proportional* family (arrows, ∩ ∪ ⊕ ⊖ and half a dozen others live only
+there, which is why they rendered in the monospaced status bar and as boxes
+in menus), and a unit test walks the sources and fails on any character
+outside `ALLOWED`, the list verified against those fonts' `cmap` tables.
+
+The application's picture of itself is one file, `assets/rust-dicom-station.png`
+(with `.ico` beside it for Windows): `src/icon.rs` loads it as the window
+icon of the viewer and the installer, the two `build.rs` compile the `.ico`
+into both executables as a resource — which is what Explorer, the task bar,
+the start-menu shortcut and *Add or remove programs* read — and the release
+workflow copies the PNG into the AppImage as the Linux desktop icon.
+
 ### The tool windows
 
-Every secondary window is drawn through `app/detach.rs`: docked, it is an
-`egui::Window` floating over the viewports; detached, the same closure draws
-into a native window of the operating system that can live on another
-monitor. The choice is per window and persisted.
+Every secondary window is drawn through `app/detach.rs::tool_window`, which
+puts its contents in an *immediate viewport* — a real top-level window of the
+operating system, on whichever monitor the user drags it to. Nothing floats
+inside the main window, so the viewports always keep the whole of it. Two
+rules live in that module: the window's position and size are applied **only
+on the pass that creates it** (egui diffs the `ViewportBuilder` against the
+one it stored and would otherwise command a dragged window back every frame,
+which reads as shaking), and every title goes through `window_title` so the
+whole program reads as `Rust DICOM Station: <what this window is>`. The
+transient confirmations — *Error*, *Done*, *Rename* — stay inside the main
+window, being answers to the last click rather than tools.
 
 The segmentation-type tools — body contour, structure algebra,
 auto-segmentation, prompt segmentation, slice propagation, 4D motion — are
 different conversations but the same kind of tool, and `app/seg_engines.rs`
 makes them alike: one `ToolInfo` per tool gives the glyph, the window title
-(`🤖 Auto-segmentation — dataset A`), the menu entry and the small sidebar
+(`🔬 Auto-segmentation — dataset A`), the menu entry and the small sidebar
 button; every window stays open while its run is in flight, the button row
 becoming the progress row (device, bar, message, Cancel); the sections come
 in the same order (description, the tool's inputs, `Name`, a collapsed
@@ -509,14 +554,17 @@ its `ndarray` CPU backend, with the wgpu backend added by the cargo feature
 
 ## Testing
 
-Fourteen integration suites plus in-module unit tests run against the same
+Fifteen integration suites plus in-module unit tests run against the same
 code paths the GUI uses, with no external data or tooling: the analytic
 phantom round trip (**synthetic_study**), simulate → export → reload
 (**simulate_export**), rigid and B-spline recovery of known transforms
 (**registration**), masks, growing, contours and meshing (**segmentation**),
 anonymize → reload (**anonymize**), SEG written and read back voxel for voxel
 (**dicomseg**), the body contour on phantoms with couch, chair and mask
-(**body**), the archive round trip (**archive**), the DVH against an analytic
+(**body**), the archive round trip (**archive**), opening what is not a volume
+— RT images and a structure set on their own, a single slice, a folder of RT
+objects, and an image series added afterwards (**open_files**) — the DVH
+against an analytic
 Gaussian phantom (**dvh**), structure algebra (**structops**), and the three
 engines assembled and run without a download — a miniature nnU-Net with the
 exact checkpoint naming (**autoseg**), and synthesized checkpoints with the

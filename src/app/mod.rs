@@ -44,6 +44,7 @@ mod detach;
 mod dialogs;
 mod drr_win;
 mod dvh_win;
+mod glyphs;
 mod jobs;
 mod models_win;
 mod motion_results;
@@ -365,6 +366,16 @@ impl StudySlot {
             .and_then(|s| s.structure_sets.get(self.active_structs))
     }
 
+    /// Whether this slot shows an image volume.
+    ///
+    /// A slot can hold a perfectly good dataset with none — RT images, a
+    /// structure set, a plan. Every feature that needs voxels (the MPR views,
+    /// the brush, registration, the segmentation engines, the DRR) asks this
+    /// rather than `study.is_some()`.
+    fn has_volume(&self) -> bool {
+        self.study.as_ref().is_some_and(|st| st.has_volume())
+    }
+
     /// Index of the segmentation series the tools edit, clamped to what the
     /// study actually holds.
     fn seg_series_idx(&self) -> Option<usize> {
@@ -378,7 +389,9 @@ impl StudySlot {
     /// drawn on another image series simply has nothing to show here.
     fn segs(&self) -> &[Segmentation] {
         match (self.study.as_ref(), self.seg_series_idx()) {
-            (Some(st), Some(i)) if st.seg_series[i].grid.dims == st.volume.dims => {
+            (Some(st), Some(i))
+                if st.has_volume() && st.seg_series[i].grid.dims == st.volume.dims =>
+            {
                 &st.seg_series[i].segs
             }
             _ => &[],
@@ -389,6 +402,9 @@ impl StudySlot {
     fn segs_mut(&mut self) -> Option<&mut Vec<Segmentation>> {
         let i = self.seg_series_idx()?;
         let st = self.study.as_mut()?;
+        if !st.has_volume() {
+            return None;
+        }
         let dims = st.volume.dims;
         let ser = &mut st.seg_series[i];
         (ser.grid.dims == dims).then_some(&mut ser.segs)
@@ -756,6 +772,8 @@ pub struct ViewerApp {
     loading: Option<Job<LoadResult>>,
     /// A load queued behind the one in flight (slot, directory).
     pending_load: Option<(usize, PathBuf)>,
+    /// The same, for an explicit file selection (slot, files).
+    pending_load_files: Option<(usize, Vec<PathBuf>)>,
     error: Option<String>,
     /// A one-line confirmation shown in a small modal (e.g. a written file).
     notice: Option<String>,
@@ -1011,13 +1029,13 @@ pub struct ViewerApp {
     /// The side panel is expanded (View ▶ Left panel, F9, or the arrow on
     /// the panel edge). Collapsed, the views have the whole window.
     side_open: bool,
-    /// Tool windows currently living in their own window of the operating
-    /// system. The live set is egui memory (`detach`); this is the copy last
-    /// written to the settings file, so a change can be spotted per frame.
-    detached_windows: std::collections::BTreeSet<String>,
 
     /// Light / dark / follow-the-system appearance, persisted between runs.
     theme: egui::ThemePreference,
+    /// Which graphics backend the *next* run will use. Read at startup by
+    /// `main`, before the window exists, so changing it here only takes
+    /// effect after a restart — which the menu says out loud.
+    graphics_backend: crate::gfx::Backend,
     /// Non-fatal note shown in the View menu if the settings file could not
     /// be written (e.g. a read-only installation folder).
     settings_error: Option<String>,
@@ -1040,13 +1058,10 @@ impl ViewerApp {
         initial_b: Option<PathBuf>,
     ) -> Self {
         let prefs = settings::load();
+        // Before anything is drawn: the font stack that makes every glyph in
+        // the interface render (see `glyphs`).
+        glyphs::install(&cc.egui_ctx);
         cc.egui_ctx.set_theme(prefs.theme);
-        // The windows the user last pulled out open in their own window
-        // again — `detach` reads the set straight from egui memory.
-        detach::set_detached_ids(
-            &cc.egui_ctx,
-            prefs.detached_windows.iter().cloned().collect(),
-        );
         let models_dir = prefs
             .models_dir
             .as_ref()
@@ -1074,6 +1089,7 @@ impl ViewerApp {
             hovered_slot: 0,
             loading: None,
             pending_load: None,
+            pending_load_files: None,
             error: None,
             notice: None,
             registration: None,
@@ -1207,8 +1223,8 @@ impl ViewerApp {
             module_registration: prefs.module_registration,
             module_simulation: prefs.module_simulation,
             side_open: true,
-            detached_windows: prefs.detached_windows.iter().cloned().collect(),
             theme: prefs.theme,
+            graphics_backend: prefs.graphics_backend,
             settings_error: None,
         };
         if let Some(p) = initial_a {
@@ -1249,7 +1265,7 @@ impl ViewerApp {
             archive_dir,
             module_registration: self.module_registration,
             module_simulation: self.module_simulation,
-            detached_windows: self.detached_windows.iter().cloned().collect(),
+            graphics_backend: self.graphics_backend,
         }) {
             Ok(()) => self.settings_error = None,
             Err(e) => {
@@ -1305,6 +1321,19 @@ impl ViewerApp {
     pub(super) fn pick_folder(title: &str) -> Option<PathBuf> {
         rfd::FileDialog::new().set_title(title).pick_folder()
     }
+
+    /// Pick one or more DICOM files.
+    ///
+    /// "All files" comes first because DICOM files very often have no
+    /// extension at all; the `.dcm` filter is the convenience, not the rule.
+    pub(super) fn pick_files(title: &str) -> Option<Vec<PathBuf>> {
+        rfd::FileDialog::new()
+            .set_title(title)
+            .add_filter("All files", &["*"])
+            .add_filter("DICOM", &["dcm", "DCM", "ima", "IMA", "dic", "img"])
+            .pick_files()
+            .filter(|v| !v.is_empty())
+    }
 }
 
 // eframe::App
@@ -1333,6 +1362,8 @@ impl eframe::App for ViewerApp {
         if self.loading.is_none() {
             if let Some((slot, path)) = self.pending_load.take() {
                 self.start_load(slot, path);
+            } else if let Some((slot, paths)) = self.pending_load_files.take() {
+                self.start_load_files(slot, paths);
             }
         }
 
@@ -1523,12 +1554,5 @@ impl eframe::App for ViewerApp {
             self.open_rename(target);
         }
         self.modals(&ctx);
-        // A window was pulled out of the main window or pushed back into it:
-        // remember which, so it opens the same way next time the viewer runs.
-        let detached = detach::detached_ids(&ctx);
-        if detached != self.detached_windows {
-            self.detached_windows = detached;
-            self.persist_settings();
-        }
     }
 }

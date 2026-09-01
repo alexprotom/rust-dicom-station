@@ -482,7 +482,7 @@ pub(super) fn plane_name(plane: ViewPlane) -> &'static str {
 impl ViewerApp {
     /// Tools ▶ slice propagation: open the tool window for `slot`.
     pub(super) fn open_medsam2_panel(&mut self, slot: usize) {
-        if self.slots[slot].study.is_none() {
+        if !self.slots[slot].has_volume() {
             return;
         }
         if self.medsam2.slot != slot {
@@ -506,6 +506,7 @@ impl ViewerApp {
     pub(super) fn medsam2_showing_in(&self, slot: usize, plane: ViewPlane) -> bool {
         self.medsam2.open
             && self.medsam2.slot == slot
+            && self.slots[slot].has_volume()
             && self.slots[slot]
                 .study
                 .as_ref()
@@ -758,7 +759,7 @@ impl ViewerApp {
             "medsam2",
             SLICE_PROP.title(slot),
             &mut open,
-            detach::WinOpts::width(380.0).resizable(false),
+            detach::WinOpts::width(380.0),
             |ui| {
                 ui.label(format!(
                     "Follows a structure boxed on one slice through the stack with MedSAM2, \
@@ -772,7 +773,7 @@ impl ViewerApp {
                 // ---- the prompt ------------------------------------------
                 ui.horizontal(|ui| {
                     ui.label("Draw:");
-                    ui.selectable_value(&mut self.medsam2.tool, BoxTool::Draw, "▭ Box")
+                    ui.selectable_value(&mut self.medsam2.tool, BoxTool::Draw, "⬚ Box")
                         .on_hover_text("Drag a new box, or move and resize the one that is there");
                     ui.selectable_value(&mut self.medsam2.tool, BoxTool::Include, "➕ Include")
                         .on_hover_text("Click a spot the box got wrong — this is the structure");
@@ -836,11 +837,11 @@ impl ViewerApp {
                 }
                 ui.horizontal(|ui| {
                     ui.add(one_based(&mut range.0, last, "from "));
-                    if ui.button("⤒ this slice").clicked() {
+                    if ui.button("⇤ this slice").clicked() {
                         range.0 = current;
                     }
                     ui.add(one_based(&mut range.1, last, "to "));
-                    if ui.button("⤓ this slice").clicked() {
+                    if ui.button("⇥ this slice").clicked() {
                         range.1 = current;
                     }
                 });
@@ -923,7 +924,7 @@ impl ViewerApp {
                 ui.separator();
                 let need = weights::download_needed(self.medsam2.variant, &models_dir);
                 let weights_note = if need == 0 {
-                    "Weights: MedSAM2 (research and education only) — cached ✓.".to_string()
+                    "Weights: MedSAM2 (research and education only) — cached ✔.".to_string()
                 } else {
                     format!(
                         "Weights: MedSAM2 (research and education only) — {} MB downloaded \

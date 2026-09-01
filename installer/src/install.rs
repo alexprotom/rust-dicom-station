@@ -154,34 +154,58 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
     ));
 
     // ---- settings seed ----------------------------------------------------
-    // The viewer keeps its settings and, by default, its model folder in its
-    // own per-user data folder, so the default needs no recording. A model
-    // folder chosen elsewhere is written into the settings of the user
-    // running the installer (the file is theirs, not the installation's, so
-    // it is not in the manifest); other users of a machine-wide install get
-    // the viewer's default and can move it from any tool window.
+    // Two things the viewer must be told before its first run: which graphics
+    // backend to start on, and — when it is not the default — where the model
+    // folder is. They are written twice, on purpose, because neither place
+    // alone is enough.
+    //
+    // `viewer-defaults.txt` goes beside the executable and is read by every
+    // user of the machine before their own settings. That is the only thing
+    // that works for an all-users installation: it is made by an
+    // administrator, and the people who will run the viewer have no settings
+    // file yet for anyone to write into.
+    //
+    // The settings file of whoever is running the installer is then updated
+    // as well, because it wins over the defaults and would otherwise keep an
+    // older answer. Someone re-running the installer to change the backend —
+    // which is exactly why the page exists — must actually get the change.
+    let mut wanted: Vec<(&str, String)> =
+        vec![(SETTINGS_GRAPHICS_KEY, opts.graphics.key().to_string())];
     if opts.models_dir != default_models_dir(opts.scope, &opts.dir) {
-        if let Some(settings) = viewer_settings_path() {
-            if !settings.exists() {
-                if let Some(parent) = settings.parent() {
-                    std::fs::create_dir_all(parent)
-                        .with_context(|| format!("create {}", parent.display()))?;
-                }
-                let text = format!(
-                    "# rust-dicom-station user settings\n\
-                     # theme = dark | light | system\n\
-                     theme = dark\n\
-                     {SETTINGS_MODELS_KEY} = {}\n",
-                    opts.models_dir.display()
-                );
-                std::fs::write(&settings, text)
-                    .with_context(|| format!("write {}", settings.display()))?;
-                log(format!(
-                    "Model folder set to {} in {}",
-                    opts.models_dir.display(),
-                    settings.display()
-                ));
-            }
+        wanted.push((SETTINGS_MODELS_KEY, opts.models_dir.display().to_string()));
+    }
+    {
+        let defaults = opts.dir.join(DEFAULTS_FILE);
+        let mut text = String::from(
+            "# Machine-wide defaults written by the installer.\n\
+             # Each user's own settings file is read after this one and wins.\n",
+        );
+        for (key, value) in &wanted {
+            text.push_str(&format!("{key} = {value}\n"));
+        }
+        std::fs::write(&defaults, text).with_context(|| format!("write {}", defaults.display()))?;
+        if !manifest.files.iter().any(|f| f.as_str() == DEFAULTS_FILE) {
+            manifest.files.push(DEFAULTS_FILE.to_string());
+        }
+        log(format!("Defaults: {}", defaults.display()));
+    }
+    if let Some(settings) = viewer_settings_path() {
+        if let Some(parent) = settings.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create {}", parent.display()))?;
+        }
+        let mut text = std::fs::read_to_string(&settings).unwrap_or_else(|_| {
+            "# rust-dicom-station user settings\n\
+             # theme = dark | light | system\n\
+             theme = dark\n"
+                .to_string()
+        });
+        for (key, value) in &wanted {
+            text = merge_setting(&text, key, value);
+        }
+        std::fs::write(&settings, text).with_context(|| format!("write {}", settings.display()))?;
+        for (key, value) in &wanted {
+            log(format!("{key} = {value} in {}", settings.display()));
         }
     }
     std::fs::create_dir_all(&opts.models_dir).ok();
@@ -403,4 +427,82 @@ fn is_running(exe: &Path) -> bool {
         return false;
     }
     std::fs::OpenOptions::new().write(true).open(exe).is_err()
+}
+
+/// Set one `key = value` line in a viewer settings file, leaving every other
+/// line exactly as it was.
+///
+/// The file belongs to the user and may hold keys this installer has never
+/// heard of — written by a newer viewer, or by hand. Rewriting it wholesale
+/// would throw those away, so an existing line is replaced in place and a
+/// missing one is appended. Comments and blank lines are untouched.
+fn merge_setting(text: &str, key: &str, value: &str) -> String {
+    let mut out = String::with_capacity(text.len() + key.len() + value.len() + 2);
+    let mut replaced = false;
+    for line in text.lines() {
+        let is_this_key = line
+            .split_once('=')
+            .map(|(k, _)| k.trim().eq_ignore_ascii_case(key))
+            .unwrap_or(false)
+            && !line.trim_start().starts_with('#');
+        if is_this_key && !replaced {
+            out.push_str(&format!("{key} = {value}"));
+            replaced = true;
+        } else if is_this_key {
+            // A duplicate of a key we have already set: drop it, so the file
+            // cannot end up saying two different things.
+            continue;
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    if !replaced {
+        out.push_str(&format!("{key} = {value}\n"));
+    }
+    out
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::merge_setting;
+
+    #[test]
+    fn an_existing_key_is_replaced_in_place_and_the_rest_is_untouched() {
+        let before = "# a comment\ntheme = dark\nmodels_dir = D:\\models\nsomething_new = 7\n";
+        let after = merge_setting(before, "theme", "light");
+        assert_eq!(
+            after,
+            "# a comment\ntheme = light\nmodels_dir = D:\\models\nsomething_new = 7\n"
+        );
+    }
+
+    #[test]
+    fn a_missing_key_is_appended() {
+        let after = merge_setting("theme = dark\n", "graphics_backend", "dx12");
+        assert_eq!(after, "theme = dark\ngraphics_backend = dx12\n");
+    }
+
+    #[test]
+    fn a_commented_out_key_is_not_mistaken_for_the_setting() {
+        let before = "# graphics_backend = vulkan\ntheme = dark\n";
+        let after = merge_setting(before, "graphics_backend", "dx12");
+        assert_eq!(
+            after,
+            "# graphics_backend = vulkan\ntheme = dark\ngraphics_backend = dx12\n"
+        );
+    }
+
+    #[test]
+    fn duplicates_are_collapsed_rather_than_left_to_contradict_each_other() {
+        let before = "graphics_backend = vulkan\ntheme = dark\ngraphics_backend = opengl\n";
+        let after = merge_setting(before, "graphics_backend", "dx12");
+        assert_eq!(after, "graphics_backend = dx12\ntheme = dark\n");
+    }
+
+    #[test]
+    fn the_key_match_ignores_case_and_spacing() {
+        let after = merge_setting("  Graphics_Backend=vulkan\n", "graphics_backend", "dx12");
+        assert_eq!(after, "graphics_backend = dx12\n");
+    }
 }

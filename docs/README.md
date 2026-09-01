@@ -5,7 +5,7 @@ each page here covers one area.
 
 | Page | Contents |
 |---|---|
-| [viewer.md](viewer.md) | Loading, volume reconstruction, the MPR layout, window/level, the patient ▶ study ▶ series tree, comparison mode, planar images, interaction bindings, appearance |
+| [viewer.md](viewer.md) | Loading — folders or individual files, with or without a reconstructable volume — volume reconstruction, the MPR layout, window/level, the patient ▶ study ▶ series tree, comparison mode, planar images, interaction bindings, appearance, the graphics backend |
 | [rt-objects.md](rt-objects.md) | RTSTRUCT, RTDOSE, RTPLAN, REG, RT treatment records, and how their reference chains are resolved |
 | [registration.md](registration.md) | The four registration engines, local registration, analytics, vector fields, fusion, the transform simulator, verification |
 | [propagation.md](propagation.md) | Carrying contours and segmentations across a registration |
@@ -24,3 +24,4 @@ each page here covers one area.
 | [release-versioning.md](release-versioning.md) | Versioning, the branch workflow, how CI produces a release |
 | [example-data.md](example-data.md) | The bundled example patient: contents, source, citations, license |
 | [early-detection-plan.md](early-detection-plan.md) | Plan: integrating early cancer detection methods (CT) |
+| [raystation-contouring-plan.md](raystation-contouring-plan.md) | Plan: RayStation-class contouring — the 2024B structure toolset mapped onto RDS, and the phases that close the gap |

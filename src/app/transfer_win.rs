@@ -128,7 +128,7 @@ impl ViewerApp {
         };
         let src = d.src_slot;
         let dst = 1 - src;
-        if self.slots[src].study.is_none() || self.slots[dst].study.is_none() {
+        if !self.slots[src].has_volume() || !self.slots[dst].has_volume() {
             self.transfer_dialog = None;
             return;
         }
@@ -152,7 +152,7 @@ impl ViewerApp {
             "transfer",
             "◎ Transfer by relationship",
             &mut open,
-            detach::WinOpts::default().resizable(false),
+            detach::WinOpts::default(),
             |ui| {
                 ui.label(format!(
                     "Place a structure of dataset {} into dataset {} at the same offset \

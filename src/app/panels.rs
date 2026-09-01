@@ -180,7 +180,7 @@ impl ViewerApp {
                     ui.weak("centered at the crosshair");
                 });
 
-                let src_ok = self.slots[self.sim_source.min(1)].study.is_some();
+                let src_ok = self.slots[self.sim_source.min(1)].has_volume();
                 if ui
                     .add_enabled(
                         src_ok && self.loading.is_none(),
@@ -270,7 +270,7 @@ impl ViewerApp {
             let mut act: Option<TreeAction> = None;
             let mut rename = None;
             resp.context_menu(|ui| {
-                if ui.button("✎ Rename patient…").clicked() {
+                if ui.button("✏ Rename patient…").clicked() {
                     rename = Some(RenameTarget::Patient {
                         slot,
                         key: key.clone(),
@@ -326,7 +326,7 @@ impl ViewerApp {
             let mut act: Option<TreeAction> = None;
             let mut rename = None;
             resp.context_menu(|ui| {
-                if ui.button("✎ Rename study…").clicked() {
+                if ui.button("✏ Rename study…").clicked() {
                     rename = Some(RenameTarget::Study {
                         slot,
                         uid: uid.clone(),
@@ -433,7 +433,7 @@ impl ViewerApp {
                     switch_to = Some(i);
                 }
                 resp.context_menu(|ui| {
-                    if ui.button("✎ Rename series…").clicked() {
+                    if ui.button("✏ Rename series…").clicked() {
                         rename = Some(RenameTarget::Series { slot, idx: i });
                         ui.close();
                     }
@@ -602,7 +602,7 @@ impl ViewerApp {
             }
         });
         resp.context_menu(|ui| {
-            if ui.button("✎ Rename group…").clicked() {
+            if ui.button("✏ Rename group…").clicked() {
                 rename = Some(RenameTarget::FourD { slot, idx: gi });
                 ui.close();
             }
@@ -774,7 +774,7 @@ impl ViewerApp {
     /// where it goes, and whether it stays.
     fn set_context_menu(&self, ui: &mut egui::Ui, here: SetRef, out: &mut Option<SetAction>) {
         let other = SLOT_NAMES[1 - here.slot];
-        if ui.button("✎ Rename series…").clicked() {
+        if ui.button("✏ Rename series…").clicked() {
             *out = Some(SetAction::Rename(here));
             ui.close();
         }
@@ -899,7 +899,7 @@ impl ViewerApp {
                     continue;
                 }
                 if ui
-                    .button(format!("✎ {} ({} segments)", sr.label, sr.segs.len()))
+                    .button(format!("✏ {} ({} segments)", sr.label, sr.segs.len()))
                     .clicked()
                 {
                     picked = Some(here);
@@ -914,7 +914,7 @@ impl ViewerApp {
                 });
                 ui.close();
             }
-            if ui.button("✎ ➕ a new segmentation series").clicked() {
+            if ui.button("✏ ➕ a new segmentation series").clicked() {
                 picked = Some(SetRef {
                     slot,
                     kind: SetKind::Segmentations,
@@ -953,7 +953,7 @@ impl ViewerApp {
         } else {
             format!("'{label}'")
         };
-        if ui.button(format!("✎ Rename '{label}'…")).clicked() {
+        if ui.button(format!("✏ Rename '{label}'…")).clicked() {
             *out = Some(ItemAction::Rename { from, idx: clicked });
             ui.close();
         }
@@ -980,7 +980,7 @@ impl ViewerApp {
         });
         ui.separator();
         if ui
-            .button(format!("◧ Combine {what}…"))
+            .button(format!("∪ Combine {what}…"))
             .on_hover_text(
                 "Open the structure-algebra window with these as its operands — union, \
                  intersection, subtraction, margins",
@@ -1131,6 +1131,9 @@ impl ViewerApp {
         if self.slots[slot].study.is_none() {
             return;
         }
+        // Sets can be listed, renamed, moved and deleted without an image
+        // volume; only what would draw into one is held back.
+        let has_volume = self.slots[slot].has_volume();
         // Rendering runs behind a shared borrow of `self` (the context menus
         // need to list the other dataset's series), so the one piece of
         // mutable state in the list is edited on a copy and written back.
@@ -1164,8 +1167,12 @@ impl ViewerApp {
             };
             Self::wrapped_node(ui, ("structs", slot, pat, stu), true, title, |ui| {
                 if ui
-                    .small_button("New series")
-                    .on_hover_text("An empty RT structure set, drawn on the displayed image series")
+                    .add_enabled(has_volume, egui::Button::new("New series").small())
+                    .on_hover_text(if has_volume {
+                        "An empty RT structure set, drawn on the displayed image series"
+                    } else {
+                        "This dataset has no image volume to draw on"
+                    })
                     .clicked()
                 {
                     set_act = Some(SetAction::New(SetRef {
@@ -1315,6 +1322,9 @@ impl ViewerApp {
         if self.slots[slot].study.is_none() {
             return;
         }
+        // Sets can be listed, renamed, moved and deleted without an image
+        // volume; only what would draw into one is held back.
+        let has_volume = self.slots[slot].has_volume();
         // Whichever engine is running on this slot: its glyph, message and
         // fraction, read before the section borrows anything.
         let running = self
@@ -1370,11 +1380,13 @@ impl ViewerApp {
             Self::wrapped_node(ui, ("segs", slot, pat, stu), true, title, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     if ui
-                        .small_button("New series")
-                        .on_hover_text(
+                        .add_enabled(has_volume, egui::Button::new("New series").small())
+                        .on_hover_text(if has_volume {
                             "An empty segmentation series, drawn on the displayed image \
-                             series — exports as one DICOM SEG file",
-                        )
+                             series — exports as one DICOM SEG file"
+                        } else {
+                            "This dataset has no image volume to draw on"
+                        })
                         .clicked()
                     {
                         new_series = true;
@@ -1407,8 +1419,12 @@ impl ViewerApp {
                         ),
                     ] {
                         if ui
-                            .add(egui::Button::new(tool.short_button()).small())
-                            .on_hover_text(hint)
+                            .add_enabled(has_volume, egui::Button::new(tool.short_button()).small())
+                            .on_hover_text(if has_volume {
+                                hint
+                            } else {
+                                "This dataset has no image volume to segment"
+                            })
                             .clicked()
                         {
                             open_tool = Some(tool);
@@ -1426,7 +1442,7 @@ impl ViewerApp {
                         egui::Button::selectable(
                             active_here == Some(i),
                             format!(
-                                "✎ {} ({} segments){}",
+                                "✏ {} ({} segments){}",
                                 sr.label,
                                 sr.segs.len(),
                                 Self::series_suffix(study, &sr.referenced_series_uid)
@@ -1453,6 +1469,13 @@ impl ViewerApp {
                 };
                 // Masks of a series drawn on another image series are on that
                 // series' lattice — nothing here can index them.
+                if !study.has_volume() {
+                    ui.weak(
+                        "this dataset has no image volume — add the image series these \
+                         segments were drawn on to see and edit them",
+                    );
+                    return;
+                }
                 if series[active_series].grid.dims != study.volume.dims {
                     ui.weak(
                         "drawn on another image series — display that series to see and \
@@ -1488,7 +1511,7 @@ impl ViewerApp {
                 ui.horizontal_wrapped(|ui| {
                     if ui
                         .small_button("New")
-                        .on_hover_text("An empty segmentation to paint with 🖌 / ✨ in the views")
+                        .on_hover_text("An empty segmentation to paint with 🎨 / ✨ in the views")
                         .clicked()
                     {
                         make_new = true;
@@ -1681,7 +1704,7 @@ impl ViewerApp {
             );
             *active_dose = picked;
             hdr.context_menu(|ui| {
-                if ui.button("✎ Rename this dose…").clicked() {
+                if ui.button("✏ Rename this dose…").clicked() {
                     rename = Some(RenameTarget::Dose { slot, idx: picked });
                     ui.close();
                 }
@@ -1868,7 +1891,7 @@ impl ViewerApp {
                     },
                 );
                 plan_hdr.context_menu(|ui| {
-                    if ui.button("✎ Rename plan…").clicked() {
+                    if ui.button("✏ Rename plan…").clicked() {
                         rename = Some(RenameTarget::Plan { slot, idx: pi });
                         ui.close();
                     }
@@ -1892,11 +1915,14 @@ impl ViewerApp {
         }
         let mut open_idx = None;
         let mut rename: Option<RenameTarget> = None;
+        // Normally a side note beneath the tree; for a dataset with no image
+        // volume these *are* the images, so the section opens itself.
+        let sole_content = !self.slots[slot].has_volume();
         {
             let study = self.slots[slot].study.as_ref().unwrap();
             egui::CollapsingHeader::new(format!("Planar images ({n})"))
                 .id_salt(("planar", slot))
-                .default_open(false)
+                .default_open(sole_content)
                 .show(ui, |ui| {
                     for (i, img) in study.planar_images.iter().enumerate() {
                         ui.horizontal(|ui| {
@@ -1905,7 +1931,7 @@ impl ViewerApp {
                                 .label(&img.label)
                                 .on_hover_text("right-click: rename this image");
                             resp.context_menu(|ui| {
-                                if ui.button("✎ Rename image…").clicked() {
+                                if ui.button("✏ Rename image…").clicked() {
                                     rename = Some(RenameTarget::Planar { slot, idx: i });
                                     ui.close();
                                 }
@@ -1952,7 +1978,7 @@ impl ViewerApp {
         if n == 0 {
             return;
         }
-        let both = self.slots[0].study.is_some() && self.slots[1].study.is_some();
+        let both = self.slots[0].has_volume() && self.slots[1].has_volume();
         let mut apply: Option<(registration::RigidTransform, usize)> = None;
         let mut apply_grid: Option<(usize, usize)> = None;
         let mut rename: Option<RenameTarget> = None;
@@ -1990,7 +2016,7 @@ impl ViewerApp {
                             )
                             .on_hover_text("right-click: rename this registration");
                         resp.context_menu(|ui| {
-                            if ui.button("✎ Rename registration…").clicked() {
+                            if ui.button("✏ Rename registration…").clicked() {
                                 rename = Some(RenameTarget::Registration { slot, idx: ri });
                                 ui.close();
                             }
@@ -2204,7 +2230,7 @@ impl ViewerApp {
                         )
                         .on_hover_text("right-click: rename this record");
                     resp.context_menu(|ui| {
-                        if ui.button("✎ Rename record…").clicked() {
+                        if ui.button("✏ Rename record…").clicked() {
                             rename = Some(RenameTarget::Record { slot, idx: ri });
                             ui.close();
                         }
@@ -2425,6 +2451,104 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
         };
         if let Some((pi, si)) = find(&g.study_uid).or_else(|| find(fallback)) {
             patients[pi].studies[si].fourd.push(gi);
+        }
+    }
+
+    // Studies that no image series announced.
+    //
+    // A dataset does not have to contain images at all — a folder or a file
+    // selection can hold nothing but a structure set, a plan, a dose grid or
+    // a handful of RT images. Those objects carry their own Study Instance
+    // UID, so a study node is made from it and filed under the patient the
+    // dataset's own metadata names. Without this the tree would be empty and
+    // the objects invisible, which is the one outcome worse than no images.
+    {
+        let known: std::collections::HashSet<String> = patients
+            .iter()
+            .flat_map(|p| p.studies.iter().map(|s| s.uid.clone()))
+            .collect();
+        let mut missing: Vec<String> = Vec::new();
+        let mut orphans = false;
+        let mut want = |uid: &str| {
+            // A blank UID names no study, so it gets no node of its own: the
+            // fallback below files those objects under the first study there
+            // is, which is the long-standing rule.
+            if uid.is_empty() {
+                orphans = true;
+            } else if !known.contains(uid) && !missing.iter().any(|u| u == uid) {
+                missing.push(uid.to_string());
+            }
+        };
+        for ss in &study.structure_sets {
+            want(&ss.study_uid);
+        }
+        for sr in &study.seg_series {
+            want(&sr.study_uid);
+        }
+        for d in &study.doses {
+            want(&d.study_uid);
+        }
+        for pl in &study.plans {
+            want(&pl.study_uid);
+        }
+        // …unless there is no first study either. Then one study node has to
+        // exist for those objects to be reachable at all.
+        if missing.is_empty() && patients.is_empty() && orphans {
+            missing.push(String::new());
+        }
+        if !missing.is_empty() {
+            let m = &study.meta;
+            let name = m.patient_name.replace('^', " ");
+            let key = if !m.patient_id.is_empty() {
+                m.patient_id.clone()
+            } else if !name.is_empty() {
+                name.clone()
+            } else {
+                "?".to_string()
+            };
+            let title = match (name.is_empty(), m.patient_id.is_empty()) {
+                (true, true) => "Unknown patient".to_string(),
+                (true, false) => format!("Patient {}", m.patient_id),
+                (false, true) => name.clone(),
+                (false, false) => format!("{name} ({})", m.patient_id),
+            };
+            let pi = match patients.iter().position(|p| p.key == key) {
+                Some(i) => i,
+                None => {
+                    patients.push(PatientNode {
+                        key,
+                        title,
+                        studies: Vec::new(),
+                    });
+                    patients.len() - 1
+                }
+            };
+            for uid in missing {
+                let n = patients[pi].studies.len() + 1;
+                let title = format!(
+                    "Study {}{}",
+                    if m.study_date.is_empty() {
+                        n.to_string()
+                    } else {
+                        m.study_date.clone()
+                    },
+                    if m.study_description.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" — {}", m.study_description)
+                    }
+                );
+                patients[pi].studies.push(StudyNode {
+                    uid,
+                    title,
+                    modalities: Vec::new(),
+                    structs: Vec::new(),
+                    segs: Vec::new(),
+                    doses: Vec::new(),
+                    plans: Vec::new(),
+                    fourd: Vec::new(),
+                });
+            }
         }
     }
 
@@ -2671,5 +2795,66 @@ mod layout_tests {
             .map(|s| s.structs.len())
             .sum();
         assert_eq!(total, 3, "every structure set is reachable exactly once");
+    }
+
+    /// A dataset can hold no image series at all — a folder of RT images, a
+    /// structure set opened on its own. Its objects must still be in the
+    /// tree, under a patient and a study, or there is no way to reach them.
+    #[test]
+    fn a_dataset_without_image_series_still_has_a_patient_and_a_study() {
+        let mut st = study();
+        st.series.clear();
+        st.volume = Arc::new(Volume::empty());
+        st.meta = loader::PatientMeta {
+            patient_name: "Doe^John".into(),
+            patient_id: "P9".into(),
+            study_date: "20260901".into(),
+            study_description: "Portal images".into(),
+        };
+        let layout = tree_layout(&st);
+        assert_eq!(layout.len(), 1, "one patient, from the dataset's own tags");
+        assert_eq!(layout[0].title, "Doe John (P9)");
+        // ss1 names st1, ss2 names none but references a series that is gone,
+        // ss3 names none at all: two real studies plus the fallback.
+        assert_eq!(
+            layout[0].studies.len(),
+            2,
+            "one node per study the objects name: {:?}",
+            layout[0].studies.iter().map(|s| &s.uid).collect::<Vec<_>>()
+        );
+        assert!(
+            layout[0]
+                .studies
+                .iter()
+                .any(|s| s.title.contains("20260901")),
+            "the study is dated from the dataset's metadata"
+        );
+        let total: usize = layout[0].studies.iter().map(|s| s.structs.len()).sum();
+        assert_eq!(total, 3, "every structure set is still reachable");
+        assert_eq!(
+            layout[0]
+                .studies
+                .iter()
+                .map(|s| s.segs.len())
+                .sum::<usize>(),
+            1,
+            "and so is the segmentation series"
+        );
+    }
+
+    /// The degenerate case: objects that name no study whatsoever, in a
+    /// dataset with no series to fall back to.
+    #[test]
+    fn objects_naming_no_study_at_all_still_get_one() {
+        let mut st = study();
+        st.series.clear();
+        st.volume = Arc::new(Volume::empty());
+        st.structure_sets = vec![structset("ss3", "", "")];
+        st.seg_series.clear();
+        let layout = tree_layout(&st);
+        assert_eq!(layout.len(), 1);
+        assert_eq!(layout[0].studies.len(), 1);
+        assert_eq!(layout[0].studies[0].uid, "", "the catch-all study");
+        assert_eq!(layout[0].studies[0].structs, vec![0]);
     }
 }

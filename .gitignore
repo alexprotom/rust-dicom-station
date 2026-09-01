@@ -3,3 +3,4 @@
 /patient_data
 autoseg_models/
 models/
+Cargo.lock

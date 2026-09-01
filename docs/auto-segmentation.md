@@ -24,8 +24,8 @@ and a 1×1×1 segmentation head — rebuilt at load time from each model's
 
 ## Using it in the viewer
 
-*Tools ▶ 🤖 Auto-segment dataset A/B…* or the **🤖 Auto…** button in the
-sidebar *Segmentations* section opens the tool window (**🤖
+*Tools ▶ 🔬 Auto-segment dataset A/B…* or the **🔬 Auto…** button in the
+sidebar *Segmentations* section opens the tool window (**🔬
 Auto-segmentation — dataset A**; the three segmentation engines share one
 window layout, see [architecture.md](architecture.md#the-three-engine-windows)):
 
@@ -202,7 +202,12 @@ If you use the auto-segmentation in academic work, cite:
 
 * **"no usable wgpu adapter found"** — no Vulkan/DX12/Metal device
   (headless machine, missing driver). *Auto* silently uses the CPU;
-  forcing *GPU* reports the error.
+  forcing *GPU* reports the error. If the whole program will not start,
+  that is the related and more common failure — a Windows machine
+  advertising a Vulkan driver that cannot create a device; see
+  [viewer.md](viewer.md#graphics-backend). The backend chosen there governs
+  inference too, so a machine forced onto Direct3D 12 runs the networks on
+  Direct3D 12.
 * **Download fails behind a proxy** — the downloader uses the OS trust
   store, so a corporate/clinical inspection proxy's CA installed
   system-wide is honored; fully offline machines, see the air-gapped note

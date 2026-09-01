@@ -19,7 +19,7 @@ impl ViewerApp {
     // -- Auto-segmentation (TotalSegmentator, see the `autoseg` module) ----
     /// Open the tool window for auto-segmenting the given slot.
     pub(super) fn open_autoseg_dialog(&mut self, slot: usize) {
-        if self.slots[slot].study.is_none() {
+        if !self.slots[slot].has_volume() {
             return;
         }
         match &mut self.autoseg_dialog {
@@ -114,7 +114,7 @@ impl ViewerApp {
             "autoseg",
             AUTOSEG.title(d.slot),
             &mut open,
-            detach::WinOpts::width(380.0).resizable(false),
+            detach::WinOpts::width(380.0),
             |ui| {
                 ui.label(
                     "Segments the CT into up to 117 anatomical structures with \
@@ -143,7 +143,7 @@ impl ViewerApp {
                 ] {
                     let need = autoseg::download_needed(variant, d.parts, &models_dir);
                     let note = if need == 0 {
-                        "weights cached ✓".to_string()
+                        "weights cached ✔".to_string()
                     } else {
                         format!("downloads {} MB once", need / 1_000_000)
                     };
@@ -238,7 +238,7 @@ impl ViewerApp {
             "autoseg_results",
             AUTOSEG.titled("results", p.slot),
             &mut open,
-            detach::WinOpts::default().collapsible(false).centered(),
+            detach::WinOpts::default(),
             |ui| {
                 ui.label(format!(
                     "{} structures found on dataset {} — {} · {:.0} s",
@@ -331,12 +331,9 @@ impl ViewerApp {
         detach::tool_window(
             ctx,
             "generator",
-            "🧪 Generate synthetic RT test study",
+            "📐 Generate synthetic RT test study",
             &mut open,
-            detach::WinOpts::default()
-                .resizable(false)
-                .collapsible(false)
-                .centered(),
+            detach::WinOpts::default(),
             |ui| {
                 ui.set_max_width(560.0);
                 ui.label(
@@ -525,9 +522,7 @@ impl ViewerApp {
             "anonymize",
             "🔏 Anonymize DICOM folder",
             &mut open,
-            detach::WinOpts::size(780.0, 560.0)
-                .collapsible(false)
-                .centered(),
+            detach::WinOpts::size(780.0, 560.0),
             |ui| {
                 ui.label(
                     "Scans a folder, shows every identifying tag with its current values \
@@ -772,9 +767,7 @@ impl ViewerApp {
             "export",
             format!("💾 Export dataset {} as DICOM", SLOT_NAMES[slot]),
             &mut open,
-            detach::WinOpts::size(720.0, 520.0)
-                .collapsible(false)
-                .centered(),
+            detach::WinOpts::size(720.0, 520.0),
             |ui| {
                 ui.label(
                     "Writes the displayed volume (one file per slice) plus every \

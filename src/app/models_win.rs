@@ -197,7 +197,7 @@ impl ViewerApp {
                     if ui
                         .add_enabled(
                             !running && spare > 0,
-                            egui::Button::new(format!("🧹 Free {}", models::human_bytes(spare))),
+                            egui::Button::new(format!("♻ Free {}", models::human_bytes(spare))),
                         )
                         .on_hover_text(
                             "Delete the source checkpoints the converted caches were made \
@@ -401,7 +401,7 @@ fn model_row(
         }
         if s.spare_bytes > 0
             && ui
-                .add_enabled(!running, egui::Button::new("🧹").small())
+                .add_enabled(!running, egui::Button::new("♻").small())
                 .on_hover_text(format!(
                     "Delete the {} source checkpoint; the model keeps running",
                     models::human_bytes(s.spare_bytes)

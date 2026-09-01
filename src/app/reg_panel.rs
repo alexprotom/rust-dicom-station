@@ -47,7 +47,7 @@ impl ViewerApp {
         }
         for (i, seg) in self.slots[slot].segs().iter().enumerate() {
             if seg.count > 0 {
-                out.push((RegRoi::Segmentation(i), format!("✎ {}", seg.name)));
+                out.push((RegRoi::Segmentation(i), format!("✏ {}", seg.name)));
             }
         }
         out
@@ -245,7 +245,7 @@ impl ViewerApp {
             field: Arc::new(field),
             region: None,
         });
-        self.fusion_on = self.slots[0].study.is_some() && self.slots[1].study.is_some();
+        self.fusion_on = self.slots[0].has_volume() && self.slots[1].has_volume();
         self.reg_gen += 1;
         let cursor = self.slots[fixed_slot].cursor;
         self.set_cursor(fixed_slot, cursor, usize::MAX);
@@ -308,7 +308,7 @@ impl ViewerApp {
     // -- the panel section -------------------------------------------------
 
     pub(super) fn registration_section(&mut self, ui: &mut egui::Ui) {
-        let both = self.slots[0].study.is_some() && self.slots[1].study.is_some();
+        let both = self.slots[0].has_volume() && self.slots[1].has_volume();
         // The section is worth showing while two datasets are loaded, while a
         // result is on display, and while a run is in flight — the last one
         // because that is where its progress and its Cancel button live.

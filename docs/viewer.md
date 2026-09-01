@@ -8,8 +8,13 @@ reconstructed cross-sections of the same ROIs.*
 
 ## Loading and volume reconstruction
 
-Opening a folder (*File ▶ Add DICOM folder…*, or directory arguments on the
-command line) starts a background scan:
+Data comes in either way round: a whole folder (*File ▶ Add DICOM folder…*, or
+directory arguments on the command line) or an explicit handful of files
+(*File ▶ Add DICOM file(s)…*, multi-select). Both start the same background
+scan and both merge into the dataset the same way — a file selection is not a
+separate mode with its own rules, it is a study that happens to be small.
+
+The scan:
 
 1. **Classification.** Every file in the tree is read header-only (no pixel
    data) in parallel and classified by SOP class / modality: image series
@@ -34,6 +39,38 @@ image series are not yet supported (classic single-frame only). RT objects
 found in the folder are parsed alongside and attached to the study — see
 [rt-objects.md](rt-objects.md).
 
+### Datasets with no volume
+
+Not everything worth opening reconstructs into slices, and a viewer that
+insists otherwise is a viewer you cannot use to look at a portal image. So
+**a dataset without an image volume is a normal dataset here**, not a failed
+load. Three cases arrive at it:
+
+* the selection holds only RT images, DX/CR radiographs or other projection
+  images — nothing with slice positions to stack;
+* the selection holds only RT objects — a structure set, a plan, a dose grid,
+  a registration, a treatment record;
+* an image file carries no `ImagePositionPatient` at all. That is judged per
+  *series*, not per file: a series where nothing is positioned cannot be
+  reconstructed and its files are opened as single images, while a series
+  where one slice happens to lack the tag is still a series. Before, such
+  files were dropped silently.
+
+Such a dataset appears in the tree under its patient and study exactly like
+any other, and everything it holds is usable: planar images open in their
+viewers (the *Planar images* section opens itself, since for these datasets it
+is the content rather than a footnote), structure sets render in the 3D
+window, plans and dose objects show their tables, and any of it can be
+renamed, copied to the other dataset or exported. What is held back is only
+what needs voxels: the MPR views say so in place of three black panes, and the
+segmentation tools, the four engines, registration, propagation, combination,
+comparison and the DRR are disabled until there is something to run them on.
+
+Adding an image series afterwards completes the dataset. *File ▶ Add DICOM
+folder…* into the same slot merges the images in and the views switch to
+them — which is the ordinary way to open a structure set first and its CT
+second, and have the contours land on the right images.
+
 ## The three-view MPR layout
 
 The main area shows **axial, sagittal and coronal** planes side by side with
@@ -47,7 +84,7 @@ The views tile the central area edge to edge, each with its own **slice
 scrubber** drawn over its bottom edge; the plane and dataset name in the
 top-left corner is white in every view, the edge labels keep their colour.
 Two corner buttons (named on hover): **⟲** resets the view's zoom and pan and
-re-centers the crosshair in the volume, **⛶ / ❐** maximizes the view and
+re-centers the crosshair in the volume, **⛶ / ⊞** maximizes the view and
 restores the layout. The toolbar holds a global **⟲** (the same reset for
 every view of both datasets), the **⌖** crosshair toggle (while hidden,
 left-click navigation is off and slices change only by scrolling), the **🔗**
@@ -63,16 +100,19 @@ shows each preset's center and width; the closed list carries only the chosen
 name, and any other window — a drag or the full range — leaves it nameless.
 Window/level is shared between datasets A and B.
 
-**Tool windows on their own screen.** Every secondary window — the archive,
-the model manager, the DRR, the 3D scenes, the segmentation and motion tools,
-the export and anonymizer dialogs — has a **Detach** button in its top-right
-corner that makes it an operating-system window of its own, to drag onto a
-second or third monitor, resize or maximize there, and keep open beside the
-images while the main window keeps all six viewports; **Dock** puts it back.
-Several can be out at once; each reopens where it was left, on the same
-monitor, and which are detached is remembered between runs
-(`detached_windows` in the settings file). Closing a detached window only
-closes that tool — it opens in its own window again next time.
+**Every tool has its own window.** The archive, the model manager, the DRR,
+the 3D scenes, the segmentation, motion and DVH tools, the export and
+anonymizer dialogs — none of them float inside the main window. Each opens as
+a window of the operating system in its own right, with its own title bar and
+task-bar entry, to be dragged onto a second or third monitor, resized or
+maximized there, and left open beside the images while the main window keeps
+all six viewports. Any number can be open at once, on any mix of screens, and
+each one reopens at the size and place it was last left — on the monitor it
+was left on. Closing a window closes that tool alone.
+
+Every window of the program is titled the same way: **Rust DICOM Station:**
+followed by what the window is — *Viewer* for the main one, then *PACS —
+patient archive*, *Downloaded models*, *DRR — dataset A*, and so on.
 
 **Status bar.** Patient coordinates, voxel indices, HU and dose (Gy and % of
 the reference dose) at the crosshair; in comparison mode both datasets report
@@ -120,7 +160,7 @@ Dataset A
        ├ RT structures (12/12)
        │   └ ▣ Approved (12 ROIs) ▶ CT chest
        ├ Segmentations (8/8)
-       │   └ ✎ TotalSeg (8 segments) ▶ CT chest
+       │   └ ✏ TotalSeg (8 segments) ▶ CT chest
        ├ Dose (1)
        └ Plan: IMRT
  Dose display · Planar images · Spatial registrations · Records · Warnings
@@ -170,7 +210,7 @@ offers:
 * *💾 Export as DICOM SEG…* (segmentation series only) — writes this one series
   as a single SEG file.
 * *🗑 Remove this RT structure set / segmentation series*.
-* *✎ Rename series…*.
+* *✏ Rename series…*.
 
 Each item's **check box is both its visibility and its selection**, so *All*
 / *None* tick everything or nothing and the actions act on whatever is
@@ -197,7 +237,7 @@ the ticked group:
   SEG series of their own: same lattice, same referenced image series, a fresh
   SOP Instance UID, only those segments; the file reloads as an ordinary
   segmentation series.
-* *✎ Rename …* — always the row you clicked, never the whole selection.
+* *✏ Rename …* — always the row you clicked, never the whole selection.
 
 Crossing between the two kinds converts on transfer: a structure moved into a
 segmentation series is rasterized onto its lattice (even–odd fill), a segment
@@ -255,6 +295,13 @@ right-drag like the CT views), correct physical aspect ratio (imager /
 image-plane pixel spacing), MONOCHROME1 inversion, and metadata — body part,
 view and kVp for DX; machine, gantry angle, SAD and SID for RTIMAGE.
 
+Any image that carries no slice position lands here, whatever its modality —
+that is what makes *File ▶ Add DICOM file(s)…* on a single RT image, an
+unpositioned secondary capture or a stray slice give you something to look at.
+The section is closed by default when there is a volume beside it and open
+when there is not. Multi-frame images are the one exception: they are reported
+as a warning rather than loaded.
+
 ## Appearance
 
 *View ▶ Appearance* switches between **🌙 Dark**, **☀ Light** and **💻 System**
@@ -265,3 +312,81 @@ to edit or delete. The image viewports stay black in both themes so
 windowing, the dose colorwash and the overlays keep one calibrated
 appearance; unit tests assert the accent colors clear WCAG AA contrast on
 both backgrounds.
+
+## Graphics backend
+
+The viewer draws — and, with the GPU feature, runs the segmentation networks —
+through `wgpu`, which speaks Vulkan, Direct3D 12, Metal or OpenGL depending on
+the machine. Normally there is nothing to think about. The exception is real
+and was the reason this section exists: **some Windows machines advertise a
+Vulkan driver that cannot actually create a device.** `wgpu` prefers Vulkan,
+finds the broken one, and the program dies before drawing anything — on a
+machine where nothing else is wrong. The only escape used to be knowing to
+type
+
+```powershell
+$env:WGPU_BACKEND = "dx12"
+```
+
+before starting it, which is not a thing to ask of a physicist in a clinic.
+
+Three things now decide which backend is used, in this order of authority:
+
+1. **`WGPU_BACKEND`**, if set. It stays the escape hatch and it still wins —
+   someone who set it is debugging something.
+2. **`graphics_backend`** in the settings, which the installer writes from the
+   page it asks on and *View ▶ Graphics backend* changes afterwards. Accepted
+   values: `auto`, `vulkan`, `dx12`, `metal`, `opengl`.
+3. Failing both, whatever `wgpu` picks on its own.
+
+And whichever is chosen, **the program falls back by itself when it does not
+work.** The window is not opened once but attempted: the preferred backend
+first, then Direct3D 12, Vulkan and OpenGL, ending at whatever `wgpu` would
+have chosen. A backend that fails — by returning an error, or by panicking
+somewhere inside the driver, which is the usual shape of this failure — costs
+one line on standard error instead of the program:
+
+```
+rust-dicom-station: Vulkan failed: …
+rust-dicom-station: Vulkan did not work, trying DirectX 12…
+```
+
+So on a machine with a broken Vulkan driver the viewer now starts unaided. The
+setting only saves it the first failed attempt — worth having, because the
+attempt costs a second or two and prints a line that looks alarming.
+
+*View ▸ Graphics backend* lists the backends this platform could have (no
+Direct3D outside Windows, no Metal outside macOS), each with a one-line hint,
+and remembers the choice. It takes effect at the next start: the backend is
+read once before the window exists, and the menu says so. If `WGPU_BACKEND` is
+set in the session, the menu says that too rather than appearing to lie.
+
+### Where the setting is read from
+
+Two files, in increasing order of authority:
+
+* `viewer-defaults.txt` **beside the executable**, written by the installer.
+  A machine-wide installation is made by an administrator whose
+  `%LOCALAPPDATA%` is not the one the viewer will run under, so this is the
+  only place an installer-time answer can reach every user of the machine.
+  Every key in it is a default.
+* `viewer_settings.txt` in the per-user config folder
+  (`%LOCALAPPDATA%\RustDICOMStation`, `~/.config/RustDICOMStation`), which is
+  read afterwards and wins — key by key, so a setting the user has never
+  touched keeps the machine-wide default.
+
+Both are plain `key = value` text, safe to edit or delete. An unreadable value
+leaves the default rather than failing to start: these files are edited by
+hand and by an installer, and a typo in one must not cost someone their
+program.
+
+### Note on the inference backend
+
+The program creates two independent `wgpu` instances: `eframe` draws the
+interface with one, and `burn` runs the networks on another. The first takes
+its backends as a typed argument; the second is several layers down inside
+`cubecl` and takes them only from the environment. So the chosen backend is
+also exported as `WGPU_BACKEND` for this process — once, at the very top of
+`main` before any thread exists, which is both the documented contract for
+writing the environment and exactly the workaround that was already known to
+work. A value the user set themselves is never overwritten.

@@ -172,7 +172,8 @@ impl ViewerApp {
     /// Tools ▶ combine structures: open the window for `slot`, optionally
     /// seeded with the items the tree had ticked.
     pub(super) fn open_combine_dialog(&mut self, slot: usize, seed: Vec<ItemRef>) {
-        if self.slots[slot].study.is_none() {
+        // Every operand is rasterised onto the displayed volume's lattice.
+        if !self.slots[slot].has_volume() {
             return;
         }
         let rows: Vec<Row> = seed
@@ -326,7 +327,7 @@ impl ViewerApp {
         let Some(slot) = self.combine_dialog.as_ref().map(|d| d.slot) else {
             return;
         };
-        if self.slots[slot].study.is_none() {
+        if !self.slots[slot].has_volume() {
             self.combine_dialog = None;
             return;
         }
@@ -358,7 +359,7 @@ impl ViewerApp {
             "combine",
             COMBINE.title(slot),
             &mut open,
-            detach::WinOpts::width(470.0).resizable(false),
+            detach::WinOpts::width(470.0),
             |ui| {
                 ui.label(
                     "Builds one structure out of others: union, intersection, subtraction \
@@ -441,7 +442,7 @@ impl ViewerApp {
                             if ui.button("↓").clicked() && i + 1 < n_rows {
                                 move_row = Some((i, 1));
                             }
-                            if ui.button("✕").clicked() {
+                            if ui.button("✖").clicked() {
                                 drop_row = Some(i);
                             }
                         });
@@ -673,9 +674,9 @@ mod tests {
 
     #[test]
     fn the_tool_names_itself_like_the_others() {
-        assert_eq!(COMBINE.title(0), "◧ Combine structures — dataset A");
-        assert_eq!(COMBINE.menu_entry(1), "◧ Combine structures in dataset B…");
-        assert_eq!(COMBINE.short_button(), "◧ Combine");
+        assert_eq!(COMBINE.title(0), "∪ Combine structures — dataset A");
+        assert_eq!(COMBINE.menu_entry(1), "∪ Combine structures in dataset B…");
+        assert_eq!(COMBINE.short_button(), "∪ Combine");
     }
 
     #[test]

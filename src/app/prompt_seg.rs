@@ -127,7 +127,7 @@ pub(super) fn box_around(centre: [f32; 3], mm: f32, prep: &Prepared, vol: &Volum
 impl ViewerApp {
     /// Tools ▶ prompt segmentation: open the tool window for `slot`.
     pub(super) fn open_segvol_dialog(&mut self, slot: usize) {
-        if self.slots[slot].study.is_none() {
+        if !self.slots[slot].has_volume() {
             return;
         }
         match &mut self.segvol_dialog {
@@ -247,7 +247,7 @@ impl ViewerApp {
             "segvol",
             PROMPT_SEG.title(d.slot),
             &mut open,
-            detach::WinOpts::width(380.0).resizable(false),
+            detach::WinOpts::width(380.0),
             |ui| {
                 ui.label(
                     "Segments whatever the prompt points at — a box, a click or a structure \
@@ -334,7 +334,7 @@ impl ViewerApp {
                 ui.separator();
                 let need = weights::download_needed(&models_dir, d.kind == PromptKind::Text);
                 let weights_note = if need == 0 {
-                    "Weights: SegVol (BAAI, no licence declared) — cached ✓.".to_string()
+                    "Weights: SegVol (BAAI, no licence declared) — cached ✔.".to_string()
                 } else {
                     format!(
                         "Weights: SegVol (BAAI, no licence declared) — {} MB downloaded once \

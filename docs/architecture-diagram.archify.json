@@ -1,0 +1,400 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Rust DICOM Station — architecture",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1290,
+      550
+    ],
+    "views": [
+      {
+        "id": "loading",
+        "label": "Loading a study",
+        "focus": [
+          "dicomDisk",
+          "archive",
+          "loader",
+          "study",
+          "shell"
+        ],
+        "note": "How DICOM on disk becomes the in-memory study every other module reads."
+      },
+      {
+        "id": "jobs",
+        "label": "Running a long operation",
+        "focus": [
+          "shell",
+          "jobs",
+          "reg",
+          "tools",
+          "study"
+        ],
+        "note": "Snapshot the inputs, run on a worker thread, poll one progress channel, land the result."
+      },
+      {
+        "id": "inference",
+        "label": "The three inference engines",
+        "focus": [
+          "jobs",
+          "autoseg",
+          "segvol",
+          "medsam2"
+        ],
+        "note": "Three published networks re-implemented in Rust over one shared checkpoint runtime."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "export",
+      "type": "backend",
+      "label": "DICOM export",
+      "sublabel": "dicom_export · dicomseg",
+      "pos": [
+        700,
+        40
+      ],
+      "size": [
+        220,
+        60
+      ]
+    },
+    {
+      "id": "views",
+      "type": "frontend",
+      "label": "MPR & 3D views",
+      "sublabel": "views · render · mesh3d · d3",
+      "pos": [
+        1030,
+        40
+      ],
+      "size": [
+        220,
+        60
+      ]
+    },
+    {
+      "id": "dicomDisk",
+      "type": "external",
+      "label": "DICOM on disk",
+      "sublabel": "folders · network drives",
+      "pos": [
+        40,
+        170
+      ],
+      "size": [
+        220,
+        60
+      ]
+    },
+    {
+      "id": "loader",
+      "type": "backend",
+      "label": "Loader",
+      "sublabel": "scan · classify · reconstruct",
+      "pos": [
+        370,
+        170
+      ],
+      "size": [
+        220,
+        60
+      ],
+      "tag": "rayon"
+    },
+    {
+      "id": "study",
+      "type": "database",
+      "label": "Study model",
+      "sublabel": "volumes · structures · dose · plans",
+      "pos": [
+        700,
+        170
+      ],
+      "size": [
+        220,
+        60
+      ]
+    },
+    {
+      "id": "shell",
+      "type": "frontend",
+      "label": "Application shell",
+      "sublabel": "menus · data tree · tool windows",
+      "pos": [
+        1030,
+        170
+      ],
+      "size": [
+        220,
+        60
+      ],
+      "tag": "egui / eframe"
+    },
+    {
+      "id": "archive",
+      "type": "database",
+      "label": "Local archive",
+      "sublabel": "studies filed by patient",
+      "pos": [
+        40,
+        300
+      ],
+      "size": [
+        220,
+        60
+      ],
+      "tag": "PACS"
+    },
+    {
+      "id": "tools",
+      "type": "backend",
+      "label": "RT & geometry tools",
+      "sublabel": "DVH · DRR · 4D motion · algebra",
+      "pos": [
+        370,
+        300
+      ],
+      "size": [
+        220,
+        60
+      ]
+    },
+    {
+      "id": "jobs",
+      "type": "messagebus",
+      "label": "Job runner",
+      "sublabel": "worker thread · progress channel",
+      "pos": [
+        700,
+        300
+      ],
+      "size": [
+        220,
+        60
+      ]
+    },
+    {
+      "id": "reg",
+      "type": "backend",
+      "label": "Registration",
+      "sublabel": "elastix · plastimatch · landmark",
+      "pos": [
+        1030,
+        300
+      ],
+      "size": [
+        220,
+        60
+      ]
+    },
+    {
+      "id": "autoseg",
+      "type": "backend",
+      "label": "TotalSegmentator",
+      "sublabel": "nnU-Net · 117 classes",
+      "pos": [
+        370,
+        430
+      ],
+      "size": [
+        220,
+        60
+      ]
+    },
+    {
+      "id": "segvol",
+      "type": "backend",
+      "label": "SegVol",
+      "sublabel": "text & point prompts, 3D",
+      "pos": [
+        700,
+        430
+      ],
+      "size": [
+        220,
+        60
+      ]
+    },
+    {
+      "id": "medsam2",
+      "type": "backend",
+      "label": "MedSAM2",
+      "sublabel": "box prompt · slice propagation",
+      "pos": [
+        1030,
+        430
+      ],
+      "size": [
+        220,
+        60
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Inference stack — one nn:: runtime on burn (wgpu GPU / ndarray CPU)",
+      "wraps": [
+        "autoseg",
+        "segvol",
+        "medsam2"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "scan",
+      "from": "dicomDisk",
+      "to": "loader",
+      "label": "two-pass read",
+      "variant": "emphasis"
+    },
+    {
+      "id": "file",
+      "from": "dicomDisk",
+      "to": "archive",
+      "label": "file a folder",
+      "variant": "dashed",
+      "labelAt": [
+        150,
+        265
+      ]
+    },
+    {
+      "id": "restore",
+      "from": "archive",
+      "to": "loader",
+      "label": "restore a study"
+    },
+    {
+      "id": "reconstruct",
+      "from": "loader",
+      "to": "study",
+      "label": "volumes + RT objects",
+      "variant": "emphasis"
+    },
+    {
+      "id": "toExport",
+      "from": "study",
+      "to": "export",
+      "label": "CT · RTSTRUCT · SEG · RTDOSE",
+      "labelAt": [
+        810,
+        135
+      ]
+    },
+    {
+      "id": "writeOut",
+      "from": "export",
+      "to": "dicomDisk",
+      "label": "writes DICOM files",
+      "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "top",
+      "via": [
+        [
+          150,
+          70
+        ]
+      ],
+      "labelAt": [
+        420,
+        56
+      ]
+    },
+    {
+      "id": "tree",
+      "from": "study",
+      "to": "shell",
+      "label": "as a data tree",
+      "variant": "emphasis"
+    },
+    {
+      "id": "draw",
+      "from": "shell",
+      "to": "views",
+      "label": "slices, contours, dose",
+      "variant": "emphasis",
+      "labelAt": [
+        1140,
+        135
+      ]
+    },
+    {
+      "id": "spawn",
+      "from": "shell",
+      "to": "jobs",
+      "label": "spawn · poll each frame",
+      "variant": "emphasis",
+      "labelAt": [
+        975,
+        265
+      ]
+    },
+    {
+      "id": "land",
+      "from": "jobs",
+      "to": "study",
+      "label": "results land in the tree",
+      "labelAt": [
+        810,
+        265
+      ]
+    },
+    {
+      "id": "runTools",
+      "from": "jobs",
+      "to": "tools"
+    },
+    {
+      "id": "runReg",
+      "from": "jobs",
+      "to": "reg"
+    },
+    {
+      "id": "runAuto",
+      "from": "jobs",
+      "to": "autoseg"
+    },
+    {
+      "id": "runSegvol",
+      "from": "jobs",
+      "to": "segvol"
+    },
+    {
+      "id": "runMedsam",
+      "from": "jobs",
+      "to": "medsam2"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Data",
+      "items": [
+        "A header-only scan classifies every file; a parallel read then reconstructs what was selected",
+        "Volumes, RTSTRUCT, RTDOSE, RTPLAN and SEG share one patient-coordinate geometry"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Application",
+      "items": [
+        "egui / eframe on wgpu — one or two rows of three linked MPR views",
+        "Every long operation snapshots its inputs, runs on a worker thread and reports on one channel"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Inference",
+      "items": [
+        "TotalSegmentator, SegVol and MedSAM2 re-implemented in pure Rust — no Python or C++ interop",
+        "Checkpoints download on first use and are cached as safetensors; GPU via wgpu, CPU fallback"
+      ]
+    }
+  ]
+}

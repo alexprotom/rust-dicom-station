@@ -486,7 +486,7 @@ impl ViewerApp {
             d.structs.iter_mut().for_each(|s| *s = v);
             d.segs.iter_mut().for_each(|s| *s = v);
         }
-        // A run in flight keeps the window alive whatever the ✕ says: the
+        // A run in flight keeps the window alive whatever the ✖ says: the
         // job's results have to land somewhere.
         if running || (!close && open) {
             self.propagate_dialog = Some(d);
