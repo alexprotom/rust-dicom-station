@@ -17,7 +17,7 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Rust DICOM / RT Viewer")
+            .with_title("Rust DICOM Station: Viewer")
             .with_inner_size([1680.0, 940.0])
             .with_min_inner_size([900.0, 520.0]),
         renderer: eframe::Renderer::Wgpu,

@@ -20,9 +20,6 @@ pub const ARCHIVE_DIR_KEY: &str = "archive_dir";
 const MODULE_REG_KEY: &str = "module_image_registration";
 const MODULE_SIM_KEY: &str = "module_image_simulation";
 
-/// Settings key of the tool windows that live in their own window.
-const DETACHED_KEY: &str = "detached_windows";
-
 /// User preferences that survive a restart.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
@@ -48,11 +45,6 @@ pub struct Settings {
     /// *Modules ▶ Image simulation*: the simulation section is shown in the
     /// side panel.
     pub module_simulation: bool,
-
-    /// Ids of the tool windows the user has pulled out of the main window
-    /// (see `app::detach`). A reading room that keeps the archive on its
-    /// second monitor gets it there again on the next start.
-    pub detached_windows: Vec<String>,
 }
 
 impl Default for Settings {
@@ -67,7 +59,6 @@ impl Default for Settings {
             // on and the choice is remembered.
             module_registration: false,
             module_simulation: false,
-            detached_windows: Vec::new(),
         }
     }
 }
@@ -286,13 +277,6 @@ fn parse(text: &str) -> Settings {
             if let Some(b) = bool_from_str(value) {
                 s.module_simulation = b;
             }
-        } else if key.eq_ignore_ascii_case(DETACHED_KEY) {
-            s.detached_windows = value
-                .split(',')
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .map(str::to_owned)
-                .collect();
         }
     }
     s
@@ -318,13 +302,6 @@ fn render(s: &Settings) -> String {
         bool_to_str(s.module_registration),
         bool_to_str(s.module_simulation)
     ));
-    if !s.detached_windows.is_empty() {
-        out.push_str(&format!(
-            "# tool windows opened in their own window\n\
-             {DETACHED_KEY} = {}\n",
-            s.detached_windows.join(",")
-        ));
-    }
     out
 }
 
@@ -375,26 +352,6 @@ mod tests {
             ..Settings::default()
         };
         assert_eq!(parse(&render(&with_dir)), with_dir, "model dir round trip");
-    }
-
-    #[test]
-    fn round_trips_the_detached_window_list() {
-        let s = Settings {
-            detached_windows: vec!["pacs".into(), "models".into()],
-            ..Settings::default()
-        };
-        assert_eq!(parse(&render(&s)), s, "list round trip");
-        assert_eq!(
-            parse(&format!("{DETACHED_KEY} = pacs , , drr_0\n")).detached_windows,
-            vec!["pacs".to_owned(), "drr_0".to_owned()],
-            "blank entries and spacing ignored"
-        );
-        assert!(
-            parse(&format!("{DETACHED_KEY} =\n"))
-                .detached_windows
-                .is_empty(),
-            "an empty list is no windows, not one blank id"
-        );
     }
 
     #[test]

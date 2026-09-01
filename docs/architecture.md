@@ -203,8 +203,8 @@ src/
                       plumbing (Job::spawn, poll_job, poll_tool_job), per-frame driver
     theme.rs          theme-dependent colors
     chrome.rs         menu bar, toolbar, status bar, help
-    detach.rs         every tool window, docked in the main window or in its
-                      own window of the operating system
+    detach.rs         every tool window as a window of the operating system
+                      (immediate viewport), titled and placed alike
     panels.rs         left panel: show / hide, the per-dataset Data tree sections
     reg_panel.rs      the Image registration section: method, region, parameters,
                       landmarks, the run, the analytics, the vector field
@@ -395,10 +395,17 @@ run, the UI polls at 10 Hz.
 
 ### The tool windows
 
-Every secondary window is drawn through `app/detach.rs`: docked, it is an
-`egui::Window` floating over the viewports; detached, the same closure draws
-into a native window of the operating system that can live on another
-monitor. The choice is per window and persisted.
+Every secondary window is drawn through `app/detach.rs::tool_window`, which
+puts its contents in an *immediate viewport* — a real top-level window of the
+operating system, on whichever monitor the user drags it to. Nothing floats
+inside the main window, so the viewports always keep the whole of it. Two
+rules live in that module: the window's position and size are applied **only
+on the pass that creates it** (egui diffs the `ViewportBuilder` against the
+one it stored and would otherwise command a dragged window back every frame,
+which reads as shaking), and every title goes through `window_title` so the
+whole program reads as `Rust DICOM Station: <what this window is>`. The
+transient confirmations — *Error*, *Done*, *Rename* — stay inside the main
+window, being answers to the last click rather than tools.
 
 The segmentation-type tools — body contour, structure algebra,
 auto-segmentation, prompt segmentation, slice propagation, 4D motion — are

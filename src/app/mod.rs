@@ -1011,10 +1011,6 @@ pub struct ViewerApp {
     /// The side panel is expanded (View ▶ Left panel, F9, or the arrow on
     /// the panel edge). Collapsed, the views have the whole window.
     side_open: bool,
-    /// Tool windows currently living in their own window of the operating
-    /// system. The live set is egui memory (`detach`); this is the copy last
-    /// written to the settings file, so a change can be spotted per frame.
-    detached_windows: std::collections::BTreeSet<String>,
 
     /// Light / dark / follow-the-system appearance, persisted between runs.
     theme: egui::ThemePreference,
@@ -1041,12 +1037,6 @@ impl ViewerApp {
     ) -> Self {
         let prefs = settings::load();
         cc.egui_ctx.set_theme(prefs.theme);
-        // The windows the user last pulled out open in their own window
-        // again — `detach` reads the set straight from egui memory.
-        detach::set_detached_ids(
-            &cc.egui_ctx,
-            prefs.detached_windows.iter().cloned().collect(),
-        );
         let models_dir = prefs
             .models_dir
             .as_ref()
@@ -1207,7 +1197,6 @@ impl ViewerApp {
             module_registration: prefs.module_registration,
             module_simulation: prefs.module_simulation,
             side_open: true,
-            detached_windows: prefs.detached_windows.iter().cloned().collect(),
             theme: prefs.theme,
             settings_error: None,
         };
@@ -1249,7 +1238,6 @@ impl ViewerApp {
             archive_dir,
             module_registration: self.module_registration,
             module_simulation: self.module_simulation,
-            detached_windows: self.detached_windows.iter().cloned().collect(),
         }) {
             Ok(()) => self.settings_error = None,
             Err(e) => {
@@ -1523,12 +1511,5 @@ impl eframe::App for ViewerApp {
             self.open_rename(target);
         }
         self.modals(&ctx);
-        // A window was pulled out of the main window or pushed back into it:
-        // remember which, so it opens the same way next time the viewer runs.
-        let detached = detach::detached_ids(&ctx);
-        if detached != self.detached_windows {
-            self.detached_windows = detached;
-            self.persist_settings();
-        }
     }
 }

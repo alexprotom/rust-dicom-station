@@ -63,16 +63,19 @@ shows each preset's center and width; the closed list carries only the chosen
 name, and any other window — a drag or the full range — leaves it nameless.
 Window/level is shared between datasets A and B.
 
-**Tool windows on their own screen.** Every secondary window — the archive,
-the model manager, the DRR, the 3D scenes, the segmentation and motion tools,
-the export and anonymizer dialogs — has a **Detach** button in its top-right
-corner that makes it an operating-system window of its own, to drag onto a
-second or third monitor, resize or maximize there, and keep open beside the
-images while the main window keeps all six viewports; **Dock** puts it back.
-Several can be out at once; each reopens where it was left, on the same
-monitor, and which are detached is remembered between runs
-(`detached_windows` in the settings file). Closing a detached window only
-closes that tool — it opens in its own window again next time.
+**Every tool has its own window.** The archive, the model manager, the DRR,
+the 3D scenes, the segmentation, motion and DVH tools, the export and
+anonymizer dialogs — none of them float inside the main window. Each opens as
+a window of the operating system in its own right, with its own title bar and
+task-bar entry, to be dragged onto a second or third monitor, resized or
+maximized there, and left open beside the images while the main window keeps
+all six viewports. Any number can be open at once, on any mix of screens, and
+each one reopens at the size and place it was last left — on the monitor it
+was left on. Closing a window closes that tool alone.
+
+Every window of the program is titled the same way: **Rust DICOM Station:**
+followed by what the window is — *Viewer* for the main one, then *PACS —
+patient archive*, *Downloaded models*, *DRR — dataset A*, and so on.
 
 **Status bar.** Patient coordinates, voxel indices, HU and dose (Gy and % of
 the reference dose) at the crosshair; in comparison mode both datasets report

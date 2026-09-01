@@ -214,7 +214,7 @@ impl ViewerApp {
             "body",
             BODY_CONTOUR.title(d.slot),
             &mut open,
-            detach::WinOpts::width(430.0).resizable(false),
+            detach::WinOpts::width(430.0),
             |ui| {
                 ui.label(
                     "Finds the patient's outer surface and leaves the couch, the chair and \

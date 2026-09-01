@@ -157,7 +157,7 @@ impl ViewerApp {
             "compare",
             "◑ Compare structures",
             &mut open,
-            detach::WinOpts::default().resizable(false),
+            detach::WinOpts::default(),
             |ui| {
                 ui.label(
                     "Volumes, centroid offset, Dice, HD95 and mean surface distance of \

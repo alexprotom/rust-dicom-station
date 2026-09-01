@@ -758,7 +758,7 @@ impl ViewerApp {
             "medsam2",
             SLICE_PROP.title(slot),
             &mut open,
-            detach::WinOpts::width(380.0).resizable(false),
+            detach::WinOpts::width(380.0),
             |ui| {
                 ui.label(format!(
                     "Follows a structure boxed on one slice through the stack with MedSAM2, \

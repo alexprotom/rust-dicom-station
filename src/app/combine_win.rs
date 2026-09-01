@@ -358,7 +358,7 @@ impl ViewerApp {
             "combine",
             COMBINE.title(slot),
             &mut open,
-            detach::WinOpts::width(470.0).resizable(false),
+            detach::WinOpts::width(470.0),
             |ui| {
                 ui.label(
                     "Builds one structure out of others: union, intersection, subtraction \

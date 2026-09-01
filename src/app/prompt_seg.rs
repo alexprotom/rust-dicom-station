@@ -247,7 +247,7 @@ impl ViewerApp {
             "segvol",
             PROMPT_SEG.title(d.slot),
             &mut open,
-            detach::WinOpts::width(380.0).resizable(false),
+            detach::WinOpts::width(380.0),
             |ui| {
                 ui.label(
                     "Segments whatever the prompt points at — a box, a click or a structure \

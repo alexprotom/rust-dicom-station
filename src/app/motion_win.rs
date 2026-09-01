@@ -525,7 +525,7 @@ impl ViewerApp {
             "motion",
             MOTION.title(slot),
             &mut open,
-            detach::WinOpts::default().resizable(false),
+            detach::WinOpts::default(),
             |ui| {
                 ui.label(
                     "Register the reference phase to every phase of a 4D group, carry the \
