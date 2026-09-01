@@ -365,6 +365,16 @@ impl StudySlot {
             .and_then(|s| s.structure_sets.get(self.active_structs))
     }
 
+    /// Whether this slot shows an image volume.
+    ///
+    /// A slot can hold a perfectly good dataset with none — RT images, a
+    /// structure set, a plan. Every feature that needs voxels (the MPR views,
+    /// the brush, registration, the segmentation engines, the DRR) asks this
+    /// rather than `study.is_some()`.
+    fn has_volume(&self) -> bool {
+        self.study.as_ref().is_some_and(|st| st.has_volume())
+    }
+
     /// Index of the segmentation series the tools edit, clamped to what the
     /// study actually holds.
     fn seg_series_idx(&self) -> Option<usize> {
@@ -378,7 +388,9 @@ impl StudySlot {
     /// drawn on another image series simply has nothing to show here.
     fn segs(&self) -> &[Segmentation] {
         match (self.study.as_ref(), self.seg_series_idx()) {
-            (Some(st), Some(i)) if st.seg_series[i].grid.dims == st.volume.dims => {
+            (Some(st), Some(i))
+                if st.has_volume() && st.seg_series[i].grid.dims == st.volume.dims =>
+            {
                 &st.seg_series[i].segs
             }
             _ => &[],
@@ -389,6 +401,9 @@ impl StudySlot {
     fn segs_mut(&mut self) -> Option<&mut Vec<Segmentation>> {
         let i = self.seg_series_idx()?;
         let st = self.study.as_mut()?;
+        if !st.has_volume() {
+            return None;
+        }
         let dims = st.volume.dims;
         let ser = &mut st.seg_series[i];
         (ser.grid.dims == dims).then_some(&mut ser.segs)
@@ -756,6 +771,8 @@ pub struct ViewerApp {
     loading: Option<Job<LoadResult>>,
     /// A load queued behind the one in flight (slot, directory).
     pending_load: Option<(usize, PathBuf)>,
+    /// The same, for an explicit file selection (slot, files).
+    pending_load_files: Option<(usize, Vec<PathBuf>)>,
     error: Option<String>,
     /// A one-line confirmation shown in a small modal (e.g. a written file).
     notice: Option<String>,
@@ -1064,6 +1081,7 @@ impl ViewerApp {
             hovered_slot: 0,
             loading: None,
             pending_load: None,
+            pending_load_files: None,
             error: None,
             notice: None,
             registration: None,
@@ -1293,6 +1311,19 @@ impl ViewerApp {
     pub(super) fn pick_folder(title: &str) -> Option<PathBuf> {
         rfd::FileDialog::new().set_title(title).pick_folder()
     }
+
+    /// Pick one or more DICOM files.
+    ///
+    /// "All files" comes first because DICOM files very often have no
+    /// extension at all; the `.dcm` filter is the convenience, not the rule.
+    pub(super) fn pick_files(title: &str) -> Option<Vec<PathBuf>> {
+        rfd::FileDialog::new()
+            .set_title(title)
+            .add_filter("All files", &["*"])
+            .add_filter("DICOM", &["dcm", "DCM", "ima", "IMA", "dic", "img"])
+            .pick_files()
+            .filter(|v| !v.is_empty())
+    }
 }
 
 // eframe::App
@@ -1321,6 +1352,8 @@ impl eframe::App for ViewerApp {
         if self.loading.is_none() {
             if let Some((slot, path)) = self.pending_load.take() {
                 self.start_load(slot, path);
+            } else if let Some((slot, paths)) = self.pending_load_files.take() {
+                self.start_load_files(slot, paths);
             }
         }
 

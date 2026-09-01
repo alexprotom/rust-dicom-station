@@ -127,7 +127,7 @@ pub(super) fn box_around(centre: [f32; 3], mm: f32, prep: &Prepared, vol: &Volum
 impl ViewerApp {
     /// Tools ▶ prompt segmentation: open the tool window for `slot`.
     pub(super) fn open_segvol_dialog(&mut self, slot: usize) {
-        if self.slots[slot].study.is_none() {
+        if !self.slots[slot].has_volume() {
             return;
         }
         match &mut self.segvol_dialog {

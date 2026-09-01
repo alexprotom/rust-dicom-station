@@ -478,7 +478,7 @@ impl ViewerApp {
             return;
         };
         let slot = d.slot;
-        if self.slots[slot].study.is_none() {
+        if !self.slots[slot].has_volume() {
             self.motion_dialog = None;
             return;
         }

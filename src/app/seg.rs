@@ -179,6 +179,9 @@ impl ViewerApp {
         let Some(study) = &self.slots[slot].study else {
             return;
         };
+        if !study.has_volume() {
+            return;
+        }
         let dims = study.volume.dims;
         let seed = [
             (seed[0].round().max(0.0) as usize).min(dims[0] - 1),

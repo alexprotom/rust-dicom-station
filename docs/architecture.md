@@ -47,6 +47,8 @@ rust-dicom-station
 │   │   structures, segmentations, 4D groups, dose and plans inside their study —
 │   │   plus dose display, planar images, spatial registrations, records, warnings
 │   ├── Views: 1 × 3 or 2 × 3 (comparison) linked MPR viewports, crosshair,
+│   │   a dataset with no volume says so in place of the panes and holds back
+│   │   the voxel tools;
 │   │   zoom / pan / W-L interaction, maximize, per-view caches
 │   ├── Tool windows (one shared skeleton; each can be docked over the views or
 │   │   detached into its own window of the operating system):
@@ -63,7 +65,10 @@ rust-dicom-station
 │   └── Theme: dark / light / system, accent colors
 │
 ├── DICOM
-│   ├── Import: directory scan, classification, patient ▶ study ▶ series tree, merging
+│   ├── Import: directory *or* file-list scan, classification, patient ▶ study ▶
+│   │   series tree, merging; a selection that reconstructs no volume (RT images,
+│   │   a structure set, a plan) loads as an ordinary dataset with an empty
+│   │   volume, and unpositioned image series open as single images
 │   │   ├── Volumes: CT, MR, PT, NM, US, OT (parallel decode, compressed syntaxes)
 │   │   └── Planar images: DX, CR, RTIMAGE, MG, XA, RF, PX
 │   ├── RT objects: RTSTRUCT, SEG (binary / fractional, read and written), RTDOSE,
@@ -149,7 +154,7 @@ rust-dicom-station
 │   ├── Render: window / level, dose colorwash, marching-squares isodose, contour ∩ plane
 │   └── Progress: message, fraction, device, cancel, phase window
 │
-├── Tests: 14 integration suites + in-module unit tests, synthetic phantom, reference dumps
+├── Tests: 15 integration suites + in-module unit tests, synthetic phantom, reference dumps
 ├── Examples: headless CLIs and probes for the engines (shared examples/common)
 ├── Tools: the two PyTorch scripts that produce the MedSAM2 reference fixtures
 ├── Installer: Windows setup (shortcuts, VC++ runtime, optional weight prefetch, uninstall)
@@ -244,8 +249,8 @@ src/
                       import, load, send back
     models_win.rs     the model manager window
 
-  loader.rs         directory scan, classification, parallel volume loading,
-                    dataset merging, safe DICOM element helpers                  DICOM
+  loader.rs         directory / file-list scan, classification, parallel volume
+                    loading, dataset merging, safe DICOM element helpers         DICOM
   volume.rs         3D volume, patient-space geometry, slice extraction,
                     trilinear sampling, canonical [S, A, R] axes                 Core
   geometry.rs       minimal 3D vector math (Vec3, f64, patient mm)               Core
@@ -361,7 +366,7 @@ src/
     engine.rs         backend choice, the encoded-slice cache, the one call
                       the user interface makes
 
-tests/             fourteen integration suites (see Testing)
+tests/             fifteen integration suites (see Testing)
 examples/          autoseg_cli, autoseg_probe, body_cli, segvol_cli, segvol_probe,
                    medsam2_cli, medsam2_probe; common/ holds what they share
 tools/             gen_reference_activations.py, gen_ops_fixtures.py — the two
@@ -523,14 +528,17 @@ its `ndarray` CPU backend, with the wgpu backend added by the cargo feature
 
 ## Testing
 
-Fourteen integration suites plus in-module unit tests run against the same
+Fifteen integration suites plus in-module unit tests run against the same
 code paths the GUI uses, with no external data or tooling: the analytic
 phantom round trip (**synthetic_study**), simulate → export → reload
 (**simulate_export**), rigid and B-spline recovery of known transforms
 (**registration**), masks, growing, contours and meshing (**segmentation**),
 anonymize → reload (**anonymize**), SEG written and read back voxel for voxel
 (**dicomseg**), the body contour on phantoms with couch, chair and mask
-(**body**), the archive round trip (**archive**), the DVH against an analytic
+(**body**), the archive round trip (**archive**), opening what is not a volume
+— RT images and a structure set on their own, a single slice, a folder of RT
+objects, and an image series added afterwards (**open_files**) — the DVH
+against an analytic
 Gaussian phantom (**dvh**), structure algebra (**structops**), and the three
 engines assembled and run without a download — a miniature nnU-Net with the
 exact checkpoint naming (**autoseg**), and synthesized checkpoints with the

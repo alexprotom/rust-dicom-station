@@ -172,7 +172,8 @@ impl ViewerApp {
     /// Tools ▶ combine structures: open the window for `slot`, optionally
     /// seeded with the items the tree had ticked.
     pub(super) fn open_combine_dialog(&mut self, slot: usize, seed: Vec<ItemRef>) {
-        if self.slots[slot].study.is_none() {
+        // Every operand is rasterised onto the displayed volume's lattice.
+        if !self.slots[slot].has_volume() {
             return;
         }
         let rows: Vec<Row> = seed
@@ -326,7 +327,7 @@ impl ViewerApp {
         let Some(slot) = self.combine_dialog.as_ref().map(|d| d.slot) else {
             return;
         };
-        if self.slots[slot].study.is_none() {
+        if !self.slots[slot].has_volume() {
             self.combine_dialog = None;
             return;
         }

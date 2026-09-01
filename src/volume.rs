@@ -173,6 +173,45 @@ pub struct Volume {
 }
 
 impl Volume {
+    /// A volume with no voxels, for a dataset that carries no image series.
+    ///
+    /// A dataset does not have to contain a reconstructable volume — a folder
+    /// or a handful of files can hold nothing but RT images, a structure set
+    /// or a plan, and those are legitimate things to open. Rather than making
+    /// [`crate::loader::LoadedStudy::volume`] optional and forcing a hundred
+    /// call sites to unwrap it, such a study carries this: dimensions of
+    /// zero, so every voxel loop is empty and every lookup misses.
+    ///
+    /// The geometry is deliberately the identity rather than zeros. Spacing
+    /// of zero would divide in [`Volume::patient_to_voxel`] and make
+    /// [`Grid::matches`] false even against itself, and zero direction
+    /// vectors would label every view edge the same way. Nothing should read
+    /// this geometry — [`Volume::is_empty`] says not to — but if something
+    /// does, it gets an answer that is merely useless rather than poisonous.
+    pub fn empty() -> Volume {
+        Volume {
+            data: Vec::new(),
+            dims: [0, 0, 0],
+            spacing: [1.0, 1.0, 1.0],
+            origin: Vec3::new(0.0, 0.0, 0.0),
+            row_dir: Vec3::new(1.0, 0.0, 0.0),
+            col_dir: Vec3::new(0.0, 1.0, 0.0),
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            frame_of_reference_uid: String::new(),
+            min_value: 0,
+            max_value: 0,
+        }
+    }
+
+    /// No voxels — nothing to display, sample, register or segment.
+    ///
+    /// Every feature that needs image data asks this first; see
+    /// [`Volume::empty`].
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.dims.contains(&0)
+    }
+
     #[inline]
     pub fn index(&self, i: usize, j: usize, k: usize) -> i16 {
         self.data[k * self.dims[0] * self.dims[1] + j * self.dims[0] + i]
@@ -265,6 +304,11 @@ impl Volume {
     /// * Coronal: horizontal = i, vertical = k *flipped*.
     pub fn extract_slice(&self, plane: ViewPlane, slice: usize, out: &mut Vec<i16>) {
         let [nx, ny, nz] = self.dims;
+        if self.is_empty() {
+            // Nothing to reformat, and `par_chunks_mut(0)` would panic.
+            out.clear();
+            return;
+        }
         let (w, h) = {
             let d = self.plane_dims(plane);
             (d[0], d[1])

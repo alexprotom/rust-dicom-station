@@ -8,8 +8,13 @@ reconstructed cross-sections of the same ROIs.*
 
 ## Loading and volume reconstruction
 
-Opening a folder (*File ▶ Add DICOM folder…*, or directory arguments on the
-command line) starts a background scan:
+Data comes in either way round: a whole folder (*File ▶ Add DICOM folder…*, or
+directory arguments on the command line) or an explicit handful of files
+(*File ▶ Add DICOM file(s)…*, multi-select). Both start the same background
+scan and both merge into the dataset the same way — a file selection is not a
+separate mode with its own rules, it is a study that happens to be small.
+
+The scan:
 
 1. **Classification.** Every file in the tree is read header-only (no pixel
    data) in parallel and classified by SOP class / modality: image series
@@ -33,6 +38,38 @@ for display) and duplicate slice positions are collapsed. Enhanced multi-frame
 image series are not yet supported (classic single-frame only). RT objects
 found in the folder are parsed alongside and attached to the study — see
 [rt-objects.md](rt-objects.md).
+
+### Datasets with no volume
+
+Not everything worth opening reconstructs into slices, and a viewer that
+insists otherwise is a viewer you cannot use to look at a portal image. So
+**a dataset without an image volume is a normal dataset here**, not a failed
+load. Three cases arrive at it:
+
+* the selection holds only RT images, DX/CR radiographs or other projection
+  images — nothing with slice positions to stack;
+* the selection holds only RT objects — a structure set, a plan, a dose grid,
+  a registration, a treatment record;
+* an image file carries no `ImagePositionPatient` at all. That is judged per
+  *series*, not per file: a series where nothing is positioned cannot be
+  reconstructed and its files are opened as single images, while a series
+  where one slice happens to lack the tag is still a series. Before, such
+  files were dropped silently.
+
+Such a dataset appears in the tree under its patient and study exactly like
+any other, and everything it holds is usable: planar images open in their
+viewers (the *Planar images* section opens itself, since for these datasets it
+is the content rather than a footnote), structure sets render in the 3D
+window, plans and dose objects show their tables, and any of it can be
+renamed, copied to the other dataset or exported. What is held back is only
+what needs voxels: the MPR views say so in place of three black panes, and the
+segmentation tools, the four engines, registration, propagation, combination,
+comparison and the DRR are disabled until there is something to run them on.
+
+Adding an image series afterwards completes the dataset. *File ▶ Add DICOM
+folder…* into the same slot merges the images in and the views switch to
+them — which is the ordinary way to open a structure set first and its CT
+second, and have the contours land on the right images.
 
 ## The three-view MPR layout
 
@@ -257,6 +294,13 @@ windows with their own window/level (DICOM default at open; auto, manual, or
 right-drag like the CT views), correct physical aspect ratio (imager /
 image-plane pixel spacing), MONOCHROME1 inversion, and metadata — body part,
 view and kVp for DX; machine, gantry angle, SAD and SID for RTIMAGE.
+
+Any image that carries no slice position lands here, whatever its modality —
+that is what makes *File ▶ Add DICOM file(s)…* on a single RT image, an
+unpositioned secondary capture or a stray slice give you something to look at.
+The section is closed by default when there is a volume beside it and open
+when there is not. Multi-frame images are the one exception: they are reported
+as a warning rather than loaded.
 
 ## Appearance
 

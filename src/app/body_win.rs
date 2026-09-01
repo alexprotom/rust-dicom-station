@@ -48,7 +48,7 @@ impl ViewerApp {
 
     /// Tools ▶ body contour: open the tool window for `slot`.
     pub(super) fn open_body_dialog(&mut self, slot: usize) {
-        if self.slots[slot].study.is_none() {
+        if !self.slots[slot].has_volume() {
             return;
         }
         let modality = self.slot_modality(slot);

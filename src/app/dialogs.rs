@@ -19,7 +19,7 @@ impl ViewerApp {
     // -- Auto-segmentation (TotalSegmentator, see the `autoseg` module) ----
     /// Open the tool window for auto-segmenting the given slot.
     pub(super) fn open_autoseg_dialog(&mut self, slot: usize) {
-        if self.slots[slot].study.is_none() {
+        if !self.slots[slot].has_volume() {
             return;
         }
         match &mut self.autoseg_dialog {

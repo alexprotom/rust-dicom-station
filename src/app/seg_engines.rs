@@ -111,10 +111,14 @@ impl ViewerApp {
 
     /// Does `slot` still show the volume a run started on?
     pub(super) fn slot_still_shows(&self, slot: usize, dims: [usize; 3], uid: &str) -> bool {
-        self.slots[slot]
-            .study
-            .as_ref()
-            .is_some_and(|st| st.volume.dims == dims && st.volume.frame_of_reference_uid == uid)
+        // `has_volume` first: an empty volume has dims [0, 0, 0] and a
+        // blank frame of reference, which would match a stale result's own
+        // zeros and let it land on a dataset that shows nothing.
+        self.slots[slot].has_volume()
+            && self.slots[slot]
+                .study
+                .as_ref()
+                .is_some_and(|st| st.volume.dims == dims && st.volume.frame_of_reference_uid == uid)
     }
 
     /// The colour the next new segmentation gets, from the shared palette.

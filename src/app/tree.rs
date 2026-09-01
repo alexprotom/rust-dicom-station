@@ -42,11 +42,17 @@ impl ViewerApp {
     /// takes only its reference chain (RTSTRUCT drawn on it, plans made on
     /// those structure sets, doses computed for those plans); study/patient
     /// selections additionally take objects filed under the same studies.
+    ///
+    /// `scope_uids` names studies the selection covers beyond those the
+    /// selected series announce. A study can be in the tree without a single
+    /// image series in it — a folder of RT images, a structure set on its
+    /// own — and then the series are silent about which study was picked.
     pub(super) fn subset_masks(
         study: &LoadedStudy,
         sel: &[bool],
         study_scope: bool,
         take_extras: bool,
+        scope_uids: &[&str],
     ) -> SubsetMasks {
         if take_extras {
             // Whole slot content: everything goes.
@@ -66,7 +72,7 @@ impl ViewerApp {
             .filter(|(_, k)| **k)
             .map(|(s, _)| s.uid.as_str())
             .collect();
-        let stuids: Vec<&str> = study
+        let mut stuids: Vec<&str> = study
             .series
             .iter()
             .zip(sel)
@@ -74,6 +80,7 @@ impl ViewerApp {
             .map(|(s, _)| s.study_uid.as_str())
             .filter(|u| !u.is_empty())
             .collect();
+        stuids.extend(scope_uids.iter().copied().filter(|u| !u.is_empty()));
         let structs: Vec<bool> = study
             .structure_sets
             .iter()
@@ -143,11 +150,12 @@ impl ViewerApp {
     /// Standalone copy of the selected subset. `activate` is the source
     /// series index to display; the volume is a placeholder (the source's
     /// current volume) that is correct exactly when `activate` is the
-    /// source's active series.
+    /// source's active series. `None` builds a subset with no image series
+    /// at all — the RT objects of a study that has none.
     pub(super) fn build_subset(
         study: &LoadedStudy,
         masks: &SubsetMasks,
-        activate: usize,
+        activate: Option<usize>,
     ) -> LoadedStudy {
         let pick = |sel: &[bool], n: usize| -> Vec<usize> {
             (0..n)
@@ -158,30 +166,42 @@ impl ViewerApp {
             .iter()
             .map(|&i| study.series[i].clone())
             .collect();
-        let sub_active = pick(&masks.series, study.series.len())
-            .iter()
-            .position(|&i| i == activate)
+        let sub_active = activate
+            .and_then(|a| {
+                pick(&masks.series, study.series.len())
+                    .iter()
+                    .position(|&i| i == a)
+            })
             .unwrap_or(0);
-        let se = &study.series[activate];
+        // Identity comes off the displayed series where there is one, and off
+        // the dataset otherwise — a study of RT objects alone still has a
+        // patient.
+        let se = activate.and_then(|a| study.series.get(a));
         let meta = loader::PatientMeta {
-            patient_name: if se.patient_name.is_empty() {
-                study.meta.patient_name.clone()
-            } else {
-                se.patient_name.clone()
+            patient_name: match se {
+                Some(se) if !se.patient_name.is_empty() => se.patient_name.clone(),
+                _ => study.meta.patient_name.clone(),
             },
-            patient_id: if se.patient_id.is_empty() {
-                study.meta.patient_id.clone()
-            } else {
-                se.patient_id.clone()
+            patient_id: match se {
+                Some(se) if !se.patient_id.is_empty() => se.patient_id.clone(),
+                _ => study.meta.patient_id.clone(),
             },
-            study_date: se.study_date.clone(),
-            study_description: se.study_description.clone(),
+            study_date: se.map_or_else(|| study.meta.study_date.clone(), |s| s.study_date.clone()),
+            study_description: se.map_or_else(
+                || study.meta.study_description.clone(),
+                |s| s.study_description.clone(),
+            ),
         };
         LoadedStudy {
             meta,
             series,
             active_series: sub_active,
-            volume: study.volume.clone(),
+            // No series taken means no volume taken: the destination gets the
+            // objects and nothing to display them on.
+            volume: match activate {
+                Some(_) => study.volume.clone(),
+                None => Arc::new(Volume::empty()),
+            },
             structure_sets: pick(&masks.structs, study.structure_sets.len())
                 .iter()
                 .map(|&i| study.structure_sets[i].clone())
@@ -227,23 +247,59 @@ impl ViewerApp {
             return;
         };
         let sel_mask = Self::tree_sel_mask(study, sel);
-        if !sel_mask.iter().any(|b| *b) {
+        let any_series = sel_mask.iter().any(|b| *b);
+        let study_scope = !matches!(sel, TreeSel::Series(_));
+        // The studies the selection covers, for the objects of a study that
+        // has no image series to speak for it.
+        let scope_uids: Vec<&str> = match sel {
+            TreeSel::Series(_) => Vec::new(),
+            TreeSel::Study(uid) => vec![uid.as_str()],
+            // A patient node with no series is the one the tree synthesises
+            // for everything unattached, so it covers every such study.
+            TreeSel::Patient(_) if !any_series => study
+                .structure_sets
+                .iter()
+                .map(|ss| ss.study_uid.as_str())
+                .chain(study.seg_series.iter().map(|sr| sr.study_uid.as_str()))
+                .chain(study.doses.iter().map(|d| d.study_uid.as_str()))
+                .chain(study.plans.iter().map(|p| p.study_uid.as_str()))
+                .filter(|u| !u.is_empty())
+                .collect(),
+            TreeSel::Patient(_) => Vec::new(),
+        };
+        let all_selected = !sel_mask.is_empty() && sel_mask.iter().all(|b| *b);
+        let masks = Self::subset_masks(
+            study,
+            &sel_mask,
+            study_scope,
+            study_scope && all_selected,
+            &scope_uids,
+        );
+        let any_object = [
+            &masks.structs,
+            &masks.seg_series,
+            &masks.doses,
+            &masks.plans,
+        ]
+        .iter()
+        .any(|m| m.iter().any(|b| *b));
+        if !any_series && !any_object {
             return;
         }
-        let all_selected = sel_mask.iter().all(|b| *b);
-        let study_scope = !matches!(sel, TreeSel::Series(_));
-        let masks = Self::subset_masks(study, &sel_mask, study_scope, study_scope && all_selected);
 
         if op != TreeOp::Remove {
-            // Choose the series the destination will display.
+            // Choose the series the destination will display — there may be
+            // none, when the selection is a study of RT objects alone.
             let active = study.active_series;
-            let activate = if sel_mask.get(active).copied().unwrap_or(false) {
-                active
+            let activate = if !any_series {
+                None
+            } else if sel_mask.get(active).copied().unwrap_or(false) {
+                Some(active)
             } else {
                 match (0..study.series.len())
                     .find(|&i| sel_mask[i] && !study.series[i].files.is_empty())
                 {
-                    Some(i) => i,
+                    Some(i) => Some(i),
                     None => {
                         self.error = Some(
                             "The selected series exist only in memory (no source files) — \
@@ -255,8 +311,9 @@ impl ViewerApp {
                 }
             };
             let sub = Self::build_subset(study, &masks, activate);
-            let direct = (activate == active).then(|| (study.volume.clone(), study.default_window));
-            let uid = study.series[activate].uid.clone();
+            let direct =
+                (activate == Some(active)).then(|| (study.volume.clone(), study.default_window));
+            let uid = activate.map_or_else(String::new, |a| study.series[a].uid.clone());
             self.tree_insert(1 - from, sub, &uid, direct);
         }
         if op != TreeOp::Copy {
@@ -308,7 +365,7 @@ impl ViewerApp {
     /// removed, clearing the slot if nothing is left).
     pub(super) fn remove_subset(&mut self, slot: usize, masks: &SubsetMasks) {
         let mut reload: Option<usize> = None;
-        let mut empty = false;
+        let empty;
         {
             let s = &mut self.slots[slot];
             let Some(st) = s.study.as_mut() else { return };
@@ -352,20 +409,37 @@ impl ViewerApp {
                 st.registrations.clear();
                 st.treat_records.clear();
             }
-            if st.series.is_empty() {
-                empty = true;
-            } else {
-                match active_uid
-                    .as_deref()
-                    .and_then(|uid| st.series.iter().position(|se| se.uid == uid))
-                {
-                    Some(i) => st.active_series = i,
-                    None => {
-                        if let Some(i) = st.series.iter().position(|se| !se.files.is_empty()) {
-                            st.active_series = i;
-                            reload = Some(i);
-                        } else {
-                            st.active_series = 0;
+            // "No series left" no longer means "nothing left": a dataset can
+            // legitimately hold only RT images, a structure set or a plan.
+            // The slot is cleared only when it really is empty.
+            empty = st.series.is_empty()
+                && st.structure_sets.is_empty()
+                && st.seg_series.is_empty()
+                && st.doses.is_empty()
+                && st.plans.is_empty()
+                && st.planar_images.is_empty()
+                && st.registrations.is_empty()
+                && st.treat_records.is_empty();
+            if !empty {
+                if st.series.is_empty() {
+                    // The images that were being displayed have just been
+                    // removed; keeping their voxels would show a series the
+                    // tree no longer lists.
+                    st.volume = Arc::new(Volume::empty());
+                    st.active_series = 0;
+                } else {
+                    match active_uid
+                        .as_deref()
+                        .and_then(|uid| st.series.iter().position(|se| se.uid == uid))
+                    {
+                        Some(i) => st.active_series = i,
+                        None => {
+                            if let Some(i) = st.series.iter().position(|se| !se.files.is_empty()) {
+                                st.active_series = i;
+                                reload = Some(i);
+                            } else {
+                                st.active_series = 0;
+                            }
                         }
                     }
                 }
@@ -527,13 +601,13 @@ mod tree_tests {
         let study = two_chain_study();
         let sel = ViewerApp::tree_sel_mask(&study, &TreeSel::Series(0));
         assert_eq!(sel, vec![true, false]);
-        let masks = ViewerApp::subset_masks(&study, &sel, false, false);
+        let masks = ViewerApp::subset_masks(&study, &sel, false, false, &[]);
         assert_eq!(masks.series, vec![true, false]);
         assert_eq!(masks.structs, vec![true, false]);
         assert_eq!(masks.plans, vec![true, false]);
         assert_eq!(masks.doses, vec![true, false]);
 
-        let sub = ViewerApp::build_subset(&study, &masks, 0);
+        let sub = ViewerApp::build_subset(&study, &masks, Some(0));
         assert_eq!(sub.series.len(), 1);
         assert_eq!(sub.series[0].uid, "se1");
         assert_eq!(sub.structure_sets.len(), 1);
@@ -549,7 +623,7 @@ mod tree_tests {
         let study = two_chain_study();
         let sel = ViewerApp::tree_sel_mask(&study, &TreeSel::Study("st2".into()));
         assert_eq!(sel, vec![false, true]);
-        let masks = ViewerApp::subset_masks(&study, &sel, true, false);
+        let masks = ViewerApp::subset_masks(&study, &sel, true, false, &[]);
         assert_eq!(masks.structs, vec![false, true]);
         assert_eq!(masks.plans, vec![false, true]);
         assert_eq!(masks.doses, vec![false, true]);
@@ -561,7 +635,7 @@ mod tree_tests {
         let study = two_chain_study();
         let sel = ViewerApp::tree_sel_mask(&study, &TreeSel::Patient("P1".into()));
         assert_eq!(sel, vec![true, true]);
-        let masks = ViewerApp::subset_masks(&study, &sel, true, true);
+        let masks = ViewerApp::subset_masks(&study, &sel, true, true, &[]);
         assert!(masks.structs.iter().all(|b| *b));
         assert!(masks.take_extras);
     }
@@ -570,8 +644,8 @@ mod tree_tests {
     #[test]
     fn merge_dedupes_by_uid() {
         let mut dest = two_chain_study();
-        let masks = ViewerApp::subset_masks(&dest, &[true, false], false, false);
-        let sub = ViewerApp::build_subset(&dest, &masks, 0);
+        let masks = ViewerApp::subset_masks(&dest, &[true, false], false, false, &[]);
+        let sub = ViewerApp::build_subset(&dest, &masks, Some(0));
         let notes = loader::merge_study(&mut dest, sub);
         assert_eq!(dest.series.len(), 2, "duplicate series must not be added");
         assert_eq!(dest.structure_sets.len(), 2);

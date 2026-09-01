@@ -167,6 +167,17 @@ pub struct LoadedStudy {
     pub default_window: (f32, f32),
 }
 
+impl LoadedStudy {
+    /// Whether this dataset holds a reconstructed image volume.
+    ///
+    /// A study with none is not an error: a folder or a handful of files can
+    /// hold nothing but RT images, a structure set or a plan. Everything that
+    /// needs voxels asks this first; see [`Volume::empty`].
+    pub fn has_volume(&self) -> bool {
+        !self.volume.is_empty()
+    }
+}
+
 const IMAGE_MODALITIES: &[&str] = &["CT", "MR", "PT", "NM", "US", "OT"];
 /// Modalities treated as 2D projection images (no volume reconstruction).
 const PLANAR_MODALITIES: &[&str] = &["DX", "CR", "RTIMAGE", "MG", "XA", "RF", "PX"];
@@ -193,6 +204,22 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
 
     if files.is_empty() {
         bail!("No files found in {}", dir.display());
+    }
+    load_files(&files, &dir.display().to_string(), progress)
+}
+
+/// Load an explicit list of DICOM files (*File ▶ Add DICOM file(s)*).
+///
+/// The same code path as [`load_directory`] — the only difference is where
+/// the list of files came from. Opening three RT images, one structure set or
+/// a single slice is therefore not a special mode with its own rules; it is
+/// an ordinary study that happens to be small, and it merges into a dataset
+/// exactly like a folder does.
+///
+/// `origin` names what is being opened, for error messages only.
+pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Result<LoadedStudy> {
+    if files.is_empty() {
+        bail!("No files to open");
     }
     progress.set(format!("Reading headers of {} files…", files.len()));
 
@@ -255,7 +282,7 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
         ));
     }
     if scanned.is_empty() {
-        bail!("No DICOM files found in {}", dir.display());
+        bail!("No DICOM files found in {origin}");
     }
 
     // Classify.
@@ -272,6 +299,19 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
     // Series are looked up by UID rather than scanned linearly: with many
     // series in one folder the linear form is quadratic in the file count.
     let mut series_index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+
+    // An image file without Image Position Patient cannot be placed in a
+    // volume. Judged file by file that would break a series in which one
+    // slice happens to lack the tag, so the question is asked of the series:
+    // if *nothing* in it is positioned, none of it can be reconstructed and
+    // its files are opened as single images instead of being dropped. This
+    // is what makes "open this one file" work for an RT image, a scanned
+    // document, a secondary capture or a stray unpositioned slice.
+    let positioned: std::collections::HashSet<&str> = scanned
+        .iter()
+        .filter(|s| s.has_geometry)
+        .map(|s| s.series_uid.as_str())
+        .collect();
 
     for s in &scanned {
         if meta.patient_id.is_empty() && !s.meta.patient_id.is_empty() {
@@ -305,6 +345,10 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
             record_files.push(s.path.clone());
         } else if is_planar && !s.has_geometry {
             planar_files.push(s.path.clone());
+        } else if !positioned.contains(s.series_uid.as_str()) {
+            // An image whose series carries no position anywhere: readable
+            // on its own, but not part of any volume.
+            planar_files.push(s.path.clone());
         } else if s.has_geometry
             && (IMAGE_MODALITIES.contains(&s.modality.as_str())
                 || PLANAR_MODALITIES.contains(&s.modality.as_str())
@@ -332,17 +376,32 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
         }
     }
 
-    if image_series.is_empty() {
-        bail!("No image series (CT/MR/…) with geometry found — cannot build a volume");
-    }
-
     // Default to the series with the most slices (typically the planning CT).
     image_series.sort_by_key(|s| std::cmp::Reverse(s.files.len()));
     let active_series = 0;
 
-    let (volume, default_window, mut vol_warnings) =
-        load_series_volume(&image_series[active_series], progress)?;
-    warnings.append(&mut vol_warnings);
+    // No image series is not an error. RT images, a structure set, a plan or
+    // a dose grid are perfectly ordinary things to open on their own, and a
+    // dataset holding only those is loaded with an empty volume rather than
+    // refused; see [`Volume::empty`].
+    let (volume, default_window) = match image_series.first() {
+        Some(series) => {
+            let (v, w, mut vol_warnings) = load_series_volume(series, progress)?;
+            warnings.append(&mut vol_warnings);
+            (v, w)
+        }
+        None => {
+            warnings.push(
+                "No image series with slice positions — nothing to reconstruct a volume from. \
+                 Everything else in the selection was loaded; single images are under \
+                 Planar images."
+                    .into(),
+            );
+            // Keep a usable window rather than the (0, 1) an empty volume
+            // would suggest, so the other dataset's display is untouched.
+            (Volume::empty(), (40.0, 400.0))
+        }
+    };
 
     // RT objects — every structure set is loaded (e.g. one per 4DCT phase);
     // the application chooses which one is active. Each group is parsed in

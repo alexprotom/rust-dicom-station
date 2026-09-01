@@ -188,6 +188,85 @@ impl ViewerApp {
         }
     }
 
+    /// The pane shown for a loaded dataset that carries no image volume.
+    ///
+    /// Modelled on [`Self::empty_row`], but it says something different: the
+    /// dataset is *there*, it simply has nothing to reformat. Only the middle
+    /// pane carries the text (or the single pane, when one is maximized), so
+    /// the message is stated once rather than three times across the row.
+    fn no_volume_row(&mut self, ui: &mut egui::Ui, slot: usize, rect: Rect, idx: usize) {
+        let (fill, hint, strong) = {
+            let v = ui.visuals();
+            (empty_row_color(v), v.text_color(), v.strong_text_color())
+        };
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 0.0, fill);
+        if !(self.maximized.is_some() || idx == 1) {
+            return;
+        }
+        let counts = self.slots[slot]
+            .study
+            .as_ref()
+            .map(|st| {
+                let mut parts: Vec<String> = Vec::new();
+                let mut add = |n: usize, one: &str, many: &str| {
+                    if n > 0 {
+                        parts.push(format!("{n} {}", if n == 1 { one } else { many }));
+                    }
+                };
+                add(st.planar_images.len(), "image", "images");
+                add(st.structure_sets.len(), "structure set", "structure sets");
+                add(
+                    st.seg_series.len(),
+                    "segmentation series",
+                    "segmentation series",
+                );
+                add(st.doses.len(), "dose grid", "dose grids");
+                add(st.plans.len(), "plan", "plans");
+                add(st.registrations.len(), "registration", "registrations");
+                add(
+                    st.treat_records.len(),
+                    "treatment record",
+                    "treatment records",
+                );
+                parts.join(" · ")
+            })
+            .unwrap_or_default();
+
+        painter.text(
+            rect.center() - Vec2::new(0.0, 40.0),
+            Align2::CENTER_CENTER,
+            format!("Dataset {} has no image volume", SLOT_NAMES[slot]),
+            FontId::proportional(15.0),
+            strong,
+        );
+        painter.text(
+            rect.center() - Vec2::new(0.0, 18.0),
+            Align2::CENTER_CENTER,
+            if counts.is_empty() {
+                "Nothing in it can be reconstructed into slices.".to_string()
+            } else {
+                format!("{counts} — open them from the panel on the left.")
+            },
+            FontId::proportional(13.0),
+            hint,
+        );
+        let btn_rect =
+            Rect::from_center_size(rect.center() + Vec2::new(0.0, 14.0), Vec2::new(240.0, 28.0));
+        if ui
+            .put(btn_rect, egui::Button::new("📂 Add DICOM folder…"))
+            .on_hover_text("Add an image series to this dataset so the views have slices to show")
+            .clicked()
+        {
+            if let Some(dir) = Self::pick_folder(&format!(
+                "Select DICOM folder to add to dataset {}",
+                SLOT_NAMES[slot]
+            )) {
+                self.start_load(slot, dir);
+            }
+        }
+    }
+
     pub(super) fn empty_state(&mut self, ui: &mut egui::Ui) {
         ui.centered_and_justified(|ui| {
             ui.vertical_centered(|ui| {
@@ -242,6 +321,15 @@ impl ViewerApp {
 
         // ---- cache refresh (image, dose, contours) ----
         self.refresh_view_caches(&ctx, slot, idx);
+
+        // A dataset with no image series has nothing to reformat. It is a
+        // legitimate dataset all the same — RT images, a structure set, a
+        // plan — so the pane says so and offers the folder that would give
+        // it a volume, instead of three black rectangles.
+        if self.slots[slot].study.is_some() && !self.slots[slot].has_volume() {
+            self.no_volume_row(ui, slot, rect, idx);
+            return;
+        }
 
         let slot_state = &self.slots[slot];
         let Some(study) = &slot_state.study else {
@@ -773,7 +861,7 @@ impl ViewerApp {
                 let acc = view.scroll_accum + wheel_lines;
                 let steps = acc.trunc() as i64;
                 new_accum = Some(acc - steps as f32);
-                if steps != 0 {
+                if steps != 0 && n_slices > 0 {
                     let s = (view.slice as i64 - steps).clamp(0, n_slices as i64 - 1) as usize;
                     new_slice = Some(s);
                 }
@@ -944,11 +1032,16 @@ impl ViewerApp {
         let Some(study) = &self.slots[slot].study else {
             return;
         };
+        if !study.has_volume() {
+            return;
+        }
         let dims = study.volume.dims;
+        // `saturating_sub`, not `- 1`: a zero dimension would make the upper
+        // bound negative and `clamp` panics on min > max.
         let clamped = [
-            c[0].clamp(0.0, dims[0] as f64 - 1.0),
-            c[1].clamp(0.0, dims[1] as f64 - 1.0),
-            c[2].clamp(0.0, dims[2] as f64 - 1.0),
+            c[0].clamp(0.0, dims[0].saturating_sub(1) as f64),
+            c[1].clamp(0.0, dims[1].saturating_sub(1) as f64),
+            c[2].clamp(0.0, dims[2].saturating_sub(1) as f64),
         ];
         let patient = study
             .volume
@@ -969,12 +1062,15 @@ impl ViewerApp {
                 Some(reg) => reg.result.transform.unmap(patient),
                 None => patient,
             };
+            if !ostudy.has_volume() {
+                return;
+            }
             let odims = ostudy.volume.dims;
             let oc = ostudy.volume.patient_to_voxel(target);
             self.slots[other].cursor = [
-                oc[0].clamp(0.0, odims[0] as f64 - 1.0),
-                oc[1].clamp(0.0, odims[1] as f64 - 1.0),
-                oc[2].clamp(0.0, odims[2] as f64 - 1.0),
+                oc[0].clamp(0.0, odims[0].saturating_sub(1) as f64),
+                oc[1].clamp(0.0, odims[1].saturating_sub(1) as f64),
+                oc[2].clamp(0.0, odims[2].saturating_sub(1) as f64),
             ];
             self.sync_views_to_cursor(other, None);
         }
@@ -1010,7 +1106,9 @@ impl ViewerApp {
 
     /// Rebuild per-view textures & cached geometry when their inputs changed.
     pub(super) fn refresh_view_caches(&mut self, ctx: &egui::Context, slot: usize, idx: usize) {
-        if self.slots[slot].study.is_none() {
+        // No voxels, no textures: a 0 × 0 image is not a valid wgpu texture,
+        // and every reformat below would be reading an empty buffer.
+        if !self.slots[slot].has_volume() {
             return;
         }
         // Pre-compute hashes that need `&self` before borrowing mutably.

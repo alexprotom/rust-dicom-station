@@ -23,6 +23,11 @@ impl ViewerApp {
     /// slot's displayed image series, make it the active one and return its
     /// index.
     pub(super) fn new_set(&mut self, slot: usize, kind: SetKind) -> Option<usize> {
+        // A new set is bound to the displayed image series' lattice; with
+        // no volume there is nothing to bind it to.
+        if !self.slots[slot].has_volume() {
+            return None;
+        }
         let s = &mut self.slots[slot];
         let study = s.study.as_mut()?;
         let se = study.series.get(study.active_series);

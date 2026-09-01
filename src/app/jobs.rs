@@ -24,6 +24,33 @@ impl ViewerApp {
         self.loading = Some(Job { progress, rx });
     }
 
+    /// *File ▶ Add DICOM file(s)*: load an explicit selection of files.
+    ///
+    /// It lands through the same [`LoadResult::Study`] as a folder, so the
+    /// files merge into the dataset and appear in the tree exactly as a
+    /// folder's contents would. Nothing downstream knows the difference.
+    pub(super) fn start_load_files(&mut self, slot: usize, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+        if self.loading.is_some() {
+            self.pending_load_files = Some((slot, paths));
+            return;
+        }
+        let origin = match paths.len() {
+            1 => paths[0].display().to_string(),
+            n => format!("{n} selected files"),
+        };
+        let progress = Arc::new(Progress::default());
+        let (tx, rx) = mpsc::channel();
+        let p2 = progress.clone();
+        std::thread::spawn(move || {
+            let res = loader::load_files(&paths, &origin, &p2);
+            let _ = tx.send(LoadResult::Study(Box::new(res), slot));
+        });
+        self.loading = Some(Job { progress, rx });
+    }
+
     pub(super) fn start_series_switch(&mut self, slot: usize, idx: usize) {
         if self.loading.is_some() {
             return;
@@ -31,7 +58,9 @@ impl ViewerApp {
         let Some(study) = &self.slots[slot].study else {
             return;
         };
-        let series = study.series[idx].clone();
+        let Some(series) = study.series.get(idx).cloned() else {
+            return;
+        };
         let progress = Arc::new(Progress::default());
         let (tx, rx) = mpsc::channel();
         let p2 = progress.clone();
@@ -48,13 +77,26 @@ impl ViewerApp {
     /// displayed volume and all selections untouched — the new patients /
     /// studies / series simply appear in the data tree.
     pub(super) fn absorb_loaded_study(&mut self, slot: usize, study: LoadedStudy) {
-        if self.slots[slot].study.is_some() {
-            let dest = self.slots[slot].study.as_mut().unwrap();
-            let notes = loader::merge_study(dest, study);
-            dest.warnings.extend(notes);
-            self.settings_gen += 1;
-        } else {
+        let Some(dest) = self.slots[slot].study.as_mut() else {
             self.on_study_loaded(slot, study);
+            return;
+        };
+        let was_empty = !dest.has_volume();
+        let notes = loader::merge_study(dest, study);
+        dest.warnings.extend(notes);
+        self.settings_gen += 1;
+        // A dataset that held only RT images or RT objects has just been
+        // given an image series: display it. Merging normally leaves the
+        // shown volume alone, but here there was none, and leaving the views
+        // empty beside a tree that now lists a CT would be a puzzle rather
+        // than a policy.
+        if was_empty
+            && self.slots[slot]
+                .study
+                .as_ref()
+                .is_some_and(|s| !s.series.is_empty())
+        {
+            self.start_series_switch(slot, 0);
         }
     }
 

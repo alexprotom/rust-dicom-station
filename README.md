@@ -16,7 +16,10 @@ engine.*
 * **Viewing** - parallel DICOM loading (compressed syntaxes included), true
   patient-space geometry, linked axial / sagittal / coronal views, W/L
   presets, dose colorwash and isodose lines, per-beam plan summaries, planar
-  images (DX / CR / RTIMAGE), dark and light themes.
+  images (DX / CR / RTIMAGE), dark and light themes. Folders *or* individual
+  files, and **the data does not have to be a volume**: a portal image, a
+  structure set or a plan opens on its own, in the ordinary tree, with
+  everything that does not need voxels still working.
 * **Datasets** - a patient ▶ study ▶ series tree per dataset; copy / move /
   remove / rename at every level with the reference chains kept intact; RT
   structure sets and segmentation series as tree nodes, contours and masks
@@ -115,7 +118,7 @@ https://alexprotom.github.io/rust-dicom-station/
 
 | | |
 |---|---|
-| [docs/viewer.md](docs/viewer.md) | Loading, MPR views, dataset tree, comparison mode, interaction reference |
+| [docs/viewer.md](docs/viewer.md) | Loading folders and single files, datasets with no volume, MPR views, dataset tree, comparison mode, interaction reference |
 | [docs/rt-objects.md](docs/rt-objects.md) | RTSTRUCT, RTDOSE, RTPLAN, REG, RTRECORD, reference chains |
 | [docs/registration.md](docs/registration.md) | The four registration engines, local registration, analytics, vector fields, fusion, simulator, verification |
 | [docs/propagation.md](docs/propagation.md) | Carrying contours and segmentations across a registration |

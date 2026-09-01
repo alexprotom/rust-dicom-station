@@ -126,7 +126,7 @@ impl ViewerApp {
         let mut beam_pick: Option<(usize, usize)> = None;
 
         // Read-only facts about the datasets, gathered before the closure.
-        let loaded: [bool; 2] = [self.slots[0].study.is_some(), self.slots[1].study.is_some()];
+        let loaded: [bool; 2] = [self.slots[0].has_volume(), self.slots[1].has_volume()];
         let mut d = self.drr_dialog.take().unwrap();
         let beams: Vec<(usize, usize, String)> = self.slots[d.slot]
             .study
