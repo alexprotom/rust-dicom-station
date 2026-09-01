@@ -1,5 +1,12 @@
 # Architecture
 
+An interactive map of the whole program — modules, the data path and the
+background-job fan-out — is in
+[architecture-diagram.html](architecture-diagram.html): open it in a browser,
+click a box to focus it, or use the three guided views along the top. It is
+rendered from [architecture-diagram.archify.json](architecture-diagram.archify.json)
+and exports to PNG or SVG from the *Export* menu.
+
 ## Design philosophy
 
 **One language.** Everything is Rust — DICOM parsing, image reconstruction,

@@ -209,7 +209,7 @@
       "id": "segvol",
       "type": "backend",
       "label": "SegVol",
-      "sublabel": "text & point prompts, 3-D",
+      "sublabel": "text & point prompts, 3D",
       "pos": [
         700,
         430
