@@ -11,6 +11,7 @@ impl ViewerApp {
     /// Empty a study slot completely (used by tree "move" actions).
     pub(super) fn tree_clear_slot(&mut self, slot: usize) {
         self.slots[slot] = StudySlot::empty();
+        self.forget_sources(slot);
         self.planar_windows.retain(|w| w.slot != slot);
         self.d3_windows.retain(|w| w.slot != slot);
         if self.maximized.map(|(s, _)| s == slot).unwrap_or(false) {
@@ -18,6 +19,77 @@ impl ViewerApp {
         }
         self.clear_registration();
         self.hovered_slot = 0;
+    }
+
+    /// Take one dose grid, plan, planar image, registration or treatment
+    /// record out of a dataset.
+    ///
+    /// The lists are plain vectors and the selections beside them are
+    /// indices, so everything that pointed past the removed entry has to be
+    /// walked back by one - which is the whole reason this lives here rather
+    /// than in the panel that drew the button.
+    pub(super) fn remove_object(&mut self, r: ObjRef) {
+        let slot = r.slot.min(1);
+        let planar_gone = |windows: &mut Vec<PlanarWindow>, idx: usize| {
+            windows.retain(|w| !(w.slot == slot && w.idx == idx));
+            for w in windows.iter_mut().filter(|w| w.slot == slot && w.idx > idx) {
+                w.idx -= 1;
+            }
+        };
+        let Some(study) = self.slots[slot].study.as_mut() else {
+            return;
+        };
+        match r.kind {
+            ObjKind::Dose => {
+                if r.idx >= study.doses.len() {
+                    return;
+                }
+                study.doses.remove(r.idx);
+                let active = &mut self.slots[slot].active_dose;
+                if *active > r.idx
+                    || *active >= self.slots[slot].study.as_ref().unwrap().doses.len()
+                {
+                    *active = active.saturating_sub(1);
+                }
+                if self.slots[slot]
+                    .study
+                    .as_ref()
+                    .is_some_and(|s| s.doses.is_empty())
+                {
+                    self.dose_mode = DoseMode::Off;
+                }
+            }
+            ObjKind::Plan => {
+                if r.idx >= study.plans.len() {
+                    return;
+                }
+                study.plans.remove(r.idx);
+                let vis = &mut self.slots[slot].plan_visible;
+                if r.idx < vis.len() {
+                    vis.remove(r.idx);
+                }
+            }
+            ObjKind::Planar => {
+                if r.idx >= study.planar_images.len() {
+                    return;
+                }
+                study.planar_images.remove(r.idx);
+                planar_gone(&mut self.planar_windows, r.idx);
+            }
+            ObjKind::Registration => {
+                if r.idx >= study.registrations.len() {
+                    return;
+                }
+                study.registrations.remove(r.idx);
+            }
+            ObjKind::Record => {
+                if r.idx >= study.treat_records.len() {
+                    return;
+                }
+                study.treat_records.remove(r.idx);
+            }
+        }
+        self.settings_gen += 1;
     }
 
     // -- Data tree copy / move / remove actions ----------------------------
@@ -302,7 +374,7 @@ impl ViewerApp {
                     Some(i) => Some(i),
                     None => {
                         self.error = Some(
-                            "The selected series exist only in memory (no source files) — \
+                            "The selected series exist only in memory (no source files) - \
                              they cannot be loaded as the displayed volume of the other slot"
                                 .into(),
                         );

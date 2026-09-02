@@ -192,7 +192,7 @@ const SOP_RTPLAN: &str = "1.2.840.10008.5.1.4.1.1.481.5";
 const SOP_RTIONPLAN: &str = "1.2.840.10008.5.1.4.1.1.481.8";
 
 pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
-    progress.set("Scanning directory…");
+    progress.set("Scanning directory");
 
     let files: Vec<PathBuf> = walkdir::WalkDir::new(dir)
         .follow_links(true)
@@ -221,7 +221,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
     if files.is_empty() {
         bail!("No files to open");
     }
-    progress.set(format!("Reading headers of {} files…", files.len()));
+    progress.set(format!("Reading headers of {} files", files.len()));
 
     // Parallel header-only scan.
     struct Scanned {
@@ -392,7 +392,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
         }
         None => {
             warnings.push(
-                "No image series with slice positions — nothing to reconstruct a volume from. \
+                "No image series with slice positions - nothing to reconstruct a volume from. \
                  Everything else in the selection was loaded; single images are under \
                  Planar images."
                     .into(),
@@ -409,7 +409,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
     let structure_sets = parse_group(
         &rtstruct_files,
         "RTSTRUCT",
-        "Parsing RT Structure Sets…",
+        "Parsing RT Structure Sets",
         progress,
         &mut warnings,
         rtstruct::load,
@@ -417,7 +417,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
     let seg_series = parse_group(
         &seg_files,
         "SEG",
-        "Parsing segmentations (SEG)…",
+        "Parsing segmentations (SEG)",
         progress,
         &mut warnings,
         dicomseg::load,
@@ -425,7 +425,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
     let doses = parse_group(
         &rtdose_files,
         "RTDOSE",
-        "Parsing RT Dose…",
+        "Parsing RT Dose",
         progress,
         &mut warnings,
         rtdose::load,
@@ -433,7 +433,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
     let plans = parse_group(
         &rtplan_files,
         "RTPLAN",
-        "Parsing RT Plan…",
+        "Parsing RT Plan",
         progress,
         &mut warnings,
         rtplan::load,
@@ -441,7 +441,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
     let planar_images = parse_group(
         &planar_files,
         "planar image",
-        "Loading planar images (DX/RTIMAGE)…",
+        "Loading planar images (DX/RTIMAGE)",
         progress,
         &mut warnings,
         extras::load_planar,
@@ -449,21 +449,21 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
     let registrations = parse_group(
         &reg_files,
         "REG",
-        "Parsing spatial registrations (REG)…",
+        "Parsing spatial registrations (REG)",
         progress,
         &mut warnings,
         extras::load_reg,
     );
     for r in registrations.iter().filter(|r| r.deformable) {
         warnings.push(format!(
-            "REG {} is a deformable registration — only its rigid matrices are read",
+            "REG {} is a deformable registration - only its rigid matrices are read",
             r.label
         ));
     }
     let treat_records = parse_group(
         &record_files,
         "RTRECORD",
-        "Parsing treatment records…",
+        "Parsing treatment records",
         progress,
         &mut warnings,
         extras::load_record,
@@ -476,7 +476,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
             && ss.frame_of_reference_uid != volume.frame_of_reference_uid
         {
             warnings.push(format!(
-                "RTSTRUCT {} frame of reference differs from the image volume — contours may be misaligned",
+                "RTSTRUCT {} frame of reference differs from the image volume - contours may be misaligned",
                 ss.file_name
             ));
         }
@@ -487,7 +487,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
             && sr.grid.frame_of_reference_uid != volume.frame_of_reference_uid
         {
             warnings.push(format!(
-                "SEG {} frame of reference differs from the image volume — \
+                "SEG {} frame of reference differs from the image volume - \
                  the segments may be misaligned",
                 sr.file_name
             ));
@@ -499,7 +499,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
             && d.frame_of_reference_uid != volume.frame_of_reference_uid
         {
             warnings.push(
-                "RTDOSE frame of reference differs from the image volume — overlay may be misaligned"
+                "RTDOSE frame of reference differs from the image volume - overlay may be misaligned"
                     .into(),
             );
         }
@@ -531,7 +531,7 @@ pub fn load_series_volume(
     progress: &Progress,
 ) -> Result<(Volume, (f32, f32), Vec<String>)> {
     progress.set(format!(
-        "Loading {} slice(s) of series {}…",
+        "Loading {} slice(s) of series {}",
         series.files.len(),
         if series.description.is_empty() {
             &series.modality
@@ -681,7 +681,7 @@ pub fn load_series_volume(
             .fold(0.0_f64, f64::max);
         if median > 1e-6 && max_dev / median > 0.01 {
             warnings.push(format!(
-                "Non-uniform slice spacing (median {:.3} mm, max deviation {:.3} mm) — using median",
+                "Non-uniform slice spacing (median {:.3} mm, max deviation {:.3} mm) - using median",
                 median, max_dev
             ));
         }

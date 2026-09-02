@@ -226,7 +226,7 @@ fn do_install(args: &Args) -> Result<()> {
     // so they fail here instead.
     if opts.scope == Scope::AllUsers && !win::is_elevated() && (args.silent || args.console) {
         bail!(
-            "a machine-wide installation needs administrator rights — start the installer \
+            "a machine-wide installation needs administrator rights - start the installer \
              from an elevated prompt, or install with --just-me"
         );
     }

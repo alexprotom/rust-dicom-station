@@ -214,11 +214,11 @@ impl Margin {
         let (grow, shrink) = self.to_radii(grid);
         let mut out = mask.to_vec();
         if morph_any(&grow) {
-            sink.report(0.0, "Expanding…");
+            sink.report(0.0, "Expanding");
             out = morph::dilate_radii(&out, grid.dims, grid.spacing, &grow);
         }
         if morph_any(&shrink) {
-            sink.report(0.5, "Contracting…");
+            sink.report(0.5, "Contracting");
             out = morph::erode_radii(&out, grid.dims, grid.spacing, &shrink);
         }
         out
@@ -263,15 +263,15 @@ impl Cleanup {
 
     pub fn apply(&self, mask: &mut Vec<u8>, grid: &Grid, sink: &dyn ProgressSink) {
         if self.close_mm > 0.0 {
-            sink.report(0.0, "Smoothing…");
+            sink.report(0.0, "Smoothing");
             *mask = morph::close_mm(mask, grid.dims, grid.spacing, self.close_mm);
         }
         if self.fill_holes {
-            sink.report(0.4, "Filling cavities…");
+            sink.report(0.4, "Filling cavities");
             morph::fill_holes_2d(mask, grid.dims, grid.canonical_axes().0[0]);
         }
         if self.keep_largest || self.min_volume_cm3 > 0.0 {
-            sink.report(0.7, "Dropping small pieces…");
+            sink.report(0.7, "Dropping small pieces");
             let voxel_cm3 = grid.spacing[0] * grid.spacing[1] * grid.spacing[2] / 1000.0;
             let comps = morph::components(mask, grid.dims);
             let keep: Vec<&morph::Component> = if self.keep_largest {
@@ -340,7 +340,7 @@ impl std::fmt::Debug for Combined {
 pub fn combine(recipe: &Recipe, grid: &Grid, sink: &dyn ProgressSink) -> Result<Combined> {
     let n = grid.dims[0] * grid.dims[1] * grid.dims[2];
     if recipe.operands.is_empty() {
-        bail!("nothing to combine — add at least one structure");
+        bail!("nothing to combine - add at least one structure");
     }
     if recipe.op == BoolOp::Subtract && recipe.operands.len() < 2 {
         bail!("a subtraction needs something to subtract");
@@ -357,7 +357,7 @@ pub fn combine(recipe: &Recipe, grid: &Grid, sink: &dyn ProgressSink) -> Result<
     let steps = recipe.operands.len() as f32 + 2.0;
     let mut acc = vec![0u8; n];
     for (i, operand) in recipe.operands.iter().enumerate() {
-        sink.report(i as f32 / steps, &format!("Preparing '{}'…", operand.name));
+        sink.report(i as f32 / steps, &format!("Preparing '{}'", operand.name));
         if sink.cancelled() {
             bail!(crate::progress::CANCELLED);
         }
@@ -373,11 +373,11 @@ pub fn combine(recipe: &Recipe, grid: &Grid, sink: &dyn ProgressSink) -> Result<
         bail!(crate::progress::CANCELLED);
     }
     if !recipe.margin.is_none() {
-        sink.report(recipe.operands.len() as f32 / steps, "Applying the margin…");
+        sink.report(recipe.operands.len() as f32 / steps, "Applying the margin");
         acc = recipe.margin.apply(&acc, grid, &crate::progress::Quiet);
     }
     if !recipe.cleanup.is_none() {
-        sink.report((recipe.operands.len() as f32 + 1.0) / steps, "Cleaning up…");
+        sink.report((recipe.operands.len() as f32 + 1.0) / steps, "Cleaning up");
         recipe
             .cleanup
             .apply(&mut acc, grid, &crate::progress::Quiet);

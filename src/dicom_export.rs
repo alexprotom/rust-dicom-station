@@ -455,7 +455,7 @@ pub fn export_study(
 
     for k in 0..nz {
         if k % 20 == 0 {
-            progress.set(format!("Writing CT slice {}/{}…", k + 1, nz));
+            progress.set(format!("Writing CT slice {}/{}", k + 1, nz));
         }
         let sop_uid = new_uid();
         ct_sop_uids.push(sop_uid.clone());
@@ -543,7 +543,7 @@ pub fn export_study(
     // ---- RTSTRUCT (one file per structure set) ----------------------------
     for (si, ss) in study.structure_sets.iter().enumerate() {
         progress.set(format!(
-            "Writing RTSTRUCT {}/{}…",
+            "Writing RTSTRUCT {}/{}",
             si + 1,
             study.structure_sets.len()
         ));
@@ -557,11 +557,7 @@ pub fn export_study(
         if ser.segs.iter().all(|s| s.count == 0) {
             continue;
         }
-        progress.set(format!(
-            "Writing SEG {}/{}…",
-            gi + 1,
-            study.seg_series.len()
-        ));
+        progress.set(format!("Writing SEG {}/{}", gi + 1, study.seg_series.len()));
         // The exported image slices may only be claimed as the source of a
         // series that actually sits on their lattice.
         let same_grid = ser.grid.matches(&vol.grid());
@@ -581,7 +577,7 @@ pub fn export_study(
 
     // ---- RTDOSE (16-bit, rescaled) ----------------------------------------
     for (di, d) in study.doses.iter().enumerate() {
-        progress.set(format!("Writing RTDOSE {}/{}…", di + 1, study.doses.len()));
+        progress.set(format!("Writing RTDOSE {}/{}", di + 1, study.doses.len()));
         let [dnx, dny, dnf] = d.dims;
         let scaling = (d.max_dose as f64 / 60000.0).max(1e-9);
         let mut o = InMemDicomObject::new_empty();
@@ -686,7 +682,7 @@ pub fn export_study(
 
     // ---- RTPLAN (skeleton with prescription, fractionation, beams) --------
     for (pi, plan) in study.plans.iter().enumerate() {
-        progress.set(format!("Writing RTPLAN {}/{}…", pi + 1, study.plans.len()));
+        progress.set(format!("Writing RTPLAN {}/{}", pi + 1, study.plans.len()));
         let ion = plan.plan_kind == "Ion"
             || plan
                 .beams
@@ -1110,7 +1106,7 @@ pub fn export_derived(
             continue;
         }
         progress.set(format!(
-            "Writing RTSTRUCT {}/{}…",
+            "Writing RTSTRUCT {}/{}",
             si + 1,
             study.structure_sets.len()
         ));
@@ -1134,11 +1130,7 @@ pub fn export_derived(
         if ser.segs.iter().all(|s| s.count == 0) {
             continue;
         }
-        progress.set(format!(
-            "Writing SEG {}/{}…",
-            gi + 1,
-            study.seg_series.len()
-        ));
+        progress.set(format!("Writing SEG {}/{}", gi + 1, study.seg_series.len()));
         let study_uid = study_of(&ser.study_uid, &ser.referenced_series_uid);
         let for_uid = if ser.grid.frame_of_reference_uid.is_empty() {
             vol_for.clone()

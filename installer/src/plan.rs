@@ -160,7 +160,7 @@ impl Models {
             Models::Preview6mm => "6 mm preview model (~135 MB)",
             Models::Fast3mm => "3 mm model, all 117 structures (~135 MB)",
             Models::HighRes15mm => "1.5 mm high-quality models (~1.2 GB)",
-            Models::Everything => "3 mm + 1.5 mm — everything (~1.3 GB)",
+            Models::Everything => "3 mm + 1.5 mm - everything (~1.3 GB)",
         }
     }
 
@@ -185,7 +185,7 @@ pub struct Options {
     pub start_menu_shortcut: bool,
     pub desktop_shortcut: bool,
     pub add_to_path: bool,
-    /// Register `.dcm`/`.dicom` and an "Open with …" entry on folders.
+    /// Register `.dcm`/`.dicom` and an "Open with " entry on folders.
     pub file_association: bool,
     /// Install the Microsoft Visual C++ runtime when it is missing.
     pub install_vcredist: bool,

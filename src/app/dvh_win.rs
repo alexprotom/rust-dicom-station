@@ -257,7 +257,7 @@ impl ViewerApp {
         }
         let req = DvhRequest { items, doses };
         let progress = Arc::new(Progress::default());
-        progress.set("Sampling dose…");
+        progress.set("Sampling dose");
         self.dvh_job = Some(Job::spawn(progress, move |p| {
             let t0 = std::time::Instant::now();
             let total = (req.items.len() * req.doses.len()).max(1);
@@ -303,7 +303,7 @@ impl ViewerApp {
             done.elapsed_secs,
             match truncated {
                 0 => String::new(),
-                n => format!(" — {n} extend outside the dose grid"),
+                n => format!(" - {n} extend outside the dose grid"),
             }
         ));
         d.curves = done.curves;
@@ -332,7 +332,7 @@ impl ViewerApp {
         detach::tool_window(
             ctx,
             "dvh",
-            "📊 Dose–volume histograms",
+            "📊 Dose-volume histograms",
             &mut open,
             detach::WinOpts::size(880.0, 620.0),
             |ui| {
@@ -359,7 +359,7 @@ impl ViewerApp {
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Structures:");
                     egui::ComboBox::from_id_salt("dvh_add_struct")
-                        .selected_text("add…")
+                        .selected_text("add")
                         .width(200.0)
                         .show_ui(ui, |ui| {
                             for (r, label) in &struct_list {
@@ -400,9 +400,9 @@ impl ViewerApp {
                 // ---- axes ---------------------------------------------
                 ui.horizontal_wrapped(|ui| {
                     ui.selectable_value(&mut d.cumulative, true, "Cumulative")
-                        .on_hover_text("Volume receiving at least each dose — the usual view");
+                        .on_hover_text("Volume receiving at least each dose - the usual view");
                     ui.selectable_value(&mut d.cumulative, false, "Differential")
-                        .on_hover_text("Volume in each dose bin — where the cold spots are");
+                        .on_hover_text("Volume in each dose bin - where the cold spots are");
                     ui.separator();
                     ui.label("Dose:");
                     ui.selectable_value(&mut d.dose_relative, false, "Gy");
@@ -413,7 +413,7 @@ impl ViewerApp {
                     rel.clone().on_hover_text(if has_ref {
                         "Per cent of the reference dose"
                     } else {
-                        "No plan in this study declares a prescription — type one"
+                        "No plan in this study declares a prescription - type one"
                     });
                     if rel.clicked() {
                         d.dose_relative = true;
@@ -470,7 +470,7 @@ impl ViewerApp {
                     }
                     let resp = ui.add(
                         egui::TextEdit::singleline(&mut d.new_metric)
-                            .hint_text("D98%, V20Gy, D2cc…")
+                            .hint_text("D98%, V20Gy, D2cc")
                             .desired_width(110.0),
                     );
                     let add = ui.small_button("➕").clicked()
@@ -485,7 +485,7 @@ impl ViewerApp {
                             }
                             None if !d.new_metric.trim().is_empty() => {
                                 d.status = Some(format!(
-                                    "'{}' is not a metric — try D95%, D2cc, V20Gy or Dmean.",
+                                    "'{}' is not a metric - try D95%, D2cc, V20Gy or Dmean.",
                                     d.new_metric.trim()
                                 ));
                             }
@@ -502,19 +502,19 @@ impl ViewerApp {
                 } else {
                     let v = dvh::check(&d.constraints, &d.curves);
                     let failed = v.iter().filter(|x| !x.pass).count();
-                    format!("Constraints — {} of {} met", v.len() - failed, v.len())
+                    format!("Constraints - {} of {} met", v.len() - failed, v.len())
                 };
                 egui::CollapsingHeader::new(header)
                     .default_open(d.show_constraints)
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            if ui.button("Load protocol…").clicked() {
+                            if ui.button("Load protocol").clicked() {
                                 load_protocol = true;
                             }
                             if ui
                                 .add_enabled(
                                     !d.constraints.is_empty(),
-                                    egui::Button::new("Save protocol…"),
+                                    egui::Button::new("Save protocol"),
                                 )
                                 .clicked()
                             {
@@ -539,13 +539,13 @@ impl ViewerApp {
                 ui.separator();
                 ui.horizontal(|ui| {
                     if ui
-                        .add_enabled(!d.curves.is_empty(), egui::Button::new("Export curves…"))
+                        .add_enabled(!d.curves.is_empty(), egui::Button::new("Export curves"))
                         .clicked()
                     {
                         export = Some(true);
                     }
                     if ui
-                        .add_enabled(!d.curves.is_empty(), egui::Button::new("Export table…"))
+                        .add_enabled(!d.curves.is_empty(), egui::Button::new("Export table"))
                         .clicked()
                     {
                         export = Some(false);
@@ -741,7 +741,7 @@ fn constraint_table(ui: &mut egui::Ui, d: &DvhDialog) {
             ui.end_row();
             for v in &verdicts {
                 let (mark, color) = match (v.value.is_some(), v.pass) {
-                    (false, _) => ("—", warn_color(ui.visuals())),
+                    (false, _) => ("-", warn_color(ui.visuals())),
                     (true, true) => ("✔", egui::Color32::from_rgb(60, 160, 80)),
                     (true, false) => ("✖", egui::Color32::from_rgb(200, 70, 70)),
                 };
@@ -759,7 +759,7 @@ fn constraint_table(ui: &mut egui::Ui, d: &DvhDialog) {
                 ));
                 match v.value {
                     Some(x) => ui.label(egui::RichText::new(format!("{x:.2}")).color(color)),
-                    None => ui.label("—"),
+                    None => ui.label("-"),
                 };
                 ui.end_row();
             }

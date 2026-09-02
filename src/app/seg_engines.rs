@@ -75,20 +75,20 @@ impl ToolInfo {
     /// `🔬 Auto-segmentation — dataset A`, the window title.
     pub fn title(&self, slot: usize) -> String {
         format!(
-            "{} {} — dataset {}",
+            "{} {} - dataset {}",
             self.glyph, self.name, SLOT_NAMES[slot]
         )
     }
     /// `🔬 Auto-segmentation results — dataset A`, a companion window.
     pub fn titled(&self, what: &str, slot: usize) -> String {
         format!(
-            "{} {} {what} — dataset {}",
+            "{} {} {what} - dataset {}",
             self.glyph, self.name, SLOT_NAMES[slot]
         )
     }
     /// `🔬 Auto-segment dataset A…`, the menu entry.
     pub fn menu_entry(&self, slot: usize) -> String {
-        format!("{} {} dataset {}…", self.glyph, self.verb, SLOT_NAMES[slot])
+        format!("{} {} dataset {}", self.glyph, self.verb, SLOT_NAMES[slot])
     }
     /// `🔬 Auto…`, the small sidebar button.
     pub fn short_button(&self) -> String {
@@ -98,13 +98,13 @@ impl ToolInfo {
 }
 
 /// One line every tool window ends its options with.
-pub(super) const RESEARCH_NOTE: &str = "Research / QA use — not a medical device.";
+pub(super) const RESEARCH_NOTE: &str = "Research / QA use - not a medical device.";
 
 /// The message shown when a run finishes on a dataset that was replaced
 /// meanwhile.
 pub(super) fn stale_result(tool: &ToolInfo) -> String {
     format!(
-        "{} finished, but the dataset changed while it was running — the result was discarded.",
+        "{} finished, but the dataset changed while it was running - the result was discarded.",
         tool.name
     )
 }
@@ -223,7 +223,7 @@ pub(super) fn device_row(ui: &mut egui::Ui, pref: &mut DevicePref) {
         for p in DevicePref::ALL {
             let hint = match p {
                 DevicePref::Auto => "Use the GPU when one is available, else the CPU",
-                DevicePref::Gpu => "Any GPU via wgpu (Vulkan / DX12 / Metal) — no CUDA needed",
+                DevicePref::Gpu => "Any GPU via wgpu (Vulkan / DX12 / Metal) - no CUDA needed",
                 DevicePref::Cpu => "Every core, no GPU",
             };
             ui.radio_value(pref, p, p.label()).on_hover_text(hint);
@@ -286,12 +286,12 @@ pub(super) fn weights_licence(engine: Engine) -> (&'static str, bool) {
         ),
         Engine::SegVol => (
             "Weights: no licence declaration in the model repository, training corpus \
-             partly non-commercial — downloaded to this machine at your request only, \
+             partly non-commercial - downloaded to this machine at your request only, \
              never redistributed.",
             true,
         ),
         Engine::MedSam2 => (
-            "Weights: CC-BY-SA-4.0 with a 'research and education only' model card — \
+            "Weights: CC-BY-SA-4.0 with a 'research and education only' model card - \
              downloaded to this machine at your request only, never redistributed.",
             true,
         ),
@@ -318,7 +318,7 @@ pub(super) fn progress_row(ui: &mut egui::Ui, progress: &Progress) -> bool {
     }
     ui.add(egui::ProgressBar::new(progress.frac()).show_percentage());
     let msg = progress.get();
-    ui.label(if msg.is_empty() { "Working…" } else { &msg });
+    ui.label(if msg.is_empty() { "Working" } else { &msg });
     ui.button("Cancel").clicked()
 }
 
@@ -328,17 +328,17 @@ mod tests {
 
     #[test]
     fn titles_menu_entries_and_buttons_follow_one_pattern() {
-        assert_eq!(AUTOSEG.title(0), "🔬 Auto-segmentation — dataset A");
+        assert_eq!(AUTOSEG.title(0), "🔬 Auto-segmentation - dataset A");
         assert_eq!(
             AUTOSEG.titled("results", 1),
-            "🔬 Auto-segmentation results — dataset B"
+            "🔬 Auto-segmentation results - dataset B"
         );
-        assert_eq!(PROMPT_SEG.menu_entry(1), "💬 Prompt-segment dataset B…");
-        assert_eq!(SLICE_PROP.menu_entry(0), "⏩ Propagate through dataset A…");
+        assert_eq!(PROMPT_SEG.menu_entry(1), "💬 Prompt-segment dataset B");
+        assert_eq!(SLICE_PROP.menu_entry(0), "⏩ Propagate through dataset A");
         assert_eq!(AUTOSEG.short_button(), "🔬 Auto");
         assert_eq!(PROMPT_SEG.short_button(), "💬 Prompt");
         assert_eq!(SLICE_PROP.short_button(), "⏩ Propagate");
-        assert_eq!(BODY_CONTOUR.menu_entry(0), "👤 Body-contour dataset A…");
+        assert_eq!(BODY_CONTOUR.menu_entry(0), "👤 Body-contour dataset A");
         assert_eq!(MOTION.short_button(), "📈 Motion");
         let mut glyphs = vec![
             AUTOSEG.glyph,

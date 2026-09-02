@@ -27,7 +27,7 @@ mod tests {
         let icon = window_icon();
         assert_eq!(
             icon.width, icon.height,
-            "the icon has to be square — window managers scale it to their own sizes"
+            "the icon has to be square - window managers scale it to their own sizes"
         );
         assert!(
             icon.width >= 128,

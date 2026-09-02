@@ -178,7 +178,7 @@ impl ViewerApp {
         };
         self.persist_settings();
         let progress = Arc::new(Progress::default());
-        progress.set("Preparing the volume…");
+        progress.set("Preparing the volume");
         self.segvol_slot = slot;
         self.segvol_job = Some(Job::spawn(progress, move |p| {
             (slot, run_segvol(&volume, &req, p))
@@ -207,7 +207,7 @@ impl ViewerApp {
         let cm3 = result.voxels as f64 * spacing[0] * spacing[1] * spacing[2] / 1000.0;
         if let Some(d) = &mut self.segvol_dialog {
             d.status = Some(format!(
-                "✔ {}: {} voxels ({cm3:.1} cm³) in {:.1} s on {} — {} refinement window(s), \
+                "✔ {}: {} voxels ({cm3:.1} cm³) in {:.1} s on {} - {} refinement window(s), \
                  coarse pass {}",
                 result.name,
                 result.voxels,
@@ -250,15 +250,15 @@ impl ViewerApp {
             detach::WinOpts::width(380.0),
             |ui| {
                 ui.label(
-                    "Segments whatever the prompt points at — a box, a click or a structure \
-                     name — with SegVol, re-implemented natively in Rust. For the lesions and \
+                    "Segments whatever the prompt points at - a box, a click or a structure \
+                     name - with SegVol, re-implemented natively in Rust. For the lesions and \
                      targets a fixed-class model cannot cover.",
                 );
                 ui.separator();
                 ui.label("Prompt:");
                 ui.horizontal(|ui| {
                     ui.radio_value(&mut d.kind, PromptKind::Box, "Box")
-                        .on_hover_text("A box centred on the crosshair — the most reliable prompt, and the only one that works well for lesions");
+                        .on_hover_text("A box centred on the crosshair - the most reliable prompt, and the only one that works well for lesions");
                     ui.radio_value(&mut d.kind, PromptKind::Point, "Point")
                         .on_hover_text("A single click at the crosshair");
                     ui.radio_value(&mut d.kind, PromptKind::Text, "Text")
@@ -284,7 +284,7 @@ impl ViewerApp {
                             ui.label("Structure:");
                             ui.add(
                                 egui::TextEdit::singleline(&mut d.text)
-                                    .hint_text("liver, pancreas, aorta…")
+                                    .hint_text("liver, pancreas, aorta")
                                     .desired_width(180.0),
                             );
                         });
@@ -309,7 +309,7 @@ impl ViewerApp {
                     ui.checkbox(&mut d.cfg.use_zoom_in, "Refinement pass")
                         .on_hover_text(
                             "The second, sliding-window pass. Without it the result is a \
-                             single coarse pass — much faster, much blockier.",
+                             single coarse pass - much faster, much blockier.",
                         );
                     ui.add_enabled(
                         d.kind == PromptKind::Box,
@@ -334,10 +334,10 @@ impl ViewerApp {
                 ui.separator();
                 let need = weights::download_needed(&models_dir, d.kind == PromptKind::Text);
                 let weights_note = if need == 0 {
-                    "Weights: SegVol (BAAI, no licence declared) — cached ✔.".to_string()
+                    "Weights: SegVol (BAAI, no licence declared) - cached ✔.".to_string()
                 } else {
                     format!(
-                        "Weights: SegVol (BAAI, no licence declared) — {} MB downloaded once \
+                        "Weights: SegVol (BAAI, no licence declared) - {} MB downloaded once \
                          from Hugging Face, at your request, never redistributed.",
                         need / 1_000_000
                     )
@@ -407,14 +407,14 @@ fn run_segvol(
     if progress.cancelled() {
         bail!(CANCELLED);
     }
-    progress.set("Assembling the network…");
+    progress.set("Assembling the network");
     #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
     let mut net = SegVolNet::build(&params).context("assemble the SegVol network")?;
 
     // Put the image encoder on the GPU when asked and a usable adapter
     // exists; fall back to the CPU otherwise. Either way the device is
     // reported, both in the progress row and in the finished-run status.
-    progress.set("Choosing the compute device…");
+    progress.set("Choosing the compute device");
     let gpu = req.device.resolve()?;
     let device = match gpu {
         #[cfg(feature = "gpu")]
@@ -447,7 +447,7 @@ fn run_segvol(
             if req.text.is_empty() {
                 bail!("enter a structure name");
             }
-            progress.set("Encoding the text prompt…");
+            progress.set("Encoding the text prompt");
             for f in &weights::CLIP_FILES {
                 f.ensure(&req.models_dir, progress)?;
             }

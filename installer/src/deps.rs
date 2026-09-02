@@ -58,7 +58,7 @@ pub fn vcredist_state() -> Dependency {
 /// the installer is not elevated).
 pub fn install_vcredist(progress: &dyn Fn(f32, &str)) -> Result<()> {
     let dest = std::env::temp_dir().join("vc_redist.x64.exe");
-    progress(0.0, "Downloading the Visual C++ runtime…");
+    progress(0.0, "Downloading the Visual C++ runtime");
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(30))
         .timeout_read(std::time::Duration::from_secs(60))
@@ -87,12 +87,12 @@ pub fn install_vcredist(progress: &dyn Fn(f32, &str)) -> Result<()> {
             done += n as u64;
             progress(
                 (done as f32 / total.max(1) as f32).min(1.0),
-                "Downloading the Visual C++ runtime…",
+                "Downloading the Visual C++ runtime",
             );
         }
         out.flush()?;
     }
-    progress(1.0, "Installing the Visual C++ runtime…");
+    progress(1.0, "Installing the Visual C++ runtime");
     let status = std::process::Command::new(&dest)
         .args(["/install", "/passive", "/norestart"])
         .status()

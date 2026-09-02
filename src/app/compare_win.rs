@@ -94,7 +94,7 @@ impl ViewerApp {
         let mut lines = Vec::new();
         if ga.frame_of_reference_uid != gb.frame_of_reference_uid {
             lines.push(
-                "⚠ Different frames of reference — the comparison assumes the patient \
+                "⚠ Different frames of reference - the comparison assumes the patient \
                  coordinates already correspond (register + propagate first if they do not)."
                     .into(),
             );
@@ -106,8 +106,8 @@ impl ViewerApp {
         };
         match motion::overlap(&ma, &mb_on_a, &ga) {
             Some(o) => {
-                lines.push(format!("A: {la} — {:.2} cm³", o.vol_a_cm3));
-                lines.push(format!("B: {lb} — {:.2} cm³", o.vol_b_cm3));
+                lines.push(format!("A: {la} - {:.2} cm³", o.vol_a_cm3));
+                lines.push(format!("B: {lb} - {:.2} cm³", o.vol_b_cm3));
                 if let Some(s) = o.centroid_shift() {
                     lines.push(format!(
                         "Centroid offset A → B: RL {:+.2} · AP {:+.2} · SI {:+.2} mm  (|d| = {:.2} mm)",
@@ -122,7 +122,7 @@ impl ViewerApp {
                 lines.push(format!("Mean surface distance: {:.2} mm", o.msd_mm));
             }
             None => lines.push(
-                "Nothing to compare — one of the masks is empty (a structure from the other \
+                "Nothing to compare - one of the masks is empty (a structure from the other \
                  dataset may lie outside this volume; resampling cannot invent it)."
                     .into(),
             ),

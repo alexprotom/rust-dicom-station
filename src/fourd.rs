@@ -113,7 +113,7 @@ impl FourDGroup {
         let what = if stem.is_empty() || stem.eq_ignore_ascii_case(&format!("4D {modality}")) {
             format!("4D {modality}")
         } else {
-            format!("4D {modality} — {stem}")
+            format!("4D {modality} - {stem}")
         };
         if extras > 0 {
             format!("{what} ({n_phases} phases + {extras})")
@@ -317,7 +317,7 @@ pub fn detect(series: &[SeriesInfo]) -> Vec<FourDGroup> {
 
         // Each group is kept with the stem its name was derived from, so
         // attaching the reconstructions can re-derive the name without
-        // parsing it back apart (a stem may itself contain " — " or "(").
+        // parsing it back apart (a stem may itself contain " - " or "(").
         let mut groups_here: Vec<(FourDGroup, String)> = Vec::new();
         for (tpl, literal_pct, mut members) in templates {
             if members.len() < 3 {

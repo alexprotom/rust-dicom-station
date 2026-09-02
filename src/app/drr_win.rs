@@ -79,7 +79,7 @@ impl ViewerApp {
         let params = d.params;
         let both = d.both;
         let progress = Arc::new(Progress::default());
-        progress.set("starting…");
+        progress.set("starting");
         self.drr_job = Some(Job::spawn(progress, move |p| {
             let engines: Vec<Engine> = if both {
                 Engine::ALL.to_vec()
@@ -90,7 +90,7 @@ impl ViewerApp {
             let mut out = Vec::new();
             for (i, engine) in engines.into_iter().enumerate() {
                 p.set_phase(i as f32 / n as f32, 1.0 / n as f32);
-                p.set(format!("{} — {} of {n}", engine.label(), i + 1));
+                p.set(format!("{} - {} of {n}", engine.label(), i + 1));
                 out.push(drr::render(&vol, &DrrParams { engine, ..params }, p)?);
             }
             p.set_phase(0.0, 1.0);
@@ -158,7 +158,7 @@ impl ViewerApp {
         detach::tool_window(
             ctx,
             "drr",
-            format!("☢ DRR — dataset {}", SLOT_NAMES[d.slot]),
+            format!("☢ DRR - dataset {}", SLOT_NAMES[d.slot]),
             &mut open,
             detach::WinOpts::width(720.0).no_scroll(),
             |ui| {
@@ -187,7 +187,7 @@ impl ViewerApp {
                             ui.horizontal(|ui| {
                                 ui.label("From beam");
                                 egui::ComboBox::from_id_salt("drr_beam")
-                                    .selected_text("Choose a plan beam…")
+                                    .selected_text("Choose a plan beam")
                                     .width(240.0)
                                     .show_ui(ui, |ui| {
                                         for (pi, bi, label) in &beams {
@@ -199,7 +199,7 @@ impl ViewerApp {
                                     .response
                                     .on_hover_text(
                                         "Take the gantry angle, the couch angle and the \
-                                         isocentre from a beam of the loaded plan — the \
+                                         isocentre from a beam of the loaded plan - the \
                                          beam's-eye view it would actually deliver",
                                     );
                             });
@@ -292,7 +292,7 @@ impl ViewerApp {
                         ui.checkbox(&mut d.both, "Run both and compare")
                             .on_hover_text(
                                 "Render the same geometry with each projector and report \
-                                 the difference — the honest way to know what either one \
+                                 the difference - the honest way to know what either one \
                                  costs you",
                             );
                         if !d.both {
@@ -321,7 +321,7 @@ impl ViewerApp {
                                     .range(-1024.0..=3000.0)
                                     .suffix(" HU"),
                             )
-                            .on_hover_text("Voxels below this contribute nothing — air, couch");
+                            .on_hover_text("Voxels below this contribute nothing - air, couch");
                             ui.label("Ray step");
                             ui.add(
                                 egui::DragValue::new(&mut d.params.step_mm)
@@ -354,7 +354,7 @@ impl ViewerApp {
                                 )
                                 .on_hover_text(
                                     "File the rendering(s) under Planar images in the data \
-                                     tree, with the geometry that produced them — from \
+                                     tree, with the geometry that produced them - from \
                                      there they open in their own viewer, rename, and \
                                      travel with the dataset",
                                 )
@@ -470,7 +470,7 @@ impl ViewerApp {
         }
         self.settings_gen += 1;
         self.notice = Some(format!(
-            "✔ {n} radiograph(s) added to dataset {} — see Planar images in the tree",
+            "✔ {n} radiograph(s) added to dataset {} - see Planar images in the tree",
             SLOT_NAMES[d.slot]
         ));
     }

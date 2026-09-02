@@ -86,10 +86,10 @@ impl RegMethod {
     /// Full name, as the result panel writes it.
     pub fn label(self) -> &'static str {
         match self {
-            RegMethod::ElastixRigid => "Rigid — Euler 6-DOF (elastix, ASGD)",
-            RegMethod::ElastixBSpline => "Deformable — rigid + B-spline FFD (elastix, ASGD)",
-            RegMethod::PlastimatchBSpline => "Deformable — B-spline (plastimatch, L-BFGS)",
-            RegMethod::PlastimatchLandmark => "Deformable — landmark warp (plastimatch, RBF)",
+            RegMethod::ElastixRigid => "Rigid - Euler 6-DOF (elastix, ASGD)",
+            RegMethod::ElastixBSpline => "Deformable - rigid + B-spline FFD (elastix, ASGD)",
+            RegMethod::PlastimatchBSpline => "Deformable - B-spline (plastimatch, L-BFGS)",
+            RegMethod::PlastimatchLandmark => "Deformable - landmark warp (plastimatch, RBF)",
         }
     }
 
@@ -108,7 +108,7 @@ impl RegMethod {
         match self {
             RegMethod::ElastixRigid => {
                 "6-DOF Euler transform about the fixed-image centre. Stochastic \
-                 sampling and the ASGD optimizer — seconds, and tolerant of a poor \
+                 sampling and the ASGD optimizer - seconds, and tolerant of a poor \
                  starting alignment."
             }
             RegMethod::ElastixBSpline => {
@@ -120,11 +120,11 @@ impl RegMethod {
                 "Centre-of-gravity alignment, then a B-spline deformation optimized \
                  over every eligible voxel with the exact analytic gradient and a \
                  bending-energy penalty (L-BFGS). Deterministic and smoother than the \
-                 stochastic engine, and the only one with mutual information — so also \
-                 the CT–MR option. Slower."
+                 stochastic engine, and the only one with mutual information - so also \
+                 the CT-MR option. Slower."
             }
             RegMethod::PlastimatchLandmark => {
-                "A deformation interpolating the landmark pairs you place — thin-plate \
+                "A deformation interpolating the landmark pairs you place - thin-plate \
                  spline, Gaussian or Wendland kernel. Image intensities are not used at \
                  all, so it works across modalities and where an intensity metric has \
                  nothing to lock onto."
@@ -182,12 +182,12 @@ impl Metric {
         match self {
             Metric::MeanSquares => {
                 "Mean squared HU difference. Right when the two images measure the same \
-                 thing (CT–CT); meaningless when they do not."
+                 thing (CT-CT); meaningless when they do not."
             }
             Metric::MutualInformation => {
                 "Mattes mutual information over a 32 × 32 joint histogram with cubic \
                  B-spline Parzen windows. Needs no intensity correspondence, so it is \
-                 what CT–MR and CT–CBCT need. Slower and less sharply peaked."
+                 what CT-MR and CT-CBCT need. Slower and less sharply peaked."
             }
         }
     }
@@ -789,7 +789,7 @@ impl Warp {
                 b.control_points()
             ),
             Warp::Rbf(r) => r.describe(),
-            Warp::Field(f) => format!("displacement field — {}", f.describe()),
+            Warp::Field(f) => format!("displacement field - {}", f.describe()),
             Warp::Composite(parts) => parts
                 .iter()
                 .map(Warp::describe)
@@ -1293,10 +1293,10 @@ pub fn register(
     // entirely — building them for a geometric interpolation would be
     // several seconds of pure waste on a 512³ study.
     if params.method == RegMethod::PlastimatchLandmark {
-        progress.set("Solving the landmark system…");
+        progress.set("Solving the landmark system");
         let out = landmark::run(params)?;
         let transform = Arc::new(out.transform);
-        progress.set("Measuring the deformation…");
+        progress.set("Measuring the deformation");
         let analysis = analysis::analyse(fixed_vol, &transform, params.region.as_deref());
         progress.set("done");
         return Ok(RegistrationResult {
@@ -1312,7 +1312,7 @@ pub fn register(
         });
     }
 
-    progress.set("Building image pyramids…");
+    progress.set("Building image pyramids");
     let fixed_full = RegImage::from_volume(fixed_vol);
     let moving_full = RegImage::from_volume(moving_vol);
 
@@ -1347,12 +1347,12 @@ pub fn register(
     if fixed_pyr.iter().all(|i| i.eligible.is_empty()) {
         match &params.region {
             Some(r) => bail!(
-                "no fixed-image voxels inside '{}' above the sampling threshold — \
+                "no fixed-image voxels inside '{}' above the sampling threshold - \
                  lower the threshold or widen the margin",
                 r.name
             ),
             None => {
-                bail!("no fixed-image voxels above the sampling threshold — lower it and retry")
+                bail!("no fixed-image voxels above the sampling threshold - lower it and retry")
             }
         }
     }
@@ -1399,7 +1399,7 @@ pub fn register(
     };
 
     let transform = Arc::new(out.transform);
-    progress.set("Measuring the deformation…");
+    progress.set("Measuring the deformation");
     let analysis = analysis::analyse(fixed_vol, &transform, params.region.as_deref());
 
     progress.set("done");

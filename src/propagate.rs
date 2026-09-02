@@ -231,7 +231,7 @@ pub fn propagate(
         }
         sink.report(
             si as f32 / n as f32,
-            &format!("Propagating {} ({}/{n})…", s.name, si + 1),
+            &format!("Propagating {} ({}/{n})", s.name, si + 1),
         );
         if s.mask.len() != src.dims[0] * src.dims[1] * src.dims[2] {
             continue;

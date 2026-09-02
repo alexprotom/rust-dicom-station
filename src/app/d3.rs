@@ -49,7 +49,7 @@ impl ViewerApp {
         self.d3_windows.retain(|w| w.slot != slot);
         let job = ss.map(|ss| {
             let progress = Arc::new(Progress::default());
-            progress.set("starting…");
+            progress.set("starting");
             let p2 = progress.clone();
             let (tx, rx) = mpsc::channel();
             std::thread::spawn(move || {
@@ -206,12 +206,12 @@ impl ViewerApp {
                         let inverse = reg.fixed_slot == w.slot;
                         let t = reg.result.transform.clone();
                         let progress = Arc::new(Progress::default());
-                        progress.set("starting…");
+                        progress.set("starting");
                         let p2 = progress.clone();
                         let (tx, rx) = mpsc::channel();
                         std::thread::spawn(move || {
                             let mut meshes = mesh3d::build_meshes(&ss, &p2);
-                            p2.set("Mapping the surfaces through the registration…");
+                            p2.set("Mapping the surfaces through the registration");
                             let r = t.rigid.matrix();
                             meshes.par_iter_mut().for_each(|m| {
                                 for v in &mut m.verts {
@@ -271,7 +271,7 @@ impl ViewerApp {
                 .filter(|r| r.fixed_slot == w.slot)
                 .map(|r| (r.field.clone(), r.result.method.short()));
             let registered = self.registration.is_some();
-            let title = format!("3D structures — dataset {}", SLOT_NAMES[w.slot]);
+            let title = format!("3D structures - dataset {}", SLOT_NAMES[w.slot]);
             let mut open = w.open;
             detach::tool_window(
                 ctx,
@@ -315,7 +315,7 @@ impl ViewerApp {
                             .on_hover_text(
                                 "Mesh the other dataset's structures and map every vertex \
                                  through the recovered transform, so both anatomies stand \
-                                 in one frame of reference — the only way to see what a \
+                                 in one frame of reference - the only way to see what a \
                                  deformable registration actually did to a surface",
                             );
                             if w.show_other {
@@ -335,7 +335,7 @@ impl ViewerApp {
                         if w.other_job.is_some() {
                             ui.horizontal(|ui| {
                                 ui.spinner();
-                                ui.weak("Mapping the other dataset…");
+                                ui.weak("Mapping the other dataset");
                             });
                         }
                     }
@@ -383,7 +383,7 @@ impl ViewerApp {
                             rect.center(),
                             Align2::CENTER_CENTER,
                             if w.seg_job.is_some() {
-                                "Meshing segmentation…"
+                                "Meshing segmentation"
                             } else {
                                 "No meshable structures"
                             },

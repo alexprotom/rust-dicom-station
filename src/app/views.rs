@@ -165,7 +165,7 @@ impl ViewerApp {
         let btn_rect =
             Rect::from_center_size(rect.center() + Vec2::new(0.0, 10.0), Vec2::new(220.0, 28.0));
         if ui
-            .put(btn_rect, egui::Button::new("📂 Add DICOM folder…"))
+            .put(btn_rect, egui::Button::new("📂 Add DICOM folder"))
             .clicked()
         {
             if let Some(dir) = Self::pick_folder(&format!(
@@ -246,7 +246,7 @@ impl ViewerApp {
             if counts.is_empty() {
                 "Nothing in it can be reconstructed into slices.".to_string()
             } else {
-                format!("{counts} — open them from the panel on the left.")
+                format!("{counts} - open them from the panel on the left.")
             },
             FontId::proportional(13.0),
             hint,
@@ -254,7 +254,7 @@ impl ViewerApp {
         let btn_rect =
             Rect::from_center_size(rect.center() + Vec2::new(0.0, 14.0), Vec2::new(240.0, 28.0));
         if ui
-            .put(btn_rect, egui::Button::new("📂 Add DICOM folder…"))
+            .put(btn_rect, egui::Button::new("📂 Add DICOM folder"))
             .on_hover_text("Add an image series to this dataset so the views have slices to show")
             .clicked()
         {
@@ -267,44 +267,74 @@ impl ViewerApp {
         }
     }
 
+    /// The screen before any data: four buttons, and only the ones that can
+    /// do something. No heading and no explanations - a button that says
+    /// *Add DICOM folder* has already said it.
     pub(super) fn empty_state(&mut self, ui: &mut egui::Ui) {
+        let now = ui.input(|i| i.time);
+        let offer_pacs = self.archive_has_data(now);
+        let offer_session = self.has_last_session();
+        let mut open_folder = false;
+        let mut open_pacs = false;
+        let mut restore = false;
+        let mut generate = false;
         ui.centered_and_justified(|ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(ui.available_height() * 0.35);
-                ui.heading("Rust DICOM / RT viewer");
-                ui.add_space(8.0);
                 if self.loading.is_some() {
                     ui.spinner();
                     if let Some(job) = &self.loading {
                         ui.label(job.progress.get());
                     }
-                } else if let Some(job) = &self.gen_job {
-                    ui.spinner();
-                    ui.label(format!("Generating test data — {}", job.progress.get()));
-                } else {
-                    ui.label("Add a folder containing DICOM data");
-                    ui.add_space(8.0);
-                    if ui.button("📂 Add DICOM folder…").clicked() {
-                        if let Some(dir) = Self::pick_folder("Select a DICOM folder") {
-                            self.start_load(0, dir);
-                        }
-                    }
-                    ui.add_space(12.0);
-                    ui.weak("…or create a synthetic RT study to try the viewer on");
-                    ui.add_space(4.0);
-                    if ui
-                        .button("📐 Generate test data…")
-                        .on_hover_text(
-                            "Writes a synthetic CT + RTSTRUCT + RTPLAN + RTDOSE study \
-                             into the application folder",
-                        )
-                        .clicked()
-                    {
-                        self.gen_open = true;
-                    }
+                    return;
                 }
+                if let Some(job) = &self.gen_job {
+                    ui.spinner();
+                    ui.label(format!("Generating test data - {}", job.progress.get()));
+                    return;
+                }
+                open_folder = ui
+                    .button("📂 Add DICOM folder")
+                    .on_hover_text("Scan a folder of DICOM files into dataset A")
+                    .clicked();
+                if offer_pacs {
+                    ui.add_space(8.0);
+                    open_pacs = ui
+                        .button("🏥 Load data from PACS")
+                        .on_hover_text("Take a study out of the local patient archive")
+                        .clicked();
+                }
+                if offer_session {
+                    ui.add_space(8.0);
+                    restore = ui
+                        .button("⟲ Restore the last session")
+                        .on_hover_text("Load again what was open when the program last closed")
+                        .clicked();
+                }
+                ui.add_space(8.0);
+                generate = ui
+                    .button("📐 Generate test data")
+                    .on_hover_text(
+                        "Writes a synthetic CT + RTSTRUCT + RTPLAN + RTDOSE study \
+                         into the application folder",
+                    )
+                    .clicked();
             });
         });
+        if open_folder {
+            if let Some(dir) = Self::pick_folder("Select a DICOM folder") {
+                self.start_load(0, dir);
+            }
+        }
+        if open_pacs {
+            self.open_pacs_window();
+        }
+        if restore {
+            self.restore_last_session();
+        }
+        if generate {
+            self.gen_open = true;
+        }
     }
 
     // -- One viewport -----------------------------------------------------
@@ -521,7 +551,14 @@ impl ViewerApp {
         // Isocenter markers.
         if self.show_isocenters {
             let mut seen: Vec<[i64; 3]> = Vec::new();
-            for plan in &study.plans {
+            // A plan unticked in the data tree keeps its isocenters out of
+            // the views; a plan that arrived after the flags were sized
+            // counts as shown.
+            let shown = &slot_state.plan_visible;
+            for (pi, plan) in study.plans.iter().enumerate() {
+                if !shown.get(pi).copied().unwrap_or(true) {
+                    continue;
+                }
                 for b in &plan.beams {
                     let Some(iso) = b.isocenter else { continue };
                     let key = [

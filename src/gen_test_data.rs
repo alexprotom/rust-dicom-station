@@ -256,7 +256,7 @@ fn write_ct(dir: &Path, p: &GenParams, ids: &mut Ids, progress: &Progress) -> Re
     let mut hu = vec![0i16; NX * NY];
     for k in 0..NZ {
         if k % 8 == 0 {
-            progress.set(format!("Writing CT slice {}/{}…", k + 1, NZ));
+            progress.set(format!("Writing CT slice {}/{}", k + 1, NZ));
         }
         let z = z0 + k as f64 * SPACING;
 
@@ -353,7 +353,7 @@ fn circle_points(cx: f64, cy: f64, r: f64, z: f64, n: usize) -> Vec<String> {
 }
 
 fn write_rtstruct(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> Result<usize> {
-    progress.set("Writing RTSTRUCT…");
+    progress.set("Writing RTSTRUCT");
     let z0 = axis_origin(NZ, SPACING);
     let (sx, sy) = (p.shift_x, p.shift_y);
 
@@ -492,7 +492,7 @@ fn write_rtstruct(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> 
 // -- RTPLAN (ion) -----------------------------------------------------------
 
 fn write_rtplan(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> Result<usize> {
-    progress.set("Writing RTPLAN…");
+    progress.set("Writing RTPLAN");
     let mut o = base_dataset(ids, SOP_RTIONPLAN, &ids.plan_uid, "RTPLAN");
     put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, new_uid());
     put_is(&mut o, tags::SERIES_NUMBER, 3);
@@ -613,7 +613,7 @@ fn write_rtplan(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> Re
 // -- RTDOSE -----------------------------------------------------------------
 
 fn write_rtdose(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> Result<usize> {
-    progress.set("Writing RTDOSE…");
+    progress.set("Writing RTDOSE");
     let dx0 = axis_origin(DNX, DSP);
     let dy0 = axis_origin(DNY, DSP);
     // Frames step by the CT slice spacing, not the in-plane dose spacing.
@@ -697,7 +697,7 @@ fn write_rtdose(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> Re
 // -- Extras: DX, RTIMAGE, REG, RTRECORD -------------------------------------
 
 fn write_extras(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> Result<usize> {
-    progress.set("Writing DX / RTIMAGE…");
+    progress.set("Writing DX / RTIMAGE");
     let raw = ap_radiograph(p);
 
     // Detector extent: 190 mm across x, 80 mm across z.
@@ -752,7 +752,7 @@ fn write_extras(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> Re
     write_object(o, SOP_RTIMAGE, &dir.join("RI_synth.dcm"))?;
 
     // ---- REG: identity for this frame + a rigid translation for another ----
-    progress.set("Writing REG / RTRECORD…");
+    progress.set("Writing REG / RTRECORD");
     let [tx, ty, tz] = p.reg_shift;
     let mut o = base_dataset(ids, SOP_SPATIAL_REG, &new_uid(), "REG");
     put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, new_uid());

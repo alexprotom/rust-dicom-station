@@ -259,7 +259,7 @@ impl ViewerApp {
             roi_type: d.roi_type.clone(),
         };
         let progress = Arc::new(Progress::default());
-        progress.set("Preparing…");
+        progress.set("Preparing");
         self.combine_slot = slot;
         self.combine_job = Some(Job::spawn(progress, move |p| {
             let t0 = std::time::Instant::now();
@@ -284,7 +284,7 @@ impl ViewerApp {
         }
         if result.combined.voxels == 0 {
             self.error = Some(format!(
-                "'{}' came out empty. Check the order of the list — a subtraction with \
+                "'{}' came out empty. Check the order of the list - a subtraction with \
                  its operands the wrong way round is the usual reason.",
                 result.name
             ));
@@ -364,7 +364,7 @@ impl ViewerApp {
                 ui.label(
                     "Builds one structure out of others: union, intersection, subtraction \
                      or symmetric difference, with a margin on any of them. Contours and \
-                     segmentations mix freely — each is rasterized onto the displayed \
+                     segmentations mix freely - each is rasterized onto the displayed \
                      series first.",
                 );
                 ui.separator();
@@ -518,7 +518,7 @@ impl ViewerApp {
                         );
                     ui.add_enabled_ui(!d.cleanup.keep_largest, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label("…or drop pieces under:");
+                            ui.label("or drop pieces under:");
                             ui.add(
                                 egui::DragValue::new(&mut d.cleanup.min_volume_cm3)
                                     .range(0.0..=1000.0)
@@ -674,8 +674,8 @@ mod tests {
 
     #[test]
     fn the_tool_names_itself_like_the_others() {
-        assert_eq!(COMBINE.title(0), "∪ Combine structures — dataset A");
-        assert_eq!(COMBINE.menu_entry(1), "∪ Combine structures in dataset B…");
+        assert_eq!(COMBINE.title(0), "∪ Combine structures - dataset A");
+        assert_eq!(COMBINE.menu_entry(1), "∪ Combine structures in dataset B");
         assert_eq!(COMBINE.short_button(), "∪ Combine");
     }
 

@@ -178,10 +178,10 @@ impl ViewerApp {
         }
         let step = self.field_step_mm;
         let progress = Arc::new(Progress::default());
-        progress.set("starting…");
+        progress.set("starting");
         self.reg_job = Some(Job::spawn(progress, move |p| {
             let out = registration::register(&fixed, &moving, &params, p).map(|result| {
-                p.set("Sampling the vector field…");
+                p.set("Sampling the vector field");
                 let field = VectorField::sample(&fixed, &result.transform, region.as_deref(), step);
                 RegOutcome {
                     result,
@@ -319,7 +319,7 @@ impl ViewerApp {
                 .default_open(true)
                 .show(ui, |ui| {
                     ui.weak(
-                        "Load a second dataset (File ▶ Add DICOM folder to B…) — \
+                        "Load a second dataset (File > Add DICOM folder to B) - \
                          registration aligns one onto the other",
                     );
                 });
@@ -397,7 +397,7 @@ impl ViewerApp {
                             "Restrict the registration to one structure of the fixed \
                              dataset. Samples come from inside it only and the B-spline \
                              lattice covers it alone, so a small structure can be aligned \
-                             at a fine grid — and, when it refines an existing result, \
+                             at a fine grid - and, when it refines an existing result, \
                              the rest of the patient keeps that result untouched.",
                         );
                 });
@@ -445,7 +445,7 @@ impl ViewerApp {
                                 .button("➕ Add pair")
                                 .on_hover_text(
                                     "Take the crosshair of each dataset as one pair. Put \
-                                     both crosshairs on the same anatomy first — and turn \
+                                     both crosshairs on the same anatomy first - and turn \
                                      off View ▶ Sync crosshairs, or they move together.",
                                 )
                                 .clicked()
@@ -511,7 +511,7 @@ impl ViewerApp {
                         .add_enabled(both && can_refine, egui::Button::new("▶ Refine"))
                         .on_hover_text(
                             "Recover a correction on top of the active registration and \
-                             add the two together — how a local registration is meant to \
+                             add the two together - how a local registration is meant to \
                              be used after a global one",
                         )
                         .clicked()
@@ -565,8 +565,8 @@ impl ViewerApp {
                         .show(ui, |ui| {
                             ui.checkbox(&mut self.field_on, "Show the deformation field")
                                 .on_hover_text(
-                                    "Draw the recovered displacement in every view — and \
-                                     in the 3D window — instead of leaving it implicit in \
+                                    "Draw the recovered displacement in every view - and \
+                                     in the 3D window - instead of leaving it implicit in \
                                      the fusion colours",
                                 );
                             ui.horizontal(|ui| {
@@ -615,7 +615,7 @@ impl ViewerApp {
                                 ui.weak(reg.field.describe());
                             }
                             if ui
-                                .button("💾 Save as DICOM…")
+                                .button("💾 Save as DICOM")
                                 .on_hover_text(
                                     "Write the field as a Deformable Spatial Registration \
                                      object: the whole mapping in one grid, with identity \
@@ -695,7 +695,7 @@ impl ViewerApp {
             patient_id: &f.meta.patient_id,
             label: reg.result.method.family(),
             description: &format!(
-                "{} — {}",
+                "{} - {}",
                 reg.result.method.label(),
                 reg.result.transform.warp.describe()
             ),
@@ -742,7 +742,7 @@ impl ViewerApp {
                         .suffix(" HU"),
                 )
                 .on_hover_text(
-                    "Only fixed-image voxels above this drive the metric — a crude body \
+                    "Only fixed-image voxels above this drive the metric - a crude body \
                      mask that keeps air out of the cost",
                 );
             });
@@ -835,7 +835,7 @@ impl ViewerApp {
                 )
                 .on_hover_text(
                     "0 passes exactly through every landmark. Larger values smooth the \
-                     field instead — which is what inconsistent pairs need.",
+                     field instead - which is what inconsistent pairs need.",
                 );
             });
         }
@@ -855,11 +855,11 @@ fn analysis_rows(
     ui.monospace(a.dof.line());
     if a.dof.residual_mm > 1e-6 {
         ui.weak(format!(
-            "residual {:.2} mm — what the six numbers do not explain",
+            "residual {:.2} mm - what the six numbers do not explain",
             a.dof.residual_mm
         ));
     } else {
-        ui.weak("residual 0.00 mm — the result is a rigid body");
+        ui.weak("residual 0.00 mm - the result is a rigid body");
     }
     ui.add_space(2.0);
     ui.label("Displacement:");

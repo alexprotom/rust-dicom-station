@@ -51,7 +51,7 @@ pub fn build_meshes(ss: &StructureSet, progress: &Progress) -> Vec<RoiMesh> {
         .filter_map(|(i, roi)| {
             let m = build_roi_mesh(i, roi);
             let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            progress.set(format!("Meshing structures… {d}/{n}"));
+            progress.set(format!("Meshing structures {d}/{n}"));
             m
         })
         .collect();

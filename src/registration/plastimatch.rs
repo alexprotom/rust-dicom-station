@@ -695,7 +695,7 @@ pub(super) fn run(setup: &RegSetup, progress: &Progress) -> Result<EngineOutput>
         None => {
             let mut rigid = RigidTransform::identity(setup.center);
             if params.region.is_none() {
-                progress.set("align_center: matching the centres of gravity…");
+                progress.set("align_center: matching the centres of gravity");
                 let cf = eligible_center_of_gravity(&setup.fixed[0]);
                 let cm = center_of_gravity(&setup.moving[0], params.fixed_threshold);
                 if let (Some(cf), Some(cm)) = (cf, cm) {
@@ -715,7 +715,7 @@ pub(super) fn run(setup: &RegSetup, progress: &Progress) -> Result<EngineOutput>
         params.grid_spacing_mm,
     );
     if bspline.coeffs.is_empty() {
-        bail!("the B-spline lattice is empty — the grid spacing is larger than the image");
+        bail!("the B-spline lattice is empty - the grid spacing is larger than the image");
     }
     let mut total_evals = 0usize;
     let mut final_cost = f64::MAX;
@@ -740,7 +740,7 @@ pub(super) fn run(setup: &RegSetup, progress: &Progress) -> Result<EngineOutput>
             levels,
             samples.len()
         );
-        progress.set(format!("{label}: preparing…"));
+        progress.set(format!("{label}: preparing"));
         let base: Vec<Vec3> = samples
             .par_iter()
             .map(|&(x, _)| base_transform.map(x))

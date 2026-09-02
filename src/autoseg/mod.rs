@@ -202,7 +202,7 @@ pub fn run_specs(
     }
 
     // ---- engine ----------------------------------------------------------
-    progress.set("Choosing the compute device…");
+    progress.set("Choosing the compute device");
     let gpu = device.resolve()?;
     let device_desc = gpu
         .as_ref()
@@ -215,7 +215,7 @@ pub fn run_specs(
     progress.report(
         0.0,
         &format!(
-            "Resampling volume to {} mm…",
+            "Resampling volume to {} mm",
             if spacing[0] == spacing[1] && spacing[1] == spacing[2] {
                 format!("{}", spacing[0])
             } else {
@@ -291,7 +291,7 @@ pub fn run_specs(
 
     // ---- back-map to the CT grid ----------------------------------------
     phase(progress, 0.95, 0.05);
-    progress.report(0.0, "Mapping labels back to the CT grid…");
+    progress.report(0.0, "Mapping labels back to the CT grid");
     let labels = preprocess::labels_to_volume_grid(&global, &map, volume);
     Ok((labels, device_desc))
 }

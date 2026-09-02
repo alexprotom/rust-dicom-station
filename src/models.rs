@@ -184,17 +184,17 @@ pub fn inventory() -> Vec<ModelAsset> {
 
     for spec in autoseg::weights::all_specs() {
         let detail = if spec.key == autoseg::weights::SPEC_3MM.key {
-            "All 117 structures at 3 mm — the fast default."
+            "All 117 structures at 3 mm - the fast default."
         } else if spec.key == autoseg::weights::SPEC_6MM.key {
-            "Coarse preview quality — the quickest look."
+            "Coarse preview quality - the quickest look."
         } else if spec.key == autoseg::weights::SPEC_BODY_6MM.key {
-            "Patient outline, 6 mm — what the body-contour tool's model-assisted \
+            "Patient outline, 6 mm - what the body-contour tool's model-assisted \
              method uses. Plenty, because it only decides which side of the skin \
              a voxel is on."
         } else if spec.key == autoseg::weights::SPEC_BODY_15MM.key {
             "Patient outline at full resolution; slower, for the same decision."
         } else if spec.key == autoseg::weights::SPEC_BODY_MR.key {
-            "Patient outline on MR — the body-contour tool's model for MR series."
+            "Patient outline on MR - the body-contour tool's model for MR series."
         } else {
             "Full-resolution sub-model; the five together are the reference quality."
         };
@@ -221,7 +221,7 @@ pub fn inventory() -> Vec<ModelAsset> {
         kind: AssetKind::SegVol,
         engine: Engine::SegVol,
         key: format!("{}/weights", Engine::SegVol.subdir()),
-        label: "SegVol — network weights".to_string(),
+        label: "SegVol - network weights".to_string(),
         detail: "3-D ViT image encoder, SAM-style prompt encoder and mask decoder \
                  (box and point prompts).",
         download_bytes: segvol::weights::CHECKPOINT.bytes,
@@ -233,7 +233,7 @@ pub fn inventory() -> Vec<ModelAsset> {
         kind: AssetKind::SegVolText,
         engine: Engine::SegVol,
         key: format!("{}/tokenizer", Engine::SegVol.subdir()),
-        label: "SegVol — CLIP tokenizer".to_string(),
+        label: "SegVol - CLIP tokenizer".to_string(),
         detail: "Byte-pair vocabulary and merge table; only *text* prompts need it.",
         download_bytes: segvol::weights::CLIP_FILES.iter().map(|f| f.bytes).sum(),
         subdir: "",
@@ -249,7 +249,7 @@ pub fn inventory() -> Vec<ModelAsset> {
             kind: AssetKind::MedSam2(v),
             engine: Engine::MedSam2,
             key: format!("{}/{}", Engine::MedSam2.subdir(), v.key()),
-            label: format!("MedSAM2 — {}", v.label()),
+            label: format!("MedSAM2 - {}", v.label()),
             detail: "SAM 2.1-T fine-tune with the memory bank; one architecture, \
                      one loader, a choice of training data.",
             download_bytes: v.file().bytes,

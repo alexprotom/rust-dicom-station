@@ -243,7 +243,7 @@ fn walk_stats(obj: &InMemDicomObject, uids: &mut HashSet<String>, private: &mut 
 }
 
 pub fn scan(dir: &Path, progress: &Progress) -> Result<ScanResult> {
-    progress.set("Scanning folder…");
+    progress.set("Scanning folder");
     let files: Vec<PathBuf> = walkdir::WalkDir::new(dir)
         .follow_links(true)
         .into_iter()
@@ -272,7 +272,7 @@ pub fn scan(dir: &Path, progress: &Progress) -> Result<ScanResult> {
         .map(|path| {
             let n = done.fetch_add(1, Ordering::Relaxed);
             if n.is_multiple_of(64) {
-                progress.set(format!("Reading headers… {}/{}", n + 1, files.len()));
+                progress.set(format!("Reading headers {}/{}", n + 1, files.len()));
             }
             // Header-only read: identifying tags and reference sequences all
             // sit before Pixel Data.
@@ -347,7 +347,7 @@ pub fn scan(dir: &Path, progress: &Progress) -> Result<ScanResult> {
     }
     if ids.len() > 1 {
         warnings.push(format!(
-            "{} distinct patients in this folder — they would all receive the same alias; \
+            "{} distinct patients in this folder - they would all receive the same alias; \
              edit the PatientName/PatientID replacements if that is not intended",
             ids.len()
         ));
@@ -504,7 +504,7 @@ pub fn apply(
     // across files (referential integrity of the whole folder).
     let mut uid_map: HashMap<String, String> = HashMap::new();
     if p.remap_uids {
-        progress.set("Collecting UIDs…");
+        progress.set("Collecting UIDs");
         let per_file: Vec<Result<HashSet<String>>> = files
             .par_iter()
             .map(|path| {
@@ -547,7 +547,7 @@ pub fn apply(
         .par_iter()
         .map(|path| -> Result<()> {
             let i = done.fetch_add(1, Ordering::Relaxed);
-            progress.set(format!("Anonymizing… {}/{}", i + 1, files.len()));
+            progress.set(format!("Anonymizing {}/{}", i + 1, files.len()));
             let file_obj = dicom_object::open_file(path)
                 .with_context(|| format!("open {}", path.display()))?;
             let meta = file_obj.meta().clone();

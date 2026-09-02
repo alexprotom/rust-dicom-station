@@ -1,7 +1,6 @@
 # Documentation
 
-Start with the [main README](../README.md) for the overview and quick start;
-each page here covers one area.
+Each page here covers one area.
 
 | Page | Contents |
 |---|---|
@@ -23,5 +22,3 @@ each page here covers one area.
 | [architecture.md](architecture.md) | Design, functional overview, module map, the tool windows, background jobs, the model folder, conventions, testing |
 | [release-versioning.md](release-versioning.md) | Versioning, the branch workflow, how CI produces a release |
 | [example-data.md](example-data.md) | The bundled example patient: contents, source, citations, license |
-| [early-detection-plan.md](early-detection-plan.md) | Plan: integrating early cancer detection methods (CT) |
-| [raystation-contouring-plan.md](raystation-contouring-plan.md) | Plan: RayStation-class contouring — the 2024B structure toolset mapped onto RDS, and the phases that close the gap |

@@ -91,7 +91,7 @@ impl ViewerApp {
         };
         self.persist_settings();
         let progress = Arc::new(Progress::default());
-        progress.set("Preparing…");
+        progress.set("Preparing");
         self.body_slot = slot;
         self.body_job = Some(Job::spawn(progress, move |p| {
             (
@@ -110,7 +110,7 @@ impl ViewerApp {
         }
         if result.voxels == 0 {
             self.error = Some(
-                "The body contour came out empty — lower the threshold, or reduce the \
+                "The body contour came out empty - lower the threshold, or reduce the \
                  opening radius."
                     .into(),
             );
@@ -153,7 +153,7 @@ impl ViewerApp {
         };
         if let Some(d) = &mut self.body_dialog {
             d.status = Some(format!(
-                "✔ {}: {:.0} cm³{pieces} in {:.1} s{device} — {:.0} cm³ of couch, chair, \
+                "✔ {}: {:.0} cm³{pieces} in {:.1} s{device} - {:.0} cm³ of couch, chair, \
                  immobilisation and stray objects left out{}",
                 result.name,
                 result.cm3,
@@ -218,7 +218,7 @@ impl ViewerApp {
             |ui| {
                 ui.label(
                     "Finds the patient's outer surface and leaves the couch, the chair and \
-                     the immobilisation outside it — the EXTERNAL structure everything \
+                     the immobilisation outside it - the EXTERNAL structure everything \
                      downstream starts from.",
                 );
                 ui.separator();
@@ -278,7 +278,7 @@ impl ViewerApp {
                     ui.add(egui::TextEdit::singleline(&mut d.params.name).desired_width(140.0));
                     ui.checkbox(&mut d.params.make_external, "as EXTERNAL structure")
                         .on_hover_text(
-                            "Also file the result as an RTSTRUCT ROI of type EXTERNAL — \
+                            "Also file the result as an RTSTRUCT ROI of type EXTERNAL - \
                              what a planning system looks for to find the patient surface. \
                              It rides the DICOM export like any other contour.",
                         );
@@ -360,8 +360,8 @@ impl ViewerApp {
                     )
                     .on_hover_text(
                         "What the opening shaved off the body's own surface is always \
-                             given back. What stands clear of it — an ear, a nose, a \
-                             fingertip — is given back if it is small enough; a pad, a \
+                             given back. What stands clear of it - an ear, a nose, a \
+                             fingertip - is given back if it is small enough; a pad, a \
                              blanket or a bolus is not.",
                     );
                     ui.add_enabled_ui(d.params.recover_thin, |ui| {
@@ -557,8 +557,8 @@ mod tests {
 
     #[test]
     fn the_tool_names_itself_like_the_others() {
-        assert_eq!(BODY_CONTOUR.title(0), "👤 Body contour — dataset A");
-        assert_eq!(BODY_CONTOUR.menu_entry(1), "👤 Body-contour dataset B…");
+        assert_eq!(BODY_CONTOUR.title(0), "👤 Body contour - dataset A");
+        assert_eq!(BODY_CONTOUR.menu_entry(1), "👤 Body-contour dataset B");
         assert_eq!(BODY_CONTOUR.short_button(), "👤 Body");
     }
 

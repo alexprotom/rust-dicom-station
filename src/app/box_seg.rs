@@ -245,7 +245,7 @@ fn run_job(req: Medsam2Request, progress: &Progress) -> anyhow::Result<Medsam2Do
     let (prepared, volume) = match req.cached {
         Some(pair) => pair,
         None => {
-            progress.set("Preparing the study…");
+            progress.set("Preparing the study");
             let volume = req
                 .fresh
                 .ok_or_else(|| anyhow::anyhow!("no volume to prepare"))?;
@@ -263,9 +263,9 @@ fn run_job(req: Medsam2Request, progress: &Progress) -> anyhow::Result<Medsam2Do
             e
         }
         None => {
-            progress.set("Loading the weights…");
+            progress.set("Loading the weights");
             let params = weights::load(req.variant, &req.models_dir, progress)?;
-            progress.set("Choosing the compute device…");
+            progress.set("Choosing the compute device");
             Arc::new(Engine::load(&params, req.device)?)
         }
     };
@@ -274,7 +274,7 @@ fn run_job(req: Medsam2Request, progress: &Progress) -> anyhow::Result<Medsam2Do
     let started = std::time::Instant::now();
     let result = match req.request {
         Request::Preview => {
-            progress.set("Segmenting this slice…");
+            progress.set("Segmenting this slice");
             let slice_mask = engine.preview(&prepared, req.slice, &req.prompt, &req.cfg)?;
             let voxels = slice_mask.iter().filter(|v| **v != 0).count() as u64;
             // One slice, on the volume's grid, so the viewer can draw it with
@@ -606,7 +606,7 @@ impl ViewerApp {
         // so nothing expensive happens on this thread.
         let Some((slice, prompt)) = self.medsam2.engine_prompt(&study.volume) else {
             self.error = Some(
-                format!("Draw a box in the {} view first — drag around the structure on a slice where it is clear.", plane_name(plane)),
+                format!("Draw a box in the {} view first - drag around the structure on a slice where it is clear.", plane_name(plane)),
             );
             return;
         };
@@ -623,8 +623,8 @@ impl ViewerApp {
         };
         let progress = Arc::new(Progress::default());
         progress.set(match request {
-            Request::Preview => "Segmenting this slice…",
-            Request::Propagate => "Propagating…",
+            Request::Preview => "Segmenting this slice",
+            Request::Propagate => "Propagating",
         });
         let req = Medsam2Request {
             engine: self.medsam2.engine.clone(),
@@ -720,7 +720,7 @@ impl ViewerApp {
                 None => "nothing".to_string(),
             };
             format!(
-                "✔ {}: {} voxels ({cm3:.1} cm³) over {span} in {:.1} s on {} — {} slice(s) tracked",
+                "✔ {}: {} voxels ({cm3:.1} cm³) over {span} in {:.1} s on {} - {} slice(s) tracked",
                 self.medsam2.name.trim(),
                 r.voxels,
                 r.elapsed_secs,
@@ -764,7 +764,7 @@ impl ViewerApp {
                 ui.label(format!(
                     "Follows a structure boxed on one slice through the stack with MedSAM2, \
                      re-implemented natively in Rust. Drag a box around it in the {} view, on a \
-                     slice where it is clear; the box stays — drag its corners to resize, its \
+                     slice where it is clear; the box stays - drag its corners to resize, its \
                      middle to move it.",
                     plane_name(plane)
                 ));
@@ -776,7 +776,7 @@ impl ViewerApp {
                     ui.selectable_value(&mut self.medsam2.tool, BoxTool::Draw, "⬚ Box")
                         .on_hover_text("Drag a new box, or move and resize the one that is there");
                     ui.selectable_value(&mut self.medsam2.tool, BoxTool::Include, "➕ Include")
-                        .on_hover_text("Click a spot the box got wrong — this is the structure");
+                        .on_hover_text("Click a spot the box got wrong - this is the structure");
                     ui.selectable_value(&mut self.medsam2.tool, BoxTool::Exclude, "➖ Exclude")
                         .on_hover_text("Click a spot that must stay out");
                     if ui.button("Clear").clicked() {
@@ -787,7 +787,7 @@ impl ViewerApp {
                     Some(b) => {
                         let (lo, hi) = b.rect();
                         ui.weak(format!(
-                            "Box on slice {} — {:.0} x {:.0} px, {} click(s)",
+                            "Box on slice {} - {:.0} x {:.0} px, {} click(s)",
                             b.slice + 1,
                             hi[0] - lo[0],
                             hi[1] - lo[1],
@@ -869,7 +869,7 @@ impl ViewerApp {
                     ui.checkbox(&mut self.medsam2.merge, "Add to what is already there")
                         .on_hover_text(
                             "Correcting a slice that drifted: scroll to it, draw a fresh \
-                             box, and propagate again — the new run is added to the \
+                             box, and propagate again - the new run is added to the \
                              segmentation instead of replacing it.",
                         );
                 }
@@ -924,10 +924,10 @@ impl ViewerApp {
                 ui.separator();
                 let need = weights::download_needed(self.medsam2.variant, &models_dir);
                 let weights_note = if need == 0 {
-                    "Weights: MedSAM2 (research and education only) — cached ✔.".to_string()
+                    "Weights: MedSAM2 (research and education only) - cached ✔.".to_string()
                 } else {
                     format!(
-                        "Weights: MedSAM2 (research and education only) — {} MB downloaded \
+                        "Weights: MedSAM2 (research and education only) - {} MB downloaded \
                          once from Hugging Face, at your request, never redistributed.",
                         need / 1_000_000
                     )

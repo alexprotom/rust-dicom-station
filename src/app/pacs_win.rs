@@ -73,7 +73,7 @@ impl ViewerApp {
         }
         let root = self.pacs_root();
         let progress = Arc::new(Progress::default());
-        progress.set("Reading the archive…");
+        progress.set("Reading the archive");
         self.pacs_job = Some(Job::spawn(progress, move |_| {
             Archive::new(root).scan().map(PacsOutcome::Scanned)
         }));
@@ -131,7 +131,7 @@ impl ViewerApp {
         ));
         let progress = Arc::new(Progress::default());
         self.pacs_job = Some(Job::spawn(progress, move |p| {
-            p.set("Writing the derived objects…");
+            p.set("Writing the derived objects");
             let n = dicom_export::export_derived(&study, &scratch, &params, p)?;
             let archive = Archive::new(root);
             let sum = archive.import(&scratch, p)?;
@@ -146,7 +146,7 @@ impl ViewerApp {
         }
         let root = self.pacs_root();
         let progress = Arc::new(Progress::default());
-        progress.set("Removing…");
+        progress.set("Removing");
         self.pacs_job = Some(Job::spawn(progress, move |_| {
             Archive::new(root)
                 .remove(&dir)
@@ -187,7 +187,7 @@ impl ViewerApp {
                     rescan = true;
                 }
                 PacsOutcome::Uploaded(n, filed) => {
-                    w.status = Some(format!("✔ {n} object(s) sent — {filed}"));
+                    w.status = Some(format!("✔ {n} object(s) sent - {filed}"));
                     rescan = true;
                 }
                 PacsOutcome::Removed => {
@@ -224,7 +224,7 @@ impl ViewerApp {
         detach::tool_window(
             ctx,
             "pacs",
-            "🏥 PACS — patient archive",
+            "🏥 PACS - patient archive",
             &mut open,
             detach::WinOpts::size(720.0, 520.0),
             |ui| {
@@ -246,7 +246,7 @@ impl ViewerApp {
                     if resp.lost_focus() {
                         commit_dir = true;
                     }
-                    if ui.button("📂 Browse…").clicked() {
+                    if ui.button("📂 Browse").clicked() {
                         browse = true;
                     }
                     if ui
@@ -258,7 +258,7 @@ impl ViewerApp {
                 });
                 ui.horizontal(|ui| {
                     if ui
-                        .add_enabled(!busy, egui::Button::new("📥 Import folder…"))
+                        .add_enabled(!busy, egui::Button::new("📥 Import folder"))
                         .on_hover_text("Copy every DICOM file of a folder into the archive")
                         .clicked()
                     {
@@ -293,11 +293,11 @@ impl ViewerApp {
                 ui.separator();
 
                 let Some(patients) = &w.patients else {
-                    ui.weak("reading…");
+                    ui.weak("reading");
                     return;
                 };
                 if patients.is_empty() {
-                    ui.weak("The archive is empty — 📥 Import folder… files a study into it.");
+                    ui.weak("The archive is empty. 📥 Import folder files a study into it.");
                     return;
                 }
                 egui::ScrollArea::vertical()
@@ -326,7 +326,7 @@ impl ViewerApp {
                                     expand = Some(Some(pi));
                                 }
                                 resp.context_menu(|ui| {
-                                    if ui.button("🗑 Remove this patient…").clicked() {
+                                    if ui.button("🗑 Remove this patient").clicked() {
                                         remove = Some(p.dir.clone());
                                         ui.close();
                                     }
@@ -354,7 +354,7 @@ impl ViewerApp {
                                         st.dir.display()
                                     ));
                                     resp.context_menu(|ui| {
-                                        if ui.button("🗑 Remove this study…").clicked() {
+                                        if ui.button("🗑 Remove this study").clicked() {
                                             remove = Some(st.dir.clone());
                                             ui.close();
                                         }
@@ -381,7 +381,7 @@ impl ViewerApp {
                             )
                             .on_hover_text(
                                 "Read the selection into this dataset, merging it with \
-                                 whatever is already there — the same as adding its folder",
+                                 whatever is already there - the same as adding its folder",
                             )
                             .clicked()
                         {

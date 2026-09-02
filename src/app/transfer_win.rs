@@ -100,7 +100,7 @@ impl ViewerApp {
         if mask.iter().all(|&v| v == 0) {
             if let Some(dlg) = &mut self.transfer_dialog {
                 dlg.status = Some(format!(
-                    "'{tname}' lands outside dataset {}'s displayed volume — nothing to store.",
+                    "'{tname}' lands outside dataset {}'s displayed volume - nothing to store.",
                     SLOT_NAMES[dst]
                 ));
             }
@@ -112,7 +112,7 @@ impl ViewerApp {
         self.add_colored_segmentation(dst, name.clone(), tcolor, dims, &mask);
         if let Some(dlg) = &mut self.transfer_dialog {
             dlg.status = Some(format!(
-                "'{name}' stored in dataset {} — offset from {rname}: RL {:+.1} · AP {:+.1} · \
+                "'{name}' stored in dataset {} - offset from {rname}: RL {:+.1} · AP {:+.1} · \
                  SI {:+.1} mm, {placed_cm3:.2} cm³.",
                 SLOT_NAMES[dst],
                 c_target.x - c_src.x,
@@ -156,7 +156,7 @@ impl ViewerApp {
             |ui| {
                 ui.label(format!(
                     "Place a structure of dataset {} into dataset {} at the same offset \
-                     from a reference structure (e.g. the heart) — the target–reference \
+                     from a reference structure (e.g. the heart) - the target-reference \
                      relationship travels, not the image registration.",
                     SLOT_NAMES[src], SLOT_NAMES[dst]
                 ));

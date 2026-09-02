@@ -348,6 +348,10 @@ struct StudySlot {
     /// Fractional voxel coords of the linked crosshair (in this slot's volume).
     cursor: [f64; 3],
     roi_visible: Vec<bool>,
+    /// Which plans are drawn in the views (their isocenters), one flag per
+    /// entry of `study.plans`. Missing entries count as visible, so a plan
+    /// that arrives later is shown.
+    plan_visible: Vec<bool>,
     /// Index of the active structure set within `study.structure_sets`.
     active_structs: usize,
     active_dose: usize,
@@ -418,6 +422,7 @@ impl StudySlot {
             views: fresh_views(),
             cursor: [0.0; 3],
             roi_visible: Vec::new(),
+            plan_visible: Vec::new(),
             active_structs: 0,
             active_dose: 0,
             dose_reference: 1.0,
@@ -492,7 +497,7 @@ fn poll_job<T>(
 }
 
 /// [`poll_job`] for the jobs that answer with `(slot, Result)`: a failure is
-/// reported as `"{what} failed: …"`, except a cancellation, which is what
+/// reported as `"{what} failed: "`, except a cancellation, which is what
 /// the user asked for and needs no dialog.
 fn poll_tool_job<T>(
     slot: &mut Option<Job<(usize, anyhow::Result<T>)>>,
@@ -662,6 +667,26 @@ impl SetRef {
     const NEW: usize = usize::MAX;
 }
 
+/// One of the study-level objects that are neither image, structure nor
+/// segmentation series: they hang off the study, are drawn in the views (or
+/// not), and can be taken out of the dataset.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ObjKind {
+    Dose,
+    Plan,
+    Planar,
+    Registration,
+    Record,
+}
+
+/// Which object, in which dataset.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct ObjRef {
+    slot: usize,
+    kind: ObjKind,
+    idx: usize,
+}
+
 /// Deferred right-click action on a whole series node of the data tree.
 enum SetAction {
     New(SetRef),
@@ -771,6 +796,21 @@ pub struct ViewerApp {
 
     loading: Option<Job<LoadResult>>,
     /// A load queued behind the one in flight (slot, directory).
+    /// What each dataset has been loaded from this run, in order: the
+    /// *Restore the last session* button on the start screen replays it, and
+    /// it is written to the settings file as it changes.
+    session: [Vec<PathBuf>; 2],
+    /// Sources still to load for a restore, drained one at a time as each
+    /// load finishes (the loader takes one folder at a time).
+    restore_queue: Vec<(usize, PathBuf)>,
+    /// The session the previous run ended with, as read from the settings
+    /// file. Emptied when it turns out its data is gone.
+    last_session: [Vec<PathBuf>; 2],
+    /// Whether the archive holds anything, and when that was last looked at:
+    /// the start screen offers *Load data from PACS* only when it does, and
+    /// asking the file system every frame would be silly.
+    archive_has_data: bool,
+    archive_checked_at: f64,
     pending_load: Option<(usize, PathBuf)>,
     /// The same, for an explicit file selection (slot, files).
     pending_load_files: Option<(usize, Vec<PathBuf>)>,
@@ -881,6 +921,9 @@ pub struct ViewerApp {
     tree_action: Option<TreeAction>,
     /// Deferred right-click action on a structure set / segmentation series.
     set_action: Option<SetAction>,
+    /// A study-level object the tree asked to remove, applied after the
+    /// panel has been drawn (it borrows the study while drawing).
+    obj_remove: Option<ObjRef>,
     /// Deferred right-click action on structures / segments.
     item_action: Option<ItemAction>,
     /// The rename dialog, when open.
@@ -1036,6 +1079,9 @@ pub struct ViewerApp {
     /// `main`, before the window exists, so changing it here only takes
     /// effect after a restart — which the menu says out loud.
     graphics_backend: crate::gfx::Backend,
+    /// What the graphics library actually started with, which is not always
+    /// what was asked for: `Settings > Graphics backend` reports this one.
+    active_backend: Option<crate::gfx::Backend>,
     /// Non-fatal note shown in the View menu if the settings file could not
     /// be written (e.g. a read-only installation folder).
     settings_error: Option<String>,
@@ -1088,6 +1134,14 @@ impl ViewerApp {
             link_studies: true,
             hovered_slot: 0,
             loading: None,
+            // What the last run ended with, ready for the start screen's
+            // *Restore the last session*; it becomes this run's session as
+            // soon as anything is loaded.
+            session: [Vec::new(), Vec::new()],
+            last_session: prefs.session.clone(),
+            restore_queue: Vec::new(),
+            archive_has_data: false,
+            archive_checked_at: f64::NEG_INFINITY,
             pending_load: None,
             pending_load_files: None,
             error: None,
@@ -1151,6 +1205,7 @@ impl ViewerApp {
             d3_windows: Vec::new(),
             tree_action: None,
             set_action: None,
+            obj_remove: None,
             item_action: None,
             rename: None,
             rename_request: None,
@@ -1225,6 +1280,10 @@ impl ViewerApp {
             side_open: true,
             theme: prefs.theme,
             graphics_backend: prefs.graphics_backend,
+            active_backend: cc
+                .wgpu_render_state
+                .as_ref()
+                .map(|r| crate::gfx::Backend::from_wgpu(r.adapter.get_info().backend)),
             settings_error: None,
         };
         if let Some(p) = initial_a {
@@ -1265,6 +1324,7 @@ impl ViewerApp {
             archive_dir,
             module_registration: self.module_registration,
             module_simulation: self.module_simulation,
+            session: self.session.clone(),
             graphics_backend: self.graphics_backend,
         }) {
             Ok(()) => self.settings_error = None,
@@ -1306,8 +1366,60 @@ impl ViewerApp {
         self.sync_views_to_cursor(slot, None);
     }
 
+    /// Does the local archive hold any patient? Re-read at most twice a
+    /// second, since the start screen asks every frame.
+    pub(super) fn archive_has_data(&mut self, now: f64) -> bool {
+        if now - self.archive_checked_at < 0.5 {
+            return self.archive_has_data;
+        }
+        self.archive_checked_at = now;
+        let root = crate::archive::root_from_setting(&self.archive_dir);
+        self.archive_has_data = crate::archive::Archive::new(root).has_patients();
+        self.archive_has_data
+    }
+
+    /// Is there a session from the last run to offer?
+    pub(super) fn has_last_session(&self) -> bool {
+        self.last_session.iter().any(|paths| !paths.is_empty())
+    }
+
+    /// Load again what the program was showing when it was last closed.
+    ///
+    /// Folders move and get cleaned up between sessions, so the sources are
+    /// checked first: if any of them is gone the session is dropped, with a
+    /// message saying so, and the start screen no longer offers it.
+    pub(super) fn restore_last_session(&mut self) {
+        let missing: Vec<String> = self
+            .last_session
+            .iter()
+            .flatten()
+            .filter(|p| !p.exists())
+            .map(|p| p.display().to_string())
+            .collect();
+        if !missing.is_empty() {
+            self.error = Some(format!(
+                "The last session cannot be restored. This is no longer on \
+                 disk:\n{}",
+                missing.join("\n")
+            ));
+            self.last_session = [Vec::new(), Vec::new()];
+            self.session = [Vec::new(), Vec::new()];
+            self.persist_settings();
+            return;
+        }
+        if !self.last_session[1].is_empty() {
+            self.comparison = true;
+        }
+        for (slot, paths) in self.last_session.clone().iter().enumerate() {
+            for path in paths {
+                self.restore_queue.push((slot, path.clone()));
+            }
+        }
+    }
+
     pub(super) fn close_comparison(&mut self) {
         self.slots[1] = StudySlot::empty();
+        self.forget_sources(1);
         self.comparison = false;
         self.hovered_slot = 0;
         self.planar_windows.retain(|w| w.slot != 1);
@@ -1364,6 +1476,14 @@ impl eframe::App for ViewerApp {
                 self.start_load(slot, path);
             } else if let Some((slot, paths)) = self.pending_load_files.take() {
                 self.start_load_files(slot, paths);
+            } else if !self.restore_queue.is_empty() {
+                // One source of the session being restored at a time.
+                let (slot, path) = self.restore_queue.remove(0);
+                if path.is_dir() {
+                    self.start_load(slot, path);
+                } else {
+                    self.start_load_files(slot, vec![path]);
+                }
             }
         }
 
@@ -1543,6 +1663,9 @@ impl eframe::App for ViewerApp {
         }
         if let Some(action) = self.set_action.take() {
             self.apply_set_action(action);
+        }
+        if let Some(obj) = self.obj_remove.take() {
+            self.remove_object(obj);
         }
         if let Some(action) = self.item_action.take() {
             self.apply_item_action(action);

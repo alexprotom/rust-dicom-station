@@ -371,7 +371,7 @@ impl ViewerApp {
             return;
         };
         if study.volume.dims != p.result.volume_dims {
-            self.error = Some("Dataset changed — auto-segmentation result discarded.".into());
+            self.error = Some("Dataset changed - auto-segmentation result discarded.".into());
             return;
         }
         let dims = study.volume.dims;

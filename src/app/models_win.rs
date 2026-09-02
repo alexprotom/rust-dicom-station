@@ -69,7 +69,7 @@ impl ViewerApp {
         }
         let root = models::root_from_setting(&self.models_dir);
         let progress = Arc::new(Progress::default());
-        progress.set("starting…");
+        progress.set("starting");
         self.models_result = None;
         self.models_job = Some(Job::spawn(progress, move |p| {
             let n = assets.len();
@@ -79,7 +79,7 @@ impl ViewerApp {
                     break;
                 }
                 p.set_phase(i as f32 / n as f32, 1.0 / n as f32);
-                p.set(format!("{} — {} of {n}", a.label, i + 1));
+                p.set(format!("{} - {} of {n}", a.label, i + 1));
                 if refresh {
                     models::remove(a, &root).with_context(|| format!("remove {}", a.label))?;
                 }
@@ -91,7 +91,7 @@ impl ViewerApp {
             Ok(if done == n {
                 format!("✔ {n} model(s) {verb}")
             } else {
-                format!("{done} of {n} model(s) {verb} — cancelled")
+                format!("{done} of {n} model(s) {verb} - cancelled")
             })
         }));
     }
@@ -150,7 +150,7 @@ impl ViewerApp {
                 ui.label(
                     "Every model the segmentation tools can fetch. Weights are \
                      downloaded once, converted to a cache beside them, and never touched \
-                     again — this window is where that inventory is managed.",
+                     again - this window is where that inventory is managed.",
                 );
                 ui.separator();
 
@@ -187,7 +187,7 @@ impl ViewerApp {
                     if ui
                         .add_enabled(!running && ready_n > 0, egui::Button::new("⟳ Update all"))
                         .on_hover_text(
-                            "Remove and re-fetch every model that is on disk — the published \
+                            "Remove and re-fetch every model that is on disk - the published \
                              files carry no version, so an update is a fresh download",
                         )
                         .clicked()
@@ -356,13 +356,13 @@ fn model_row(
     } else if s.partial {
         ("◐", Color32::from_rgb(230, 190, 90))
     } else {
-        ("–", Color32::GRAY)
+        ("-", Color32::GRAY)
     };
     ui.label(egui::RichText::new(glyph).color(tint).monospace())
         .on_hover_text(if s.ready {
-            "Ready — runs with no network access"
+            "Ready - runs with no network access"
         } else if s.partial {
-            "Partly downloaded — a run (or Download) finishes it"
+            "Partly downloaded - a run (or Download) finishes it"
         } else {
             "Not downloaded"
         });

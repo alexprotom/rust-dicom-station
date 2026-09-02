@@ -52,7 +52,7 @@ pub fn run_install(payload: Payload, mut opts: Options, silent: bool) -> Result<
     let sink = |ev: Event| printer.handle(ev);
     install::run(&opts, &payload, &sink, &cancel)?;
     println!("\nInstalled into {}", opts.dir.display());
-    if opts.launch_after && !silent && ask_yes_no("Start the viewer now?", false)? {
+    if opts.launch_after && !silent && ask_yes_no(&format!("Start {APP_NAME} now?"), false)? {
         crate::win::shell_execute(&opts.exe_path(), "", false)?;
     }
     Ok(())

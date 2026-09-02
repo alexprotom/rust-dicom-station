@@ -143,7 +143,7 @@ fn launch(app: SetupApp, title: &str) -> Result<()> {
     for (i, attempt) in order.iter().enumerate() {
         if i > 0 {
             eprintln!(
-                "{APP_NAME} setup: {} did not work, trying {}…",
+                "{APP_NAME} setup: {} did not work, trying {}",
                 order[i - 1].label,
                 attempt.label
             );
@@ -358,7 +358,11 @@ impl eframe::App for SetupApp {
             ui.add_space(8.0);
             ui.heading(title);
             ui.label(
-                RichText::new("A fast DICOM / RT DICOM viewer written entirely in Rust").weak(),
+                RichText::new(
+                    "Open-source software designed for the medical imaging, radiotherapy \
+                     research, analysis and QA",
+                )
+                .weak(),
             );
             ui.add_space(8.0);
         });
@@ -395,7 +399,7 @@ impl SetupApp {
             ui.checkbox(&mut self.accepted, "I accept the license terms");
         } else {
             self.accepted = true;
-            ui.label("MIT-licensed software. Not a medical device — for research and QA only.");
+            ui.label("MIT-licensed software. Not a medical device - for research and QA only.");
         }
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -444,7 +448,7 @@ impl SetupApp {
                     self.opts.set_dir(PathBuf::from(self.dir_text.trim()));
                     self.models_dir_text = self.opts.models_dir.to_string_lossy().to_string();
                 }
-                if ui.button("Browse…").clicked() {
+                if ui.button("Browse").clicked() {
                     if let Some(d) = rfd::FileDialog::new()
                         .set_title("Choose the installation folder")
                         .pick_folder()
@@ -492,7 +496,7 @@ impl SetupApp {
             ui.label(
                 RichText::new(
                     "Graphics: drawing uses Direct3D 12 or Vulkan through the display driver \
-                     already on this machine — nothing to install. The next page chooses \
+                     already on this machine - nothing to install. The next page chooses \
                      which one.",
                 )
                 .weak(),
@@ -526,7 +530,7 @@ impl SetupApp {
                     let bytes = models::download_size(self.opts.models, &self.opts.models_dir);
                     ui.label(
                         RichText::new(format!(
-                            "{} still to download from the TotalSegmentator release — this can \
+                            "{} still to download from the TotalSegmentator release - this can \
                              take a while.",
                             human_size(bytes)
                         ))
@@ -582,9 +586,9 @@ impl SetupApp {
             ui.add_space(4.0);
             ui.label(
                 RichText::new(
-                    "This is only the starting choice — it can be changed at any time under \
-                     View ▸ Graphics backend, and the viewer falls back on its own if the \
-                     one chosen here does not work.",
+                    "This is only the starting choice. It can be changed at any time under \
+                     Settings > Graphics backend, and the viewer falls back on its own if \
+                     the one chosen here does not work.",
                 )
                 .weak(),
             );
@@ -675,7 +679,7 @@ impl SetupApp {
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             if self.is_install() && self.error.is_none() {
-                ui.checkbox(&mut self.opts.launch_after, "Start the viewer now");
+                ui.checkbox(&mut self.opts.launch_after, format!("Start {APP_NAME} now"));
             }
             if ui.button("Close").clicked() {
                 if self.is_install() && self.error.is_none() && self.opts.launch_after {

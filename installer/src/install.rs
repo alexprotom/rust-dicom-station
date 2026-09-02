@@ -45,7 +45,7 @@ pub struct Manifest {
 impl Manifest {
     pub fn render(&self) -> String {
         let mut out = String::from(
-            "# rust-dicom-station install manifest — used by uninstall.exe.\n\
+            "# rust-dicom-station install manifest - used by uninstall.exe.\n\
              # Editing this file changes what the uninstaller removes.\n",
         );
         out.push_str(&format!("version = {}\n", self.version));
@@ -96,13 +96,13 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
     let step = |f: f32, s: &str| sink(Event::Progress(f, s.to_string()));
 
     // ---- preflight -------------------------------------------------------
-    step(0.0, "Preparing…");
+    step(0.0, "Preparing");
     std::fs::create_dir_all(&opts.dir)
         .with_context(|| format!("create install directory {}", opts.dir.display()))?;
     check_writable(&opts.dir)?;
     if is_running(&opts.exe_path()) {
         bail!(
-            "{} is currently running from {} — close it and start the installer again",
+            "{} is currently running from {} - close it and start the installer again",
             APP_NAME,
             opts.dir.display()
         );
@@ -145,7 +145,7 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
     save_manifest(&manifest)?;
 
     // ---- uninstaller ------------------------------------------------------
-    step(0.57, "Writing the uninstaller…");
+    step(0.57, "Writing the uninstaller");
     write_uninstaller(payload, &opts.uninstaller_path())?;
     manifest.files.push(UNINSTALLER_EXE.to_string());
     log(format!(
@@ -213,7 +213,7 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
     save_manifest(&manifest)?;
 
     // ---- shortcuts --------------------------------------------------------
-    step(0.60, "Creating shortcuts…");
+    step(0.60, "Creating shortcuts");
     shortcut::init_com();
     if opts.start_menu_shortcut {
         let link = crate::win::start_menu_programs()?.join(format!("{APP_NAME}.lnk"));
@@ -243,7 +243,7 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
     save_manifest(&manifest)?;
 
     // ---- registry ---------------------------------------------------------
-    step(0.65, "Registering the application…");
+    step(0.65, "Registering the application");
     let hive = opts.scope.hive();
     write_uninstall_entry(opts, hive, total_bytes, &manifest.version)?;
     log(format!("Listed in Apps & features ({})", hive.label()));
@@ -264,18 +264,18 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
     save_manifest(&manifest)?;
 
     // ---- dependencies -----------------------------------------------------
-    step(0.70, "Checking dependencies…");
+    step(0.70, "Checking dependencies");
     match deps::vcredist_state() {
         deps::Dependency::Present => log("Visual C++ runtime: already installed".into()),
         deps::Dependency::Missing if opts.install_vcredist => {
-            log("Visual C++ runtime: missing — downloading from Microsoft".into());
+            log("Visual C++ runtime: missing - downloading from Microsoft".into());
             deps::install_vcredist(&|f, msg| {
                 sink(Event::Progress(0.70 + 0.10 * f, msg.to_string()))
             })?;
             log("Visual C++ runtime: installed".into());
         }
         deps::Dependency::Missing => {
-            log("Visual C++ runtime: missing — skipped (the viewer may not start)".into())
+            log("Visual C++ runtime: missing - skipped (the viewer may not start)".into())
         }
     }
     if cancel.load(Ordering::Relaxed) {
@@ -284,7 +284,7 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
 
     // ---- optional model weights ------------------------------------------
     if opts.models != Models::None {
-        step(0.80, "Downloading the auto-segmentation weights…");
+        step(0.80, "Downloading the auto-segmentation weights");
         crate::models::prefetch(
             opts.models,
             &opts.models_dir,

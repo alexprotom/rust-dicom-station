@@ -14,7 +14,7 @@
 //! 1. the `WGPU_BACKEND` environment variable, if the user has set one —
 //!    it stays the escape hatch and it still wins;
 //! 2. the `graphics_backend` line in the settings file, which the installer
-//!    writes from the page it asks on and the *View ▸ Graphics backend* menu
+//!    writes from the page it asks on and the *Settings > Graphics backend* menu
 //!    changes afterwards;
 //! 3. failing both, whatever `wgpu` picks.
 //!
@@ -114,13 +114,28 @@ impl Backend {
         }
     }
 
+    /// Which of these a running `wgpu` adapter is.
+    ///
+    /// The menu says what the program is drawing with *now*, which is not
+    /// always what was asked for: a machine whose Vulkan driver does not
+    /// start falls through to the next backend by itself.
+    pub fn from_wgpu(backend: eframe::wgpu::Backend) -> Backend {
+        match backend {
+            eframe::wgpu::Backend::Vulkan => Backend::Vulkan,
+            eframe::wgpu::Backend::Dx12 => Backend::Dx12,
+            eframe::wgpu::Backend::Metal => Backend::Metal,
+            eframe::wgpu::Backend::Gl => Backend::OpenGl,
+            _ => Backend::Auto,
+        }
+    }
+
     /// One line saying when to pick it.
     pub fn hint(self) -> &'static str {
         match self {
             Backend::Auto => "Let the graphics library decide. Right on most machines.",
             Backend::Vulkan => {
                 "Usually the fastest. A few Windows machines advertise a Vulkan driver \
-                 that does not work — if the program will not start, this is why."
+                 that does not work - if the program will not start, this is why."
             }
             Backend::Dx12 => {
                 "Windows' own. Slightly slower than Vulkan on some cards, and \

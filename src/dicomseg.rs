@@ -400,7 +400,7 @@ pub fn load(path: &Path) -> Result<SegSeries> {
     }
     if frames.is_empty() {
         bail!(
-            "SEG {} has no Per-frame Functional Groups — its frames cannot be placed",
+            "SEG {} has no Per-frame Functional Groups - its frames cannot be placed",
             path.display()
         );
     }

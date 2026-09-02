@@ -120,7 +120,7 @@ impl ViewerApp {
             return;
         };
         let Some(reg) = &self.registration else {
-            self.error = Some("Run a registration first — propagation needs one.".into());
+            self.error = Some("Run a registration first - propagation needs one.".into());
             return;
         };
         let src_slot = d.src_slot;
@@ -175,12 +175,12 @@ impl ViewerApp {
         let field_step = self.field_step_mm;
 
         let progress = Arc::new(Progress::default());
-        progress.set("starting…");
+        progress.set("starting");
         self.propagate_job = Some(Job::spawn(progress, move |p| {
             let mut refined = None;
             let transform = if region.is_some() {
                 p.set_phase(0.0, 0.6);
-                p.set("Refining the registration on the region…");
+                p.set("Refining the registration on the region");
                 match registration::register(&fixed_vol, &moving_vol, &params, p) {
                     Ok(result) => {
                         let field = VectorField::sample(
@@ -301,7 +301,7 @@ impl ViewerApp {
             ctx,
             "propagate",
             format!(
-                "⇄ Propagate structures — {} ▶ {}",
+                "⇄ Propagate structures - {} ▶ {}",
                 SLOT_NAMES[src_slot], SLOT_NAMES[dst_slot]
             ),
             &mut open,
@@ -317,7 +317,7 @@ impl ViewerApp {
                     None => {
                         ui.colored_label(
                             alert_color(ui.visuals()),
-                            "No active registration — run one in the sidebar first.",
+                            "No active registration - run one in the sidebar first.",
                         );
                     }
                     Some((fixed, method, region)) => {
@@ -329,7 +329,7 @@ impl ViewerApp {
                             }
                         ));
                         ui.weak(format!(
-                            "Fixed image: dataset {} — the transform is inverted \
+                            "Fixed image: dataset {} - the transform is inverted \
                          automatically for the other direction.",
                             SLOT_NAMES[*fixed]
                         ));
@@ -403,7 +403,7 @@ impl ViewerApp {
                         ui.label(
                             "A structure inside a larger one lands where the *larger* one's \
                          deformation puts it. Refining the registration on the enclosing \
-                         structure first is what fixes that — and it only changes the \
+                         structure first is what fixes that - and it only changes the \
                          transform inside that structure.",
                         );
                         ui.horizontal(|ui| {

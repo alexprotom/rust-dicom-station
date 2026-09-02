@@ -221,17 +221,17 @@ mod tests {
             "Rust DICOM Station: Downloaded models"
         );
         assert_eq!(
-            window_title("🏥 PACS — patient archive"),
-            "Rust DICOM Station: PACS — patient archive"
+            window_title("🏥 PACS - patient archive"),
+            "Rust DICOM Station: PACS - patient archive"
         );
         assert_eq!(
-            window_title("⇄ Propagate structures — A ▶ B"),
-            "Rust DICOM Station: Propagate structures — A ▶ B",
+            window_title("⇄ Propagate structures - A ▶ B"),
+            "Rust DICOM Station: Propagate structures - A ▶ B",
             "only the leading glyph goes; the ones inside the name stay"
         );
         assert_eq!(
-            window_title("3D structures — dataset A"),
-            "Rust DICOM Station: 3D structures — dataset A",
+            window_title("3D structures - dataset A"),
+            "Rust DICOM Station: 3D structures - dataset A",
             "a name that starts with a digit is untouched"
         );
     }

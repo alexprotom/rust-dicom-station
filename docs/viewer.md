@@ -6,11 +6,26 @@
 the axial view draws the native RTSTRUCT contours, sagittal/coronal show
 reconstructed cross-sections of the same ROIs.*
 
+## The start screen
+
+With nothing loaded the window is four buttons, and only the ones that can do
+something:
+
+* **Add DICOM folder** scans a folder into dataset A.
+* **Load data from PACS** opens the local patient archive. It appears only
+  when the archive holds a patient.
+* **Restore the last session** loads again what was open when the program was
+  last closed. It appears only when there was such a session; if the folders
+  it names have since moved or been deleted, it says so and stops offering it.
+  The sources of both datasets are remembered in `session_a` / `session_b` in
+  the settings file as they are loaded, so an unclean exit loses nothing.
+* **Generate test data** writes a synthetic RT study to try the program on.
+
 ## Loading and volume reconstruction
 
-Data comes in either way round: a whole folder (*File ▶ Add DICOM folder…*, or
+Data comes in either way round: a whole folder (*File > Add DICOM folder*, or
 directory arguments on the command line) or an explicit handful of files
-(*File ▶ Add DICOM file(s)…*, multi-select). Both start the same background
+(*File > Add DICOM file(s)*, multi-select). Both start the same background
 scan and both merge into the dataset the same way — a file selection is not a
 separate mode with its own rules, it is a study that happens to be small.
 
@@ -119,7 +134,7 @@ the reference dose) at the crosshair; in comparison mode both datasets report
 the full set side by side, each at its own crosshair. Hover the **?** at the
 right end to read the active tool's mouse bindings.
 
-**The left panel.** *View ▶ Left panel*, **F9** and the arrow on the window's
+**The left panel.** *View > Left panel*, **F9** and the arrow on the window's
 left edge hide and show it; dragging its inner edge past the minimum does the
 same, and the arrow brings it back. The *Modules* menu chooses its sections:
 **Image registration** and **Image simulation** are off until switched on,
@@ -274,7 +289,7 @@ Load a second dataset (menu, tree copy/move, or two directories on the command
 line) and the window splits into two rows of three views — dataset A on top,
 dataset B below. Each dataset keeps its own structures, dose and plan panels
 in the sidebar; window/level and dose display are shared. The crosshair is
-synced through **patient coordinates** (the toolbar's **🔗**, or *View ▶ Sync
+synced through **patient coordinates** (the toolbar's **🔗**, or *View > Sync
 crosshairs between datasets* — both appear only while the crosshair itself is
 on); with a registration active, the link maps through the recovered transform
 instead — see [registration.md](registration.md).
@@ -296,7 +311,7 @@ image-plane pixel spacing), MONOCHROME1 inversion, and metadata — body part,
 view and kVp for DX; machine, gantry angle, SAD and SID for RTIMAGE.
 
 Any image that carries no slice position lands here, whatever its modality —
-that is what makes *File ▶ Add DICOM file(s)…* on a single RT image, an
+that is what makes *File > Add DICOM file(s)* on a single RT image, an
 unpositioned secondary capture or a stray slice give you something to look at.
 The section is closed by default when there is a volume beside it and open
 when there is not. Multi-frame images are the one exception: they are reported
@@ -304,7 +319,7 @@ as a warning rather than loaded.
 
 ## Appearance
 
-*View ▶ Appearance* switches between **🌙 Dark**, **☀ Light** and **💻 System**
+*View > Appearance* switches between **🌙 Dark**, **☀ Light** and **💻 System**
 (follows the OS setting and updates live). The choice is remembered in
 `viewer_settings.txt` (`%LOCALAPPDATA%\RustDICOMStation` on Windows,
 `~/.config/RustDICOMStation` on Linux), a tiny `key = value` text file, safe
@@ -335,7 +350,7 @@ Three things now decide which backend is used, in this order of authority:
 1. **`WGPU_BACKEND`**, if set. It stays the escape hatch and it still wins —
    someone who set it is debugging something.
 2. **`graphics_backend`** in the settings, which the installer writes from the
-   page it asks on and *View ▶ Graphics backend* changes afterwards. Accepted
+   page it asks on and *Settings > Graphics backend* changes afterwards. Accepted
    values: `auto`, `vulkan`, `dx12`, `metal`, `opengl`.
 3. Failing both, whatever `wgpu` picks on its own.
 
@@ -355,11 +370,12 @@ So on a machine with a broken Vulkan driver the viewer now starts unaided. The
 setting only saves it the first failed attempt — worth having, because the
 attempt costs a second or two and prints a line that looks alarming.
 
-*View ▸ Graphics backend* lists the backends this platform could have (no
+*Settings > Graphics backend* lists the backends this platform could have (no
 Direct3D outside Windows, no Metal outside macOS), each with a one-line hint,
-and remembers the choice. It takes effect at the next start: the backend is
-read once before the window exists, and the menu says so. If `WGPU_BACKEND` is
-set in the session, the menu says that too rather than appearing to lie.
+and remembers the choice. Under the list it names the backend the program is
+actually drawing with at that moment, which after a fallback is not always the
+one that was asked for, and says that a change takes effect at the next start:
+the backend is read once, before the window exists.
 
 ### Where the setting is read from
 

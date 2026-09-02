@@ -29,6 +29,11 @@ pub const GRAPHICS_BACKEND_KEY: &str = "graphics_backend";
 const MODULE_REG_KEY: &str = "module_image_registration";
 const MODULE_SIM_KEY: &str = "module_image_simulation";
 
+/// Settings keys of the last session's sources, one per dataset. The paths
+/// are separated by `|`, which no path on any supported system contains.
+const SESSION_KEYS: [&str; 2] = ["session_a", "session_b"];
+const SESSION_SEP: char = '|';
+
 /// User preferences that survive a restart.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
@@ -59,6 +64,11 @@ pub struct Settings {
     /// startup, before the window exists, so a change only takes effect on
     /// the next run — which the menu says.
     pub graphics_backend: Backend,
+
+    /// What dataset A and dataset B were last loaded from: folders and
+    /// files, in the order they were added, so *Restore the last session*
+    /// can put the same data back.
+    pub session: [Vec<PathBuf>; 2],
 }
 
 impl Default for Settings {
@@ -73,6 +83,7 @@ impl Default for Settings {
             // on and the choice is remembered.
             module_registration: false,
             module_simulation: false,
+            session: [Vec::new(), Vec::new()],
             // Let wgpu choose. The installer writes an explicit value when
             // the person installing picks one.
             graphics_backend: Backend::Auto,
@@ -328,6 +339,16 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
             if let Some(b) = bool_from_str(value) {
                 s.module_registration = b;
             }
+        } else if let Some(slot) = SESSION_KEYS
+            .iter()
+            .position(|k| key.eq_ignore_ascii_case(k))
+        {
+            s.session[slot] = value
+                .split(SESSION_SEP)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .collect();
         } else if key.eq_ignore_ascii_case(MODULE_SIM_KEY) {
             if let Some(b) = bool_from_str(value) {
                 s.module_simulation = b;
@@ -368,6 +389,16 @@ fn render(s: &Settings) -> String {
         bool_to_str(s.module_simulation),
         s.graphics_backend.key()
     ));
+    for (key, paths) in SESSION_KEYS.iter().zip(&s.session) {
+        if paths.is_empty() {
+            continue;
+        }
+        let joined: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+        out.push_str(&format!(
+            "# what this dataset was last loaded from\n{key} = {}\n",
+            joined.join(&SESSION_SEP.to_string())
+        ));
+    }
     out
 }
 
@@ -472,6 +503,30 @@ mod tests {
         );
         let merged = parse_into(parse_into(Settings::default(), &machine), &user);
         assert_eq!(merged.graphics_backend, Backend::Vulkan);
+    }
+
+    #[test]
+    fn round_trips_the_last_session() {
+        let s = Settings {
+            session: [
+                vec![
+                    PathBuf::from("D:/studies/one"),
+                    PathBuf::from("D:/studies/two"),
+                ],
+                vec![PathBuf::from("D:/studies/three")],
+            ],
+            ..Settings::default()
+        };
+        assert_eq!(parse(&render(&s)), s, "both datasets round trip");
+        assert_eq!(
+            parse("session_a = D:/one | D:/two |\n").session[0],
+            vec![PathBuf::from("D:/one"), PathBuf::from("D:/two")],
+            "spacing and a trailing separator are ignored"
+        );
+        assert!(
+            parse("session_b =\n").session[1].is_empty(),
+            "an empty list is no session, not one blank path"
+        );
     }
 
     #[test]

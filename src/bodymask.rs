@@ -356,7 +356,7 @@ pub fn contour_body(
         guide = Some(body_from_labels(&labels, dims, spacing, progress)?);
     }
     progress.set_phase(fg_base, fg_span);
-    progress.report(0.0, "Separating tissue from air…");
+    progress.report(0.0, "Separating tissue from air");
     let mut fg = foreground(volume, params.foreground);
     if progress.cancelled() {
         bail!(CANCELLED);
@@ -387,7 +387,7 @@ pub fn contour_body(
     // and at a radius small enough that only equipment qualifies.
     progress.set_phase(fg_base + fg_span, fg_span);
     if params.remove_devices {
-        progress.report(0.0, "Looking for couch, chair and immobilisation…");
+        progress.report(0.0, "Looking for couch, chair and immobilisation");
         let opened = morph::open_mm(&mask, dims, spacing, params.device_thin_mm);
         let mut thin: Vec<u8> = mask
             .par_iter()
@@ -445,7 +445,7 @@ pub fn contour_body(
     // axis happens to be third in the array.
     let axial = volume.canonical_axes().0[0];
     progress.set_phase(fg_base + 2.0 * fg_span, fg_span);
-    progress.report(0.0, "Closing the interior…");
+    progress.report(0.0, "Closing the interior");
     let mut solid = mask.clone();
     morph::fill_holes_2d(&mut solid, dims, axial);
     if progress.cancelled() {
@@ -454,12 +454,12 @@ pub fn contour_body(
 
     // ---- 4. which components are a patient -------------------------------
     progress.set_phase(fg_base + 3.0 * fg_span, fg_span);
-    progress.report(0.0, "Finding the body…");
+    progress.report(0.0, "Finding the body");
     let core = morph::open_mm(&solid, dims, spacing, params.open_mm);
     let comps = morph::components(&core, dims);
     if comps.is_empty() {
         bail!(
-            "nothing above the threshold looks like a body — lower the threshold \
+            "nothing above the threshold looks like a body - lower the threshold \
              or reduce the opening radius"
         );
     }
@@ -484,7 +484,7 @@ pub fn contour_body(
     progress.set_phase(fg_base + 4.0 * fg_span, fg_span);
     let mut recovered = 0u64;
     if params.recover_thin {
-        progress.report(0.0, "Recovering ears, nose and fingers…");
+        progress.report(0.0, "Recovering ears, nose and fingers");
         // Two questions, because there are two kinds of thing here.
         //
         // What the opening shaved off the body's *own* surface lies, by
@@ -531,7 +531,7 @@ pub fn contour_body(
 
     // ---- 6. finish -------------------------------------------------------
     progress.set_phase(fg_base + 5.0 * fg_span, fg_span);
-    progress.report(0.0, "Finishing the surface…");
+    progress.report(0.0, "Finishing the surface");
     // The opening can leave a dent the fill has to close again, and a
     // cavity that is open on every slice can still be enclosed in space.
     morph::fill_holes_2d(&mut body, dims, axial);
@@ -744,7 +744,7 @@ fn body_from_labels(
     spacing: [f64; 3],
     progress: &Progress,
 ) -> Result<Vec<u8>> {
-    progress.report(0.95, "Cleaning up the network's answer…");
+    progress.report(0.95, "Cleaning up the network's answer");
     let voxel_mm3 = spacing[0] * spacing[1] * spacing[2];
     let trunk: Vec<u8> = labels.par_iter().map(|&l| u8::from(l == 1)).collect();
     let limbs: Vec<u8> = labels.par_iter().map(|&l| u8::from(l == 2)).collect();

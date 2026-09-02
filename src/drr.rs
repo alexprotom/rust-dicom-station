@@ -79,7 +79,7 @@ impl Engine {
             Engine::Siddon => {
                 "Exact voxel-intersection ray tracing: every voxel contributes the true \
                  length of ray inside it. No sampling step and no interpolation, so the \
-                 result is exact for the voxel model — and slightly harder-edged."
+                 result is exact for the voxel model - and slightly harder-edged."
             }
             Engine::RayCast => {
                 "Fixed-step marching with trilinear interpolation, as ITK's \
@@ -296,7 +296,7 @@ impl DrrImage {
     /// `512 × 512 · 0.78 mm/px · range 0.00 – 24.31`.
     pub fn describe(&self) -> String {
         format!(
-            "{} × {} · {:.2} mm/px · range {:.2} – {:.2} · {:.2} s",
+            "{} × {} · {:.2} mm/px · range {:.2} - {:.2} · {:.2} s",
             self.dims[0], self.dims[1], self.spacing[0], self.min, self.max, self.elapsed_secs
         )
     }
@@ -325,7 +325,7 @@ impl DrrImage {
             self.pixels.clone()
         };
         let mut info = vec![
-            ("Source".into(), format!("DRR — {}", self.engine.label())),
+            ("Source".into(), format!("DRR - {}", self.engine.label())),
             (
                 "Geometry".into(),
                 format!(
@@ -354,9 +354,9 @@ impl DrrImage {
         info.push((
             "Greyscale".into(),
             if invert {
-                "inverted — dark is high attenuation, as on a radiograph".into()
+                "inverted - dark is high attenuation, as on a radiograph".into()
             } else {
-                "line integral — bright is high attenuation".into()
+                "line integral - bright is high attenuation".into()
             },
         ));
         PlanarImage {

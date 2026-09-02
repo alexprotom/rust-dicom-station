@@ -171,7 +171,7 @@ impl ViewerApp {
         let to = 1 - from.slot;
         if self.slots[to].study.is_none() {
             self.error = Some(format!(
-                "dataset {} is empty — load a study into it before moving series there",
+                "dataset {} is empty - load a study into it before moving series there",
                 SLOT_NAMES[to]
             ));
             return;
@@ -243,7 +243,7 @@ impl ViewerApp {
         };
         if ser.segs.iter().all(|s| s.count == 0) {
             self.error =
-                Some("nothing to write — the chosen segmentation(s) have no voxels".into());
+                Some("nothing to write - the chosen segmentation(s) have no voxels".into());
             return;
         }
         let stem: String = ser
@@ -449,7 +449,7 @@ impl ViewerApp {
                 Some(i) => to.idx = i,
                 None => {
                     self.error = Some(format!(
-                        "dataset {} is empty — load a study into it first",
+                        "dataset {} is empty - load a study into it first",
                         SLOT_NAMES[to.slot]
                     ));
                     return;
@@ -482,7 +482,7 @@ impl ViewerApp {
                 for seg in &src_segs {
                     let roi = segmentation::mask_to_roi(seg, &src_grid, 0);
                     if roi.contours.is_empty() {
-                        notes.push(format!("'{}' is empty — nothing was copied", seg.name));
+                        notes.push(format!("'{}' is empty - nothing was copied", seg.name));
                         continue;
                     }
                     new_rois.push(roi);

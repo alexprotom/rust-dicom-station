@@ -69,7 +69,7 @@ impl StudyEntry {
             if self.description.is_empty() {
                 String::new()
             } else {
-                format!(" — {}", self.description)
+                format!(" - {}", self.description)
             },
             if self.modalities.is_empty() {
                 "?".into()
@@ -214,6 +214,21 @@ impl Archive {
         Archive { root: root.into() }
     }
 
+    /// Does the archive hold anything at all?
+    ///
+    /// The start screen asks this to decide whether to offer *Load data from
+    /// PACS*, so it must be cheap: one directory read that stops at the
+    /// first patient folder, not the full [`Archive::scan`].
+    pub fn has_patients(&self) -> bool {
+        std::fs::read_dir(&self.root)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .any(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            })
+            .unwrap_or(false)
+    }
+
     /// Every patient in the archive, with their studies, in name order.
     ///
     /// Reads sidecars only; a study folder without one has it rebuilt from
@@ -337,7 +352,7 @@ impl Archive {
     /// the same study is counted as a duplicate and left alone, so importing
     /// the same folder twice is a no-op rather than a second copy.
     pub fn import(&self, src: &Path, progress: &Progress) -> Result<ImportSummary> {
-        progress.set("Scanning the folder…");
+        progress.set("Scanning the folder");
         let files: Vec<PathBuf> = walkdir::WalkDir::new(src)
             .follow_links(true)
             .into_iter()
@@ -350,7 +365,7 @@ impl Archive {
         let mut patients: BTreeSet<PathBuf> = BTreeSet::new();
         for (n, path) in files.iter().enumerate() {
             if n % 25 == 0 {
-                progress.set(format!("Filing {}/{}…", n + 1, files.len()));
+                progress.set(format!("Filing {}/{}", n + 1, files.len()));
             }
             let Ok(obj) = OpenFileOptions::new()
                 .read_until(tags::PIXEL_DATA)
@@ -393,7 +408,7 @@ impl Archive {
         }
         // The sidecars are rebuilt once per touched study rather than per
         // file — the counts and modality list are only right at the end.
-        progress.set("Updating the archive index…");
+        progress.set("Updating the archive index");
         for sdir in &touched {
             let _ = self.rebuild_sidecars(sdir);
         }
@@ -498,7 +513,7 @@ mod tests {
         assert_eq!(st.modalities, vec!["CT", "RTSTRUCT"]);
         assert!(st
             .describe()
-            .starts_with("20260827 — Planning · CT, RTSTRUCT · 214 files"));
+            .starts_with("20260827 - Planning · CT, RTSTRUCT · 214 files"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

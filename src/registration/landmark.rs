@@ -65,7 +65,7 @@ impl LandmarkKernel {
         match self {
             LandmarkKernel::ThinPlate => {
                 "φ(r) = r with an affine term: the classic minimum-bending-energy warp. \
-                 Global — every landmark influences the whole volume — and it reproduces \
+                 Global - every landmark influences the whole volume - and it reproduces \
                  a global shift or rotation exactly. Needs at least four landmarks that \
                  are not coplanar."
             }
@@ -253,7 +253,7 @@ fn solve_in_place(a: &mut [f64], b: &mut [f64], n: usize, m: usize) -> Result<()
         }
         if best < 1e-12 {
             bail!(
-                "the landmark system is singular — landmarks are coincident or coplanar; \
+                "the landmark system is singular - landmarks are coincident or coplanar; \
                  move one, add one, or raise the stiffness"
             );
         }
@@ -301,7 +301,7 @@ pub fn solve(pairs: &[LandmarkPair], p: &LandmarkParams) -> Result<RbfWarp> {
     if p.kernel.has_affine() && n < 4 {
         bail!(
             "the thin-plate spline needs at least 4 landmark pairs (it also solves for an \
-             affine term); {n} placed — add more, or switch to the Gaussian or Wendland kernel"
+             affine term); {n} placed - add more, or switch to the Gaussian or Wendland kernel"
         );
     }
     let extra = if p.kernel.has_affine() { 4 } else { 0 };

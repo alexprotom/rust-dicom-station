@@ -38,7 +38,7 @@ fn main() -> eframe::Result<()> {
     for (attempt, backend) in order.iter().copied().enumerate() {
         if attempt > 0 {
             eprintln!(
-                "rust-dicom-station: {} did not work, trying {}…",
+                "rust-dicom-station: {} did not work, trying {}",
                 order[attempt - 1].label(),
                 backend.label()
             );
@@ -54,7 +54,7 @@ fn main() -> eframe::Result<()> {
     eprintln!(
         "rust-dicom-station: no graphics backend on this machine could open a window. \
          Set {}=dx12 (or vulkan, or opengl) to force one, or choose it under \
-         View ▸ Graphics backend after the program starts.",
+         View > Graphics backend after the program starts.",
         gfx::ENV_VAR
     );
     Err(last.expect("candidates() is never empty"))

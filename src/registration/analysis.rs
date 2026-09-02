@@ -79,7 +79,7 @@ impl JacobianStats {
     /// `det J 0.82 – 1.24 (mean 1.00), no folding`.
     pub fn line(&self) -> String {
         format!(
-            "det J {:.2} – {:.2} (mean {:.2}), {}",
+            "det J {:.2} - {:.2} (mean {:.2}), {}",
             self.min,
             self.max,
             self.mean,
