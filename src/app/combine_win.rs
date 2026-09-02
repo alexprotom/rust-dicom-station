@@ -343,6 +343,8 @@ impl ViewerApp {
                     .collect()
             })
             .unwrap_or_default();
+        let has = [self.slots[0].has_volume(), self.slots[1].has_volume()];
+        let mut switch: Option<usize> = None;
         let Some(d) = &mut self.combine_dialog else {
             return;
         };
@@ -361,6 +363,7 @@ impl ViewerApp {
             &mut open,
             detach::WinOpts::width(470.0),
             |ui| {
+                switch = dataset_row(ui, slot, has, running.is_none());
                 ui.label(
                     "Builds one structure out of others: union, intersection, subtraction \
                      or symmetric difference, with a margin on any of them. Contours and \
@@ -582,6 +585,10 @@ impl ViewerApp {
                 }
             },
         );
+        if let Some(s) = switch {
+            self.open_combine_dialog(s, Vec::new());
+            return;
+        }
         if let Some((i, delta)) = move_row {
             let j = (i as isize + delta) as usize;
             if let Some(d) = &mut self.combine_dialog {
@@ -675,7 +682,7 @@ mod tests {
     #[test]
     fn the_tool_names_itself_like_the_others() {
         assert_eq!(COMBINE.title(0), "∪ Combine structures - dataset A");
-        assert_eq!(COMBINE.menu_entry(1), "∪ Combine structures in dataset B");
+        assert_eq!(COMBINE.menu_entry(), "∪ Combine structures");
         assert_eq!(COMBINE.short_button(), "∪ Combine");
     }
 

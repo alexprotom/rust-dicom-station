@@ -31,7 +31,8 @@ everything else in the field of view:
 
 ## Using it
 
-*Tools ▶ 👤 Body-contour dataset A/B…*, or the **👤 Body…** button in the
+*Tools ▶ 👤 Body contour* (the dataset is chosen on the window's **Dataset
+A / B** row), or the **👤 Body…** button in the
 sidebar *Segmentations* section. The window shares the segmentation tools'
 layout (see [architecture.md](architecture.md#the-segmentation-tool-windows)).
 

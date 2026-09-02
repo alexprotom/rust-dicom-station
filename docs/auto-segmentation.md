@@ -24,7 +24,8 @@ and a 1×1×1 segmentation head - rebuilt at load time from each model's
 
 ## Using it in the viewer
 
-*Tools ▶ 🔬 Auto-segment dataset A/B…* or the **🔬 Auto…** button in the
+*Tools ▶ 🔬 Auto-segmentation* (the dataset is chosen in the window, on its
+**Dataset A / B** row) or the **🔬 Auto…** button in the
 sidebar *Segmentations* section opens the tool window (**🔬
 Auto-segmentation - dataset A**; the three segmentation engines share one
 window layout, see [architecture.md](architecture.md#the-three-engine-windows)):

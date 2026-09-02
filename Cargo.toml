@@ -12,6 +12,7 @@ dicom-core = "0.10"
 dicom-dictionary-std = "0.10"
 dicom-object = "0.10"
 dicom-pixeldata = { version = "0.10", features = ["native", "rayon"] }
+dicom-transfer-syntax-registry = "0.10"  # read data sets that carry no file meta group (see dicomfile.rs)
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "wayland", "x11"] }
 egui = "0.36"
 rayon = "1.12"

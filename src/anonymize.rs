@@ -28,7 +28,7 @@ use dicom_core::value::{PrimitiveValue, Value};
 use dicom_core::{DataElement, Length, Tag, VR};
 use dicom_dictionary_std::tags;
 use dicom_object::meta::FileMetaTableBuilder;
-use dicom_object::{InMemDicomObject, OpenFileOptions};
+use dicom_object::InMemDicomObject;
 use rayon::prelude::*;
 
 use crate::progress::Progress;
@@ -276,10 +276,7 @@ pub fn scan(dir: &Path, progress: &Progress) -> Result<ScanResult> {
             }
             // Header-only read: identifying tags and reference sequences all
             // sit before Pixel Data.
-            let obj = OpenFileOptions::new()
-                .read_until(tags::PIXEL_DATA)
-                .open_file(path)
-                .ok()?;
+            let obj = crate::dicomfile::open_header(path).ok()?;
             let mut uids = HashSet::new();
             let mut private = 0usize;
             walk_stats(&obj, &mut uids, &mut private);
@@ -508,9 +505,7 @@ pub fn apply(
         let per_file: Vec<Result<HashSet<String>>> = files
             .par_iter()
             .map(|path| {
-                let obj = OpenFileOptions::new()
-                    .read_until(tags::PIXEL_DATA)
-                    .open_file(path)
+                let obj = crate::dicomfile::open_header(path)
                     .with_context(|| format!("re-open {}", path.display()))?;
                 let mut u = HashSet::new();
                 let mut private = 0usize;
@@ -548,8 +543,7 @@ pub fn apply(
         .map(|path| -> Result<()> {
             let i = done.fetch_add(1, Ordering::Relaxed);
             progress.set(format!("Anonymizing {}/{}", i + 1, files.len()));
-            let file_obj = dicom_object::open_file(path)
-                .with_context(|| format!("open {}", path.display()))?;
+            let file_obj = crate::dicomfile::open_full(path)?;
             let meta = file_obj.meta().clone();
             let mut obj = file_obj.into_inner();
 

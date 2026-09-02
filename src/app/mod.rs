@@ -16,6 +16,7 @@ use crate::anonymize;
 use crate::autoseg;
 use crate::bodymask;
 use crate::dicom_export;
+use crate::export;
 use crate::extras;
 use crate::fourd;
 use crate::gen_test_data::{self, GenParams};
@@ -44,6 +45,7 @@ mod detach;
 mod dialogs;
 mod drr_win;
 mod dvh_win;
+mod export_win;
 mod glyphs;
 mod jobs;
 mod models_win;
@@ -893,17 +895,19 @@ pub struct ViewerApp {
     sim_params: SimParams,
     sim_job: Option<Job<(usize, LoadedStudy)>>,
     last_sim: Option<String>,
-    // DICOM export (File ▶ Export dataset …).
-    /// Dialog visibility.
+    // DICOM export (File ▶ Export DICOM). One window for both datasets: what
+    // goes out is chosen inside it, not in the menu.
+    /// Window visibility.
     export_open: bool,
-    /// Dataset the dialog exports.
-    export_slot: usize,
-    /// Output folder as edited in the dialog.
+    /// Output folder as edited in the window.
     export_dir: String,
-    /// Editable DICOM attributes, filled from the study when the dialog opens.
-    export_params: Option<dicom_export::ExportParams>,
-    export_job: Option<Job<anyhow::Result<(usize, String)>>>,
+    /// The selection tree and every identifier it carries, built when the
+    /// window opens.
+    export_plan: Option<export::ExportPlan>,
+    export_job: Option<Job<anyhow::Result<export::ExportSummary>>>,
     export_result: Option<String>,
+    /// What the finished run could not do exactly as asked.
+    export_warnings: Vec<String>,
 
     // Built-in synthetic test-data generator.
     /// Dialog visibility.
@@ -1208,11 +1212,11 @@ impl ViewerApp {
             sim_job: None,
             last_sim: None,
             export_open: false,
-            export_slot: 0,
             export_dir: String::new(),
-            export_params: None,
+            export_plan: None,
             export_job: None,
             export_result: None,
+            export_warnings: Vec::new(),
             gen_open: false,
             gen_params: GenParams::default(),
             gen_dir: gen_test_data::default_output_dir().display().to_string(),
@@ -1538,8 +1542,9 @@ impl eframe::App for ViewerApp {
 
         // Poll background export.
         match poll_job(&mut self.export_job, &ctx, "Export", &mut self.error) {
-            Some(Ok((n, dir))) => {
-                self.export_result = Some(format!("✔ {n} DICOM file(s) written to {dir}"));
+            Some(Ok(sum)) => {
+                self.export_result = Some(sum.message());
+                self.export_warnings = sum.warnings;
             }
             Some(Err(e)) => self.error = Some(format!("Export failed: {e:#}")),
             None => {}

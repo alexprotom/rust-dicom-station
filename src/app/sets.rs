@@ -41,6 +41,7 @@ impl ViewerApp {
                     label: format!("Structure Set {}", study.structure_sets.len() + 1),
                     frame_of_reference_uid: for_uid,
                     sop_instance_uid: crate::dicom_export::new_uid(),
+                    series_instance_uid: crate::dicom_export::new_uid(),
                     study_uid,
                     referenced_series_uid: uid,
                     file_name: String::new(),

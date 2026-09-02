@@ -235,12 +235,15 @@ src/
     jobs.rs           loading, simulation, export, generator, anonymizer and
                       auto-segmentation job starts
     dialogs.rs        auto-segmentation window + results, generator, anonymizer,
-                      export, error dialog
+                      error dialog
+    export_win.rs     the export window: the selection tree over both datasets,
+                      the name and UID editors, the RTSTRUCT / SEG radios
     seg.rs            interactive segmentation state machine, mask ▶ RTSTRUCT,
                       landing an auto-segmentation result
-    seg_engines.rs    what the tool windows share: names and glyphs, device /
-                      model-folder / licence / progress rows, result landing,
-                      the "still the same dataset" check
+    seg_engines.rs    what the tool windows share: names and glyphs, the
+                      dataset A / B row, device / model-folder / licence /
+                      progress rows, result landing, the "still the same
+                      dataset" check
     body_win.rs       the body-contour window
     combine_win.rs    the structure-algebra window: operands, margins, the recipe
     prompt_seg.rs     prompt segmentation window and worker (SegVol)
@@ -264,6 +267,9 @@ src/
 
   loader.rs         directory / file-list scan, classification, parallel volume
                     loading, dataset merging, safe DICOM element helpers         DICOM
+  dicomfile.rs      the one way a file is opened: the standard reader, plus
+                    the encoding sniffer for data sets written with no file
+                    meta group (no preamble, no DICM)                            DICOM
   volume.rs         3D volume, patient-space geometry, slice extraction,
                     trilinear sampling, canonical [S, A, R] axes                 Core
   geometry.rs       minimal 3D vector math (Vec3, f64, patient mm)               Core
@@ -279,8 +285,13 @@ src/
   rtdose.rs         RT Dose parsing + trilinear patient-space sampling           DICOM
   rtplan.rs         RT Plan / RT Ion Plan parsing                                DICOM
   extras.rs         DX / CR / RTIMAGE planar images, REG, RTRECORD               DICOM
-  dicom_export.rs   DICOM writer (CT, RTSTRUCT, SEG, RTDOSE, RTPLAN, Deformable
-                    Spatial Registration)                                        DICOM
+  dicom_export.rs   DICOM writer: the object builders (CT slice, RTSTRUCT with
+                    its image reference chain, SEG, RTDOSE, RTPLAN, Deformable
+                    Spatial Registration) and the patching file copier         DICOM
+  export.rs         what one export run is: the dataset / patient / study /
+                    series selection tree, every editable name and UID, the
+                    RTSTRUCT / SEG choice, and the runner that keeps the
+                    references between the written objects resolvable          DICOM
   anonymize.rs      interactive DICOM anonymizer engine                          DICOM
   gen_test_data.rs  synthetic RT phantom study generator                         Sim
   simulate.rs       known-transform study generator (registration QA)           Sim

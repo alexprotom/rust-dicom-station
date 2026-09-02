@@ -517,6 +517,8 @@ impl ViewerApp {
         let mut cancel = false;
         let mut close = false;
         let mut apply_recipe = false;
+        let has = [self.slots[0].has_volume(), self.slots[1].has_volume()];
+        let mut switch: Option<usize> = None;
         let mut open = true;
 
         let d = self.motion_dialog.as_mut().expect("checked above");
@@ -527,6 +529,7 @@ impl ViewerApp {
             &mut open,
             detach::WinOpts::default(),
             |ui| {
+                switch = dataset_row(ui, slot, has, running.is_none());
                 ui.label(
                     "Register the reference phase to every phase of a 4D group, carry the \
                      targets across, and measure their motion - trajectories, amplitudes, \
@@ -712,6 +715,10 @@ impl ViewerApp {
             if let Some(job) = &self.motion_job {
                 job.progress.cancel();
             }
+        }
+        if let Some(s) = switch {
+            self.open_motion_dialog(s, None);
+            return;
         }
         if apply_recipe {
             if let (Some(mut d), Some(r)) = (self.motion_dialog.take(), self.motion_recipe.clone())

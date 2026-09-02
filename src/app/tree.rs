@@ -590,6 +590,7 @@ mod tree_tests {
             label: sop.into(),
             frame_of_reference_uid: String::new(),
             sop_instance_uid: sop.into(),
+            series_instance_uid: String::new(),
             study_uid: study.into(),
             referenced_series_uid: series_uid.into(),
             file_name: format!("{sop}.dcm"),
@@ -606,6 +607,7 @@ mod tree_tests {
             n_fractions: None,
             target_prescription_dose: None,
             sop_instance_uid: sop.into(),
+            series_instance_uid: String::new(),
             study_uid: study.into(),
             referenced_structset_uid: structset_sop.into(),
             beams: Vec::new(),
@@ -614,6 +616,8 @@ mod tree_tests {
 
     fn dose(plan_sop: &str, study: &str) -> DoseGrid {
         DoseGrid {
+            sop_instance_uid: String::new(),
+            series_instance_uid: String::new(),
             data: vec![0.0],
             dims: [1, 1, 1],
             spacing: [1.0, 1.0],

@@ -53,6 +53,11 @@ pub struct SegSeries {
     /// Series description / content label shown in the tree.
     pub label: String,
     pub sop_instance_uid: String,
+    /// Series Instance UID of this object's own series. Kept so that an
+    /// export asked to preserve the identifiers really preserves them: an
+    /// archive files an instance under its series, and the same instance
+    /// arriving under a different one is a different object to it.
+    pub series_instance_uid: String,
     /// Study this series belongs to.
     pub study_uid: String,
     /// Image series the segments belong to (ReferencedSeriesSequence).
@@ -75,6 +80,7 @@ impl SegSeries {
         SegSeries {
             label,
             sop_instance_uid: new_uid(),
+            series_instance_uid: new_uid(),
             study_uid,
             referenced_series_uid,
             file_name: String::new(),
@@ -266,8 +272,8 @@ struct FrameRef {
 /// necessarily that of any loaded volume - [`SegSeries::rebind`] does that
 /// step when the series is displayed.
 pub fn load(path: &Path) -> Result<SegSeries> {
-    let obj =
-        dicom_object::open_file(path).with_context(|| format!("open SEG {}", path.display()))?;
+    let obj = crate::dicomfile::open_full(path)
+        .with_context(|| format!("open SEG {}", path.display()))?;
 
     let rows = i32_of(&obj, tags::ROWS).unwrap_or(0).max(0) as usize;
     let cols = i32_of(&obj, tags::COLUMNS).unwrap_or(0).max(0) as usize;
@@ -514,6 +520,7 @@ pub fn load(path: &Path) -> Result<SegSeries> {
             .or_else(|| str_of(&obj, tags::CONTENT_DESCRIPTION))
             .unwrap_or_else(|| "Segmentation".into()),
         sop_instance_uid: str_of(&obj, tags::SOP_INSTANCE_UID).unwrap_or_default(),
+        series_instance_uid: str_of(&obj, tags::SERIES_INSTANCE_UID).unwrap_or_default(),
         study_uid: str_of(&obj, tags::STUDY_INSTANCE_UID).unwrap_or_default(),
         referenced_series_uid,
         file_name: path

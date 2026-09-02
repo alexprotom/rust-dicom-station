@@ -10,37 +10,112 @@ application's own store, with the same DICOM writer underneath - see
 
 ## DICOM export
 
-Any loaded dataset - original, simulated or with converted segmentations -
-can be exported as DICOM files via *File ▶ 💾 Export dataset A/B as DICOM…*:
-one CT Image Storage file per slice plus RTSTRUCT, one binary Segmentation
-(SEG) object per segmentation series, RTDOSE (16-bit with `DoseGridScaling`)
-and an RTPLAN skeleton (photon or ion), written with `dicom-rs` in Explicit
-VR Little Endian and preserving the RTSTRUCT ▶ series, SEG ▶ series and
-RTDOSE ▶ RTPLAN ▶ RTSTRUCT reference chains. A SEG claims the exported image
-slices as its source only when it sits on their lattice; the new objects get
-fresh `2.25.…` UIDs. Export runs on a background thread with progress.
+*File ▶ 💾 Export DICOM* opens one window for everything that is loaded. What
+goes out is chosen inside it, not by which menu entry was clicked: the tree
+lists **dataset ▸ patient ▸ study ▸ series and RT objects** for both A and B
+at once, every row has a tick box, and a tick on a study or a patient takes
+everything under it. One run can therefore write two patients, or three
+series out of forty, or the structure sets alone.
 
-The dialog shows, in the anonymizer's shape, an output folder and every
-patient / study / equipment attribute written into all exported files -
+```
+[x] Dataset A
+   [x] 👤 STAR_Rambam_2  (STAR_Rambam_2)         2 study(ies)
+      [x] 📁 20250728  CCT                        1 series, 1 object(s)
+           StudyInstanceUID  [1.2.840.113619.…]  ↺ ⟳
+      [x] 📈 4DCT (10 phases)                     10 series, 10 phase(s)
+           [x] CT 4DCT 0%   [0%]                  318 file(s)
+                SeriesInstanceUID   [1.3.12.2.1107.…]  ↺ ⟳
+                FrameOfReferenceUID [1.3.12.2.1107.…]  ↺ ⟳
+      [x] ▣ CCT RTSTRUCT   12 ROI(s)     (•) RTSTRUCT ( ) SEG
+```
 
-| Tag | Default |
-|---|---|
-| PatientName, PatientID | from the loaded study |
-| PatientBirthDate, PatientSex | empty, `O` |
-| StudyID, StudyDescription, StudyDate, StudyTime | `1`, study's own, study's own date (today if absent), now |
-| AccessionNumber, ReferringPhysicianName | empty |
-| SeriesDescription | from the active series (written on the image series only) |
-| InstitutionName, StationName | empty |
-| Manufacturer, ManufacturerModelName | `rust-dicom-station`, `DICOM export` |
+### Identifiers
 
-Every value is editable, `↺` restores the study's own value (`↺ all` the whole
-table), and unchecking a row leaves that tag out of the files. *StudyDate* /
-*StudyTime* also stamp the RTSTRUCT and RTPLAN date/time. **Keep the source
-Frame of Reference UID** (on by default) keeps the export spatially linked to
-its source; switched off, a fresh frame of reference is generated.
+Every identifier is on screen and every one of them is editable - an export
+whose UIDs you cannot read is one you cannot file. Study, series, frame of
+reference and SOP instance UIDs each get a row with `↺` (back to what the
+data says) and `⟳` (a newly generated one).
 
-A single segmentation series can be written on its own: right-click it in
-the data tree and choose *💾 Export as DICOM SEG…*. To write only what was
+**Identifiers ▸ keep the original UIDs** (the default) writes the UIDs the
+data already has - study, series, frame of reference, and the SOP instance of
+every slice and every RT object, each back in the series it came from: the
+export *is* the same study, so re-importing it where it came from updates that
+study instead of duplicating it, and references from objects outside the
+export still resolve. **Generate new UIDs** re-fills every row with a fresh
+`2.25.…` UID, for the edited copy that has to live beside its source. Either
+way the cross-references are rewritten to match, so the export is internally
+consistent - and single rows can still be overridden by hand.
+
+One exception is made on your behalf. An object whose format you *converted*
+is written under a different SOP class, so it is a new instance and not the
+one that was read; its SOP Instance UID switches to the generated one as soon
+as you move the radio, and switches back if you move it back. Two objects of
+different SOP classes sharing one instance UID is the one thing an archive
+cannot forgive.
+
+A rendered image series is the other place slice-level identity cannot be
+kept: the reconstructed volume no longer knows which file each slice came
+from, so its slices get new SOP Instance UIDs. Copied series - the default -
+keep theirs.
+
+### What keeps the objects together
+
+An RT Structure Set that names nothing but a frame of reference is what
+"losing the link to the CT" looks like; a planning system follows
+*ReferencedFrameOfReference ▶ RTReferencedStudy ▶ RTReferencedSeries* and the
+*ContourImage* of each contour before it will draw contours on a scan. Every
+export now writes that chain in full: the study, the image series, every
+slice of it, and per contour the image it lies on. So do the other links -
+SEG ▸ image series and its frames, RTPLAN ▸ RTSTRUCT, RTDOSE ▸ RTPLAN, and one
+frame of reference across all of them.
+
+If a structure set goes out without its images, that is not silently
+degraded: the object is still written and the run reports what it could not
+link.
+
+### Structures as RTSTRUCT or SEG
+
+Each set of structures carries its own radio. Contours are rasterised onto
+the image lattice for SEG, masks are contoured (marching squares, exactly as
+the viewer draws them) for RTSTRUCT, so anything can go out as either;
+*Structures ▸ all RTSTRUCT / all SEG* sets the whole run at once. An ROI with
+no contour inside the image volume is reported rather than written empty.
+
+### 4D acquisitions
+
+A recognised 4D group is one node of the tree and one tick takes every phase.
+Its phases go out into one study, keep their own series identity, their
+descriptions and their Temporal Position Identifier, so the export regroups as
+the same acquisition when it is read back. Selecting only part of a group is
+allowed but reported - half a 4DCT is not a 4DCT.
+
+### Images are copied, not re-encoded
+
+A series that still has its source files is copied file by file with only the
+identifying attributes patched. Private tags, acquisition parameters, the
+padding value, the transfer syntax and every bit of pixel data pass through
+untouched, which is what keeps 4D acquisitions, dual-energy series and vendor
+extensions intact. Only a series the application invented - a simulation, a
+resampled volume - is rendered from its voxels; *Rewrite images from the
+voxels* forces that for everything, and is needed only when the voxels
+themselves were changed.
+
+On a copied series the **Common tags** table applies only the rows you
+actually change, so the scanner's own equipment tags are not overwritten by
+this application's defaults.
+
+### The rest of the window
+
+*Folders* chooses `patient / study / series` subfolders (the default), one
+folder per study, or everything flat. The **Common tags** section holds the
+attributes the tree does not own - birth date, sex, accession number,
+referring physician, institution, station, manufacturer - each with the same
+`↺` and a tick box that leaves the tag out of the files altogether. Export
+runs on a background thread with progress, and finishes with the file count
+and any notes.
+
+A single segmentation series can still be written on its own: right-click it
+in the data tree and choose *💾 Export as DICOM SEG…*. To write only what was
 *drawn* - the structure sets and segmentation series, with the images left
 where they are - use *📤 Send dataset* in the [patient archive](pacs.md)
 window instead. The exports round-trip through this viewer and pydicom; they

@@ -745,6 +745,8 @@ impl ViewerApp {
         let n_slices = study.volume.plane_slice_count(plane);
         let current = self.slots[slot].views[super::plane_index(plane)].slice;
         let running = self.medsam2_job.is_some();
+        let has = [self.slots[0].has_volume(), self.slots[1].has_volume()];
+        let mut switch: Option<usize> = None;
         let models_dir = self.engine_models_dir(ModelsEngine::MedSam2);
 
         let mut request: Option<Request> = None;
@@ -761,6 +763,7 @@ impl ViewerApp {
             &mut open,
             detach::WinOpts::width(380.0),
             |ui| {
+                switch = dataset_row(ui, slot, has, !running);
                 ui.label(format!(
                     "Follows a structure boxed on one slice through the stack with MedSAM2, \
                      re-implemented natively in Rust. Drag a box around it in the {} view, on a \
@@ -967,6 +970,10 @@ impl ViewerApp {
             if let Some(dir) = Self::pick_folder("Model folder") {
                 self.models_dir = dir.display().to_string();
             }
+        }
+        if let Some(s) = switch {
+            self.open_medsam2_panel(s);
+            return;
         }
         if clear {
             self.medsam2.prompt = None;

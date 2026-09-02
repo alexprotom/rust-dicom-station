@@ -37,6 +37,11 @@ pub struct PlanInfo {
     pub target_prescription_dose: Option<f64>,
     /// SOP Instance UID of this plan (referenced by RTDOSE objects).
     pub sop_instance_uid: String,
+    /// Series Instance UID of this object's own series. Kept so that an
+    /// export asked to preserve the identifiers really preserves them: an
+    /// archive files an instance under its series, and the same instance
+    /// arriving under a different one is a different object to it.
+    pub series_instance_uid: String,
     /// Study this plan belongs to.
     pub study_uid: String,
     /// SOP Instance UID of the structure set the plan was made on.
@@ -45,14 +50,15 @@ pub struct PlanInfo {
 }
 
 pub fn load(path: &Path) -> Result<PlanInfo> {
-    let obj =
-        dicom_object::open_file(path).with_context(|| format!("open RTPLAN {}", path.display()))?;
+    let obj = crate::dicomfile::open_full(path)
+        .with_context(|| format!("open RTPLAN {}", path.display()))?;
 
     let mut plan = PlanInfo {
         label: str_of(&obj, tags::RT_PLAN_LABEL).unwrap_or_default(),
         name: str_of(&obj, tags::RT_PLAN_NAME).unwrap_or_default(),
         date: str_of(&obj, tags::RT_PLAN_DATE).unwrap_or_default(),
         sop_instance_uid: str_of(&obj, tags::SOP_INSTANCE_UID).unwrap_or_default(),
+        series_instance_uid: str_of(&obj, tags::SERIES_INSTANCE_UID).unwrap_or_default(),
         study_uid: str_of(&obj, tags::STUDY_INSTANCE_UID).unwrap_or_default(),
         referenced_structset_uid: items_of(&obj, tags::REFERENCED_STRUCTURE_SET_SEQUENCE)
             .and_then(|items| items.first())

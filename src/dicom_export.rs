@@ -20,14 +20,17 @@ use dicom_object::meta::FileMetaTableBuilder;
 use dicom_object::InMemDicomObject;
 
 use crate::dicomseg;
+use crate::geometry::Vec3;
 use crate::loader::LoadedStudy;
 use crate::progress::Progress;
 
-const SOP_CT: &str = "1.2.840.10008.5.1.4.1.1.2";
-const SOP_RTSTRUCT: &str = "1.2.840.10008.5.1.4.1.1.481.3";
-const SOP_RTDOSE: &str = "1.2.840.10008.5.1.4.1.1.481.2";
+pub(crate) const SOP_CT: &str = "1.2.840.10008.5.1.4.1.1.2";
+pub(crate) const SOP_RTSTRUCT: &str = "1.2.840.10008.5.1.4.1.1.481.3";
+pub(crate) const SOP_RTDOSE: &str = "1.2.840.10008.5.1.4.1.1.481.2";
 const SOP_RTPLAN: &str = "1.2.840.10008.5.1.4.1.1.481.5";
 const SOP_RTIONPLAN: &str = "1.2.840.10008.5.1.4.1.1.481.8";
+/// Detached Study Management, the SOP class RTSTRUCT names a study with.
+const SOP_DETACHED_STUDY: &str = "1.2.840.10008.3.1.2.3.1";
 const EXPLICIT_VR_LE: &str = "1.2.840.10008.1.2.1";
 
 static UID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -247,6 +250,21 @@ impl ExportParams {
             .map(|f| f.value.trim())
     }
 
+    /// A copy with `tags` switched off.
+    ///
+    /// The selective exporter writes patient name, study description and the
+    /// rest per node, where they belong; this is how it stops the run-wide
+    /// table from writing them a second time.
+    pub fn without(&self, tags: &[Tag]) -> ExportParams {
+        let mut out = self.clone();
+        for f in &mut out.fields {
+            if tags.contains(&f.tag) {
+                f.enabled = false;
+            }
+        }
+        out
+    }
+
     /// Write every enabled field except SeriesDescription, which is a
     /// per-series attribute and only belongs on the image series.
     pub(crate) fn write_common(&self, o: &mut InMemDicomObject) {
@@ -263,14 +281,137 @@ impl ExportParams {
 // Export
 // ---------------------------------------------------------------------------
 
-struct Ctx<'a> {
-    study_uid: String,
-    for_uid: String,
+pub(crate) struct Ctx<'a> {
+    pub study_uid: String,
+    pub for_uid: String,
     /// Date / time stamped on the RT objects - the StudyDate / StudyTime
     /// fields of `params` when set, today otherwise.
-    date: String,
-    time: String,
-    params: &'a ExportParams,
+    pub date: String,
+    pub time: String,
+    pub params: &'a ExportParams,
+}
+
+// ---------------------------------------------------------------------------
+// The link between an RT object and the images it was drawn on
+// ---------------------------------------------------------------------------
+
+/// The image series an RT object is filed against.
+///
+/// A structure set that names nothing but a Frame of Reference is what
+/// "losing the link to the CT" looks like: a TPS follows
+/// *ReferencedFrameOfReference ▶ RTReferencedStudy ▶ RTReferencedSeries*, and
+/// the *ContourImage* of each contour, to decide which scan a set of contours
+/// belongs on. Frame of reference alone is a hint, not a reference, and most
+/// systems will not draw on it.
+///
+/// This carries everything needed to write that chain: the identifiers of the
+/// image series **as they are being written**, and one entry per slice so a
+/// contour can name the image it lies on.
+#[derive(Clone, Default)]
+pub struct ImageRef {
+    /// Series Instance UID of the image series, as written.
+    pub series_uid: String,
+    /// Study Instance UID of that series, as written.
+    pub study_uid: String,
+    /// SOP Class UID of the slices (CT Image Storage, MR Image Storage, ...).
+    pub sop_class: String,
+    /// One entry per slice: SOP Instance UID and position along `normal`, mm.
+    pub slices: Vec<(String, f64)>,
+    /// Unit normal of the image plane, to project a contour onto the slice
+    /// axis.
+    pub normal: Vec3,
+    /// Slice spacing (mm). Half of it is the contour-to-slice tolerance.
+    pub spacing: f64,
+}
+
+impl ImageRef {
+    /// Whether an image series is known at all. When it is not, the RT object
+    /// still gets its Frame of Reference, and the caller is expected to say
+    /// so in a warning.
+    pub fn is_known(&self) -> bool {
+        !self.series_uid.is_empty()
+    }
+
+    /// Position of `p` along the slice axis.
+    fn axis(&self, p: Vec3) -> f64 {
+        p.dot(self.normal)
+    }
+
+    /// The slice a contour at `z` (already projected) lies on.
+    fn slice_at(&self, z: f64) -> Option<&str> {
+        let tol = (self.spacing.abs() * 0.5).max(0.05);
+        self.slices
+            .iter()
+            .map(|(uid, pos)| (uid, (pos - z).abs()))
+            .filter(|(_, d)| *d <= tol)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(uid, _)| uid.as_str())
+    }
+
+    /// One item of a Contour Image Sequence.
+    fn image_item(&self, sop_uid: &str) -> InMemDicomObject {
+        let mut o = InMemDicomObject::new_empty();
+        put_str(
+            &mut o,
+            tags::REFERENCED_SOP_CLASS_UID,
+            VR::UI,
+            if self.sop_class.is_empty() {
+                SOP_CT
+            } else {
+                &self.sop_class
+            },
+        );
+        put_str(&mut o, tags::REFERENCED_SOP_INSTANCE_UID, VR::UI, sop_uid);
+        o
+    }
+
+    /// `RTReferencedStudySequence`, the middle link of the chain. Empty when
+    /// no image series is known.
+    fn rt_referenced_study(&self, fallback_study: &str) -> Option<InMemDicomObject> {
+        if !self.is_known() {
+            return None;
+        }
+        let mut series = InMemDicomObject::new_empty();
+        put_str(
+            &mut series,
+            tags::SERIES_INSTANCE_UID,
+            VR::UI,
+            self.series_uid.clone(),
+        );
+        if !self.slices.is_empty() {
+            put_seq(
+                &mut series,
+                tags::CONTOUR_IMAGE_SEQUENCE,
+                self.slices
+                    .iter()
+                    .map(|(uid, _)| self.image_item(uid))
+                    .collect(),
+            );
+        }
+        let mut study = InMemDicomObject::new_empty();
+        put_str(
+            &mut study,
+            tags::REFERENCED_SOP_CLASS_UID,
+            VR::UI,
+            SOP_DETACHED_STUDY,
+        );
+        put_str(
+            &mut study,
+            tags::REFERENCED_SOP_INSTANCE_UID,
+            VR::UI,
+            if self.study_uid.is_empty() {
+                fallback_study
+            } else {
+                &self.study_uid
+            },
+        );
+        put_seq(
+            &mut study,
+            tags::RT_REFERENCED_SERIES_SEQUENCE,
+            vec![series],
+        );
+        Some(study)
+    }
 }
 
 fn common_elements(o: &mut InMemDicomObject, ctx: &Ctx, modality: &str) {
@@ -278,6 +419,21 @@ fn common_elements(o: &mut InMemDicomObject, ctx: &Ctx, modality: &str) {
     ctx.params.write_common(o);
     put_str(o, tags::STUDY_INSTANCE_UID, VR::UI, ctx.study_uid.clone());
     put_str(o, tags::MODALITY, VR::CS, modality);
+}
+
+/// Overwrite a handful of attributes on a freshly built object.
+///
+/// The identity of a study - who the patient is, which study this is - is a
+/// property of the export as a whole and is decided by the plan, not by the
+/// builder of any one object. An empty value removes the tag.
+pub(crate) fn apply(o: &mut InMemDicomObject, set: &[(Tag, VR, String)]) {
+    for (tag, vr, value) in set {
+        if value.is_empty() {
+            o.remove_element(*tag);
+        } else {
+            put_str(o, *tag, *vr, value.clone());
+        }
+    }
 }
 
 pub(crate) fn write_object(obj: InMemDicomObject, sop_class: &str, path: &Path) -> Result<()> {
@@ -299,11 +455,12 @@ pub(crate) fn write_object(obj: InMemDicomObject, sop_class: &str, path: &Path) 
 /// Split out of [`export_study`] so the archive can write the same object
 /// against the study it already belongs to (`export_derived`) instead of the
 /// fresh one a full export invents.
-fn build_rtstruct(
+pub(crate) fn build_rtstruct(
     ss: &crate::rtstruct::StructureSet,
     ctx: &Ctx,
     series_number: i64,
     sop_uid: &str,
+    image: &ImageRef,
 ) -> InMemDicomObject {
     let mut o = InMemDicomObject::new_empty();
     common_elements(&mut o, ctx, "RTSTRUCT");
@@ -320,7 +477,9 @@ fn build_rtstruct(
     put_str(&mut o, tags::STRUCTURE_SET_DATE, VR::DA, ctx.date.clone());
     put_str(&mut o, tags::STRUCTURE_SET_TIME, VR::TM, ctx.time.clone());
 
-    // Referenced frame of reference.
+    // Referenced frame of reference, and through it the study and the image
+    // series the contours were drawn on. Without the two inner sequences a
+    // TPS has no way to bind this set to a scan (see [`ImageRef`]).
     let mut rfr = InMemDicomObject::new_empty();
     put_str(
         &mut rfr,
@@ -328,6 +487,9 @@ fn build_rtstruct(
         VR::UI,
         ctx.for_uid.clone(),
     );
+    if let Some(study) = image.rt_referenced_study(&ctx.study_uid) {
+        put_seq(&mut rfr, tags::RT_REFERENCED_STUDY_SEQUENCE, vec![study]);
+    }
     put_seq(
         &mut o,
         tags::REFERENCED_FRAME_OF_REFERENCE_SEQUENCE,
@@ -365,6 +527,16 @@ fn build_rtstruct(
         let mut contours = Vec::with_capacity(roi.contours.len());
         for c in &roi.contours {
             let mut co = InMemDicomObject::new_empty();
+            // The image this contour was drawn on. A planar contour lies in
+            // one slice, so its mean position along the slice axis picks it.
+            if !c.points.is_empty() {
+                let z =
+                    c.points.iter().map(|p| image.axis(*p)).sum::<f64>() / c.points.len() as f64;
+                if let Some(uid) = image.slice_at(z) {
+                    let item = image.image_item(uid);
+                    put_seq(&mut co, tags::CONTOUR_IMAGE_SEQUENCE, vec![item]);
+                }
+            }
             put_str(
                 &mut co,
                 tags::CONTOUR_GEOMETRIC_TYPE,
@@ -406,451 +578,460 @@ fn build_rtstruct(
     o
 }
 
-/// Export `study` into `dir` as individual DICOM files.
-/// Returns the number of files written.
+// ---------------------------------------------------------------------------
+// Object builders
+//
+// One builder per object kind, so the whole-study export below and the
+// selective runner in `crate::export` write byte-identical objects and there
+// is only one place where a cross-reference can be got wrong.
+// ---------------------------------------------------------------------------
+
+/// One CT / MR slice rendered from the reconstructed voxels.
+///
+/// Used for a series the application invented (a simulation, a resampled
+/// volume). A series that still has its source files is copied instead, by
+/// [`copy_patched`], which keeps everything this rendering cannot.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_image_slice(
+    vol: &crate::volume::Volume,
+    k: usize,
+    ctx: &Ctx,
+    modality: &str,
+    sop_uid: &str,
+    series_uid: &str,
+    series_number: i64,
+    series_desc: Option<&str>,
+    window: (f32, f32),
+) -> InMemDicomObject {
+    let [nx, ny, _] = vol.dims;
+    let mut o = InMemDicomObject::new_empty();
+    common_elements(&mut o, ctx, modality);
+    put_str(&mut o, tags::SOP_CLASS_UID, VR::UI, SOP_CT);
+    put_str(&mut o, tags::SOP_INSTANCE_UID, VR::UI, sop_uid);
+    put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, series_uid);
+    put_is(&mut o, tags::SERIES_NUMBER, series_number);
+    if let Some(d) = series_desc {
+        put_str(&mut o, tags::SERIES_DESCRIPTION, VR::LO, d);
+    }
+    put_is(&mut o, tags::INSTANCE_NUMBER, k as i64 + 1);
+    put_str(
+        &mut o,
+        tags::FRAME_OF_REFERENCE_UID,
+        VR::UI,
+        ctx.for_uid.clone(),
+    );
+    put_str(&mut o, tags::POSITION_REFERENCE_INDICATOR, VR::LO, "");
+    let ipp = vol.voxel_to_patient(0.0, 0.0, k as f64);
+    put_ds(&mut o, tags::IMAGE_POSITION_PATIENT, &[ipp.x, ipp.y, ipp.z]);
+    put_ds(
+        &mut o,
+        tags::IMAGE_ORIENTATION_PATIENT,
+        &[
+            vol.row_dir.x,
+            vol.row_dir.y,
+            vol.row_dir.z,
+            vol.col_dir.x,
+            vol.col_dir.y,
+            vol.col_dir.z,
+        ],
+    );
+    // PixelSpacing = [between rows, between columns].
+    put_ds(
+        &mut o,
+        tags::PIXEL_SPACING,
+        &[vol.spacing[1], vol.spacing[0]],
+    );
+    put_ds(&mut o, tags::SLICE_THICKNESS, &[vol.spacing[2]]);
+    put_us(&mut o, tags::ROWS, ny as u16);
+    put_us(&mut o, tags::COLUMNS, nx as u16);
+    put_us(&mut o, tags::BITS_ALLOCATED, 16);
+    put_us(&mut o, tags::BITS_STORED, 16);
+    put_us(&mut o, tags::HIGH_BIT, 15);
+    put_us(&mut o, tags::PIXEL_REPRESENTATION, 1); // signed (HU stored raw)
+    put_us(&mut o, tags::SAMPLES_PER_PIXEL, 1);
+    put_str(
+        &mut o,
+        tags::PHOTOMETRIC_INTERPRETATION,
+        VR::CS,
+        "MONOCHROME2",
+    );
+    put_ds(&mut o, tags::RESCALE_INTERCEPT, &[0.0]);
+    put_ds(&mut o, tags::RESCALE_SLOPE, &[1.0]);
+    put_str(&mut o, tags::RESCALE_TYPE, VR::LO, "HU");
+    put_ds(&mut o, tags::WINDOW_CENTER, &[window.0 as f64]);
+    put_ds(&mut o, tags::WINDOW_WIDTH, &[window.1 as f64]);
+
+    let base = k * nx * ny;
+    let words: Vec<u16> = vol.data[base..base + nx * ny]
+        .iter()
+        .map(|&v| v as u16)
+        .collect();
+    o.put(DataElement::new(
+        tags::PIXEL_DATA,
+        VR::OW,
+        PrimitiveValue::U16(C::from_vec(words)),
+    ));
+    o
+}
+
+/// An RT Dose object. `plan_ref` is the SOP Instance UID of the plan as it is
+/// being written, so the dose still points at *this* export's plan.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_dose(
+    d: &crate::rtdose::DoseGrid,
+    ctx: &Ctx,
+    sop_uid: &str,
+    series_uid: &str,
+    series_number: i64,
+    plan_ref: Option<(&str, &str)>,
+) -> InMemDicomObject {
+    let [dnx, dny, dnf] = d.dims;
+    let scaling = (d.max_dose as f64 / 60000.0).max(1e-9);
+    let mut o = InMemDicomObject::new_empty();
+    common_elements(&mut o, ctx, "RTDOSE");
+    put_str(&mut o, tags::SOP_CLASS_UID, VR::UI, SOP_RTDOSE);
+    put_str(&mut o, tags::SOP_INSTANCE_UID, VR::UI, sop_uid);
+    put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, series_uid);
+    put_is(&mut o, tags::SERIES_NUMBER, series_number);
+    put_str(
+        &mut o,
+        tags::FRAME_OF_REFERENCE_UID,
+        VR::UI,
+        ctx.for_uid.clone(),
+    );
+    put_str(&mut o, tags::POSITION_REFERENCE_INDICATOR, VR::LO, "");
+    put_ds(
+        &mut o,
+        tags::IMAGE_POSITION_PATIENT,
+        &[d.origin.x, d.origin.y, d.origin.z],
+    );
+    put_ds(
+        &mut o,
+        tags::IMAGE_ORIENTATION_PATIENT,
+        &[
+            d.row_dir.x,
+            d.row_dir.y,
+            d.row_dir.z,
+            d.col_dir.x,
+            d.col_dir.y,
+            d.col_dir.z,
+        ],
+    );
+    put_ds(&mut o, tags::PIXEL_SPACING, &[d.spacing[1], d.spacing[0]]);
+    put_us(&mut o, tags::ROWS, dny as u16);
+    put_us(&mut o, tags::COLUMNS, dnx as u16);
+    put_is(&mut o, tags::NUMBER_OF_FRAMES, dnf as i64);
+    o.put(DataElement::new(
+        tags::FRAME_INCREMENT_POINTER,
+        VR::AT,
+        PrimitiveValue::from(tags::GRID_FRAME_OFFSET_VECTOR),
+    ));
+    put_ds(&mut o, tags::GRID_FRAME_OFFSET_VECTOR, &d.offsets);
+    put_us(&mut o, tags::BITS_ALLOCATED, 16);
+    put_us(&mut o, tags::BITS_STORED, 16);
+    put_us(&mut o, tags::HIGH_BIT, 15);
+    put_us(&mut o, tags::PIXEL_REPRESENTATION, 0);
+    put_us(&mut o, tags::SAMPLES_PER_PIXEL, 1);
+    put_str(
+        &mut o,
+        tags::PHOTOMETRIC_INTERPRETATION,
+        VR::CS,
+        "MONOCHROME2",
+    );
+    put_str(&mut o, tags::DOSE_UNITS, VR::CS, d.units.clone());
+    put_str(&mut o, tags::DOSE_TYPE, VR::CS, "PHYSICAL");
+    put_str(
+        &mut o,
+        tags::DOSE_SUMMATION_TYPE,
+        VR::CS,
+        if d.summation_type.is_empty() {
+            "PLAN"
+        } else {
+            &d.summation_type
+        },
+    );
+    put_ds(&mut o, tags::DOSE_GRID_SCALING, &[scaling]);
+    if let Some((sop_class, uid)) = plan_ref {
+        let mut rp = InMemDicomObject::new_empty();
+        put_str(&mut rp, tags::REFERENCED_SOP_CLASS_UID, VR::UI, sop_class);
+        put_str(&mut rp, tags::REFERENCED_SOP_INSTANCE_UID, VR::UI, uid);
+        put_seq(&mut o, tags::REFERENCED_RT_PLAN_SEQUENCE, vec![rp]);
+    }
+    let words: Vec<u16> = d
+        .data
+        .iter()
+        .map(|&v| ((v as f64 / scaling).round().clamp(0.0, 65535.0)) as u16)
+        .collect();
+    o.put(DataElement::new(
+        tags::PIXEL_DATA,
+        VR::OW,
+        PrimitiveValue::U16(C::from_vec(words)),
+    ));
+    o
+}
+
+/// Whether a plan is an ion plan, which decides its SOP class and the tags
+/// its beams and control points live under.
+pub(crate) fn plan_is_ion(plan: &crate::rtplan::PlanInfo) -> bool {
+    plan.plan_kind == "Ion"
+        || plan
+            .beams
+            .iter()
+            .any(|b| b.radiation_type == "PROTON" || b.radiation_type == "ION")
+}
+
+/// The SOP Class UID a plan will be written under.
+pub(crate) fn plan_sop_class(plan: &crate::rtplan::PlanInfo) -> &'static str {
+    if plan_is_ion(plan) {
+        SOP_RTIONPLAN
+    } else {
+        SOP_RTPLAN
+    }
+}
+
+/// An RT (Ion) Plan. `struct_ref` is the SOP Instance UID of the structure
+/// set as it is being written.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_plan(
+    plan: &crate::rtplan::PlanInfo,
+    ctx: &Ctx,
+    sop_uid: &str,
+    series_uid: &str,
+    series_number: i64,
+    struct_ref: Option<&str>,
+) -> InMemDicomObject {
+    let ion = plan_is_ion(plan);
+    let mut o = InMemDicomObject::new_empty();
+    common_elements(&mut o, ctx, "RTPLAN");
+    put_str(&mut o, tags::SOP_CLASS_UID, VR::UI, plan_sop_class(plan));
+    put_str(&mut o, tags::SOP_INSTANCE_UID, VR::UI, sop_uid);
+    put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, series_uid);
+    put_is(&mut o, tags::SERIES_NUMBER, series_number);
+    put_str(
+        &mut o,
+        tags::FRAME_OF_REFERENCE_UID,
+        VR::UI,
+        ctx.for_uid.clone(),
+    );
+    put_str(
+        &mut o,
+        tags::RT_PLAN_LABEL,
+        VR::SH,
+        truncate(&plan.label, 16),
+    );
+    put_str(&mut o, tags::RT_PLAN_NAME, VR::LO, plan.name.clone());
+    put_str(&mut o, tags::RT_PLAN_DATE, VR::DA, ctx.date.clone());
+    put_str(&mut o, tags::RT_PLAN_TIME, VR::TM, ctx.time.clone());
+    put_str(&mut o, tags::RT_PLAN_GEOMETRY, VR::CS, "PATIENT");
+    if let Some(uid) = struct_ref {
+        let mut rs = InMemDicomObject::new_empty();
+        put_str(
+            &mut rs,
+            tags::REFERENCED_SOP_CLASS_UID,
+            VR::UI,
+            SOP_RTSTRUCT,
+        );
+        put_str(&mut rs, tags::REFERENCED_SOP_INSTANCE_UID, VR::UI, uid);
+        put_seq(&mut o, tags::REFERENCED_STRUCTURE_SET_SEQUENCE, vec![rs]);
+    }
+
+    if let Some(rx) = plan.target_prescription_dose {
+        let mut dr = InMemDicomObject::new_empty();
+        put_is(&mut dr, tags::DOSE_REFERENCE_NUMBER, 1);
+        put_str(&mut dr, tags::DOSE_REFERENCE_STRUCTURE_TYPE, VR::CS, "SITE");
+        put_str(&mut dr, tags::DOSE_REFERENCE_TYPE, VR::CS, "TARGET");
+        put_ds(&mut dr, tags::TARGET_PRESCRIPTION_DOSE, &[rx]);
+        put_seq(&mut o, tags::DOSE_REFERENCE_SEQUENCE, vec![dr]);
+    }
+
+    let mut fg = InMemDicomObject::new_empty();
+    put_is(&mut fg, tags::FRACTION_GROUP_NUMBER, 1);
+    put_is(
+        &mut fg,
+        tags::NUMBER_OF_FRACTIONS_PLANNED,
+        plan.n_fractions.unwrap_or(1) as i64,
+    );
+    put_is(&mut fg, tags::NUMBER_OF_BEAMS, plan.beams.len() as i64);
+    put_is(&mut fg, tags::NUMBER_OF_BRACHY_APPLICATION_SETUPS, 0);
+    let mut rbs = Vec::new();
+    for b in &plan.beams {
+        let mut rb = InMemDicomObject::new_empty();
+        put_is(&mut rb, tags::REFERENCED_BEAM_NUMBER, b.number as i64);
+        if let Some(m) = b.meterset {
+            put_ds(&mut rb, tags::BEAM_METERSET, &[m]);
+        }
+        if let Some(bd) = b.beam_dose {
+            put_ds(&mut rb, tags::BEAM_DOSE, &[bd]);
+        }
+        rbs.push(rb);
+    }
+    put_seq(&mut fg, tags::REFERENCED_BEAM_SEQUENCE, rbs);
+    put_seq(&mut o, tags::FRACTION_GROUP_SEQUENCE, vec![fg]);
+
+    let mut beams = Vec::new();
+    for b in &plan.beams {
+        let mut bo = InMemDicomObject::new_empty();
+        put_is(&mut bo, tags::BEAM_NUMBER, b.number as i64);
+        put_str(&mut bo, tags::BEAM_NAME, VR::LO, b.name.clone());
+        put_str(&mut bo, tags::BEAM_TYPE, VR::CS, "STATIC");
+        put_str(
+            &mut bo,
+            tags::RADIATION_TYPE,
+            VR::CS,
+            if b.radiation_type.is_empty() {
+                "PHOTON"
+            } else {
+                &b.radiation_type
+            },
+        );
+        if ion && !b.scan_mode.is_empty() {
+            put_str(&mut bo, tags::SCAN_MODE, VR::CS, b.scan_mode.clone());
+        }
+        put_str(
+            &mut bo,
+            tags::TREATMENT_DELIVERY_TYPE,
+            VR::CS,
+            if b.delivery_type.is_empty() {
+                "TREATMENT"
+            } else {
+                &b.delivery_type
+            },
+        );
+        put_str(&mut bo, tags::TREATMENT_MACHINE_NAME, VR::SH, "EXPORT");
+        put_is(&mut bo, tags::NUMBER_OF_WEDGES, 0);
+        put_is(&mut bo, tags::NUMBER_OF_COMPENSATORS, 0);
+        put_is(&mut bo, tags::NUMBER_OF_BOLI, 0);
+        put_is(&mut bo, tags::NUMBER_OF_BLOCKS, 0);
+        put_ds(&mut bo, tags::FINAL_CUMULATIVE_METERSET_WEIGHT, &[1.0]);
+        put_is(&mut bo, tags::NUMBER_OF_CONTROL_POINTS, 1);
+
+        let mut cp = InMemDicomObject::new_empty();
+        put_is(&mut cp, tags::CONTROL_POINT_INDEX, 0);
+        if let Some(e) = b.energy_max.or(b.energy_min) {
+            put_ds(&mut cp, tags::NOMINAL_BEAM_ENERGY, &[e]);
+        }
+        put_ds(&mut cp, tags::CUMULATIVE_METERSET_WEIGHT, &[0.0]);
+        if let Some(g) = b.gantry_angle {
+            put_ds(&mut cp, tags::GANTRY_ANGLE, &[g]);
+            put_str(&mut cp, tags::GANTRY_ROTATION_DIRECTION, VR::CS, "NONE");
+        }
+        if let Some(c) = b.couch_angle {
+            put_ds(&mut cp, tags::PATIENT_SUPPORT_ANGLE, &[c]);
+            put_str(
+                &mut cp,
+                tags::PATIENT_SUPPORT_ROTATION_DIRECTION,
+                VR::CS,
+                "NONE",
+            );
+        }
+        if let Some(iso) = b.isocenter {
+            put_ds(&mut cp, tags::ISOCENTER_POSITION, &[iso.x, iso.y, iso.z]);
+        }
+        let cp_tag = if ion {
+            tags::ION_CONTROL_POINT_SEQUENCE
+        } else {
+            tags::CONTROL_POINT_SEQUENCE
+        };
+        put_seq(&mut bo, cp_tag, vec![cp]);
+        beams.push(bo);
+    }
+    let beam_tag = if ion {
+        tags::ION_BEAM_SEQUENCE
+    } else {
+        tags::BEAM_SEQUENCE
+    };
+    put_seq(&mut o, beam_tag, beams);
+    o
+}
+
+// ---------------------------------------------------------------------------
+// Copying an existing file
+// ---------------------------------------------------------------------------
+
+/// What a copied slice turned out to be, for the reference chain.
+pub struct CopiedSlice {
+    pub sop_uid: String,
+    pub sop_class: String,
+    /// Position along the image plane normal, mm.
+    pub axis: f64,
+    /// Unit normal of the image plane.
+    pub normal: crate::geometry::Vec3,
+}
+
+/// Copy one DICOM file, patching only the attributes in `set`.
+///
+/// This is how an image series that still has its files leaves the
+/// application. Every other attribute - the private tags, the padding value,
+/// the acquisition parameters, the transfer syntax, every bit of the pixel
+/// data - is passed through untouched, which is the difference between
+/// exporting a study and re-rendering something that resembles it. An empty
+/// value removes the tag rather than writing an empty one.
+pub fn copy_patched(src: &Path, dst: &Path, set: &[(Tag, VR, String)]) -> Result<CopiedSlice> {
+    let obj = crate::dicomfile::open_full(src)
+        .with_context(|| format!("read {} for export", src.display()))?;
+    let ts = obj
+        .meta()
+        .transfer_syntax()
+        .trim_end_matches('\0')
+        .to_string();
+    let sop_class = crate::loader::str_of(&obj, tags::SOP_CLASS_UID).unwrap_or_default();
+    let mut inner = obj.into_inner();
+    for (tag, vr, value) in set {
+        if value.is_empty() {
+            inner.remove_element(*tag);
+        } else {
+            put_str(&mut inner, *tag, *vr, value.clone());
+        }
+    }
+    let sop_uid = crate::loader::str_of(&inner, tags::SOP_INSTANCE_UID).unwrap_or_default();
+
+    // Where this slice sits, for the contour-to-image references.
+    let iop = crate::loader::f64s_of(&inner, tags::IMAGE_ORIENTATION_PATIENT)
+        .filter(|v| v.len() >= 6)
+        .unwrap_or_else(|| vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+    let normal = crate::geometry::Vec3::from_slice(&iop[0..3])
+        .normalized()
+        .cross(crate::geometry::Vec3::from_slice(&iop[3..6]).normalized())
+        .normalized();
+    let axis = crate::loader::f64s_of(&inner, tags::IMAGE_POSITION_PATIENT)
+        .filter(|v| v.len() >= 3)
+        .map(|v| crate::geometry::Vec3::from_slice(&v).dot(normal))
+        .unwrap_or(0.0);
+
+    let out = inner
+        .with_meta(
+            FileMetaTableBuilder::new()
+                .transfer_syntax(&ts)
+                .media_storage_sop_class_uid(&sop_class)
+                .media_storage_sop_instance_uid(&sop_uid),
+        )
+        .with_context(|| format!("rebuild the file meta of {}", src.display()))?;
+    out.write_to_file(dst)
+        .with_context(|| format!("write {}", dst.display()))?;
+
+    Ok(CopiedSlice {
+        sop_uid,
+        sop_class,
+        axis,
+        normal,
+    })
+}
+
+/// Export the whole of `study` into `dir`, everything selected, flat.
+///
+/// The convenience form of [`crate::export::run`] - the same code path, with
+/// a plan that says "all of it". `params` also supplies the patient and study
+/// identity, which the plan otherwise takes from the data.
 pub fn export_study(
     study: &LoadedStudy,
     dir: &Path,
     params: &ExportParams,
     progress: &Progress,
 ) -> Result<usize> {
-    std::fs::create_dir_all(dir).with_context(|| format!("create directory {}", dir.display()))?;
-    let (today_date, today_time) = today();
-    let vol = &study.volume;
-    let pick = |tag, fallback: &str| {
-        params
-            .value(tag)
-            .filter(|v| !v.is_empty())
-            .unwrap_or(fallback)
-            .to_string()
-    };
-    let ctx = Ctx {
-        study_uid: new_uid(),
-        for_uid: if params.keep_frame_of_reference && !vol.frame_of_reference_uid.is_empty() {
-            vol.frame_of_reference_uid.clone()
-        } else {
-            new_uid()
-        },
-        date: pick(tags::STUDY_DATE, &today_date),
-        time: pick(tags::STUDY_TIME, &today_time),
-        params,
-    };
-    let mut n_files = 0usize;
-
-    // Stable SOP Instance UIDs so the exported objects keep their DICOM
-    // cross-references (dose ▶ plan ▶ structure set).
-    let rs_uids: Vec<String> = study.structure_sets.iter().map(|_| new_uid()).collect();
-    let plan_uids: Vec<String> = study.plans.iter().map(|_| new_uid()).collect();
-
-    // ---- CT series -------------------------------------------------------
-    let series_uid = new_uid();
-    let [nx, ny, nz] = vol.dims;
-    let modality = study
-        .series
-        .get(study.active_series)
-        .map(|s| s.modality.clone())
-        .filter(|m| !m.is_empty())
-        .unwrap_or_else(|| "CT".into());
-    let mut ct_sop_uids = Vec::with_capacity(nz);
-
-    for k in 0..nz {
-        if k % 20 == 0 {
-            progress.set(format!("Writing CT slice {}/{}", k + 1, nz));
-        }
-        let sop_uid = new_uid();
-        ct_sop_uids.push(sop_uid.clone());
-        let mut o = InMemDicomObject::new_empty();
-        common_elements(&mut o, &ctx, &modality);
-        put_str(&mut o, tags::SOP_CLASS_UID, VR::UI, SOP_CT);
-        put_str(&mut o, tags::SOP_INSTANCE_UID, VR::UI, sop_uid);
-        put_str(
-            &mut o,
-            tags::SERIES_INSTANCE_UID,
-            VR::UI,
-            series_uid.clone(),
-        );
-        put_is(&mut o, tags::SERIES_NUMBER, 1);
-        if let Some(d) = params.value(tags::SERIES_DESCRIPTION) {
-            put_str(&mut o, tags::SERIES_DESCRIPTION, VR::LO, d);
-        }
-        put_is(&mut o, tags::INSTANCE_NUMBER, k as i64 + 1);
-        put_str(
-            &mut o,
-            tags::FRAME_OF_REFERENCE_UID,
-            VR::UI,
-            ctx.for_uid.clone(),
-        );
-        put_str(&mut o, tags::POSITION_REFERENCE_INDICATOR, VR::LO, "");
-        let ipp = vol.voxel_to_patient(0.0, 0.0, k as f64);
-        put_ds(&mut o, tags::IMAGE_POSITION_PATIENT, &[ipp.x, ipp.y, ipp.z]);
-        put_ds(
-            &mut o,
-            tags::IMAGE_ORIENTATION_PATIENT,
-            &[
-                vol.row_dir.x,
-                vol.row_dir.y,
-                vol.row_dir.z,
-                vol.col_dir.x,
-                vol.col_dir.y,
-                vol.col_dir.z,
-            ],
-        );
-        // PixelSpacing = [between rows, between columns].
-        put_ds(
-            &mut o,
-            tags::PIXEL_SPACING,
-            &[vol.spacing[1], vol.spacing[0]],
-        );
-        put_ds(&mut o, tags::SLICE_THICKNESS, &[vol.spacing[2]]);
-        put_us(&mut o, tags::ROWS, ny as u16);
-        put_us(&mut o, tags::COLUMNS, nx as u16);
-        put_us(&mut o, tags::BITS_ALLOCATED, 16);
-        put_us(&mut o, tags::BITS_STORED, 16);
-        put_us(&mut o, tags::HIGH_BIT, 15);
-        put_us(&mut o, tags::PIXEL_REPRESENTATION, 1); // signed (HU stored raw)
-        put_us(&mut o, tags::SAMPLES_PER_PIXEL, 1);
-        put_str(
-            &mut o,
-            tags::PHOTOMETRIC_INTERPRETATION,
-            VR::CS,
-            "MONOCHROME2",
-        );
-        put_ds(&mut o, tags::RESCALE_INTERCEPT, &[0.0]);
-        put_ds(&mut o, tags::RESCALE_SLOPE, &[1.0]);
-        put_str(&mut o, tags::RESCALE_TYPE, VR::LO, "HU");
-        put_ds(
-            &mut o,
-            tags::WINDOW_CENTER,
-            &[study.default_window.0 as f64],
-        );
-        put_ds(&mut o, tags::WINDOW_WIDTH, &[study.default_window.1 as f64]);
-
-        let base = k * nx * ny;
-        let words: Vec<u16> = vol.data[base..base + nx * ny]
-            .iter()
-            .map(|&v| v as u16)
-            .collect();
-        o.put(DataElement::new(
-            tags::PIXEL_DATA,
-            VR::OW,
-            PrimitiveValue::U16(C::from_vec(words)),
-        ));
-
-        write_object(o, SOP_CT, &dir.join(format!("CT_{k:04}.dcm")))?;
-        n_files += 1;
-    }
-
-    // ---- RTSTRUCT (one file per structure set) ----------------------------
-    for (si, ss) in study.structure_sets.iter().enumerate() {
-        progress.set(format!(
-            "Writing RTSTRUCT {}/{}",
-            si + 1,
-            study.structure_sets.len()
-        ));
-        let o = build_rtstruct(ss, &ctx, 2 + si as i64, &rs_uids[si]);
-        write_object(o, SOP_RTSTRUCT, &dir.join(format!("RS_export_{si}.dcm")))?;
-        n_files += 1;
-    }
-
-    // ---- SEG (one Segmentation Storage object per segmentation series) ----
-    for (gi, ser) in study.seg_series.iter().enumerate() {
-        if ser.segs.iter().all(|s| s.count == 0) {
-            continue;
-        }
-        progress.set(format!("Writing SEG {}/{}", gi + 1, study.seg_series.len()));
-        // The exported image slices may only be claimed as the source of a
-        // series that actually sits on their lattice.
-        let same_grid = ser.grid.matches(&vol.grid());
-        let seg_ctx = dicomseg::SegWriteCtx {
-            study_uid: &ctx.study_uid,
-            for_uid: &ctx.for_uid,
-            date: &ctx.date,
-            time: &ctx.time,
-            series_number: 20 + gi as i64,
-            image_series_uid: if same_grid { &series_uid } else { "" },
-            image_sop_uids: if same_grid { &ct_sop_uids } else { &[] },
-            params,
-        };
-        dicomseg::write(ser, &seg_ctx, &dir.join(format!("SEG_export_{gi}.dcm")))?;
-        n_files += 1;
-    }
-
-    // ---- RTDOSE (16-bit, rescaled) ----------------------------------------
-    for (di, d) in study.doses.iter().enumerate() {
-        progress.set(format!("Writing RTDOSE {}/{}", di + 1, study.doses.len()));
-        let [dnx, dny, dnf] = d.dims;
-        let scaling = (d.max_dose as f64 / 60000.0).max(1e-9);
-        let mut o = InMemDicomObject::new_empty();
-        common_elements(&mut o, &ctx, "RTDOSE");
-        put_str(&mut o, tags::SOP_CLASS_UID, VR::UI, SOP_RTDOSE);
-        put_str(&mut o, tags::SOP_INSTANCE_UID, VR::UI, new_uid());
-        put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, new_uid());
-        put_is(&mut o, tags::SERIES_NUMBER, 3 + di as i64);
-        put_str(
-            &mut o,
-            tags::FRAME_OF_REFERENCE_UID,
-            VR::UI,
-            ctx.for_uid.clone(),
-        );
-        put_str(&mut o, tags::POSITION_REFERENCE_INDICATOR, VR::LO, "");
-        put_ds(
-            &mut o,
-            tags::IMAGE_POSITION_PATIENT,
-            &[d.origin.x, d.origin.y, d.origin.z],
-        );
-        put_ds(
-            &mut o,
-            tags::IMAGE_ORIENTATION_PATIENT,
-            &[
-                d.row_dir.x,
-                d.row_dir.y,
-                d.row_dir.z,
-                d.col_dir.x,
-                d.col_dir.y,
-                d.col_dir.z,
-            ],
-        );
-        put_ds(&mut o, tags::PIXEL_SPACING, &[d.spacing[1], d.spacing[0]]);
-        put_us(&mut o, tags::ROWS, dny as u16);
-        put_us(&mut o, tags::COLUMNS, dnx as u16);
-        put_is(&mut o, tags::NUMBER_OF_FRAMES, dnf as i64);
-        o.put(DataElement::new(
-            tags::FRAME_INCREMENT_POINTER,
-            VR::AT,
-            PrimitiveValue::from(tags::GRID_FRAME_OFFSET_VECTOR),
-        ));
-        put_ds(&mut o, tags::GRID_FRAME_OFFSET_VECTOR, &d.offsets);
-        put_us(&mut o, tags::BITS_ALLOCATED, 16);
-        put_us(&mut o, tags::BITS_STORED, 16);
-        put_us(&mut o, tags::HIGH_BIT, 15);
-        put_us(&mut o, tags::PIXEL_REPRESENTATION, 0);
-        put_us(&mut o, tags::SAMPLES_PER_PIXEL, 1);
-        put_str(
-            &mut o,
-            tags::PHOTOMETRIC_INTERPRETATION,
-            VR::CS,
-            "MONOCHROME2",
-        );
-        put_str(&mut o, tags::DOSE_UNITS, VR::CS, d.units.clone());
-        put_str(&mut o, tags::DOSE_TYPE, VR::CS, "PHYSICAL");
-        put_str(
-            &mut o,
-            tags::DOSE_SUMMATION_TYPE,
-            VR::CS,
-            if d.summation_type.is_empty() {
-                "PLAN"
-            } else {
-                &d.summation_type
-            },
-        );
-        put_ds(&mut o, tags::DOSE_GRID_SCALING, &[scaling]);
-        if !plan_uids.is_empty() {
-            let pidx = study
-                .plans
-                .iter()
-                .position(|p| p.sop_instance_uid == d.referenced_plan_uid)
-                .unwrap_or(0);
-            let mut rp = InMemDicomObject::new_empty();
-            put_str(
-                &mut rp,
-                tags::REFERENCED_SOP_CLASS_UID,
-                VR::UI,
-                SOP_RTIONPLAN,
-            );
-            put_str(
-                &mut rp,
-                tags::REFERENCED_SOP_INSTANCE_UID,
-                VR::UI,
-                plan_uids[pidx].clone(),
-            );
-            put_seq(&mut o, tags::REFERENCED_RT_PLAN_SEQUENCE, vec![rp]);
-        }
-        let words: Vec<u16> = d
-            .data
-            .iter()
-            .map(|&v| ((v as f64 / scaling).round().clamp(0.0, 65535.0)) as u16)
-            .collect();
-        o.put(DataElement::new(
-            tags::PIXEL_DATA,
-            VR::OW,
-            PrimitiveValue::U16(C::from_vec(words)),
-        ));
-
-        write_object(o, SOP_RTDOSE, &dir.join(format!("RD_export_{di}.dcm")))?;
-        n_files += 1;
-    }
-
-    // ---- RTPLAN (skeleton with prescription, fractionation, beams) --------
-    for (pi, plan) in study.plans.iter().enumerate() {
-        progress.set(format!("Writing RTPLAN {}/{}", pi + 1, study.plans.len()));
-        let ion = plan.plan_kind == "Ion"
-            || plan
-                .beams
-                .iter()
-                .any(|b| b.radiation_type == "PROTON" || b.radiation_type == "ION");
-        let sop_class = if ion { SOP_RTIONPLAN } else { SOP_RTPLAN };
-        let mut o = InMemDicomObject::new_empty();
-        common_elements(&mut o, &ctx, "RTPLAN");
-        put_str(&mut o, tags::SOP_CLASS_UID, VR::UI, sop_class);
-        put_str(
-            &mut o,
-            tags::SOP_INSTANCE_UID,
-            VR::UI,
-            plan_uids[pi].clone(),
-        );
-        put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, new_uid());
-        put_is(&mut o, tags::SERIES_NUMBER, 10 + pi as i64);
-        put_str(
-            &mut o,
-            tags::FRAME_OF_REFERENCE_UID,
-            VR::UI,
-            ctx.for_uid.clone(),
-        );
-        put_str(
-            &mut o,
-            tags::RT_PLAN_LABEL,
-            VR::SH,
-            truncate(&plan.label, 16),
-        );
-        put_str(&mut o, tags::RT_PLAN_NAME, VR::LO, plan.name.clone());
-        put_str(&mut o, tags::RT_PLAN_DATE, VR::DA, ctx.date.clone());
-        put_str(&mut o, tags::RT_PLAN_TIME, VR::TM, ctx.time.clone());
-        put_str(&mut o, tags::RT_PLAN_GEOMETRY, VR::CS, "PATIENT");
-        if !rs_uids.is_empty() {
-            let sidx = study
-                .structure_sets
-                .iter()
-                .position(|ss| ss.sop_instance_uid == plan.referenced_structset_uid)
-                .unwrap_or(0);
-            let mut rs = InMemDicomObject::new_empty();
-            put_str(
-                &mut rs,
-                tags::REFERENCED_SOP_CLASS_UID,
-                VR::UI,
-                SOP_RTSTRUCT,
-            );
-            put_str(
-                &mut rs,
-                tags::REFERENCED_SOP_INSTANCE_UID,
-                VR::UI,
-                rs_uids[sidx].clone(),
-            );
-            put_seq(&mut o, tags::REFERENCED_STRUCTURE_SET_SEQUENCE, vec![rs]);
-        }
-
-        if let Some(rx) = plan.target_prescription_dose {
-            let mut dr = InMemDicomObject::new_empty();
-            put_is(&mut dr, tags::DOSE_REFERENCE_NUMBER, 1);
-            put_str(&mut dr, tags::DOSE_REFERENCE_STRUCTURE_TYPE, VR::CS, "SITE");
-            put_str(&mut dr, tags::DOSE_REFERENCE_TYPE, VR::CS, "TARGET");
-            put_ds(&mut dr, tags::TARGET_PRESCRIPTION_DOSE, &[rx]);
-            put_seq(&mut o, tags::DOSE_REFERENCE_SEQUENCE, vec![dr]);
-        }
-
-        let mut fg = InMemDicomObject::new_empty();
-        put_is(&mut fg, tags::FRACTION_GROUP_NUMBER, 1);
-        put_is(
-            &mut fg,
-            tags::NUMBER_OF_FRACTIONS_PLANNED,
-            plan.n_fractions.unwrap_or(1) as i64,
-        );
-        put_is(&mut fg, tags::NUMBER_OF_BEAMS, plan.beams.len() as i64);
-        put_is(&mut fg, tags::NUMBER_OF_BRACHY_APPLICATION_SETUPS, 0);
-        let mut rbs = Vec::new();
-        for b in &plan.beams {
-            let mut rb = InMemDicomObject::new_empty();
-            put_is(&mut rb, tags::REFERENCED_BEAM_NUMBER, b.number as i64);
-            if let Some(m) = b.meterset {
-                put_ds(&mut rb, tags::BEAM_METERSET, &[m]);
-            }
-            if let Some(bd) = b.beam_dose {
-                put_ds(&mut rb, tags::BEAM_DOSE, &[bd]);
-            }
-            rbs.push(rb);
-        }
-        put_seq(&mut fg, tags::REFERENCED_BEAM_SEQUENCE, rbs);
-        put_seq(&mut o, tags::FRACTION_GROUP_SEQUENCE, vec![fg]);
-
-        let mut beams = Vec::new();
-        for b in &plan.beams {
-            let mut bo = InMemDicomObject::new_empty();
-            put_is(&mut bo, tags::BEAM_NUMBER, b.number as i64);
-            put_str(&mut bo, tags::BEAM_NAME, VR::LO, b.name.clone());
-            put_str(&mut bo, tags::BEAM_TYPE, VR::CS, "STATIC");
-            put_str(
-                &mut bo,
-                tags::RADIATION_TYPE,
-                VR::CS,
-                if b.radiation_type.is_empty() {
-                    "PHOTON"
-                } else {
-                    &b.radiation_type
-                },
-            );
-            if ion && !b.scan_mode.is_empty() {
-                put_str(&mut bo, tags::SCAN_MODE, VR::CS, b.scan_mode.clone());
-            }
-            put_str(
-                &mut bo,
-                tags::TREATMENT_DELIVERY_TYPE,
-                VR::CS,
-                if b.delivery_type.is_empty() {
-                    "TREATMENT"
-                } else {
-                    &b.delivery_type
-                },
-            );
-            put_str(&mut bo, tags::TREATMENT_MACHINE_NAME, VR::SH, "EXPORT");
-            put_is(&mut bo, tags::NUMBER_OF_WEDGES, 0);
-            put_is(&mut bo, tags::NUMBER_OF_COMPENSATORS, 0);
-            put_is(&mut bo, tags::NUMBER_OF_BOLI, 0);
-            put_is(&mut bo, tags::NUMBER_OF_BLOCKS, 0);
-            put_ds(&mut bo, tags::FINAL_CUMULATIVE_METERSET_WEIGHT, &[1.0]);
-            put_is(&mut bo, tags::NUMBER_OF_CONTROL_POINTS, 1);
-
-            let mut cp = InMemDicomObject::new_empty();
-            put_is(&mut cp, tags::CONTROL_POINT_INDEX, 0);
-            if let Some(e) = b.energy_max.or(b.energy_min) {
-                put_ds(&mut cp, tags::NOMINAL_BEAM_ENERGY, &[e]);
-            }
-            put_ds(&mut cp, tags::CUMULATIVE_METERSET_WEIGHT, &[0.0]);
-            if let Some(g) = b.gantry_angle {
-                put_ds(&mut cp, tags::GANTRY_ANGLE, &[g]);
-                put_str(&mut cp, tags::GANTRY_ROTATION_DIRECTION, VR::CS, "NONE");
-            }
-            if let Some(c) = b.couch_angle {
-                put_ds(&mut cp, tags::PATIENT_SUPPORT_ANGLE, &[c]);
-                put_str(
-                    &mut cp,
-                    tags::PATIENT_SUPPORT_ROTATION_DIRECTION,
-                    VR::CS,
-                    "NONE",
-                );
-            }
-            if let Some(iso) = b.isocenter {
-                put_ds(&mut cp, tags::ISOCENTER_POSITION, &[iso.x, iso.y, iso.z]);
-            }
-            let cp_tag = if ion {
-                tags::ION_CONTROL_POINT_SEQUENCE
-            } else {
-                tags::CONTROL_POINT_SEQUENCE
-            };
-            put_seq(&mut bo, cp_tag, vec![cp]);
-            beams.push(bo);
-        }
-        let beam_tag = if ion {
-            tags::ION_BEAM_SEQUENCE
-        } else {
-            tags::BEAM_SEQUENCE
-        };
-        put_seq(&mut o, beam_tag, beams);
-
-        write_object(o, sop_class, &dir.join(format!("RP_export_{pi}.dcm")))?;
-        n_files += 1;
-    }
-
-    progress.set("done");
-    Ok(n_files)
+    let mut plan = crate::export::ExportPlan::build([Some(study), None], params.clone());
+    plan.layout = crate::export::Layout::Flat;
+    plan.adopt_params_identity();
+    Ok(crate::export::run(&plan, [Some(study), None], dir, progress)?.files)
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -1121,7 +1302,14 @@ pub fn export_derived(
             time: today_time.clone(),
             params,
         };
-        let o = build_rtstruct(ss, &ctx, 2 + si as i64, &new_uid());
+        // The image series is already in the archive, so naming it is a real
+        // reference even though its slices are not being written here.
+        let image = ImageRef {
+            series_uid: ss.referenced_series_uid.clone(),
+            study_uid: ctx.study_uid.clone(),
+            ..ImageRef::default()
+        };
+        let o = build_rtstruct(ss, &ctx, 2 + si as i64, &new_uid(), &image);
         write_object(o, SOP_RTSTRUCT, &dir.join(format!("RS_derived_{si}.dcm")))?;
         n_files += 1;
     }

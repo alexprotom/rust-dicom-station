@@ -40,7 +40,8 @@ smoothing option is for.
 
 ## Using it
 
-*Tools ▶ ∪ Combine structures in dataset A…*, the **∪ Combine** button in the
+*Tools ▶ ∪ Combine structures* (the dataset is chosen on the window's
+**Dataset A / B** row), the **∪ Combine** button in the
 sidebar, or - usually quickest - tick the structures in the data tree,
 right-click and choose **∪ Combine …**: the window opens with them listed in
 the order ticked.

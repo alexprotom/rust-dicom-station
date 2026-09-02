@@ -14,7 +14,7 @@ impl ViewerApp {
         let mut open_models = false;
         let mut open_pacs = false;
         let mut open_drr = false;
-        let mut open_export: Option<usize> = None;
+        let mut open_export = false;
         let mut new_theme: Option<egui::ThemePreference> = None;
         let mut save_settings = false;
         // A module was switched on or off - remember it for the next run.
@@ -91,28 +91,22 @@ impl ViewerApp {
                         ui.close();
                     }
                     ui.separator();
-                    for (slot, slot_name) in SLOT_NAMES.iter().enumerate() {
-                        if slot == 1 && !self.comparison && self.slots[1].study.is_none() {
-                            continue;
-                        }
-                        if ui
-                            .add_enabled(
-                                self.slots[slot].study.is_some(),
-                                egui::Button::new(format!(
-                                    "💾 Export dataset {slot_name} as DICOM"
-                                )),
-                            )
-                            .on_hover_text(
-                                "Write the displayed volume, structure sets, \
-                                 segmentation series (DICOM SEG), dose grids and plans \
-                                 as DICOM files - with the patient / study / equipment \
-                                 tags reviewed and edited first",
-                            )
-                            .clicked()
-                        {
-                            open_export = Some(slot);
-                            ui.close();
-                        }
+                    // One export for everything that is loaded: which
+                    // patients, studies and series go out is chosen in the
+                    // window, not by which menu entry was clicked.
+                    let anything = self.slots[0].study.is_some() || self.slots[1].study.is_some();
+                    if ui
+                        .add_enabled(anything, egui::Button::new("💾 Export DICOM"))
+                        .on_hover_text(
+                            "Write any patients, studies, series and RT objects of either \
+                             dataset as DICOM - with every name and UID shown and editable, \
+                             structures as RTSTRUCT or SEG, and the references between the \
+                             objects kept intact",
+                        )
+                        .clicked()
+                    {
+                        open_export = true;
+                        ui.close();
                     }
                     ui.separator();
                     if ui
@@ -271,46 +265,34 @@ impl ViewerApp {
                              trajectories, drift, correlations and the ITV.",
                         ),
                     ];
-                    let mut open_tool: Option<(usize, &ToolInfo)> = None;
-                    for slot in 0..SLOT_NAMES.len() {
-                        if slot == 1 && !self.comparison {
-                            continue;
-                        }
-                        if slot == 1 {
-                            ui.separator();
-                        }
-                        // Every engine reads voxels: a dataset that holds
-                        // only RT images or RT objects has nothing to give
-                        // them.
-                        let loaded = self.slots[slot].has_volume();
-                        for (tool, hint) in tools {
-                            if ui
-                                .add_enabled(loaded, egui::Button::new(tool.menu_entry(slot)))
-                                .on_hover_text(hint)
-                                .clicked()
-                            {
-                                open_tool = Some((slot, tool));
-                                ui.close();
-                            }
+                    // One entry per tool, not one per tool per dataset:
+                    // which dataset it works on is a setting of the tool,
+                    // shown as a row at the top of its window, and it opens
+                    // on whichever dataset can actually feed it.
+                    let mut open_tool: Option<&ToolInfo> = None;
+                    // Every engine reads voxels: a dataset that holds only RT
+                    // images or RT objects has nothing to give them.
+                    let loaded = self.slots[0].has_volume() || self.slots[1].has_volume();
+                    let slot = usize::from(!self.slots[0].has_volume());
+                    for (tool, hint) in tools {
+                        if ui
+                            .add_enabled(loaded, egui::Button::new(tool.menu_entry()))
+                            .on_hover_text(hint)
+                            .clicked()
+                        {
+                            open_tool = Some(tool);
+                            ui.close();
                         }
                     }
                     match open_tool {
-                        Some((slot, t)) if t.glyph == COMBINE.glyph => {
+                        Some(t) if t.glyph == COMBINE.glyph => {
                             self.open_combine_dialog(slot, Vec::new())
                         }
-                        Some((slot, t)) if t.glyph == MOTION.glyph => {
-                            self.open_motion_dialog(slot, None)
-                        }
-                        Some((slot, t)) if t.glyph == BODY_CONTOUR.glyph => {
-                            self.open_body_dialog(slot)
-                        }
-                        Some((slot, t)) if t.glyph == AUTOSEG.glyph => {
-                            self.open_autoseg_dialog(slot)
-                        }
-                        Some((slot, t)) if t.glyph == PROMPT_SEG.glyph => {
-                            self.open_segvol_dialog(slot)
-                        }
-                        Some((slot, _)) => self.open_medsam2_panel(slot),
+                        Some(t) if t.glyph == MOTION.glyph => self.open_motion_dialog(slot, None),
+                        Some(t) if t.glyph == BODY_CONTOUR.glyph => self.open_body_dialog(slot),
+                        Some(t) if t.glyph == AUTOSEG.glyph => self.open_autoseg_dialog(slot),
+                        Some(t) if t.glyph == PROMPT_SEG.glyph => self.open_segvol_dialog(slot),
+                        Some(_) => self.open_medsam2_panel(slot),
                         None => {}
                     }
                     ui.separator();
@@ -538,8 +520,8 @@ impl ViewerApp {
             let slot = usize::from(!self.slots[0].has_volume());
             self.open_drr_window(slot);
         }
-        if let Some(slot) = open_export {
-            self.open_export_dialog(slot);
+        if open_export {
+            self.open_export_dialog();
         }
         if let Some(theme) = new_theme {
             self.set_theme(ctx, theme);

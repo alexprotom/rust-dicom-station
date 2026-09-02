@@ -19,7 +19,8 @@ as the image.
 
 ## Using it
 
-**Tools ▶ ⏩ Propagate through dataset A…**, or the **⏩ Propagate…** button
+**Tools ▶ ⏩ Slice propagation** (the dataset is chosen on the window's
+**Dataset A / B** row), or the **⏩ Propagate…** button
 in the sidebar *Segmentations* section, opens the tool window (**⏩ Slice
 propagation - dataset A**; the three segmentation engines share one window
 layout, see [architecture.md](architecture.md#the-three-engine-windows)).
