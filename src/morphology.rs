@@ -1,11 +1,11 @@
-//! Binary-mask morphology on voxel grids — the geometry every mask-shaped
+//! Binary-mask morphology on voxel grids - the geometry every mask-shaped
 //! feature needs and nobody should write twice.
 //!
 //! Masks are `[u8]` in [`crate::volume::Volume`] index order
 //! (`k * nx * ny + j * nx + i`), non-zero meaning *set*. Every operation that
 //! has a physical size takes it in **millimetres** and reads the voxel
 //! spacing, so a 5 mm opening is 5 mm along each axis whatever the slice
-//! thickness — which is the whole point on clinical CT, where in-plane and
+//! thickness - which is the whole point on clinical CT, where in-plane and
 //! through-plane spacing routinely differ by a factor of five.
 //!
 //! The distance transform is the exact anisotropic Euclidean one
@@ -17,8 +17,8 @@
 //!
 //! Outside the volume counts as **set** for the distance-to-background
 //! transform. That convention is what keeps anatomy truncated by the scan
-//! FoV — the arms at the edge of the field, the body at the first and last
-//! slice — from being eroded away at the cut: nothing is inferred about
+//! FoV - the arms at the edge of the field, the body at the first and last
+//! slice - from being eroded away at the cut: nothing is inferred about
 //! what was never imaged.
 
 use rayon::prelude::*;
@@ -63,7 +63,7 @@ fn edt_in_place(f: &mut [f32], dims: [usize; 3], spacing: [f64; 3]) {
 /// make an *asymmetric* margin possible: restricted to sources at a lower
 /// index, a pass measures only how far the mask has grown in the `+axis`
 /// direction, so three such passes give the distance within one octant and
-/// eight octants tile the whole neighbourhood — each with its own radius.
+/// eight octants tile the whole neighbourhood - each with its own radius.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Sweep {
     Both,
@@ -111,7 +111,7 @@ impl Envelope {
 
 /// A pointer to the buffer, handed to each rayon task. Lines along one axis
 /// are disjoint sets of indices, so writing them in parallel is sound; the
-/// alternative — collecting every line and writing back afterwards — costs a
+/// alternative - collecting every line and writing back afterwards - costs a
 /// second copy of the volume and one allocation per line, which on a routine
 /// CT is 300 MB and 150 000 allocations per pass.
 #[derive(Clone, Copy)]
@@ -185,7 +185,7 @@ fn pass_along(f: &mut [f32], dims: [usize; 3], axis: usize, step: f32, sweep: Sw
                 }
                 if sweep != Sweep::Both {
                     // Only parabolas up to q are in the envelope, and q sits
-                    // in its last piece — so this is the one-sided minimum.
+                    // in its last piece - so this is the one-sided minimum.
                     let p = e.v[k];
                     e.out[q] = if e.d[p].is_infinite() {
                         f32::INFINITY
@@ -249,7 +249,7 @@ pub fn dilate_mm(mask: &[u8], dims: [usize; 3], spacing: [f64; 3], radius_mm: f6
 /// `radii[axis] = [toward decreasing index, toward increasing index]`.
 ///
 /// The structuring element is the ellipsoid whose semi-axis in each of the
-/// six directions is the corresponding entry — the shape a planning system
+/// six directions is the corresponding entry - the shape a planning system
 /// means by "5 mm laterally, 8 mm superiorly". Symmetric cases are detected
 /// and take a single distance transform; only a genuinely one-sided margin
 /// pays for the eight-octant form.
@@ -281,7 +281,7 @@ fn unit_step(spacing: f64, radius: f64) -> f32 {
 /// Dilation by the ellipsoid of [`Radii`].
 ///
 /// Dilation distributes over a union of structuring elements, and an
-/// asymmetric ellipsoid is the union of its eight octants — each of which is
+/// asymmetric ellipsoid is the union of its eight octants - each of which is
 /// an octant of an *ordinary* ellipsoid, and so is reached by three one-sided
 /// passes. Eight of those is the price of a one-sided margin; a symmetric one
 /// costs a single transform.
@@ -331,7 +331,7 @@ pub fn dilate_radii(mask: &[u8], dims: [usize; 3], spacing: [f64; 3], radii: &Ra
     out
 }
 
-/// Erosion by the ellipsoid of [`Radii`] — everything that survives having
+/// Erosion by the ellipsoid of [`Radii`] - everything that survives having
 /// the shape swept round the inside of the mask.
 ///
 /// Computed as the complement of dilating the complement, which is the
@@ -350,7 +350,7 @@ pub fn erode_radii(mask: &[u8], dims: [usize; 3], spacing: [f64; 3], radii: &Rad
     grown.par_iter().map(|&v| u8::from(v == 0)).collect()
 }
 
-/// Opening — erosion then dilation. Equivalently: the union of every ball of
+/// Opening - erosion then dilation. Equivalently: the union of every ball of
 /// `radius_mm` that fits entirely inside the mask, so everything thinner
 /// than twice the radius disappears and everything thicker keeps its exact
 /// surface.
@@ -362,7 +362,7 @@ pub fn open_mm(mask: &[u8], dims: [usize; 3], spacing: [f64; 3], radius_mm: f64)
     dilate_mm(&eroded, dims, spacing, radius_mm)
 }
 
-/// Closing — dilation then erosion. Bridges gaps narrower than twice the
+/// Closing - dilation then erosion. Bridges gaps narrower than twice the
 /// radius; used to take the staircase off a contour.
 pub fn close_mm(mask: &[u8], dims: [usize; 3], spacing: [f64; 3], radius_mm: f64) -> Vec<u8> {
     if radius_mm <= 0.0 {
@@ -647,8 +647,8 @@ pub fn fill_holes_3d(mask: &mut [u8], dims: [usize; 3]) {
 /// knowing what either looks like. A couch top, a chair backrest, a seat
 /// pan, an arm rest, a bright reconstruction-circle rim: each is a surface
 /// swept along one axis, so its footprint in the orthogonal plane repeats
-/// slice after slice after slice. A pinna, a nose, a finger — the thin
-/// anatomy a plain opening also removes — never repeats over anything like
+/// slice after slice after slice. A pinna, a nose, a finger - the thin
+/// anatomy a plain opening also removes - never repeats over anything like
 /// the same distance, so a window of 150 mm at 80 % separates them cleanly.
 ///
 /// The scan has to contain slices where the columns in question are free of
@@ -717,7 +717,7 @@ pub fn axis_persistence(
 // Smoothing
 // ---------------------------------------------------------------------------
 
-/// Three successive box blurs of `sigma_mm` — a close approximation of a
+/// Three successive box blurs of `sigma_mm` - a close approximation of a
 /// Gaussian (the central limit theorem does the work) at O(voxels) per axis
 /// whatever the width, which is what makes a 40 mm blur of a whole MR study
 /// affordable. Used to estimate the receive-coil bias field.
@@ -964,7 +964,7 @@ mod tests {
         let dims = [4, 4, 4];
         let mask = vec![1u8; 64];
         // Outside is not background, so nothing is within any finite
-        // distance — the convention that stops truncated anatomy eroding.
+        // distance - the convention that stops truncated anatomy eroding.
         assert!(dist2_to_background(&mask, dims, [1.0; 3])
             .iter()
             .all(|d| d.is_infinite()));
@@ -1024,7 +1024,7 @@ mod tests {
     #[test]
     fn slicewise_filling_closes_a_lung_that_a_three_d_fill_leaves_open() {
         // A block with a cavity that connects to the outside on one slice
-        // only — a lung and its trachea.
+        // only - a lung and its trachea.
         let dims = [12, 12, 6];
         let at = |i: usize, j: usize, k: usize| k * 144 + j * 12 + i;
         let mut mask = vec![0u8; 12 * 12 * 6];

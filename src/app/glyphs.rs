@@ -1,4 +1,4 @@
-//! Which characters the interface is allowed to draw — and the font stack
+//! Which characters the interface is allowed to draw - and the font stack
 //! that makes them all draw.
 //!
 //! egui carries four fonts of its own: Ubuntu-Light for text, Hack for
@@ -13,15 +13,15 @@
 //!
 //! **[`install`] widens the font stack.** By default only Ubuntu-Light and
 //! the two emoji fonts are used for ordinary (proportional) text, so
-//! everything that lives *only* in Hack — the arrows ↑ ↓ ⇄ ⇤ ⇥, the set
-//! algebra ∩ ∪ ⊕ ⊖, ● ◐ ▸ ▼ ⬚ — was a box in a button label while rendering
+//! everything that lives *only* in Hack - the arrows ↑ ↓ ⇄ ⇤ ⇥, the set
+//! algebra ∩ ∪ ⊕ ⊖, ● ◐ ▸ ▼ ⬚ - was a box in a button label while rendering
 //! perfectly in the status bar's monospaced text. Hack is appended as the
 //! last proportional fallback: no new font files, no new dependency, and the
 //! mathematical symbols the structure algebra needs are simply there.
 //!
 //! **The test below is the guard.** Every non-ASCII character in the sources
 //! has to appear in [`ALLOWED`], which lists what those four fonts really
-//! draw — "really" meaning a `cmap` entry that is not `.notdef`. A new glyph
+//! draw - "really" meaning a `cmap` entry that is not `.notdef`. A new glyph
 //! fails the build until somebody has checked it against
 //! `epaint_default_fonts-*/fonts/*.ttf`.
 

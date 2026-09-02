@@ -1,4 +1,4 @@
-//! The installer payload — the files that end up in the install directory.
+//! The installer payload - the files that end up in the install directory.
 //!
 //! A shipped `rust-dicom-station-setup.exe` is the `rds-setup` binary with a
 //! zip appended to it and a small fixed-size footer at the very end:
@@ -10,7 +10,7 @@
 //! Appending rather than `include_bytes!`-ing the payload has one concrete
 //! benefit: the first `offset` bytes are exactly the untouched setup binary,
 //! so the uninstaller left behind in the install directory is a plain
-//! truncated copy of ourselves — a few MB instead of a few hundred.
+//! truncated copy of ourselves - a few MB instead of a few hundred.
 //!
 //! A freshly `cargo build`-ed `rds-setup.exe` has no payload; it then falls
 //! back to a `payload/` directory next to the executable, which is handy when

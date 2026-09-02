@@ -4,8 +4,8 @@
 //!
 //! One section covers four algorithms because the choice between them is
 //! the user's real question ("stochastic or dense? intensities or points?"),
-//! and the rest of the conversation — direction, region, parameters,
-//! analytics, fusion, vector field — is the same whichever they pick.
+//! and the rest of the conversation - direction, region, parameters,
+//! analytics, fusion, vector field - is the same whichever they pick.
 
 use anyhow::{anyhow, Result};
 
@@ -210,8 +210,8 @@ impl ViewerApp {
     /// Install any transform read from a file as the active registration.
     ///
     /// A Deformable Spatial Registration's grid arrives here exactly as a
-    /// REG matrix does, so everything downstream — fusion, the crosshair
-    /// link, the analytics, the vector field, propagation — works on it
+    /// REG matrix does, so everything downstream - fusion, the crosshair
+    /// link, the analytics, the vector field, propagation - works on it
     /// without knowing where it came from.
     pub(super) fn apply_external_transform(
         &mut self,

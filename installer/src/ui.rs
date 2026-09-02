@@ -115,12 +115,12 @@ pub fn run_uninstall(target: Target) -> Result<()> {
 /// Open the wizard window.
 ///
 /// The installer draws with the same library as the viewer, on the same
-/// machine — so the broken Vulkan driver that stops the viewer stops the
+/// machine - so the broken Vulkan driver that stops the viewer stops the
 /// setup program too, and the setup program is where the page that fixes it
 /// lives. The window is therefore *attempted* rather than opened: first
 /// whatever `wgpu` would pick on its own (which already honours
-/// `WGPU_BACKEND`), then Direct3D 12, then Vulkan. A backend that fails —
-/// by error or by panicking inside the driver — costs a line on standard
+/// `WGPU_BACKEND`), then Direct3D 12, then Vulkan. A backend that fails -
+/// by error or by panicking inside the driver - costs a line on standard
 /// error instead of the installation.
 ///
 /// Falling back is also an answer: if this window only appeared on Direct3D
@@ -180,7 +180,7 @@ fn launch(app: SetupApp, title: &str) -> Result<()> {
 struct Attempt {
     label: &'static str,
     /// `None` leaves `wgpu`'s own default in place, which is what an
-    /// unremarkable machine — and anyone who set `WGPU_BACKEND` — should get.
+    /// unremarkable machine - and anyone who set `WGPU_BACKEND` - should get.
     bits: Option<eframe::wgpu::Backends>,
     /// What to preselect on the graphics page when this is the attempt that
     /// works. `None` for the first try, which says nothing about the machine.
@@ -237,7 +237,7 @@ impl Attempt {
         let slot = slot.clone();
         // `NativeOptions` holds boxed callbacks that are not `UnwindSafe`,
         // which is a fair warning in general and irrelevant here: nothing is
-        // read back after a failed attempt — the next one builds its own.
+        // read back after a failed attempt - the next one builds its own.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             eframe::run_native(
                 title,
@@ -572,7 +572,7 @@ impl SetupApp {
     /// should start on.
     ///
     /// Vulkan is preselected because it is right on the overwhelming majority
-    /// of machines. The page exists for the rest — and when the installer's
+    /// of machines. The page exists for the rest - and when the installer's
     /// own window had to fall back to get here, the answer is already known
     /// and filled in.
     fn graphics(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {

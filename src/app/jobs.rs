@@ -106,7 +106,7 @@ impl ViewerApp {
 
     /// A folder finished loading (*File ▶ Add DICOM folder*): merge it into
     /// an occupied slot, or install it into an empty one. Merging leaves the
-    /// displayed volume and all selections untouched — the new patients /
+    /// displayed volume and all selections untouched - the new patients /
     /// studies / series simply appear in the data tree.
     pub(super) fn absorb_loaded_study(&mut self, slot: usize, study: LoadedStudy) {
         let Some(dest) = self.slots[slot].study.as_mut() else {

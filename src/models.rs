@@ -112,7 +112,7 @@ pub fn migrate_legacy_layout(root: &Path) -> Vec<Engine> {
 
 /// Which download an inventory row stands for.
 ///
-/// Each engine already describes its own published files —
+/// Each engine already describes its own published files -
 /// [`autoseg::weights::ModelSpec`], [`segvol::weights::CHECKPOINT`],
 /// [`medsam2::weights::Variant`]. This enum only records *which* of them a
 /// row is, so [`ensure`] can hand the actual work straight back to the engine
@@ -148,7 +148,7 @@ pub struct ModelAsset {
     /// With all of these present the model runs with no network access.
     pub ready: Vec<String>,
     /// Files the download leaves behind that nothing reads once the model is
-    /// ready — the raw checkpoint, interrupted temporaries. Removing them
+    /// ready - the raw checkpoint, interrupted temporaries. Removing them
     /// frees disk without costing anything.
     pub spare: Vec<String>,
 }
@@ -170,7 +170,7 @@ impl ModelAsset {
 pub struct AssetStatus {
     /// Every file needed to run offline is present.
     pub ready: bool,
-    /// Some — but not all — of them are.
+    /// Some - but not all - of them are.
     pub partial: bool,
     /// Bytes this model occupies, including the spare files.
     pub bytes: u64,
@@ -294,7 +294,7 @@ pub fn status(asset: &ModelAsset, root: &Path) -> AssetStatus {
 /// Download and convert one model if it is not ready yet.
 ///
 /// The work is the engine's own first-use path, so a model prepared here is
-/// bit for bit the one a run would have prepared — there is no second
+/// bit for bit the one a run would have prepared - there is no second
 /// download route to keep in step.
 pub fn ensure(asset: &ModelAsset, root: &Path, sink: &dyn ProgressSink) -> Result<()> {
     let dir = engine_dir(root, asset.engine);
@@ -338,8 +338,8 @@ fn delete(dir: &Path, names: &[String]) -> Result<u64> {
 
 /// Remove everything one model owns; returns the bytes freed.
 ///
-/// Only the file names the inventory lists are deleted — never a whole
-/// folder — so a model folder the user also keeps something else in survives
+/// Only the file names the inventory lists are deleted - never a whole
+/// folder - so a model folder the user also keeps something else in survives
 /// intact. The model's own sub-folder is removed afterwards if it came out
 /// empty.
 pub fn remove(asset: &ModelAsset, root: &Path) -> Result<u64> {
@@ -449,7 +449,7 @@ mod tests {
         std::fs::write(dir.join(&asset.spare[0]), vec![0u8; 2048]).unwrap();
         let s = status(&asset, &root);
         assert!(!s.ready && s.partial && s.bytes == 2048 && s.spare_bytes == 0);
-        // With the converted cache beside it, it is — and the source is spare.
+        // With the converted cache beside it, it is - and the source is spare.
         std::fs::write(dir.join(&asset.ready[0]), vec![0u8; 1024]).unwrap();
         let s = status(&asset, &root);
         assert!(s.ready && !s.partial);

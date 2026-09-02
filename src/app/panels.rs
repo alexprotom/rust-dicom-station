@@ -371,7 +371,7 @@ impl ViewerApp {
     }
 
     pub(super) fn study_section(&mut self, ui: &mut egui::Ui, slot: usize) {
-        // Plain header — the patient(s) always appear as tree nodes below.
+        // Plain header - the patient(s) always appear as tree nodes below.
         let header = format!("Dataset {}", SLOT_NAMES[slot]);
         let ch = egui::CollapsingHeader::new(egui::RichText::new(header).strong())
             .id_salt(("study_hdr", slot))
@@ -379,10 +379,10 @@ impl ViewerApp {
             .show(ui, |ui| {
                 // Patient ▶ study ▶ category ▶ series. Everything that
                 // carries a StudyInstanceUID lives inside a study node; the
-                // rest — planar images have no study link at all, REG objects
+                // rest - planar images have no study link at all, REG objects
                 // and records belong to a frame of reference rather than a
                 // study, and the dose display settings are shared by both
-                // datasets — stays at dataset level below it.
+                // datasets - stays at dataset level below it.
                 self.data_tree(ui, slot);
                 self.dose_display_section(ui, slot);
                 self.planar_section(ui, slot);
@@ -823,7 +823,7 @@ impl ViewerApp {
             FourDAction::Redetect { slot } => {
                 if let Some(study) = self.slots[slot].study.as_mut() {
                     // An explicit re-detect is the one action that clears
-                    // dissolved tombstones — the user asked for detection.
+                    // dissolved tombstones - the user asked for detection.
                     study.fourd_groups.retain(|g| !g.dissolved);
                     study.refresh_fourd();
                 }
@@ -1033,7 +1033,7 @@ impl ViewerApp {
     }
 
     /// Every structure set and segmentation series of both datasets, as the
-    /// destinations of a *Copy to ▶* / *Move to ▶* submenu — plus the two
+    /// destinations of a *Copy to ▶* / *Move to ▶* submenu - plus the two
     /// "make me a new one" entries, so a transfer never needs preparing.
     fn destination_menu(&self, ui: &mut egui::Ui, from: SetRef) -> Option<SetRef> {
         let mut picked = None;
@@ -1227,7 +1227,7 @@ impl ViewerApp {
     }
 
     /// The *Copy to / Move to / Remove / Export* buttons that act on whatever
-    /// is ticked, added inline so they share one row with *All* / *None* — a
+    /// is ticked, added inline so they share one row with *All* / *None* - a
     /// multi-item action should not have to be found by right-clicking
     /// exactly the right row.
     fn selection_buttons(
@@ -1527,7 +1527,7 @@ impl ViewerApp {
         let active_here = self.slots[slot]
             .seg_series_idx()
             .filter(|i| which.contains(i));
-        // (name, colour, visible, cm³) of the active series' segments — the
+        // (name, colour, visible, cm³) of the active series' segments - the
         // editable columns live on this copy, see `structures_section`.
         let mut rows: Vec<(String, [u8; 3], bool, f64)> = {
             let s = &self.slots[slot];
@@ -1975,7 +1975,7 @@ impl ViewerApp {
         }
     }
 
-    /// How dose is drawn — colorwash, isodose lines, opacity, threshold and
+    /// How dose is drawn - colorwash, isodose lines, opacity, threshold and
     /// the isodose ladder. Shared by both datasets, so it is shown once, at
     /// dataset level, under the first dataset that actually has dose.
     pub(super) fn dose_display_section(&mut self, ui: &mut egui::Ui, slot: usize) {
@@ -2671,14 +2671,14 @@ impl ViewerApp {
 pub(super) struct StudyNode {
     uid: String,
     title: String,
-    /// Image series of this study, grouped by modality in first-seen order —
+    /// Image series of this study, grouped by modality in first-seen order -
     /// the CT / MR / US level DICOM implies but does not store as a node.
     modalities: Vec<(String, Vec<usize>)>,
     structs: Vec<usize>,
     segs: Vec<usize>,
     doses: Vec<usize>,
     plans: Vec<usize>,
-    /// 4D groups of this study — indices into `LoadedStudy::fourd_groups`.
+    /// 4D groups of this study - indices into `LoadedStudy::fourd_groups`.
     fourd: Vec<usize>,
 }
 
@@ -2693,7 +2693,7 @@ pub(super) struct PatientNode {
 ///
 /// Series carry the patient and study they belong to, so those two levels
 /// fall straight out of them. The RT objects carry a StudyInstanceUID as
-/// well, but not always a usable one — a set built in the application from a
+/// well, but not always a usable one - a set built in the application from a
 /// series that had none, or a file written by a tool that left it blank. An
 /// object whose study is not in the tree is therefore filed under the study
 /// of the image series it references, and failing that under the first study
@@ -2701,7 +2701,7 @@ pub(super) struct PatientNode {
 /// a level away from where its header claims it lives.
 pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
     // Series filed under a 4D group render inside that node, not under
-    // their modality — one series, one place in the tree.
+    // their modality - one series, one place in the tree.
     let mut grouped = vec![false; study.series.len()];
     for g in &study.fourd_groups {
         if g.dissolved {
@@ -2780,7 +2780,7 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
     }
 
     // File each 4D group under its study node (falling back to the study of
-    // its first surviving series, then to the first study — same rule as
+    // its first surviving series, then to the first study - same rule as
     // the RT objects below).
     for (gi, g) in study.fourd_groups.iter().enumerate() {
         if g.dissolved {
@@ -2806,7 +2806,7 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
 
     // Studies that no image series announced.
     //
-    // A dataset does not have to contain images at all — a folder or a file
+    // A dataset does not have to contain images at all - a folder or a file
     // selection can hold nothing but a structure set, a plan, a dose grid or
     // a handful of RT images. Those objects carry their own Study Instance
     // UID, so a study node is made from it and filed under the patient the
@@ -2963,7 +2963,7 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
 /// row's *new* value is what the span is filled with: tick one row and
 /// Shift-tick a later one and everything between turns on; untick and
 /// Shift-untick and it all turns off. Rows outside the span are never
-/// touched — the box is a visibility toggle as much as a selection, and
+/// touched - the box is a visibility toggle as much as a selection, and
 /// silently hiding structures the user did not point at would be worse than
 /// any convenience gained.
 fn apply_tick(vis: &mut [bool], i: usize, shift: bool, anchor: Option<usize>) -> usize {
@@ -3147,7 +3147,7 @@ mod layout_tests {
         assert_eq!(total, 3, "every structure set is reachable exactly once");
     }
 
-    /// A dataset can hold no image series at all — a folder of RT images, a
+    /// A dataset can hold no image series at all - a folder of RT images, a
     /// structure set opened on its own. Its objects must still be in the
     /// tree, under a patient and a study, or there is no way to reach them.
     #[test]

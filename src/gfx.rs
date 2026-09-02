@@ -3,7 +3,7 @@
 //! Everything here exists because of one failure that is common in the field
 //! and impossible for a user to diagnose: a Windows machine advertises a
 //! Vulkan driver that does not work. `wgpu` enumerates it, prefers it, and
-//! the program dies before it has drawn anything — the same program that
+//! the program dies before it has drawn anything - the same program that
 //! runs perfectly on the next desk. The only escape used to be knowing to
 //! type `$env:WGPU_BACKEND = "dx12"` before starting it, which is not a
 //! thing to ask of a clinical physicist.
@@ -11,7 +11,7 @@
 //! So the choice is made explicit in three places, in this order of
 //! authority:
 //!
-//! 1. the `WGPU_BACKEND` environment variable, if the user has set one —
+//! 1. the `WGPU_BACKEND` environment variable, if the user has set one -
 //!    it stays the escape hatch and it still wins;
 //! 2. the `graphics_backend` line in the settings file, which the installer
 //!    writes from the page it asks on and the *Settings > Graphics backend* menu
@@ -28,7 +28,7 @@
 //! networks on another. The first takes its backends as a typed argument;
 //! the second is several layers down inside `cubecl` and takes them only
 //! from the environment. So [`Backend::export`] sets `WGPU_BACKEND` for this
-//! process, once, before anything has started a thread — which is both the
+//! process, once, before anything has started a thread - which is both the
 //! documented contract and exactly the workaround that was already known to
 //! work.
 
@@ -39,7 +39,7 @@ pub enum Backend {
     /// module exists on an unhealthy one.
     #[default]
     Auto,
-    /// Cross-platform, and the fastest on most hardware — when the driver
+    /// Cross-platform, and the fastest on most hardware - when the driver
     /// works.
     Vulkan,
     /// Windows only. Present and dependable wherever Windows 10 or later is.
@@ -68,7 +68,7 @@ impl Backend {
             .collect()
     }
 
-    /// False for backends this platform cannot have at all — DirectX on
+    /// False for backends this platform cannot have at all - DirectX on
     /// Linux, Metal anywhere but Apple. Offering them would only invite a
     /// choice that cannot work.
     pub fn available_here(self) -> bool {
@@ -160,7 +160,7 @@ impl Backend {
     }
 
     /// Publish the choice to `wgpu` through the environment, for the parts
-    /// of the program that can only be reached that way — `burn`'s compute
+    /// of the program that can only be reached that way - `burn`'s compute
     /// backend, several layers down inside `cubecl`.
     ///
     /// A value the user set themselves is never overwritten: it is the
@@ -170,7 +170,7 @@ impl Backend {
     ///
     /// Setting an environment variable is only sound while the process is
     /// single-threaded, which is why this must be called from the top of
-    /// `main` before anything has spawned a thread — including the `rayon`
+    /// `main` before anything has spawned a thread - including the `rayon`
     /// pool, which is built lazily on first use.
     pub fn export(self) {
         if std::env::var_os(ENV_VAR).is_some() {
@@ -189,7 +189,7 @@ pub const ENV_VAR: &str = "WGPU_BACKEND";
 /// The backend the environment asks for, if it asks for one.
 ///
 /// This is checked before the settings file so that a user who has been told
-/// to set the variable — or who has it in a launch script — keeps getting
+/// to set the variable - or who has it in a launch script - keeps getting
 /// what they asked for after an upgrade.
 pub fn from_env() -> Option<Backend> {
     let raw = std::env::var(ENV_VAR).ok()?;

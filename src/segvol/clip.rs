@@ -3,14 +3,14 @@
 //!
 //! This is the ViT-B/32 text encoder at `transformers`' default
 //! `CLIPTextConfig`: vocabulary 49,408, width 512, twelve pre-norm layers,
-//! eight heads, MLP 2,048, **QuickGELU** — not the exact GELU the image
-//! encoder uses — and a **causal** attention mask. It is frozen throughout
+//! eight heads, MLP 2,048, **QuickGELU** - not the exact GELU the image
+//! encoder uses - and a **causal** attention mask. It is frozen throughout
 //! SegVol's training and, crucially, ships *inside* the SegVol checkpoint, so
 //! no second download is needed for the weights; only the tokenizer's two
 //! data files are separate.
 //!
 //! Pooling takes the hidden state at the end-of-text token, which is found as
-//! `argmax(input_ids)` — a trick that works because `<|endoftext|>` is the
+//! `argmax(input_ids)` - a trick that works because `<|endoftext|>` is the
 //! highest id in the vocabulary. That vector goes through `dim_align`
 //! (512 -> 768) and becomes the text prompt the rest of the network sees.
 //!
@@ -186,7 +186,7 @@ mod tests {
     use crate::nn::cache::WTensor;
 
     /// A miniature text tower with the real key names but tiny tensors is not
-    /// possible — the dimensions are fixed by the checkpoint — so these tests
+    /// possible - the dimensions are fixed by the checkpoint - so these tests
     /// use the real shapes with cheap values. That is 63 M parameters, so
     /// only one encoder is built and it is shared.
     fn tiny_params() -> Params {

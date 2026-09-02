@@ -126,7 +126,7 @@ mod tests {
         let f = load_safetensors(Path::new("tests/data/medsam2-ops.safetensors")).unwrap();
         let want = f.get("pe_sine.y").expect("fixture");
         // `PositionEmbeddingSine(num_pos_feats=8)` emits eight channels in
-        // total — four for y and four for x — over a 3 x 4 grid.
+        // total - four for y and four for x - over a 3 x 4 grid.
         assert_eq!(want.shape, vec![1, 8, 3, 4]);
         let got = ops::to_vec(sine_pos_embed::<Bk>(3, 4, 8, &dev));
         assert_eq!(got.len(), want.data.len());

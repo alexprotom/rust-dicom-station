@@ -1,7 +1,7 @@
 //! Development probe: fetch a MedSAM2 checkpoint and check it against the
 //! layout the port is written for.
 //!
-//! Unlike its SegVol counterpart this one does not *discover* the layout —
+//! Unlike its SegVol counterpart this one does not *discover* the layout -
 //! [`layout::expected`] derives all 471 tensors from the architecture, and
 //! the probe's job is to prove that a real file agrees, key for key and shape
 //! for shape. Run it whenever the upstream repository changes: it parses only

@@ -3,11 +3,11 @@
 //! The viewer downloads and converts the official nnU-Net checkpoints itself
 //! on first use; doing it here just moves that wait into the installation, on
 //! a machine that is already online. The work is done by the viewer's own
-//! `autoseg::weights` code — the installer links the library without the GPU
+//! `autoseg::weights` code - the installer links the library without the GPU
 //! backend, so this only writes the model cache, it never runs inference.
 //! The files land where the viewer looks for them: the `totalsegmentator/`
 //! sub-folder of the model root (`rust_dicom_station::models`). Only these
-//! weights are ever pre-fetched — they are Apache-2.0; the SegVol and MedSAM2
+//! weights are ever pre-fetched - they are Apache-2.0; the SegVol and MedSAM2
 //! weights must be downloaded by the user at their own request.
 //!
 //! Building the installer with `--no-default-features` drops the dependency
@@ -95,7 +95,7 @@ mod imp {
                 span: 1.0 / specs.len() as f32,
             };
             // `ensure_model` downloads, converts and caches; the returned
-            // tensors are dropped right away — we only wanted the cache.
+            // tensors are dropped right away - we only wanted the cache.
             let _ = weights::ensure_model(spec, &dir, &sink)?;
         }
         Ok(())

@@ -5,7 +5,7 @@
 //! another patient (or another posture) by registration alone when the two
 //! datasets share no anatomy-to-anatomy correspondence for it. What travels
 //! instead is the *relationship*: the target's offset from the centroid of a
-//! reference structure both datasets can segment — typically the heart. The
+//! reference structure both datasets can segment - typically the heart. The
 //! target lands in the destination at the same offset from the destination's
 //! reference structure, keeping its shape; deformable adaptation, when
 //! wanted, is the propagation tool's job afterwards.
@@ -48,7 +48,7 @@ impl ViewerApp {
         self.transfer_dialog = Some(d);
     }
 
-    /// Carry the target across, synchronously — a translation and one
+    /// Carry the target across, synchronously - a translation and one
     /// nearest-neighbour resampling over the target's bounding box.
     fn transfer_now(&mut self) {
         let Some(d) = &self.transfer_dialog else {
@@ -91,7 +91,7 @@ impl ViewerApp {
         let delta = c_dst - c_src;
 
         // The destination lattice is the displayed volume of the other
-        // dataset — that is where a new segmentation is editable.
+        // dataset - that is where a new segmentation is editable.
         let Some(study) = self.slots[dst].study.as_ref() else {
             return;
         };

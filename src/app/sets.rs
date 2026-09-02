@@ -4,9 +4,9 @@
 //!
 //! The two kinds are deliberately symmetric. An RT structure set stores
 //! contours in patient coordinates; a segmentation series stores voxel masks
-//! on a lattice. A transfer between them is therefore a conversion —
+//! on a lattice. A transfer between them is therefore a conversion -
 //! [`segmentation::rasterize_roi`] one way, [`segmentation::mask_to_roi`] the
-//! other — and a transfer between two segmentation series on different
+//! other - and a transfer between two segmentation series on different
 //! lattices is a resampling. Doing it here, once, is what lets the context
 //! menus offer every series of both datasets as a destination without caring
 //! which kind the user picked.
@@ -127,7 +127,7 @@ impl ViewerApp {
 
     /// Re-point a series at another image series of the same dataset.
     ///
-    /// For contours this is bookkeeping — they are in patient coordinates
+    /// For contours this is bookkeeping - they are in patient coordinates
     /// either way. For a segmentation series it also decides which volume
     /// its masks are resampled onto, which is why the rebind follows.
     fn connect_set(&mut self, r: SetRef, uid: &str) {
@@ -211,7 +211,7 @@ impl ViewerApp {
         self.settings_gen += 1;
     }
 
-    /// Write a segmentation series — or just the chosen segments of it — as a
+    /// Write a segmentation series - or just the chosen segments of it - as a
     /// standalone DICOM SEG file.
     ///
     /// A subset is written as a series in its own right: same lattice, same

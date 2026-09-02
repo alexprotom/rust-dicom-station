@@ -117,8 +117,8 @@ impl ViewerApp {
     ///
     /// `scope_uids` names studies the selection covers beyond those the
     /// selected series announce. A study can be in the tree without a single
-    /// image series in it — a folder of RT images, a structure set on its
-    /// own — and then the series are silent about which study was picked.
+    /// image series in it - a folder of RT images, a structure set on its
+    /// own - and then the series are silent about which study was picked.
     pub(super) fn subset_masks(
         study: &LoadedStudy,
         sel: &[bool],
@@ -223,7 +223,7 @@ impl ViewerApp {
     /// series index to display; the volume is a placeholder (the source's
     /// current volume) that is correct exactly when `activate` is the
     /// source's active series. `None` builds a subset with no image series
-    /// at all — the RT objects of a study that has none.
+    /// at all - the RT objects of a study that has none.
     pub(super) fn build_subset(
         study: &LoadedStudy,
         masks: &SubsetMasks,
@@ -246,7 +246,7 @@ impl ViewerApp {
             })
             .unwrap_or(0);
         // Identity comes off the displayed series where there is one, and off
-        // the dataset otherwise — a study of RT objects alone still has a
+        // the dataset otherwise - a study of RT objects alone still has a
         // patient.
         let se = activate.and_then(|a| study.series.get(a));
         let meta = loader::PatientMeta {
@@ -360,7 +360,7 @@ impl ViewerApp {
         }
 
         if op != TreeOp::Remove {
-            // Choose the series the destination will display — there may be
+            // Choose the series the destination will display - there may be
             // none, when the selection is a study of RT objects alone.
             let active = study.active_series;
             let activate = if !any_series {
@@ -666,7 +666,7 @@ mod tree_tests {
         }
     }
 
-    /// Selecting one series must take exactly its reference chain — the bug
+    /// Selecting one series must take exactly its reference chain - the bug
     /// this guards against is "move series moved every series and RT object".
     #[test]
     fn series_selection_takes_only_linked_objects() {

@@ -1,11 +1,11 @@
-//! Automatic CT multi-organ segmentation — a pure-Rust re-implementation of
+//! Automatic CT multi-organ segmentation - a pure-Rust re-implementation of
 //! [TotalSegmentator](https://github.com/wasserth/TotalSegmentator) v2
 //! inference (Wasserthal et al., Radiology AI 2023, doi 10.1148/ryai.230024).
 //!
 //! The nnU-Net v2 models of the openly licensed (Apache-2.0) "total" task
 //! are downloaded from the official GitHub release on first use, converted
 //! natively (no Python) and cached. Inference runs either on the CPU
-//! (rayon + SIMD GEMM) or on any GPU through wgpu (Vulkan / DX12 / Metal —
+//! (rayon + SIMD GEMM) or on any GPU through wgpu (Vulkan / DX12 / Metal -
 //! no CUDA toolkit required) when the `gpu` feature is enabled.
 //!
 //! Pipeline (mirroring TotalSegmentator exactly): reorient to canonical
@@ -40,7 +40,7 @@ pub enum Variant {
     /// Five 1.5 mm sub-models (organs / vertebrae / cardiac / muscles /
     /// ribs), best quality. ~1.2 GB download.
     HighRes15mm,
-    /// Single 6 mm model (`--fastest`) — quick preview quality.
+    /// Single 6 mm model (`--fastest`) - quick preview quality.
     Preview6mm,
 }
 
@@ -157,7 +157,7 @@ impl infer::InferHooks for Hooks<'_> {
 /// resampled onto, tiled over or mapped back from.
 ///
 /// `label` names the run in progress messages, and `window` is the slice of
-/// the overall progress bar this run owns — `(0.0, 1.0)` for the whole of it.
+/// the overall progress bar this run owns - `(0.0, 1.0)` for the whole of it.
 /// [`Progress::set_phase`] is absolute rather than nested, so a caller that
 /// has its own work to do afterwards has to say so here; otherwise the bar
 /// reaches 100 % and then jumps backwards.
@@ -296,7 +296,7 @@ pub fn run_specs(
     Ok((labels, device_desc))
 }
 
-/// Run auto-segmentation on a CT volume. Blocking — call from a worker
+/// Run auto-segmentation on a CT volume. Blocking - call from a worker
 /// thread; observe/cancel through `progress`.
 ///
 /// `parts` selects sub-models for [`Variant::HighRes15mm`]

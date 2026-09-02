@@ -9,7 +9,7 @@
 //!
 //! # The axis convention, and why it looks wrong
 //!
-//! SAM is two-dimensional and takes points as `(x, y)` — column first — while
+//! SAM is two-dimensional and takes points as `(x, y)` - column first - while
 //! `image_size` is `(h, w)`. Its normalization is therefore
 //! `coords[0] /= image_size[1]; coords[1] /= image_size[0]`, which is correct
 //! for that ordering.
@@ -19,7 +19,7 @@
 //! `torch.nonzero`, so a point is `(axis0, axis1, axis2)` and a box is
 //! `(axis0_min, axis1_min, axis2_min, axis0_max, axis1_max, axis2_max)`.
 //! With `image_size = [32, 256, 256]` the result is that axis 0 (range 0..32)
-//! is divided by 256 and axis 1 (range 0..256) is divided by 32 — so the
+//! is divided by 256 and axis 1 (range 0..256) is divided by 32 - so the
 //! first coordinate lands in `[0, 0.125)` and the second in `[0, 8)`.
 //!
 //! The dense encoding, meanwhile, normalizes each axis by its own length and
@@ -66,7 +66,7 @@ pub type BBox = [f32; 6];
 pub struct Prompts {
     /// One row per sparse token, `[n, EMBED]`. May have zero rows.
     pub sparse: Mat,
-    /// `[EMBED, GRID]` — the no-mask embedding broadcast over the grid.
+    /// `[EMBED, GRID]` - the no-mask embedding broadcast over the grid.
     pub dense: Act,
 }
 
@@ -141,7 +141,7 @@ impl PromptEncoder {
     /// The dense positional encoding of the token grid, `[TOKENS, EMBED]`.
     ///
     /// Each axis is normalized by its own length, and the three channels are
-    /// stacked `(axis1, axis0, axis2)` — the order the reference's
+    /// stacked `(axis1, axis0, axis2)` - the order the reference's
     /// `torch.stack([x_embed, y_embed, z_embed])` produces.
     pub fn dense_pe(&self) -> Mat {
         let [g0, g1, g2] = GRID;
@@ -160,7 +160,7 @@ impl PromptEncoder {
         self.pe_encoding(&coords)
     }
 
-    /// Encode sparse coordinates the way `forward_with_coords` does —
+    /// Encode sparse coordinates the way `forward_with_coords` does -
     /// including the inherited axis-swapped normalization documented above.
     fn encode_coords(&self, coords: &[[f32; 3]]) -> Mat {
         let scaled: Vec<[f32; 3]> = coords
@@ -345,14 +345,14 @@ mod tests {
     #[test]
     fn sparse_normalization_reproduces_the_inherited_axis_swap() {
         // This is trap #1. A point at (a, b, c) must be encoded exactly as
-        // (a/ROI[1], b/ROI[0], c/ROI[2]) — axis 0 over 256, axis 1 over 32.
+        // (a/ROI[1], b/ROI[0], c/ROI[2]) - axis 0 over 256, axis 1 over 32.
         // The check is behavioural: two coordinates that the swapped rule
         // maps to the same normalized value must encode identically, and a
         // "corrected" rule would separate them.
         let enc = encoder();
         // (8, 0, 0) -> (8/256, 0, 0);  (0, 1, 0) -> (0, 1/32, 0) = (0, 0.03125, 0)
         // 8/256 = 0.03125 as well, so these two land on the same magnitude in
-        // different channels — only possible under the swapped divisors.
+        // different channels - only possible under the swapped divisors.
         let a = enc.encode_coords(&[[8.0, 0.0, 0.0]]);
         let b = enc.encode_coords(&[[0.0, 1.0, 0.0]]);
         assert!((8.0 / ROI[1] as f32 - 1.0 / ROI[0] as f32).abs() < 1e-9);

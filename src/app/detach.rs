@@ -1,7 +1,7 @@
 //! Every secondary window is a window of the operating system.
 //!
 //! The archive, the model manager, the DRR, the 3D scenes, the segmentation
-//! and motion tools, the export and anonymizer dialogs — each is drawn
+//! and motion tools, the export and anonymizer dialogs - each is drawn
 //! through [`tool_window`], which puts it in an *immediate viewport*: a real
 //! top-level window with its own title bar, task-bar entry and place on
 //! whichever monitor the user drags it to. Nothing floats inside the main
@@ -15,7 +15,7 @@
 //!   stored and sends a move / resize command for every field that differs.
 //!   Feeding the window's own position back into the builder every frame is
 //!   therefore a loop: the user drags, the next frame commands the window
-//!   back, and it shakes — sometimes long after the mouse is released. The
+//!   back, and it shakes - sometimes long after the mouse is released. The
 //!   geometry is remembered for the session and applied only on the pass
 //!   that opens the window; after that the window belongs to the user.
 //! * **Titles follow one pattern**, [`window_title`]: `Rust DICOM Station:`
@@ -77,7 +77,7 @@ impl WinOpts {
     }
 }
 
-/// One window's last geometry, so it reopens where it was left — on the
+/// One window's last geometry, so it reopens where it was left - on the
 /// monitor it was left on.
 #[derive(Clone, Copy, Default)]
 struct Geometry {
@@ -110,7 +110,7 @@ pub(super) fn window_title(name: &str) -> String {
 /// Show one tool window in its own window of the operating system and run
 /// `contents` inside it.
 ///
-/// `id` must be stable and unique — it keys the native window and its
+/// `id` must be stable and unique - it keys the native window and its
 /// remembered geometry. `open` is cleared when the user closes the window.
 pub(super) fn tool_window<R>(
     ctx: &egui::Context,
@@ -128,7 +128,7 @@ pub(super) fn tool_window<R>(
     // (an immediate viewport repaints with its parent), so a gap in the pass
     // numbers means this window was closed in between and is being created
     // again. The caller usually returns early while its window is shut, so
-    // this — not a flag cleared on closing — is what can tell the two apart.
+    // this - not a flag cleared on closing - is what can tell the two apart.
     let seen_key = egui::Id::new((SEEN, id));
     let pass = ctx.cumulative_pass_nr();
     let fresh = ctx
@@ -185,7 +185,7 @@ pub(super) fn tool_window<R>(
                 if info.close_requested() {
                     close = true;
                 }
-                // Where the user has put it — including which monitor, since
+                // Where the user has put it - including which monitor, since
                 // the position is in desktop coordinates. Read only: it is
                 // used the next time this window opens, never fed back into
                 // the builder of the window it came from.

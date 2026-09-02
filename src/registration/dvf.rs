@@ -3,7 +3,7 @@
 //!
 //! A transform is an equation; a vector field is a picture of it. Sampling
 //! it once into a lattice (rather than evaluating the transform per pixel on
-//! every repaint) is what makes the display affordable — a B-spline
+//! every repaint) is what makes the display affordable - a B-spline
 //! evaluation is 64 weighted lookups and a landmark warp is a sum over every
 //! landmark, neither of which belongs in a paint loop.
 //!
@@ -22,7 +22,7 @@ pub enum FieldStyle {
     #[default]
     /// Arrow per lattice node, from where the anatomy is to where it goes.
     Arrows,
-    /// The lattice itself, pushed through the deformation — the classic
+    /// The lattice itself, pushed through the deformation - the classic
     /// "warped graph paper" that shows compression and expansion at a
     /// glance, where arrows only show motion.
     Grid,
@@ -52,7 +52,7 @@ pub struct VectorField {
     pub axes: [Vec3; 3],
     /// Displacement at each node, patient mm, `[i + nx*(j + ny*k)]`.
     pub data: Vec<Vec3>,
-    /// Largest magnitude present — the natural scale for colours and arrows.
+    /// Largest magnitude present - the natural scale for colours and arrows.
     pub max_mag: f64,
     /// Name of the region the field was restricted to, if any.
     pub region: Option<String>,
@@ -202,7 +202,7 @@ pub struct Glyph {
     pub to: [f32; 2],
     /// Full 3-D magnitude, mm.
     pub magnitude: f32,
-    /// Component along the view normal, mm — signed.
+    /// Component along the view normal, mm - signed.
     pub out_of_plane: f32,
 }
 
@@ -210,7 +210,7 @@ pub struct Glyph {
 ///
 /// The lattice is re-walked in display-pixel space rather than reused from
 /// the field, so the arrow density is the same in every view whatever the
-/// slice thickness — three views of one field should look like three views
+/// slice thickness - three views of one field should look like three views
 /// of one field.
 pub fn glyphs_on_plane(
     field: &VectorField,

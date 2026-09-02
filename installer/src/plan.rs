@@ -45,9 +45,9 @@ pub const VCREDIST_URL: &str = "https://aka.ms/vs/17/release/vc_redist.x64.exe";
 /// Who the installation is for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Scope {
-    /// `%LOCALAPPDATA%\Programs\…` — no administrator rights needed.
+    /// `%LOCALAPPDATA%\Programs\…` - no administrator rights needed.
     CurrentUser,
-    /// `C:\Program Files\…` — needs elevation.
+    /// `C:\Program Files\…` - needs elevation.
     AllUsers,
 }
 
@@ -74,7 +74,7 @@ impl Scope {
 /// advertises a Vulkan driver which cannot create a device gives a program
 /// that dies on start, with no window to change a setting in. The viewer
 /// falls back on its own nowadays, but starting on the right backend is
-/// quicker and quieter than starting on the wrong one twice — and a site
+/// quicker and quieter than starting on the wrong one twice - and a site
 /// that already knows its machines can set it once here.
 ///
 /// The spellings must match `rust_dicom_station::gfx::Backend::key`.
@@ -84,7 +84,7 @@ pub enum Graphics {
     Auto,
     /// The default, and the fastest where the driver is sound.
     Vulkan,
-    /// Windows' own — the answer when Vulkan will not start.
+    /// Windows' own - the answer when Vulkan will not start.
     Dx12,
 }
 
@@ -143,13 +143,13 @@ impl Graphics {
 pub enum Models {
     /// Leave the cache empty; the viewer downloads on first use.
     None,
-    /// 6 mm preview model — ~135 MB.
+    /// 6 mm preview model - ~135 MB.
     Preview6mm,
-    /// 3 mm model, all 117 classes — ~135 MB.
+    /// 3 mm model, all 117 classes - ~135 MB.
     Fast3mm,
-    /// The five 1.5 mm sub-models — ~1.2 GB.
+    /// The five 1.5 mm sub-models - ~1.2 GB.
     HighRes15mm,
-    /// 3 mm plus the full 1.5 mm set — ~1.3 GB.
+    /// 3 mm plus the full 1.5 mm set - ~1.3 GB.
     Everything,
 }
 
@@ -178,7 +178,7 @@ impl Models {
 pub struct Options {
     pub scope: Scope,
     pub dir: PathBuf,
-    /// The model root — every engine's weights live in a sub-folder of it;
+    /// The model root - every engine's weights live in a sub-folder of it;
     /// see [`default_models_dir`].
     pub models_dir: PathBuf,
     pub models: Models,
@@ -280,7 +280,7 @@ pub fn viewer_settings_path() -> Option<PathBuf> {
     viewer_data_dir().map(|d| d.join(SETTINGS_FILE))
 }
 
-/// Where the model root goes — the folder all three engines download into
+/// Where the model root goes - the folder all three engines download into
 /// (`models/totalsegmentator`, `models/segvol`, `models/medsam2`).
 ///
 /// The viewer's default is `models/` in its per-user data folder, which is

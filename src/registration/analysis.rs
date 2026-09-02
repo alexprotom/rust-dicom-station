@@ -4,13 +4,13 @@
 //! A registration result is otherwise two numbers (a metric before and
 //! after) and a black box. Everything here is measured on the transform
 //! itself, on a regular lattice over the fixed image or over the region a
-//! local run was restricted to, so it applies to any method — the numbers
+//! local run was restricted to, so it applies to any method - the numbers
 //! for a landmark warp are computed exactly the same way as for a B-spline.
 //!
 //! * **Six degrees of freedom.** Even a deformable result has a best-fitting
 //!   rigid body, and it is usually the number a physicist wants first: how
 //!   far did the patient move, and how far did they turn? It is the
-//!   orthogonal Procrustes fit of the mapping over the sampled points —
+//!   orthogonal Procrustes fit of the mapping over the sampled points -
 //!   translation, three Euler angles in the same `Rz Ry Rx` convention as
 //!   [`RigidTransform`], and the RMS residual, which says how much of the
 //!   transform those six numbers do *not* explain (zero for a rigid result,
@@ -20,7 +20,7 @@
 //!   scattered local motion.
 //! * **Jacobian determinant.** `det(I + ∂d/∂x)` by central differences:
 //!   above 1 the tissue expanded, below 1 it compressed, and at or below
-//!   zero the deformation folded onto itself — which is not anatomy, it is
+//!   zero the deformation folded onto itself - which is not anatomy, it is
 //!   an artefact, and the folded fraction is the standard way to say so.
 
 use super::*;
@@ -29,7 +29,7 @@ use super::*;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct VectorStats {
     pub mean: f64,
-    /// 95th percentile — where the bulk of the motion ends.
+    /// 95th percentile - where the bulk of the motion ends.
     pub p95: f64,
     pub max: f64,
     pub rms: f64,
@@ -70,13 +70,13 @@ pub struct JacobianStats {
     pub min: f64,
     pub mean: f64,
     pub max: f64,
-    /// Fraction of sample points where the determinant is ≤ 0 — the
+    /// Fraction of sample points where the determinant is ≤ 0 - the
     /// deformation folded, which is never anatomy.
     pub folded: f64,
 }
 
 impl JacobianStats {
-    /// `det J 0.82 – 1.24 (mean 1.00), no folding`.
+    /// `det J 0.82 - 1.24 (mean 1.00), no folding`.
     pub fn line(&self) -> String {
         format!(
             "det J {:.2} - {:.2} (mean {:.2}), {}",
@@ -97,7 +97,7 @@ impl JacobianStats {
 pub struct Dof6 {
     /// Translation of the fit, mm.
     pub translation: Vec3,
-    /// Euler angles `[rx, ry, rz]` in degrees, `Rz Ry Rx` — the same
+    /// Euler angles `[rx, ry, rz]` in degrees, `Rz Ry Rx` - the same
     /// convention as [`RigidTransform`].
     pub rotation_deg: [f64; 3],
     /// RMS distance between the fit and the real mapping, mm: how much of
@@ -125,7 +125,7 @@ impl Dof6 {
 pub struct RegAnalysis {
     pub dof: Dof6,
     pub displacement: VectorStats,
-    /// Mean displacement vector (LPS), mm — a systematic shift shows here
+    /// Mean displacement vector (LPS), mm - a systematic shift shows here
     /// while the magnitude statistics cannot tell it from random motion.
     pub mean_vector: Vec3,
     pub jacobian: JacobianStats,
@@ -166,7 +166,7 @@ fn m3_inverse(a: &M3) -> Option<M3> {
     let mut r = [[0.0; 3]; 3];
     for (i, row) in r.iter_mut().enumerate() {
         for (j, v) in row.iter_mut().enumerate() {
-            // Cofactor of (j, i) — the adjugate is the transposed cofactor
+            // Cofactor of (j, i) - the adjugate is the transposed cofactor
             // matrix, which is what the inverse needs.
             let (r0, r1) = ((j + 1) % 3, (j + 2) % 3);
             let (c0, c1) = ((i + 1) % 3, (i + 2) % 3);
@@ -177,7 +177,7 @@ fn m3_inverse(a: &M3) -> Option<M3> {
 }
 
 /// Nearest rotation to `a`, by Higham's polar-decomposition iteration
-/// `R ← ½(R + R⁻ᵀ)` — quadratically convergent and free of any eigen
+/// `R ← ½(R + R⁻ᵀ)` - quadratically convergent and free of any eigen
 /// solver, which is why the whole analysis needs no linear-algebra
 /// dependency.
 fn nearest_rotation(a: &M3) -> M3 {
@@ -267,7 +267,7 @@ pub fn fit_rigid(from: &[Vec3], to: &[Vec3]) -> Dof6 {
     }
 }
 
-/// Displacement statistics of a transform over a set of points — what the
+/// Displacement statistics of a transform over a set of points - what the
 /// per-structure readout uses, with the structure's own contour points.
 pub fn stats_over_points(t: &Transform3, points: &[Vec3]) -> (VectorStats, Vec3) {
     let d: Vec<Vec3> = points.iter().map(|p| t.displacement(*p)).collect();

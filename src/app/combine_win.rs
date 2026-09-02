@@ -1,8 +1,8 @@
 //! The structure-algebra window: combining contours and segmentations.
 //!
 //! Its one job that the core module ([`crate::structops`]) cannot do is
-//! deciding *what the operands are*. Everything else — the four operations,
-//! the margins, the tidying — is arithmetic; picking "the GTV from the second
+//! deciding *what the operands are*. Everything else - the four operations,
+//! the margins, the tidying - is arithmetic; picking "the GTV from the second
 //! structure set of dataset A" out of a data tree, rasterizing it onto the
 //! displayed lattice, and putting the answer back as whichever kind the user
 //! wants is the part that has to know about the application.
@@ -64,7 +64,7 @@ pub(super) struct CombineDialog {
     pub cleanup: Cleanup,
     pub name: String,
     pub output: Output,
-    /// Interpreted type given to an RT structure result — PTV, ORGAN, …
+    /// Interpreted type given to an RT structure result - PTV, ORGAN, …
     pub roi_type: String,
     pub status: Option<String>,
 }
@@ -89,7 +89,7 @@ struct CombineRequest {
     roi_type: String,
 }
 
-/// The interpreted types offered for an RT structure result — the ones a
+/// The interpreted types offered for an RT structure result - the ones a
 /// planning system actually branches on.
 const ROI_TYPES: [&str; 7] = [
     "ORGAN",
@@ -103,7 +103,7 @@ const ROI_TYPES: [&str; 7] = [
 
 impl ViewerApp {
     /// Every structure and segment of `slot` that can be an operand, as
-    /// (reference, label) — the pick list, and what the summary line names.
+    /// (reference, label) - the pick list, and what the summary line names.
     pub(super) fn combine_candidates(&self, slot: usize) -> Vec<(ItemRef, String)> {
         let mut out = Vec::new();
         let Some(study) = self.slots[slot].study.as_ref() else {
@@ -554,7 +554,7 @@ impl ViewerApp {
                 });
 
                 ui.separator();
-                // The recipe, spelled out — the cheapest possible guard
+                // The recipe, spelled out - the cheapest possible guard
                 // against an operand list in the wrong order.
                 ui.label(egui::RichText::new(recipe_line(d, &labels)).italics());
                 ui.separator();
@@ -611,7 +611,7 @@ impl ViewerApp {
     }
 }
 
-/// `PTV ∪ Nodes − (Cord + 5 mm)` — the recipe as one line of text.
+/// `PTV ∪ Nodes − (Cord + 5 mm)` - the recipe as one line of text.
 fn recipe_line(d: &CombineDialog, labels: &[String]) -> String {
     if d.rows.is_empty() {
         return "Nothing selected yet.".to_string();

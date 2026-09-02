@@ -33,7 +33,7 @@ pub const SEG_PALETTE: &[[u8; 3]] = &[
 const UNDO_DEPTH: usize = 64;
 
 /// A meshing snapshot of a mask: `(padded bool grid, grid dims, bbox lo,
-/// stride)` — see [`Segmentation::mesh_grid`].
+/// stride)` - see [`Segmentation::mesh_grid`].
 pub type MeshGrid = (Vec<bool>, [usize; 3], [usize; 3], usize);
 
 /// A binary label mask over a study's volume.
@@ -42,8 +42,8 @@ pub struct Segmentation {
     pub name: String,
     pub color: [u8; 3],
     pub visible: bool,
-    /// One byte per voxel (0 or 1), index order `k * nx * ny + j * nx + i`
-    /// — identical to [`Volume::data`].
+    /// One byte per voxel (0 or 1), index order `k * nx * ny + j * nx + i` -
+    /// identical to [`Volume::data`].
     pub mask: Vec<u8>,
     pub dims: [usize; 3],
     /// Number of set voxels (kept incrementally).
@@ -51,7 +51,7 @@ pub struct Segmentation {
     /// Bumped on every edit → 2D overlays and 3D meshes rebuild.
     pub gen: u64,
     /// Extent of all voxels ever set (inclusive). May overestimate after
-    /// erasing — harmless, it only bounds later scans.
+    /// erasing - harmless, it only bounds later scans.
     pub bbox: Option<([usize; 3], [usize; 3])>,
     /// Undo stack: per stroke, the changed voxels with their prior values.
     undo: Vec<Vec<(u32, u8)>>,
@@ -75,7 +75,7 @@ impl Segmentation {
         }
     }
 
-    /// Adopt a ready-made mask — a DICOM SEG frame stack, a resampling onto
+    /// Adopt a ready-made mask - a DICOM SEG frame stack, a resampling onto
     /// another lattice, a propagated structure. The count and bounding box
     /// are recomputed in one pass; no undo history is carried, because the
     /// voxels it would refer to were never edited here.
@@ -135,7 +135,7 @@ impl Segmentation {
     }
 
     /// Build one segmentation per requested class of a multi-label voxel
-    /// map in a single pass over it — what an auto-segmentation run with a
+    /// map in a single pass over it - what an auto-segmentation run with a
     /// hundred structures needs, rather than a hundred passes.
     pub fn from_label_map_many(
         dims: [usize; 3],
@@ -196,7 +196,7 @@ impl Segmentation {
     }
 
     /// Paint (or erase) a capsule swept from `a` to `b` (fractional voxel
-    /// coords) with the given radius in mm — sweeping between the previous
+    /// coords) with the given radius in mm - sweeping between the previous
     /// and current pointer sample keeps fast strokes gap-free. With
     /// `plane2d` set, painting is confined to that single displayed slice
     /// (2D circle); otherwise the brush is a 3D sphere.
@@ -347,7 +347,7 @@ impl Segmentation {
     /// Snapshot the mask's bounding box (plus a one-cell empty margin so the
     /// surface closes) as a bool grid ready for surface-nets meshing.
     /// Very large masks are max-pooled with an integer stride to keep the
-    /// grid — and thus the rebuild latency — bounded for interactive use.
+    /// grid - and thus the rebuild latency - bounded for interactive use.
     /// Returns `(grid, grid_dims, bbox_lo, stride)`.
     pub fn mesh_grid(&self) -> Option<MeshGrid> {
         let (lo, hi) = self.bbox?;
@@ -369,7 +369,7 @@ impl Segmentation {
         ];
         let mut grid = vec![false; g[0] * g[1] * g[2]];
         let mask = &self.mask;
-        // Each grid layer max-pools its own voxel slab — layers are independent.
+        // Each grid layer max-pools its own voxel slab - layers are independent.
         grid.par_chunks_mut(g[0] * g[1])
             .enumerate()
             .for_each(|(gk, layer)| {
@@ -459,7 +459,7 @@ pub fn overlay_slice(
 // a Dijkstra front expands from the seed, and the cost of traversing a voxel
 // rises exponentially both with its intensity deviation from the seed
 // statistics and with the local gradient magnitude. Organ boundaries (edges,
-// fat planes, tissue transitions) therefore act as barriers — the organ
+// fat planes, tissue transitions) therefore act as barriers - the organ
 // under the seed fills long before the front leaks into neighboring tissue,
 // which a pure threshold grow cannot distinguish. The user's drag selects an
 // arrival-time (geodesic reach) threshold; inside homogeneous tissue the
@@ -496,7 +496,7 @@ pub struct GrowState {
     inv_sigma: f32,
     /// Current selection: the prefix of `accepted` below the drag threshold.
     pub voxels: Vec<u32>,
-    /// The voxel cap was hit — the region would grow further.
+    /// The voxel cap was hit - the region would grow further.
     pub capped: bool,
 }
 
@@ -733,8 +733,8 @@ pub fn fill_holes_slicewise(voxels: &mut Vec<u32>, dims: [usize; 3]) {
 /// deformation, measuring how far a structure moved.
 ///
 /// Contours are grouped by the slice they fall on and each slice is filled
-/// once with the even–odd rule over **all** of that slice's contours
-/// together — which is what makes a doughnut a doughnut rather than a disc,
+/// once with the even-odd rule over **all** of that slice's contours
+/// together - which is what makes a doughnut a doughnut rather than a disc,
 /// since RTSTRUCT expresses a hole as a second contour inside the first.
 /// Returns `None` when the ROI has no planar contour inside the volume.
 pub fn rasterize_roi(grid: &Grid, roi: &Roi) -> Option<Vec<u8>> {
@@ -778,7 +778,7 @@ pub fn rasterize_roi(grid: &Grid, roi: &Roi) -> Option<Vec<u8>> {
         let base = k * nx * ny;
         for j in j_start..=j_end {
             // Scanline through the *centre* of the row, so a voxel counts as
-            // inside when its centre is — the rule `mask_to_roi` reverses,
+            // inside when its centre is - the rule `mask_to_roi` reverses,
             // and the one every planning system uses.
             let y = j as f64;
             crossings.clear();
@@ -917,7 +917,7 @@ fn stitch_loops(segs: &[render::Segment]) -> Vec<Vec<[f32; 2]>> {
     out
 }
 
-/// Remove points that lie on the straight line between their neighbors —
+/// Remove points that lie on the straight line between their neighbors -
 /// marching squares on a binary mask produces long collinear runs.
 fn drop_collinear(pts: Vec<[f32; 2]>) -> Vec<[f32; 2]> {
     let n = pts.len();

@@ -1,7 +1,7 @@
 //! Prompt-driven segmentation: the SegVol engine's user interface.
 //!
 //! Where auto-segmentation runs to completion on its own, this one is a
-//! conversation — the user points at something and the network answers, and
+//! conversation - the user points at something and the network answers, and
 //! the answer lands as an ordinary [`Segmentation`], editable with the brush
 //! and convertible to RTSTRUCT like any other.
 //!
@@ -78,7 +78,7 @@ struct SegVolRequest {
     name: String,
 }
 
-/// Convert the crosshair — fractional voxel indices in the slot's volume —
+/// Convert the crosshair - fractional voxel indices in the slot's volume -
 /// into prompt coordinates on the prepared grid.
 ///
 /// Returns `None` when the crosshair falls outside the prepared volume's

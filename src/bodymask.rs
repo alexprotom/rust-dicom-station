@@ -1,4 +1,4 @@
-//! Automatic **BODY / External** contouring — the outer patient surface,
+//! Automatic **BODY / External** contouring - the outer patient surface,
 //! with the couch, the chair and the immobilisation left outside it.
 //!
 //! Every downstream calculation starts here. A dose engine needs to know
@@ -10,19 +10,19 @@
 //!
 //! Two methods, sharing everything after the first step:
 //!
-//! * [`Method::Classical`] — thresholding and morphology, deterministic,
+//! * [`Method::Classical`] - thresholding and morphology, deterministic,
 //!   instantaneous, nothing to download. Equipment is separated from anatomy
 //!   by two geometric facts and no semantics: a device shell is *thin*
 //!   (a couch top is two carbon skins around foam that is already below the
-//!   threshold; a thermoplastic mask is 2–3 mm), and it is *extruded* —
+//!   threshold; a thermoplastic mask is 2-3 mm), and it is *extruded* -
 //!   the same footprint repeats slice after slice, which no part of a
 //!   patient does. See [`morphology::axis_persistence`].
 //!
-//! * [`Method::ModelAssisted`] — TotalSegmentator's openly licensed
+//! * [`Method::ModelAssisted`] - TotalSegmentator's openly licensed
 //!   body-outline nnU-Net (Apache-2.0, the same engine as
 //!   [`crate::autoseg`]) decides *what* is patient; the threshold still
 //!   decides *where* the skin is. The network's own output is far too
-//!   coarse to be a skin surface — it is planned at 6 mm or 1.5 mm — so it
+//!   coarse to be a skin surface - it is planned at 6 mm or 1.5 mm - so it
 //!   is used dilated, as a mask on the thresholded image, never as the
 //!   answer. This is what removes a device in gap-free contact with the
 //!   skin, which no amount of geometry can.
@@ -34,7 +34,7 @@
 //!
 //! Known limitation, stated rather than hidden: where a shell touches the
 //! skin with no air gap at all, the classical method keeps the shell's
-//! thickness over the contact patch — 2–5 mm, over the patches only. It is
+//! thickness over the contact patch - 2-5 mm, over the patches only. It is
 //! not detectable by geometry, because locally it *is* a slightly thicker
 //! patient. The model-assisted method is the answer to that.
 
@@ -71,12 +71,12 @@ impl Method {
 /// Which body-outline network the model-assisted method runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BodyModel {
-    /// Dataset300, 6 mm — 124 MB, seconds even on a CPU. Plenty, because
+    /// Dataset300, 6 mm - 124 MB, seconds even on a CPU. Plenty, because
     /// the network only has to say *which side of the skin* a voxel is on.
     Ct6mm,
-    /// Dataset299, 1.5 mm — 233 MB, minutes on a CPU.
+    /// Dataset299, 1.5 mm - 233 MB, minutes on a CPU.
     Ct15mm,
-    /// Dataset597, the MR body model — 230 MB.
+    /// Dataset597, the MR body model - 230 MB.
     Mr,
 }
 
@@ -106,7 +106,7 @@ impl BodyModel {
     }
 }
 
-/// How the foreground — "anything at all, patient or not" — is found.
+/// How the foreground - "anything at all, patient or not" - is found.
 ///
 /// CT has an absolute scale, so a fixed HU threshold is exactly right. MR
 /// has none: the same tissue is a different number on the next sequence,
@@ -121,7 +121,7 @@ pub enum Foreground {
     /// Fraction of the bias-corrected 99th percentile, with the bias field
     /// estimated by a `sigma_mm` blur.
     MrRelative { fraction: f32, sigma_mm: f64 },
-    /// Otsu's threshold on the bias-corrected image — no constant to pick,
+    /// Otsu's threshold on the bias-corrected image - no constant to pick,
     /// but it splits bright from dark rather than tissue from air, so it
     /// runs high on fat-suppressed series.
     MrOtsu { sigma_mm: f64 },
@@ -156,12 +156,12 @@ pub struct BodyParams {
     /// thin-anatomy step to judge.
     pub open_mm: f64,
     /// A shell whose largest inscribed ball is smaller than this is a
-    /// candidate for equipment — so shells up to about twice it.
+    /// candidate for equipment - so shells up to about twice it.
     ///
     /// Deliberately far smaller than [`Self::open_mm`], and not a knob to
     /// turn up. A couch skin is one or two millimetres of carbon and a
     /// thermoplastic mask two or three; the thinnest tissue anyone would
-    /// miss — the chest wall over a lung — is five or six. At 2 mm the two
+    /// miss - the chest wall over a lung - is five or six. At 2 mm the two
     /// are cleanly separated. At 3 mm a six-millimetre chest wall is
     /// itself a candidate, and since it repeats slice after slice it is
     /// then indistinguishable from a couch: the whole ribcage goes.
@@ -175,13 +175,13 @@ pub struct BodyParams {
     pub persist_window_mm: f64,
     /// And in what fraction of that window's slices.
     pub persist_frac: f64,
-    /// Components smaller than this are noise, a cable or a pillow — not a
+    /// Components smaller than this are noise, a cable or a pillow - not a
     /// patient. Kept as a *volume* so two legs both survive.
     pub min_volume_cm3: f64,
     /// Give back the thin pieces the opening removed.
     pub recover_thin: bool,
     /// How big a piece standing clear of the body's own surface may be and
-    /// still count as anatomy — an ear, a nose, a fingertip. A pad, a
+    /// still count as anatomy - an ear, a nose, a fingertip. A pad, a
     /// blanket or a bolus is larger, and stays out.
     pub thin_max_extent_mm: f64,
     /// How far the network's coarse answer is grown before it is used as a
@@ -223,7 +223,7 @@ impl Default for BodyParams {
 }
 
 impl BodyParams {
-    /// The defaults that suit a series of this modality — the CT thresholds
+    /// The defaults that suit a series of this modality - the CT thresholds
     /// are meaningless on MR and vice versa, so the tool window re-seeds
     /// itself whenever the displayed series changes.
     pub fn for_modality(modality: &str) -> BodyParams {
@@ -235,7 +235,7 @@ impl BodyParams {
     }
 }
 
-/// One piece of the finished contour — two legs are two pieces — with its
+/// One piece of the finished contour - two legs are two pieces - with its
 /// own size, so the status line can say how big each one is.
 #[derive(Clone, Debug)]
 pub struct Piece {
@@ -250,10 +250,10 @@ pub struct BodyResult {
     pub mask: Vec<u8>,
     pub voxels: u64,
     pub cm3: f64,
-    /// The separate bodies kept — two legs are two pieces, and saying so is
+    /// The separate bodies kept - two legs are two pieces, and saying so is
     /// more use than silently keeping the larger one.
     pub pieces: Vec<Piece>,
-    /// Voxels above the threshold that were judged not to be patient — the
+    /// Voxels above the threshold that were judged not to be patient - the
     /// equipment the extrusion test caught, plus every component too small
     /// or too detached to be a body.
     pub removed_voxels: u64,
@@ -271,7 +271,7 @@ pub struct BodyResult {
 }
 
 /// The mask is 35 MB of ones and zeros on a normal CT, so it is named
-/// rather than printed — everything else is what one wants to see when a
+/// rather than printed - everything else is what one wants to see when a
 /// test or a batch run reports a surprise.
 impl std::fmt::Debug for BodyResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -304,7 +304,7 @@ pub fn download_needed(model: BodyModel, models_dir: &Path) -> u64 {
 // The pipeline
 // ---------------------------------------------------------------------------
 
-/// Contour the patient. Blocking — call from a worker thread and watch it
+/// Contour the patient. Blocking - call from a worker thread and watch it
 /// through `progress`.
 pub fn contour_body(
     volume: &Volume,
@@ -362,14 +362,14 @@ pub fn contour_body(
         bail!(CANCELLED);
     }
 
-    // Everything above the threshold, before the network has had its say —
+    // Everything above the threshold, before the network has had its say -
     // the yardstick the "how much was left out" figure is measured against.
     // Measuring against the guided foreground instead would report almost
     // nothing removed in precisely the mode that removes the most.
     let above_threshold: Vec<u8> = fg.clone();
 
-    // The network's answer is coarse by construction — it is planned at
-    // 6 mm or 1.5 mm — so it is grown by a margin and used as a *mask* on
+    // The network's answer is coarse by construction - it is planned at
+    // 6 mm or 1.5 mm - so it is grown by a margin and used as a *mask* on
     // the thresholded image. What survives has the network's semantics and
     // the image's resolution.
     if let Some(g) = &guide {
@@ -434,7 +434,7 @@ pub fn contour_body(
     // Everything below reasons about the *body*, and a threshold does not
     // see one: it sees a shell of tissue wrapped round two lungs. Left that
     // way, the chest wall over a lung is a five-millimetre sheet that
-    // repeats slice after slice — which is to say, indistinguishable from a
+    // repeats slice after slice - which is to say, indistinguishable from a
     // couch skin, and duly deleted. Filling the interior first is what
     // makes the wall part of a solid object again. It happens after the
     // equipment step, so that a couch top with a closed profile is not
@@ -488,7 +488,7 @@ pub fn contour_body(
         // Two questions, because there are two kinds of thing here.
         //
         // What the opening shaved off the body's *own* surface lies, by
-        // construction, within one opening radius of what is left — a skin
+        // construction, within one opening radius of what is left - a skin
         // rim, the edge of a shoulder, the sharp flank of a cross-section.
         // It can run the whole length of the scan and still be nothing but
         // patient, so its size says nothing and is not asked.
@@ -614,13 +614,13 @@ pub fn foreground(volume: &Volume, how: Foreground) -> Vec<u8> {
 /// The estimate is a **normalized convolution**: the image blurred far
 /// beyond any anatomy (40 mm by default), but weighted so that only voxels
 /// plausibly inside *something* contribute, and divided by the same blur of
-/// the weights. A plain blur would not do — near the skin, and anywhere the
+/// the weights. A plain blur would not do - near the skin, and anywhere the
 /// body is thin, it is dominated by the surrounding air and reports a bias
 /// that is really just "how much background is nearby", which flattens the
 /// anatomy instead of the shading. Weighting fixes exactly that, for the
 /// cost of one more pass.
 ///
-/// It is a poor man's N4 — no iteration, no histogram model — which is all a
+/// It is a poor man's N4 - no iteration, no histogram model - which is all a
 /// *body outline* needs, because the boundary it is looking for is the
 /// largest step in the image. The output is rescaled to the mean signal
 /// inside the object, so the numbers stay readable and a threshold given as
@@ -636,7 +636,7 @@ pub fn flatten_bias(volume: &Volume, sigma_mm: f64) -> Vec<f32> {
     if sigma_mm <= 0.0 {
         return raw;
     }
-    // "Plausibly inside something" — deliberately generous, since this only
+    // "Plausibly inside something" - deliberately generous, since this only
     // has to keep the estimate off the air, not find the body.
     let floor = 0.05 * high_percentile(&raw, 0.99);
     let weight: Vec<f32> = raw.par_iter().map(|&v| f32::from(v >= floor)).collect();
@@ -671,7 +671,7 @@ pub fn flatten_bias(volume: &Volume, sigma_mm: f64) -> Vec<f32> {
         .collect()
 }
 
-/// The value below which `q` of the (positive) samples fall — a robust
+/// The value below which `q` of the (positive) samples fall - a robust
 /// stand-in for the maximum, immune to a single hot voxel.
 fn high_percentile(v: &[f32], q: f64) -> f32 {
     let mut pos: Vec<f32> = v.par_iter().copied().filter(|x| *x > 0.0).collect();
@@ -733,7 +733,7 @@ fn otsu(v: &[f32]) -> f32 {
 
 /// TotalSegmentator's own post-processing of the body task, then the union.
 ///
-/// The network answers in two classes — trunk and extremities — and the
+/// The network answers in two classes - trunk and extremities - and the
 /// reference implementation cleans each differently: the trunk is one
 /// object, so only its largest blob is kept, while extremities are several
 /// and are merely filtered for size (50 000 mm³, the same constant
@@ -801,7 +801,7 @@ mod tests {
         // The case that matters on MR, and the one a fixed threshold cannot
         // survive: an exponential coil falloff steep enough that background
         // *near* the coil is brighter than body *far* from it. No single
-        // threshold on the raw image can separate them — that is asserted
+        // threshold on the raw image can separate them - that is asserted
         // below, not assumed.
         let dims = [256, 64, 8];
         let mut data = vec![0i16; dims[0] * dims[1] * dims[2]];

@@ -2,17 +2,17 @@
 //!
 //! The published weights live in the Hugging Face repository
 //! [`BAAI/SegVol`](https://huggingface.co/BAAI/SegVol) as a single
-//! `pytorch_model.bin` — a plain `state_dict()` saved with `torch.save`, so
+//! `pytorch_model.bin` - a plain `state_dict()` saved with `torch.save`, so
 //! [`crate::nn::pickle`] reads it directly with an empty top-level key. The
 //! download, the conversion to the `safetensors` cache and the cache itself
 //! are the shared machinery in [`crate::nn::cache`]; what stays here is what
-//! is SegVol's alone — which files, which tensors, and under what names.
+//! is SegVol's alone - which files, which tensors, and under what names.
 //!
 //! ## Licensing
 //!
 //! The SegVol *code* is MIT (Copyright (c) 2023 BAAI-DCAI). The *weights*
-//! carry **no license declaration at all** — the model repository has no
-//! license tag and no LICENSE file — and the training corpus (M3D-Seg)
+//! carry **no license declaration at all** - the model repository has no
+//! license tag and no LICENSE file - and the training corpus (M3D-Seg)
 //! aggregates 25 datasets whose own terms differ, several of them
 //! non-commercial. This is deliberately unlike the auto-segmentation module,
 //! whose TotalSegmentator weights are Apache-2.0.
@@ -117,7 +117,7 @@ pub fn load(models_dir: &Path, sink: &dyn ProgressSink) -> Result<Params> {
 /// Open the checkpoint's state dict. The archive root *is* the state dict,
 /// so the top-level key is empty.
 ///
-/// Only `data.pkl` is read here — the tensor metadata — so this is fast even
+/// Only `data.pkl` is read here - the tensor metadata - so this is fast even
 /// though the file is 724 MB; storage blobs are read on demand.
 pub fn open_checkpoint(path: &Path) -> Result<PthReader> {
     PthReader::open(path, "").with_context(|| format!("read SegVol checkpoint {}", path.display()))

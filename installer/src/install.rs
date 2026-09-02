@@ -155,7 +155,7 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
 
     // ---- settings seed ----------------------------------------------------
     // Two things the viewer must be told before its first run: which graphics
-    // backend to start on, and — when it is not the default — where the model
+    // backend to start on, and - when it is not the default - where the model
     // folder is. They are written twice, on purpose, because neither place
     // alone is enough.
     //
@@ -167,8 +167,8 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
     //
     // The settings file of whoever is running the installer is then updated
     // as well, because it wins over the defaults and would otherwise keep an
-    // older answer. Someone re-running the installer to change the backend —
-    // which is exactly why the page exists — must actually get the change.
+    // older answer. Someone re-running the installer to change the backend -
+    // which is exactly why the page exists - must actually get the change.
     let mut wanted: Vec<(&str, String)> =
         vec![(SETTINGS_GRAPHICS_KEY, opts.graphics.key().to_string())];
     if opts.models_dir != default_models_dir(opts.scope, &opts.dir) {
@@ -377,7 +377,7 @@ fn write_file_association(opts: &Options, hive: registry::Hive) -> Result<()> {
     }
 
     // "Open with Rust DICOM Station" on a folder, and on the empty space inside
-    // one — the viewer takes a directory as its argument.
+    // one - the viewer takes a directory as its argument.
     for base in [
         format!(r"{classes}\Directory\shell\{PRODUCT_ID}"),
         format!(r"{classes}\Directory\Background\shell\{PRODUCT_ID}"),
@@ -404,7 +404,7 @@ fn payload_version(payload: &Payload) -> String {
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
 }
 
-/// Writability probe — cheaper and more honest than inspecting ACLs.
+/// Writability probe - cheaper and more honest than inspecting ACLs.
 fn check_writable(dir: &Path) -> Result<()> {
     let probe = dir.join(".rds-write-test");
     match std::fs::write(&probe, b"x") {
@@ -433,7 +433,7 @@ fn is_running(exe: &Path) -> bool {
 /// line exactly as it was.
 ///
 /// The file belongs to the user and may hold keys this installer has never
-/// heard of — written by a newer viewer, or by hand. Rewriting it wholesale
+/// heard of - written by a newer viewer, or by hand. Rewriting it wholesale
 /// would throw those away, so an existing line is replaced in place and a
 /// missing one is appended. Comments and blank lines are untouched.
 fn merge_setting(text: &str, key: &str, value: &str) -> String {

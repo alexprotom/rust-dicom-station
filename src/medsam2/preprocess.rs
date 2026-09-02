@@ -5,7 +5,7 @@
 //!
 //! 1. clip the volume to a **HU window**;
 //! 2. min-max the *whole clipped volume* to `[0, 255]` and **quantize to
-//!    `u8`** — this is not a formality, the network never saw anything finer;
+//!    `u8`** - this is not a formality, the network never saw anything finer;
 //! 3. resize each slice to 512 x 512 with `PIL.Image.resize`, whose default is
 //!    a bicubic kernel with `a = -0.5` (see [`super::resample`]);
 //! 4. divide by 255 and normalize with the ImageNet statistics.
@@ -17,8 +17,8 @@
 //!
 //! The window is the one thing this port sources differently. The reference
 //! reads a per-lesion window out of a CSV; RDS has one on screen already, so
-//! [`Window`] takes the viewport's window/level — what you see is what the
-//! model sees — with the paper's presets available by name.
+//! [`Window`] takes the viewport's window/level - what you see is what the
+//! model sees - with the paper's presets available by name.
 //!
 //! ## Geometry
 //!
@@ -109,7 +109,7 @@ fn reorient_index(
 /// The same, for a volume that has not been prepared yet.
 ///
 /// The user interface needs this to turn a box drawn on screen into slice and
-/// pixel numbers *before* paying for [`Prepared::prepare`] — and it agrees
+/// pixel numbers *before* paying for [`Prepared::prepare`] - and it agrees
 /// with [`Prepared::from_volume_index`] by construction, since both are
 /// [`reorient_index`].
 pub fn volume_index_to_prepared(vol: &Volume, voxel: [usize; 3]) -> [usize; 3] {
@@ -182,8 +182,8 @@ impl Prepared {
         }
     }
 
-    /// Read one oriented slice out of a mask that lives on the volume's grid
-    /// — the inverse of [`Self::mask_to_volume_grid`], for one slice.
+    /// Read one oriented slice out of a mask that lives on the volume's grid -
+    /// the inverse of [`Self::mask_to_volume_grid`], for one slice.
     ///
     /// This is what turns "the contour I already drew" into a mask prompt.
     pub fn slice_from_volume_mask(&self, mask: &[u8], vol: &Volume, slice: usize) -> Vec<u8> {

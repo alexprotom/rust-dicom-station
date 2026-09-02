@@ -322,7 +322,7 @@ impl ViewState {
     }
 }
 
-/// Which of the three view slots shows a plane — the order `fresh_views`
+/// Which of the three view slots shows a plane - the order `fresh_views`
 /// builds them in.
 fn plane_index(plane: ViewPlane) -> usize {
     match plane {
@@ -379,7 +379,7 @@ impl StudySlot {
 
     /// Whether this slot shows an image volume.
     ///
-    /// A slot can hold a perfectly good dataset with none — RT images, a
+    /// A slot can hold a perfectly good dataset with none - RT images, a
     /// structure set, a plan. Every feature that needs voxels (the MPR views,
     /// the brush, registration, the segmentation engines, the DRR) asks this
     /// rather than `study.is_some()`.
@@ -394,7 +394,7 @@ impl StudySlot {
         (!st.seg_series.is_empty()).then(|| self.active_seg_series.min(st.seg_series.len() - 1))
     }
 
-    /// Segments of the active segmentation series — empty unless they live
+    /// Segments of the active segmentation series - empty unless they live
     /// on the displayed volume's lattice, because every overlay, brush
     /// stroke and mesh indexes them with that volume's dimensions. A series
     /// drawn on another image series simply has nothing to show here.
@@ -548,7 +548,7 @@ struct D3Window {
     /// Hash of the segmentation state `seg_meshes` was built from.
     seg_built: u64,
     /// Also draw the *other* dataset's structures, mapped through the active
-    /// registration — the two anatomies in one scene is what makes a
+    /// registration - the two anatomies in one scene is what makes a
     /// deformable result readable at all.
     show_other: bool,
     /// Opacity of that second dataset, independent of this one's.
@@ -632,8 +632,8 @@ struct TreeAction {
 
 /// Which of a dataset's two kinds of segmented series an action addresses.
 ///
-/// The data tree treats them alike — both are series drawn on an image
-/// series, both hold named, coloured items — even though one stores contours
+/// The data tree treats them alike - both are series drawn on an image
+/// series, both hold named, coloured items - even though one stores contours
 /// and the other voxel masks. Conversions between the two happen on
 /// transfer (`ViewerApp::apply_item_action`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -668,7 +668,7 @@ struct SetRef {
     slot: usize,
     kind: SetKind,
     /// Index into that dataset's list, or [`SetRef::NEW`] for a series that
-    /// does not exist yet — what the *New …* transfer destinations mean.
+    /// does not exist yet - what the *New …* transfer destinations mean.
     idx: usize,
 }
 
@@ -740,7 +740,7 @@ enum ItemAction {
         from: SetRef,
         items: Vec<usize>,
     },
-    /// Plot these items' dose–volume histograms.
+    /// Plot these items' dose-volume histograms.
     Dvh {
         from: SetRef,
         items: Vec<usize>,
@@ -996,7 +996,7 @@ pub struct ViewerApp {
     // Tools ▶ PACS: the patient archive window.
     /// The window, when open.
     pacs: Option<PacsWindow>,
-    /// The archive job in flight — a scan, an import, an upload or a removal.
+    /// The archive job in flight - a scan, an import, an upload or a removal.
     pacs_job: Option<Job<anyhow::Result<PacsOutcome>>>,
 
     // Tools ▶ Downloaded models: the inventory window.
@@ -1019,14 +1019,14 @@ pub struct ViewerApp {
     /// Finished result awaiting organ selection.
     autoseg_pending: Option<AutosegPending>,
 
-    // Body / External contouring (see `bodymask`) — the one tool that can
+    // Body / External contouring (see `bodymask`) - the one tool that can
     // answer with no network at all.
     body_job: Option<SegJob<bodymask::BodyResult>>,
     body_slot: usize,
     /// The tool window, when open; it stays open across runs.
     body_dialog: Option<body_win::BodyDialog>,
 
-    // Dose–volume histograms (see `dvh`), in a window of their own.
+    // Dose-volume histograms (see `dvh`), in a window of their own.
     dvh_open: bool,
     dvh_dialog: Option<dvh_win::DvhDialog>,
     dvh_job: Option<Job<anyhow::Result<dvh_win::DvhDone>>>,
@@ -1103,7 +1103,7 @@ pub struct ViewerApp {
     theme: egui::ThemePreference,
     /// Which graphics backend the *next* run will use. Read at startup by
     /// `main`, before the window exists, so changing it here only takes
-    /// effect after a restart — which the menu says out loud.
+    /// effect after a restart - which the menu says out loud.
     graphics_backend: crate::gfx::Backend,
     /// What the graphics library actually started with, which is not always
     /// what was asked for: `Settings > Graphics backend` reports this one.
@@ -1383,7 +1383,7 @@ impl ViewerApp {
 
     /// Put the crosshair of `slot` back at its volume center and follow it
     /// with that slot's three slices. The other dataset is left alone even
-    /// when crosshair linking is on — a reset is per-dataset, and "Reset all
+    /// when crosshair linking is on - a reset is per-dataset, and "Reset all
     /// views" recenters both anyway.
     pub(super) fn center_cursor(&mut self, slot: usize) {
         let Some(study) = &self.slots[slot].study else {
@@ -1468,13 +1468,22 @@ impl ViewerApp {
 
     /// Pick one or more DICOM files.
     ///
-    /// "All files" comes first because DICOM files very often have no
-    /// extension at all; the `.dcm` filter is the convenience, not the rule.
+    /// **No name filter at all**, deliberately. A DICOM file is one whose
+    /// header parses, which is a question only [`crate::loader`] can answer
+    /// and the file name never can: real archives are full of `IM_0001`,
+    /// `I0000001`, `0001.DCM`, `image.ima` and `1.2.840...` in every mixture
+    /// of upper and lower case, and plenty with no extension whatsoever.
+    ///
+    /// An extension filter here can only ever hide such a file from the
+    /// person trying to open it, and it also decides what the platform
+    /// dialog does with the name afterwards - the file-type list is what
+    /// carries the "default extension" a dialog may append to what comes
+    /// back. Neither is worth a convenience nobody asked for: the dialog
+    /// lists everything, and the loader says what was and was not DICOM,
+    /// which it has to do anyway for the files that did parse.
     pub(super) fn pick_files(title: &str) -> Option<Vec<PathBuf>> {
         rfd::FileDialog::new()
             .set_title(title)
-            .add_filter("All files", &["*"])
-            .add_filter("DICOM", &["dcm", "DCM", "ima", "IMA", "dic", "img"])
             .pick_files()
             .filter(|v| !v.is_empty())
     }
@@ -1616,7 +1625,7 @@ impl eframe::App for ViewerApp {
             self.set_cursor(fixed_slot, cursor, usize::MAX);
         }
 
-        // Poll an archive job — a scan, an import, an upload or a removal.
+        // Poll an archive job - a scan, an import, an upload or a removal.
         match poll_job(&mut self.pacs_job, &ctx, "Archive", &mut self.error) {
             Some(Ok(outcome)) => self.on_pacs_done(outcome),
             Some(Err(e)) => self.error = Some(format!("Archive: {e:#}")),

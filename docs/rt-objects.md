@@ -3,7 +3,7 @@
 Alongside the image series the viewer parses the RT objects below and
 resolves the DICOM reference chains between them.
 
-## RTSTRUCT — structure sets
+## RTSTRUCT - structure sets
 
 Parsed per file: ROI names, display colors, interpreted types (PTV, CTV, GTV,
 ORGAN, EXTERNAL, …) and all planar contours in patient coordinates. ROIs are
@@ -11,15 +11,15 @@ ordered EXTERNAL → PTV → CTV → GTV → alphabetical, and a fallback 12-col
 palette fills in for structure sets without stored colors.
 
 Axial views draw the **native closed contours**; sagittal and coronal views
-show the **reconstructed cross-section silhouette** of each ROI (even–odd
+show the **reconstructed cross-section silhouette** of each ROI (even-odd
 crossing pairing of the contour stack). Per-ROI visibility toggles live in the
 sidebar, with All/None shortcuts. **Every** structure set in the folder is
 loaded (e.g. one per 4DCT phase) and selectable; the set referencing the
 active image series (RTReferencedSeriesSequence) is chosen automatically and
-follows series switches. Structure sets also feed the 3D surface view — see
+follows series switches. Structure sets also feed the 3D surface view - see
 [segmentation.md](segmentation.md).
 
-## SEG — DICOM Segmentation objects
+## SEG - DICOM Segmentation objects
 
 A Segmentation instance is a multi-frame image of binary masks, one frame per
 (segment, slice) pair, placed in patient space by the per-frame functional
@@ -44,11 +44,11 @@ Writing is the reverse: only the slices a segment occupies become frames, so a
 ten-slice structure on a 200-slice CT costs ten frames. See
 [export-and-tools.md](export-and-tools.md#dicom-export).
 
-## RTDOSE — dose grids
+## RTDOSE - dose grids
 
 16- and 32-bit dose grids with `DoseGridScaling` applied at load,
 `GridFrameOffsetVector` handled in full generality (uniform or not, ascending
-or descending — descending grids are re-ordered) and the frame offsets
+or descending - descending grids are re-ordered) and the frame offsets
 re-based onto ImagePositionPatient. Multiple dose files (plan and/or per-beam)
 are listed and selectable.
 
@@ -65,7 +65,7 @@ The **reference dose** defaults to the plan's `TargetPrescriptionDose` and can
 be overridden; the status bar shows Gy and % of reference at the crosshair for
 both datasets.
 
-## RTPLAN — photon and ion plans
+## RTPLAN - photon and ion plans
 
 Photon (`BeamSequence`) and ion/proton (`IonBeamSequence`) plans are
 summarized: label, date, prescription and fractionation, and a per-beam table
@@ -73,7 +73,7 @@ with radiation type, delivery type, scan mode (for scanned ion beams),
 gantry/couch angles, energy range, meterset and control-point count. Beam
 isocenters are marked in all three views (toggleable).
 
-## REG — spatial registration objects
+## REG - spatial registration objects
 
 Rigid Spatial Registration files are parsed into their 4×4 frame-of-reference
 matrices, shown with the decomposed translation/rotation and
@@ -85,8 +85,8 @@ validated (orthonormality, no reflection/scale) before being accepted.
 
 **Deformable Spatial Registration** objects are read the same way, grid
 included: the displacement lattice becomes a transform applicable in either
-direction, and everything downstream — fusion, the crosshair link, the
-analytics, the vector-field display, structure propagation — works on it
+direction, and everything downstream - fusion, the crosshair link, the
+analytics, the vector-field display, structure propagation - works on it
 unchanged. The panel reports the lattice size, spacing and largest
 displacement, and which loaded dataset the grid's frame of reference matches.
 
@@ -95,7 +95,7 @@ Registration (*Image registration ▶ Vector field ▶ 💾 Save as DICOM…*); 
 IOD's pre- and post-deformation matrices are written as the identity and the
 grid carries the whole mapping. See [registration.md](registration.md).
 
-## RTRECORD — treatment records
+## RTRECORD - treatment records
 
 RT (Ion) Beams Treatment Records are summarized per session: fraction number,
 date, machine, and a per-beam table of specified vs delivered meterset with

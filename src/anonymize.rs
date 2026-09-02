@@ -11,7 +11,7 @@
 //!   PatientID). The proposals are shown in the UI and can be edited.
 //! * [`apply`] rewrites the files with the (possibly edited) replacements,
 //!   optionally removing private (odd-group) elements and remapping every
-//!   non-standard UID — consistently across all files, so the DICOM
+//!   non-standard UID - consistently across all files, so the DICOM
 //!   reference chains (RTSTRUCT ▶ series, RTDOSE ▶ RTPLAN ▶ RTSTRUCT,
 //!   ReferencedSOPInstanceUID lists, frames of reference) stay intact.
 //!   Pixel data is copied through untouched.
@@ -58,7 +58,7 @@ struct Rule {
     vr: VR,
     suggest: Suggest,
     /// Rows for these tags start unchecked (descriptions are not PHI per se,
-    /// but often contain it — the user opts in).
+    /// but often contain it - the user opts in).
     default_on: bool,
 }
 
@@ -410,7 +410,7 @@ pub struct ApplyParams {
     pub out_dir: Option<PathBuf>,
 }
 
-/// Fresh UID under the 2.25 (UUID-derived) root — deterministic within one
+/// Fresh UID under the 2.25 (UUID-derived) root - deterministic within one
 /// run (salted hash of the original), collision-checked against the map.
 fn new_uid(old: &str, salt: u64, taken: &HashSet<String>) -> String {
     let mut n = 0u64;
@@ -542,7 +542,7 @@ pub fn apply(
     }
 
     let done = AtomicUsize::new(0);
-    // One file in, one file out — parallel over files, like the scan pass.
+    // One file in, one file out - parallel over files, like the scan pass.
     let results: Vec<Result<()>> = files
         .par_iter()
         .map(|path| -> Result<()> {

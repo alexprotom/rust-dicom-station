@@ -1,7 +1,7 @@
 //! Auto-segmentation integration tests.
 //!
 //! The fast tests exercise the network assembly and the full sliding-window
-//! machinery with a small synthetic network — no model download needed.
+//! machinery with a small synthetic network - no model download needed.
 //! The `#[ignore]`d test runs the real 3 mm TotalSegmentator model against
 //! bundled example data; enable it locally with
 //!

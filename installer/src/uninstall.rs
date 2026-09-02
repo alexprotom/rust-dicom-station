@@ -67,7 +67,7 @@ pub fn relaunch_from_temp(target: &Target, extra_args: &[&str]) -> Result<std::p
         .with_context(|| format!("start {}", tmp.display()))
 }
 
-/// Remove the installation. `remove_models` also deletes the model root —
+/// Remove the installation. `remove_models` also deletes the model root -
 /// every engine's downloads, not only what the installer fetched.
 pub fn run(target: &Target, remove_models: bool, sink: Sink) -> Result<()> {
     let log = |s: String| sink(Event::Log(s));
@@ -230,7 +230,7 @@ fn remove_with_retry(path: &Path) -> std::io::Result<()> {
     last
 }
 
-/// Delete the now-empty folders the installer itself created around a path —
+/// Delete the now-empty folders the installer itself created around a path -
 /// never anything the user might have named.
 fn prune_empty_parents(start: &Path) {
     let mut parent = start.parent();

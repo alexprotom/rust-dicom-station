@@ -1,10 +1,10 @@
-//! *Tools ▶ 📊 Dose–volume histograms*: the plot, the table and the
+//! *Tools ▶ 📊 Dose-volume histograms*: the plot, the table and the
 //! constraint check, in a window that can be put on its own monitor.
 //!
 //! The window is deliberately a *review* tool rather than a dialog. It stays
 //! open, recomputes when the picks change, and shows three things at once
 //! because that is how a plan is actually read: the curves for shape, the
-//! table for the numbers a report quotes, and — when a protocol is loaded —
+//! table for the numbers a report quotes, and - when a protocol is loaded -
 //! the pass/fail column that says whether the plan is acceptable.
 //!
 //! Two design points worth stating, because both are easy to get wrong in a
@@ -18,7 +18,7 @@
 //!
 //! * **A structure sticking out of the dose grid is called out.** Those
 //!   voxels are counted at zero dose, which drags the curve down and is the
-//!   honest reading — but silently, it looks like a cold structure rather
+//!   honest reading - but silently, it looks like a cold structure rather
 //!   than a truncated calculation, so the window says so in the table and
 //!   in a warning line.
 //!
@@ -154,7 +154,7 @@ impl ViewerApp {
         out
     }
 
-    /// The prescription of the first plan that declares one — what the
+    /// The prescription of the first plan that declares one - what the
     /// percentage dose axis is measured against until the user says
     /// otherwise.
     fn prescription(&self) -> Option<(f64, String)> {

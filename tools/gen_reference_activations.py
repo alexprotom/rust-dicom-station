@@ -8,8 +8,8 @@ module the port implements, and writes both the weights and the activations
 as safetensors. The Rust side then loads the same weights and must reproduce
 the same numbers.
 
-Random weights are as strong a test as trained ones — stronger, if anything,
-since a mistake cannot hide behind a plausible-looking mask — and they make
+Random weights are as strong a test as trained ones - stronger, if anything,
+since a mistake cannot hide behind a plausible-looking mask - and they make
 the whole check reproducible from a seed.
 
 The output is large (the weights alone are 156 MB) and is **not** committed;
@@ -118,7 +118,7 @@ def main(stem):
         put("prompt_dense_none", dense)
         put("prompt_dense_pe", model.sam_prompt_encoder.get_dense_pe())
 
-        # no prompt at all — what a propagated slice sends
+        # no prompt at all - what a propagated slice sends
         empty_coords = torch.zeros(1, 1, 2)
         empty_labels = -torch.ones(1, 1, dtype=torch.int32)
         sparse_empty, _ = model.sam_prompt_encoder(
@@ -185,7 +185,7 @@ def main(stem):
         # ---- the mask decoder on its own ---------------------------------
         # `_forward_sam_heads` replaces every logit with NO_OBJ_SCORE when the
         # object-score head is negative, which with random weights it usually
-        # is — so the decoder's own output is dumped too, or the whole
+        # is - so the decoder's own output is dumped too, or the whole
         # transformer would go unchecked.
         raw_low, raw_ious, raw_tokens, raw_obj = model.sam_mask_decoder(
             image_embeddings=pix_feat,
@@ -258,7 +258,7 @@ def main(stem):
                 num_obj_ptr_tokens=n_ptr,
             ),
         )
-        # one memory frame, no pointers — the first propagated slice
+        # one memory frame, no pointers - the first propagated slice
         memory1 = torch.randn(tokens, 1, 64, generator=g) * 0.3
         memory1_pos = torch.randn(tokens, 1, 64, generator=g) * 0.3
         put("memattn1.memory", memory1)
@@ -317,7 +317,7 @@ def main(stem):
 # ---------------------------------------------------------------------------
 # Propagation: the reference tracker over a stack of slices.
 #
-# This is what phase P4 is validated against — the memory bank, the temporal
+# This is what phase P4 is validated against - the memory bank, the temporal
 # encodings, the object pointers and the forward/reverse passes, end to end.
 # ---------------------------------------------------------------------------
 

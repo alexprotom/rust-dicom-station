@@ -16,7 +16,7 @@
 //!
 //! One thing that is *not* a choice: hole filling. MedSAM2 enables
 //! `fill_hole_area = 8`, but its implementation is a CUDA extension and falls
-//! back to a no-op on CPU — so the reference itself does not fill holes
+//! back to a no-op on CPU - so the reference itself does not fill holes
 //! unless it is running on a GPU, and neither does this.
 
 use anyhow::{bail, Result};
@@ -71,7 +71,7 @@ pub trait Slices<B: Backend> {
     /// normalized.
     fn slice(&self, index: usize) -> Tensor<B, 4>;
 
-    /// In-plane size the masks are wanted at — the slice's own size, so the
+    /// In-plane size the masks are wanted at - the slice's own size, so the
     /// result lands on the study's grid rather than the network's.
     fn out_size(&self) -> [usize; 2];
 }
@@ -96,7 +96,7 @@ impl Segmentation {
     }
 }
 
-/// Run one prompt through the stack, the prompted slice already encoded —
+/// Run one prompt through the stack, the prompted slice already encoded -
 /// which is what makes re-running an adjusted prompt on the same slice cheap.
 pub fn propagate_from<B: Backend>(
     model: &Medsam2<B>,
@@ -209,7 +209,7 @@ pub fn propagate_from<B: Backend>(
 ///
 /// This is the interactive half of the Slicer-style workflow: draw a box, look
 /// at what the network makes of it on that one slice, adjust, and only then
-/// pay for the propagation. No memory is involved, so it costs one encode —
+/// pay for the propagation. No memory is involved, so it costs one encode -
 /// and none at all when the caller already has the slice's features.
 pub fn preview<B: Backend>(
     model: &Medsam2<B>,

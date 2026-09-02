@@ -11,7 +11,7 @@
 //! ```
 //!
 //! `--out` writes a raw `u8` mask on the original volume's grid, one byte
-//! per voxel in `Volume::data` order — the same convention as the other
+//! per voxel in `Volume::data` order - the same convention as the other
 //! example tools, so the masks can be compared byte for byte.
 //!
 //! Batch use, which is what this is for: run it over a folder of upright

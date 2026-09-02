@@ -1,11 +1,11 @@
-//! The body-contour tool window — the fourth of the segmentation tools, and
+//! The body-contour tool window - the fourth of the segmentation tools, and
 //! the only one that can answer without a network.
 //!
 //! It shares its bones with the other three ([`super::seg_engines`]): a
 //! description, the tool's own inputs, an `Options` section, a licence line
 //! and a button row that becomes a progress row while a run is in flight.
 //! What it does differently is that its *method* choice changes what the
-//! rest of the window means — the classical method has no device, no model
+//! rest of the window means - the classical method has no device, no model
 //! and nothing to download, so those rows appear only when they matter.
 //!
 //! The window re-seeds its thresholds from the displayed series' modality
@@ -23,7 +23,7 @@ pub(super) struct BodyDialog {
     pub slot: usize,
     pub params: BodyParams,
     /// The modality the parameters were seeded from, so a series switch can
-    /// re-seed them — and only then.
+    /// re-seed them - and only then.
     pub seeded_for: String,
     /// One-line summary of the last finished run.
     pub status: Option<String>,
@@ -102,7 +102,7 @@ impl ViewerApp {
     }
 
     /// A run finished: verify the slot still shows the same volume, land the
-    /// mask, and — when asked — file it as an RTSTRUCT `EXTERNAL` too.
+    /// mask, and - when asked - file it as an RTSTRUCT `EXTERNAL` too.
     pub(super) fn on_body_done(&mut self, slot: usize, result: BodyResult) {
         if !self.slot_still_shows(slot, result.volume_dims, &result.frame_of_reference_uid) {
             self.error = Some(stale_result(&BODY_CONTOUR));
@@ -478,7 +478,7 @@ impl ViewerApp {
 const DEFAULT_MR_FRACTION: f32 = 0.12;
 const DEFAULT_BIAS_SIGMA_MM: f64 = 40.0;
 
-/// The threshold row — a different question on CT and on MR, so a different
+/// The threshold row - a different question on CT and on MR, so a different
 /// row rather than one control that means two things.
 fn foreground_row(ui: &mut egui::Ui, fg: &mut Foreground) {
     match fg {

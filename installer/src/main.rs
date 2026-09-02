@@ -1,4 +1,4 @@
-//! `rds-setup` — the Windows installer for rust-dicom-station.
+//! `rds-setup` - the Windows installer for rust-dicom-station.
 //!
 //! Run without arguments it shows a small wizard; `--silent` and `--console`
 //! drive the same code from a terminal, and `--uninstall` (the form recorded

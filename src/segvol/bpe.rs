@@ -2,7 +2,7 @@
 //!
 //! Text prompts have to become the same token ids the text tower was trained
 //! on, which means reproducing OpenAI's tokenizer exactly rather than
-//! approximating it. It is a small, well-specified algorithm — the two data
+//! approximating it. It is a small, well-specified algorithm - the two data
 //! files it needs (`vocab.json` and `merges.txt`) are fetched alongside the
 //! weights, the same way the auto-segmentation module fetches `plans.json`
 //! beside its checkpoint.
@@ -12,7 +12,7 @@
 //! * text is byte-level. Each pre-token's UTF-8 bytes are mapped into a
 //!   printable-character alphabet before any merging, so non-ASCII input can
 //!   never fail to tokenize;
-//! * the pre-tokenizer splits **each digit separately** — `\p{N}` matches one
+//! * the pre-tokenizer splits **each digit separately** - `\p{N}` matches one
 //!   character, so "2024" becomes four tokens, not one;
 //! * the last symbol of every word carries a `</w>` suffix, which is what
 //!   distinguishes a word-final fragment from a word-internal one.
@@ -106,7 +106,7 @@ fn pre_tokenize(text: &str) -> Vec<String> {
             }
             out.push(chars[start..i].iter().collect());
         } else if c.is_numeric() {
-            // one digit at a time — the regex class is not repeated
+            // one digit at a time - the regex class is not repeated
             out.push(c.to_string());
             i += 1;
         } else {

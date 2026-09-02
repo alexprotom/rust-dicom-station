@@ -1,4 +1,4 @@
-//! Digitally reconstructed radiographs — two independent forward projectors.
+//! Digitally reconstructed radiographs - two independent forward projectors.
 //!
 //! A DRR is a line integral of attenuation from a point source through the
 //! CT to a flat detector: the simulated radiograph a treatment beam would
@@ -7,14 +7,14 @@
 //! the two implemented here come from different lineages and disagree in
 //! interesting ways:
 //!
-//! * [`Engine::Siddon`] — **plastimatch**'s exact ray tracer (`drr -i
+//! * [`Engine::Siddon`] - **plastimatch**'s exact ray tracer (`drr -i
 //!   exact`), after Siddon (Med. Phys. 1985) with Jacobs' incremental
 //!   formulation. The ray is intersected with the three families of voxel
 //!   planes and each voxel contributes exactly the length of ray inside it.
 //!   No interpolation, no sampling step: the integral is *exact* for a
 //!   piecewise-constant volume, and it is the reference the other one is
 //!   checked against.
-//! * [`Engine::RayCast`] — the **ITK / elastix-stack**
+//! * [`Engine::RayCast`] - the **ITK / elastix-stack**
 //!   `RayCastInterpolateImageFunction` used by `itkImageToImageMetric`-based
 //!   2-D/3-D registration: march the ray at a fixed step and accumulate
 //!   trilinearly interpolated values. The volume is treated as a smooth
@@ -27,9 +27,9 @@
 //!
 //! ## Geometry
 //!
-//! [`Geometry`] is a cone-beam geometry in IEC 61217 terms — source-to-axis
+//! [`Geometry`] is a cone-beam geometry in IEC 61217 terms - source-to-axis
 //! and source-to-imager distances, gantry and couch angles about an
-//! isocentre — because that is how a linac states it and how an RTPLAN beam
+//! isocentre - because that is how a linac states it and how an RTPLAN beam
 //! stores it ([`Geometry::from_beam`]). The IEC fixed frame is mapped to the
 //! DICOM patient frame for a head-first supine patient: `Xf` (patient left)
 //! = `+x`, `Yf` (gantry rotation axis, towards the head) = `+z`, `Zf`
@@ -93,7 +93,7 @@ impl Engine {
 /// How voxel values become attenuation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum HuMode {
-    /// `μ = μ_water · (1 + HU/1000)`, clamped at zero — plastimatch's
+    /// `μ = μ_water · (1 + HU/1000)`, clamped at zero - plastimatch's
     /// `preprocess` conversion. Physically meaningful: the integral is an
     /// optical depth and the image is a real radiograph.
     #[default]
@@ -114,7 +114,7 @@ impl HuMode {
     }
 }
 
-/// Linear attenuation coefficient of water at ~60 keV, mm⁻¹ — the effective
+/// Linear attenuation coefficient of water at ~60 keV, mm⁻¹ - the effective
 /// energy plastimatch's DRR preprocessing assumes.
 pub const MU_WATER: f64 = 0.0206;
 
@@ -174,7 +174,7 @@ impl Geometry {
         }
     }
 
-    /// The isocentre of the volume's own centre — a sane default when there
+    /// The isocentre of the volume's own centre - a sane default when there
     /// is no plan to take one from.
     pub fn centered_on(vol: &Volume) -> Geometry {
         let d = vol.dims;
@@ -237,7 +237,7 @@ impl Geometry {
         ]
     }
 
-    /// Pixel spacing projected back to the isocentre plane — what a
+    /// Pixel spacing projected back to the isocentre plane - what a
     /// millimetre on the DRR is worth on the patient.
     pub fn pixel_mm_at_isocenter(&self) -> [f64; 2] {
         let m = self.sad / self.sid.max(1e-6);
@@ -254,7 +254,7 @@ pub struct DrrParams {
     pub hu: HuMode,
     /// Ray-cast step, mm (ignored by the exact tracer).
     pub step_mm: f64,
-    /// Voxels below this value contribute nothing — the standard way to keep
+    /// Voxels below this value contribute nothing - the standard way to keep
     /// couch and air out of a DRR.
     pub threshold_hu: f32,
 }
@@ -293,7 +293,7 @@ impl DrrImage {
         self.pixels.iter().sum::<f32>() / self.pixels.len() as f32
     }
 
-    /// `512 × 512 · 0.78 mm/px · range 0.00 – 24.31`.
+    /// `512 × 512 · 0.78 mm/px · range 0.00 - 24.31`.
     pub fn describe(&self) -> String {
         format!(
             "{} × {} · {:.2} mm/px · range {:.2} - {:.2} · {:.2} s",
@@ -302,7 +302,7 @@ impl DrrImage {
     }
 
     /// File this rendering as a planar image, so it can live in the data tree
-    /// beside the DX / CR / RTIMAGE the study came with — a DRR *is* an RT
+    /// beside the DX / CR / RTIMAGE the study came with - a DRR *is* an RT
     /// Image, and once it is one it inherits everything the tree already
     /// does: its own viewer window, renaming, and travelling with the study
     /// when it is copied or moved.
@@ -379,7 +379,7 @@ impl DrrImage {
     }
 }
 
-/// How two renderings of the same geometry differ — the reason for having
+/// How two renderings of the same geometry differ - the reason for having
 /// two implementations at all.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DrrComparison {
@@ -706,7 +706,7 @@ mod tests {
     }
 
     /// The planar image a DRR becomes must describe the same picture: same
-    /// raster, same physical size, same value range — and the greyscale the
+    /// raster, same physical size, same value range - and the greyscale the
     /// window was showing.
     #[test]
     fn a_rendering_becomes_a_planar_image() {

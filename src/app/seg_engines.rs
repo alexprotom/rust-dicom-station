@@ -3,7 +3,7 @@
 //! Auto-segmentation (TotalSegmentator), prompt segmentation (SegVol) and
 //! slice propagation (MedSAM2) are different conversations with the user,
 //! but they are the same *kind* of tool: a window per dataset with the same
-//! bones — a one-line description, the tool's own inputs, an `Options`
+//! bones - a one-line description, the tool's own inputs, an `Options`
 //! section holding the compute device and the model folder, one line about
 //! the weights' licence, and a button row that turns into a progress row
 //! while the network runs. This module holds those bones, so the three
@@ -27,7 +27,7 @@ pub(super) struct ToolInfo {
     pub verb: &'static str,
 }
 
-/// Every glyph in this file — and in the rest of the interface — has to be
+/// Every glyph in this file - and in the rest of the interface - has to be
 /// one egui's bundled fonts actually carry, or it comes out as an empty box
 /// on the user's screen. The microscope stands for the tool that examines
 /// the whole scan by itself; a robot would have read better and does not
@@ -72,14 +72,14 @@ pub(super) const MOTION: ToolInfo = ToolInfo {
 };
 
 impl ToolInfo {
-    /// `🔬 Auto-segmentation — dataset A`, the window title.
+    /// `🔬 Auto-segmentation - dataset A`, the window title.
     pub fn title(&self, slot: usize) -> String {
         format!(
             "{} {} - dataset {}",
             self.glyph, self.name, SLOT_NAMES[slot]
         )
     }
-    /// `🔬 Auto-segmentation results — dataset A`, a companion window.
+    /// `🔬 Auto-segmentation results - dataset A`, a companion window.
     pub fn titled(&self, what: &str, slot: usize) -> String {
         format!(
             "{} {} {what} - dataset {}",
@@ -147,7 +147,7 @@ impl ViewerApp {
         self.add_colored_segmentation(slot, name, color, dims, mask)
     }
 
-    /// [`Self::add_segmentation`] keeping a colour the caller already has —
+    /// [`Self::add_segmentation`] keeping a colour the caller already has -
     /// a propagated structure should arrive in the colour it left in, not in
     /// the next one off the palette.
     pub(super) fn add_colored_segmentation(
@@ -169,7 +169,7 @@ impl ViewerApp {
         s.active_seg
     }
 
-    /// The tool that is running on `slot`, with its progress — for the
+    /// The tool that is running on `slot`, with its progress - for the
     /// sidebar, which shows one line whichever engine it is.
     pub(super) fn running_tool(&self, slot: usize) -> Option<(&ToolInfo, &Arc<Progress>)> {
         if let Some(job) = self
@@ -231,7 +231,7 @@ pub(super) fn device_row(ui: &mut egui::Ui, pref: &mut DevicePref) {
     });
 }
 
-/// `Model folder: [ ... ] 📁` — the root every engine downloads into.
+/// `Model folder: [ ... ] 📁` - the root every engine downloads into.
 /// Returns true when the browse button was clicked.
 pub(super) fn models_root_row(ui: &mut egui::Ui, models_dir: &mut String) -> bool {
     let mut browse = false;
@@ -264,7 +264,7 @@ pub(super) fn models_dir_row(ui: &mut egui::Ui, models_dir: &mut String, engine:
     browse
 }
 
-/// The tool window each engine belongs to — the glyph and name the model
+/// The tool window each engine belongs to - the glyph and name the model
 /// manager labels its rows with.
 pub(super) fn tool_of(engine: Engine) -> &'static ToolInfo {
     match engine {

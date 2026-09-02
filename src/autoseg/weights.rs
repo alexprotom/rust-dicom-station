@@ -5,11 +5,11 @@
 //! weights), extracts the nnU-Net `plans.json` + `checkpoint_final.pth`,
 //! parses the PyTorch checkpoint natively, and caches the result as
 //! `model.safetensors` + `plans.json` in the model directory. Subsequent
-//! runs load the cache directly — no network access.
+//! runs load the cache directly - no network access.
 //!
 //! Downloading, checkpoint parsing and the cache format are generic and live
 //! in [`crate::nn`]; what stays here is the part that is specific to
-//! TotalSegmentator — which models exist, where they are published, and how
+//! TotalSegmentator - which models exist, where they are published, and how
 //! to get `plans.json` and `checkpoint_final.pth` out of the release zip.
 
 use anyhow::{bail, Context, Result};
@@ -55,7 +55,7 @@ pub const SPEC_6MM: ModelSpec = ModelSpec {
 /// The body-outline task's models. Same nnU-Net architecture, same open
 /// Apache-2.0 licence, a different question: two classes, trunk and
 /// extremities, whose union is the patient. They are what the body-contour
-/// tool's model-assisted method uses to tell patient from equipment — see
+/// tool's model-assisted method uses to tell patient from equipment - see
 /// [`crate::bodymask`].
 pub const SPEC_BODY_15MM: ModelSpec = ModelSpec {
     key: "body_1_5mm",

@@ -1,7 +1,7 @@
 //! Thin, hand-rolled wrappers over the Win32 APIs the installer needs.
 //!
 //! Everything here is a direct call into the operating system through the
-//! `windows` crate — no third-party installer framework, in keeping with the
+//! `windows` crate - no third-party installer framework, in keeping with the
 //! project's one-language rule.
 
 pub mod registry;
@@ -47,7 +47,7 @@ fn known_folder(id: &GUID) -> Result<PathBuf> {
     }
 }
 
-/// `%LOCALAPPDATA%` — resolved through the shell, so folder redirection and
+/// `%LOCALAPPDATA%` - resolved through the shell, so folder redirection and
 /// roaming profiles are honoured.
 pub fn local_app_data() -> Result<PathBuf> {
     known_folder(&FOLDERID_LocalAppData)
@@ -58,7 +58,7 @@ pub fn program_files() -> Result<PathBuf> {
     known_folder(&FOLDERID_ProgramFiles)
 }
 
-/// The user's Desktop — the real one, which may live under OneDrive.
+/// The user's Desktop - the real one, which may live under OneDrive.
 pub fn desktop_dir() -> Result<PathBuf> {
     known_folder(&FOLDERID_Desktop)
 }
@@ -165,8 +165,8 @@ pub fn delete_on_reboot(path: &Path) {
 
 /// Give this GUI-subsystem process a console: attach to the parent one when
 /// started from a shell, otherwise allocate a fresh window. Standard handles
-/// are then rebound to `CONOUT$`/`CONIN$` so `println!` and `read_line` work
-/// — but only the ones the process does not already have, so redirection
+/// are then rebound to `CONOUT$`/`CONIN$` so `println!` and `read_line` work -
+/// but only the ones the process does not already have, so redirection
 /// (`rds-setup --silent > log.txt`) keeps working.
 pub fn attach_console() {
     unsafe {
@@ -199,7 +199,7 @@ unsafe fn bind_std_handle(which: STD_HANDLE, device: &str) {
     }
 }
 
-/// A plain message box — the only way to report a fatal error when the
+/// A plain message box - the only way to report a fatal error when the
 /// installer runs windowed and the wizard never came up.
 pub fn message_box(title: &str, text: &str) {
     let t = HSTRING::from(title);

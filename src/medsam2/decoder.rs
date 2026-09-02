@@ -1,7 +1,7 @@
 //! The mask decoder: a two-way transformer, then a hypernetwork.
 //!
-//! Six output tokens are prepended to the prompt tokens — one object-score
-//! token, one IoU token and four mask tokens — and run through two blocks
+//! Six output tokens are prepended to the prompt tokens - one object-score
+//! token, one IoU token and four mask tokens - and run through two blocks
 //! that attend tokens to image, image to tokens, and tokens to themselves.
 //! The image side is then upscaled twice, fused with the encoder's two
 //! high-resolution feature maps, and dotted with per-token filters produced

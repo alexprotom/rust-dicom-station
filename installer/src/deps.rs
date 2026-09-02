@@ -3,7 +3,7 @@
 //! The viewer is a single static-ish Rust binary: it needs the Microsoft
 //! Visual C++ runtime (`vcruntime140.dll`, which Rust's MSVC target links
 //! against) and a Direct3D 12 or Vulkan capable driver, which Windows always
-//! provides in some form — even the software WARP adapter works.
+//! provides in some form - even the software WARP adapter works.
 //!
 //! Only the first of those is installable, and only when it is missing; on
 //! Windows 10/11 it usually is not.

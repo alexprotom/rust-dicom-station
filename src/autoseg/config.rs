@@ -4,12 +4,12 @@
 //! Only the `3d_fullres` configuration is used (that is what all
 //! TotalSegmentator CT models train). Array-valued fields are stored in the
 //! nnU-Net array-axis order, i.e. the order of the model tensor's spatial
-//! axes after the canonical reorientation ([S, A, R] — see `preprocess`).
+//! axes after the canonical reorientation ([S, A, R] - see `preprocess`).
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
-/// How the model wants its input scaled — nnU-Net's `normalization_schemes`.
+/// How the model wants its input scaled - nnU-Net's `normalization_schemes`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Norm {
     /// `CTNormalization`: clip to the training set's [p0.5, p99.5] window,
@@ -19,7 +19,7 @@ pub enum Norm {
     Ct,
     /// `ZScoreNormalization`: subtract *this image's* mean and divide by
     /// *this image's* standard deviation. MR has no absolute scale, so the
-    /// MR models use it — and it is why an MR run fills its normalization
+    /// MR models use it - and it is why an MR run fills its normalization
     /// constants in only after resampling ([`ModelConfig::apply_image_norm`]).
     ZScore,
 }

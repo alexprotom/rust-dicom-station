@@ -2,7 +2,7 @@
 //!
 //! Once two datasets are aligned, the alignment is only half the answer: the
 //! contours drawn on one of them have to arrive on the other. That is what
-//! this module does — an RTSTRUCT ROI or a painted segmentation of one
+//! this module does - an RTSTRUCT ROI or a painted segmentation of one
 //! dataset becomes an editable voxel mask on the other, mapped through
 //! whatever [`crate::registration`] recovered, rigid or deformable, global
 //! or local.
@@ -19,7 +19,7 @@
 //!
 //! ## The mapping cache
 //!
-//! The inverse of a deformable transform is a fixed-point iteration —
+//! The inverse of a deformable transform is a fixed-point iteration -
 //! twelve evaluations of a B-spline lattice per point. Asked once per voxel
 //! of a 512³ study that is billions of operations for a mapping that is
 //! smooth to well under a millimetre over any few voxels. So the mapping is
@@ -55,7 +55,7 @@ pub struct Propagated {
     pub voxels: usize,
     /// Volume of the source structure, cm³.
     pub source_cm3: f64,
-    /// Volume of the propagated structure, cm³ — the two differ by exactly
+    /// Volume of the propagated structure, cm³ - the two differ by exactly
     /// what the deformation compressed or expanded, which is the first thing
     /// worth checking about a propagated contour.
     pub result_cm3: f64,
@@ -495,7 +495,7 @@ mod tests {
 
     #[test]
     fn structures_cross_between_grids_of_different_spacing() {
-        // The destination has its own geometry — a propagated contour has to
+        // The destination has its own geometry - a propagated contour has to
         // land on *its* voxels, not on a copy of the source lattice.
         let src = vol([40, 40, 40], 2.0, Vec3::new(-40.0, -40.0, -40.0));
         let dst = vol([27, 27, 27], 3.0, Vec3::new(-39.0, -39.0, -39.0));

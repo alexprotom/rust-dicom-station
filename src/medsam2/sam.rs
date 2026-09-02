@@ -1,8 +1,8 @@
-//! The SAM head as the tracker calls it — `SAM2Base._forward_sam_heads`.
+//! The SAM head as the tracker calls it - `SAM2Base._forward_sam_heads`.
 //!
 //! This is where the prompt encoder, the mask decoder and three of the
 //! model's root-level parameters meet: a prompt goes in, and what comes out
-//! is the pair a tracked slice needs — a mask, and a 256-dimensional
+//! is the pair a tracked slice needs - a mask, and a 256-dimensional
 //! **object pointer** summarizing what was segmented, which later slices
 //! attend to.
 //!
@@ -104,7 +104,7 @@ impl<B: Backend> SamHead<B> {
     ///
     /// `pix_feat` is the neck's level-2 map `[1, 256, 32, 32]`; `high_res` are
     /// the two projected high-resolution features. `points` are in pixels of
-    /// the 512 x 512 input — empty means a tracked slice, which sends a single
+    /// the 512 x 512 input - empty means a tracked slice, which sends a single
     /// padding point.
     pub fn forward(
         &self,
@@ -143,7 +143,7 @@ impl<B: Backend> SamHead<B> {
         let high_res_multimasks = ops::resize_bilinear(low_res_multimasks.clone(), [size, size]);
 
         // Which candidate wins, and which token the pointer comes from. The
-        // *predicted IoUs of every candidate* are reported as they are — the
+        // *predicted IoUs of every candidate* are reported as they are - the
         // reference returns the whole vector, and the tracker uses it.
         let (low_res_masks, high_res_masks, token_index) = if multimask {
             let best = decoder::argmax_iou(selected.ious.clone());

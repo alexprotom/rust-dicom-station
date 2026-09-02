@@ -2,9 +2,9 @@
 //! study → reload it with the normal directory scanner → the masks must come
 //! back voxel for voxel.
 //!
-//! This exercises the whole path the application uses — the SEG writer, the
+//! This exercises the whole path the application uses - the SEG writer, the
 //! loader's classification of SEG files, the frame-position lattice
-//! reconstruction and the resampling back onto the displayed volume — rather
+//! reconstruction and the resampling back onto the displayed volume - rather
 //! than any one of them in isolation.
 
 use rust_dicom_station::dicom_export::{self, ExportParams};
@@ -154,7 +154,7 @@ fn resampling_between_lattices_is_exact_on_a_sub_grid() {
     let mask = ball(dims, 7.0);
 
     // A lattice with the same orientation and spacing but half the slices,
-    // starting at slice 4 — the shape a SEG file's frames produce.
+    // starting at slice 4 - the shape a SEG file's frames produce.
     let mut sub = vol.grid();
     sub.dims = [dims[0], dims[1], dims[2] / 2];
     sub.origin = vol.voxel_to_patient(0.0, 0.0, 4.0);

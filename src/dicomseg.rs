@@ -6,7 +6,7 @@
 //! per (segment, slice) pair, positioned in patient space by the per-frame
 //! functional groups rather than by a slice index. Reading therefore means
 //! reconstructing a lattice out of the frame positions, and writing means
-//! emitting one frame per slice a segment actually occupies — a segment that
+//! emitting one frame per slice a segment actually occupies - a segment that
 //! covers ten slices of a 200-slice CT costs ten frames, not two hundred.
 //!
 //! The masks keep the lattice they arrived on ([`SegSeries::grid`]) instead
@@ -34,7 +34,7 @@ use crate::volume::{Grid, Volume};
 
 /// Segmentation Storage.
 pub const SOP_SEG: &str = "1.2.840.10008.5.1.4.1.1.66.4";
-/// CT Image Storage — what the referenced instances of an export are.
+/// CT Image Storage - what the referenced instances of an export are.
 const SOP_CT: &str = "1.2.840.10008.5.1.4.1.1.2";
 
 // ---------------------------------------------------------------------------
@@ -87,7 +87,7 @@ impl SegSeries {
     /// brush and the meshes can all index them with the displayed volume's
     /// dimensions. A no-op when the series is already on that lattice.
     ///
-    /// Undo history does not survive a rebind — the voxels it refers to no
+    /// Undo history does not survive a rebind - the voxels it refers to no
     /// longer exist.
     pub fn rebind(&mut self, vol: &Volume) -> bool {
         let to = vol.grid();
@@ -107,7 +107,7 @@ impl SegSeries {
 
 /// Nearest-neighbour resample of a binary mask from one lattice onto another.
 ///
-/// Destination driven — every voxel of `to` asks `from` what it holds — so a
+/// Destination driven - every voxel of `to` asks `from` what it holds - so a
 /// segmentation coarser than the image it is shown on never breaks up into
 /// stripes, which is exactly the common case (a 3 mm SEG on a 1 mm CT).
 ///
@@ -170,7 +170,7 @@ pub fn resample_mask(mask: &[u8], from: &Grid, to: &Grid) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 /// Decode a Recommended Display CIELab Value (three 16-bit unsigned values,
-/// L\* over 0–100 and a\*/b\* over −128–127) into sRGB.
+/// L\* over 0-100 and a\*/b\* over −128-127) into sRGB.
 pub fn cielab_to_rgb(v: [u16; 3]) -> [u8; 3] {
     let l = v[0] as f64 / 65535.0 * 100.0;
     let a = v[1] as f64 / 65535.0 * 255.0 - 128.0;
@@ -263,7 +263,7 @@ struct FrameRef {
 /// Read one Segmentation Storage instance.
 ///
 /// The masks come back on the lattice the frames describe, which is *not*
-/// necessarily that of any loaded volume — [`SegSeries::rebind`] does that
+/// necessarily that of any loaded volume - [`SegSeries::rebind`] does that
 /// step when the series is displayed.
 pub fn load(path: &Path) -> Result<SegSeries> {
     let obj =
@@ -437,7 +437,7 @@ pub fn load(path: &Path) -> Result<SegSeries> {
         declared_thickness.unwrap_or(1.0)
     };
     // The origin is the in-plane position of the frame lowest along the
-    // normal — every frame of one lattice shares it up to the slice offset.
+    // normal - every frame of one lattice shares it up to the slice offset.
     let origin = frames
         .iter()
         .min_by(|a, b| {

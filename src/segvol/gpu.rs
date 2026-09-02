@@ -1,8 +1,8 @@
 //! GPU image encoder via `burn`'s wgpu backend (Vulkan / DX12 / Metal).
 //!
 //! Only the image encoder runs here, and that is a deliberate choice rather
-//! than an unfinished one. The ViT is ~97% of a window's arithmetic — 2.5e11
-//! multiply-accumulates against the decoder's low single-digit billions — so
+//! than an unfinished one. The ViT is ~97% of a window's arithmetic - 2.5e11
+//! multiply-accumulates against the decoder's low single-digit billions - so
 //! moving it alone captures essentially all of the speedup. Keeping the
 //! prompt encoder and mask decoder on the CPU also keeps the trap-dense part
 //! of the port (the axis-swapped positional encoding, the `(C,D,H,W)`
@@ -179,7 +179,7 @@ fn layer_norm(x: Tensor<B, 3>, w: &Tensor<B, 3>, b: &Tensor<B, 3>) -> Tensor<B, 
     normed * w.clone() + b.clone()
 }
 
-/// Exact (erf-based) GELU, matching `nn.GELU()` — *not* the tanh
+/// Exact (erf-based) GELU, matching `nn.GELU()` - *not* the tanh
 /// approximation, which some frameworks use by default and which would
 /// diverge from the CPU path.
 fn gelu_erf(x: Tensor<B, 3>) -> Tensor<B, 3> {
@@ -191,8 +191,8 @@ fn gelu_erf(x: Tensor<B, 3>) -> Tensor<B, 3> {
 ///
 /// Heads are processed one at a time, as on the CPU, and for a harder reason
 /// than working-set size: batching all twelve would need a
-/// `heads x tokens x tokens` score buffer — 192 MB in `f32` for the image
-/// encoder — and **WebGPU's default `maxStorageBufferBindingSize` is
+/// `heads x tokens x tokens` score buffer - 192 MB in `f32` for the image
+/// encoder - and **WebGPU's default `maxStorageBufferBindingSize` is
 /// 128 MiB**. A batched implementation therefore fails to allocate on any
 /// adapter that only offers the guaranteed limits, which includes software
 /// rasterizers and plenty of real hardware. Per head the score buffer is
@@ -245,7 +245,7 @@ mod tests {
     ///
     /// Ignored by default. It needs a real GPU: `WgpuDevice::default()`
     /// happily returns a *software* adapter wherever Mesa's lavapipe or
-    /// Windows' WARP is installed — which is the case on CI runners — and
+    /// Windows' WARP is installed - which is the case on CI runners - and
     /// running twelve transformer blocks through a software rasterizer takes
     /// minutes and tests nothing about the backend. Run it where the hardware
     /// is:

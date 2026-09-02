@@ -1,4 +1,4 @@
-//! The local patient archive — the application's own store of DICOM studies.
+//! The local patient archive - the application's own store of DICOM studies.
 //!
 //! A small PACS in the sense that matters day to day: every study ever
 //! imported is filed under its patient, listed without opening a single
@@ -24,7 +24,7 @@
 //! headers out of ten thousand files is not instant. Each study folder
 //! therefore carries a `STUDY.txt` written when anything is filed into it,
 //! in the same `key = value` shape as the settings file. A folder that
-//! arrived without one — copied in by hand — gets it rebuilt from the
+//! arrived without one - copied in by hand - gets it rebuilt from the
 //! headers once, and is fast from then on.
 //!
 //! The sidecars are a cache, never the truth: the `.dcm` files are, and the
@@ -57,7 +57,7 @@ pub struct StudyEntry {
 }
 
 impl StudyEntry {
-    /// `20260827 — Planning · CT, RTSTRUCT · 214 files`.
+    /// `20260827 - Planning · CT, RTSTRUCT · 214 files`.
     pub fn describe(&self) -> String {
         format!(
             "{}{} · {} · {} file{}",
@@ -159,12 +159,12 @@ pub fn root_from_setting(setting: &str) -> PathBuf {
 
 /// Keep a free-text identifier usable as a folder name.
 ///
-/// Patient identifiers arrive as whatever the acquiring system wrote —
+/// Patient identifiers arrive as whatever the acquiring system wrote -
 /// slashes, colons, trailing spaces, non-ASCII. Anything outside a
 /// conservative set becomes `_`, which can map two identifiers onto one
 /// folder; that merges two patients who already share an identifier, which
 /// is the correct reading, and is the reason the folder name is never the
-/// authority — `PATIENT.txt` is.
+/// authority - `PATIENT.txt` is.
 fn sanitize(s: &str) -> String {
     let out: String = s
         .trim()
@@ -237,7 +237,7 @@ impl Archive {
         let mut out = Vec::new();
         let Ok(dirs) = std::fs::read_dir(&self.root) else {
             // A root that does not exist yet is an empty archive, not a
-            // failure — it is created on the first import.
+            // failure - it is created on the first import.
             return Ok(out);
         };
         for pd in dirs.filter_map(|e| e.ok()) {
@@ -281,7 +281,7 @@ impl Archive {
             if patient.studies.is_empty() {
                 continue;
             }
-            // Newest study first — what one is normally after.
+            // Newest study first - what one is normally after.
             patient.studies.sort_by(|a, b| b.date.cmp(&a.date));
             out.push(patient);
         }
@@ -407,7 +407,7 @@ impl Archive {
             touched.insert(sdir);
         }
         // The sidecars are rebuilt once per touched study rather than per
-        // file — the counts and modality list are only right at the end.
+        // file - the counts and modality list are only right at the end.
         progress.set("Updating the archive index");
         for sdir in &touched {
             let _ = self.rebuild_sidecars(sdir);

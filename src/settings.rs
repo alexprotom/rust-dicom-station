@@ -67,7 +67,7 @@ pub struct Settings {
 
     /// Which graphics backend to draw and compute with. Read once at
     /// startup, before the window exists, so a change only takes effect on
-    /// the next run — which the menu says.
+    /// the next run - which the menu says.
     pub graphics_backend: Backend,
 
     /// What dataset A and dataset B were last loaded from: folders and
@@ -228,14 +228,14 @@ pub fn settings_path() -> PathBuf {
 /// A machine-wide installation is performed by an administrator whose
 /// `%LOCALAPPDATA%` is not the one the viewer will later run under, so the
 /// installer's answers cannot be written into the settings file of everyone
-/// who will use the program — those files do not exist yet. They go into a
+/// who will use the program - those files do not exist yet. They go into a
 /// small file next to the executable instead, in the same `key = value`
 /// syntax, and every key in it is only a *default*: the user's own settings
 /// file is read afterwards and wins, and so does anything they change from
 /// the menus.
 ///
 /// `None` when the executable's own path cannot be determined, which is not
-/// a condition worth reporting — it just means there are no defaults.
+/// a condition worth reporting - it just means there are no defaults.
 pub fn defaults_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     Some(exe.parent()?.join(DEFAULTS_FILE_NAME))

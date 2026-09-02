@@ -101,7 +101,7 @@ pub struct SeriesInfo {
     pub study_description: String,
     /// SeriesNumber (0020,0011), when present.
     pub series_number: Option<i64>,
-    /// TemporalPositionIdentifier (0020,0100) of the first slice — enhanced
+    /// TemporalPositionIdentifier (0020,0100) of the first slice - enhanced
     /// 4D exports carry the phase here rather than in the description.
     pub temporal_id: Option<i64>,
     pub files: Vec<PathBuf>,
@@ -149,7 +149,7 @@ pub struct LoadedStudy {
     /// All RT Structure Sets found in the folder (e.g. one per 4DCT phase).
     /// The application selects the active one per study slot.
     pub structure_sets: Vec<StructureSet>,
-    /// DICOM Segmentation series — imported SEG objects and everything the
+    /// DICOM Segmentation series - imported SEG objects and everything the
     /// interactive tools paint. Each keeps the voxel lattice it was made on
     /// and names the image series it belongs to.
     pub seg_series: Vec<SegSeries>,
@@ -210,7 +210,7 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
 
 /// Load an explicit list of DICOM files (*File ▶ Add DICOM file(s)*).
 ///
-/// The same code path as [`load_directory`] — the only difference is where
+/// The same code path as [`load_directory`] - the only difference is where
 /// the list of files came from. Opening three RT images, one structure set or
 /// a single slice is therefore not a special mode with its own rules; it is
 /// an ordinary study that happens to be small, and it merges into a dataset
@@ -403,7 +403,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
         }
     };
 
-    // RT objects — every structure set is loaded (e.g. one per 4DCT phase);
+    // RT objects - every structure set is loaded (e.g. one per 4DCT phase);
     // the application chooses which one is active. Each group is parsed in
     // parallel; the files are independent.
     let structure_sets = parse_group(

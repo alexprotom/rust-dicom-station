@@ -1,8 +1,8 @@
 //! *Tools ▶ 🏥 PACS*: the local patient archive as a window.
 //!
-//! Everything the archive can do reduces to three gestures — file a folder
+//! Everything the archive can do reduces to three gestures - file a folder
 //! into it, take a patient or a study out of it into a viewer dataset, and
-//! give back what was drawn on one — and each is one button here. The
+//! give back what was drawn on one - and each is one button here. The
 //! archive itself ([`crate::archive`]) knows nothing about the UI; this
 //! window is the part that knows which dataset the user meant.
 //!
@@ -96,7 +96,7 @@ impl ViewerApp {
     /// into the archive.
     ///
     /// They are written to a scratch folder first and then imported, so the
-    /// filing rule lives in exactly one place — the archive — and an upload
+    /// filing rule lives in exactly one place - the archive - and an upload
     /// that fails half way leaves the archive untouched rather than
     /// half-written.
     fn start_pacs_upload(&mut self, slot: usize) {

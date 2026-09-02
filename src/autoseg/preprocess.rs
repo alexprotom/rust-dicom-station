@@ -4,13 +4,13 @@
 //! RAS orientation (nibabel `as_closest_canonical`), resamples it to the
 //! model's isotropic spacing (spline order 1 = trilinear, int32 dtype), and
 //! feeds nnU-Net arrays whose spatial axes are, in order, [S, A, R]
-//! (superior, anterior, right — each increasing with the array index).
+//! (superior, anterior, right - each increasing with the array index).
 //! This module reproduces that from the DICOM volume directly: it finds the
 //! permutation + flips of the volume's own axes that best align with
 //! [S, A, R] (LPS patient space: S = +z, A = −y, R = −x), then resamples
 //! along the volume's (possibly slightly oblique) axes onto the model grid
 //! using the endpoint-aligned coordinate convention of `scipy.ndimage.zoom`
-//! (first and last voxel centers coincide) — the resampler TotalSegmentator
+//! (first and last voxel centers coincide) - the resampler TotalSegmentator
 //! uses.
 //!
 //! The inverse mapping (`labels_to_volume_grid`) assigns every voxel of the
@@ -37,7 +37,7 @@ pub struct SarMap {
 impl SarMap {
     /// `target` is the model's voxel spacing in [S, A, R] order. It is an
     /// array rather than a scalar because not every nnU-Net model is
-    /// isotropic — the MR body model plans 3.0 × 1.19 × 0.99 mm.
+    /// isotropic - the MR body model plans 3.0 × 1.19 × 0.99 mm.
     pub fn new(vol: &Volume, target: [f64; 3]) -> SarMap {
         let (perm, flip) = vol.canonical_axes();
         let dims = [vol.dims[0], vol.dims[1], vol.dims[2]];

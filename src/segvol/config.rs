@@ -36,7 +36,7 @@ pub const NUM_MASK_TOKENS: usize = 4;
 
 /// Channels after `output_upscaling`, `EMBED / 8`.
 pub const UPSCALED_CHANNELS: usize = 96;
-/// Spatial shape between the two transposed convolutions — the shape the
+/// Spatial shape between the two transposed convolutions - the shape the
 /// decoder's LayerNorm is sized for.
 pub const FEAT_SHAPE: [usize; 3] = [16, 32, 32];
 /// Spatial shape of the logits the decoder produces: full resolution along

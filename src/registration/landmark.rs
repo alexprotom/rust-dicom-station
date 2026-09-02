@@ -1,4 +1,4 @@
-//! Landmark-based deformable registration — plastimatch's `landmark_warp`.
+//! Landmark-based deformable registration - plastimatch's `landmark_warp`.
 //!
 //! No image intensity is read at any point: the deformation is a radial
 //! basis interpolation of displacements the user measured by hand, which is
@@ -19,7 +19,7 @@
 //! over the whole domain and carries an affine term, so a global shift or
 //! rotation implied by the landmarks is represented exactly. The two radial
 //! kernels have no affine term, so the displacement decays back to zero away
-//! from the landmarks — which is the point of the compactly supported
+//! from the landmarks - which is the point of the compactly supported
 //! Wendland kernel: a local correction that provably leaves distant anatomy
 //! untouched.
 //!
@@ -170,7 +170,7 @@ pub struct RbfWarp {
     pub targets: Vec<Vec3>,
     /// One weight vector per centre.
     weights: Vec<Vec3>,
-    /// `[a0, ax, ay, az]` — the affine term, empty for the radial kernels.
+    /// `[a0, ax, ay, az]` - the affine term, empty for the radial kernels.
     affine: Vec<Vec3>,
 }
 
@@ -236,7 +236,7 @@ impl RbfWarp {
 ///
 /// `a` is `n × n` row-major and `b` is `n × m` row-major; both are consumed.
 /// The systems here are tens to a few hundred unknowns, so a dense direct
-/// solve is both the simplest and the fastest thing available — and it is
+/// solve is both the simplest and the fastest thing available - and it is
 /// exact, which an iterative solver on an ill-conditioned thin-plate matrix
 /// would not be.
 fn solve_in_place(a: &mut [f64], b: &mut [f64], n: usize, m: usize) -> Result<()> {

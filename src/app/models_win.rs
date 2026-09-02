@@ -9,7 +9,7 @@
 //! **Download / Update / Remove**, and the same three actions over
 //! everything at once. Preparing a model runs the engine's *own* first-use
 //! path, so a model fetched here is bit for bit the one a run would have
-//! fetched — there is no second download route to keep in step.
+//! fetched - there is no second download route to keep in step.
 
 use anyhow::Context;
 

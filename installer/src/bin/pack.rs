@@ -1,4 +1,4 @@
-//! `rds-pack` — turns the freshly built `rds-setup.exe` into a shippable
+//! `rds-pack` - turns the freshly built `rds-setup.exe` into a shippable
 //! single-file installer by appending a zip of everything that should be
 //! installed, plus the footer `payload.rs` looks for.
 //!

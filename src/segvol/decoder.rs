@@ -10,12 +10,12 @@
 //! * the MLPs here use **ReLU**, not the GELU of the image encoder; the
 //!   upscaling path uses GELU. Three activations coexist in this network;
 //! * `output_upscaling.1` is a `LayerNorm` over the whole `(192,16,32,32)`
-//!   activation — 3.1 M affine values in each of weight and bias, a fifth of
+//!   activation - 3.1 M affine values in each of weight and bias, a fifth of
 //!   the decoder's parameters, and a channel-wise norm in its place compiles
 //!   and produces nonsense;
 //! * the first layer skips the query positional encoding entirely and does
 //!   **not** add a residual around its self-attention;
-//! * text enters twice — once as a prompt token, and again here as an
+//! * text enters twice - once as a prompt token, and again here as an
 //!   additive similarity map;
 //! * inference keeps mask channel 0 of the four.
 
@@ -161,7 +161,7 @@ impl Layer {
     fn forward(&self, queries: Mat, keys: Mat, query_pe: &Mat, key_pe: &Mat) -> (Mat, Mat) {
         // Self-attention over the prompt tokens. On the first layer the
         // positional encoding is skipped and the result *replaces* the
-        // queries — there is no residual here, unlike every later layer.
+        // queries - there is no residual here, unlike every later layer.
         let mut queries = if self.skip_first_layer_pe {
             self.self_attn.forward(&queries, &queries, &queries)
         } else {
@@ -340,7 +340,7 @@ impl MaskDecoder {
         let volume = Act::from_tokens(&src, GRID[0], GRID[1], GRID[2]);
         let upscaled = self.upscale(&volume);
         let up_dims = [upscaled.d, upscaled.h, upscaled.w];
-        // [UPSCALED_CHANNELS, spatial], the same storage — 50 MB per window
+        // [UPSCALED_CHANNELS, spatial], the same storage - 50 MB per window
         // not copied.
         let up_mat = upscaled.into_mat();
 
@@ -403,7 +403,7 @@ impl MaskDecoder {
     fn upscale(&self, x: &Act) -> Act {
         let mut h = conv_transpose3d_2x(x, &self.up0_w, &self.up0_b, EMBED / 4);
         debug_assert_eq!([h.d, h.h, h.w], FEAT_SHAPE);
-        // One group spanning the entire activation — not a per-channel norm.
+        // One group spanning the entire activation - not a per-channel norm.
         let whole = h.data.len();
         layer_norm(&mut h.data, whole, &self.up1_w, &self.up1_b, LAYER_NORM_EPS);
         gelu(&mut h.data);

@@ -26,7 +26,7 @@ impl ViewerApp {
     }
 
     /// Everything the 3D segmentation meshes of a slot depend on
-    /// (geometry only — color and visibility are applied at draw time).
+    /// (geometry only - color and visibility are applied at draw time).
     pub(super) fn seg_mesh_hash(&self, slot: usize) -> u64 {
         let mut h = mix(0x5E6_3E54u64, slot as u64 + 1);
         for s in self.slots[slot].segs() {

@@ -2,7 +2,7 @@
 //! normalization, softmax, and the three activation functions the SegVol
 //! network uses.
 //!
-//! Matrix multiplication goes through the `gemm` crate's SIMD kernels — the
+//! Matrix multiplication goes through the `gemm` crate's SIMD kernels - the
 //! same ones the auto-segmentation convolutions use. Everything else is
 //! memory-bound and hand-rolled with `rayon`.
 //!
@@ -74,7 +74,7 @@ pub fn linear(x: &Mat, w: &[f32], out: usize, bias: Option<&[f32]>) -> Mat {
 }
 
 /// Plain `a @ b`, both row-major. Used where the right operand is an
-/// activation rather than a stored `[out, in]` weight — the mask decoder
+/// activation rather than a stored `[out, in]` weight - the mask decoder
 /// multiplies its hypernetwork outputs into the upscaled feature volume.
 pub fn matmul(a: &Mat, b: &Mat) -> Mat {
     assert_eq!(
@@ -116,7 +116,7 @@ pub fn matmul(a: &Mat, b: &Mat) -> Mat {
 ///
 /// One function covers both shapes in the network: `group = dim` normalizes
 /// each token independently (the usual case), and `group = C*D*H*W` with a
-/// single group normalizes a whole volume jointly — which is what the mask
+/// single group normalizes a whole volume jointly - which is what the mask
 /// decoder's `output_upscaling.1` does, with an affine pair as large as the
 /// activation itself.
 pub fn layer_norm(data: &mut [f32], group: usize, weight: &[f32], bias: &[f32], eps: f32) {
@@ -166,7 +166,7 @@ pub fn softmax_rows(data: &mut [f32], cols: usize) {
 }
 
 /// The error function, Abramowitz & Stegun 7.1.26 evaluated in `f64`
-/// (|error| < 1.5e-7 — well inside `f32` precision).
+/// (|error| < 1.5e-7 - well inside `f32` precision).
 fn erf(x: f64) -> f64 {
     const P: f64 = 0.327_591_1;
     const A: [f64; 5] = [
@@ -183,7 +183,7 @@ fn erf(x: f64) -> f64 {
     sign * (1.0 - poly * (-x * x).exp())
 }
 
-/// Exact (erf-based) GELU — PyTorch's `nn.GELU()` default, used by the image
+/// Exact (erf-based) GELU - PyTorch's `nn.GELU()` default, used by the image
 /// encoder's MLP blocks and the decoder's upscaling.
 pub fn gelu(data: &mut [f32]) {
     data.par_iter_mut().for_each(|v| {
@@ -192,7 +192,7 @@ pub fn gelu(data: &mut [f32]) {
     });
 }
 
-/// ReLU — the two-way transformer's MLP, the hypernetwork MLPs and the IoU
+/// ReLU - the two-way transformer's MLP, the hypernetwork MLPs and the IoU
 /// head all use this, *not* GELU. Mixing the two up is silent and costly.
 pub fn relu(data: &mut [f32]) {
     data.par_iter_mut().for_each(|v| {
@@ -202,7 +202,7 @@ pub fn relu(data: &mut [f32]) {
     });
 }
 
-/// QuickGELU, `x * sigmoid(1.702 x)` — CLIP's activation, and only CLIP's.
+/// QuickGELU, `x * sigmoid(1.702 x)` - CLIP's activation, and only CLIP's.
 pub fn quick_gelu(data: &mut [f32]) {
     data.par_iter_mut().for_each(|v| {
         let x = *v;
@@ -364,7 +364,7 @@ mod tests {
         // The three are genuinely distinct, which is what makes using the
         // wrong one a real bug. ReLU is trivially far from GELU at negative
         // x; QuickGELU is a deliberate approximation of GELU, so it only
-        // separates by ~0.02 and only away from the origin — hence a scan
+        // separates by ~0.02 and only away from the origin - hence a scan
         // rather than a single probe.
         let mut a = vec![-1.0f32];
         let mut b = vec![-1.0f32];

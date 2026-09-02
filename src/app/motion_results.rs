@@ -2,7 +2,7 @@
 //! side-by-side comparison of two runs (e.g. upright vs. supine, or
 //! dataset A vs. B).
 //!
-//! The charts are drawn with the egui painter directly — a displacement-
+//! The charts are drawn with the egui painter directly - a displacement-
 //! vs-phase line chart and grouped bar charts are simple enough that a
 //! plotting dependency would cost more than it gives.
 
@@ -489,7 +489,7 @@ impl ViewerApp {
         };
         let mut csv = r.csv();
         if let Some(other) = also.and_then(|i| self.motion_reports.get(i)) {
-            // The header line of the second report is dropped — one file,
+            // The header line of the second report is dropped - one file,
             // one header.
             if let Some(pos) = other.csv().find('\n') {
                 csv.push_str(&other.csv()[pos + 1..]);
@@ -516,7 +516,7 @@ impl ViewerApp {
 }
 
 impl MotionReport {
-    /// `dataset A` — the comparison table's column header.
+    /// `dataset A` - the comparison table's column header.
     fn slot_label(&self) -> String {
         format!("dataset {}", self.slot_name)
     }

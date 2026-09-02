@@ -6,7 +6,7 @@
 //! is the interface people who use this model already know:
 //!
 //! 1. scroll to a slice where the structure is clear and **drag a box** around
-//!    it, directly in the image — the box stays, with handles, and can be
+//!    it, directly in the image - the box stays, with handles, and can be
 //!    resized or moved;
 //! 2. **preview that one slice**, which costs a single encoder pass and is
 //!    re-run for free while the box is adjusted;
@@ -14,8 +14,8 @@
 //! 4. set the **slice range** to propagate through, and run it.
 //!
 //! Nothing is anchored to the crosshair, and the crosshair does not move while
-//! the box tool has the left button. The expensive things — the weights and
-//! the prepared stack — are built once and kept in [`Medsam2State`], and the
+//! the box tool has the left button. The expensive things - the weights and
+//! the prepared stack - are built once and kept in [`Medsam2State`], and the
 //! engine keeps the *prompted slice's* encoder output, so steps 2 and 3 loop
 //! at the cost of the prompt path alone.
 //!
@@ -68,7 +68,7 @@ enum Grab {
 pub(super) struct BoxPrompt {
     pub plane: ViewPlane,
     pub slice: usize,
-    /// The two dragged corners, in drawing order — not necessarily sorted.
+    /// The two dragged corners, in drawing order - not necessarily sorted.
     a: [f32; 2],
     b: [f32; 2],
     /// Refinement clicks and whether each says "include".
@@ -96,7 +96,7 @@ impl BoxPrompt {
         )
     }
 
-    /// A box too small to mean anything — a stray click rather than a drag.
+    /// A box too small to mean anything - a stray click rather than a drag.
     pub fn is_degenerate(&self) -> bool {
         let (lo, hi) = self.rect();
         hi[0] - lo[0] < 2.0 || hi[1] - lo[1] < 2.0
@@ -323,7 +323,7 @@ fn run_job(req: Medsam2Request, progress: &Progress) -> anyhow::Result<Medsam2Do
 /// Where the intensity window comes from.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum WindowSource {
-    /// What the viewport is showing — what you see is what the model sees.
+    /// What the viewport is showing - what you see is what the model sees.
     Viewport,
     /// One of the windows the MedSAM2 paper trained with.
     Preset(usize),
@@ -355,7 +355,7 @@ pub(super) struct Medsam2State {
     /// True once the user has chosen a range themselves, after which it stops
     /// following the box.
     pub range_pinned: bool,
-    /// Add each run to what is already there, instead of replacing it — how a
+    /// Add each run to what is already there, instead of replacing it - how a
     /// slice that drifted gets corrected: draw a fresh box on it and run
     /// again.
     pub merge: bool,
@@ -458,7 +458,7 @@ impl Medsam2State {
     }
 }
 
-/// Which of the three views the stack is sliced along — the one a prompt has
+/// Which of the three views the stack is sliced along - the one a prompt has
 /// to be drawn in.
 pub(super) fn drawing_plane(vol: &Volume) -> ViewPlane {
     let (perm, _) = preprocess::axial_axes(vol);
@@ -1148,7 +1148,7 @@ mod tests {
         assert_eq!(slice, prepared.from_volume_index([10, 12, 4])[0]);
 
         // The corners come back sorted, they enclose the click, and they keep
-        // the drawn extent — whichever way the axes were permuted.
+        // the drawn extent - whichever way the axes were permuted.
         assert!(points[0].row <= points[1].row && points[0].column <= points[1].column);
         assert!(points[2].row >= points[0].row && points[2].row <= points[1].row);
         assert!(points[2].column >= points[0].column && points[2].column <= points[1].column);

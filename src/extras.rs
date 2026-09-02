@@ -1,12 +1,12 @@
 //! Additional DICOM object types beyond volumes and the core RT set:
 //!
-//! * planar projection images — DX / CR digital radiographs and RTIMAGE
+//! * planar projection images - DX / CR digital radiographs and RTIMAGE
 //!   (DRRs, portal / setup images), shown in floating viewer windows;
-//! * REG — Spatial Registration objects (rigid 4×4 frame-of-reference
+//! * REG - Spatial Registration objects (rigid 4×4 frame-of-reference
 //!   transformation matrices, and Deformable Spatial Registration objects
 //!   with their displacement grids, both of which can be applied as the
 //!   active registration);
-//! * RTRECORD — RT (Ion) Beams Treatment Records with per-beam specified vs
+//! * RTRECORD - RT (Ion) Beams Treatment Records with per-beam specified vs
 //!   delivered metersets and termination status.
 
 use std::path::Path;
@@ -154,7 +154,7 @@ pub fn load_planar(path: &Path) -> Result<PlanarImage> {
 }
 
 // ---------------------------------------------------------------------------
-// REG — Spatial Registration
+// REG - Spatial Registration
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
@@ -178,7 +178,7 @@ pub struct SpatialReg {
     pub frame_of_reference_uid: String,
     pub items: Vec<RegMatrixItem>,
     /// The displacement lattice of a Deformable Spatial Registration, when
-    /// the object carries one — it can be applied as the active
+    /// the object carries one - it can be applied as the active
     /// registration exactly like a matrix.
     pub grid: Option<VectorField>,
     /// Frame of Reference the grid's own lattice lives in.
@@ -399,7 +399,7 @@ pub fn matrix_to_rigid(m: &[f64; 16], invert: bool) -> Option<RigidTransform> {
 }
 
 // ---------------------------------------------------------------------------
-// RTRECORD — RT (Ion) Beams Treatment Record
+// RTRECORD - RT (Ion) Beams Treatment Record
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]

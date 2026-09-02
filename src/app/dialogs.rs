@@ -86,7 +86,7 @@ impl ViewerApp {
     }
 
     /// The auto-segmentation tool window: model variant, compute device and
-    /// model folder, then the run — whose progress replaces the buttons.
+    /// model folder, then the run - whose progress replaces the buttons.
     pub(super) fn autoseg_run_window(&mut self, ctx: &egui::Context) {
         let Some(d) = &mut self.autoseg_dialog else {
             return;
@@ -478,7 +478,7 @@ impl ViewerApp {
     }
 
     /// The anonymizer tool window: pick a folder, scan it, review every
-    /// identifying tag (current values, proposed replacement — editable),
+    /// identifying tag (current values, proposed replacement - editable),
     /// then rewrite the files.
     pub(super) fn anonymize_window(&mut self, ctx: &egui::Context) {
         if !self.anon_open {
@@ -711,7 +711,7 @@ impl ViewerApp {
         );
 
         if !open {
-            // Closing the window forgets everything that was scanned — the
+            // Closing the window forgets everything that was scanned - the
             // findings (they contain patient identity!), any running scan,
             // the result line and the derived output path. Only the folder
             // field is kept for convenience.
@@ -720,7 +720,7 @@ impl ViewerApp {
             self.anon_result = None;
             self.anon_out.clear();
             self.anon_in_place = false;
-            // A running rewrite is not aborted — the background thread
+            // A running rewrite is not aborted - the background thread
             // finishes writing; only its completion message is dropped.
             self.anon_apply_job = None;
         }
@@ -890,7 +890,7 @@ impl ViewerApp {
             },
         );
 
-        // A running export is not aborted when the window closes — the
+        // A running export is not aborted when the window closes - the
         // background thread finishes writing; only its message is dropped.
         self.export_open = open;
         if !open {

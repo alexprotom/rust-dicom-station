@@ -3,7 +3,7 @@
 //! Loading, registration, meshing, export, anonymization and the three
 //! segmentation engines all run on worker threads and all need the same
 //! things from the thread that started them: a message to show, a fraction
-//! for a progress bar, a cancel flag to poll, and — for the engines — the
+//! for a progress bar, a cancel flag to poll, and - for the engines - the
 //! name of the device the work ended up on. Rather than five near-identical
 //! structs, there is one, and the workers see it through [`ProgressSink`].
 //!
@@ -31,7 +31,7 @@ pub trait ProgressSink: Sync {
 pub struct Quiet;
 impl ProgressSink for Quiet {}
 
-/// A sink that prints each report to standard error — for the examples.
+/// A sink that prints each report to standard error - for the examples.
 pub struct Stderr;
 impl ProgressSink for Stderr {
     fn report(&self, frac: f32, msg: &str) {

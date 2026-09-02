@@ -118,7 +118,7 @@ impl Act {
         self.d * self.h * self.w
     }
 
-    /// View the volume as a `[c, d*h*w]` matrix — channels are rows; the
+    /// View the volume as a `[c, d*h*w]` matrix - channels are rows; the
     /// layouts are identical, so nothing is copied.
     pub fn into_mat(self) -> Mat {
         Mat {
@@ -163,7 +163,7 @@ impl SendPtr {
 /// The 2× case has its own hand-tuned routine below; this is the general
 /// one, used by the models whose decoder upsamples anisotropically (the MR
 /// body model halves two axes at a time and leaves the third alone). Since
-/// kernel equals stride the output tiles are disjoint — no overlap-add,
+/// kernel equals stride the output tiles are disjoint - no overlap-add,
 /// just a GEMM that expands every input voxel into its `s0·s1·s2` outputs
 /// and a scatter.
 pub fn conv_transpose3d_stride(
@@ -256,8 +256,8 @@ pub fn conv_transpose3d_stride(
 }
 
 /// Transposed 3D convolution with kernel = stride = 2: every input voxel
-/// projects to a disjoint 2x2x2 output block. `weight`: `[cin, cout, 2, 2, 2]`
-/// — PyTorch's `ConvTranspose3d` layout.
+/// projects to a disjoint 2x2x2 output block. `weight`: `[cin, cout, 2, 2, 2]` -
+/// PyTorch's `ConvTranspose3d` layout.
 pub fn conv_transpose3d_2x(x: &Act, weight: &[f32], bias: &[f32], cout: usize) -> Act {
     let (cin, d, h, w) = (x.c, x.d, x.h, x.w);
     debug_assert_eq!(weight.len(), cin * cout * 8);
@@ -388,8 +388,8 @@ mod tests {
 
     /// The general `kernel = stride` form against its own definition, at the
     /// anisotropic strides the MR body model's decoder actually plans. The
-    /// 2× fast path is covered above; without this the general path — the
-    /// only code the MR model runs through — has no test at all.
+    /// 2× fast path is covered above; without this the general path - the
+    /// only code the MR model runs through - has no test at all.
     #[test]
     fn transpose_conv_matches_the_definition_at_any_stride() {
         for stride in [[1, 2, 2], [2, 2, 1], [1, 1, 2], [3, 2, 1], [1, 1, 1]] {

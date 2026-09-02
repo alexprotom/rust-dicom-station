@@ -85,7 +85,7 @@ impl WTensor {
 ///
 /// `F32` reproduces the published checkpoint bit for bit and is what any
 /// model validated against a reference implementation must use. `F16` halves
-/// the cache on disk at the cost of roughly three decimal digits per weight —
+/// the cache on disk at the cost of roughly three decimal digits per weight -
 /// fine for a preview, not for numerical equivalence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StoreDtype {

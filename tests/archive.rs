@@ -20,7 +20,7 @@ fn scratch(tag: &str) -> std::path::PathBuf {
     dir
 }
 
-/// A solid ellipsoid around the volume centre — something with a non-zero
+/// A solid ellipsoid around the volume centre - something with a non-zero
 /// voxel count, which is what makes the writer emit the object at all.
 fn ball(dims: [usize; 3], radius: f64) -> Vec<u8> {
     let [nx, ny, nz] = dims;
@@ -151,7 +151,7 @@ fn a_study_files_lists_loads_and_takes_back_what_was_drawn_on_it() {
     assert_eq!(
         (up.patients, up.studies),
         (1, 1),
-        "they land in one patient and one study — the ones already there"
+        "they land in one patient and one study - the ones already there"
     );
 
     let patients = archive.scan().expect("rescan succeeds");

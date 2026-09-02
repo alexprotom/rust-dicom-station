@@ -39,7 +39,7 @@ eframe = { version = "0.36", default-features = false, features = ["default_font
 egui = "0.36"
 # Optional: pre-download and convert the TotalSegmentator weights at install
 # time by reusing the viewer's own (pure-Rust) downloader. Built without the
-# GPU backend — this only writes the model cache, it never runs inference.
+# GPU backend - this only writes the model cache, it never runs inference.
 rust-dicom-station = { path = "..", default-features = false, optional = true }
 
 [target.'cfg(windows)'.dependencies]

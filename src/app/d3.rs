@@ -466,7 +466,7 @@ impl ViewerApp {
                         // One iterator over everything the scene draws: this
                         // dataset's structures, its live segmentations, and
                         // the other dataset's structures already mapped
-                        // through the registration — each with its own
+                        // through the registration - each with its own
                         // opacity, which is the whole point of showing two
                         // datasets at once.
                         let entries = meshes

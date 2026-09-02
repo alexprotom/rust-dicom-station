@@ -1,7 +1,7 @@
 //! Build script: give the Windows executable its icon.
 //!
 //! On Windows an application's icon is a resource compiled into the `.exe`
-//! itself — Explorer, the task bar, Alt+Tab and every shortcut that points at
+//! itself - Explorer, the task bar, Alt+Tab and every shortcut that points at
 //! the executable read it from there, which is also what the installer's
 //! shortcuts and its *Add or remove programs* entry rely on. The runtime
 //! window icon comes from the same picture (see `app_icon` in `main.rs`),

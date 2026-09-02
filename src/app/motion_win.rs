@@ -3,7 +3,7 @@
 //! One run reproduces the whole 4DCT motion workflow on a recognised 4D
 //! group: the reference phase is registered to every other phase (rigidly,
 //! and deformably on top of the rigid result), the chosen targets are
-//! propagated through each transform, and what comes back is measured —
+//! propagated through each transform, and what comes back is measured -
 //! centroid trajectories, peak-to-peak amplitudes, drift against a
 //! reference structure (typically the heart) with direction-wise
 //! correlation, per-phase registration quality, and motion-encompassing
@@ -411,8 +411,8 @@ impl ViewerApp {
             "Motion analysis finished: {}",
             outcome.report.run_name
         )];
-        // The report is kept whatever happened to the dataset meanwhile —
-        // it is self-contained — but segmentations only land in the study
+        // The report is kept whatever happened to the dataset meanwhile -
+        // it is self-contained - but segmentations only land in the study
         // the run analysed.
         let still_there = self.slots[slot]
             .study
@@ -775,7 +775,7 @@ fn run_motion(req: MotionRequest, p: &Progress) -> anyhow::Result<MotionOutcome>
     }
     let n_subjects = subjects.len();
 
-    // samples[model][subject][phase] — filled as the phases are processed.
+    // samples[model][subject][phase] - filled as the phases are processed.
     let mut samples: Vec<Vec<Vec<Option<PhaseSample>>>> =
         vec![vec![vec![None; n]; n_subjects]; req.models.len()];
     // Union accumulators on the reference grid, [model][target].

@@ -17,7 +17,7 @@ impl ViewerApp {
         let mut open_export: Option<usize> = None;
         let mut new_theme: Option<egui::ThemePreference> = None;
         let mut save_settings = false;
-        // A module was switched on or off — remember it for the next run.
+        // A module was switched on or off - remember it for the next run.
         let mut modules_changed = false;
 
         egui::Panel::top(egui::Id::new("menu_bar")).show(ui, |ui| {
@@ -577,8 +577,8 @@ impl ViewerApp {
                     );
                     let mut full_range = false;
                     // The closed combo carries the name of the preset in
-                    // force. Its numbers are dropped there — the two drag
-                    // values to the left already show them — but kept in the
+                    // force. Its numbers are dropped there - the two drag
+                    // values to the left already show them - but kept in the
                     // list, where they are what tells the presets apart.
                     // Any other window (a drag, a right-drag in a view, the
                     // full range) is nameless again.
@@ -863,8 +863,8 @@ impl ViewerApp {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // The readouts are what the bar is for, so the mouse
-                    // bindings fold into a single "?" that the pointer opens
-                    // — always the bindings of the tool in force.
+                    // bindings fold into a single "?" that the pointer opens -
+                    // always the bindings of the tool in force.
                     let hint = match self.seg_tool {
                         SegTool::None => {
                             "LMB crosshair · RMB W/L · MMB pan · wheel slice · Ctrl+wheel zoom"

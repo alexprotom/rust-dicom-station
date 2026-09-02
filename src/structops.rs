@@ -8,7 +8,7 @@
 //! whether the thing you want to combine happens to be a contour or a
 //! painted mask.
 //!
-//! So this module works in one currency — a binary mask on one lattice — and
+//! So this module works in one currency - a binary mask on one lattice - and
 //! the caller converts on the way in and out. An RT structure is rasterized
 //! onto the grid ([`segmentation::rasterize_roi`]), a segmentation is already
 //! there, and the result goes back as either kind. Mixing them is then not a
@@ -107,7 +107,7 @@ impl BoolOp {
 /// has to mean the same thing on an axial CT, a coronal MR and an obliquely
 /// acquired series; the direction cosines decide which array axis that is and
 /// which way along it. Positive grows, negative shrinks, and the two may be
-/// mixed — the expansion runs first, then the contraction.
+/// mixed - the expansion runs first, then the contraction.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Margin {
     pub right: f64,
@@ -232,7 +232,7 @@ fn morph_any(r: &Radii) -> bool {
 /// Tidying applied to the finished mask.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Cleanup {
-    /// Close interior cavities, slice by slice — the same reasoning as the
+    /// Close interior cavities, slice by slice - the same reasoning as the
     /// body contour: a lung drains through the trachea, so a three-
     /// dimensional fill would leave it open.
     pub fill_holes: bool,
@@ -316,7 +316,7 @@ pub struct Combined {
     pub mask: Vec<u8>,
     pub voxels: u64,
     pub cm3: f64,
-    /// Separate pieces in the result — worth saying, because a subtraction
+    /// Separate pieces in the result - worth saying, because a subtraction
     /// that cuts a structure in two is rarely what was intended.
     pub pieces: usize,
 }

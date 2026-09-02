@@ -1,12 +1,12 @@
 //! *Tools ▶ Compare structures*: geometric comparison of any two
-//! structures — volumes, centroids and their offset, Dice, HD95 and mean
+//! structures - volumes, centroids and their offset, Dice, HD95 and mean
 //! surface distance.
 //!
 //! The two structures may live in either dataset and on different lattices;
 //! the second is resampled onto the first's grid through patient
 //! coordinates. Across two datasets that is only meaningful when both are
 //! in the same frame of reference (or have been registered and propagated
-//! first) — the window says so instead of silently comparing apples to
+//! first) - the window says so instead of silently comparing apples to
 //! oranges.
 
 use crate::motion;
@@ -36,7 +36,7 @@ impl ViewerApp {
         });
     }
 
-    /// One structure's mask on a definite grid, with its identity — the
+    /// One structure's mask on a definite grid, with its identity - the
     /// common currency of the compare and transfer tools. A contour is
     /// rasterized onto the displayed volume of its slot; a segment comes on
     /// its own series' lattice.

@@ -80,7 +80,7 @@ fn main() -> anyhow::Result<()> {
     let problems = inv.problems();
     if problems.is_empty() {
         println!(
-            "OK: matches the recorded layout — {} tensors, {} values, \
+            "OK: matches the recorded layout - {} tensors, {} values, \
              {} ViT blocks, {} decoder layers, {} CLIP layers.",
             layout::EXPECTED_TENSORS,
             layout::EXPECTED_PARAMS,

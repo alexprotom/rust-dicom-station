@@ -21,13 +21,13 @@ which the module registers as it goes.
   *onto* the moving dataset runs through its inverse; you only choose the
   source dataset.
 * **A cached mapping.** A deformable inverse is a fixed-point iteration,
-  twelve control-lattice evaluations per point — billions of operations
+  twelve control-lattice evaluations per point - billions of operations
   over a 512³ study. So the mapping is evaluated on a 3 mm lattice across
   the destination bounding box and interpolated in between: exact for a
   rigid transform, far below the contour's accuracy for a deformable one.
 
 Each propagated structure is reported as `name: 164.2 cm³ ▶ 170.1 cm³
-(+3.6 %)` — the volume change the registration panel's Jacobian statistics
+(+3.6 %)` - the volume change the registration panel's Jacobian statistics
 also describe; if the two disagree, look harder at the registration.
 
 ## Global and local
@@ -36,8 +36,8 @@ also describe; if the two disagree, look harder at the registration.
 restricted to a region gives structures inside it the local mapping and
 everything else the global one.
 
-**Locally** — when one structure sits inside another that actually
-deformed — *Refine locally first* runs a local deformable refinement on
+**Locally** - when one structure sits inside another that actually
+deformed - *Refine locally first* runs a local deformable refinement on
 the enclosing structure before anything is carried; otherwise a small
 structure lands where the *larger* one's average deformation puts it.
 
@@ -80,7 +80,7 @@ there is one pair per phase.
    **▶ Propagate**.
 
 Results arrive named `<structure> (from A)`, in the source structure's
-colour, as the destination's active segmentation — edit with the brush,
+colour, as the destination's active segmentation - edit with the brush,
 view in 3D, convert to RTSTRUCT, export as DICOM.
 
 ## Verification

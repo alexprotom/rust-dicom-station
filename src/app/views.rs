@@ -96,7 +96,7 @@ impl ViewerApp {
         }
     }
 
-    /// The slice slider lies *inside* the viewport, along its bottom edge —
+    /// The slice slider lies *inside* the viewport, along its bottom edge -
     /// a scrubber over the image rather than a strip of window furniture
     /// under it. Returns the rectangle it occupies so the viewport can hand
     /// pointer activity there over to it.
@@ -356,8 +356,8 @@ impl ViewerApp {
         self.refresh_view_caches(&ctx, slot, idx);
 
         // A dataset with no image series has nothing to reformat. It is a
-        // legitimate dataset all the same — RT images, a structure set, a
-        // plan — so the pane says so and offers the folder that would give
+        // legitimate dataset all the same - RT images, a structure set, a
+        // plan - so the pane says so and offers the folder that would give
         // it a volume, instead of three black rectangles.
         if self.slots[slot].study.is_some() && !self.slots[slot].has_volume() {
             self.no_volume_row(ui, slot, rect, idx);
@@ -592,7 +592,7 @@ impl ViewerApp {
         }
 
         // The MedSAM2 prompt: the box belongs to the tool, not to the
-        // crosshair, so it stays visible with ⌖ off — which is exactly how
+        // crosshair, so it stays visible with ⌖ off - which is exactly how
         // it is drawn, with left-click navigation out of the way.
         if medsam2_show {
             if let Some(b) = &self.medsam2.prompt {
@@ -795,8 +795,8 @@ impl ViewerApp {
         // Their rectangles are needed here (the viewport handlers below ignore
         // any pointer activity over them), but the buttons themselves are
         // registered *after* the viewport interaction: the last widget at a
-        // position is the topmost one, so they get the hover — and show their
-        // tooltips — instead of the full-viewport rectangle underneath.
+        // position is the topmost one, so they get the hover - and show their
+        // tooltips - instead of the full-viewport rectangle underneath.
         let is_max = self.maximized == Some((slot, idx));
         let bsize = egui::vec2(24.0, 20.0);
         let by = rect.top() + 22.0; // below the slice counter
@@ -1067,7 +1067,7 @@ impl ViewerApp {
     }
 
     /// Set the crosshair of `slot` (voxel coords), sync its other two views,
-    /// and — when study linking is on — propagate the same patient-space
+    /// and - when study linking is on - propagate the same patient-space
     /// point to the other study.
     pub(super) fn set_cursor(&mut self, slot: usize, c: [f64; 3], source_view: usize) {
         let Some(study) = &self.slots[slot].study else {
@@ -1181,7 +1181,7 @@ impl ViewerApp {
         let study = study.as_ref().unwrap();
         let vol = &study.volume;
         // Segments of the active segmentation series, when they live on this
-        // volume's lattice — see `StudySlot::segs`.
+        // volume's lattice - see `StudySlot::segs`.
         let segs: &[Segmentation] = seg_idx
             .map(|i| &study.seg_series[i])
             .filter(|sr| sr.grid.dims == vol.dims)
@@ -1248,7 +1248,7 @@ impl ViewerApp {
                         ))
                     }
                 }
-                // Isodose segments — one marching-squares pass per enabled
+                // Isodose segments - one marching-squares pass per enabled
                 // level, and the levels are independent.
                 let levels: Vec<(usize, f32)> = self
                     .iso_levels
@@ -1350,7 +1350,7 @@ impl ViewerApp {
     ///
     /// The field is a lattice of displacements; what a view needs is arrows
     /// (or a deformed lattice) in *its* display-pixel space, which changes
-    /// only when the slice, the style or the field itself does — not on
+    /// only when the slice, the style or the field itself does - not on
     /// every repaint, and certainly not on every pan.
     pub(super) fn refresh_field_cache(&mut self, slot: usize, idx: usize) {
         let showing = self.field_on

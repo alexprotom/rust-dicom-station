@@ -16,7 +16,7 @@
 //! purposes". Those two statements are in tension; the stricter one governs.
 //!
 //! Consequently this file only ever *downloads* to the user's own machine, at
-//! the user's request — the same handling as SegVol's unlicensed weights, and
+//! the user's request - the same handling as SegVol's unlicensed weights, and
 //! unlike the auto-segmentation module's Apache-2.0 TotalSegmentator ones.
 //! Nothing here is redistributed with the program, the weights must not be
 //! bundled into the installer, and the converted cache written beside them is

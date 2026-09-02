@@ -2,7 +2,7 @@
 //!
 //! MedSAM2 is SAM 2.1 Hiera-Tiny with the input resolution halved: the
 //! published `sam2.1_hiera_t512.yaml` differs from Meta's `sam2.1_hiera_t.yaml`
-//! in exactly three values — `image_size` 1024 -> 512 and the two
+//! in exactly three values - `image_size` 1024 -> 512 and the two
 //! `RoPEAttention.feat_sizes` [64,64] -> [32,32], which is only 512/16 spelled
 //! out. Everything below is therefore SAM 2.1-T's own geometry, evaluated at
 //! 512.
@@ -12,7 +12,7 @@
 //! quantity that depends on `IMAGE_SIZE` (the interpolated background
 //! position embedding, the dense prompt encoding, the RoPE frequency table)
 //! is computed at build time. Changing `IMAGE_SIZE` here would therefore
-//! produce a *working* network — just not the one MedSAM2 was fine-tuned as.
+//! produce a *working* network - just not the one MedSAM2 was fine-tuned as.
 
 /// Input edge, in pixels, of one slice as the network sees it.
 pub const IMAGE_SIZE: usize = 512;
@@ -27,7 +27,7 @@ pub const PATCH_PADDING: usize = 3;
 pub const TRUNK_GRID: usize = IMAGE_SIZE / PATCH_STRIDE;
 /// Width of the first stage.
 pub const EMBED_DIM: usize = 96;
-/// Blocks per stage, `[1, 2, 7, 2]` — twelve in total.
+/// Blocks per stage, `[1, 2, 7, 2]` - twelve in total.
 pub const STAGES: [usize; 4] = [1, 2, 7, 2];
 pub const NUM_BLOCKS: usize = 12;
 /// Index of the last block of each stage, `cumsum(STAGES) - 1`.
@@ -39,7 +39,7 @@ pub const Q_POOL_BLOCKS: [usize; 3] = [1, 3, 10];
 pub const WINDOW_SPEC: [usize; 4] = [8, 4, 14, 7];
 /// Blocks with global (unwindowed) attention.
 pub const GLOBAL_ATT_BLOCKS: [usize; 3] = [5, 7, 9];
-/// Head width — constant across the trunk, because width and head count
+/// Head width - constant across the trunk, because width and head count
 /// double together.
 pub const HEAD_DIM: usize = 96;
 /// Learned background position embedding, tiled window embedding.
@@ -48,7 +48,7 @@ pub const POS_EMBED_WINDOW: usize = 8;
 
 // ---- image encoder: FPN neck --------------------------------------------
 
-/// Trunk output channels, lowest resolution first — the order the neck's
+/// Trunk output channels, lowest resolution first - the order the neck's
 /// convolutions are declared in.
 pub const BACKBONE_CHANNELS: [usize; 4] = [768, 384, 192, 96];
 /// Width of everything downstream of the neck.
@@ -135,14 +135,14 @@ pub const NUM_MASKMEM: usize = 7;
 pub const MAX_OBJ_PTRS: usize = 16;
 /// A 256-d pointer is split into this many `MEM_DIM`-wide tokens.
 pub const PTR_TOKENS: usize = D_MODEL / MEM_DIM;
-/// The mask handed to the memory encoder is `sigmoid(x) * SCALE + BIAS`, or —
-/// on a prompted slice — the hard binarization `(x > 0) * SCALE + BIAS`.
+/// The mask handed to the memory encoder is `sigmoid(x) * SCALE + BIAS`, or -
+/// on a prompted slice - the hard binarization `(x > 0) * SCALE + BIAS`.
 pub const SIGMOID_SCALE: f32 = 20.0;
 pub const SIGMOID_BIAS: f32 = -10.0;
 /// Logit written everywhere when the object-score head says "absent".
 pub const NO_OBJ_SCORE: f32 = -1024.0;
 /// `_use_multimask`: multi-mask output is used when the prompt has between
-/// these many points, inclusive — so a click (1) qualifies and a box (2)
+/// these many points, inclusive - so a click (1) qualifies and a box (2)
 /// does not.
 pub const MULTIMASK_MIN_PT: usize = 0;
 pub const MULTIMASK_MAX_PT: usize = 1;
@@ -162,7 +162,7 @@ pub const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
 pub struct Block {
     /// Width in.
     pub dim_in: usize,
-    /// Width out — twice `dim_in` on the first block of a new stage.
+    /// Width out - twice `dim_in` on the first block of a new stage.
     pub dim_out: usize,
     pub heads: usize,
     /// Attention window, or 0 for global attention.

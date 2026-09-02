@@ -2,14 +2,14 @@
 //!
 //! Writes a complete, self-consistent test study into a directory:
 //!
-//! * **CT series** — 40 slices, 96 × 96 px, 2 mm isotropic. Water cylinder
+//! * **CT series** - 40 slices, 96 × 96 px, 2 mm isotropic. Water cylinder
 //!   phantom (r = 70 mm), spherical target (r = 25 mm, HU 100) at the origin
 //!   and a small "cord" cylinder (r = 8 mm, HU 40) at (0, 60).
-//! * **RTSTRUCT** — BODY (EXTERNAL), TARGET (PTV), CORD (ORGAN).
-//! * **RTDOSE** — 3D Gaussian, 60 Gy at the isocenter, σ = 20 mm, 32-bit,
+//! * **RTSTRUCT** - BODY (EXTERNAL), TARGET (PTV), CORD (ORGAN).
+//! * **RTDOSE** - 3D Gaussian, 60 Gy at the isocenter, σ = 20 mm, 32-bit,
 //!   4 mm in-plane grid with 2 mm frame steps.
-//! * **RTPLAN** — ion (proton) plan, 2 beams, 60 Gy / 30 fx prescription.
-//! * **Extras** (optional) — DX radiograph, RTIMAGE (DRR), REG spatial
+//! * **RTPLAN** - ion (proton) plan, 2 beams, 60 Gy / 30 fx prescription.
+//! * **Extras** (optional) - DX radiograph, RTIMAGE (DRR), REG spatial
 //!   registration and an RT Ion Beams Treatment Record.
 //!
 //! The geometry is exact and analytically known, which makes the study usable
@@ -45,7 +45,7 @@ const SOP_RT_ION_BEAMS_RECORD: &str = "1.2.840.10008.5.1.4.1.1.481.9";
 const SOP_DETACHED_STUDY: &str = "1.2.840.10008.3.1.2.3.1";
 
 // ---------------------------------------------------------------------------
-// Phantom geometry (fixed — the integration tests depend on these values)
+// Phantom geometry (fixed - the integration tests depend on these values)
 // ---------------------------------------------------------------------------
 
 /// CT columns / rows.
@@ -64,7 +64,7 @@ const R_TARGET: f64 = 25.0;
 const R_CORD: f64 = 8.0;
 const CORD_Y: f64 = 60.0;
 
-/// Dose grid: odd counts so that (0, 0, 0) — the peak — is exactly on a node.
+/// Dose grid: odd counts so that (0, 0, 0) - the peak - is exactly on a node.
 const DNX: usize = 47;
 const DNY: usize = 47;
 const DNZ: usize = 41;

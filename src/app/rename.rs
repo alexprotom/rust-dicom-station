@@ -3,7 +3,7 @@
 //! segments, dose grids, plans, planar images, registrations and records.
 //!
 //! Every target addresses something inside one dataset's [`LoadedStudy`], so
-//! the rename itself is a pure function of that study — which is what makes
+//! the rename itself is a pure function of that study - which is what makes
 //! it testable without a running UI, and what keeps the dialog down to a text
 //! field and two buttons.
 //!
@@ -74,7 +74,7 @@ impl RenameTarget {
         }
     }
 
-    /// Which DICOM attribute the new text lands in — worth saying, because
+    /// Which DICOM attribute the new text lands in - worth saying, because
     /// renaming a patient touches every series filed under them.
     fn attribute(&self) -> &'static str {
         match self {
@@ -162,7 +162,7 @@ impl ViewerApp {
         };
         match t {
             RenameTarget::Patient { key, .. } => {
-                // A patient is a grouping over series, not an object — every
+                // A patient is a grouping over series, not an object - every
                 // series filed under them has to follow, or the tree splits
                 // into an old and a new patient node.
                 let mut hit = false;
@@ -268,7 +268,7 @@ impl ViewerApp {
     }
 
     /// The rename dialog. Enter applies, Esc and ✖ cancel, and an empty name
-    /// is simply not accepted — every one of these labels is what something
+    /// is simply not accepted - every one of these labels is what something
     /// is called somewhere else in the UI.
     pub(super) fn rename_window(&mut self, ctx: &egui::Context) {
         let Some(mut d) = self.rename.take() else {
@@ -410,7 +410,7 @@ mod rename_tests {
     }
 
     /// A patient is a grouping, so the rename has to reach every series of
-    /// that patient — and nobody else's.
+    /// that patient - and nobody else's.
     #[test]
     fn renaming_a_patient_moves_all_of_their_series() {
         let mut st = study();

@@ -2,7 +2,7 @@
 //!
 //! The only heavy primitive a (Plain-Conv) nnU-Net needs is 3D convolution;
 //! it is implemented as per-output-slice im2col + SIMD GEMM (`gemm` crate),
-//! parallelized over output slices with rayon — 15–50× faster than a direct
+//! parallelized over output slices with rayon - 15-50× faster than a direct
 //! scalar convolution loop. The remaining ops (transposed conv with
 //! kernel = stride = 2, instance norm, leaky ReLU, channel concat) are
 //! memory-bound and hand-rolled.
@@ -140,7 +140,7 @@ pub fn conv3d(
 }
 
 /// InstanceNorm3d (affine, eps 1e-5, biased variance) fused with
-/// LeakyReLU(0.01) — the pairing every nnU-Net conv block uses.
+/// LeakyReLU(0.01) - the pairing every nnU-Net conv block uses.
 pub fn instance_norm_lrelu(x: &mut Act, gamma: &[f32], beta: &[f32]) {
     let n = x.spatial();
     let inv_n = 1.0 / n as f64;

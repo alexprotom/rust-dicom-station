@@ -8,8 +8,8 @@
 //! The split that matters for performance is [`Medsam2::encode_slice`] versus
 //! everything else. Encoding is ~22 G multiply-accumulates and depends only on
 //! the image, so it can be done once per slice and reused across prompts and
-//! across both propagation directions; the rest — memory attention, decoder,
-//! memory encoder — is another ~26 G but it is strictly sequential, because
+//! across both propagation directions; the rest - memory attention, decoder,
+//! memory encoder - is another ~26 G but it is strictly sequential, because
 //! slice *n* needs slice *n-1*'s memory.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -33,7 +33,7 @@ use super::sam::{SamHead, SamOutput};
 /// One slice, encoded. Independent of any prompt, so worth caching.
 #[derive(Clone)]
 pub struct SliceFeatures<B: Backend> {
-    /// The neck's level-2 map, `[1, 256, 32, 32]` — what the memory attention
+    /// The neck's level-2 map, `[1, 256, 32, 32]` - what the memory attention
     /// and the SAM head consume, and what the memory encoder pairs with a
     /// mask.
     pub pix_feat: Tensor<B, 4>,
@@ -60,7 +60,7 @@ pub struct Medsam2<B: Backend> {
     ///
     /// The interactive loop's whole premise is the split described at the top
     /// of this module: re-prompting a slice must *not* re-encode it. Counting
-    /// the encodes is how that stays checkable — in a test, or in a profile —
+    /// the encodes is how that stays checkable - in a test, or in a profile -
     /// without measuring elapsed time, which says as much about the machine
     /// as about the code.
     encodes: AtomicUsize,
@@ -156,7 +156,7 @@ impl<B: Backend> Medsam2<B> {
     /// One row of the temporal encoding table, `[1, 1, MEM_DIM]`.
     ///
     /// Row 0 belongs to the slice immediately before the one being tracked and
-    /// row `NUM_MASKMEM - 1` to the prompted slices — the reference indexes it
+    /// row `NUM_MASKMEM - 1` to the prompted slices - the reference indexes it
     /// as `maskmem_tpos_enc[num_maskmem - t_pos - 1]`, and callers here pass
     /// that row directly.
     pub fn tpos_row(&self, row: usize) -> Tensor<B, 3> {
@@ -168,9 +168,9 @@ impl<B: Backend> Medsam2<B> {
 
     /// Temporal encodings for a set of object pointers, `[1, p, MEM_DIM]`.
     ///
-    /// `offsets` are how far each pointer is from the current slice — signed
+    /// `offsets` are how far each pointer is from the current slice - signed
     /// for conditioning slices (`use_signed_tpos_enc_to_obj_ptrs`) and
-    /// positive for tracked ones — normalized by `t_diff_max` and turned into
+    /// positive for tracked ones - normalized by `t_diff_max` and turned into
     /// a 256-wide sine encoding before the projection.
     pub fn pointer_pos(&self, offsets: &[f32], t_diff_max: f32) -> Tensor<B, 3> {
         let mut data = Vec::with_capacity(offsets.len() * D_MODEL);
@@ -195,7 +195,7 @@ impl<B: Backend> Medsam2<B> {
     /// `_use_mask_as_output`: a mask prompt bypasses the decoder entirely.
     ///
     /// `use_mask_input_as_output_without_sam` means the mask the user supplies
-    /// *is* the answer for that slice — scaled to the network's logit range
+    /// *is* the answer for that slice - scaled to the network's logit range
     /// rather than predicted. The decoder still runs, but only to produce an
     /// object pointer for the slices that follow.
     pub fn mask_as_output(

@@ -2,10 +2,10 @@
 //!
 //! Global label ids 1..=117 follow `class_map["total"]` of
 //! `totalsegmentator/map_to_binary.py` (v2.x). The five 1.5 mm sub-models
-//! (nnU-Net datasets 291–295) each predict a *local* contiguous label range
+//! (nnU-Net datasets 291-295) each predict a *local* contiguous label range
 //! that maps onto a contiguous slice of the global table, in this order:
-//! organs (1–24), vertebrae (25–50), cardiac (51–68), muscles (69–91),
-//! ribs (92–117). The 3 mm / 6 mm single models predict the global ids
+//! organs (1-24), vertebrae (25-50), cardiac (51-68), muscles (69-91),
+//! ribs (92-117). The 3 mm / 6 mm single models predict the global ids
 //! directly.
 
 /// Global class names, index 0 = label 1 ("spleen") … index 116 = label 117.

@@ -13,40 +13,40 @@ on the CPU or on any GPU via wgpu.
 | Variant | nnU-Net dataset(s) | Classes | Download | Practical use |
 |---|---|---|---|---|
 | **3 mm (fast)** | 297 | all 117 in one model | ≈ 135 MB | good quality, practical on any CPU |
-| **1.5 mm (high quality)** | 291–295 (organs / vertebrae / cardiac / muscles / ribs) | 117 across five sub-models, individually selectable | ≈ 1.2 GB | reference quality; GPU recommended |
+| **1.5 mm (high quality)** | 291-295 (organs / vertebrae / cardiac / muscles / ribs) | 117 across five sub-models, individually selectable | ≈ 1.2 GB | reference quality; GPU recommended |
 | **6 mm (preview)** | 298 | all 117 in one model | ≈ 135 MB | coarse but very fast |
 
 All variants are nnU-Net v2 `PlainConvUNet` 3D networks (5 stages at
 3/6 mm, 6 at 1.5 mm): Conv3d → InstanceNorm → LeakyReLU blocks,
 strided-conv downsampling, a transposed-conv decoder with skip connections,
-and a 1×1×1 segmentation head — rebuilt at load time from each model's
+and a 1×1×1 segmentation head - rebuilt at load time from each model's
 `plans.json`, not hard-coded.
 
 ## Using it in the viewer
 
 *Tools ▶ 🔬 Auto-segment dataset A/B…* or the **🔬 Auto…** button in the
 sidebar *Segmentations* section opens the tool window (**🔬
-Auto-segmentation — dataset A**; the three segmentation engines share one
+Auto-segmentation - dataset A**; the three segmentation engines share one
 window layout, see [architecture.md](architecture.md#the-three-engine-windows)):
 
-* **Model** — one of the three variants; the dialog shows whether weights
+* **Model** - one of the three variants; the dialog shows whether weights
   are cached or how much will be downloaded once. For 1.5 mm the five
-  sub-models can be toggled individually — *organs* + *cardiac* alone takes
+  sub-models can be toggled individually - *organs* + *cardiac* alone takes
   a fifth of the full set's time.
-* **Options ▸ Compute** — *Auto* (GPU when available, else CPU), *GPU*, or
+* **Options ▸ Compute** - *Auto* (GPU when available, else CPU), *GPU*, or
   *CPU*.
-* **Options ▸ Model folder** — the root every engine downloads into
+* **Options ▸ Model folder** - the root every engine downloads into
   (`%LOCALAPPDATA%\RustDICOMStation\models` on Windows,
   `~/.local/share/RustDICOMStation/models` on Linux, by default); this
   engine uses its `totalsegmentator/` sub-folder. Persisted as `models_dir`
   in `viewer_settings.txt`.
 
 **▶ Segment** runs in the background; the buttons become a progress row
-(device, bar, message, **Cancel** — effective during download, conversion
+(device, bar, message, **Cancel** - effective during download, conversion
 and between inference tiles), mirrored in the sidebar. A **results dialog**
 then lists every detected structure with its volume; checked ones become
-ordinary editable segmentations — brush/erase/grow correction, live 3D
-view, per-structure colors from a curated anatomical palette — optionally
+ordinary editable segmentations - brush/erase/grow correction, live 3D
+view, per-structure colors from a curated anatomical palette - optionally
 converted to **RTSTRUCT contours** in the same step, which then render like
 any ROI and ride the DICOM export. Materialize only what you need: every
 mask is a full-volume voxel map (≈ 35 MB at 512 × 512 × 133).
@@ -61,7 +61,7 @@ from the TotalSegmentator GitHub release (TLS via rustls with the
 **operating-system certificate store**) and converts them natively:
 
 1. `plans.json` is extracted and validated;
-2. `fold_0/checkpoint_final.pth` — a PyTorch zip/pickle checkpoint — is
+2. `fold_0/checkpoint_final.pth` - a PyTorch zip/pickle checkpoint - is
    parsed by the built-in **torch-pickle reader** (`autoseg/pickle.rs`, a
    minimal pickle virtual machine covering `torch.save`'s persistent
    storage IDs, `_rebuild_tensor_v2`, shapes, strides and offsets);
@@ -89,7 +89,7 @@ The pipeline mirrors TotalSegmentator exactly:
    truncation.
 3. **Normalization** per model: clip to the training-set foreground's
    [0.5, 99.5] HU percentiles, then z-score with the dataset-fingerprint
-   mean/std — all constants from `plans.json`.
+   mean/std - all constants from `plans.json`.
 4. **Sliding-window inference** with nnU-Net's exact tiling (step 0.8 ×
    patch for the "total" task), Gaussian importance weighting
    (σ = patch/8), zero-padded borders, no mirroring test-time augmentation
@@ -105,16 +105,16 @@ The pipeline mirrors TotalSegmentator exactly:
 
 ## Compute engines
 
-**CPU** — a hand-written engine (`autoseg/cpu.rs`): 3D convolution as
+**CPU** - a hand-written engine (`autoseg/cpu.rs`): 3D convolution as
 per-output-slice im2col + pure-Rust SIMD GEMM (the `gemm` crate),
 parallelized over slices with rayon; the transposed conv
 (kernel = stride = 2) is a GEMM plus disjoint scatter; instance norm and
-LeakyReLU are fused. That is 15–50× faster than a direct convolution loop
-(25–100 GFLOP/s measured on modest hardware): a thorax CT with the 3 mm
+LeakyReLU are fused. That is 15-50× faster than a direct convolution loop
+(25-100 GFLOP/s measured on modest hardware): a thorax CT with the 3 mm
 model takes well under a minute on a desktop CPU, ≈ 3.5 min even on a
 throttled 2-core VM.
 
-**GPU** — the same network through
+**GPU** - the same network through
 [burn](https://github.com/tracel-ai/burn)'s **wgpu** backend
 (`autoseg/gpu.rs`): Vulkan / DX12 / Metal, i.e. NVIDIA, AMD, Intel and
 Apple GPUs, with **no CUDA toolkit or vendor SDK**; kernels are generated
@@ -128,15 +128,15 @@ burn dependency tree).
 
 Verified against the reference at three levels:
 
-* **Network equivalence** — on an identical preprocessed patch, the Rust
+* **Network equivalence** - on an identical preprocessed patch, the Rust
   forward pass reproduces the actual 3 mm checkpoint's PyTorch/nnU-Net
   logits to ≈ 1 × 10⁻⁴ absolute (float accumulation-order noise on logits
   spanning ±86) with **100 % argmax agreement**.
-* **End-to-end** — on the bundled example study, the full pipeline agrees
+* **End-to-end** - on the bundled example study, the full pipeline agrees
   with the official Python TotalSegmentator at **mean Dice 0.9995 across
   90 detected structures** (worst 0.992, spleen 1.0000); residual
   differences are single-voxel boundary tie-breaks.
-* **CPU vs GPU** — the wgpu engine produced **bit-identical labels** to
+* **CPU vs GPU** - the wgpu engine produced **bit-identical labels** to
   the CPU engine over a full run (34.9 M voxels, zero differences, on a
   software Vulkan implementation).
 
@@ -172,11 +172,11 @@ Global label ids follow TotalSegmentator v2's `class_map["total"]`:
 
 | Ids | Group (1.5 mm sub-model) | Structures |
 |---|---|---|
-| 1–24 | organs | spleen, kidney R/L, gallbladder, liver, stomach, pancreas, adrenal gland R/L, lung upper/lower lobe L, lung upper/middle/lower lobe R, esophagus, trachea, thyroid, small bowel, duodenum, colon, urinary bladder, prostate, kidney cyst L/R |
-| 25–50 | vertebrae | sacrum, S1, L5–L1, T12–T1, C7–C1 |
-| 51–68 | cardiac | heart, aorta, pulmonary vein, brachiocephalic trunk, subclavian artery R/L, common carotid artery R/L, brachiocephalic vein L/R, left atrial appendage, superior/inferior vena cava, portal + splenic vein, iliac artery L/R, iliac vena L/R |
-| 69–91 | muscles | humerus L/R, scapula L/R, clavicula L/R, femur L/R, hip L/R, spinal cord, gluteus maximus/medius/minimus L+R, autochthon L/R, iliopsoas L/R, brain, skull |
-| 92–117 | ribs | ribs left 1–12, ribs right 1–12, sternum, costal cartilages |
+| 1-24 | organs | spleen, kidney R/L, gallbladder, liver, stomach, pancreas, adrenal gland R/L, lung upper/lower lobe L, lung upper/middle/lower lobe R, esophagus, trachea, thyroid, small bowel, duodenum, colon, urinary bladder, prostate, kidney cyst L/R |
+| 25-50 | vertebrae | sacrum, S1, L5-L1, T12-T1, C7-C1 |
+| 51-68 | cardiac | heart, aorta, pulmonary vein, brachiocephalic trunk, subclavian artery R/L, common carotid artery R/L, brachiocephalic vein L/R, left atrial appendage, superior/inferior vena cava, portal + splenic vein, iliac artery L/R, iliac vena L/R |
+| 69-91 | muscles | humerus L/R, scapula L/R, clavicula L/R, femur L/R, hip L/R, spinal cord, gluteus maximus/medius/minimus L+R, autochthon L/R, iliopsoas L/R, brain, skull |
+| 92-117 | ribs | ribs left 1-12, ribs right 1-12, sternum, costal cartilages |
 
 The exact per-id table lives in `src/autoseg/classes.rs` and is verified
 against upstream `map_to_binary.py` by unit test.
@@ -184,7 +184,7 @@ against upstream `map_to_binary.py` by unit test.
 ## Licensing and citation
 
 The TotalSegmentator **code and the weights of the "total" task are
-Apache-2.0** — the authors publish these models as "openly available for
+Apache-2.0** - the authors publish these models as "openly available for
 any usage", commercial use included. (Other TotalSegmentator sub-tasks
 have restricted licenses; this viewer only uses the open "total" task.)
 
@@ -200,20 +200,20 @@ If you use the auto-segmentation in academic work, cite:
 
 ## Troubleshooting
 
-* **"no usable wgpu adapter found"** — no Vulkan/DX12/Metal device
+* **"no usable wgpu adapter found"** - no Vulkan/DX12/Metal device
   (headless machine, missing driver). *Auto* silently uses the CPU;
   forcing *GPU* reports the error. If the whole program will not start,
-  that is the related and more common failure — a Windows machine
+  that is the related and more common failure - a Windows machine
   advertising a Vulkan driver that cannot create a device; see
   [viewer.md](viewer.md#graphics-backend). The backend chosen there governs
   inference too, so a machine forced onto Direct3D 12 runs the networks on
   Direct3D 12.
-* **Download fails behind a proxy** — the downloader uses the OS trust
+* **Download fails behind a proxy** - the downloader uses the OS trust
   store, so a corporate/clinical inspection proxy's CA installed
   system-wide is honored; fully offline machines, see the air-gapped note
   above.
-* **Memory** — the 3 mm model peaks around 2–3 GB for a thorax CT
+* **Memory** - the 3 mm model peaks around 2-3 GB for a thorax CT
   (streaming accumulator + activations); the 1.5 mm variant needs several
   GB more, and each materialized mask ≈ volume-size bytes.
-* As with everything in this viewer: research and QA use — not a medical
+* As with everything in this viewer: research and QA use - not a medical
   device, not for clinical decision-making.

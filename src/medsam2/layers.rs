@@ -46,14 +46,14 @@ impl<B: Backend> Norm<B> {
         ops::layer_norm(x, &self.weight, &self.bias, self.eps)
     }
 
-    /// SAM 2's `LayerNorm2d` — statistics over the channel axis.
+    /// SAM 2's `LayerNorm2d` - statistics over the channel axis.
     pub fn apply_2d(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         ops::layer_norm_2d(x, &self.weight, &self.bias, self.eps)
     }
 }
 
 /// An `nn.Linear`. The weight is kept transposed, `[in, out]`, so applying
-/// it is one matmul with nothing rearranged per call — every `Lin` in the
+/// it is one matmul with nothing rearranged per call - every `Lin` in the
 /// network runs once per slice, hundreds of slices per run.
 pub struct Lin<B: Backend> {
     pub weight_t: Tensor<B, 2>,
@@ -138,7 +138,7 @@ impl<B: Backend> Mlp<B> {
     }
 }
 
-/// A two-layer MLP with GELU between — the Hiera blocks and the CXBlocks,
+/// A two-layer MLP with GELU between - the Hiera blocks and the CXBlocks,
 /// which use `Linear` layers rather than SAM 2's `MLP` helper.
 pub struct GeluMlp<B: Backend> {
     pub up: Lin<B>,

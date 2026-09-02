@@ -1,9 +1,9 @@
-//! rust-dicom-station — a fast, robust DICOM / RT DICOM viewer in pure Rust.
+//! rust-dicom-station - a fast, robust DICOM / RT DICOM viewer in pure Rust.
 //!
 //! Usage: `rust-dicom-station [DICOM_DIRECTORY] [COMPARISON_DIRECTORY]`
 //!
 //! With two directories, comparison mode starts automatically (study A on
-//! top, study B below — six views total).
+//! top, study B below - six views total).
 //!
 //! ## Starting on a machine whose Vulkan driver does not work
 //!
@@ -11,8 +11,8 @@
 //! create a device. `wgpu` prefers Vulkan, so the program would die before
 //! drawing anything, on a machine where nothing else is wrong. So the window
 //! is not opened once but *attempted*: the preferred backend first, then the
-//! rest of [`gfx::candidates`], and a backend that fails — by error or by
-//! panicking somewhere inside the driver — costs a line on standard error
+//! rest of [`gfx::candidates`], and a backend that fails - by error or by
+//! panicking somewhere inside the driver - costs a line on standard error
 //! rather than the program. See [`rust_dicom_station::gfx`].
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -88,7 +88,7 @@ fn run(
 
     // `NativeOptions` holds boxed callbacks that are not `UnwindSafe`, which
     // is a fair warning in general and irrelevant here: nothing is read back
-    // after a failed attempt — the next one builds its own options from
+    // after a failed attempt - the next one builds its own options from
     // scratch.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         eframe::run_native(

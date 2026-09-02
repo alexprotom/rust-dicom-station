@@ -28,7 +28,7 @@ const CY: f64 = 62.0;
 const RX: f64 = 80.0;
 const RY: f64 = 52.0;
 /// Where the moulded shell is pressed against the skin instead of standing
-/// off it — the one thing geometry cannot undo.
+/// off it - the one thing geometry cannot undo.
 const CONTACT: std::ops::Range<usize> = 46..55;
 
 fn idx(i: usize, j: usize, k: usize) -> usize {
@@ -92,7 +92,7 @@ fn phantom() -> Phantom {
             }
         }
     }
-    // Airways reaching both lungs — on the first two slices only, so that
+    // Airways reaching both lungs - on the first two slices only, so that
     // exactly those two slices have a cavity open to the outside.
     for k in 0..2 {
         for j in 0..23 {
@@ -206,7 +206,7 @@ fn the_classical_method_finds_the_patient_and_leaves_the_equipment_out() {
         }
     }
 
-    // The ears — thin, and exactly what a plain opening shaves off.
+    // The ears - thin, and exactly what a plain opening shaves off.
     assert_eq!(r.mask[idx(8, 30, 10)], 1, "left ear");
     assert_eq!(r.mask[idx(91, 30, 10)], 1, "right ear");
     assert!(r.recovered_voxels > 0, "thin anatomy was recovered");
@@ -241,7 +241,7 @@ fn a_shell_pressed_against_the_skin_is_kept_and_the_cost_is_bounded() {
         * VOXEL_CM3;
     assert!(
         extra < 10.0,
-        "the error beyond the patient is {extra:.1} cm³ — the contact patch \
+        "the error beyond the patient is {extra:.1} cm³ - the contact patch \
          alone should be about 7"
     );
 }
@@ -249,7 +249,7 @@ fn a_shell_pressed_against_the_skin_is_kept_and_the_cost_is_bounded() {
 #[test]
 fn the_chest_wall_over_a_lung_is_not_mistaken_for_a_couch_skin() {
     // The failure real data taught, reduced to its essentials: a hollow
-    // cylinder — a 6 mm wall around a big cavity — beside a 2 mm couch
+    // cylinder - a 6 mm wall around a big cavity - beside a 2 mm couch
     // skin. A threshold does not see a body here, it sees a thin shell
     // that repeats slice after slice, which is the exact signature the
     // equipment test looks for. Both are thin, both are extruded; only one
@@ -320,7 +320,7 @@ fn two_legs_are_two_bodies_not_the_larger_one() {
 #[test]
 fn an_mr_phantom_with_a_coil_gradient_still_comes_out_whole() {
     // The same body, but with MR intensities and a receive profile that
-    // falls off across the field — the case a fixed threshold cannot serve.
+    // falls off across the field - the case a fixed threshold cannot serve.
     let p = phantom();
     let mut data = vec![0i16; NX * NY * NZ];
     for k in 0..NZ {
@@ -341,7 +341,7 @@ fn an_mr_phantom_with_a_coil_gradient_still_comes_out_whole() {
     let mut pr = params();
     pr.foreground = Foreground::MrRelative {
         fraction: 0.12,
-        // Well above any anatomy, well below the 160 mm body — the window a
+        // Well above any anatomy, well below the 160 mm body - the window a
         // bias estimate has to sit in.
         sigma_mm: 25.0,
     };
@@ -397,8 +397,8 @@ fn the_model_assisted_method_runs_the_published_network() {
     )
     .expect("a body");
     // The network sees a featureless ellipse rather than a person, so this
-    // asserts that the hybrid holds together — a body of a plausible size,
-    // with the skin still placed by the threshold — not a Dice figure that
+    // asserts that the hybrid holds together - a body of a plausible size,
+    // with the skin still placed by the threshold - not a Dice figure that
     // would only be meaningful on real anatomy.
     assert!(r.voxels > 0, "the network found a patient");
     assert!(!r.device.is_empty(), "the device was reported");

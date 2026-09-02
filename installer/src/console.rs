@@ -119,8 +119,8 @@ fn yes_no(b: bool) -> &'static str {
 
 /// The text-mode equivalent of the wizard's graphics page.
 ///
-/// The default is whatever the caller already has — `Vulkan` unless
-/// `--graphics` said otherwise — so pressing Enter is always the right
+/// The default is whatever the caller already has - `Vulkan` unless
+/// `--graphics` said otherwise - so pressing Enter is always the right
 /// answer on a machine with nothing wrong with it.
 fn ask_graphics(current: Graphics) -> Result<Graphics> {
     let choices = Graphics::ALL;
@@ -143,7 +143,7 @@ fn ask_graphics(current: Graphics) -> Result<Graphics> {
         if line.is_empty() {
             return Ok(current);
         }
-        // A number from the list, or the name itself — both are things
+        // A number from the list, or the name itself - both are things
         // people type, and neither is worth rejecting.
         if let Ok(n) = line.parse::<usize>() {
             if (1..=choices.len()).contains(&n) {

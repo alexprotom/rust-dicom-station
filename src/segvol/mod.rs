@@ -1,12 +1,12 @@
-//! Promptable volumetric segmentation — a pure-Rust re-implementation of
+//! Promptable volumetric segmentation - a pure-Rust re-implementation of
 //! [SegVol](https://github.com/BAAI-DCAI/SegVol) inference (Du et al.,
 //! NeurIPS 2024, arXiv 2311.13385).
 //!
 //! Where [`crate::autoseg`] segments 117 fixed anatomical classes with no
 //! interaction, this engine segments whatever it is pointed at: a 3-D box, a
 //! set of clicks, or a structure name in plain text. That covers the things a
-//! fixed-class model structurally cannot — lesions, targets, post-surgical
-//! cavities — which is why the two engines coexist rather than compete.
+//! fixed-class model structurally cannot - lesions, targets, post-surgical
+//! cavities - which is why the two engines coexist rather than compete.
 //!
 //! The network is a MONAI 3-D ViT image encoder feeding a SAM-style prompt
 //! encoder and mask decoder, plus a frozen CLIP text tower for text prompts.

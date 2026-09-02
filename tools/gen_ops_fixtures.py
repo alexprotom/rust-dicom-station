@@ -3,7 +3,7 @@
 
 Run once, offline, with PyTorch installed; the output is a small safetensors
 file committed to `tests/data/`. Nothing in the shipped program depends on
-PyTorch — this only records what PyTorch's semantics *are*, so the Rust
+PyTorch - this only records what PyTorch's semantics *are*, so the Rust
 engine's kernels can be asserted against them.
 
     python3 tools/gen_ops_fixtures.py tests/data/medsam2-ops.safetensors
