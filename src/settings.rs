@@ -28,6 +28,7 @@ pub const GRAPHICS_BACKEND_KEY: &str = "graphics_backend";
 /// Settings keys of the two optional side-panel modules.
 const MODULE_REG_KEY: &str = "module_image_registration";
 const MODULE_SIM_KEY: &str = "module_image_simulation";
+const MODULE_PROP_KEY: &str = "module_structures_propagation";
 
 /// Settings keys of the last session's sources, one per dataset. The paths
 /// are separated by `|`, which no path on any supported system contains.
@@ -53,12 +54,16 @@ pub struct Settings {
     pub archive_dir: Option<PathBuf>,
 
     /// *Modules ▶ Image registration*: the registration section is shown in
-    /// the side panel.
+    /// the modules panel.
     pub module_registration: bool,
 
     /// *Modules ▶ Image simulation*: the simulation section is shown in the
-    /// side panel.
+    /// modules panel.
     pub module_simulation: bool,
+
+    /// *Modules ▶ Structures propagation*: the propagation section is shown
+    /// in the modules panel.
+    pub module_propagation: bool,
 
     /// Which graphics backend to draw and compute with. Read once at
     /// startup, before the window exists, so a change only takes effect on
@@ -83,6 +88,7 @@ impl Default for Settings {
             // on and the choice is remembered.
             module_registration: false,
             module_simulation: false,
+            module_propagation: false,
             session: [Vec::new(), Vec::new()],
             // Let wgpu choose. The installer writes an explicit value when
             // the person installing picks one.
@@ -353,6 +359,10 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
             if let Some(b) = bool_from_str(value) {
                 s.module_simulation = b;
             }
+        } else if key.eq_ignore_ascii_case(MODULE_PROP_KEY) {
+            if let Some(b) = bool_from_str(value) {
+                s.module_propagation = b;
+            }
         } else if key.eq_ignore_ascii_case(GRAPHICS_BACKEND_KEY) {
             // An unreadable value leaves the default rather than failing to
             // start: this file is edited by hand and by an installer, and a
@@ -379,14 +389,16 @@ fn render(s: &Settings) -> String {
         out.push_str(&format!("{ARCHIVE_DIR_KEY} = {}\n", dir.display()));
     }
     out.push_str(&format!(
-        "# optional side-panel modules (Modules menu) = on | off\n\
+        "# optional modules-panel sections (Modules menu) = on | off\n\
          {MODULE_REG_KEY} = {}\n\
          {MODULE_SIM_KEY} = {}\n\
+         {MODULE_PROP_KEY} = {}\n\
          # graphics backend = auto | vulkan | dx12 | metal | opengl\n\
          # (the WGPU_BACKEND environment variable overrides this)\n\
          {GRAPHICS_BACKEND_KEY} = {}\n",
         bool_to_str(s.module_registration),
         bool_to_str(s.module_simulation),
+        bool_to_str(s.module_propagation),
         s.graphics_backend.key()
     ));
     for (key, paths) in SESSION_KEYS.iter().zip(&s.session) {
@@ -531,17 +543,22 @@ mod tests {
 
     #[test]
     fn round_trips_the_module_flags() {
-        for (reg, sim) in [(false, false), (true, false), (false, true), (true, true)] {
+        for bits in 0..8u8 {
             let s = Settings {
-                module_registration: reg,
-                module_simulation: sim,
+                module_registration: bits & 1 != 0,
+                module_simulation: bits & 2 != 0,
+                module_propagation: bits & 4 != 0,
                 ..Settings::default()
             };
-            assert_eq!(parse(&render(&s)), s, "round trip of ({reg}, {sim})");
+            assert_eq!(parse(&render(&s)), s, "round trip of {bits:03b}");
         }
         assert!(
             parse(&format!("{MODULE_REG_KEY} = TRUE")).module_registration,
             "case-insensitive alias"
+        );
+        assert!(
+            parse(&format!("{MODULE_PROP_KEY} = on")).module_propagation,
+            "the propagation module is remembered too"
         );
     }
 }

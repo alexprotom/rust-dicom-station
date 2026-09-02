@@ -8,7 +8,7 @@ is linked — the algorithms are **re-implemented natively in Rust**.
 
 ![registration](screenshot_registration.png)
 
-*Deformable registration of two breathing phases: the sidebar reports the
+*Deformable registration of two breathing phases: the module reports the
 recovered transform and metric improvement; the fusion overlay shows aligned
 anatomy in gray, residual respiratory mismatch as magenta/green fringes.*
 
@@ -107,8 +107,8 @@ and, after a run, its residual.
 
 ## Running a registration
 
-*Modules ▶ Image registration* puts the section — method, region,
-parameters, landmarks, result and vector field — in the left panel. With
+*Modules ▶ Image registration* puts the section - method, region,
+parameters, landmarks, result and vector field - in the right panel. With
 two datasets loaded it registers one onto the other, **B ▶ A** or **A ▶ B**
 (the second-named is the fixed image and receives the fusion overlay), on a
 background thread with progress and a **Cancel** button.
@@ -121,6 +121,21 @@ On the bundled data (512 × 512 × 133 CT, two breathing phases): elastix
 rigid pre-alignment plus three B-spline resolution levels, 1800 iterations
 total, ≈ 20 s on a desktop CPU, driving the mean-squared HU difference from
 ≈ 9700 to ≈ 1800.
+
+## Against a 4D group
+
+The **Fixed image** row offers, besides the other dataset's displayed volume,
+**every phase of a 4D group** of either dataset. That runs one registration
+per phase against the moving dataset's displayed volume: the phases of one
+acquisition differ by breathing, so a single transform for the group would be
+answering a question nobody asked.
+
+The moving image can be the group's own dataset - a planning CT and the 4DCT
+of the same patient usually arrive together - or the other one. Each phase
+reports its own metric line, and the transforms are kept so that propagating
+structures onto the same group afterwards costs no registration
+([propagation.md](propagation.md)). **Clear group registration** drops them,
+as does clearing the registration.
 
 ## Local registration
 
@@ -213,7 +228,7 @@ see [propagation.md](propagation.md).
 
 ## Transform simulator (registration QA)
 
-The *Simulation* sidebar section applies an **exactly known** transform —
+The *Simulation* module section applies an **exactly known** transform -
 rigid motion (translation + Euler rotation about the volume centre) plus an
 optional local Gaussian deformation (amplitude vector + σ, centred at the
 crosshair) — to a loaded dataset and generates the result into the other

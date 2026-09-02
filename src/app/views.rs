@@ -31,6 +31,9 @@ impl ViewerApp {
     pub(super) fn contour_settings_hash(&self, slot: usize) -> u64 {
         let mut h: u64 = 0x9e3779b97f4a7c15 ^ (slot as u64).wrapping_mul(0xff51afd7ed558ccd);
         h = h.rotate_left(11) ^ (self.slots[slot].active_structs as u64 + 1);
+        if self.slots[slot].structs_shown {
+            h = h.rotate_left(3) ^ 0xA5A5;
+        }
         for (i, v) in self.slots[slot].roi_visible.iter().enumerate() {
             if *v {
                 h = h.rotate_left(7) ^ (i as u64 + 1);
@@ -454,8 +457,9 @@ impl ViewerApp {
             }
         }
 
-        // Contours.
-        if self.show_contours {
+        // Contours. `structs_shown` is the tick box on the series row; the
+        // cached geometry stays, it simply is not painted.
+        if self.show_contours && slot_state.structs_shown {
             if let Some(ss) = slot_state.active_structures() {
                 for (ri, gfx) in &view.contours {
                     let Some(roi) = ss.rois.get(*ri) else {
@@ -1152,12 +1156,18 @@ impl ViewerApp {
         let dose_hash = self.dose_settings_hash(slot);
         let contour_hash = self.contour_settings_hash(slot);
         let seg_hash = self.seg_overlay_hash(slot);
-        let seg_idx = self.slots[slot].seg_series_idx();
+        // The tick box on the segmentation series row. `seg_series_idx` still
+        // reports the active series to the editing tools; only the overlay
+        // below is held back.
+        let seg_idx = self.slots[slot]
+            .segs_shown
+            .then(|| self.slots[slot].seg_series_idx())
+            .flatten();
         let grow_here = self.grow.as_ref().is_some_and(|g| g.slot == slot);
         let wc = self.window_center;
         let ww = self.window_width;
         let dose_on = self.dose_mode != DoseMode::Off;
-        let contours_on = self.show_contours;
+        let contours_on = self.show_contours && self.slots[slot].structs_shown;
 
         let StudySlot {
             study,

@@ -218,9 +218,12 @@ src/
     chrome.rs         menu bar, toolbar, status bar, help
     detach.rs         every tool window as a window of the operating system
                       (immediate viewport), titled and placed alike
-    panels.rs         left panel: show / hide, the per-dataset Data tree sections
-    reg_panel.rs      the Image registration section: method, region, parameters,
-                      landmarks, the run, the analytics, the vector field
+    panels.rs         both edge panels: the shared show / hide machinery, the
+                      left panel's per-dataset Data tree sections, and the
+                      right panel's list of switched-on modules
+    reg_panel.rs      the Image registration module: method, region, parameters,
+                      landmarks, the run (against the other dataset or every
+                      phase of a 4D group), the analytics, the vector field
     views.rs          central MPR viewports, interaction, texture caches
     d3.rs             live 3D structure window
     planar.rs         floating DX / CR / RTIMAGE viewers
@@ -243,7 +246,9 @@ src/
     prompt_seg.rs     prompt segmentation window and worker (SegVol)
     box_seg.rs        slice propagation: the box drawn in the viewport, the
                       preview / refine / propagate loop, the resident session (MedSAM2)
-    propagate_win.rs  structure propagation window and worker
+    propagate_win.rs  the Structures propagation module and its worker, onto the
+                      other dataset or onto every phase of a 4D group (one
+                      registration each, transforms kept for the next run)
     motion_win.rs     the 4D motion / ITV window and its per-phase pipeline
                       worker (register ▸ propagate ▸ measure ▸ ITV)
     motion_results.rs the motion results window: charts, tables, correlations,

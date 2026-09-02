@@ -1,9 +1,13 @@
 # Contour and segmentation propagation
 
-*Tools ▶ ⇄ Propagate structures* carries any RTSTRUCT ROI or painted
-segmentation across the active registration and lands it on the other
-dataset as an ordinary, editable segmentation — convertible back to
-RTSTRUCT and exportable as DICOM.
+*Modules ▶ Structures propagation* carries any RTSTRUCT ROI or painted
+segmentation across a registration and lands it as an ordinary, editable
+segmentation, convertible back to RTSTRUCT and exportable as DICOM. It is a
+section of the right panel, next to the image registration that drives it.
+
+The destination is either **the other dataset**, through the registration
+that is already active, or **every phase of a 4D group** of either dataset,
+which the module registers as it goes.
 
 ## What it does
 
@@ -37,17 +41,43 @@ deformed — *Refine locally first* runs a local deformable refinement on
 the enclosing structure before anything is carried; otherwise a small
 structure lands where the *larger* one's average deformation puts it.
 
-The refinement replaces the active registration, so the sidebar reports
-exactly what the propagation used; method and parameters come from the
-sidebar (forced to deformable), the margin from the propagation window.
+The refinement replaces the active registration, so the registration module
+reports exactly what the propagation used; method and parameters come from
+that module (forced to deformable), the margin from the propagation section.
+
+## Onto a 4D group
+
+A planning CT with its structures on one side and a 4DCT on the other is the
+case where a single transform is wrong: the phases differ by breathing, and
+one transform would put every structure where the reference phase is. So
+choosing a group as the destination runs **one registration per phase**: the
+source volume is registered onto that phase, and the structures are pulled
+through that phase's own transform.
+
+The results arrive as one segmentation series per phase, each bound to that
+phase's image series, so the tree files them under the right member and the
+views show them when that phase is displayed. Every phase reports its own
+metric line beside its structures' volume changes.
+
+The transforms are kept. Registering a group in the registration module
+(*Fixed image ▶ the group*) and then propagating onto it costs no
+registration at all, and the button says **▶ Propagate to N phases** rather
+than **▶ Register and propagate to N phases**. They are dropped when the
+registration is cleared, or when the moving image changes.
+
+A local refinement belongs to one pair of images, so it is not offered here:
+there is one pair per phase.
 
 ## Using it
 
 1. Register the two datasets (any method; see
-   [registration.md](registration.md)).
-2. *Tools ▶ ⇄ Propagate structures…*
-3. Choose the source dataset, tick what to carry, optionally pick an
-   enclosing region to refine on, and press **▶ Propagate**.
+   [registration.md](registration.md)). Skip this when the destination is a
+   4D group: the module registers each phase itself.
+2. *Modules ▶ Structures propagation*, or **⇄ Propagate structures** in the
+   registration module once it has a result.
+3. Choose the source dataset and the destination, tick what to carry,
+   optionally pick an enclosing region to refine on, and press
+   **▶ Propagate**.
 
 Results arrive named `<structure> (from A)`, in the source structure's
 colour, as the destination's active segmentation — edit with the brush,

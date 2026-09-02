@@ -1,37 +1,82 @@
-//! The side panel and its per-dataset sections.
+//! The two side panels and their sections.
 //!
-//! Each section renders one kind of loaded object -- series, structures,
-//! segmentations, dose, plan, planar images, registrations, records. The
-//! optional registration and simulation sections live in `reg_panel.rs`.
+//! The left panel is the data tree and nothing else: one section per kind of
+//! loaded object - series, structures, segmentations, dose, plan, planar
+//! images, registrations, records - under one node per dataset.
+//!
+//! The right panel holds the modules, each one turned on and off in the
+//! Modules menu: image registration and image simulation (both in
+//! `reg_panel.rs`) and structures propagation (`propagate_win.rs`).
+//!
+//! Both panels are built the same way, by [`ViewerApp::edge_panel`]: a thin
+//! strip along the window edge carrying the show / hide arrow, and beside it
+//! the panel itself, which can also be dragged shut and pulled back open.
+//! F9 works the left one, F10 the right.
 
 use super::*;
 
+/// What tells one edge panel from the other.
+struct EdgePanel {
+    /// Keys the panel, its strip and its remembered width.
+    id: &'static str,
+    /// Which edge it lives on.
+    left: bool,
+    /// Width it opens at the first time.
+    width: f32,
+    /// What the hover text calls it.
+    name: &'static str,
+    /// The shortcut the hover text names.
+    key: &'static str,
+}
+
 impl ViewerApp {
-    // -- Side panel -------------------------------------------------------
-    pub(super) fn side_panel(&mut self, ui: &mut egui::Ui) {
-        if self.slots[0].study.is_none() && self.slots[1].study.is_none() {
-            return;
-        }
-        // A thin strip along the window edge carries the show / hide arrow.
-        // It stays there when the panel is gone — otherwise nothing on
-        // screen would say how to get it back (View ▶ Left panel and F9 do
-        // the same).
+    /// One edge panel: the strip with the show / hide arrow, and the panel
+    /// beside it.
+    ///
+    /// The strip stays there when the panel is gone - otherwise nothing on
+    /// screen would say how to get it back, and only the shortcut would.
+    ///
+    /// `open` is the flag the caller keeps: `show_collapsible` wants it by
+    /// reference, which the body's `&mut self` cannot share, so it travels
+    /// in and out through the return value.
+    fn edge_panel(
+        ui: &mut egui::Ui,
+        p: EdgePanel,
+        open: bool,
+        body: impl FnOnce(&mut egui::Ui),
+    ) -> bool {
+        let EdgePanel {
+            id,
+            left,
+            width,
+            name,
+            key,
+        } = p;
+        let mut open = open;
         let strip = egui::Frame::new()
             .fill(ui.visuals().panel_fill)
             .inner_margin(egui::Margin::symmetric(1, 4));
-        egui::Panel::left(egui::Id::new("side_toggle"))
+        // The arrow always points the way the panel would move.
+        let glyph = match (left, open) {
+            (true, true) | (false, false) => "◀",
+            _ => "▶",
+        };
+        let hint = if open {
+            format!("Hide the {name} panel ({key})")
+        } else {
+            format!("Show the {name} panel ({key})")
+        };
+        let toggle = egui::Id::new((id, "toggle"));
+        let strip_panel = if left {
+            egui::Panel::left(toggle)
+        } else {
+            egui::Panel::right(toggle)
+        };
+        strip_panel
             .exact_size(22.0)
             .resizable(false)
             .frame(strip)
             .show(ui, |ui| {
-                let (glyph, hint) = if self.side_open {
-                    (
-                        "◀",
-                        "Hide the left panel - the views take the whole window (F9)",
-                    )
-                } else {
-                    ("▶", "Show the left panel (F9)")
-                };
                 if ui
                     .add(
                         egui::Button::new(glyph)
@@ -41,35 +86,82 @@ impl ViewerApp {
                     .on_hover_text(hint)
                     .clicked()
                 {
-                    self.side_open = !self.side_open;
+                    open = !open;
                 }
             });
-        // `show_collapsible` also lets the panel be dragged shut and pulled
-        // back open by its edge; it wants the flag by reference, which the
-        // body's `&mut self` cannot share, so it travels via a local.
-        let mut open = self.side_open;
-        egui::Panel::left(egui::Id::new("side"))
+        let panel = if left {
+            egui::Panel::left(egui::Id::new(id))
+        } else {
+            egui::Panel::right(egui::Id::new(id))
+        };
+        panel
             .resizable(true)
-            .default_size(280.0)
+            .default_size(width)
             .show_collapsible(ui, &mut open, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    // The two optional modules (Modules menu) come first,
-                    // then one data tree per loaded dataset.
-                    if self.module_registration {
-                        self.registration_section(ui);
-                    }
-                    if self.module_simulation {
-                        self.simulation_section(ui);
-                    }
-                    for slot in 0..2 {
-                        if self.slots[slot].study.is_none() {
-                            continue;
-                        }
-                        self.study_section(ui, slot);
-                    }
-                });
+                egui::ScrollArea::vertical().show(ui, body);
             });
-        self.side_open = open;
+        open
+    }
+
+    // -- Left panel: the data tree ----------------------------------------
+    pub(super) fn side_panel(&mut self, ui: &mut egui::Ui) {
+        if self.slots[0].study.is_none() && self.slots[1].study.is_none() {
+            return;
+        }
+        self.side_open = Self::edge_panel(
+            ui,
+            EdgePanel {
+                id: "side",
+                left: true,
+                width: 280.0,
+                name: "data tree",
+                key: "F9",
+            },
+            self.side_open,
+            |ui| {
+                for slot in 0..2 {
+                    if self.slots[slot].study.is_none() {
+                        continue;
+                    }
+                    self.study_section(ui, slot);
+                }
+            },
+        );
+    }
+
+    // -- Right panel: the modules -----------------------------------------
+    /// Every module the Modules menu has turned on, one section each. The
+    /// panel is not built at all while they are all off, so an untouched
+    /// installation looks exactly as it did before there was one.
+    pub(super) fn modules_panel(&mut self, ui: &mut egui::Ui) {
+        if self.slots[0].study.is_none() && self.slots[1].study.is_none() {
+            return;
+        }
+        if !self.module_registration && !self.module_simulation && !self.module_propagation {
+            return;
+        }
+        self.right_open = Self::edge_panel(
+            ui,
+            EdgePanel {
+                id: "modules",
+                left: false,
+                width: 320.0,
+                name: "modules",
+                key: "F10",
+            },
+            self.right_open,
+            |ui| {
+                if self.module_registration {
+                    self.registration_section(ui);
+                }
+                if self.module_simulation {
+                    self.simulation_section(ui);
+                }
+                if self.module_propagation {
+                    self.propagate_section(ui);
+                }
+            },
+        );
     }
 
     /// A tree node whose title wraps over as many lines as it needs.
@@ -169,6 +261,35 @@ impl ViewerApp {
     /// Study transform simulator: apply a known rigid motion + optional
     /// Gaussian deformation to a study and generate the result into the
     /// other slot (the generated study is exportable via *File ▶ Export*).
+    /// One series row of the data tree, carrying the same tick box the items
+    /// inside it carry.
+    ///
+    /// The views draw one set of each kind at a time, so the box behaves as a
+    /// radio: ticking a row makes it the shown one, and unticking the shown
+    /// row leaves the views with none of that kind. Selection and visibility
+    /// are the same thing here, exactly as they are for a single ROI.
+    ///
+    /// Returns `(tick clicked, the label's response)`.
+    fn series_row(
+        ui: &mut egui::Ui,
+        active: bool,
+        shown: bool,
+        title: String,
+    ) -> (bool, egui::Response) {
+        let mut ticked = active && shown;
+        let mut toggled = false;
+        let resp = ui
+            .horizontal(|ui| {
+                toggled = ui
+                    .checkbox(&mut ticked, "")
+                    .on_hover_text("Show this series in the views")
+                    .clicked();
+                ui.add(egui::Button::selectable(active, title).wrap())
+            })
+            .inner;
+        (toggled, resp)
+    }
+
     pub(super) fn simulation_section(&mut self, ui: &mut egui::Ui) {
         if self.slots[0].study.is_none() && self.slots[1].study.is_none() {
             return;
@@ -1192,6 +1313,8 @@ impl ViewerApp {
         // need to list the other dataset's series), so the one piece of
         // mutable state in the list is edited on a copy and written back.
         let mut vis = std::mem::take(&mut self.slots[slot].roi_visible);
+        let structs_shown = self.slots[slot].structs_shown;
+        let mut new_shown: Option<bool> = None;
         let mut new_active: Option<usize> = None;
         let mut set_act: Option<SetAction> = None;
         let mut item_act: Option<ItemAction> = None;
@@ -1247,19 +1370,33 @@ impl ViewerApp {
                     } else {
                         &set.label
                     };
-                    let resp = ui.add(
-                        egui::Button::selectable(
-                            active_set == Some(i),
-                            format!(
-                                "▣ {name} ({} ROIs){}",
-                                set.rois.len(),
-                                Self::series_suffix(study, &set.referenced_series_uid)
-                            ),
-                        )
-                        .wrap(),
+                    let (toggled, resp) = Self::series_row(
+                        ui,
+                        active_set == Some(i),
+                        structs_shown,
+                        format!(
+                            "{name} ({} ROIs){}",
+                            set.rois.len(),
+                            Self::series_suffix(study, &set.referenced_series_uid)
+                        ),
                     );
-                    if resp.clicked() && active_set != Some(i) {
-                        new_active = Some(i);
+                    if toggled {
+                        // Ticking a set shows it; unticking the shown one
+                        // leaves the views with no contours.
+                        if active_set == Some(i) && structs_shown {
+                            new_shown = Some(false);
+                        } else {
+                            new_active = Some(i);
+                            new_shown = Some(true);
+                        }
+                    }
+                    if resp.clicked() {
+                        if active_set == Some(i) {
+                            new_shown = Some(!structs_shown);
+                        } else {
+                            new_active = Some(i);
+                            new_shown = Some(true);
+                        }
                     }
                     resp.context_menu(|ui| me.set_context_menu(ui, here, &mut set_act));
                     resp.on_hover_text(format!(
@@ -1342,6 +1479,9 @@ impl ViewerApp {
             });
         }
         self.slots[slot].roi_visible = vis;
+        if let Some(on) = new_shown {
+            self.slots[slot].structs_shown = on;
+        }
         if new_anchor.is_some() {
             self.tick_anchor = new_anchor;
         }
@@ -1412,6 +1552,8 @@ impl ViewerApp {
         let mut cancel_tool = false;
         let mut set_all: Option<bool> = None;
         let mut new_active_series: Option<usize> = None;
+        let segs_shown = self.slots[slot].segs_shown;
+        let mut new_segs_shown: Option<bool> = None;
         let mut activate: Option<usize> = None;
         let mut set_act: Option<SetAction> = None;
         let mut item_act: Option<ItemAction> = None;
@@ -1500,20 +1642,32 @@ impl ViewerApp {
                             kind: SetKind::Segmentations,
                             idx: i,
                         };
-                        let resp = ui.add(
-                            egui::Button::selectable(
-                                active_here == Some(i),
-                                format!(
-                                    "✏ {} ({} segments){}",
-                                    sr.label,
-                                    sr.segs.len(),
-                                    Self::series_suffix(study, &sr.referenced_series_uid)
-                                ),
-                            )
-                            .wrap(),
+                        let (toggled, resp) = Self::series_row(
+                            ui,
+                            active_here == Some(i),
+                            segs_shown,
+                            format!(
+                                "{} ({} segments){}",
+                                sr.label,
+                                sr.segs.len(),
+                                Self::series_suffix(study, &sr.referenced_series_uid)
+                            ),
                         );
-                        if resp.clicked() && active_here != Some(i) {
-                            new_active_series = Some(i);
+                        if toggled {
+                            if active_here == Some(i) && segs_shown {
+                                new_segs_shown = Some(false);
+                            } else {
+                                new_active_series = Some(i);
+                                new_segs_shown = Some(true);
+                            }
+                        }
+                        if resp.clicked() {
+                            if active_here == Some(i) {
+                                new_segs_shown = Some(!segs_shown);
+                            } else {
+                                new_active_series = Some(i);
+                                new_segs_shown = Some(true);
+                            }
                         }
                         resp.context_menu(|ui| me.set_context_menu(ui, here, &mut set_act));
                         resp.on_hover_text(format!(
@@ -1658,6 +1812,9 @@ impl ViewerApp {
             s.active_seg_series = i;
             s.active_seg = 0;
             self.settings_gen += 1;
+        }
+        if let Some(on) = new_segs_shown {
+            self.slots[slot].segs_shown = on;
         }
         if let Some(i) = activate {
             self.slots[slot].active_seg = i;

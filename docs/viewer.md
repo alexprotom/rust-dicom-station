@@ -134,11 +134,16 @@ the reference dose) at the crosshair; in comparison mode both datasets report
 the full set side by side, each at its own crosshair. Hover the **?** at the
 right end to read the active tool's mouse bindings.
 
-**The left panel.** *View > Left panel*, **F9** and the arrow on the window's
-left edge hide and show it; dragging its inner edge past the minimum does the
-same, and the arrow brings it back. The *Modules* menu chooses its sections:
-**Image registration** and **Image simulation** are off until switched on,
-remembered between runs. Each dataset's data tree is always there.
+**The two panels.** The left one is the data tree, the right one the modules.
+Each hides and shows from the *View* menu (*Data tree*, *Modules*), from a
+shortcut (**F9**, **F10**) and from the arrow on its edge of the window;
+dragging a panel's inner edge past the minimum does the same, and the arrow
+brings it back.
+
+The *Modules* menu chooses the right panel's sections: **Image registration**,
+**Image simulation** and **Structures propagation** are off until switched on,
+and the choice is remembered between runs. With all three off there is no
+right panel at all.
 
 ## Interaction reference
 
@@ -173,9 +178,9 @@ Dataset A
        │   └ abdomen (90 sl.)
        ├ MR (1)
        ├ RT structures (12/12)
-       │   └ ▣ Approved (12 ROIs) ▶ CT chest
+       │   └ ☑ Approved (12 ROIs) ▶ CT chest
        ├ Segmentations (8/8)
-       │   └ ✏ TotalSeg (8 segments) ▶ CT chest
+       │   └ ☑ TotalSeg (8 segments) ▶ CT chest
        ├ Dose (1)
        └ Plan: IMRT
  Dose display · Planar images · Spatial registrations · Records · Warnings
@@ -190,6 +195,12 @@ the study of the image series it references, failing that under the first
 study. Planar images, spatial registrations and treatment records have no
 study and sit below the tree, as does **Dose display** — colorwash, isodose
 ladder, opacity, threshold — one setting shared by both datasets, shown once.
+
+Every structure set and segmentation series carries the same tick box its
+own structures carry. The views draw one set of each kind at a time, so the
+box works as a radio: ticking a series makes it the one on display, and
+unticking the ticked one clears that kind from the views while leaving the
+list, the drawing tools and any 3D scene working on it.
 
 The displayed series is marked; clicking another loads it. Long names,
 descriptions and IDs wrap, so the panel can be dragged narrow. The reference

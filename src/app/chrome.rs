@@ -13,7 +13,6 @@ impl ViewerApp {
         let mut open_gen = false;
         let mut open_models = false;
         let mut open_pacs = false;
-        let mut open_propagate = false;
         let mut open_drr = false;
         let mut open_export: Option<usize> = None;
         let mut new_theme: Option<egui::ThemePreference> = None;
@@ -156,12 +155,24 @@ impl ViewerApp {
                     ui.checkbox(&mut self.show_labels, "Orientation labels");
                     ui.checkbox(&mut self.show_isocenters, "Isocenters");
                     ui.separator();
-                    ui.checkbox(&mut self.side_open, "Left panel (F9)")
+                    ui.checkbox(&mut self.side_open, "Data tree (F9)")
                         .on_hover_text(
-                            "Hide the left panel and give the whole window to the views. \
-                             The arrow on the window's left edge brings it back, as does \
-                             F9.",
+                            "The left panel. Hidden, its arrow stays on the window's left \
+                             edge to bring it back, and so does F9.",
                         );
+                    let any_module = self.module_registration
+                        || self.module_simulation
+                        || self.module_propagation;
+                    ui.add_enabled_ui(any_module, |ui| {
+                        ui.checkbox(&mut self.right_open, "Modules (F10)")
+                            .on_hover_text(if any_module {
+                                "The right panel. Hidden, its arrow stays on the window's \
+                                 right edge to bring it back, and so does F10."
+                            } else {
+                                "There is no modules panel until a module is turned on in \
+                                 the Modules menu"
+                            });
+                    });
                     ui.separator();
                     ui.label("Appearance:");
                     let before = self.theme;
@@ -179,12 +190,14 @@ impl ViewerApp {
                             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
                     )
                     .ui(ui, |ui| {
-                        // Two optional side-panel sections, each one line of the
-                        // menu. Everything they do — direction, method, region,
-                        // parameters, landmarks, analytics, fusion, the vector
-                        // field, the simulated motion — lives in the section
-                        // itself, so the menu only decides whether it is there.
-                        ui.weak("Sections of the left panel:");
+                        // Every module is one line of this menu and one
+                        // section of the right panel. Everything a module
+                        // does - direction, method, region, parameters,
+                        // landmarks, analytics, fusion, the vector field, the
+                        // simulated motion, what travels and where - lives in
+                        // its section, so the menu only decides whether it is
+                        // there.
+                        ui.weak("Sections of the right panel (F10):");
                         modules_changed |= ui
                             .checkbox(&mut self.module_registration, "Image registration")
                             .on_hover_text(
@@ -201,6 +214,21 @@ impl ViewerApp {
                              other - the ground truth a registration can be measured against.",
                             )
                             .changed();
+                        modules_changed |= ui
+                            .checkbox(&mut self.module_propagation, "Structures propagation")
+                            .on_hover_text(
+                                "Carry contours and segmentations from one dataset to the \
+                             other through the active registration - globally, or refined \
+                             on an enclosing structure first. Sits next to the \
+                             registration that drives it.",
+                            )
+                            .changed();
+                        if self.module_registration
+                            || self.module_simulation
+                            || self.module_propagation
+                        {
+                            self.right_open = true;
+                        }
                     });
                 ui.menu_button("Tools", |ui| {
                     // One block per dataset: the same six tools, in the same
@@ -286,19 +314,6 @@ impl ViewerApp {
                         None => {}
                     }
                     ui.separator();
-                    let both = self.slots[0].has_volume() && self.slots[1].has_volume();
-                    if ui
-                        .add_enabled(both, egui::Button::new("⇄ Propagate structures"))
-                        .on_hover_text(
-                            "Carry contours and segmentations from one dataset to the \
-                             other through the active registration - globally, or refined \
-                             on an enclosing structure first",
-                        )
-                        .clicked()
-                    {
-                        open_propagate = true;
-                        ui.close();
-                    }
                     let both = self.slots[0].has_volume() && self.slots[1].has_volume();
                     if ui
                         .add_enabled(both, egui::Button::new("◎ Transfer by relationship"))
@@ -522,14 +537,6 @@ impl ViewerApp {
         if open_drr {
             let slot = usize::from(!self.slots[0].has_volume());
             self.open_drr_window(slot);
-        }
-        if open_propagate {
-            let src = self
-                .registration
-                .as_ref()
-                .map(|r| r.fixed_slot)
-                .unwrap_or(0);
-            self.open_propagate_window(src);
         }
         if let Some(slot) = open_export {
             self.open_export_dialog(slot);

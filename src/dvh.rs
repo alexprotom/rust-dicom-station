@@ -366,9 +366,14 @@ impl Metric {
             "dmax" | "max" => return Some(Metric::Max),
             _ => {}
         }
-        let (head, rest) = lower.split_at(1);
+        // Not `split_at(1)`: that panics on an empty string and on any
+        // first character wider than one byte, and this is fed straight from
+        // a text box the user is still typing in.
+        let mut chars = lower.chars();
+        let head = chars.next()?;
+        let rest = chars.as_str();
         match head {
-            "d" => {
+            'd' => {
                 if let Some(v) = rest.strip_suffix("cc") {
                     v.trim().parse().ok().map(Metric::DoseAtCc)
                 } else {
@@ -379,7 +384,7 @@ impl Metric {
                         .map(Metric::DoseAtPct)
                 }
             }
-            "v" => {
+            'v' => {
                 // Both the label form (`V20cc`) and the explicit one
                 // (`V20Gy[cc]`); `label()` emits the first, so the two have
                 // to agree or a protocol cannot survive being saved.
@@ -832,6 +837,37 @@ mod tests {
         assert_eq!(Metric::DoseAtPct(95.0).label(), "D95%");
         assert_eq!(Metric::VolumeCcAtDose(20.0).label(), "V20cc");
         assert_eq!(Metric::parse("nonsense"), None);
+    }
+
+    #[test]
+    fn a_half_typed_metric_is_refused_and_never_panics() {
+        // The column box is parsed on every keystroke and on every click of
+        // the + button, so anything that can be in a text field has to come
+        // back as None rather than take the program with it.
+        // The wide characters are written as escapes on purpose: the glyph
+        // guard in `app::glyphs` reads every literal in `src` as something
+        // the interface might draw, and these are input, not interface text.
+        for text in [
+            "",
+            " ",
+            "\t",
+            "D",
+            "V",
+            "%",
+            "cc",
+            "Gy",
+            "-",
+            "\u{b5}",         // micro sign, two bytes
+            "\u{d8}",         // capital O with stroke
+            "\u{432}\u{43e}", // Cyrillic, two bytes each
+            "\u{1f642}",      // an emoji, four bytes
+            "D%",
+            "Vcc",
+            "D cc",
+            "V[cc]",
+        ] {
+            assert_eq!(Metric::parse(text), None, "{text:?} is not a metric");
+        }
     }
 
     #[test]

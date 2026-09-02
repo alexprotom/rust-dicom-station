@@ -1,20 +1,38 @@
-//! *Tools ▶ Propagate structures*: carrying contours and segmentations
+//! *Modules ▶ Structures propagation*: carrying contours and segmentations
 //! across the active registration.
 //!
-//! The window is deliberately thin — the hard part is the transform, and
-//! that already exists. What it adds is the choice of *what* travels, the
+//! The module is deliberately thin: the hard part is the transform, and that
+//! already exists. What it adds is the choice of *what* travels, the
 //! direction, and one option that matters clinically: refining the
 //! registration on an enclosing structure first, which is what makes a small
 //! structure inside a larger one land where it belongs rather than where the
 //! whole patient's average deformation puts it.
+//!
+//! It sits in the modules panel beside image registration, which is where
+//! the transform it uses comes from, rather than in a window of its own.
 
 use super::*;
 use crate::propagate::{self, Propagated, Subject};
 
-/// The propagation window's state.
+/// Where a propagation run puts its results.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum PropTarget {
+    /// The displayed volume of the other dataset, through the registration
+    /// that is already active.
+    Other,
+    /// Every phase of one 4D group, registering the source volume onto each
+    /// phase on the way. `slot` is the dataset the group belongs to, which
+    /// may be the source's own: a planning CT and the 4DCT of the same
+    /// patient often arrive together.
+    Group { slot: usize, group: usize },
+}
+
+/// The propagation module's state.
 pub(super) struct PropagateDialog {
     /// Dataset the structures come from; they land on the other one.
     pub src_slot: usize,
+    /// What they land on.
+    pub target: PropTarget,
     /// Selected ROIs of the source dataset's active structure set.
     pub structs: Vec<bool>,
     /// Selected segmentations of the source dataset.
@@ -30,6 +48,7 @@ impl Default for PropagateDialog {
     fn default() -> Self {
         PropagateDialog {
             src_slot: 0,
+            target: PropTarget::Other,
             structs: Vec::new(),
             segs: Vec::new(),
             local: RegRoi::Whole,
@@ -40,21 +59,174 @@ impl Default for PropagateDialog {
 }
 
 /// What a propagation run hands back.
-pub(super) struct PropOutcome {
+pub(super) enum PropOutcome {
+    /// One destination volume, carried through the active registration.
+    /// Boxed: a `RegOutcome` carries a whole vector field, which would make
+    /// every one of these as large as the largest.
+    One {
+        items: Vec<Propagated>,
+        /// A local refinement run on the way, which becomes the active
+        /// registration so the panel reports what was actually used.
+        refined: Option<Box<RegOutcome>>,
+    },
+    /// One result per phase of a 4D group, each with the registration that
+    /// put it there.
+    Group(GroupOutcome),
+}
+
+/// The per-phase transforms of one 4D group, kept so a later propagation
+/// onto the same group does not pay for the registrations again.
+///
+/// A registration is minutes; loading a phase and pulling a mask through a
+/// transform is seconds. Once the group is registered, carrying another
+/// structure set across should not repeat the expensive half.
+pub(super) struct GroupRegistration {
+    /// Dataset the moving image came from, and the series it was.
+    pub moving_slot: usize,
+    pub moving_series_uid: String,
+    /// The dataset holding the group, and which group of it.
+    pub slot: usize,
+    pub group: usize,
+    pub group_name: String,
+    /// One entry per phase, in the group's temporal order.
+    pub phases: Vec<GroupPhaseReg>,
+}
+
+/// One phase of a registered 4D group.
+pub(super) struct GroupPhaseReg {
+    pub label: String,
+    pub series_uid: String,
+    /// Phase → moving image: the destination → source direction a
+    /// propagation pulls along, so it needs no inversion.
+    pub transform: Arc<registration::Transform3>,
+    pub metric_line: String,
+}
+
+/// What one phase of a 4D group came out with.
+pub(super) struct PhaseOutcome {
+    /// The phase's name within the group: "0%", "50%", "t3".
+    pub label: String,
+    /// The image series the results belong to, and the study it is in.
+    pub series_uid: String,
+    pub study_uid: String,
+    /// The lattice they are on.
+    pub grid: crate::volume::Grid,
+    /// Empty when the run was a registration and nothing else.
     pub items: Vec<Propagated>,
-    /// A local refinement run on the way, which becomes the active
-    /// registration so the sidebar reports what was actually used.
-    pub refined: Option<RegOutcome>,
+    /// Phase → the moving image.
+    pub transform: Arc<registration::Transform3>,
+    /// `MSD 9700 ▶ 1800  (900 iters, 20.1 s)` of that phase's registration,
+    /// or what it says instead when the transform was reused.
+    pub metric_line: String,
+}
+
+/// What a run against a whole 4D group hands back.
+pub(super) struct GroupOutcome {
+    pub group_name: String,
+    /// Which group this was, so the transforms can be filed and found again.
+    pub group: usize,
+    pub moving_slot: usize,
+    pub moving_series_uid: String,
+    pub phases: Vec<PhaseOutcome>,
+}
+
+/// Everything the worker needs for a run against a 4D group.
+struct GroupRequest {
+    /// The moving image: the volume the structures were drawn on.
+    src_vol: Arc<Volume>,
+    /// What to carry across. Empty means register and nothing else.
+    subjects: Vec<Subject>,
+    /// (phase label, the series to load) in temporal order.
+    phases: Vec<(String, crate::loader::SeriesInfo)>,
+    /// A transform already known for that phase, which is then not
+    /// recomputed. Same length and order as `phases`.
+    cached: Vec<Option<Arc<registration::Transform3>>>,
+    params: registration::RegParams,
+    group_name: String,
+    group: usize,
+    moving_slot: usize,
+    moving_series_uid: String,
+}
+
+/// Register the source volume onto every phase of the group and carry the
+/// structures across, one phase at a time.
+///
+/// Each phase gets its own registration: a 4D acquisition is exactly the case
+/// where one transform for the whole group would be wrong, since the point of
+/// the phases is that the anatomy moves between them.
+fn run_group(req: GroupRequest, p: &Progress) -> anyhow::Result<GroupOutcome> {
+    use anyhow::Context;
+    let n = req.phases.len().max(1);
+    let mut phases = Vec::with_capacity(req.phases.len());
+    for (i, (label, series)) in req.phases.iter().enumerate() {
+        let base = i as f32 / n as f32;
+        let span = 1.0 / n as f32;
+        p.set_phase(base, span * 0.25);
+        p.set(format!("Phase {label}: loading ({}/{n})", i + 1));
+        let (vol, _, _) = crate::loader::load_series_volume(series, p)
+            .with_context(|| format!("phase '{label}'"))?;
+        let cached = req.cached.get(i).and_then(|t| t.clone());
+        let (transform, metric_line) = match cached {
+            Some(t) => (t, "transform reused".to_string()),
+            None => {
+                p.set_phase(base + span * 0.25, span * 0.55);
+                p.set(format!("Phase {label}: registering ({}/{n})", i + 1));
+                // Fixed is the phase, moving is the source volume, so the
+                // transform maps phase → source: exactly the destination →
+                // source direction `propagate` pulls along, with no
+                // inversion.
+                let r = registration::register(&vol, &req.src_vol, &req.params, p)
+                    .with_context(|| format!("phase '{label}'"))?;
+                (r.transform.clone(), r.metric_line())
+            }
+        };
+        let items = if req.subjects.is_empty() {
+            Vec::new()
+        } else {
+            p.set_phase(base + span * 0.8, span * 0.2);
+            p.set(format!("Phase {label}: propagating ({}/{n})", i + 1));
+            propagate::propagate(&req.src_vol, &vol, &transform, false, &req.subjects, p)
+                .with_context(|| format!("phase '{label}'"))?
+        };
+        phases.push(PhaseOutcome {
+            label: label.clone(),
+            series_uid: series.uid.clone(),
+            study_uid: series.study_uid.clone(),
+            grid: vol.grid(),
+            items,
+            transform,
+            metric_line,
+        });
+    }
+    Ok(GroupOutcome {
+        group_name: req.group_name,
+        group: req.group,
+        moving_slot: req.moving_slot,
+        moving_series_uid: req.moving_series_uid,
+        phases,
+    })
 }
 
 impl ViewerApp {
-    pub(super) fn open_propagate_window(&mut self, src_slot: usize) {
-        let mut d = PropagateDialog {
-            src_slot,
-            ..Default::default()
-        };
-        self.sync_propagate_lists(&mut d);
-        self.propagate_dialog = Some(d);
+    /// Show the propagation module and point it at `src_slot`.
+    ///
+    /// A running job owns the dialog (its results have to land somewhere), so
+    /// this never replaces one that is in flight; it only aims it.
+    pub(super) fn open_propagate_module(&mut self, src_slot: usize) {
+        self.module_propagation = true;
+        self.right_open = true;
+        self.settings_gen += 1;
+        match &mut self.propagate_dialog {
+            Some(d) if self.propagate_job.is_some() => d.src_slot = src_slot,
+            _ => {
+                let mut d = PropagateDialog {
+                    src_slot,
+                    ..Default::default()
+                };
+                self.sync_propagate_lists(&mut d);
+                self.propagate_dialog = Some(d);
+            }
+        }
     }
 
     /// Keep the check-box lists the same length as what the dataset holds.
@@ -110,6 +282,152 @@ impl ViewerApp {
         Ok(out)
     }
 
+    /// The 4D groups either dataset offers, as `(target, label)`.
+    ///
+    /// A group in the source's own dataset counts: a planning CT and the
+    /// 4DCT of the same patient usually arrive together, and the structures
+    /// still have to travel from the one to the phases of the other.
+    pub(super) fn propagate_group_choices(&self) -> Vec<(PropTarget, String)> {
+        let mut out = Vec::new();
+        for (slot, name) in SLOT_NAMES.iter().enumerate() {
+            let Some(study) = self.slots[slot].study.as_ref() else {
+                continue;
+            };
+            for (gi, g) in study.fourd_groups.iter().enumerate() {
+                let n = g
+                    .members
+                    .iter()
+                    .filter(|m| m.role == crate::fourd::Role::Phase)
+                    .count();
+                if n < 2 {
+                    continue;
+                }
+                out.push((
+                    PropTarget::Group { slot, group: gi },
+                    format!("{name}: {} ({n} phases)", g.name),
+                ));
+            }
+        }
+        out
+    }
+
+    /// How many phases one 4D group has, or 0 if it is gone.
+    pub(super) fn group_phase_count(&self, slot: usize, group: usize) -> usize {
+        self.slots[slot]
+            .study
+            .as_ref()
+            .and_then(|st| st.fourd_groups.get(group))
+            .map(|g| {
+                g.members
+                    .iter()
+                    .filter(|m| m.role == crate::fourd::Role::Phase)
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Start a run against every phase of a 4D group: register the displayed
+    /// volume of `moving_slot` onto each phase, and carry `subjects` across
+    /// on the way.
+    ///
+    /// An empty `subjects` makes it a registration and nothing else, which is
+    /// what the registration module asks for; the transforms it leaves behind
+    /// are what a later propagation onto the same group reuses.
+    pub(super) fn start_group_run(
+        &mut self,
+        moving_slot: usize,
+        slot: usize,
+        group: usize,
+        subjects: Vec<Subject>,
+    ) {
+        if self.propagate_job.is_some() {
+            return;
+        }
+        let Some(src) = self.slots[moving_slot].study.as_ref() else {
+            self.error = Some("This needs a loaded source dataset".into());
+            return;
+        };
+        let src_vol = src.volume.clone();
+        let moving_series_uid = src
+            .series
+            .get(src.active_series)
+            .map(|s| s.uid.clone())
+            .unwrap_or_default();
+        let Some(study) = self.slots[slot].study.as_ref() else {
+            return;
+        };
+        let Some(g) = study.fourd_groups.get(group) else {
+            self.error = Some("That 4D group is gone - pick it again.".into());
+            return;
+        };
+        let resolved = g.resolve(&study.series);
+        let mut phases = Vec::new();
+        for (mi, m) in g.members.iter().enumerate() {
+            if m.role != crate::fourd::Role::Phase {
+                continue;
+            }
+            let Some(si) = resolved[mi] else {
+                self.error = Some(format!(
+                    "Phase '{}' of {} has no series any more.",
+                    m.label, g.name
+                ));
+                return;
+            };
+            phases.push((m.label.clone(), study.series[si].clone()));
+        }
+        if phases.len() < 2 {
+            self.error = Some("That group has fewer than two phases.".into());
+            return;
+        }
+        // No region: a refinement belongs to one pair of images, and there
+        // is one pair per phase here.
+        let mut params = self.current_reg_params(None, true);
+        // Phases of one acquisition differ by breathing, which is a
+        // deformation; a rigid-only run would leave the anatomy where the
+        // reference put it.
+        if !params.method.is_deformable() {
+            params.method = registration::RegMethod::PlastimatchBSpline;
+        }
+        // Transforms already made for exactly this group, from exactly this
+        // moving image. Anything else about the pair having changed and they
+        // would be answering a different question.
+        let cached: Vec<Option<Arc<registration::Transform3>>> = match &self.group_registration {
+            Some(gr)
+                if gr.slot == slot
+                    && gr.group == group
+                    && gr.moving_slot == moving_slot
+                    && gr.moving_series_uid == moving_series_uid =>
+            {
+                phases
+                    .iter()
+                    .map(|(_, se)| {
+                        gr.phases
+                            .iter()
+                            .find(|ph| ph.series_uid == se.uid)
+                            .map(|ph| ph.transform.clone())
+                    })
+                    .collect()
+            }
+            _ => vec![None; phases.len()],
+        };
+        let req = GroupRequest {
+            src_vol,
+            subjects,
+            phases,
+            cached,
+            params,
+            group_name: g.name.clone(),
+            group,
+            moving_slot,
+            moving_series_uid,
+        };
+        let progress = Arc::new(Progress::default());
+        progress.set("starting");
+        self.propagate_job = Some(Job::spawn(progress, move |p| {
+            (slot, run_group(req, p).map(PropOutcome::Group))
+        }));
+    }
+
     /// Start the propagation (with its optional local refinement) on a
     /// worker thread.
     fn start_propagation(&mut self) {
@@ -119,6 +437,18 @@ impl ViewerApp {
         let Some(d) = &self.propagate_dialog else {
             return;
         };
+        if let PropTarget::Group { slot, group } = d.target {
+            let moving_slot = d.src_slot;
+            let subjects = match self.propagate_subjects(d) {
+                Ok(s) => s,
+                Err(e) => {
+                    self.error = Some(format!("Propagation: {e}"));
+                    return;
+                }
+            };
+            self.start_group_run(moving_slot, slot, group, subjects);
+            return;
+        }
         let Some(reg) = &self.registration else {
             self.error = Some("Run a registration first - propagation needs one.".into());
             return;
@@ -190,11 +520,11 @@ impl ViewerApp {
                             field_step,
                         );
                         let t = result.transform.clone();
-                        refined = Some(RegOutcome {
+                        refined = Some(Box::new(RegOutcome {
                             result,
                             field,
                             region,
-                        });
+                        }));
                         t
                     }
                     Err(e) => return (dst_slot, Err(e)),
@@ -208,13 +538,33 @@ impl ViewerApp {
             );
             let items =
                 propagate::propagate(&src_vol, &dst_vol, &transform, use_inverse, &subjects, p);
-            (dst_slot, items.map(|items| PropOutcome { items, refined }))
+            (
+                dst_slot,
+                items.map(|items| PropOutcome::One { items, refined }),
+            )
         }));
     }
 
     /// A propagation run landed: install the masks (and the refinement).
     pub(super) fn on_propagation_done(&mut self, dst_slot: usize, out: PropOutcome) {
-        if let Some(refined) = out.refined {
+        let lines = match out {
+            PropOutcome::One { items, refined } => self.install_one(dst_slot, items, refined),
+            PropOutcome::Group(g) => self.install_group(dst_slot, g),
+        };
+        if let Some(d) = &mut self.propagate_dialog {
+            d.summary = lines;
+        }
+        self.settings_gen += 1;
+    }
+
+    /// Results carried onto the displayed volume of one dataset.
+    fn install_one(
+        &mut self,
+        dst_slot: usize,
+        items: Vec<Propagated>,
+        refined: Option<Box<RegOutcome>>,
+    ) -> Vec<String> {
+        if let Some(refined) = refined {
             let fixed_slot = self
                 .registration
                 .as_ref()
@@ -227,17 +577,17 @@ impl ViewerApp {
                 region: refined.region,
             });
             self.reg_gen += 1;
-            // The refinement is now the active registration — show the
+            // The refinement is now the active registration - show the
             // section that reports and clears it.
             self.module_registration = true;
         }
         let Some(study) = &self.slots[dst_slot].study else {
-            return;
+            return Vec::new();
         };
         let dims = study.volume.dims;
         let src = 1 - dst_slot;
         let mut lines = Vec::new();
-        for item in out.items {
+        for item in items {
             lines.push(item.summary());
             if item.voxels == 0 {
                 continue;
@@ -245,20 +595,82 @@ impl ViewerApp {
             let name = format!("{} (from {})", item.name, SLOT_NAMES[src]);
             self.add_colored_segmentation(dst_slot, name, item.color, dims, &item.mask);
         }
-        if let Some(d) = &mut self.propagate_dialog {
-            d.summary = lines;
+        lines
+    }
+
+    /// Results carried onto every phase of a 4D group.
+    ///
+    /// One segmentation series per phase, bound to that phase's image series
+    /// so the tree files it under the right member and the views show it when
+    /// that phase is displayed.
+    fn install_group(&mut self, dst_slot: usize, g: GroupOutcome) -> Vec<String> {
+        if self.slots[dst_slot].study.is_none() {
+            return Vec::new();
         }
-        self.settings_gen += 1;
+        let mut lines = Vec::new();
+        let mut regs = Vec::new();
+        for phase in g.phases {
+            lines.push(format!("{} - {}", phase.label, phase.metric_line));
+            regs.push(GroupPhaseReg {
+                label: phase.label.clone(),
+                series_uid: phase.series_uid.clone(),
+                transform: phase.transform.clone(),
+                metric_line: phase.metric_line.clone(),
+            });
+            let mut series = crate::dicomseg::SegSeries::new(
+                format!("{} {}", g.group_name, phase.label),
+                phase.grid.clone(),
+                phase.series_uid.clone(),
+                phase.study_uid.clone(),
+            );
+            for item in phase.items {
+                lines.push(format!("   {}", item.summary()));
+                if item.voxels == 0 {
+                    continue;
+                }
+                series.segs.push(Segmentation::from_label_map(
+                    item.name.clone(),
+                    item.color,
+                    phase.grid.dims,
+                    &item.mask,
+                    1,
+                ));
+            }
+            if series.segs.is_empty() {
+                continue;
+            }
+            if let Some(study) = self.slots[dst_slot].study.as_mut() {
+                study.seg_series.push(series);
+                self.slots[dst_slot].active_seg_series = study.seg_series.len() - 1;
+                self.slots[dst_slot].active_seg = 0;
+            }
+        }
+        // Keep the transforms: propagating another structure set onto the
+        // same group now costs one load and one pull per phase, not another
+        // registration.
+        self.group_registration = Some(GroupRegistration {
+            moving_slot: g.moving_slot,
+            moving_series_uid: g.moving_series_uid,
+            slot: dst_slot,
+            group: g.group,
+            group_name: g.group_name,
+            phases: regs,
+        });
+        self.reg_gen += 1;
+        lines
     }
 
     // -- the window --------------------------------------------------------
 
-    pub(super) fn propagate_window(&mut self, ctx: &egui::Context) {
+    /// The propagation section of the modules panel.
+    pub(super) fn propagate_section(&mut self, ui: &mut egui::Ui) {
+        // The module is on, so the section exists whether or not anything has
+        // aimed it yet.
         if self.propagate_dialog.is_none() {
-            return;
+            let mut d = PropagateDialog::default();
+            self.sync_propagate_lists(&mut d);
+            self.propagate_dialog = Some(d);
         }
-        let mut open = true;
-        let mut close = false;
         let mut run = false;
         let mut cancel = false;
         let mut set_all: Option<bool> = None;
@@ -271,7 +683,6 @@ impl ViewerApp {
                 r.result.region.clone(),
             )
         });
-        let running = self.propagate_job.is_some();
         let mut d = self.propagate_dialog.take().unwrap();
         self.sync_propagate_lists(&mut d);
         let src_slot = d.src_slot;
@@ -296,31 +707,106 @@ impl ViewerApp {
             .as_ref()
             .map(|(fixed, _, _)| self.region_choices_for(*fixed))
             .unwrap_or_default();
+        let group_choices = self.propagate_group_choices();
+        // A group that was removed while the module sat open leaves a stale
+        // choice behind; fall back rather than run against nothing.
+        if !matches!(d.target, PropTarget::Other)
+            && !group_choices.iter().any(|(t, _)| *t == d.target)
+        {
+            d.target = PropTarget::Other;
+        }
+        let to_group = matches!(d.target, PropTarget::Group { .. });
+        // Transforms already made for exactly this group from exactly this
+        // moving image: the run then costs one load and one pull per phase.
+        let reuse = match (d.target, &self.group_registration) {
+            (PropTarget::Group { slot, group }, Some(gr)) => {
+                gr.slot == slot
+                    && gr.group == group
+                    && gr.moving_slot == src_slot
+                    && self.slots[src_slot]
+                        .study
+                        .as_ref()
+                        .and_then(|st| st.series.get(st.active_series))
+                        .is_some_and(|se| se.uid == gr.moving_series_uid)
+            }
+            _ => false,
+        };
+        let n_phases = match d.target {
+            PropTarget::Group { slot, group } => self.group_phase_count(slot, group),
+            PropTarget::Other => 0,
+        };
 
-        detach::tool_window(
-            ctx,
-            "propagate",
-            format!(
-                "⇄ Propagate structures - {} ▶ {}",
-                SLOT_NAMES[src_slot], SLOT_NAMES[dst_slot]
-            ),
-            &mut open,
-            detach::WinOpts::width(420.0),
-            |ui| {
+        egui::CollapsingHeader::new(egui::RichText::new("⇄ Structures propagation").strong())
+            .id_salt("module_propagate")
+            .default_open(true)
+            .show(ui, |ui| {
                 ui.label(
-                    "Carries structures and segmentations from one dataset to the other \
-                 through the active registration. Every destination voxel is asked \
-                 where it comes from, so nothing is left with holes.",
+                    "Carries structures and segmentations onto another image. Every \
+                 destination voxel is asked where it comes from, so nothing is left \
+                 with holes.",
                 );
                 ui.separator();
-                match &registered {
-                    None => {
-                        ui.colored_label(
-                            alert_color(ui.visuals()),
-                            "No active registration - run one in the sidebar first.",
+                ui.horizontal(|ui| {
+                    ui.label("From");
+                    ui.selectable_value(&mut d.src_slot, 0, "A");
+                    ui.selectable_value(&mut d.src_slot, 1, "B");
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("To");
+                    let current = match d.target {
+                        PropTarget::Other => format!("dataset {}", SLOT_NAMES[dst_slot]),
+                        PropTarget::Group { .. } => group_choices
+                            .iter()
+                            .find(|(t, _)| *t == d.target)
+                            .map(|(_, l)| l.clone())
+                            .unwrap_or_default(),
+                    };
+                    egui::ComboBox::from_id_salt("prop_target")
+                        .selected_text(current)
+                        .width(200.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut d.target,
+                                PropTarget::Other,
+                                format!("dataset {}", SLOT_NAMES[dst_slot]),
+                            );
+                            for (target, label) in &group_choices {
+                                ui.selectable_value(&mut d.target, *target, label);
+                            }
+                        });
+                });
+                ui.separator();
+                match (to_group, &registered) {
+                    // Against a group the module registers as it goes, one
+                    // run per phase, so it needs no registration in advance.
+                    (true, _) if reuse => {
+                        ui.weak(format!(
+                            "This group is already registered against this image, phase by \
+                             phase, so the {n_phases} transforms are reused and only the \
+                             structures are carried across."
+                        ));
+                    }
+                    (true, _) => {
+                        ui.weak(format!(
+                            "The source volume is registered onto each of the {n_phases} \
+                             phases in turn, and the structures are carried across that \
+                             phase's own transform. Breathing moves the anatomy between \
+                             phases, so one transform for the whole group would put them \
+                             all where the reference phase is."
+                        ));
+                        ui.weak(
+                            "Method and parameters come from the image registration \
+                             module; a rigid choice is run deformably here.",
                         );
                     }
-                    Some((fixed, method, region)) => {
+                    (false, None) => {
+                        ui.colored_label(
+                            alert_color(ui.visuals()),
+                            "No active registration - run one in the registration module \
+                             first, or send these to a 4D group instead.",
+                        );
+                    }
+                    (false, Some((fixed, method, region))) => {
                         ui.weak(format!(
                             "Using: {method}{}",
                             match region {
@@ -336,12 +822,6 @@ impl ViewerApp {
                     }
                 }
                 ui.separator();
-
-                ui.horizontal(|ui| {
-                    ui.label("From");
-                    ui.selectable_value(&mut d.src_slot, 0, "A ▶ B");
-                    ui.selectable_value(&mut d.src_slot, 1, "B ▶ A");
-                });
 
                 ui.horizontal(|ui| {
                     if ui.small_button("All").clicked() {
@@ -396,8 +876,12 @@ impl ViewerApp {
                     });
 
                 ui.separator();
+                // A local refinement refines *the* active registration.
+                // Against a group there is one registration per phase, each
+                // made on the spot, so there is nothing here to refine.
                 egui::CollapsingHeader::new("Refine locally first")
                     .id_salt("prop_local")
+                    .open(to_group.then_some(false))
                     .default_open(false)
                     .show(ui, |ui| {
                         ui.label(
@@ -452,18 +936,35 @@ impl ViewerApp {
                     Some(job) => cancel = progress_row(ui, &job.progress),
                     None => {
                         ui.horizontal(|ui| {
-                            if ui
-                                .add_enabled(registered.is_some(), egui::Button::new("▶ Propagate"))
-                                .on_hover_text(
-                                    "Results land as editable segmentations on the other \
-                                 dataset, convertible to RTSTRUCT like any other",
+                            let (label, hint, ready) = if to_group && reuse {
+                                (
+                                    format!("▶ Propagate to {n_phases} phases"),
+                                    "One segmentation series per phase, each bound to that \
+                                     phase's image series, through the transforms the \
+                                     registration module already made",
+                                    n_phases >= 2,
                                 )
+                            } else if to_group {
+                                (
+                                    format!("▶ Register and propagate to {n_phases} phases"),
+                                    "One registration and one segmentation series per \
+                                     phase, each bound to that phase's image series",
+                                    n_phases >= 2,
+                                )
+                            } else {
+                                (
+                                    "▶ Propagate".to_string(),
+                                    "Results land as editable segmentations on the other \
+                                     dataset, convertible to RTSTRUCT like any other",
+                                    registered.is_some(),
+                                )
+                            };
+                            if ui
+                                .add_enabled(ready, egui::Button::new(label))
+                                .on_hover_text(hint)
                                 .clicked()
                             {
                                 run = true;
-                            }
-                            if ui.button("Close").clicked() {
-                                close = true;
                             }
                         });
                     }
@@ -479,18 +980,14 @@ impl ViewerApp {
                      Jacobian in the registration panel reports.",
                     );
                 }
-            },
-        );
+            });
+        ui.separator();
 
         if let Some(v) = set_all {
             d.structs.iter_mut().for_each(|s| *s = v);
             d.segs.iter_mut().for_each(|s| *s = v);
         }
-        // A run in flight keeps the window alive whatever the ✖ says: the
-        // job's results have to land somewhere.
-        if running || (!close && open) {
-            self.propagate_dialog = Some(d);
-        }
+        self.propagate_dialog = Some(d);
         if cancel {
             if let Some(job) = &self.propagate_job {
                 job.progress.cancel();

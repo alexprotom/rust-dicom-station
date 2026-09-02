@@ -473,8 +473,16 @@ impl ViewerApp {
                             .hint_text("D98%, V20Gy, D2cc")
                             .desired_width(110.0),
                     );
-                    let add = ui.small_button("➕").clicked()
-                        || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                    // Nothing typed, nothing to add: the button stays dead
+                    // rather than answering a click with an error.
+                    let named = !d.new_metric.trim().is_empty();
+                    let add = ui
+                        .add_enabled(named, egui::Button::new("➕").small())
+                        .on_disabled_hover_text("Type a metric first, for example D95%")
+                        .clicked()
+                        || (named
+                            && resp.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                     if add {
                         match Metric::parse(&d.new_metric) {
                             Some(m) => {
@@ -835,8 +843,10 @@ fn plot(ui: &mut egui::Ui, d: &DvhDialog, height: f32) {
         dvh::nice_units(&d.curves[0].units)
     };
     // Room for the axis labels; the legend sits inside the panel.
+    // Left margin holds the turned-on-its-side volume caption and the tick
+    // numbers beside it, so it has to be wider than the numbers alone.
     let rect = egui::Rect::from_min_max(
-        outer.min + egui::vec2(52.0, 10.0),
+        outer.min + egui::vec2(60.0, 10.0),
         outer.max - egui::vec2(12.0, 30.0),
     );
     let x_max = d
@@ -921,16 +931,21 @@ fn plot(ui: &mut egui::Ui, d: &DvhDialog, height: f32) {
         font.clone(),
         vis.text_color(),
     );
-    painter.text(
-        egui::pos2(outer.left() + 2.0, rect.top()),
-        egui::Align2::LEFT_TOP,
-        if d.volume_relative {
-            "Volume [%]".to_string()
-        } else {
-            "Volume [cm³]".to_string()
-        },
-        font.clone(),
-        vis.text_color(),
+    // Turned on its side and centred on the axis. Drawn flat in the corner it
+    // ran straight through the topmost tick number.
+    let caption = if d.volume_relative {
+        "Volume [%]".to_string()
+    } else {
+        "Volume [cm³]".to_string()
+    };
+    let galley = painter.layout_no_wrap(caption, font.clone(), vis.text_color());
+    let anchor = egui::pos2(
+        outer.left() + 2.0,
+        (rect.center().y + galley.size().x / 2.0).min(rect.bottom()),
+    );
+    painter.add(
+        egui::epaint::TextShape::new(anchor, galley, vis.text_color())
+            .with_angle(-std::f32::consts::FRAC_PI_2),
     );
 
     // ---- the curves ----

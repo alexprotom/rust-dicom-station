@@ -66,7 +66,7 @@ mod views;
 
 use drr_win::DrrDialog;
 use pacs_win::{PacsOutcome, PacsWindow};
-use propagate_win::{PropOutcome, PropagateDialog};
+use propagate_win::{GroupRegistration, PropOutcome, PropagateDialog};
 use reg_panel::{RegOutcome, RegRoi};
 use rename::{RenameDialog, RenameTarget};
 use seg_engines::*;
@@ -354,6 +354,13 @@ struct StudySlot {
     plan_visible: Vec<bool>,
     /// Index of the active structure set within `study.structure_sets`.
     active_structs: usize,
+    /// The tick box on the RT structures series row: whether the active set
+    /// is drawn at all. Unticking it clears the contours from the image views
+    /// while the set stays selected, so the ROI list, the drawing tools and a
+    /// 3D scene opened on it all keep working.
+    structs_shown: bool,
+    /// The same tick box on the segmentation series row.
+    segs_shown: bool,
     active_dose: usize,
     dose_reference: f32,
     /// Index of the active segmentation series within `study.seg_series`.
@@ -424,6 +431,8 @@ impl StudySlot {
             roi_visible: Vec::new(),
             plan_visible: Vec::new(),
             active_structs: 0,
+            structs_shown: true,
+            segs_shown: true,
             active_dose: 0,
             dose_reference: 1.0,
             active_seg_series: 0,
@@ -820,6 +829,16 @@ pub struct ViewerApp {
 
     // Registration (direction selectable: either study can be the fixed one).
     registration: Option<ActiveRegistration>,
+    /// The last 4D group registered phase by phase, so propagating onto it
+    /// does not repeat the registrations. Cleared when the registration is.
+    group_registration: Option<GroupRegistration>,
+    /// Which 4D group the registration module runs against, when it runs
+    /// against one rather than the other dataset's displayed volume.
+    reg_group: Option<(usize, usize)>,
+    /// Dataset whose displayed volume is the moving image of a group run.
+    /// Its own dataset is a normal choice: a planning CT and the 4DCT of the
+    /// same patient usually arrive together.
+    reg_group_moving: usize,
     /// The payload carries the slot that was used as the fixed image.
     reg_job: Option<SegJob<RegOutcome>>,
     /// Fixed-image slot for the *next* registration run (0 = A, 1 = B).
@@ -1064,14 +1083,21 @@ pub struct ViewerApp {
     wl_preset: Option<usize>,
 
     /// *Modules ▶ Image registration*: the registration section is part of
-    /// the side panel. Persisted between runs.
+    /// the modules panel. Persisted between runs.
     module_registration: bool,
     /// *Modules ▶ Image simulation*: the simulation section is part of the
-    /// side panel. Persisted between runs.
+    /// modules panel. Persisted between runs.
     module_simulation: bool,
-    /// The side panel is expanded (View ▶ Left panel, F9, or the arrow on
-    /// the panel edge). Collapsed, the views have the whole window.
+    /// *Modules ▶ Structures propagation*: the propagation section is part
+    /// of the modules panel. Persisted between runs.
+    module_propagation: bool,
+    /// The left panel is expanded (View ▶ Data tree, F9, or the arrow on the
+    /// panel edge). It holds the data tree and nothing else.
     side_open: bool,
+    /// The right panel is expanded (View ▶ Modules, F10, or the arrow on the
+    /// panel edge). It holds the module sections. Collapse both and the
+    /// views have the whole window.
+    right_open: bool,
 
     /// Light / dark / follow-the-system appearance, persisted between runs.
     theme: egui::ThemePreference,
@@ -1174,6 +1200,9 @@ impl ViewerApp {
             drr_job: None,
             propagate_dialog: None,
             propagate_job: None,
+            group_registration: None,
+            reg_group: None,
+            reg_group_moving: 0,
             sim_source: 0,
             sim_params: SimParams::default(),
             sim_job: None,
@@ -1277,7 +1306,9 @@ impl ViewerApp {
             wl_preset: None,
             module_registration: prefs.module_registration,
             module_simulation: prefs.module_simulation,
+            module_propagation: prefs.module_propagation,
             side_open: true,
+            right_open: true,
             theme: prefs.theme,
             graphics_backend: prefs.graphics_backend,
             active_backend: cc
@@ -1324,6 +1355,7 @@ impl ViewerApp {
             archive_dir,
             module_registration: self.module_registration,
             module_simulation: self.module_simulation,
+            module_propagation: self.module_propagation,
             session: self.session.clone(),
             graphics_backend: self.graphics_backend,
         }) {
@@ -1622,17 +1654,21 @@ impl eframe::App for ViewerApp {
         // focused): Ctrl+Z undo, Esc cancels a region-grow drag, [ ] resize
         // the brush.
         if !ctx.egui_wants_keyboard_input() {
-            let (undo, esc, smaller, bigger, toggle_side) = ctx.input(|i| {
+            let (undo, esc, smaller, bigger, toggle_side, toggle_right) = ctx.input(|i| {
                 (
                     i.modifiers.command && i.key_pressed(egui::Key::Z),
                     i.key_pressed(egui::Key::Escape),
                     i.key_pressed(egui::Key::OpenBracket),
                     i.key_pressed(egui::Key::CloseBracket),
                     i.key_pressed(egui::Key::F9),
+                    i.key_pressed(egui::Key::F10),
                 )
             });
             if toggle_side {
                 self.side_open = !self.side_open;
+            }
+            if toggle_right {
+                self.right_open = !self.right_open;
             }
             if undo {
                 let slot = self.hovered_slot.min(1);
@@ -1654,6 +1690,7 @@ impl eframe::App for ViewerApp {
         self.menu_bar(ui, &ctx);
         self.top_bar(ui);
         self.side_panel(ui);
+        self.modules_panel(ui);
         self.status_bar(ui);
         self.central_views(ui);
         self.planar_windows_ui(&ctx);
