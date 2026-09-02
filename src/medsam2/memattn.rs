@@ -1,7 +1,7 @@
 //! Memory attention: how a slice sees the slices already segmented.
 //!
 //! Four pre-norm layers, each self-attending over the current slice's 1024
-//! image tokens and then cross-attending into the memory bank — the spatial
+//! image tokens and then cross-attending into the memory bank - the spatial
 //! memories of up to seven earlier slices, 64-dimensional, plus a tail of
 //! object-pointer tokens. This is the only part of SAM 2 that is inherently
 //! sequential, and at a full bank it costs about as much arithmetic as the
@@ -10,7 +10,7 @@
 //! Five details decide whether it is right:
 //!
 //! * the input adds its positional encoding scaled by **0.1**;
-//! * queries never get a positional encoding, keys always do — and the keys'
+//! * queries never get a positional encoding, keys always do - and the keys'
 //!   is added in the **64-dimensional** memory space, *before* `k_proj`;
 //!   values get none;
 //! * both attentions are single-headed at the full width of 256;
@@ -73,7 +73,7 @@ impl<B: Backend> Rope<B> {
     }
 
     /// Rotate `[b, heads, repeat * tokens, dim]`, reusing the same rotations
-    /// for each repeat — which is what makes every memory frame carry the
+    /// for each repeat - which is what makes every memory frame carry the
     /// same spatial encoding.
     pub fn apply(&self, x: Tensor<B, 4>, repeat: usize) -> Tensor<B, 4> {
         let [b, heads, n, dim] = x.dims();
@@ -133,8 +133,8 @@ impl<B: Backend> RopeAttention<B> {
         })
     }
 
-    /// `num_k_exclude_rope` keys at the **end** of the sequence — the object
-    /// pointers — pass through unrotated.
+    /// `num_k_exclude_rope` keys at the **end** of the sequence - the object
+    /// pointers - pass through unrotated.
     pub fn forward(
         &self,
         q: Tensor<B, 3>,

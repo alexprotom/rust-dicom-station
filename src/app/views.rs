@@ -31,6 +31,9 @@ impl ViewerApp {
     pub(super) fn contour_settings_hash(&self, slot: usize) -> u64 {
         let mut h: u64 = 0x9e3779b97f4a7c15 ^ (slot as u64).wrapping_mul(0xff51afd7ed558ccd);
         h = h.rotate_left(11) ^ (self.slots[slot].active_structs as u64 + 1);
+        if self.slots[slot].structs_shown {
+            h = h.rotate_left(3) ^ 0xA5A5;
+        }
         for (i, v) in self.slots[slot].roi_visible.iter().enumerate() {
             if *v {
                 h = h.rotate_left(7) ^ (i as u64 + 1);
@@ -93,7 +96,7 @@ impl ViewerApp {
         }
     }
 
-    /// The slice slider lies *inside* the viewport, along its bottom edge —
+    /// The slice slider lies *inside* the viewport, along its bottom edge -
     /// a scrubber over the image rather than a strip of window furniture
     /// under it. Returns the rectangle it occupies so the viewport can hand
     /// pointer activity there over to it.
@@ -165,7 +168,7 @@ impl ViewerApp {
         let btn_rect =
             Rect::from_center_size(rect.center() + Vec2::new(0.0, 10.0), Vec2::new(220.0, 28.0));
         if ui
-            .put(btn_rect, egui::Button::new("📂 Add DICOM folder…"))
+            .put(btn_rect, egui::Button::new("📂 Add DICOM folder"))
             .clicked()
         {
             if let Some(dir) = Self::pick_folder(&format!(
@@ -246,7 +249,7 @@ impl ViewerApp {
             if counts.is_empty() {
                 "Nothing in it can be reconstructed into slices.".to_string()
             } else {
-                format!("{counts} — open them from the panel on the left.")
+                format!("{counts} - open them from the panel on the left.")
             },
             FontId::proportional(13.0),
             hint,
@@ -254,7 +257,7 @@ impl ViewerApp {
         let btn_rect =
             Rect::from_center_size(rect.center() + Vec2::new(0.0, 14.0), Vec2::new(240.0, 28.0));
         if ui
-            .put(btn_rect, egui::Button::new("📂 Add DICOM folder…"))
+            .put(btn_rect, egui::Button::new("📂 Add DICOM folder"))
             .on_hover_text("Add an image series to this dataset so the views have slices to show")
             .clicked()
         {
@@ -267,44 +270,74 @@ impl ViewerApp {
         }
     }
 
+    /// The screen before any data: four buttons, and only the ones that can
+    /// do something. No heading and no explanations - a button that says
+    /// *Add DICOM folder* has already said it.
     pub(super) fn empty_state(&mut self, ui: &mut egui::Ui) {
+        let now = ui.input(|i| i.time);
+        let offer_pacs = self.archive_has_data(now);
+        let offer_session = self.has_last_session();
+        let mut open_folder = false;
+        let mut open_pacs = false;
+        let mut restore = false;
+        let mut generate = false;
         ui.centered_and_justified(|ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(ui.available_height() * 0.35);
-                ui.heading("Rust DICOM / RT viewer");
-                ui.add_space(8.0);
                 if self.loading.is_some() {
                     ui.spinner();
                     if let Some(job) = &self.loading {
                         ui.label(job.progress.get());
                     }
-                } else if let Some(job) = &self.gen_job {
-                    ui.spinner();
-                    ui.label(format!("Generating test data — {}", job.progress.get()));
-                } else {
-                    ui.label("Add a folder containing DICOM data");
-                    ui.add_space(8.0);
-                    if ui.button("📂 Add DICOM folder…").clicked() {
-                        if let Some(dir) = Self::pick_folder("Select a DICOM folder") {
-                            self.start_load(0, dir);
-                        }
-                    }
-                    ui.add_space(12.0);
-                    ui.weak("…or create a synthetic RT study to try the viewer on");
-                    ui.add_space(4.0);
-                    if ui
-                        .button("📐 Generate test data…")
-                        .on_hover_text(
-                            "Writes a synthetic CT + RTSTRUCT + RTPLAN + RTDOSE study \
-                             into the application folder",
-                        )
-                        .clicked()
-                    {
-                        self.gen_open = true;
-                    }
+                    return;
                 }
+                if let Some(job) = &self.gen_job {
+                    ui.spinner();
+                    ui.label(format!("Generating test data - {}", job.progress.get()));
+                    return;
+                }
+                open_folder = ui
+                    .button("📂 Add DICOM folder")
+                    .on_hover_text("Scan a folder of DICOM files into dataset A")
+                    .clicked();
+                if offer_pacs {
+                    ui.add_space(8.0);
+                    open_pacs = ui
+                        .button("🏥 Load data from PACS")
+                        .on_hover_text("Take a study out of the local patient archive")
+                        .clicked();
+                }
+                if offer_session {
+                    ui.add_space(8.0);
+                    restore = ui
+                        .button("⟲ Restore the last session")
+                        .on_hover_text("Load again what was open when the program last closed")
+                        .clicked();
+                }
+                ui.add_space(8.0);
+                generate = ui
+                    .button("📐 Generate test data")
+                    .on_hover_text(
+                        "Writes a synthetic CT + RTSTRUCT + RTPLAN + RTDOSE study \
+                         into the application folder",
+                    )
+                    .clicked();
             });
         });
+        if open_folder {
+            if let Some(dir) = Self::pick_folder("Select a DICOM folder") {
+                self.start_load(0, dir);
+            }
+        }
+        if open_pacs {
+            self.open_pacs_window();
+        }
+        if restore {
+            self.restore_last_session();
+        }
+        if generate {
+            self.gen_open = true;
+        }
     }
 
     // -- One viewport -----------------------------------------------------
@@ -323,8 +356,8 @@ impl ViewerApp {
         self.refresh_view_caches(&ctx, slot, idx);
 
         // A dataset with no image series has nothing to reformat. It is a
-        // legitimate dataset all the same — RT images, a structure set, a
-        // plan — so the pane says so and offers the folder that would give
+        // legitimate dataset all the same - RT images, a structure set, a
+        // plan - so the pane says so and offers the folder that would give
         // it a volume, instead of three black rectangles.
         if self.slots[slot].study.is_some() && !self.slots[slot].has_volume() {
             self.no_volume_row(ui, slot, rect, idx);
@@ -424,8 +457,9 @@ impl ViewerApp {
             }
         }
 
-        // Contours.
-        if self.show_contours {
+        // Contours. `structs_shown` is the tick box on the series row; the
+        // cached geometry stays, it simply is not painted.
+        if self.show_contours && slot_state.structs_shown {
             if let Some(ss) = slot_state.active_structures() {
                 for (ri, gfx) in &view.contours {
                     let Some(roi) = ss.rois.get(*ri) else {
@@ -521,7 +555,14 @@ impl ViewerApp {
         // Isocenter markers.
         if self.show_isocenters {
             let mut seen: Vec<[i64; 3]> = Vec::new();
-            for plan in &study.plans {
+            // A plan unticked in the data tree keeps its isocenters out of
+            // the views; a plan that arrived after the flags were sized
+            // counts as shown.
+            let shown = &slot_state.plan_visible;
+            for (pi, plan) in study.plans.iter().enumerate() {
+                if !shown.get(pi).copied().unwrap_or(true) {
+                    continue;
+                }
                 for b in &plan.beams {
                     let Some(iso) = b.isocenter else { continue };
                     let key = [
@@ -551,7 +592,7 @@ impl ViewerApp {
         }
 
         // The MedSAM2 prompt: the box belongs to the tool, not to the
-        // crosshair, so it stays visible with ⌖ off — which is exactly how
+        // crosshair, so it stays visible with ⌖ off - which is exactly how
         // it is drawn, with left-click navigation out of the way.
         if medsam2_show {
             if let Some(b) = &self.medsam2.prompt {
@@ -754,8 +795,8 @@ impl ViewerApp {
         // Their rectangles are needed here (the viewport handlers below ignore
         // any pointer activity over them), but the buttons themselves are
         // registered *after* the viewport interaction: the last widget at a
-        // position is the topmost one, so they get the hover — and show their
-        // tooltips — instead of the full-viewport rectangle underneath.
+        // position is the topmost one, so they get the hover - and show their
+        // tooltips - instead of the full-viewport rectangle underneath.
         let is_max = self.maximized == Some((slot, idx));
         let bsize = egui::vec2(24.0, 20.0);
         let by = rect.top() + 22.0; // below the slice counter
@@ -1026,7 +1067,7 @@ impl ViewerApp {
     }
 
     /// Set the crosshair of `slot` (voxel coords), sync its other two views,
-    /// and — when study linking is on — propagate the same patient-space
+    /// and - when study linking is on - propagate the same patient-space
     /// point to the other study.
     pub(super) fn set_cursor(&mut self, slot: usize, c: [f64; 3], source_view: usize) {
         let Some(study) = &self.slots[slot].study else {
@@ -1115,12 +1156,18 @@ impl ViewerApp {
         let dose_hash = self.dose_settings_hash(slot);
         let contour_hash = self.contour_settings_hash(slot);
         let seg_hash = self.seg_overlay_hash(slot);
-        let seg_idx = self.slots[slot].seg_series_idx();
+        // The tick box on the segmentation series row. `seg_series_idx` still
+        // reports the active series to the editing tools; only the overlay
+        // below is held back.
+        let seg_idx = self.slots[slot]
+            .segs_shown
+            .then(|| self.slots[slot].seg_series_idx())
+            .flatten();
         let grow_here = self.grow.as_ref().is_some_and(|g| g.slot == slot);
         let wc = self.window_center;
         let ww = self.window_width;
         let dose_on = self.dose_mode != DoseMode::Off;
-        let contours_on = self.show_contours;
+        let contours_on = self.show_contours && self.slots[slot].structs_shown;
 
         let StudySlot {
             study,
@@ -1134,7 +1181,7 @@ impl ViewerApp {
         let study = study.as_ref().unwrap();
         let vol = &study.volume;
         // Segments of the active segmentation series, when they live on this
-        // volume's lattice — see `StudySlot::segs`.
+        // volume's lattice - see `StudySlot::segs`.
         let segs: &[Segmentation] = seg_idx
             .map(|i| &study.seg_series[i])
             .filter(|sr| sr.grid.dims == vol.dims)
@@ -1201,7 +1248,7 @@ impl ViewerApp {
                         ))
                     }
                 }
-                // Isodose segments — one marching-squares pass per enabled
+                // Isodose segments - one marching-squares pass per enabled
                 // level, and the levels are independent.
                 let levels: Vec<(usize, f32)> = self
                     .iso_levels
@@ -1303,7 +1350,7 @@ impl ViewerApp {
     ///
     /// The field is a lattice of displacements; what a view needs is arrows
     /// (or a deformed lattice) in *its* display-pixel space, which changes
-    /// only when the slice, the style or the field itself does — not on
+    /// only when the slice, the style or the field itself does - not on
     /// every repaint, and certainly not on every pan.
     pub(super) fn refresh_field_cache(&mut self, slot: usize, idx: usize) {
         let showing = self.field_on

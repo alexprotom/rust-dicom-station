@@ -1,12 +1,12 @@
 //! *Tools ▶ Compare structures*: geometric comparison of any two
-//! structures — volumes, centroids and their offset, Dice, HD95 and mean
+//! structures - volumes, centroids and their offset, Dice, HD95 and mean
 //! surface distance.
 //!
 //! The two structures may live in either dataset and on different lattices;
 //! the second is resampled onto the first's grid through patient
 //! coordinates. Across two datasets that is only meaningful when both are
 //! in the same frame of reference (or have been registered and propagated
-//! first) — the window says so instead of silently comparing apples to
+//! first) - the window says so instead of silently comparing apples to
 //! oranges.
 
 use crate::motion;
@@ -36,7 +36,7 @@ impl ViewerApp {
         });
     }
 
-    /// One structure's mask on a definite grid, with its identity — the
+    /// One structure's mask on a definite grid, with its identity - the
     /// common currency of the compare and transfer tools. A contour is
     /// rasterized onto the displayed volume of its slot; a segment comes on
     /// its own series' lattice.
@@ -94,7 +94,7 @@ impl ViewerApp {
         let mut lines = Vec::new();
         if ga.frame_of_reference_uid != gb.frame_of_reference_uid {
             lines.push(
-                "⚠ Different frames of reference — the comparison assumes the patient \
+                "⚠ Different frames of reference - the comparison assumes the patient \
                  coordinates already correspond (register + propagate first if they do not)."
                     .into(),
             );
@@ -106,8 +106,8 @@ impl ViewerApp {
         };
         match motion::overlap(&ma, &mb_on_a, &ga) {
             Some(o) => {
-                lines.push(format!("A: {la} — {:.2} cm³", o.vol_a_cm3));
-                lines.push(format!("B: {lb} — {:.2} cm³", o.vol_b_cm3));
+                lines.push(format!("A: {la} - {:.2} cm³", o.vol_a_cm3));
+                lines.push(format!("B: {lb} - {:.2} cm³", o.vol_b_cm3));
                 if let Some(s) = o.centroid_shift() {
                     lines.push(format!(
                         "Centroid offset A → B: RL {:+.2} · AP {:+.2} · SI {:+.2} mm  (|d| = {:.2} mm)",
@@ -122,7 +122,7 @@ impl ViewerApp {
                 lines.push(format!("Mean surface distance: {:.2} mm", o.msd_mm));
             }
             None => lines.push(
-                "Nothing to compare — one of the masks is empty (a structure from the other \
+                "Nothing to compare - one of the masks is empty (a structure from the other \
                  dataset may lie outside this volume; resampling cannot invent it)."
                     .into(),
             ),

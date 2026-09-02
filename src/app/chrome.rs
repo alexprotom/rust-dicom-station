@@ -10,23 +10,21 @@ impl ViewerApp {
         let mut files_a = false;
         let mut files_b = false;
         let mut close_b = false;
-        let mut reset_views = false;
         let mut open_gen = false;
         let mut open_models = false;
         let mut open_pacs = false;
-        let mut open_propagate = false;
         let mut open_drr = false;
         let mut open_export: Option<usize> = None;
         let mut new_theme: Option<egui::ThemePreference> = None;
         let mut save_settings = false;
-        // A module was switched on or off — remember it for the next run.
+        // A module was switched on or off - remember it for the next run.
         let mut modules_changed = false;
 
         egui::Panel::top(egui::Id::new("menu_bar")).show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui
-                        .button("📂 Add DICOM folder to A…")
+                        .button("📂 Add DICOM folder to A")
                         .on_hover_text(
                             "Scan a folder and add its patients / studies / series to \
                              dataset A (existing content stays loaded)",
@@ -37,7 +35,7 @@ impl ViewerApp {
                         ui.close();
                     }
                     if ui
-                        .button("📂 Add DICOM folder to B…")
+                        .button("📂 Add DICOM folder to B")
                         .on_hover_text(
                             "Scan a folder and add its patients / studies / series to \
                              dataset B (existing content stays loaded)",
@@ -52,9 +50,9 @@ impl ViewerApp {
                     // folder of slices: an RT image, a structure set, a plan,
                     // a single slice. They merge exactly as a folder does.
                     if ui
-                        .button("📄 Add DICOM file(s) to A…")
+                        .button("📄 Add DICOM file(s) to A")
                         .on_hover_text(
-                            "Open one or more DICOM files directly — RT images, a \
+                            "Open one or more DICOM files directly - RT images, a \
                              structure set, a plan, single slices. They do not have to \
                              form an image volume",
                         )
@@ -64,9 +62,9 @@ impl ViewerApp {
                         ui.close();
                     }
                     if ui
-                        .button("📄 Add DICOM file(s) to B…")
+                        .button("📄 Add DICOM file(s) to B")
                         .on_hover_text(
-                            "Open one or more DICOM files directly — RT images, a \
+                            "Open one or more DICOM files directly - RT images, a \
                              structure set, a plan, single slices. They do not have to \
                              form an image volume",
                         )
@@ -101,13 +99,13 @@ impl ViewerApp {
                             .add_enabled(
                                 self.slots[slot].study.is_some(),
                                 egui::Button::new(format!(
-                                    "💾 Export dataset {slot_name} as DICOM…"
+                                    "💾 Export dataset {slot_name} as DICOM"
                                 )),
                             )
                             .on_hover_text(
                                 "Write the displayed volume, structure sets, \
                                  segmentation series (DICOM SEG), dose grids and plans \
-                                 as DICOM files — with the patient / study / equipment \
+                                 as DICOM files - with the patient / study / equipment \
                                  tags reviewed and edited first",
                             )
                             .clicked()
@@ -118,7 +116,7 @@ impl ViewerApp {
                     }
                     ui.separator();
                     if ui
-                        .button("📐 Generate test data…")
+                        .button("📐 Generate test data")
                         .on_hover_text(
                             "Write a complete synthetic RT study (CT, RTSTRUCT, RTPLAN, \
                              RTDOSE, DX, RTIMAGE, REG, RTRECORD) into the application folder",
@@ -143,81 +141,44 @@ impl ViewerApp {
                     ui.separator();
                     ui.checkbox(&mut self.show_contours, "Contours");
                     ui.checkbox(&mut self.show_crosshair, "Crosshair");
-                    // Syncing is a property of the crosshair, so it sits under
-                    // it and goes away with it.
-                    if self.show_crosshair {
-                        let both = self.slots[0].has_volume() && self.slots[1].has_volume();
-                        ui.add_enabled(
-                            both,
-                            egui::Checkbox::new(
-                                &mut self.link_studies,
-                                "Sync crosshairs between datasets",
-                            ),
-                        )
-                        .on_hover_text(
-                            "Move one crosshair and the other follows to the same patient \
-                             point — through the active registration when there is one. \
+                    // Syncing is a property of the crosshair and of having a
+                    // second dataset, so it goes away with either.
+                    let both = self.slots[0].has_volume() && self.slots[1].has_volume();
+                    if self.show_crosshair && both {
+                        ui.checkbox(&mut self.link_studies, "Sync crosshairs between datasets")
+                            .on_hover_text(
+                                "Move one crosshair and the other follows to the same patient \
+                             point - through the active registration when there is one. \
                              Off, each dataset is navigated on its own.",
-                        );
+                            );
                     }
                     ui.checkbox(&mut self.show_labels, "Orientation labels");
                     ui.checkbox(&mut self.show_isocenters, "Isocenters");
                     ui.separator();
-                    ui.checkbox(&mut self.side_open, "Left panel (F9)")
+                    ui.checkbox(&mut self.side_open, "Data tree (F9)")
                         .on_hover_text(
-                            "Hide the left panel and give the whole window to the views. \
-                             The arrow on the window's left edge brings it back, as does \
-                             F9.",
+                            "The left panel. Hidden, its arrow stays on the window's left \
+                             edge to bring it back, and so does F9.",
                         );
+                    let any_module = self.module_registration
+                        || self.module_simulation
+                        || self.module_propagation;
+                    ui.add_enabled_ui(any_module, |ui| {
+                        ui.checkbox(&mut self.right_open, "Modules (F10)")
+                            .on_hover_text(if any_module {
+                                "The right panel. Hidden, its arrow stays on the window's \
+                                 right edge to bring it back, and so does F10."
+                            } else {
+                                "There is no modules panel until a module is turned on in \
+                                 the Modules menu"
+                            });
+                    });
                     ui.separator();
                     ui.label("Appearance:");
                     let before = self.theme;
                     self.theme.radio_buttons(ui);
                     if self.theme != before {
                         new_theme = Some(self.theme);
-                    }
-                    ui.separator();
-                    ui.menu_button("Graphics backend…", |ui| {
-                        ui.label("Which graphics API the program draws and computes with.");
-                        ui.weak("Change this if the program will not start on a machine.");
-                        ui.add_space(4.0);
-                        let before = self.graphics_backend;
-                        for b in crate::gfx::Backend::offered() {
-                            ui.radio_value(&mut self.graphics_backend, b, b.label())
-                                .on_hover_text(b.hint());
-                        }
-                        if self.graphics_backend != before {
-                            save_settings = true;
-                        }
-                        ui.add_space(4.0);
-                        match crate::gfx::from_env() {
-                            // Someone who set the variable is working around
-                            // something; say so rather than let this menu
-                            // appear to be lying.
-                            Some(env) => {
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "⚠ {} is set to {} in this session and wins over \
-                                         the choice above.",
-                                        crate::gfx::ENV_VAR,
-                                        env.label()
-                                    ))
-                                    .small()
-                                    .color(warn_color(ui.visuals())),
-                                );
-                            }
-                            None => {
-                                ui.weak("Takes effect the next time the program starts.");
-                            }
-                        }
-                    });
-                    if let Some(msg) = &self.settings_error {
-                        ui.weak(msg);
-                    }
-                    ui.separator();
-                    if ui.button("Reset all views").clicked() {
-                        reset_views = true;
-                        ui.close();
                     }
                 });
                 // This menu is a set of switches, not a list of actions:
@@ -229,12 +190,14 @@ impl ViewerApp {
                             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
                     )
                     .ui(ui, |ui| {
-                        // Two optional side-panel sections, each one line of the
-                        // menu. Everything they do — direction, method, region,
-                        // parameters, landmarks, analytics, fusion, the vector
-                        // field, the simulated motion — lives in the section
-                        // itself, so the menu only decides whether it is there.
-                        ui.weak("Sections of the left panel:");
+                        // Every module is one line of this menu and one
+                        // section of the right panel. Everything a module
+                        // does - direction, method, region, parameters,
+                        // landmarks, analytics, fusion, the vector field, the
+                        // simulated motion, what travels and where - lives in
+                        // its section, so the menu only decides whether it is
+                        // there.
+                        ui.weak("Sections of the right panel (F10):");
                         modules_changed |= ui
                             .checkbox(&mut self.module_registration, "Image registration")
                             .on_hover_text(
@@ -248,9 +211,24 @@ impl ViewerApp {
                             .on_hover_text(
                                 "Registration QA: apply a known rigid motion and Gaussian \
                              deformation to one dataset and generate the result into the \
-                             other — the ground truth a registration can be measured against.",
+                             other - the ground truth a registration can be measured against.",
                             )
                             .changed();
+                        modules_changed |= ui
+                            .checkbox(&mut self.module_propagation, "Structures propagation")
+                            .on_hover_text(
+                                "Carry contours and segmentations from one dataset to the \
+                             other through the active registration - globally, or refined \
+                             on an enclosing structure first. Sits next to the \
+                             registration that drives it.",
+                            )
+                            .changed();
+                        if self.module_registration
+                            || self.module_simulation
+                            || self.module_propagation
+                        {
+                            self.right_open = true;
+                        }
                     });
                 ui.menu_button("Tools", |ui| {
                     // One block per dataset: the same six tools, in the same
@@ -265,7 +243,7 @@ impl ViewerApp {
                         (
                             &BODY_CONTOUR,
                             "Outline the patient and leave the couch, the chair and the \
-                             immobilisation outside — the EXTERNAL structure. Works on CT \
+                             immobilisation outside - the EXTERNAL structure. Works on CT \
                              and MR, with or without a network.",
                         ),
                         (
@@ -276,7 +254,7 @@ impl ViewerApp {
                         ),
                         (
                             &PROMPT_SEG,
-                            "Segment whatever you point at — a box, a click or a \
+                            "Segment whatever you point at - a box, a click or a \
                              structure name (SegVol, re-implemented natively in Rust). \
                              Covers the lesions and targets a fixed-class model cannot.",
                         ),
@@ -289,7 +267,7 @@ impl ViewerApp {
                         (
                             &MOTION,
                             "Register the reference phase of a 4D group to every other \
-                             phase, carry the targets across, and measure their motion — \
+                             phase, carry the targets across, and measure their motion - \
                              trajectories, drift, correlations and the ITV.",
                         ),
                     ];
@@ -338,24 +316,11 @@ impl ViewerApp {
                     ui.separator();
                     let both = self.slots[0].has_volume() && self.slots[1].has_volume();
                     if ui
-                        .add_enabled(both, egui::Button::new("⇄ Propagate structures…"))
-                        .on_hover_text(
-                            "Carry contours and segmentations from one dataset to the \
-                             other through the active registration — globally, or refined \
-                             on an enclosing structure first",
-                        )
-                        .clicked()
-                    {
-                        open_propagate = true;
-                        ui.close();
-                    }
-                    let both = self.slots[0].has_volume() && self.slots[1].has_volume();
-                    if ui
-                        .add_enabled(both, egui::Button::new("◎ Transfer by relationship…"))
+                        .add_enabled(both, egui::Button::new("◎ Transfer by relationship"))
                         .on_hover_text(
                             "Place a structure into the other dataset at the same offset \
-                             from a reference structure (e.g. the heart) — the \
-                             target–reference relationship travels, not a registration",
+                             from a reference structure (e.g. the heart) - the \
+                             target-reference relationship travels, not a registration",
                         )
                         .clicked()
                     {
@@ -364,10 +329,10 @@ impl ViewerApp {
                     }
                     let any = self.slots[0].has_volume() || self.slots[1].has_volume();
                     if ui
-                        .add_enabled(any, egui::Button::new("◑ Compare structures…"))
+                        .add_enabled(any, egui::Button::new("◑ Compare structures"))
                         .on_hover_text(
                             "Volumes, centroid offset, Dice, HD95 and mean surface \
-                             distance of any two structures — within a dataset or across \
+                             distance of any two structures - within a dataset or across \
                              the two",
                         )
                         .clicked()
@@ -380,11 +345,11 @@ impl ViewerApp {
                         .iter()
                         .any(|s| s.study.as_ref().is_some_and(|st| !st.doses.is_empty()));
                     if ui
-                        .add_enabled(has_dose, egui::Button::new("📊 Dose–volume histograms…"))
+                        .add_enabled(has_dose, egui::Button::new("📊 Dose-volume histograms"))
                         .on_hover_text(
                             "Cumulative and differential DVHs of any structures against \
                              any loaded dose objects, with the metrics table, protocol \
-                             constraint checking and CSV export — in a window that can \
+                             constraint checking and CSV export - in a window that can \
                              go on its own monitor",
                         )
                         .clicked()
@@ -402,7 +367,7 @@ impl ViewerApp {
                     if ui
                         .add_enabled(
                             !self.motion_reports.is_empty(),
-                            egui::Button::new("📈 Motion results…"),
+                            egui::Button::new("📈 Motion results"),
                         )
                         .on_hover_text("The finished 4D motion runs of this session")
                         .clicked()
@@ -413,10 +378,10 @@ impl ViewerApp {
                     if ui
                         .add_enabled(
                             self.slots[0].has_volume() || self.slots[1].has_volume(),
-                            egui::Button::new("☢ Digitally reconstructed radiograph…"),
+                            egui::Button::new("☢ Digitally reconstructed radiograph"),
                         )
                         .on_hover_text(
-                            "Forward-project the CT onto a flat detector — two \
+                            "Forward-project the CT onto a flat detector - two \
                              independent projectors, an exact ray tracer and an \
                              interpolating one, with the difference between them",
                         )
@@ -426,7 +391,7 @@ impl ViewerApp {
                         ui.close();
                     }
                     if ui
-                        .button("🏥 PACS — patient archive…")
+                        .button("🏥 PACS - patient archive")
                         .on_hover_text(
                             "The local archive: every study filed here, ready to be taken \
                              into a dataset and given back the structures and \
@@ -438,10 +403,10 @@ impl ViewerApp {
                         ui.close();
                     }
                     if ui
-                        .button("📦 Downloaded models…")
+                        .button("📦 Downloaded models")
                         .on_hover_text(
                             "What every segmentation engine has downloaded, how much disk \
-                             it costs, and the buttons to download, update or remove it — \
+                             it costs, and the buttons to download, update or remove it - \
                              one model at a time or all of them",
                         )
                         .clicked()
@@ -450,7 +415,7 @@ impl ViewerApp {
                         ui.close();
                     }
                     if ui
-                        .button("🔏 Anonymize DICOM folder…")
+                        .button("🔏 Anonymize DICOM folder")
                         .on_hover_text(
                             "Scan a folder, review every identifying tag with its current \
                              and proposed values, then rewrite the files (in place or into \
@@ -462,43 +427,73 @@ impl ViewerApp {
                         ui.close();
                     }
                 });
+                ui.menu_button("Settings", |ui| {
+                    ui.menu_button("Graphics backend", |ui| {
+                        ui.label("Which graphics API the program draws and computes with.");
+                        ui.add_space(4.0);
+                        let before = self.graphics_backend;
+                        for b in crate::gfx::Backend::offered() {
+                            ui.radio_value(&mut self.graphics_backend, b, b.label())
+                                .on_hover_text(b.hint());
+                        }
+                        if self.graphics_backend != before {
+                            save_settings = true;
+                        }
+                        ui.add_space(4.0);
+                        // What is drawing right now, which is not always what
+                        // was asked for: an unusable driver is fallen back
+                        // from without telling anybody.
+                        let running = self
+                            .active_backend
+                            .or_else(crate::gfx::from_env)
+                            .unwrap_or(self.graphics_backend);
+                        ui.weak(format!(
+                            "{} is set now. A change takes effect the next time the \
+                             program starts.",
+                            running.label()
+                        ));
+                    });
+                    if let Some(msg) = &self.settings_error {
+                        ui.weak(msg);
+                    }
+                });
                 ui.menu_button("Help", |ui| {
-                    ui.label("MPR views — mouse:");
-                    ui.weak("Left click / drag — move linked crosshair");
-                    ui.weak("Mouse wheel — scroll slices");
-                    ui.weak("Ctrl + wheel / pinch — zoom at cursor");
-                    ui.weak("Middle drag — pan");
-                    ui.weak("Right drag — window / level (x = width, y = center)");
+                    ui.label("MPR views - mouse:");
+                    ui.weak("Left click / drag - move linked crosshair");
+                    ui.weak("Mouse wheel - scroll slices");
+                    ui.weak("Ctrl + wheel / pinch - zoom at cursor");
+                    ui.weak("Middle drag - pan");
+                    ui.weak("Right drag - window / level (x = width, y = center)");
                     ui.separator();
                     ui.label("Segmentation (🎨 ⊖ ✨ take over the left button):");
-                    ui.weak("Left drag — paint / erase");
-                    ui.weak("Left press + drag ↑↓ — grow / shrink the region (✨)");
-                    ui.weak("Alt — erase while painting");
-                    ui.weak("Shift + wheel, or [ ] — brush radius");
-                    ui.weak("Ctrl + Z — undo the last stroke");
-                    ui.weak("Esc — cancel the running region grow");
+                    ui.weak("Left drag - paint / erase");
+                    ui.weak("Left press + drag ↑↓ - grow / shrink the region (✨)");
+                    ui.weak("Alt - erase while painting");
+                    ui.weak("Shift + wheel, or [ ] - brush radius");
+                    ui.weak("Ctrl + Z - undo the last stroke");
+                    ui.weak("Esc - cancel the running region grow");
                     ui.separator();
                     ui.label(format!(
                         "{} (the box takes over the left button in its view):",
                         SLICE_PROP.name
                     ));
                     ui.weak(
-                        "Left drag — draw the box; drag a corner to resize, the middle to move",
+                        "Left drag - draw the box; drag a corner to resize, the middle to move",
                     );
-                    ui.weak("Left click — an include / exclude point, with ➕ / ➖ chosen");
+                    ui.weak("Left click - an include / exclude point, with ➕ / ➖ chosen");
                     ui.separator();
                     ui.label("Buttons:");
-                    ui.weak("⟲ (view corner) — reset that view's zoom, pan and slice");
-                    ui.weak("⛶ / ⊞ — maximize that view / restore the layout");
-                    ui.weak("⟲ (toolbar) — reset every view of both datasets");
+                    ui.weak("⟲ (view corner) - reset that view's zoom, pan and slice");
+                    ui.weak("⛶ / ⊞ - maximize that view / restore the layout");
+                    ui.weak("⟲ (toolbar) - reset every view of both datasets");
                     ui.weak(
-                        "⌖ — show / hide the crosshair; hidden, left click no \
+                        "⌖ - show / hide the crosshair; hidden, left click no \
                          longer navigates",
                     );
-                    ui.weak("🔗 Sync — sync the crosshairs of A and B (shown while ⌖ is on)");
+                    ui.weak("🔗 Sync - sync the crosshairs of A and B (shown while ⌖ is on)");
                     ui.separator();
                     ui.weak(format!(
-                        "rust-dicom-station {} — research / QA viewer, not a medical device",
+                        "rust-dicom-station {} - research / QA viewer, not a medical device",
                         env!("CARGO_PKG_VERSION")
                     ));
                 });
@@ -530,9 +525,6 @@ impl ViewerApp {
         if close_b {
             self.close_comparison();
         }
-        if reset_views {
-            self.reset_all_views();
-        }
         if open_gen {
             self.gen_open = true;
         }
@@ -545,14 +537,6 @@ impl ViewerApp {
         if open_drr {
             let slot = usize::from(!self.slots[0].has_volume());
             self.open_drr_window(slot);
-        }
-        if open_propagate {
-            let src = self
-                .registration
-                .as_ref()
-                .map(|r| r.fixed_slot)
-                .unwrap_or(0);
-            self.open_propagate_window(src);
         }
         if let Some(slot) = open_export {
             self.open_export_dialog(slot);
@@ -593,8 +577,8 @@ impl ViewerApp {
                     );
                     let mut full_range = false;
                     // The closed combo carries the name of the preset in
-                    // force. Its numbers are dropped there — the two drag
-                    // values to the left already show them — but kept in the
+                    // force. Its numbers are dropped there - the two drag
+                    // values to the left already show them - but kept in the
                     // list, where they are what tells the presets apart.
                     // Any other window (a drag, a right-drag in a view, the
                     // full range) is nameless again.
@@ -680,7 +664,7 @@ impl ViewerApp {
                         .selectable_label(self.show_crosshair, "⌖")
                         .on_hover_text(
                             "Show / hide the slice intersection (crosshair).\n\
-                             Hidden: left click does not navigate — slices change \
+                             Hidden: left click does not navigate - slices change \
                              only by scrolling each view",
                         )
                         .clicked()
@@ -689,14 +673,13 @@ impl ViewerApp {
                     }
 
                     // Crosshair syncing: only meaningful while there is a
-                    // crosshair, so it appears and disappears with it.
-                    if self.show_crosshair {
-                        let both = self.slots[0].has_volume() && self.slots[1].has_volume();
-                        if ui
-                            .add_enabled(
-                                both,
-                                egui::Button::selectable(self.link_studies, "🔗 Sync"),
-                            )
+                    // crosshair to sync and a second dataset to sync it with,
+                    // so it appears and disappears with them.
+                    let both = self.slots[0].has_volume() && self.slots[1].has_volume();
+                    if self.show_crosshair
+                        && both
+                        && ui
+                            .add(egui::Button::selectable(self.link_studies, "🔗 Sync"))
                             .on_hover_text(
                                 "Sync the crosshairs of datasets A and B: move one and the \
                                  other follows to the same patient point, through the active \
@@ -704,9 +687,8 @@ impl ViewerApp {
                                  Off: each dataset is navigated on its own",
                             )
                             .clicked()
-                        {
-                            self.link_studies = !self.link_studies;
-                        }
+                    {
+                        self.link_studies = !self.link_studies;
                     }
 
                     // Reset every view of both datasets.
@@ -881,8 +863,8 @@ impl ViewerApp {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // The readouts are what the bar is for, so the mouse
-                    // bindings fold into a single "?" that the pointer opens
-                    // — always the bindings of the tool in force.
+                    // bindings fold into a single "?" that the pointer opens -
+                    // always the bindings of the tool in force.
                     let hint = match self.seg_tool {
                         SegTool::None => {
                             "LMB crosshair · RMB W/L · MMB pan · wheel slice · Ctrl+wheel zoom"

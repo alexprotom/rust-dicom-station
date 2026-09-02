@@ -2,7 +2,7 @@
 //!
 //! A 4DCT arrives as one series per respiratory phase, usually with an
 //! average (and sometimes a MIP) reconstruction beside them. DICOM stores
-//! no node for the acquisition they belong to — the phase lives in the
+//! no node for the acquisition they belong to - the phase lives in the
 //! series description ("Thorax 4D 30%") or, for enhanced exports, in
 //! TemporalPositionIdentifier. This module reconstructs that node: it
 //! recognises the phase series of a study, orders them, and files the
@@ -13,7 +13,7 @@
 //! by hand: groups built or edited in the tree are marked [`FourDGroup::
 //! custom`] and are never replaced by re-detection.
 //!
-//! Members reference series by UID, not by index — series are renamed,
+//! Members reference series by UID, not by index - series are renamed,
 //! removed and moved between datasets, and a UID survives all of that
 //! (an unresolvable UID simply drops out of the resolved view).
 
@@ -47,7 +47,7 @@ impl Role {
 /// One series of a 4D group.
 #[derive(Clone, Debug)]
 pub struct Member {
-    /// SeriesInstanceUID — the stable identity of the series.
+    /// SeriesInstanceUID - the stable identity of the series.
     pub series_uid: String,
     /// What the member is called within the group: "0%", "50%", "t3", "AVG".
     pub label: String,
@@ -66,7 +66,7 @@ pub struct FourDGroup {
     /// The members, phases first in temporal order, then the
     /// reconstructions (AVG, MIP, …).
     pub members: Vec<Member>,
-    /// Built or edited by hand — re-detection must not replace it.
+    /// Built or edited by hand - re-detection must not replace it.
     pub custom: bool,
     /// Dissolved by hand. The group stays as a hidden tombstone so
     /// re-detection does not resurrect it; an explicit *Re-detect 4D
@@ -102,7 +102,7 @@ impl FourDGroup {
             .or_else(|| phases.first().copied())
     }
 
-    /// `4D CT — Thorax (10 phases + 1)`, the default group name; the `+ 1`
+    /// `4D CT - Thorax (10 phases + 1)`, the default group name; the `+ 1`
     /// counts the AVG / MIP members.
     fn derive_name(modality: &str, stem: &str, n_phases: usize, extras: usize) -> String {
         // Leftover separators around the removed phase number ("4DCT_") are
@@ -113,7 +113,7 @@ impl FourDGroup {
         let what = if stem.is_empty() || stem.eq_ignore_ascii_case(&format!("4D {modality}")) {
             format!("4D {modality}")
         } else {
-            format!("4D {modality} — {stem}")
+            format!("4D {modality} - {stem}")
         };
         if extras > 0 {
             format!("{what} ({n_phases} phases + {extras})")
@@ -127,10 +127,10 @@ impl FourDGroup {
 #[derive(Clone, PartialEq, Debug)]
 enum Hint {
     /// A phase series: its number, the description with the number removed
-    /// (the *template*, identifying which 4D set it belongs to — original
+    /// (the *template*, identifying which 4D set it belongs to - original
     /// case, whitespace collapsed; compared case-insensitively), and
     /// whether the number was written as a literal percent ("30%") rather
-    /// than a keyword form ("phase_030") — which decides the label.
+    /// than a keyword form ("phase_030") - which decides the label.
     Phase {
         number: f32,
         template: String,
@@ -181,7 +181,7 @@ fn hint_of(desc: &str) -> Hint {
     // A number immediately followed by '%' (possibly with a space): the
     // respiratory phase. The description with the number removed is the
     // template that tells two 4D sets in one study apart. The scan runs on
-    // the original bytes — indices into the lowercased copy would not be
+    // the original bytes - indices into the lowercased copy would not be
     // valid slice positions of `desc` for non-ASCII descriptions.
     let bytes = desc.as_bytes();
     for (i, &b) in bytes.iter().enumerate() {
@@ -258,7 +258,7 @@ fn normalize_template(s: &str) -> String {
 /// descriptions carry a percent phase are grouped by their description
 /// template, and series with a TemporalPositionIdentifier but no percent
 /// are grouped by identical description. A group needs at least three
-/// phases — two series with "50%" in the name are more likely a coincidence
+/// phases - two series with "50%" in the name are more likely a coincidence
 /// than an acquisition. Average / MIP / MinIP reconstructions of the bucket
 /// are attached to its first group.
 pub fn detect(series: &[SeriesInfo]) -> Vec<FourDGroup> {
@@ -317,7 +317,7 @@ pub fn detect(series: &[SeriesInfo]) -> Vec<FourDGroup> {
 
         // Each group is kept with the stem its name was derived from, so
         // attaching the reconstructions can re-derive the name without
-        // parsing it back apart (a stem may itself contain " — " or "(").
+        // parsing it back apart (a stem may itself contain " - " or "(").
         let mut groups_here: Vec<(FourDGroup, String)> = Vec::new();
         for (tpl, literal_pct, mut members) in templates {
             if members.len() < 3 {

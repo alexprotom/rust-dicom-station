@@ -5,8 +5,8 @@
 //! little-endian storage blob per tensor under `<prefix>/data/<key>`.
 //!
 //! This module implements just enough of the pickle virtual machine to walk
-//! such a checkpoint and extract a state dict — every tensor's storage key,
-//! dtype, shape, stride and storage offset — either from the archive root
+//! such a checkpoint and extract a state dict - every tensor's storage key,
+//! dtype, shape, stride and storage offset - either from the archive root
 //! (a bare `state_dict()`, as Hugging Face's `pytorch_model.bin` files are
 //! saved) or from a named entry of the root dict (`network_weights` in an
 //! nnU-Net training checkpoint). No Python, no libtorch: the opcodes below
@@ -78,7 +78,7 @@ impl TensorMeta {
     pub fn numel(&self) -> usize {
         self.shape.iter().product()
     }
-    /// Row-major (C-contiguous) check — true for all nnU-Net weights.
+    /// Row-major (C-contiguous) check - true for all nnU-Net weights.
     pub fn is_contiguous(&self) -> bool {
         let mut expect = 1usize;
         for (dim, st) in self.shape.iter().zip(self.stride.iter()).rev() {
@@ -198,7 +198,7 @@ impl<'a> Machine<'a> {
     fn reduce(&mut self, callable: Value, args: Value) -> Result<Value> {
         let (module, name) = match &callable {
             Value::Global(m, n) => (m.as_ref(), n.as_ref()),
-            // e.g. the result of a previous REDUCE used as a callable — the
+            // e.g. the result of a previous REDUCE used as a callable - the
             // training-log section does this with numpy dtypes; irrelevant.
             _ => return Ok(Value::Opaque),
         };
@@ -226,7 +226,7 @@ impl<'a> Machine<'a> {
                 })))
             }
             ("torch", "device") => Ok(Value::Opaque),
-            // numpy machinery in the training log — value never inspected.
+            // numpy machinery in the training log - value never inspected.
             _ => Ok(Value::Opaque),
         }
     }
@@ -462,14 +462,14 @@ impl<'a> Machine<'a> {
                     self.stack.push(v);
                 }
                 0x81 => {
-                    // NEWOBJ: cls.__new__(cls, *args) — treat like REDUCE
+                    // NEWOBJ: cls.__new__(cls, *args) - treat like REDUCE
                     let args = self.pop()?;
                     let cls = self.pop()?;
                     let v = self.reduce(cls, args)?;
                     self.stack.push(v);
                 }
                 b'b' => {
-                    // BUILD: obj.__setstate__(state) — state unused for our targets
+                    // BUILD: obj.__setstate__(state) - state unused for our targets
                     let _state = self.pop()?;
                 }
                 b'Q' => {
@@ -510,7 +510,7 @@ impl<'a> Machine<'a> {
 /// raw storage bytes still inside the ZIP archive.
 pub struct PthReader {
     archive: zip::ZipArchive<std::fs::File>,
-    /// e.g. "checkpoint_final" — first path component inside the zip.
+    /// e.g. "checkpoint_final" - first path component inside the zip.
     prefix: String,
     /// state-dict entries in file order: (parameter name, tensor meta).
     pub tensors: Vec<(String, TensorMeta)>,
@@ -643,8 +643,8 @@ mod tests {
     // `torch.save` writes a ZIP holding `archive/data.pkl` (a protocol-2
     // pickle) plus one raw little-endian blob per storage under
     // `archive/data/<key>`. These helpers emit exactly that, so the reader is
-    // exercised end to end — including the root-level `state_dict()` layout
-    // that Hugging Face checkpoints use — without PyTorch, and without the
+    // exercised end to end - including the root-level `state_dict()` layout
+    // that Hugging Face checkpoints use - without PyTorch, and without the
     // 700 MB download.
 
     fn unicode(out: &mut Vec<u8>, s: &str) {
@@ -836,7 +836,7 @@ mod tests {
 
     #[test]
     fn honors_storage_offset_and_shared_storages() {
-        // Two tensors viewing one storage at different offsets — torch emits
+        // Two tensors viewing one storage at different offsets - torch emits
         // this whenever parameters were sliced out of a single buffer.
         let all: Vec<f32> = (0..10).map(|i| i as f32).collect();
         let mut a = contiguous("a", "0", &[4]);

@@ -6,7 +6,7 @@ use rust_dicom_station::mesh3d::{self, GridGeom};
 use rust_dicom_station::segmentation::{self, GrowState, Segmentation};
 use rust_dicom_station::volume::{ViewPlane, Volume};
 
-/// A synthetic volume with anisotropic spacing (1 x 1 x 2 mm) — the brush
+/// A synthetic volume with anisotropic spacing (1 x 1 x 2 mm) - the brush
 /// and meshing math must honor per-axis spacing.
 fn test_volume(dims: [usize; 3], fill: i16) -> Volume {
     Volume {
@@ -92,7 +92,7 @@ fn geodesic_grow_suggests_the_organ_and_respects_its_boundary() {
     }
     let mut grow = GrowState::default();
     grow.seed(&vol, [7, 7, 7]);
-    // At the default reach the whole organ — and only the organ — is
+    // At the default reach the whole organ - and only the organ - is
     // suggested: the intensity jump at its boundary is a geodesic barrier.
     assert_eq!(grow.voxels.len(), 125);
     assert!(!grow.capped);

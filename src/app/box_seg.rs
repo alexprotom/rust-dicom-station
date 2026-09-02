@@ -6,7 +6,7 @@
 //! is the interface people who use this model already know:
 //!
 //! 1. scroll to a slice where the structure is clear and **drag a box** around
-//!    it, directly in the image — the box stays, with handles, and can be
+//!    it, directly in the image - the box stays, with handles, and can be
 //!    resized or moved;
 //! 2. **preview that one slice**, which costs a single encoder pass and is
 //!    re-run for free while the box is adjusted;
@@ -14,8 +14,8 @@
 //! 4. set the **slice range** to propagate through, and run it.
 //!
 //! Nothing is anchored to the crosshair, and the crosshair does not move while
-//! the box tool has the left button. The expensive things — the weights and
-//! the prepared stack — are built once and kept in [`Medsam2State`], and the
+//! the box tool has the left button. The expensive things - the weights and
+//! the prepared stack - are built once and kept in [`Medsam2State`], and the
 //! engine keeps the *prompted slice's* encoder output, so steps 2 and 3 loop
 //! at the cost of the prompt path alone.
 //!
@@ -68,7 +68,7 @@ enum Grab {
 pub(super) struct BoxPrompt {
     pub plane: ViewPlane,
     pub slice: usize,
-    /// The two dragged corners, in drawing order — not necessarily sorted.
+    /// The two dragged corners, in drawing order - not necessarily sorted.
     a: [f32; 2],
     b: [f32; 2],
     /// Refinement clicks and whether each says "include".
@@ -96,7 +96,7 @@ impl BoxPrompt {
         )
     }
 
-    /// A box too small to mean anything — a stray click rather than a drag.
+    /// A box too small to mean anything - a stray click rather than a drag.
     pub fn is_degenerate(&self) -> bool {
         let (lo, hi) = self.rect();
         hi[0] - lo[0] < 2.0 || hi[1] - lo[1] < 2.0
@@ -245,7 +245,7 @@ fn run_job(req: Medsam2Request, progress: &Progress) -> anyhow::Result<Medsam2Do
     let (prepared, volume) = match req.cached {
         Some(pair) => pair,
         None => {
-            progress.set("Preparing the study…");
+            progress.set("Preparing the study");
             let volume = req
                 .fresh
                 .ok_or_else(|| anyhow::anyhow!("no volume to prepare"))?;
@@ -263,9 +263,9 @@ fn run_job(req: Medsam2Request, progress: &Progress) -> anyhow::Result<Medsam2Do
             e
         }
         None => {
-            progress.set("Loading the weights…");
+            progress.set("Loading the weights");
             let params = weights::load(req.variant, &req.models_dir, progress)?;
-            progress.set("Choosing the compute device…");
+            progress.set("Choosing the compute device");
             Arc::new(Engine::load(&params, req.device)?)
         }
     };
@@ -274,7 +274,7 @@ fn run_job(req: Medsam2Request, progress: &Progress) -> anyhow::Result<Medsam2Do
     let started = std::time::Instant::now();
     let result = match req.request {
         Request::Preview => {
-            progress.set("Segmenting this slice…");
+            progress.set("Segmenting this slice");
             let slice_mask = engine.preview(&prepared, req.slice, &req.prompt, &req.cfg)?;
             let voxels = slice_mask.iter().filter(|v| **v != 0).count() as u64;
             // One slice, on the volume's grid, so the viewer can draw it with
@@ -323,7 +323,7 @@ fn run_job(req: Medsam2Request, progress: &Progress) -> anyhow::Result<Medsam2Do
 /// Where the intensity window comes from.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum WindowSource {
-    /// What the viewport is showing — what you see is what the model sees.
+    /// What the viewport is showing - what you see is what the model sees.
     Viewport,
     /// One of the windows the MedSAM2 paper trained with.
     Preset(usize),
@@ -355,7 +355,7 @@ pub(super) struct Medsam2State {
     /// True once the user has chosen a range themselves, after which it stops
     /// following the box.
     pub range_pinned: bool,
-    /// Add each run to what is already there, instead of replacing it — how a
+    /// Add each run to what is already there, instead of replacing it - how a
     /// slice that drifted gets corrected: draw a fresh box on it and run
     /// again.
     pub merge: bool,
@@ -458,7 +458,7 @@ impl Medsam2State {
     }
 }
 
-/// Which of the three views the stack is sliced along — the one a prompt has
+/// Which of the three views the stack is sliced along - the one a prompt has
 /// to be drawn in.
 pub(super) fn drawing_plane(vol: &Volume) -> ViewPlane {
     let (perm, _) = preprocess::axial_axes(vol);
@@ -606,7 +606,7 @@ impl ViewerApp {
         // so nothing expensive happens on this thread.
         let Some((slice, prompt)) = self.medsam2.engine_prompt(&study.volume) else {
             self.error = Some(
-                format!("Draw a box in the {} view first — drag around the structure on a slice where it is clear.", plane_name(plane)),
+                format!("Draw a box in the {} view first - drag around the structure on a slice where it is clear.", plane_name(plane)),
             );
             return;
         };
@@ -623,8 +623,8 @@ impl ViewerApp {
         };
         let progress = Arc::new(Progress::default());
         progress.set(match request {
-            Request::Preview => "Segmenting this slice…",
-            Request::Propagate => "Propagating…",
+            Request::Preview => "Segmenting this slice",
+            Request::Propagate => "Propagating",
         });
         let req = Medsam2Request {
             engine: self.medsam2.engine.clone(),
@@ -720,7 +720,7 @@ impl ViewerApp {
                 None => "nothing".to_string(),
             };
             format!(
-                "✔ {}: {} voxels ({cm3:.1} cm³) over {span} in {:.1} s on {} — {} slice(s) tracked",
+                "✔ {}: {} voxels ({cm3:.1} cm³) over {span} in {:.1} s on {} - {} slice(s) tracked",
                 self.medsam2.name.trim(),
                 r.voxels,
                 r.elapsed_secs,
@@ -764,7 +764,7 @@ impl ViewerApp {
                 ui.label(format!(
                     "Follows a structure boxed on one slice through the stack with MedSAM2, \
                      re-implemented natively in Rust. Drag a box around it in the {} view, on a \
-                     slice where it is clear; the box stays — drag its corners to resize, its \
+                     slice where it is clear; the box stays - drag its corners to resize, its \
                      middle to move it.",
                     plane_name(plane)
                 ));
@@ -776,7 +776,7 @@ impl ViewerApp {
                     ui.selectable_value(&mut self.medsam2.tool, BoxTool::Draw, "⬚ Box")
                         .on_hover_text("Drag a new box, or move and resize the one that is there");
                     ui.selectable_value(&mut self.medsam2.tool, BoxTool::Include, "➕ Include")
-                        .on_hover_text("Click a spot the box got wrong — this is the structure");
+                        .on_hover_text("Click a spot the box got wrong - this is the structure");
                     ui.selectable_value(&mut self.medsam2.tool, BoxTool::Exclude, "➖ Exclude")
                         .on_hover_text("Click a spot that must stay out");
                     if ui.button("Clear").clicked() {
@@ -787,7 +787,7 @@ impl ViewerApp {
                     Some(b) => {
                         let (lo, hi) = b.rect();
                         ui.weak(format!(
-                            "Box on slice {} — {:.0} x {:.0} px, {} click(s)",
+                            "Box on slice {} - {:.0} x {:.0} px, {} click(s)",
                             b.slice + 1,
                             hi[0] - lo[0],
                             hi[1] - lo[1],
@@ -869,7 +869,7 @@ impl ViewerApp {
                     ui.checkbox(&mut self.medsam2.merge, "Add to what is already there")
                         .on_hover_text(
                             "Correcting a slice that drifted: scroll to it, draw a fresh \
-                             box, and propagate again — the new run is added to the \
+                             box, and propagate again - the new run is added to the \
                              segmentation instead of replacing it.",
                         );
                 }
@@ -924,10 +924,10 @@ impl ViewerApp {
                 ui.separator();
                 let need = weights::download_needed(self.medsam2.variant, &models_dir);
                 let weights_note = if need == 0 {
-                    "Weights: MedSAM2 (research and education only) — cached ✔.".to_string()
+                    "Weights: MedSAM2 (research and education only) - cached ✔.".to_string()
                 } else {
                     format!(
-                        "Weights: MedSAM2 (research and education only) — {} MB downloaded \
+                        "Weights: MedSAM2 (research and education only) - {} MB downloaded \
                          once from Hugging Face, at your request, never redistributed.",
                         need / 1_000_000
                     )
@@ -1148,7 +1148,7 @@ mod tests {
         assert_eq!(slice, prepared.from_volume_index([10, 12, 4])[0]);
 
         // The corners come back sorted, they enclose the click, and they keep
-        // the drawn extent — whichever way the axes were permuted.
+        // the drawn extent - whichever way the axes were permuted.
         assert!(points[0].row <= points[1].row && points[0].column <= points[1].column);
         assert!(points[2].row >= points[0].row && points[2].row <= points[1].row);
         assert!(points[2].column >= points[0].column && points[2].column <= points[1].column);

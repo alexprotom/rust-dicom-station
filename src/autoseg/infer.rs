@@ -32,7 +32,7 @@ fn compute_steps(image_size: usize, tile_size: usize, step_frac: f64) -> Vec<usi
 }
 
 /// 1-D Gaussian importance profile for one patch axis (σ = len/8, center at
-/// len/2 — nnU-Net's `compute_gaussian`; the ×10 scaling and per-axis kernel
+/// len/2 - nnU-Net's `compute_gaussian`; the ×10 scaling and per-axis kernel
 /// normalizations cancel in the argmax and are omitted).
 fn gauss_profile(len: usize) -> Vec<f32> {
     let sigma = len as f64 / 8.0;
@@ -56,7 +56,7 @@ pub trait InferHooks: Sync {
 
 /// Run sliding-window inference over a resampled volume.
 ///
-/// * `vol` — raw HU values on the model grid, layout `[d0][d1][d2]`.
+/// * `vol` - raw HU values on the model grid, layout `[d0][d1][d2]`.
 /// * returns per-voxel argmax labels (local class indices) on the same grid.
 pub fn predict(
     vol: &[f32],

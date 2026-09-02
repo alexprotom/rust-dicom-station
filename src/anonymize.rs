@@ -11,7 +11,7 @@
 //!   PatientID). The proposals are shown in the UI and can be edited.
 //! * [`apply`] rewrites the files with the (possibly edited) replacements,
 //!   optionally removing private (odd-group) elements and remapping every
-//!   non-standard UID — consistently across all files, so the DICOM
+//!   non-standard UID - consistently across all files, so the DICOM
 //!   reference chains (RTSTRUCT ▶ series, RTDOSE ▶ RTPLAN ▶ RTSTRUCT,
 //!   ReferencedSOPInstanceUID lists, frames of reference) stay intact.
 //!   Pixel data is copied through untouched.
@@ -58,7 +58,7 @@ struct Rule {
     vr: VR,
     suggest: Suggest,
     /// Rows for these tags start unchecked (descriptions are not PHI per se,
-    /// but often contain it — the user opts in).
+    /// but often contain it - the user opts in).
     default_on: bool,
 }
 
@@ -243,7 +243,7 @@ fn walk_stats(obj: &InMemDicomObject, uids: &mut HashSet<String>, private: &mut 
 }
 
 pub fn scan(dir: &Path, progress: &Progress) -> Result<ScanResult> {
-    progress.set("Scanning folder…");
+    progress.set("Scanning folder");
     let files: Vec<PathBuf> = walkdir::WalkDir::new(dir)
         .follow_links(true)
         .into_iter()
@@ -272,7 +272,7 @@ pub fn scan(dir: &Path, progress: &Progress) -> Result<ScanResult> {
         .map(|path| {
             let n = done.fetch_add(1, Ordering::Relaxed);
             if n.is_multiple_of(64) {
-                progress.set(format!("Reading headers… {}/{}", n + 1, files.len()));
+                progress.set(format!("Reading headers {}/{}", n + 1, files.len()));
             }
             // Header-only read: identifying tags and reference sequences all
             // sit before Pixel Data.
@@ -347,7 +347,7 @@ pub fn scan(dir: &Path, progress: &Progress) -> Result<ScanResult> {
     }
     if ids.len() > 1 {
         warnings.push(format!(
-            "{} distinct patients in this folder — they would all receive the same alias; \
+            "{} distinct patients in this folder - they would all receive the same alias; \
              edit the PatientName/PatientID replacements if that is not intended",
             ids.len()
         ));
@@ -410,7 +410,7 @@ pub struct ApplyParams {
     pub out_dir: Option<PathBuf>,
 }
 
-/// Fresh UID under the 2.25 (UUID-derived) root — deterministic within one
+/// Fresh UID under the 2.25 (UUID-derived) root - deterministic within one
 /// run (salted hash of the original), collision-checked against the map.
 fn new_uid(old: &str, salt: u64, taken: &HashSet<String>) -> String {
     let mut n = 0u64;
@@ -504,7 +504,7 @@ pub fn apply(
     // across files (referential integrity of the whole folder).
     let mut uid_map: HashMap<String, String> = HashMap::new();
     if p.remap_uids {
-        progress.set("Collecting UIDs…");
+        progress.set("Collecting UIDs");
         let per_file: Vec<Result<HashSet<String>>> = files
             .par_iter()
             .map(|path| {
@@ -542,12 +542,12 @@ pub fn apply(
     }
 
     let done = AtomicUsize::new(0);
-    // One file in, one file out — parallel over files, like the scan pass.
+    // One file in, one file out - parallel over files, like the scan pass.
     let results: Vec<Result<()>> = files
         .par_iter()
         .map(|path| -> Result<()> {
             let i = done.fetch_add(1, Ordering::Relaxed);
-            progress.set(format!("Anonymizing… {}/{}", i + 1, files.len()));
+            progress.set(format!("Anonymizing {}/{}", i + 1, files.len()));
             let file_obj = dicom_object::open_file(path)
                 .with_context(|| format!("open {}", path.display()))?;
             let meta = file_obj.meta().clone();

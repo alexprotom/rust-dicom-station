@@ -4,14 +4,14 @@
 //! by running that same fixed graph twice: once over the whole volume crushed
 //! down to the input shape, and then again as a sliding window over a crop
 //! around whatever the first pass found. The paper's own measurements make
-//! the case — resize-only is fast and coarse, sliding-window-only is accurate
+//! the case - resize-only is fast and coarse, sliding-window-only is accurate
 //! and slow, and the two-stage scheme gets most of the accuracy for a small
 //! multiple of the cost.
 //!
 //! Two deliberate divergences from the reference, both optional and both off
 //! by default:
 //!
-//! * [`Config::skip_coarse_with_box`] — when the user has drawn a box, the
+//! * [`Config::skip_coarse_with_box`] - when the user has drawn a box, the
 //!   coarse pass is only being asked to *find* a region that has already been
 //!   pointed at. Cropping straight to the box halves the compute and stops
 //!   small lesions being lost to the 32x256x256 downsample, which is where
@@ -59,7 +59,7 @@ impl Default for Config {
 
 /// The result of one segmentation.
 pub struct Segmentation {
-    /// One byte per voxel of the **prepared** grid — canonically oriented and
+    /// One byte per voxel of the **prepared** grid - canonically oriented and
     /// cropped. Callers map it onto the original volume with
     /// [`Prepared::mask_to_volume_grid`].
     pub mask: Vec<u8>,
@@ -74,8 +74,8 @@ pub struct Segmentation {
 ///
 /// The count is `ceil(image / interval)` and each start is pulled back so the
 /// window fits inside the image, which means the last few windows can overlap
-/// more than the nominal stride. This is *not* nnU-Net's rule — that one
-/// spreads the windows evenly — so the two engines cannot share it.
+/// more than the nominal stride. This is *not* nnU-Net's rule - that one
+/// spreads the windows evenly - so the two engines cannot share it.
 pub fn window_starts(image: usize, patch: usize, interval: usize) -> Vec<usize> {
     if image <= patch {
         return vec![0];
@@ -240,7 +240,7 @@ pub fn segment(
         }
         (l, h)
     } else {
-        hooks.report(0.0, "Locating the structure…");
+        hooks.report(0.0, "Locating the structure");
         coarse_ran = true;
         let small = preprocess::resize_nearest_exact(&prep.data, dims, ROI);
         let coarse_boxes: Vec<BBox> = boxes.iter().map(|b| box_to_grid(b, dims, ROI)).collect();
@@ -376,7 +376,7 @@ pub fn segment(
         }
     }
 
-    hooks.report(1.0, "Assembling the mask…");
+    hooks.report(1.0, "Assembling the mask");
     let mut mask = vec![0u8; crop_dims[0] * crop_dims[1] * crop_dims[2]];
     mask.par_chunks_mut(crop_dims[1] * crop_dims[2])
         .enumerate()

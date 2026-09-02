@@ -4,8 +4,8 @@
 //!
 //! One section covers four algorithms because the choice between them is
 //! the user's real question ("stochastic or dense? intensities or points?"),
-//! and the rest of the conversation — direction, region, parameters,
-//! analytics, fusion, vector field — is the same whichever they pick.
+//! and the rest of the conversation - direction, region, parameters,
+//! analytics, fusion, vector field - is the same whichever they pick.
 
 use anyhow::{anyhow, Result};
 
@@ -178,10 +178,10 @@ impl ViewerApp {
         }
         let step = self.field_step_mm;
         let progress = Arc::new(Progress::default());
-        progress.set("starting…");
+        progress.set("starting");
         self.reg_job = Some(Job::spawn(progress, move |p| {
             let out = registration::register(&fixed, &moving, &params, p).map(|result| {
-                p.set("Sampling the vector field…");
+                p.set("Sampling the vector field");
                 let field = VectorField::sample(&fixed, &result.transform, region.as_deref(), step);
                 RegOutcome {
                     result,
@@ -210,8 +210,8 @@ impl ViewerApp {
     /// Install any transform read from a file as the active registration.
     ///
     /// A Deformable Spatial Registration's grid arrives here exactly as a
-    /// REG matrix does, so everything downstream — fusion, the crosshair
-    /// link, the analytics, the vector field, propagation — works on it
+    /// REG matrix does, so everything downstream - fusion, the crosshair
+    /// link, the analytics, the vector field, propagation - works on it
     /// without knowing where it came from.
     pub(super) fn apply_external_transform(
         &mut self,
@@ -259,6 +259,10 @@ impl ViewerApp {
             job.progress.cancel();
         }
         self.registration = None;
+        // The per-phase transforms belong to a pair of images too: when the
+        // dataset that made them goes, so do they.
+        self.group_registration = None;
+        self.reg_group = None;
         self.fusion_on = false;
         self.reg_gen += 1;
     }
@@ -310,16 +314,28 @@ impl ViewerApp {
     pub(super) fn registration_section(&mut self, ui: &mut egui::Ui) {
         let both = self.slots[0].has_volume() && self.slots[1].has_volume();
         // The section is worth showing while two datasets are loaded, while a
-        // result is on display, and while a run is in flight — the last one
-        // because that is where its progress and its Cancel button live.
-        if !both && self.registration.is_none() && self.reg_job.is_none() {
+        // result is on display, while a run is in flight (that is where its
+        // progress and its Cancel button live), and while one dataset holds a
+        // 4D group, which can be registered against a volume of its own.
+        let any_group = (0..2).any(|slot| {
+            self.slots[slot]
+                .study
+                .as_ref()
+                .is_some_and(|st| !st.fourd_groups.is_empty())
+        });
+        if !both
+            && !any_group
+            && self.registration.is_none()
+            && self.reg_job.is_none()
+            && self.group_registration.is_none()
+        {
             // The module is switched on, so the section says what it is
             // waiting for rather than leaving an empty panel.
             egui::CollapsingHeader::new(egui::RichText::new("Image registration").strong())
                 .default_open(true)
                 .show(ui, |ui| {
                     ui.weak(
-                        "Load a second dataset (File ▶ Add DICOM folder to B…) — \
+                        "Load a second dataset (File > Add DICOM folder to B) - \
                          registration aligns one onto the other",
                     );
                 });
@@ -329,11 +345,32 @@ impl ViewerApp {
         let mut run: Option<bool> = None;
         let mut cancel = false;
         let mut clear = false;
+        let mut propagate_from: Option<usize> = None;
         let mut resample = false;
         let mut add_landmark = false;
         let mut drop_landmark: Option<usize> = None;
         let mut clear_landmarks = false;
         let mut save_field = false;
+        let mut run_group: Option<(usize, usize, usize)> = None;
+        let mut clear_group = false;
+        // 4D groups either dataset offers, keyed the way `reg_group` is.
+        let group_choices: Vec<((usize, usize), String)> = self
+            .propagate_group_choices()
+            .into_iter()
+            .filter_map(|(t, label)| match t {
+                crate::app::propagate_win::PropTarget::Group { slot, group } => {
+                    Some(((slot, group), label))
+                }
+                _ => None,
+            })
+            .collect();
+        // A group removed while the module sat open leaves a stale choice.
+        if self
+            .reg_group
+            .is_some_and(|k| !group_choices.iter().any(|(g, _)| *g == k))
+        {
+            self.reg_group = None;
+        }
 
         egui::CollapsingHeader::new(egui::RichText::new("Image registration").strong())
             .default_open(true)
@@ -358,6 +395,73 @@ impl ViewerApp {
                     ui.selectable_value(&mut self.reg_fixed_slot, 1, "A ▶ B")
                         .on_hover_text("A is deformed/moved onto B; fusion shown on B");
                 });
+
+                // ---- fixed image: the other dataset, or every phase ----
+                // A single volume against a 4D group is one registration per
+                // phase, not one for the group: the phases differ by
+                // breathing, which is the whole reason the acquisition exists.
+                if !group_choices.is_empty() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Fixed image");
+                        let current = match self.reg_group {
+                            None => format!("dataset {} (displayed)", SLOT_NAMES[fixed_slot]),
+                            Some(k) => group_choices
+                                .iter()
+                                .find(|(g, _)| *g == k)
+                                .map(|(_, l)| l.clone())
+                                .unwrap_or_default(),
+                        };
+                        let before = self.reg_group;
+                        egui::ComboBox::from_id_salt("reg_fixed_image")
+                            .selected_text(current)
+                            .width(190.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.reg_group,
+                                    None,
+                                    format!("dataset {} (displayed)", SLOT_NAMES[fixed_slot]),
+                                );
+                                for (key, label) in &group_choices {
+                                    ui.selectable_value(&mut self.reg_group, Some(*key), label);
+                                }
+                            });
+                        // Picking a group aims the moving image at the other
+                        // dataset, which is what it usually is; the row below
+                        // moves it back when the two live together.
+                        if let (true, Some((gslot, _))) = (before != self.reg_group, self.reg_group)
+                        {
+                            self.reg_group_moving = 1 - gslot;
+                        }
+                    });
+                    if let Some((gslot, _)) = self.reg_group {
+                        ui.horizontal(|ui| {
+                            ui.label("Moving image");
+                            for (slot, name) in SLOT_NAMES.iter().enumerate() {
+                                let loaded = self.slots[slot].has_volume();
+                                ui.add_enabled_ui(loaded, |ui| {
+                                    ui.selectable_value(
+                                        &mut self.reg_group_moving,
+                                        slot,
+                                        format!("dataset {name}"),
+                                    )
+                                    .on_hover_text(
+                                        if slot == gslot {
+                                            "The displayed series of the dataset the group is \
+                                         in - a planning CT beside its own 4DCT"
+                                        } else {
+                                            "The displayed series of the other dataset"
+                                        },
+                                    );
+                                });
+                            }
+                        });
+                        ui.weak(
+                            "Every phase is registered on its own. The transforms are kept, \
+                             so sending structures to the same group afterwards costs no \
+                             registration at all.",
+                        );
+                    }
+                }
 
                 // ---- method ----
                 ui.horizontal(|ui| {
@@ -397,7 +501,7 @@ impl ViewerApp {
                             "Restrict the registration to one structure of the fixed \
                              dataset. Samples come from inside it only and the B-spline \
                              lattice covers it alone, so a small structure can be aligned \
-                             at a fine grid — and, when it refines an existing result, \
+                             at a fine grid - and, when it refines an existing result, \
                              the rest of the patient keeps that result untouched.",
                         );
                 });
@@ -445,7 +549,7 @@ impl ViewerApp {
                                 .button("➕ Add pair")
                                 .on_hover_text(
                                     "Take the crosshair of each dataset as one pair. Put \
-                                     both crosshairs on the same anatomy first — and turn \
+                                     both crosshairs on the same anatomy first - and turn \
                                      off View ▶ Sync crosshairs, or they move together.",
                                 )
                                 .clicked()
@@ -494,33 +598,80 @@ impl ViewerApp {
                 }
 
                 // ---- run ----
-                let can_refine = self
-                    .registration
-                    .as_ref()
-                    .is_some_and(|r| r.fixed_slot == fixed_slot)
-                    && self.reg_method.is_deformable();
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(both, egui::Button::new("▶ Register"))
-                        .on_hover_text("Recover the transform from scratch")
-                        .clicked()
-                    {
-                        run = Some(false);
+                if let Some((gslot, group)) = self.reg_group {
+                    let n = self.group_phase_count(gslot, group);
+                    let moving_ok = self.slots[self.reg_group_moving].has_volume();
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(
+                                n >= 2 && moving_ok && self.propagate_job.is_none(),
+                                egui::Button::new(format!("▶ Register {n} phases")),
+                            )
+                            .on_hover_text(
+                                "One registration per phase, against the displayed volume \
+                                 of the other dataset",
+                            )
+                            .clicked()
+                        {
+                            run_group = Some((self.reg_group_moving, gslot, group));
+                        }
+                    });
+                    if self.propagate_job.is_some() {
+                        ui.weak("A run against a group is already going.");
+                    } else if !moving_ok {
+                        ui.weak("The moving dataset has no image volume.");
+                    }
+                } else {
+                    let can_refine = self
+                        .registration
+                        .as_ref()
+                        .is_some_and(|r| r.fixed_slot == fixed_slot)
+                        && self.reg_method.is_deformable();
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(both, egui::Button::new("▶ Register"))
+                            .on_hover_text("Recover the transform from scratch")
+                            .clicked()
+                        {
+                            run = Some(false);
+                        }
+                        if ui
+                            .add_enabled(both && can_refine, egui::Button::new("▶ Refine"))
+                            .on_hover_text(
+                                "Recover a correction on top of the active registration and \
+                                 add the two together - how a local registration is meant to \
+                                 be used after a global one",
+                            )
+                            .clicked()
+                        {
+                            run = Some(true);
+                        }
+                    });
+                    if !both {
+                        ui.weak("Load two datasets (comparison mode) first");
+                    }
+                }
+
+                // ---- what a group run left behind ----
+                if let Some(gr) = &self.group_registration {
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new(format!("✔ {} phase by phase", gr.group_name)).strong(),
+                    );
+                    ui.weak(format!(
+                        "moving image: dataset {}",
+                        SLOT_NAMES[gr.moving_slot]
+                    ));
+                    for ph in &gr.phases {
+                        ui.monospace(format!("{}: {}", ph.label, ph.metric_line));
                     }
                     if ui
-                        .add_enabled(both && can_refine, egui::Button::new("▶ Refine"))
-                        .on_hover_text(
-                            "Recover a correction on top of the active registration and \
-                             add the two together — how a local registration is meant to \
-                             be used after a global one",
-                        )
+                        .button("Clear group registration")
+                        .on_hover_text("The next run against this group registers again")
                         .clicked()
                     {
-                        run = Some(true);
+                        clear_group = true;
                     }
-                });
-                if !both {
-                    ui.weak("Load two datasets (comparison mode) first");
                 }
 
                 // ---- result ----
@@ -565,8 +716,8 @@ impl ViewerApp {
                         .show(ui, |ui| {
                             ui.checkbox(&mut self.field_on, "Show the deformation field")
                                 .on_hover_text(
-                                    "Draw the recovered displacement in every view — and \
-                                     in the 3D window — instead of leaving it implicit in \
+                                    "Draw the recovered displacement in every view - and \
+                                     in the 3D window - instead of leaving it implicit in \
                                      the fusion colours",
                                 );
                             ui.horizontal(|ui| {
@@ -615,7 +766,7 @@ impl ViewerApp {
                                 ui.weak(reg.field.describe());
                             }
                             if ui
-                                .button("💾 Save as DICOM…")
+                                .button("💾 Save as DICOM")
                                 .on_hover_text(
                                     "Write the field as a Deformable Spatial Registration \
                                      object: the whole mapping in one grid, with identity \
@@ -628,13 +779,35 @@ impl ViewerApp {
                             }
                         });
 
-                    if ui.button("Clear registration").clicked() {
-                        clear = true;
-                    }
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button("⇄ Propagate structures")
+                            .on_hover_text(
+                                "Open the structures propagation module, aimed at this \
+                                 registration",
+                            )
+                            .clicked()
+                        {
+                            propagate_from = Some(reg.fixed_slot);
+                        }
+                        if ui.button("Clear registration").clicked() {
+                            clear = true;
+                        }
+                    });
                 }
             });
         ui.separator();
 
+        if clear_group {
+            self.group_registration = None;
+            self.reg_gen += 1;
+        }
+        if let Some((moving_slot, gslot, group)) = run_group {
+            self.start_group_run(moving_slot, gslot, group, Vec::new());
+        }
+        if let Some(slot) = propagate_from {
+            self.open_propagate_module(slot);
+        }
         if let Some(refine) = run {
             self.start_registration(refine);
         }
@@ -695,7 +868,7 @@ impl ViewerApp {
             patient_id: &f.meta.patient_id,
             label: reg.result.method.family(),
             description: &format!(
-                "{} — {}",
+                "{} - {}",
                 reg.result.method.label(),
                 reg.result.transform.warp.describe()
             ),
@@ -742,7 +915,7 @@ impl ViewerApp {
                         .suffix(" HU"),
                 )
                 .on_hover_text(
-                    "Only fixed-image voxels above this drive the metric — a crude body \
+                    "Only fixed-image voxels above this drive the metric - a crude body \
                      mask that keeps air out of the cost",
                 );
             });
@@ -835,7 +1008,7 @@ impl ViewerApp {
                 )
                 .on_hover_text(
                     "0 passes exactly through every landmark. Larger values smooth the \
-                     field instead — which is what inconsistent pairs need.",
+                     field instead - which is what inconsistent pairs need.",
                 );
             });
         }
@@ -855,11 +1028,11 @@ fn analysis_rows(
     ui.monospace(a.dof.line());
     if a.dof.residual_mm > 1e-6 {
         ui.weak(format!(
-            "residual {:.2} mm — what the six numbers do not explain",
+            "residual {:.2} mm - what the six numbers do not explain",
             a.dof.residual_mm
         ));
     } else {
-        ui.weak("residual 0.00 mm — the result is a rigid body");
+        ui.weak("residual 0.00 mm - the result is a rigid body");
     }
     ui.add_space(2.0);
     ui.label("Displacement:");

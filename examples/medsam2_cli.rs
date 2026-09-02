@@ -9,8 +9,8 @@
 //! ```
 //!
 //! `--models` is the engine's folder, `medsam2/` in the viewer's model folder
-//! by default. Slice, box and point coordinates are in the **prepared** stack
-//! — axial slices in reading order, which for an ordinary head-first-supine
+//! by default. Slice, box and point coordinates are in the **prepared** stack -
+//! axial slices in reading order, which for an ordinary head-first-supine
 //! CT is the acquisition order. `--out` writes a raw `u8` mask on the
 //! original volume's grid, one byte per voxel in `Volume::data` order.
 

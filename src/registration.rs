@@ -4,20 +4,20 @@
 //! re-implemented natively so the application keeps a single-language,
 //! dependency-light build:
 //!
-//! * [`elastix`] — the [elastix](https://elastix.dev) framework: multi-
+//! * [`elastix`] - the [elastix](https://elastix.dev) framework: multi-
 //!   resolution Gaussian pyramids, *random coordinate* sampling, a mean-
 //!   squared-difference metric, an Euler rigid transform and a cubic
 //!   B-spline free-form deformation, all driven by the Adaptive Stochastic
-//!   Gradient Descent optimizer of Klein et al. (IJCV 2009) — elastix's
+//!   Gradient Descent optimizer of Klein et al. (IJCV 2009) - elastix's
 //!   default. Stochastic, fast, tolerant of a poor starting point.
-//! * [`plastimatch`] — the [plastimatch](https://plastimatch.org) B-spline
+//! * [`plastimatch`] - the [plastimatch](https://plastimatch.org) B-spline
 //!   registration of Shackleford et al.: centre-of-gravity alignment, then a
 //!   *dense* cost over every eligible fixed voxel with the exact analytic
 //!   gradient scattered onto the control lattice, a bending-energy
 //!   regularizer, mean-squared error **or** Mattes mutual information, and a
 //!   quasi-Newton (L-BFGS) optimizer with a line search. Deterministic,
 //!   smoother, and the multi-modal option.
-//! * [`landmark`] — plastimatch's `landmark_warp`: a radial-basis
+//! * [`landmark`] - plastimatch's `landmark_warp`: a radial-basis
 //!   deformation interpolating paired points, with the thin-plate spline,
 //!   Gaussian and Wendland kernels.
 //!
@@ -28,8 +28,8 @@
 //! `grid_spacing`, `young_modulus`, `max_its`) so a parameter file from
 //! either toolbox reads across.
 //!
-//! Any of them can be restricted to a [`RegionMask`] — a structure or a
-//! segmentation with a margin — which is what "register this tumour, not
+//! Any of them can be restricted to a [`RegionMask`] - a structure or a
+//! segmentation with a margin - which is what "register this tumour, not
 //! the whole patient" means; see [`analysis`] for what comes back and
 //! [`dvf`] for the vector field.
 //!
@@ -71,7 +71,7 @@ pub enum RegMethod {
     /// regularization, L-BFGS.
     PlastimatchBSpline,
     /// plastimatch `landmark_warp`: a radial-basis warp through paired
-    /// points — no image intensities involved.
+    /// points - no image intensities involved.
     PlastimatchLandmark,
 }
 
@@ -86,10 +86,10 @@ impl RegMethod {
     /// Full name, as the result panel writes it.
     pub fn label(self) -> &'static str {
         match self {
-            RegMethod::ElastixRigid => "Rigid — Euler 6-DOF (elastix, ASGD)",
-            RegMethod::ElastixBSpline => "Deformable — rigid + B-spline FFD (elastix, ASGD)",
-            RegMethod::PlastimatchBSpline => "Deformable — B-spline (plastimatch, L-BFGS)",
-            RegMethod::PlastimatchLandmark => "Deformable — landmark warp (plastimatch, RBF)",
+            RegMethod::ElastixRigid => "Rigid - Euler 6-DOF (elastix, ASGD)",
+            RegMethod::ElastixBSpline => "Deformable - rigid + B-spline FFD (elastix, ASGD)",
+            RegMethod::PlastimatchBSpline => "Deformable - B-spline (plastimatch, L-BFGS)",
+            RegMethod::PlastimatchLandmark => "Deformable - landmark warp (plastimatch, RBF)",
         }
     }
 
@@ -108,7 +108,7 @@ impl RegMethod {
         match self {
             RegMethod::ElastixRigid => {
                 "6-DOF Euler transform about the fixed-image centre. Stochastic \
-                 sampling and the ASGD optimizer — seconds, and tolerant of a poor \
+                 sampling and the ASGD optimizer - seconds, and tolerant of a poor \
                  starting alignment."
             }
             RegMethod::ElastixBSpline => {
@@ -120,11 +120,11 @@ impl RegMethod {
                 "Centre-of-gravity alignment, then a B-spline deformation optimized \
                  over every eligible voxel with the exact analytic gradient and a \
                  bending-energy penalty (L-BFGS). Deterministic and smoother than the \
-                 stochastic engine, and the only one with mutual information — so also \
-                 the CT–MR option. Slower."
+                 stochastic engine, and the only one with mutual information - so also \
+                 the CT-MR option. Slower."
             }
             RegMethod::PlastimatchLandmark => {
-                "A deformation interpolating the landmark pairs you place — thin-plate \
+                "A deformation interpolating the landmark pairs you place - thin-plate \
                  spline, Gaussian or Wendland kernel. Image intensities are not used at \
                  all, so it works across modalities and where an intensity metric has \
                  nothing to lock onto."
@@ -154,9 +154,9 @@ impl RegMethod {
 /// What the plastimatch engine minimizes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Metric {
-    /// Mean squared intensity difference — mono-modal (CT–CT).
+    /// Mean squared intensity difference - mono-modal (CT-CT).
     MeanSquares,
-    /// Mattes mutual information — multi-modal (CT–MR, CT–CBCT).
+    /// Mattes mutual information - multi-modal (CT-MR, CT-CBCT).
     MutualInformation,
 }
 
@@ -182,12 +182,12 @@ impl Metric {
         match self {
             Metric::MeanSquares => {
                 "Mean squared HU difference. Right when the two images measure the same \
-                 thing (CT–CT); meaningless when they do not."
+                 thing (CT-CT); meaningless when they do not."
             }
             Metric::MutualInformation => {
                 "Mattes mutual information over a 32 × 32 joint histogram with cubic \
                  B-spline Parzen windows. Needs no intensity correspondence, so it is \
-                 what CT–MR and CT–CBCT need. Slower and less sharply peaked."
+                 what CT-MR and CT-CBCT need. Slower and less sharply peaked."
             }
         }
     }
@@ -222,7 +222,7 @@ pub struct RegParams {
     pub landmark: LandmarkParams,
     /// The paired points the landmark method interpolates.
     pub landmarks: Vec<LandmarkPair>,
-    /// Restrict the fixed-image samples and the control lattice to a region —
+    /// Restrict the fixed-image samples and the control lattice to a region -
     /// what makes a registration *local*.
     pub region: Option<Arc<RegionMask>>,
     /// An alignment to start from and refine rather than replace.
@@ -230,7 +230,7 @@ pub struct RegParams {
     /// A deformable run with a start recovers a *correction*: the moving
     /// image is sampled through `start` plus the new deformation, and the
     /// result is the two composed. That is what makes a local refinement
-    /// behave the way a physicist expects — the structure is realigned while
+    /// behave the way a physicist expects - the structure is realigned while
     /// the rest of the patient keeps the global result, because a lattice
     /// covering only the structure is exactly zero outside it.
     pub start: Option<Arc<Transform3>>,
@@ -262,12 +262,12 @@ impl Default for RegParams {
 
 /// The part of the fixed image a registration is restricted to.
 ///
-/// Local registration — "align this tumour, not the whole patient" — needs
+/// Local registration - "align this tumour, not the whole patient" - needs
 /// two things from a structure: the samples must come from inside it, and
 /// the B-spline lattice must cover it rather than the entire volume. Both
 /// come from this mask, which is the structure's own voxel mask dilated by a
 /// margin, so the deformation is driven by the structure *and the tissue
-/// immediately around it* — without that margin nothing constrains the
+/// immediately around it* - without that margin nothing constrains the
 /// boundary.
 pub struct RegionMask {
     /// What the region is, for the result summary.
@@ -483,7 +483,7 @@ fn drot_z(a: f64) -> Mat3 {
 /// computed once in [`RigidTransform::new`] and cached. `map`, `unmap` and
 /// `jacobian` run on millions of points per registration and per fusion
 /// frame, so none of them may touch trigonometry. The parameters are private
-/// precisely so the cache cannot go stale — build a new transform to change
+/// precisely so the cache cannot go stale - build a new transform to change
 /// them.
 #[derive(Clone)]
 pub struct RigidTransform {
@@ -635,7 +635,7 @@ impl BSplineTransform {
 
     /// The lattice a run should use: the whole volume, or just the region's
     /// bounding box when the registration is local. A local lattice is what
-    /// makes a small structure affordable at a fine spacing — it covers the
+    /// makes a small structure affordable at a fine spacing - it covers the
     /// structure, not the patient.
     pub fn for_region(fixed: &Volume, region: Option<&RegionMask>, spacing_mm: f64) -> Self {
         let Some(r) = region else {
@@ -728,11 +728,11 @@ pub enum Warp {
     BSpline(BSplineTransform),
     /// Radial-basis warp through paired landmarks.
     Rbf(RbfWarp),
-    /// A displacement field on a regular lattice, trilinearly interpolated
-    /// — what a DICOM Deformable Spatial Registration carries, and what a
+    /// A displacement field on a regular lattice, trilinearly interpolated -
+    /// what a DICOM Deformable Spatial Registration carries, and what a
     /// result read back from one becomes.
     Field(Arc<VectorField>),
-    /// Several warps added together — what a refinement produces: the
+    /// Several warps added together - what a refinement produces: the
     /// deformation that was already there, plus the correction just
     /// recovered on top of it.
     Composite(Vec<Warp>),
@@ -789,7 +789,7 @@ impl Warp {
                 b.control_points()
             ),
             Warp::Rbf(r) => r.describe(),
-            Warp::Field(f) => format!("displacement field — {}", f.describe()),
+            Warp::Field(f) => format!("displacement field - {}", f.describe()),
             Warp::Composite(parts) => parts
                 .iter()
                 .map(Warp::describe)
@@ -952,7 +952,7 @@ impl RegImage {
     }
 
     /// Fixed-image points of every eligible voxel, thinned by `stride`, with
-    /// the image value there — the sample set the dense (plastimatch) engine
+    /// the image value there - the sample set the dense (plastimatch) engine
     /// works on. Deterministic: the same volume always yields the same set.
     fn dense_samples(&self, stride: usize) -> Vec<(Vec3, f32)> {
         let stride = stride.max(1);
@@ -1053,7 +1053,7 @@ impl RegImage {
     }
 
     /// Trilinear sample at fractional voxel indices that the caller has
-    /// already constrained to `[0, dim - 1)`. No gradient, no bounds check —
+    /// already constrained to `[0, dim - 1)`. No gradient, no bounds check -
     /// this is the sampler used when drawing fixed-image samples, which is
     /// the hottest loop of the whole registration.
     #[inline]
@@ -1128,7 +1128,7 @@ impl RegImage {
         Some((val, grad))
     }
 
-    /// Intensity range over the eligible voxels — what the mutual-
+    /// Intensity range over the eligible voxels - what the mutual-
     /// information histogram is binned over.
     fn eligible_range(&self) -> (f32, f32) {
         if self.eligible.is_empty() {
@@ -1146,7 +1146,7 @@ impl RegImage {
 
 // ---------------------------------------------------------------------------
 // Random coordinate sampler (xorshift; deterministic per level for
-// reproducibility, fresh samples every iteration — elastix RandomCoordinate
+// reproducibility, fresh samples every iteration - elastix RandomCoordinate
 // with NewSamplesEveryIteration=true)
 // ---------------------------------------------------------------------------
 
@@ -1185,7 +1185,7 @@ fn stream(seed: u64, i: usize) -> XorShift {
 /// Draws uniformly from the pre-built eligible-voxel list (see
 /// [`RegImage::prepare_sampling`]) and jitters within the cell, which keeps
 /// elastix's *RandomCoordinate* continuous sampling while removing the
-/// rejection loop entirely — every draw is a hit, so the work is exactly `n`
+/// rejection loop entirely - every draw is a hit, so the work is exactly `n`
 /// interpolations and can run in parallel.
 fn draw_samples(fixed: &RegImage, n: usize, rng: &mut XorShift) -> Vec<(Vec3, f32)> {
     let m = fixed.eligible.len();
@@ -1219,7 +1219,7 @@ fn draw_samples(fixed: &RegImage, n: usize, rng: &mut XorShift) -> Vec<(Vec3, f3
 // Metric evaluation (mean squared difference, elastix AdvancedMeanSquares)
 // ---------------------------------------------------------------------------
 
-/// MSD metric only (no gradient) — used for reporting.
+/// MSD metric only (no gradient) - used for reporting.
 fn msd_value(fixed: &RegImage, moving: &RegImage, t: &Transform3, n: usize) -> f64 {
     let mut rng = XorShift(0xD1B54A32D192ED03);
     let samples = draw_samples(fixed, n, &mut rng);
@@ -1257,7 +1257,7 @@ fn build_pyramid(img: RegImage, levels: usize) -> Vec<RegImage> {
 pub(crate) struct RegSetup<'a> {
     pub fixed: Vec<RegImage>,
     pub moving: Vec<RegImage>,
-    /// Fixed-image (or region) centre — the point rotations are taken about
+    /// Fixed-image (or region) centre - the point rotations are taken about
     /// and the anchor of the parameter scaling.
     pub center: Vec3,
     pub fixed_vol: &'a Volume,
@@ -1290,13 +1290,13 @@ pub fn register(
     let t_start = std::time::Instant::now();
 
     // The landmark warp never looks at a voxel, so it skips the pyramids
-    // entirely — building them for a geometric interpolation would be
+    // entirely - building them for a geometric interpolation would be
     // several seconds of pure waste on a 512³ study.
     if params.method == RegMethod::PlastimatchLandmark {
-        progress.set("Solving the landmark system…");
+        progress.set("Solving the landmark system");
         let out = landmark::run(params)?;
         let transform = Arc::new(out.transform);
-        progress.set("Measuring the deformation…");
+        progress.set("Measuring the deformation");
         let analysis = analysis::analyse(fixed_vol, &transform, params.region.as_deref());
         progress.set("done");
         return Ok(RegistrationResult {
@@ -1312,12 +1312,12 @@ pub fn register(
         });
     }
 
-    progress.set("Building image pyramids…");
+    progress.set("Building image pyramids");
     let fixed_full = RegImage::from_volume(fixed_vol);
     let moving_full = RegImage::from_volume(moving_vol);
 
     // Centre of rotation: the fixed image's geometric centre, or the
-    // region's when the run is local — rotating a tumour about the patient's
+    // region's when the run is local - rotating a tumour about the patient's
     // centre would put the whole recovered angle into the translation.
     let center = match params.region.as_deref() {
         None => fixed_full.index_to_patient(
@@ -1347,12 +1347,12 @@ pub fn register(
     if fixed_pyr.iter().all(|i| i.eligible.is_empty()) {
         match &params.region {
             Some(r) => bail!(
-                "no fixed-image voxels inside '{}' above the sampling threshold — \
+                "no fixed-image voxels inside '{}' above the sampling threshold - \
                  lower the threshold or widen the margin",
                 r.name
             ),
             None => {
-                bail!("no fixed-image voxels above the sampling threshold — lower it and retry")
+                bail!("no fixed-image voxels above the sampling threshold - lower it and retry")
             }
         }
     }
@@ -1381,7 +1381,7 @@ pub fn register(
     };
 
     // Whatever the engine minimized, the reported before/after pair is in
-    // the same units — otherwise the two numbers cannot be compared.
+    // the same units - otherwise the two numbers cannot be compared.
     let (initial_metric, final_metric) = match params.metric {
         Metric::MeanSquares => (
             initial_msd,
@@ -1399,7 +1399,7 @@ pub fn register(
     };
 
     let transform = Arc::new(out.transform);
-    progress.set("Measuring the deformation…");
+    progress.set("Measuring the deformation");
     let analysis = analysis::analyse(fixed_vol, &transform, params.region.as_deref());
 
     progress.set("done");

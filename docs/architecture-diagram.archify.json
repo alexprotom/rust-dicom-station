@@ -2,7 +2,7 @@
   "schema_version": 1,
   "diagram_type": "architecture",
   "meta": {
-    "title": "Rust DICOM Station — architecture",
+    "title": "Rust DICOM Station - architecture",
     "locale": "en",
     "quality_profile": "showcase",
     "viewBox": [
@@ -237,7 +237,7 @@
   "boundaries": [
     {
       "kind": "region",
-      "label": "Inference stack — one nn:: runtime on burn (wgpu GPU / ndarray CPU)",
+      "label": "Inference stack - one nn:: runtime on burn (wgpu GPU / ndarray CPU)",
       "wraps": [
         "autoseg",
         "segvol",
@@ -384,7 +384,7 @@
       "dot": "emerald",
       "title": "Application",
       "items": [
-        "egui / eframe on wgpu — one or two rows of three linked MPR views",
+        "egui / eframe on wgpu - one or two rows of three linked MPR views",
         "Every long operation snapshots its inputs, runs on a worker thread and reports on one channel"
       ]
     },
@@ -392,7 +392,7 @@
       "dot": "violet",
       "title": "Inference",
       "items": [
-        "TotalSegmentator, SegVol and MedSAM2 re-implemented in pure Rust — no Python or C++ interop",
+        "TotalSegmentator, SegVol and MedSAM2 re-implemented in pure Rust - no Python or C++ interop",
         "Checkpoints download on first use and are cached as safetensors; GPU via wgpu, CPU fallback"
       ]
     }

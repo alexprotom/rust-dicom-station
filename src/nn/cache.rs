@@ -85,7 +85,7 @@ impl WTensor {
 ///
 /// `F32` reproduces the published checkpoint bit for bit and is what any
 /// model validated against a reference implementation must use. `F16` halves
-/// the cache on disk at the cost of roughly three decimal digits per weight —
+/// the cache on disk at the cost of roughly three decimal digits per weight -
 /// fine for a preview, not for numerical equivalence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StoreDtype {
@@ -106,7 +106,7 @@ pub fn download_to_file(
     label: &str,
     sink: &dyn ProgressSink,
 ) -> Result<()> {
-    sink.report(0.0, &format!("Downloading {label}…"));
+    sink.report(0.0, &format!("Downloading {label}"));
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(30))
         .timeout_read(std::time::Duration::from_secs(60))
@@ -320,7 +320,7 @@ pub fn convert_checkpoint(
     if let Some(dir) = cache.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     }
-    sink.report(1.0, &format!("Writing the weight cache ({})…", spec.label));
+    sink.report(1.0, &format!("Writing the weight cache ({})", spec.label));
     save_tensor_map(cache, &out, StoreDtype::F32)
         .with_context(|| format!("write {}", cache.display()))?;
     Ok(out)
@@ -336,7 +336,7 @@ pub fn ensure_converted(
     sink: &dyn ProgressSink,
 ) -> Result<HashMap<String, WTensor>> {
     if cache.is_file() {
-        sink.report(0.0, &format!("Loading weights ({})…", spec.label));
+        sink.report(0.0, &format!("Loading weights ({})", spec.label));
         return load_safetensors(cache);
     }
     let pth = fetch()?;

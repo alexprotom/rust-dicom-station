@@ -1,9 +1,9 @@
 # Windows installer
 
-`rust-dicom-station-setup.exe` — a single-file installer for the viewer,
+`rust-dicom-station-setup.exe` - a single-file installer for the viewer,
 written in Rust like everything else in this project. No WiX, no NSIS, no
 Inno Setup: the wizard is egui/eframe (the viewer's own UI stack) and the
-system integration is direct Win32 — shell links through `IShellLink`,
+system integration is direct Win32 - shell links through `IShellLink`,
 registry through `Reg*`, elevation through `ShellExecuteW`.
 
 **This crate is a separate workspace.** `cargo build --release` in the
@@ -39,17 +39,17 @@ publisher" warning on first run.
 
 ## What the installer does
 
-* **Copies the program** — `rust-dicom-station.exe`, `README.md`,
-  `LICENSE.txt`, `docs/`, and `example_data/` when it was packed in — into
+* **Copies the program** - `rust-dicom-station.exe`, `README.md`,
+  `LICENSE.txt`, `docs/`, and `example_data/` when it was packed in - into
   `%LOCALAPPDATA%\Programs\Rust DICOM Station` (per user, the default) or
   `%ProgramFiles%\Rust DICOM Station` (all users, asks for elevation).
-* **Dependencies** — checks for the Microsoft Visual C++ runtime that Rust's
+* **Dependencies** - checks for the Microsoft Visual C++ runtime that Rust's
   MSVC target links against and installs it from Microsoft when missing.
   Rendering needs Direct3D 12 or Vulkan, which the display driver already
   provides, so there is nothing to install for the GPU.
-* **Graphics backend** — its own page, because a handful of Windows machines
+* **Graphics backend** - its own page, because a handful of Windows machines
   advertise a Vulkan driver that cannot start (see below).
-* **Model weights, optionally** — pre-downloads and converts the
+* **Model weights, optionally** - pre-downloads and converts the
   TotalSegmentator weights (6 mm, 3 mm, the 1.5 mm set, or everything) using
   the viewer's own downloader, so the first auto-segmentation run does not
   have to wait for a 135 MB … 1.3 GB download. Skipped by default. They go
@@ -58,20 +58,20 @@ publisher" warning on first run.
   `%LOCALAPPDATA%\RustDICOMStation\models` for either scope. A model folder
   chosen elsewhere is recorded as `models_dir` in the installing user's
   `%LOCALAPPDATA%\RustDICOMStation\viewer_settings.txt`. The SegVol and
-  MedSAM2 weights are never pre-fetched — their licences allow only a
+  MedSAM2 weights are never pre-fetched - their licences allow only a
   download by the user, which the viewer does on first use.
-* **Integration** — Start-menu and desktop shortcuts, an
+* **Integration** - Start-menu and desktop shortcuts, an
   "Open with Rust DICOM Station" verb on folders (the viewer takes a
   directory), a `.dcm`/`.dicom` entry that is *added* to `OpenWithProgids`
   rather than hijacking whatever owns DICOM files today, and optionally the
   program folder on `PATH`.
-* **Uninstall** — an entry in Apps & features plus `uninstall.exe` in the
+* **Uninstall** - an entry in Apps & features plus `uninstall.exe` in the
   program folder.
 
 Everything created is recorded in `install-manifest.txt`, and the uninstaller
-removes exactly what is listed there — nothing else in the folder, and the
+removes exactly what is listed there - nothing else in the folder, and the
 `PATH` entry only if the installer added it. The model folder is kept unless
-you ask for it to go — and then it goes whole, every engine's downloads
+you ask for it to go - and then it goes whole, every engine's downloads
 included (an empty one is cleaned up either way).
 
 ## Command line
@@ -100,21 +100,21 @@ from the wizard and the viewer downloads weights on first use as usual.
 
 Some Windows machines advertise a Vulkan driver that cannot actually create a
 device. `wgpu` prefers Vulkan, so the viewer would die before drawing
-anything, on a machine where nothing else is wrong — and the only escape was
+anything, on a machine where nothing else is wrong - and the only escape was
 knowing to set `WGPU_BACKEND=dx12` before starting it. So the wizard asks,
 between the options page and the installation itself:
 
-* **Vulkan (recommended)** — preselected; right on the overwhelming majority
+* **Vulkan (recommended)** - preselected; right on the overwhelming majority
   of machines.
-* **DirectX 12** — Windows' own, dependable on everything from Windows 10 on.
+* **DirectX 12** - Windows' own, dependable on everything from Windows 10 on.
   The answer for a machine where the viewer will not start.
-* **Automatic** — whatever the graphics library picks, which is what older
+* **Automatic** - whatever the graphics library picks, which is what older
   versions did.
 
 Three details make the page do its job rather than merely exist:
 
 * **The installer draws with the same library, on the same machine**, so a
-  broken Vulkan driver takes the setup program down too — and the setup
+  broken Vulkan driver takes the setup program down too - and the setup
   program is where the page that fixes it lives. Its window is therefore
   attempted rather than opened: the default first, then Direct3D 12, then
   Vulkan, each attempt catching a panic from inside the driver. If all three
@@ -125,7 +125,7 @@ Three details make the page do its job rather than merely exist:
   and preselects it.
 * **The answer is written twice.** `viewer-defaults.txt` goes beside the
   installed executable and is read by every user of the machine before their
-  own settings — the only thing that works for an all-users installation,
+  own settings - the only thing that works for an all-users installation,
   where the administrator's `%LOCALAPPDATA%` is not the one the viewer will
   run under. The installing user's own `viewer_settings.txt` is updated as
   well, because it wins over the defaults and would otherwise keep an older

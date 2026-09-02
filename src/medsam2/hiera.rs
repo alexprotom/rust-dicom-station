@@ -1,7 +1,7 @@
 //! The image encoder's trunk: Hiera-T.
 //!
 //! A hierarchical vision transformer in four stages. Unlike a plain ViT the
-//! token grid shrinks — 128² -> 64² -> 32² -> 16² for a 512 x 512 slice — while
+//! token grid shrinks - 128² -> 64² -> 32² -> 16² for a 512 x 512 slice - while
 //! the width doubles, and most blocks attend inside a window rather than
 //! globally. Three details of the reference are easy to miss and expensive to
 //! get wrong, so they are called out where they happen below:
@@ -10,9 +10,9 @@
 //!    **normalized** activation, not the block input;
 //! 2. that residual is **max-pooled** with the same 2 x 2 pooling as the
 //!    queries, so the skip connection lands on the smaller grid;
-//! 3. the attention window of a block "lags by one" — the first block of a
+//! 3. the attention window of a block "lags by one" - the first block of a
 //!    new stage keeps the previous stage's window (see
-//!    [`super::config::blocks`]) — and after query pooling the window used to
+//!    [`super::config::blocks`]) - and after query pooling the window used to
 //!    put the tiles back is half the one used to cut them.
 //!
 //! Tokens are carried as `[batch, h, w, channels]` throughout, as in the
@@ -164,7 +164,7 @@ pub struct Hiera<B: Backend> {
     patch_bias: Tensor<B, 1>,
     /// The position embedding, already interpolated, tiled and permuted to
     /// `[1, grid, grid, EMBED_DIM]`. It depends only on the weights and the
-    /// input size, so it is built once — which also keeps the one bicubic
+    /// input size, so it is built once - which also keeps the one bicubic
     /// interpolation in the whole engine off the hot path.
     pos_embed: Tensor<B, 4>,
     blocks: Vec<HieraBlock<B>>,
@@ -203,7 +203,7 @@ impl<B: Backend> Hiera<B> {
     }
 
     /// `pos_embed` bicubically stretched over the token grid, plus
-    /// `pos_embed_window` **tiled** over it — periodic, not interpolated.
+    /// `pos_embed_window` **tiled** over it - periodic, not interpolated.
     fn build_pos_embed(p: &Params, dev: &B::Device) -> Result<Tensor<B, 4>> {
         let (c, bkg, win, grid) = (
             config::EMBED_DIM,

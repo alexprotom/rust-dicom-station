@@ -2,7 +2,7 @@
 //! side-by-side comparison of two runs (e.g. upright vs. supine, or
 //! dataset A vs. B).
 //!
-//! The charts are drawn with the egui painter directly — a displacement-
+//! The charts are drawn with the egui painter directly - a displacement-
 //! vs-phase line chart and grouped bar charts are simple enough that a
 //! plotting dependency would cost more than it gives.
 
@@ -223,7 +223,7 @@ impl ViewerApp {
                             Self::report_body(ui, r, sel);
                             if let Some(ci) = cmp {
                                 ui.separator();
-                                ui.strong(format!("Comparison — {}", reports[ci].run_name));
+                                ui.strong(format!("Comparison - {}", reports[ci].run_name));
                                 Self::report_body(ui, &reports[ci], ci);
                                 ui.separator();
                                 Self::comparison_body(ui, r, &reports[ci], (sel, ci));
@@ -324,7 +324,7 @@ impl ViewerApp {
         bar_rows(ui, &bars, "mm");
         if !r.reference_tracks.is_empty() {
             ui.add_space(6.0);
-            ui.strong("Peak-to-peak target–reference drift");
+            ui.strong("Peak-to-peak target-reference drift");
             let mut bars: Vec<(String, f64, Color32)> = Vec::new();
             for (i, t) in r.tracks.iter().enumerate() {
                 if let Some(rt) = r.reference_track(t.model) {
@@ -366,7 +366,7 @@ impl ViewerApp {
 
         // Correlations.
         if !r.correlations.is_empty() {
-            egui::CollapsingHeader::new("Target–reference synchrony (Pearson)")
+            egui::CollapsingHeader::new("Target-reference synchrony (Pearson)")
                 .id_salt(("motion_corr", idx))
                 .default_open(true)
                 .show(ui, |ui| {
@@ -402,7 +402,7 @@ impl ViewerApp {
             ui.add_space(6.0);
             ui.strong("ITV volumes");
             for itv in &r.itvs {
-                ui.label(format!("    {} — {:.2} cm³", itv.seg_name, itv.volume_cm3));
+                ui.label(format!("    {} - {:.2} cm³", itv.seg_name, itv.volume_cm3));
             }
         }
     }
@@ -489,7 +489,7 @@ impl ViewerApp {
         };
         let mut csv = r.csv();
         if let Some(other) = also.and_then(|i| self.motion_reports.get(i)) {
-            // The header line of the second report is dropped — one file,
+            // The header line of the second report is dropped - one file,
             // one header.
             if let Some(pos) = other.csv().find('\n') {
                 csv.push_str(&other.csv()[pos + 1..]);
@@ -516,7 +516,7 @@ impl ViewerApp {
 }
 
 impl MotionReport {
-    /// `dataset A` — the comparison table's column header.
+    /// `dataset A` - the comparison table's column header.
     fn slot_label(&self) -> String {
         format!("dataset {}", self.slot_name)
     }

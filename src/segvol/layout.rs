@@ -37,7 +37,7 @@ pub fn group_of(key: &str) -> &'static str {
 /// True for tensors the inference path never touches.
 ///
 /// `prompt_encoder.mask_downscaling` is SAM's 2-D mask-input branch. SegVol
-/// never passes a mask prompt, so the branch is dead — but its 13,388
+/// never passes a mask prompt, so the branch is dead - but its 13,388
 /// parameters are still in the checkpoint, and reproducing them would mean
 /// implementing `Conv2d` for nothing.
 pub fn is_dead_weight(key: &str) -> bool {
@@ -51,7 +51,7 @@ pub const EXPECTED_TENSORS: usize = 475;
 /// Every value in the state dict, buffers included.
 pub const EXPECTED_PARAMS: usize = 180_891_293;
 
-/// Learnable parameters only — the figure the paper reports as "181 M".
+/// Learnable parameters only - the figure the paper reports as "181 M".
 ///
 /// The difference from [`EXPECTED_PARAMS`] is two non-learnable buffers that
 /// `state_dict()` carries but that no parameter count includes: the prompt
@@ -120,8 +120,8 @@ pub const PINNED_SHAPES: &[(&str, &[usize])] = &[
         &[2048, 768],
     ),
     // Upscaling: ConvTranspose3d 768->192, then a LayerNorm whose
-    // normalized_shape is the full (C,D,H,W) — 3.1 M affine values in each of
-    // weight and bias, and the second reason the input shape is frozen — then
+    // normalized_shape is the full (C,D,H,W) - 3.1 M affine values in each of
+    // weight and bias, and the second reason the input shape is frozen - then
     // ConvTranspose3d 192->96.
     (
         "mask_decoder.output_upscaling.0.weight",

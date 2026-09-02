@@ -1,7 +1,7 @@
 # Architecture
 
-An interactive map of the whole program — modules, the data path and the
-background-job fan-out — is in
+An interactive map of the whole program - modules, the data path and the
+background-job fan-out - is in
 [architecture-diagram.html](architecture-diagram.html): open it in a browser,
 click a box to focus it, or use the three guided views along the top. It is
 rendered from [architecture-diagram.archify.json](architecture-diagram.archify.json)
@@ -9,7 +9,7 @@ and exports to PNG or SVG from the *Export* menu.
 
 ## Design philosophy
 
-**One language.** Everything is Rust — DICOM parsing, image reconstruction,
+**One language.** Everything is Rust - DICOM parsing, image reconstruction,
 rendering primitives, registration, meshing, neural-net inference, DICOM
 writing. Where a capability normally means binding a C/C++ library (elastix,
 ITK, ONNX Runtime, CUDA), the algorithm is re-implemented natively. The only
@@ -43,8 +43,8 @@ rust-dicom-station
 ├── Application (GUI, egui over wgpu)
 │   ├── Window chrome: menu bar, toolbar (W/L, presets, 3D, crosshair, reset), status bar
 │   ├── Side panel: the optional registration and simulation sections, and per
-│   │   dataset a DICOM tree — patient ▶ study ▶ modality ▶ series, with RT
-│   │   structures, segmentations, 4D groups, dose and plans inside their study —
+│   │   dataset a DICOM tree - patient ▶ study ▶ modality ▶ series, with RT
+│   │   structures, segmentations, 4D groups, dose and plans inside their study -
 │   │   plus dose display, planar images, spatial registrations, records, warnings
 │   ├── Views: 1 × 3 or 2 × 3 (comparison) linked MPR viewports, crosshair,
 │   │   a dataset with no volume says so in place of the panes and holds back
@@ -123,17 +123,17 @@ rust-dicom-station
 │   │   image series (resampled onto its lattice for display)
 │   ├── Body / EXTERNAL contour: threshold by modality (HU, or bias-flattened MR),
 │   │   spacing-aware opening, extruded-equipment removal along all three axes,
-│   │   component selection, thin-anatomy recovery — classically, or guided by
+│   │   component selection, thin-anatomy recovery - classically, or guided by
 │   │   TotalSegmentator's body network
 │   ├── Structure algebra: union / intersection / subtraction / symmetric difference,
 │   │   a margin per operand and on the result (six patient directions, exact
 │   │   ellipsoids), crop, fill / smooth / prune
 │   ├── Surfaces: contour and mask ▶ meshes (scanline fill, surface nets, smoothing)
-│   ├── Auto-segmentation — TotalSegmentator (nnU-Net), 117 classes, 3 / 1.5 / 6 mm
+│   ├── Auto-segmentation - TotalSegmentator (nnU-Net), 117 classes, 3 / 1.5 / 6 mm
 │   │   models, CPU (im2col + SIMD GEMM) or GPU (burn / wgpu)
-│   ├── Prompt segmentation — SegVol: box / point / text, 3-D ViT + SAM-style
+│   ├── Prompt segmentation - SegVol: box / point / text, 3-D ViT + SAM-style
 │   │   decoder + CLIP text tower, zoom-out / zoom-in passes
-│   └── Slice propagation — MedSAM2 (SAM 2.1 Hiera-T): box drawn in the view,
+│   └── Slice propagation - MedSAM2 (SAM 2.1 Hiera-T): box drawn in the view,
 │       include / exclude refinement, memory-bank propagation through the stack
 │
 ├── Neural-network infrastructure (shared by every engine)
@@ -193,12 +193,12 @@ Where each function lives. The right-hand tag is the functional category
 src/
   main.rs           entry point: opens the eframe/wgpu window, retrying the
                     other graphics backends when one will not start              App
-  lib.rs            library root — every module is public, so the integration
+  lib.rs            library root - every module is public, so the integration
                     tests and the examples drive the same code as the GUI
   progress.rs       the one progress handle + ProgressSink, Quiet, Stderr         Core
   models.rs         the model folder: root, per-engine sub-folders, migration,
                     the inventory of every downloadable model                    NN
-  settings.rs       persisted preferences and the config / data folders — the
+  settings.rs       persisted preferences and the config / data folders - the
                     machine-wide defaults the installer writes, then the user's
                     own file on top                                              App
   gfx.rs            which graphics backend to draw and compute with: the
@@ -218,9 +218,12 @@ src/
     chrome.rs         menu bar, toolbar, status bar, help
     detach.rs         every tool window as a window of the operating system
                       (immediate viewport), titled and placed alike
-    panels.rs         left panel: show / hide, the per-dataset Data tree sections
-    reg_panel.rs      the Image registration section: method, region, parameters,
-                      landmarks, the run, the analytics, the vector field
+    panels.rs         both edge panels: the shared show / hide machinery, the
+                      left panel's per-dataset Data tree sections, and the
+                      right panel's list of switched-on modules
+    reg_panel.rs      the Image registration module: method, region, parameters,
+                      landmarks, the run (against the other dataset or every
+                      phase of a 4D group), the analytics, the vector field
     views.rs          central MPR viewports, interaction, texture caches
     d3.rs             live 3D structure window
     planar.rs         floating DX / CR / RTIMAGE viewers
@@ -243,7 +246,9 @@ src/
     prompt_seg.rs     prompt segmentation window and worker (SegVol)
     box_seg.rs        slice propagation: the box drawn in the viewport, the
                       preview / refine / propagate loop, the resident session (MedSAM2)
-    propagate_win.rs  structure propagation window and worker
+    propagate_win.rs  the Structures propagation module and its worker, onto the
+                      other dataset or onto every phase of a 4D group (one
+                      registration each, transforms kept for the next run)
     motion_win.rs     the 4D motion / ITV window and its per-phase pipeline
                       worker (register ▸ propagate ▸ measure ▸ ITV)
     motion_results.rs the motion results window: charts, tables, correlations,
@@ -296,7 +301,7 @@ src/
   motion.rs         motion arithmetic over phases: centroids, peak-to-peak,
                     drift, Pearson r with p-values, Dice / HD95 / MSD overlap,
                     ITV unions, the motion report + CSV                          4D
-  dvh.rs            dose–volume histograms: sampling, curves, metrics,
+  dvh.rs            dose-volume histograms: sampling, curves, metrics,
                     protocol constraints, CSV                                    Dose
   segmentation.rs   voxel masks: brush, geodesic grow, undo, overlays,
                     label map ▶ segmentations, mask ⇄ RTSTRUCT contours          Seg
@@ -307,7 +312,7 @@ src/
   mesh3d.rs         contour / mask ▶ surface meshes (scanline fill, surface
                     nets, Laplacian smoothing)                                   Seg
 
-  nn/               shared neural-network infrastructure — nothing in here
+  nn/               shared neural-network infrastructure - nothing in here
                     knows about a particular architecture                        NN
     cache.rs          RemoteFile download, torch checkpoint ▶ safetensors
                       conversion (ConvertSpec), the converted-weight cache
@@ -377,7 +382,7 @@ src/
 tests/             fifteen integration suites (see Testing)
 examples/          autoseg_cli, autoseg_probe, body_cli, segvol_cli, segvol_probe,
                    medsam2_cli, medsam2_probe; common/ holds what they share
-tools/             gen_reference_activations.py, gen_ops_fixtures.py — the two
+tools/             gen_reference_activations.py, gen_ops_fixtures.py - the two
                    PyTorch scripts that produce the fixtures and reference dumps
                    the MedSAM2 tests compare against (never run at build time)
 installer/         the Windows installer, its own workspace (see its README);
@@ -401,7 +406,7 @@ the theme.
 Rendering is cache-driven: each view keeps keyed textures for the grayscale
 slice, dose colorwash, contour polylines, segmentation overlay and fusion
 blend, rebuilt only when their inputs change. Invalidation uses generation
-counters bumped by the owning mutation sites — and only by those: a ROI
+counters bumped by the owning mutation sites - and only by those: a ROI
 visibility toggle is part of the contour key alone and leaves the dose and
 fusion textures untouched. Repaints are demand-driven; while background jobs
 run, the UI polls at 10 Hz.
@@ -409,7 +414,7 @@ run, the UI polls at 10 Hz.
 ### Glyphs and the icon
 
 Every non-ASCII character in the interface has to be one of the four fonts
-egui bundles — Ubuntu-Light, Hack, Noto Emoji and a small icon font — or it
+egui bundles - Ubuntu-Light, Hack, Noto Emoji and a small icon font - or it
 is drawn as an empty box that no compiler and no test would notice.
 `app/glyphs.rs` closes that hole from both ends: `install` appends Hack to
 the *proportional* family (arrows, ∩ ∪ ⊕ ⊖ and half a dozen others live only
@@ -420,14 +425,14 @@ outside `ALLOWED`, the list verified against those fonts' `cmap` tables.
 The application's picture of itself is one file, `assets/rust-dicom-station.png`
 (with `.ico` beside it for Windows): `src/icon.rs` loads it as the window
 icon of the viewer and the installer, the two `build.rs` compile the `.ico`
-into both executables as a resource — which is what Explorer, the task bar,
-the start-menu shortcut and *Add or remove programs* read — and the release
+into both executables as a resource - which is what Explorer, the task bar,
+the start-menu shortcut and *Add or remove programs* read - and the release
 workflow copies the PNG into the AppImage as the Linux desktop icon.
 
 ### The tool windows
 
 Every secondary window is drawn through `app/detach.rs::tool_window`, which
-puts its contents in an *immediate viewport* — a real top-level window of the
+puts its contents in an *immediate viewport* - a real top-level window of the
 operating system, on whichever monitor the user drags it to. Nothing floats
 inside the main window, so the viewports always keep the whole of it. Two
 rules live in that module: the window's position and size are applied **only
@@ -435,14 +440,14 @@ on the pass that creates it** (egui diffs the `ViewportBuilder` against the
 one it stored and would otherwise command a dragged window back every frame,
 which reads as shaking), and every title goes through `window_title` so the
 whole program reads as `Rust DICOM Station: <what this window is>`. The
-transient confirmations — *Error*, *Done*, *Rename* — stay inside the main
+transient confirmations - *Error*, *Done*, *Rename* - stay inside the main
 window, being answers to the last click rather than tools.
 
-The segmentation-type tools — body contour, structure algebra,
-auto-segmentation, prompt segmentation, slice propagation, 4D motion — are
+The segmentation-type tools - body contour, structure algebra,
+auto-segmentation, prompt segmentation, slice propagation, 4D motion - are
 different conversations but the same kind of tool, and `app/seg_engines.rs`
 makes them alike: one `ToolInfo` per tool gives the glyph, the window title
-(`🔬 Auto-segmentation — dataset A`), the menu entry and the small sidebar
+(`🔬 Auto-segmentation - dataset A`), the menu entry and the small sidebar
 button; every window stays open while its run is in flight, the button row
 becoming the progress row (device, bar, message, Cancel); the sections come
 in the same order (description, the tool's inputs, `Name`, a collapsed
@@ -464,7 +469,7 @@ struct Job<T> { progress: Arc<Progress>, rx: mpsc::Receiver<T> }
 worker the progress handle; the UI polls the channel each frame
 (`poll_job`): a value lands the result, a disconnect means the worker died
 and surfaces as an error. The tools answer with `(slot, Result)`, and
-`poll_tool_job` turns a failure into an error dialog — except a
+`poll_tool_job` turns a failure into an error dialog - except a
 cancellation, which is what the user asked for.
 
 `Progress` (`progress.rs`) holds a message, a fraction, the device label,
@@ -521,15 +526,15 @@ TotalSegmentator weights.
   (`y = (nz−1) − k`); every producer of view-space pixels honours the same
   flip (asserted by tests).
 * Interpolation is trilinear unless stated. The engines keep their reference
-  implementations' resampling conventions — scipy `zoom` (nnU-Net), PyTorch
+  implementations' resampling conventions - scipy `zoom` (nnU-Net), PyTorch
   `nearest-exact` / `align_corners=false` (SegVol), PIL antialiased bicubic
-  in 8-bit fixed point (MedSAM2) — because each is validated numerically
+  in 8-bit fixed point (MedSAM2) - because each is validated numerically
   against that reference.
 
 ## Error handling and style
 
 `anyhow::Result` with `bail!` / `context` at operation boundaries; missing or
-malformed *individual* DICOM attributes never error — safe extraction
+malformed *individual* DICOM attributes never error - safe extraction
 helpers return `Option`, and per-file failures inside a batch become
 warnings in the UI. Cancellation is an error whose message contains
 `progress::CANCELLED`. `rayon` idioms: `par_iter` over independent files /
@@ -548,7 +553,7 @@ tests).
 All pure Rust: `dicom-rs` (DICOM, with `dicom-pixeldata` for decoding),
 `egui` / `eframe` (UI over wgpu), `rayon`, `rfd` (file dialogs), `walkdir`,
 `anyhow`; for the engines `gemm` (SIMD matrix kernels), `serde_json`, `zip`,
-`ureq` (rustls + OS trust store), `safetensors`, and `burn` — always with
+`ureq` (rustls + OS trust store), `safetensors`, and `burn` - always with
 its `ndarray` CPU backend, with the wgpu backend added by the cargo feature
 `gpu` (default on).
 
@@ -561,12 +566,12 @@ phantom round trip (**synthetic_study**), simulate → export → reload
 (**registration**), masks, growing, contours and meshing (**segmentation**),
 anonymize → reload (**anonymize**), SEG written and read back voxel for voxel
 (**dicomseg**), the body contour on phantoms with couch, chair and mask
-(**body**), the archive round trip (**archive**), opening what is not a volume
-— RT images and a structure set on their own, a single slice, a folder of RT
-objects, and an image series added afterwards (**open_files**) — the DVH
+(**body**), the archive round trip (**archive**), opening what is not a volume -
+RT images and a structure set on their own, a single slice, a folder of RT
+objects, and an image series added afterwards (**open_files**) - the DVH
 against an analytic
 Gaussian phantom (**dvh**), structure algebra (**structops**), and the three
-engines assembled and run without a download — a miniature nnU-Net with the
+engines assembled and run without a download - a miniature nnU-Net with the
 exact checkpoint naming (**autoseg**), and synthesized checkpoints with the
 real key names and shapes for **segvol** and **medsam2**, so genuine forward
 passes run in CI. **reference** asserts bit-level parity of the

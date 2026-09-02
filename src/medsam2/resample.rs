@@ -6,7 +6,7 @@
 //!
 //! * **preprocessing**, where the reference resizes each slice to 512 x 512
 //!   with `PIL.Image.resize`, whose default is a bicubic kernel with
-//!   `a = -0.5` — not PyTorch's `a = -0.75` — and which scales the filter
+//!   `a = -0.5` - not PyTorch's `a = -0.75` - and which scales the filter
 //!   support when downscaling, so a shrink is area-averaged rather than
 //!   point-sampled;
 //! * **mask prompts**, where `_use_mask_as_output` downsamples 512 -> 128 with
@@ -176,7 +176,7 @@ const PRECISION_BITS: u32 = 32 - 8 - 2;
 /// The float path above is the algorithm; this is the arithmetic. PIL
 /// quantizes the kernel to 22-bit fixed point, accumulates in integers and
 /// clips to a byte **after each pass**, so a float implementation drifts from
-/// it by a few least-significant bits — visible enough to matter when the
+/// it by a few least-significant bits - visible enough to matter when the
 /// result is the network's input.
 pub fn resize_u8(
     src: &[u8],

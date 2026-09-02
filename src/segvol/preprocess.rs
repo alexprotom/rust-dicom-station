@@ -20,7 +20,7 @@
 //!    cosines with [`Volume::canonical_axes`], which is
 //!    the same target the nnU-Net engine already uses.
 //! 3. **Min-max to [0, 1]**, which puts the global minimum at exactly zero.
-//! 4. **Foreground crop** of everything `> 0` — that zero floor is what makes
+//! 4. **Foreground crop** of everything `> 0` - that zero floor is what makes
 //!    the crop remove the clipped air rim.
 //!
 //! What comes out is full-resolution and canonically oriented; the resize to
@@ -56,7 +56,7 @@ pub struct ForegroundStats {
     pub std: f32,
 }
 
-/// numpy's `percentile` with linear interpolation — the two order statistics
+/// numpy's `percentile` with linear interpolation - the two order statistics
 /// it interpolates between are found by selection rather than by sorting
 /// the whole (up to 10⁸-element) sample.
 fn percentile(values: &mut [f32], q: f64) -> f32 {
@@ -255,7 +255,7 @@ pub fn resize_nearest_exact(v: &[f32], src: [usize; 3], dst: [usize; 3]) -> Vec<
 }
 
 /// Trilinear resize with `align_corners=false`, PyTorch's default for
-/// `F.interpolate(mode='trilinear')` — used on the decoder's logits.
+/// `F.interpolate(mode='trilinear')` - used on the decoder's logits.
 pub fn resize_trilinear(v: &[f32], src: [usize; 3], dst: [usize; 3]) -> Vec<f32> {
     let coord = |i: usize, s: usize, d: usize| -> f32 {
         // align_corners=false: (i + 0.5) * scale - 0.5

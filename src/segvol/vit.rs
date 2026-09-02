@@ -1,6 +1,6 @@
 //! The image encoder: MONAI's 3-D `ViT`.
 //!
-//! Not SAM's `ImageEncoderViT` and not SwinUNETR — both are imported by the
+//! Not SAM's `ImageEncoderViT` and not SwinUNETR - both are imported by the
 //! reference builder and neither is ever instantiated. What runs is a plain
 //! pre-norm vision transformer, twelve blocks wide 768, with **global**
 //! attention over all 2048 tokens: no windowing, no shifting, no relative
@@ -103,7 +103,7 @@ impl Vit {
     /// PATCH_FEATURES]`.
     ///
     /// Token order is C-order over the patch grid, and within a patch the
-    /// values run C-order over `PATCH` — the layout MONAI's
+    /// values run C-order over `PATCH` - the layout MONAI's
     /// `Rearrange("b c (h p1) (w p2) (d p3) -> b (h w d) (p1 p2 p3 c)")`
     /// produces for a single-channel input.
     pub fn patchify(volume: &[f32]) -> Mat {

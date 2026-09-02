@@ -8,8 +8,8 @@
 //! ```
 //!
 //! `--models` is the engine's folder, `segvol/` in the viewer's model folder
-//! by default. Box and point coordinates are in the **prepared** grid —
-//! canonically oriented `[S, A, R]` and cropped to the foreground — which is
+//! by default. Box and point coordinates are in the **prepared** grid -
+//! canonically oriented `[S, A, R]` and cropped to the foreground - which is
 //! what the network sees. `--out` writes a raw `u8` mask on the original
 //! volume's grid, one byte per voxel in `Volume::data` order.
 

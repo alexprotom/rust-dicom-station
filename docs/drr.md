@@ -1,13 +1,13 @@
 # Digitally reconstructed radiographs
 
 A DRR is a line integral of attenuation from a point source through the CT
-to a flat detector — the simulated radiograph image guidance compares a
+to a flat detector - the simulated radiograph image guidance compares a
 portal or kV image against. *Tools ▶ ☢ Digitally reconstructed
 radiograph…* renders one with **two independent forward projectors**.
 
 ## The two projectors
 
-### Siddon — plastimatch's exact ray tracer
+### Siddon - plastimatch's exact ray tracer
 
 `drr -i exact`, after Siddon (Med. Phys. 1985) with Jacobs' incremental
 formulation: the ray walks voxel to voxel and each voxel contributes
@@ -15,11 +15,11 @@ exactly the length of ray inside it. For a piecewise-constant volume the
 result *is* the integral, the reference for the other projector; edges
 come out hard, because in the voxel model they are.
 
-### Ray-cast — the ITK / elastix-stack interpolating projector
+### Ray-cast - the ITK / elastix-stack interpolating projector
 
 `itk::RayCastInterpolateImageFunction`, the projector behind ITK's 2-D/3-D
 registration metrics: the ray is marched at a fixed step, trilinearly
-interpolated values accumulated with a midpoint rule — the volume as a
+interpolated values accumulated with a midpoint rule - the volume as a
 smooth field, so edges are softer and step size a real accuracy/speed knob.
 
 The difference image of the two on the same geometry and its statistics
@@ -29,14 +29,14 @@ r > 0.999 and a few percent mean difference, concentrated on the edges.
 
 ## Geometry
 
-[`Geometry`] is a cone-beam geometry in IEC 61217 terms — how a linac
+[`Geometry`] is a cone-beam geometry in IEC 61217 terms - how a linac
 states it and an RTPLAN beam stores it:
 
-* **SAD / SID** — source-to-axis and source-to-imager distances, mm.
-* **Gantry angle** — 0° source above the patient, 90° at the patient's left.
-* **Couch angle** — patient-support rotation about the vertical axis.
-* **Isocentre** — in patient coordinates; ⌖ takes the dataset's crosshair.
-* **Panel size and pixel count** — the window reports the resolution
+* **SAD / SID** - source-to-axis and source-to-imager distances, mm.
+* **Gantry angle** - 0° source above the patient, 90° at the patient's left.
+* **Couch angle** - patient-support rotation about the vertical axis.
+* **Isocentre** - in patient coordinates; ⌖ takes the dataset's crosshair.
+* **Panel size and pixel count** - the window reports the resolution
   projected back to the isocentre plane.
 
 The IEC fixed frame maps to the DICOM patient frame for a head-first supine
@@ -50,14 +50,14 @@ the loaded plan.
 
 ## Values
 
-* **Attenuation (μ from HU)** — `μ = μ_water · (1 + HU/1000)`, clamped at
+* **Attenuation (μ from HU)** - `μ = μ_water · (1 + HU/1000)`, clamped at
   zero, with `μ_water = 0.0206 mm⁻¹` (≈ 60 keV, the effective energy
   plastimatch's DRR preprocessing assumes); the integral is a real optical
-  depth — 40 mm of water on the central axis integrates to `0.0206 × 40`,
+  depth - 40 mm of water on the central axis integrates to `0.0206 × 40`,
   unit-tested for both projectors.
-* **Raw line integral** — the values as they are (plastimatch `-h none`);
+* **Raw line integral** - the values as they are (plastimatch `-h none`);
   for comparing against another tool's raw output.
-* **Threshold** — voxels below it contribute nothing, keeping air and the
+* **Threshold** - voxels below it contribute nothing, keeping air and the
   couch out.
 
 ## Display
@@ -73,7 +73,7 @@ under **Planar images** in the dataset's tree as an RT Image, with its own
 viewer (window/level, correct physical aspect ratio), renaming, and travel
 with the dataset when copied or moved.
 
-The producing geometry rides along as the planar viewer's info rows —
+The producing geometry rides along as the planar viewer's info rows -
 engine, SAD/SID, gantry and couch angles, isocentre, panel size, HU model,
 threshold, sampling step (ray-cast only) and render time. Labels are
 `DRR Siddon · G 90° C 0°`, made unique on the way in.

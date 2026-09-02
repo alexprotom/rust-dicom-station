@@ -1,10 +1,10 @@
-//! Dose–volume histograms against a study that came out of a DICOM file.
+//! Dose-volume histograms against a study that came out of a DICOM file.
 //!
 //! The unit tests in `src/dvh.rs` check the arithmetic on hand-built grids.
 //! What this adds is the whole path: the synthetic RT study is *written* as
 //! DICOM, read back through the normal loader, its RTSTRUCT contours are
 //! rasterized onto the CT lattice, and the histogram is taken against the
-//! RTDOSE as parsed — including its own grid geometry, frame offsets and
+//! RTDOSE as parsed - including its own grid geometry, frame offsets and
 //! dose-grid scaling.
 //!
 //! The phantom is what makes this worth doing. Its dose is an analytic
@@ -60,7 +60,7 @@ fn curve_for(name: &str) -> dvh::Dvh {
 }
 
 /// The fraction of a ball of radius `R` centred on the dose peak that
-/// receives at least `d` — the closed form the phantom was built to have.
+/// receives at least `d` - the closed form the phantom was built to have.
 fn analytic_fraction(d: f64, radius: f64) -> f64 {
     if d >= PEAK {
         return 0.0;
@@ -240,7 +240,7 @@ Ghost   Dmean <= 10
     assert!(v[1].pass, "and its maximum is the 60 Gy peak");
     assert!(
         !v[2].pass,
-        "the cord sits in the penumbra, so 1 Gy is not met — {:?}",
+        "the cord sits in the penumbra, so 1 Gy is not met - {:?}",
         v[2].value
     );
     assert!(

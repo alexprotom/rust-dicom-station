@@ -3,7 +3,7 @@
 //! One run reproduces the whole 4DCT motion workflow on a recognised 4D
 //! group: the reference phase is registered to every other phase (rigidly,
 //! and deformably on top of the rigid result), the chosen targets are
-//! propagated through each transform, and what comes back is measured —
+//! propagated through each transform, and what comes back is measured -
 //! centroid trajectories, peak-to-peak amplitudes, drift against a
 //! reference structure (typically the heart) with direction-wise
 //! correlation, per-phase registration quality, and motion-encompassing
@@ -295,7 +295,7 @@ impl ViewerApp {
         self.motion_recipe = Some(self.motion_recipe_of(d));
         self.motion_slot = slot;
         let progress = Arc::new(Progress::default());
-        progress.set("starting…");
+        progress.set("starting");
         self.motion_job = Some(Job::spawn(progress, move |p| (slot, run_motion(req, p))));
     }
 
@@ -348,7 +348,7 @@ impl ViewerApp {
             Some(i) => {
                 let (item, label) = cands
                     .get(i)
-                    .context("the reference-structure choice is stale — pick it again")?;
+                    .context("the reference-structure choice is stale - pick it again")?;
                 let s = self
                     .snapshot(slot, *item)
                     .with_context(|| format!("'{label}' is gone"))?;
@@ -411,15 +411,15 @@ impl ViewerApp {
             "Motion analysis finished: {}",
             outcome.report.run_name
         )];
-        // The report is kept whatever happened to the dataset meanwhile —
-        // it is self-contained — but segmentations only land in the study
+        // The report is kept whatever happened to the dataset meanwhile -
+        // it is self-contained - but segmentations only land in the study
         // the run analysed.
         let still_there = self.slots[slot]
             .study
             .as_ref()
             .is_some_and(|st| st.series.iter().any(|se| se.study_uid == outcome.study_uid));
         if !still_there {
-            lines.push("The dataset changed while it ran — segmentations were discarded.".into());
+            lines.push("The dataset changed while it ran - segmentations were discarded.".into());
             self.motion_reports.push(outcome.report);
             self.motion_sel = self.motion_reports.len() - 1;
             self.motion_results_open = true;
@@ -529,7 +529,7 @@ impl ViewerApp {
             |ui| {
                 ui.label(
                     "Register the reference phase to every phase of a 4D group, carry the \
-                     targets across, and measure their motion — trajectories, amplitudes, \
+                     targets across, and measure their motion - trajectories, amplitudes, \
                      drift against a reference structure, and the ITV.",
                 );
                 ui.add_space(4.0);
@@ -538,7 +538,7 @@ impl ViewerApp {
                         warn_color(ui.visuals()),
                         "No 4D group in this dataset. Phases are recognised from the series \
                          descriptions (e.g. \"… 30%\"); series can also be grouped by hand \
-                         from the data tree (right-click a series ▸ 4D group).",
+                         from the data tree (right-click a series > 4D group).",
                     );
                     return;
                 }
@@ -615,8 +615,8 @@ impl ViewerApp {
                 })
                 .response
                 .on_hover_text(
-                    "Carried along for target–reference drift and direction-wise \
-                     correlation — typically the heart for cardiac targets",
+                    "Carried along for target-reference drift and direction-wise \
+                     correlation - typically the heart for cardiac targets",
                 );
                 ui.separator();
 
@@ -643,7 +643,7 @@ impl ViewerApp {
                 ui.checkbox(&mut d.keep_phase_segs, "Keep per-phase segmentations")
                     .on_hover_text(
                         "Store every propagated mask as a segmentation series on its phase \
-                         — one series per phase",
+                         - one series per phase",
                     );
                 egui::CollapsingHeader::new("Registration settings")
                     .default_open(false)
@@ -670,7 +670,7 @@ impl ViewerApp {
                             ui.end_row();
                         });
                         ui.weak(
-                            "Elastix rigid, then B-spline refinement — the same engines \
+                            "Elastix rigid, then B-spline refinement - the same engines \
                                  as the Registration panel.",
                         );
                     });
@@ -693,7 +693,7 @@ impl ViewerApp {
                                 .add_enabled(has_recipe, egui::Button::new("Apply last recipe"))
                                 .on_hover_text(
                                     "Tick the same targets (matched by name) and re-use the \
-                                     options of the previous run — for the other dataset or \
+                                     options of the previous run - for the other dataset or \
                                      the next study",
                                 )
                                 .clicked()
@@ -775,7 +775,7 @@ fn run_motion(req: MotionRequest, p: &Progress) -> anyhow::Result<MotionOutcome>
     }
     let n_subjects = subjects.len();
 
-    // samples[model][subject][phase] — filled as the phases are processed.
+    // samples[model][subject][phase] - filled as the phases are processed.
     let mut samples: Vec<Vec<Vec<Option<PhaseSample>>>> =
         vec![vec![vec![None; n]; n_subjects]; req.models.len()];
     // Union accumulators on the reference grid, [model][target].
@@ -814,12 +814,12 @@ fn run_motion(req: MotionRequest, p: &Progress) -> anyhow::Result<MotionOutcome>
         let span = 0.9 / others.len() as f32;
         let (label, series) = &req.phases[pi];
         p.set_phase(base, span * 0.15);
-        p.set(format!("Phase {label}: loading…"));
+        p.set(format!("Phase {label}: loading"));
         let (vol, _, _) = loader::load_series_volume(series, p)?;
         let phase_grid = vol.grid();
 
         p.set_phase(base + span * 0.15, span * 0.35);
-        p.set(format!("Phase {label}: rigid registration…"));
+        p.set(format!("Phase {label}: rigid registration"));
         let mut params = req.params.clone();
         params.method = RegMethod::ElastixRigid;
         let rigid = registration::register(&ref_vol, &vol, &params, p)?;
@@ -833,7 +833,7 @@ fn run_motion(req: MotionRequest, p: &Progress) -> anyhow::Result<MotionOutcome>
 
         let deformable = if req.models.contains(&MotionModel::Deformable) {
             p.set_phase(base + span * 0.5, span * 0.35);
-            p.set(format!("Phase {label}: deformable refinement…"));
+            p.set(format!("Phase {label}: deformable refinement"));
             let mut params = req.params.clone();
             params.method = RegMethod::ElastixBSpline;
             params.start = Some(rigid.transform.clone());
@@ -857,7 +857,7 @@ fn run_motion(req: MotionRequest, p: &Progress) -> anyhow::Result<MotionOutcome>
                 MotionModel::Rigid => &rigid.transform,
                 MotionModel::Deformable => &deformable.as_ref().expect("built above").transform,
             };
-            p.set(format!("Phase {label}: propagating ({})…", model.label()));
+            p.set(format!("Phase {label}: propagating ({})", model.label()));
             // The transform maps reference → phase; landing on the phase
             // lattice therefore samples through the inverse.
             let props = propagate::propagate(&ref_vol, &vol, transform, true, &subjects, p)?;
@@ -889,7 +889,7 @@ fn run_motion(req: MotionRequest, p: &Progress) -> anyhow::Result<MotionOutcome>
         }
         if !phase_out.is_empty() {
             phase_series.push(OutSeries {
-                label: format!("4D {label} — {}", req.group_name),
+                label: format!("4D {label} - {}", req.group_name),
                 grid: phase_grid,
                 referenced_series_uid: series.uid.clone(),
                 segs: phase_out,
@@ -900,7 +900,7 @@ fn run_motion(req: MotionRequest, p: &Progress) -> anyhow::Result<MotionOutcome>
         return Err(cancelled());
     }
     p.set_phase(0.95, 0.05);
-    p.set("Assembling the report…");
+    p.set("Assembling the report");
 
     // Tracks in phase order.
     let mut tracks = Vec::new();
@@ -1006,7 +1006,7 @@ fn run_motion(req: MotionRequest, p: &Progress) -> anyhow::Result<MotionOutcome>
     Ok(MotionOutcome {
         report,
         itv_series: (!itv_segs.is_empty()).then(|| OutSeries {
-            label: format!("4D ITV — {}", req.group_name),
+            label: format!("4D ITV - {}", req.group_name),
             grid: ref_grid,
             referenced_series_uid: req.phases[req.reference].1.uid.clone(),
             segs: itv_segs,

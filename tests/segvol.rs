@@ -1,6 +1,6 @@
 //! SegVol integration tests.
 //!
-//! The fast tests run against `tests/data/segvol-tensors.csv` — the tensor
+//! The fast tests run against `tests/data/segvol-tensors.csv` - the tensor
 //! inventory of the real `pytorch_model.bin`, recorded by
 //! `examples/segvol_probe`. That fixture lets the network assembly be
 //! developed and checked against the exact published key names and shapes
@@ -107,7 +107,7 @@ fn the_image_encoder_is_a_12_block_768_wide_vit() {
     let inv = inventory(&rows);
     for b in 0..layout::EXPECTED_VIT_BLOCKS {
         let p = format!("image_encoder.blocks.{b}");
-        // fused qkv, no bias — MONAI's SABlock hardcodes bias=False
+        // fused qkv, no bias - MONAI's SABlock hardcodes bias=False
         assert_eq!(
             inv.shape(&format!("{p}.attn.qkv.weight")),
             Some(&[2304, 768][..])
@@ -301,7 +301,7 @@ fn the_text_tower_is_clip_vit_b_32() {
     let rows = recorded();
     let inv = inventory(&rows);
     let emb = "text_encoder.clip_text_model.text_model.embeddings";
-    // vocab 49408, width 512, 77 positions — the ViT-B/32 text tower
+    // vocab 49408, width 512, 77 positions - the ViT-B/32 text tower
     assert_eq!(
         inv.shape(&format!("{emb}.token_embedding.weight")),
         Some(&[49408, 512][..])

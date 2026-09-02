@@ -1,4 +1,4 @@
-//! `rds-setup` — the Windows installer for rust-dicom-station.
+//! `rds-setup` - the Windows installer for rust-dicom-station.
 //!
 //! Run without arguments it shows a small wizard; `--silent` and `--console`
 //! drive the same code from a terminal, and `--uninstall` (the form recorded
@@ -226,7 +226,7 @@ fn do_install(args: &Args) -> Result<()> {
     // so they fail here instead.
     if opts.scope == Scope::AllUsers && !win::is_elevated() && (args.silent || args.console) {
         bail!(
-            "a machine-wide installation needs administrator rights — start the installer \
+            "a machine-wide installation needs administrator rights - start the installer \
              from an elevated prompt, or install with --just-me"
         );
     }

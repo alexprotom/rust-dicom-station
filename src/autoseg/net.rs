@@ -1,4 +1,4 @@
-//! nnU-Net v2 `PlainConvUNet` — architecture assembly and CPU forward pass.
+//! nnU-Net v2 `PlainConvUNet` - architecture assembly and CPU forward pass.
 //!
 //! The network is rebuilt from `plans.json` (see `config`) and the checkpoint
 //! tensors (see `weights`): an encoder of N stages (each: `n_conv` blocks of
@@ -37,7 +37,7 @@ pub struct TranspConv {
     pub b: Vec<f32>,
     pub cin: usize,
     pub cout: usize,
-    /// Kernel = stride of this upsampling step — the encoder stride it
+    /// Kernel = stride of this upsampling step - the encoder stride it
     /// undoes. `[2, 2, 2]` for every isotropic model; the MR models plan
     /// `[1, 2, 2]` where the through-plane spacing is already coarse.
     pub stride: [usize; 3],
@@ -50,7 +50,7 @@ pub struct SegHead {
     pub classes: usize,
 }
 
-/// The assembled network (plain data — both the CPU and the GPU forward
+/// The assembled network (plain data - both the CPU and the GPU forward
 /// passes read from this).
 pub struct UNet {
     pub cfg: ModelConfig,
@@ -163,7 +163,7 @@ impl UNet {
     pub fn forward_cpu(&self, x: &Act) -> Act {
         let n = self.enc.len();
         // Every stage's output is a skip connection, and the next stage reads
-        // it straight out of `skips` — nothing is copied (stage 0's output is
+        // it straight out of `skips` - nothing is copied (stage 0's output is
         // 180 MB at 112³).
         let mut skips: Vec<Act> = Vec::with_capacity(n);
         for (i, stage) in self.enc.iter().enumerate() {

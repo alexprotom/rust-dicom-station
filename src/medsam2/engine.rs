@@ -1,7 +1,7 @@
 //! Picking a backend, and the one call the rest of the program makes.
 //!
 //! The network below this module is generic over a `burn` backend, which is
-//! what lets it run on the GPU and on the CPU from a single implementation —
+//! what lets it run on the GPU and on the CPU from a single implementation -
 //! but a generic type is awkward to hold in a UI struct or hand to a
 //! background thread. [`Engine`] erases it: it owns whichever backend was
 //! chosen and exposes a prompt-in, mask-out call that knows nothing about
@@ -42,7 +42,7 @@ pub enum EnginePrompt {
     /// Clicks or box corners, in **prepared** pixel coordinates
     /// (`row`, `column` of the oriented slice).
     Points(Vec<PixelPrompt>),
-    /// A binary mask over one prepared slice, `rows * columns` bytes — an
+    /// A binary mask over one prepared slice, `rows * columns` bytes - an
     /// existing contour, propagated.
     Mask(Vec<u8>),
 }
@@ -89,8 +89,8 @@ impl PixelPrompt {
     }
 }
 
-/// The last encoded slice, kept so that adjusting a prompt on it — the whole
-/// point of an interactive box — costs no encoder pass at all.
+/// The last encoded slice, kept so that adjusting a prompt on it - the whole
+/// point of an interactive box - costs no encoder pass at all.
 struct Cache<B: Backend> {
     slice: usize,
     features: SliceFeatures<B>,
@@ -162,7 +162,7 @@ impl Engine {
     ///
     /// The mask comes back at the prepared slice's own size, `rows * columns`
     /// bytes. Repeated calls on the same slice reuse its encoded features, so
-    /// only the prompt path — a few milliseconds of it — runs again.
+    /// only the prompt path - a few milliseconds of it - runs again.
     pub fn preview(
         &self,
         prepared: &Prepared,
@@ -179,7 +179,7 @@ impl Engine {
 
     /// Slices the image encoder has processed since this engine was loaded.
     ///
-    /// Re-prompting a cached slice must leave this unchanged — that is what
+    /// Re-prompting a cached slice must leave this unchanged - that is what
     /// makes the interactive loop interactive, and the one honest way to
     /// assert it, since how *long* a re-prompt takes depends on the machine.
     pub fn encode_count(&self) -> usize {
@@ -190,7 +190,7 @@ impl Engine {
         }
     }
 
-    /// Forget the cached slice — call this whenever the prepared stack itself
+    /// Forget the cached slice - call this whenever the prepared stack itself
     /// changes (a different study, or a different intensity window).
     pub fn clear_cache(&self) {
         match &self.inner {

@@ -28,6 +28,12 @@ pub const GRAPHICS_BACKEND_KEY: &str = "graphics_backend";
 /// Settings keys of the two optional side-panel modules.
 const MODULE_REG_KEY: &str = "module_image_registration";
 const MODULE_SIM_KEY: &str = "module_image_simulation";
+const MODULE_PROP_KEY: &str = "module_structures_propagation";
+
+/// Settings keys of the last session's sources, one per dataset. The paths
+/// are separated by `|`, which no path on any supported system contains.
+const SESSION_KEYS: [&str; 2] = ["session_a", "session_b"];
+const SESSION_SEP: char = '|';
 
 /// User preferences that survive a restart.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,17 +54,26 @@ pub struct Settings {
     pub archive_dir: Option<PathBuf>,
 
     /// *Modules ▶ Image registration*: the registration section is shown in
-    /// the side panel.
+    /// the modules panel.
     pub module_registration: bool,
 
     /// *Modules ▶ Image simulation*: the simulation section is shown in the
-    /// side panel.
+    /// modules panel.
     pub module_simulation: bool,
+
+    /// *Modules ▶ Structures propagation*: the propagation section is shown
+    /// in the modules panel.
+    pub module_propagation: bool,
 
     /// Which graphics backend to draw and compute with. Read once at
     /// startup, before the window exists, so a change only takes effect on
-    /// the next run — which the menu says.
+    /// the next run - which the menu says.
     pub graphics_backend: Backend,
+
+    /// What dataset A and dataset B were last loaded from: folders and
+    /// files, in the order they were added, so *Restore the last session*
+    /// can put the same data back.
+    pub session: [Vec<PathBuf>; 2],
 }
 
 impl Default for Settings {
@@ -73,6 +88,8 @@ impl Default for Settings {
             // on and the choice is remembered.
             module_registration: false,
             module_simulation: false,
+            module_propagation: false,
+            session: [Vec::new(), Vec::new()],
             // Let wgpu choose. The installer writes an explicit value when
             // the person installing picks one.
             graphics_backend: Backend::Auto,
@@ -211,14 +228,14 @@ pub fn settings_path() -> PathBuf {
 /// A machine-wide installation is performed by an administrator whose
 /// `%LOCALAPPDATA%` is not the one the viewer will later run under, so the
 /// installer's answers cannot be written into the settings file of everyone
-/// who will use the program — those files do not exist yet. They go into a
+/// who will use the program - those files do not exist yet. They go into a
 /// small file next to the executable instead, in the same `key = value`
 /// syntax, and every key in it is only a *default*: the user's own settings
 /// file is read afterwards and wins, and so does anything they change from
 /// the menus.
 ///
 /// `None` when the executable's own path cannot be determined, which is not
-/// a condition worth reporting — it just means there are no defaults.
+/// a condition worth reporting - it just means there are no defaults.
 pub fn defaults_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     Some(exe.parent()?.join(DEFAULTS_FILE_NAME))
@@ -328,9 +345,23 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
             if let Some(b) = bool_from_str(value) {
                 s.module_registration = b;
             }
+        } else if let Some(slot) = SESSION_KEYS
+            .iter()
+            .position(|k| key.eq_ignore_ascii_case(k))
+        {
+            s.session[slot] = value
+                .split(SESSION_SEP)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .collect();
         } else if key.eq_ignore_ascii_case(MODULE_SIM_KEY) {
             if let Some(b) = bool_from_str(value) {
                 s.module_simulation = b;
+            }
+        } else if key.eq_ignore_ascii_case(MODULE_PROP_KEY) {
+            if let Some(b) = bool_from_str(value) {
+                s.module_propagation = b;
             }
         } else if key.eq_ignore_ascii_case(GRAPHICS_BACKEND_KEY) {
             // An unreadable value leaves the default rather than failing to
@@ -358,16 +389,28 @@ fn render(s: &Settings) -> String {
         out.push_str(&format!("{ARCHIVE_DIR_KEY} = {}\n", dir.display()));
     }
     out.push_str(&format!(
-        "# optional side-panel modules (Modules menu) = on | off\n\
+        "# optional modules-panel sections (Modules menu) = on | off\n\
          {MODULE_REG_KEY} = {}\n\
          {MODULE_SIM_KEY} = {}\n\
+         {MODULE_PROP_KEY} = {}\n\
          # graphics backend = auto | vulkan | dx12 | metal | opengl\n\
          # (the WGPU_BACKEND environment variable overrides this)\n\
          {GRAPHICS_BACKEND_KEY} = {}\n",
         bool_to_str(s.module_registration),
         bool_to_str(s.module_simulation),
+        bool_to_str(s.module_propagation),
         s.graphics_backend.key()
     ));
+    for (key, paths) in SESSION_KEYS.iter().zip(&s.session) {
+        if paths.is_empty() {
+            continue;
+        }
+        let joined: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+        out.push_str(&format!(
+            "# what this dataset was last loaded from\n{key} = {}\n",
+            joined.join(&SESSION_SEP.to_string())
+        ));
+    }
     out
 }
 
@@ -475,18 +518,47 @@ mod tests {
     }
 
     #[test]
+    fn round_trips_the_last_session() {
+        let s = Settings {
+            session: [
+                vec![
+                    PathBuf::from("D:/studies/one"),
+                    PathBuf::from("D:/studies/two"),
+                ],
+                vec![PathBuf::from("D:/studies/three")],
+            ],
+            ..Settings::default()
+        };
+        assert_eq!(parse(&render(&s)), s, "both datasets round trip");
+        assert_eq!(
+            parse("session_a = D:/one | D:/two |\n").session[0],
+            vec![PathBuf::from("D:/one"), PathBuf::from("D:/two")],
+            "spacing and a trailing separator are ignored"
+        );
+        assert!(
+            parse("session_b =\n").session[1].is_empty(),
+            "an empty list is no session, not one blank path"
+        );
+    }
+
+    #[test]
     fn round_trips_the_module_flags() {
-        for (reg, sim) in [(false, false), (true, false), (false, true), (true, true)] {
+        for bits in 0..8u8 {
             let s = Settings {
-                module_registration: reg,
-                module_simulation: sim,
+                module_registration: bits & 1 != 0,
+                module_simulation: bits & 2 != 0,
+                module_propagation: bits & 4 != 0,
                 ..Settings::default()
             };
-            assert_eq!(parse(&render(&s)), s, "round trip of ({reg}, {sim})");
+            assert_eq!(parse(&render(&s)), s, "round trip of {bits:03b}");
         }
         assert!(
             parse(&format!("{MODULE_REG_KEY} = TRUE")).module_registration,
             "case-insensitive alias"
+        );
+        assert!(
+            parse(&format!("{MODULE_PROP_KEY} = on")).module_propagation,
+            "the propagation module is remembered too"
         );
     }
 }

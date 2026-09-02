@@ -4,7 +4,7 @@
 //! computation upcasts to `f32`, so these two functions are the whole of the
 //! crate's half-precision support. Both are exact: `f16_to_f32` is lossless
 //! (every binary16 value is representable in binary32) and `f32_to_f16`
-//! rounds to nearest, ties to even — the same rule PyTorch and numpy use.
+//! rounds to nearest, ties to even - the same rule PyTorch and numpy use.
 
 /// Widen a binary16 bit pattern to `f32`. Subnormals, infinities and NaNs
 /// are all preserved.

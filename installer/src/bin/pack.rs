@@ -1,4 +1,4 @@
-//! `rds-pack` — turns the freshly built `rds-setup.exe` into a shippable
+//! `rds-pack` - turns the freshly built `rds-setup.exe` into a shippable
 //! single-file installer by appending a zip of everything that should be
 //! installed, plus the footer `payload.rs` looks for.
 //!
@@ -17,7 +17,7 @@ use anyhow::{bail, Context, Result};
 use zip::write::SimpleFileOptions;
 
 const USAGE: &str = "\
-rds-pack — build the shippable installer
+rds-pack - build the shippable installer
 
 USAGE:
     rds-pack [OPTIONS]
@@ -84,14 +84,14 @@ fn main() -> Result<()> {
 
     if !app.is_file() {
         bail!(
-            "{} not found — build the viewer first:\n    cargo build --release   (in {})",
+            "{} not found - build the viewer first:\n    cargo build --release   (in {})",
             app.display(),
             o.repo.display()
         );
     }
     if !setup.is_file() {
         bail!(
-            "{} not found — build the installer first:\n    cargo build --release   (in {})",
+            "{} not found - build the installer first:\n    cargo build --release   (in {})",
             setup.display(),
             crate_dir.display()
         );
@@ -119,7 +119,7 @@ fn main() -> Result<()> {
     );
 
     // ---- write the zip ----------------------------------------------------
-    println!("Packing {} files…", files.len() + 1);
+    println!("Packing {} files", files.len() + 1);
     let mut zip_bytes = Vec::new();
     {
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_bytes));

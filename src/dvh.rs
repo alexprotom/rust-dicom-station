@@ -1,21 +1,21 @@
-//! Dose–volume histograms: the numbers a plan is actually judged on.
+//! Dose-volume histograms: the numbers a plan is actually judged on.
 //!
-//! A DVH answers one question — how much of this structure receives at least
-//! this dose — and every constraint in every protocol is a reading off that
+//! A DVH answers one question - how much of this structure receives at least
+//! this dose - and every constraint in every protocol is a reading off that
 //! curve. The arithmetic is elementary; what makes an implementation right or
 //! wrong is the bookkeeping around it, and this module is deliberate about
 //! four things that are easy to get quietly wrong:
 //!
 //! * **Where it samples.** The structure's own lattice, not the dose grid.
-//!   A CT mask is 1 mm and a dose grid is 2–3 mm, so walking the mask and
+//!   A CT mask is 1 mm and a dose grid is 2-3 mm, so walking the mask and
 //!   interpolating the dose gives a curve with the structure's resolution
 //!   rather than the dose's. The walk is affine, so the dose grid
 //!   coordinates are stepped rather than recomputed per voxel.
 //!
 //! * **What falls outside the dose grid.** Counted, kept, and reported.
-//!   Those voxels enter the histogram at zero dose — which is the honest
+//!   Those voxels enter the histogram at zero dose - which is the honest
 //!   reading of "this part of the structure was not irradiated by *this*
-//!   dose object" — but a DVH silently computed over 60 % of a structure is
+//!   dose object" - but a DVH silently computed over 60 % of a structure is
 //!   a wrong DVH, so [`Dvh::outside_fraction`] exists and the interface
 //!   shows it.
 //!
@@ -29,8 +29,8 @@
 //!   than by a whole one.
 //!
 //! Nothing here knows about the interface: a [`Dvh`] is computed from a mask,
-//! a lattice and a [`DoseGrid`], and everything else — metrics, constraints,
-//! CSV — is a pure function of it.
+//! a lattice and a [`DoseGrid`], and everything else - metrics, constraints,
+//! CSV - is a pure function of it.
 
 use std::fmt::Write as _;
 
@@ -40,17 +40,17 @@ use crate::rtdose::DoseGrid;
 use crate::volume::Grid;
 
 /// How finely the histogram is binned, as a fraction of the dose maximum.
-/// 2000 bins over a 70 Gy plan is 3.5 cGy — finer than any constraint is
+/// 2000 bins over a 70 Gy plan is 3.5 cGy - finer than any constraint is
 /// quoted to, and small enough that interpolation inside a bin is a
 /// formality.
 const DEFAULT_BINS: usize = 2000;
 
-/// One structure's dose–volume histogram.
+/// One structure's dose-volume histogram.
 #[derive(Clone, Debug)]
 pub struct Dvh {
     pub name: String,
     pub color: [u8; 3],
-    /// Which dose object this was computed against — shown in the legend,
+    /// Which dose object this was computed against - shown in the legend,
     /// because overlaying two plans is the whole point of allowing more than
     /// one.
     pub dose_label: String,
@@ -80,7 +80,7 @@ impl Dvh {
         }
     }
 
-    /// Dose at the upper edge of the last non-empty bin — where the curve
+    /// Dose at the upper edge of the last non-empty bin - where the curve
     /// stops being worth drawing.
     pub fn dose_extent(&self) -> f64 {
         let last = self.bins.iter().rposition(|v| *v > 0.0).unwrap_or(0);
@@ -135,7 +135,7 @@ impl Dvh {
         }
     }
 
-    /// The dose that `volume_cm3` of the structure receives at least — D2cc
+    /// The dose that `volume_cm3` of the structure receives at least - D2cc
     /// and friends. Interpolated on the cumulative curve.
     ///
     /// Returns 0 for a volume larger than the structure, which is the honest
@@ -155,7 +155,7 @@ impl Dvh {
             let v = self.bins[b];
             if acc + v >= volume_cm3 {
                 if b == 0 {
-                    // The lowest bin holds exact zeros — voxels outside the
+                    // The lowest bin holds exact zeros - voxels outside the
                     // dose grid, and anything the plan genuinely misses.
                     // Interpolating across it would report a few hundredths
                     // of a Gy for a structure half of which is unirradiated,
@@ -172,7 +172,7 @@ impl Dvh {
         0.0
     }
 
-    /// The dose that `fraction` (0‥1) of the structure receives at least —
+    /// The dose that `fraction` (0‥1) of the structure receives at least -
     /// D95 %, D2 %.
     pub fn dose_at_volume_fraction(&self, fraction: f64) -> f64 {
         self.dose_at_volume(fraction * self.volume_cm3)
@@ -297,18 +297,18 @@ pub enum Metric {
     Min,
     Mean,
     Max,
-    /// Dose to at least this percentage of the structure — `D95%`.
+    /// Dose to at least this percentage of the structure - `D95%`.
     DoseAtPct(f64),
-    /// Dose to at least this absolute volume — `D2cc`.
+    /// Dose to at least this absolute volume - `D2cc`.
     DoseAtCc(f64),
-    /// Percentage of the structure at or above this dose — `V20Gy`.
+    /// Percentage of the structure at or above this dose - `V20Gy`.
     VolumePctAtDose(f64),
-    /// Absolute volume at or above this dose — `V20Gy[cc]`.
+    /// Absolute volume at or above this dose - `V20Gy[cc]`.
     VolumeCcAtDose(f64),
 }
 
 impl Metric {
-    /// `D95%`, `V20`, `Dmean` — the column heading, and what the protocol
+    /// `D95%`, `V20`, `Dmean` - the column heading, and what the protocol
     /// file writes (`V20Gy` is accepted on input).
     pub fn label(&self) -> String {
         match self {
@@ -366,9 +366,14 @@ impl Metric {
             "dmax" | "max" => return Some(Metric::Max),
             _ => {}
         }
-        let (head, rest) = lower.split_at(1);
+        // Not `split_at(1)`: that panics on an empty string and on any
+        // first character wider than one byte, and this is fed straight from
+        // a text box the user is still typing in.
+        let mut chars = lower.chars();
+        let head = chars.next()?;
+        let rest = chars.as_str();
         match head {
-            "d" => {
+            'd' => {
                 if let Some(v) = rest.strip_suffix("cc") {
                     v.trim().parse().ok().map(Metric::DoseAtCc)
                 } else {
@@ -379,7 +384,7 @@ impl Metric {
                         .map(Metric::DoseAtPct)
                 }
             }
-            "v" => {
+            'v' => {
                 // Both the label form (`V20cc`) and the explicit one
                 // (`V20Gy[cc]`); `label()` emits the first, so the two have
                 // to agree or a protocol cannot survive being saved.
@@ -490,7 +495,7 @@ impl Constraint {
         }
     }
 
-    /// `Cord Dmax <= 45` — the line a protocol file holds. A name with a
+    /// `Cord Dmax <= 45` - the line a protocol file holds. A name with a
     /// space in it is quoted, because that is how it is read back.
     pub fn to_line(&self) -> String {
         let name = if self.structure.contains(char::is_whitespace) {
@@ -520,7 +525,7 @@ pub struct Verdict {
 /// Evaluate a protocol against the curves on screen.
 ///
 /// A constraint that matches nothing is reported with no value and does not
-/// pass — a protocol line that silently evaluates to "fine" because the
+/// pass - a protocol line that silently evaluates to "fine" because the
 /// structure was never contoured is the worst possible failure mode.
 pub fn check(constraints: &[Constraint], curves: &[Dvh]) -> Vec<Verdict> {
     constraints
@@ -666,7 +671,7 @@ mod tests {
     use crate::geometry::Vec3;
 
     /// A dose grid that ramps linearly from 0 to `top` along +x, on a 1 mm
-    /// lattice — every DVH over it can be worked out on paper.
+    /// lattice - every DVH over it can be worked out on paper.
     fn ramp(top: f32, nx: usize, ny: usize, nz: usize) -> DoseGrid {
         let mut data = vec![0f32; nx * ny * nz];
         for f in 0..nz {
@@ -832,6 +837,37 @@ mod tests {
         assert_eq!(Metric::DoseAtPct(95.0).label(), "D95%");
         assert_eq!(Metric::VolumeCcAtDose(20.0).label(), "V20cc");
         assert_eq!(Metric::parse("nonsense"), None);
+    }
+
+    #[test]
+    fn a_half_typed_metric_is_refused_and_never_panics() {
+        // The column box is parsed on every keystroke and on every click of
+        // the + button, so anything that can be in a text field has to come
+        // back as None rather than take the program with it.
+        // The wide characters are written as escapes on purpose: the glyph
+        // guard in `app::glyphs` reads every literal in `src` as something
+        // the interface might draw, and these are input, not interface text.
+        for text in [
+            "",
+            " ",
+            "\t",
+            "D",
+            "V",
+            "%",
+            "cc",
+            "Gy",
+            "-",
+            "\u{b5}",         // micro sign, two bytes
+            "\u{d8}",         // capital O with stroke
+            "\u{432}\u{43e}", // Cyrillic, two bytes each
+            "\u{1f642}",      // an emoji, four bytes
+            "D%",
+            "Vcc",
+            "D cc",
+            "V[cc]",
+        ] {
+            assert_eq!(Metric::parse(text), None, "{text:?} is not a metric");
+        }
     }
 
     #[test]

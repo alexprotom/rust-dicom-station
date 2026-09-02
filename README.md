@@ -105,13 +105,13 @@ window; each engine also has a headless CLI in [examples/](examples/).
 If the program will not start at all, it is almost certainly one thing: a
 Windows machine advertising a Vulkan driver that cannot create a device. It
 now falls back to Direct3D 12 by itself, the installer asks which backend to
-use, and *View ▸ Graphics backend* changes it afterwards — see
+use, and *View ▸ Graphics backend* changes it afterwards - see
 [docs/viewer.md](docs/viewer.md#graphics-backend).
 
 Windows, Linux and macOS are supported; `--no-default-features` builds a
 CPU-only viewer without the GPU inference backend. Every push to `main`
 publishes a release: a Windows installer
-(`rust-dicom-station-<version>-windows-x86_64.exe` — shortcuts, "Open with"
+(`rust-dicom-station-<version>-windows-x86_64.exe` - shortcuts, "Open with"
 on folders, the VC++ runtime check, optional weight prefetch, uninstaller)
 and a Linux AppImage. The installer is its own crate in
 [installer/](installer/README.md). No data at hand? *File ▶ 📐 Generate test

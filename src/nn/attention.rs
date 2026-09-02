@@ -1,6 +1,6 @@
 //! Multi-head attention.
 //!
-//! One function serves every attention in the network — the image encoder's
+//! One function serves every attention in the network - the image encoder's
 //! 2048-token self-attention, the mask decoder's self- and cross-attentions
 //! at a reduced internal width, and CLIP's causally masked text attention.
 //! They differ only in what is projected before the call and whether a mask
@@ -20,7 +20,7 @@ use super::tensor::Mat;
 pub enum Mask {
     /// Every query sees every key.
     None,
-    /// Query `i` sees keys `j <= i` — CLIP's text encoder.
+    /// Query `i` sees keys `j <= i` - CLIP's text encoder.
     Causal,
 }
 
@@ -29,7 +29,7 @@ pub enum Mask {
 /// `q` is `[n_q, internal]`, `k` and `v` are `[n_kv, internal]`, and the
 /// result is `[n_q, internal]`. `internal` must divide evenly into `heads`;
 /// the scale is `1/sqrt(internal / heads)`, taken from the head width rather
-/// than the embedding width — which is why the decoder's downsampled
+/// than the embedding width - which is why the decoder's downsampled
 /// attentions scale by `1/sqrt(48)` and not `1/sqrt(96)`.
 pub fn attention(q: &Mat, k: &Mat, v: &Mat, heads: usize, mask: Mask) -> Mat {
     assert_eq!(q.cols, k.cols, "q and k must share the internal width");

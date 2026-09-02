@@ -5,7 +5,7 @@
 //! another patient (or another posture) by registration alone when the two
 //! datasets share no anatomy-to-anatomy correspondence for it. What travels
 //! instead is the *relationship*: the target's offset from the centroid of a
-//! reference structure both datasets can segment — typically the heart. The
+//! reference structure both datasets can segment - typically the heart. The
 //! target lands in the destination at the same offset from the destination's
 //! reference structure, keeping its shape; deformable adaptation, when
 //! wanted, is the propagation tool's job afterwards.
@@ -48,7 +48,7 @@ impl ViewerApp {
         self.transfer_dialog = Some(d);
     }
 
-    /// Carry the target across, synchronously — a translation and one
+    /// Carry the target across, synchronously - a translation and one
     /// nearest-neighbour resampling over the target's bounding box.
     fn transfer_now(&mut self) {
         let Some(d) = &self.transfer_dialog else {
@@ -91,7 +91,7 @@ impl ViewerApp {
         let delta = c_dst - c_src;
 
         // The destination lattice is the displayed volume of the other
-        // dataset — that is where a new segmentation is editable.
+        // dataset - that is where a new segmentation is editable.
         let Some(study) = self.slots[dst].study.as_ref() else {
             return;
         };
@@ -100,7 +100,7 @@ impl ViewerApp {
         if mask.iter().all(|&v| v == 0) {
             if let Some(dlg) = &mut self.transfer_dialog {
                 dlg.status = Some(format!(
-                    "'{tname}' lands outside dataset {}'s displayed volume — nothing to store.",
+                    "'{tname}' lands outside dataset {}'s displayed volume - nothing to store.",
                     SLOT_NAMES[dst]
                 ));
             }
@@ -112,7 +112,7 @@ impl ViewerApp {
         self.add_colored_segmentation(dst, name.clone(), tcolor, dims, &mask);
         if let Some(dlg) = &mut self.transfer_dialog {
             dlg.status = Some(format!(
-                "'{name}' stored in dataset {} — offset from {rname}: RL {:+.1} · AP {:+.1} · \
+                "'{name}' stored in dataset {} - offset from {rname}: RL {:+.1} · AP {:+.1} · \
                  SI {:+.1} mm, {placed_cm3:.2} cm³.",
                 SLOT_NAMES[dst],
                 c_target.x - c_src.x,
@@ -156,7 +156,7 @@ impl ViewerApp {
             |ui| {
                 ui.label(format!(
                     "Place a structure of dataset {} into dataset {} at the same offset \
-                     from a reference structure (e.g. the heart) — the target–reference \
+                     from a reference structure (e.g. the heart) - the target-reference \
                      relationship travels, not the image registration.",
                     SLOT_NAMES[src], SLOT_NAMES[dst]
                 ));

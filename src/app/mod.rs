@@ -66,7 +66,7 @@ mod views;
 
 use drr_win::DrrDialog;
 use pacs_win::{PacsOutcome, PacsWindow};
-use propagate_win::{PropOutcome, PropagateDialog};
+use propagate_win::{GroupRegistration, PropOutcome, PropagateDialog};
 use reg_panel::{RegOutcome, RegRoi};
 use rename::{RenameDialog, RenameTarget};
 use seg_engines::*;
@@ -322,7 +322,7 @@ impl ViewState {
     }
 }
 
-/// Which of the three view slots shows a plane — the order `fresh_views`
+/// Which of the three view slots shows a plane - the order `fresh_views`
 /// builds them in.
 fn plane_index(plane: ViewPlane) -> usize {
     match plane {
@@ -348,8 +348,19 @@ struct StudySlot {
     /// Fractional voxel coords of the linked crosshair (in this slot's volume).
     cursor: [f64; 3],
     roi_visible: Vec<bool>,
+    /// Which plans are drawn in the views (their isocenters), one flag per
+    /// entry of `study.plans`. Missing entries count as visible, so a plan
+    /// that arrives later is shown.
+    plan_visible: Vec<bool>,
     /// Index of the active structure set within `study.structure_sets`.
     active_structs: usize,
+    /// The tick box on the RT structures series row: whether the active set
+    /// is drawn at all. Unticking it clears the contours from the image views
+    /// while the set stays selected, so the ROI list, the drawing tools and a
+    /// 3D scene opened on it all keep working.
+    structs_shown: bool,
+    /// The same tick box on the segmentation series row.
+    segs_shown: bool,
     active_dose: usize,
     dose_reference: f32,
     /// Index of the active segmentation series within `study.seg_series`.
@@ -368,7 +379,7 @@ impl StudySlot {
 
     /// Whether this slot shows an image volume.
     ///
-    /// A slot can hold a perfectly good dataset with none — RT images, a
+    /// A slot can hold a perfectly good dataset with none - RT images, a
     /// structure set, a plan. Every feature that needs voxels (the MPR views,
     /// the brush, registration, the segmentation engines, the DRR) asks this
     /// rather than `study.is_some()`.
@@ -383,7 +394,7 @@ impl StudySlot {
         (!st.seg_series.is_empty()).then(|| self.active_seg_series.min(st.seg_series.len() - 1))
     }
 
-    /// Segments of the active segmentation series — empty unless they live
+    /// Segments of the active segmentation series - empty unless they live
     /// on the displayed volume's lattice, because every overlay, brush
     /// stroke and mesh indexes them with that volume's dimensions. A series
     /// drawn on another image series simply has nothing to show here.
@@ -418,7 +429,10 @@ impl StudySlot {
             views: fresh_views(),
             cursor: [0.0; 3],
             roi_visible: Vec::new(),
+            plan_visible: Vec::new(),
             active_structs: 0,
+            structs_shown: true,
+            segs_shown: true,
             active_dose: 0,
             dose_reference: 1.0,
             active_seg_series: 0,
@@ -492,7 +506,7 @@ fn poll_job<T>(
 }
 
 /// [`poll_job`] for the jobs that answer with `(slot, Result)`: a failure is
-/// reported as `"{what} failed: …"`, except a cancellation, which is what
+/// reported as `"{what} failed: "`, except a cancellation, which is what
 /// the user asked for and needs no dialog.
 fn poll_tool_job<T>(
     slot: &mut Option<Job<(usize, anyhow::Result<T>)>>,
@@ -534,7 +548,7 @@ struct D3Window {
     /// Hash of the segmentation state `seg_meshes` was built from.
     seg_built: u64,
     /// Also draw the *other* dataset's structures, mapped through the active
-    /// registration — the two anatomies in one scene is what makes a
+    /// registration - the two anatomies in one scene is what makes a
     /// deformable result readable at all.
     show_other: bool,
     /// Opacity of that second dataset, independent of this one's.
@@ -618,8 +632,8 @@ struct TreeAction {
 
 /// Which of a dataset's two kinds of segmented series an action addresses.
 ///
-/// The data tree treats them alike — both are series drawn on an image
-/// series, both hold named, coloured items — even though one stores contours
+/// The data tree treats them alike - both are series drawn on an image
+/// series, both hold named, coloured items - even though one stores contours
 /// and the other voxel masks. Conversions between the two happen on
 /// transfer (`ViewerApp::apply_item_action`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -654,12 +668,32 @@ struct SetRef {
     slot: usize,
     kind: SetKind,
     /// Index into that dataset's list, or [`SetRef::NEW`] for a series that
-    /// does not exist yet — what the *New …* transfer destinations mean.
+    /// does not exist yet - what the *New …* transfer destinations mean.
     idx: usize,
 }
 
 impl SetRef {
     const NEW: usize = usize::MAX;
+}
+
+/// One of the study-level objects that are neither image, structure nor
+/// segmentation series: they hang off the study, are drawn in the views (or
+/// not), and can be taken out of the dataset.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ObjKind {
+    Dose,
+    Plan,
+    Planar,
+    Registration,
+    Record,
+}
+
+/// Which object, in which dataset.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct ObjRef {
+    slot: usize,
+    kind: ObjKind,
+    idx: usize,
 }
 
 /// Deferred right-click action on a whole series node of the data tree.
@@ -706,7 +740,7 @@ enum ItemAction {
         from: SetRef,
         items: Vec<usize>,
     },
-    /// Plot these items' dose–volume histograms.
+    /// Plot these items' dose-volume histograms.
     Dvh {
         from: SetRef,
         items: Vec<usize>,
@@ -771,6 +805,21 @@ pub struct ViewerApp {
 
     loading: Option<Job<LoadResult>>,
     /// A load queued behind the one in flight (slot, directory).
+    /// What each dataset has been loaded from this run, in order: the
+    /// *Restore the last session* button on the start screen replays it, and
+    /// it is written to the settings file as it changes.
+    session: [Vec<PathBuf>; 2],
+    /// Sources still to load for a restore, drained one at a time as each
+    /// load finishes (the loader takes one folder at a time).
+    restore_queue: Vec<(usize, PathBuf)>,
+    /// The session the previous run ended with, as read from the settings
+    /// file. Emptied when it turns out its data is gone.
+    last_session: [Vec<PathBuf>; 2],
+    /// Whether the archive holds anything, and when that was last looked at:
+    /// the start screen offers *Load data from PACS* only when it does, and
+    /// asking the file system every frame would be silly.
+    archive_has_data: bool,
+    archive_checked_at: f64,
     pending_load: Option<(usize, PathBuf)>,
     /// The same, for an explicit file selection (slot, files).
     pending_load_files: Option<(usize, Vec<PathBuf>)>,
@@ -780,6 +829,16 @@ pub struct ViewerApp {
 
     // Registration (direction selectable: either study can be the fixed one).
     registration: Option<ActiveRegistration>,
+    /// The last 4D group registered phase by phase, so propagating onto it
+    /// does not repeat the registrations. Cleared when the registration is.
+    group_registration: Option<GroupRegistration>,
+    /// Which 4D group the registration module runs against, when it runs
+    /// against one rather than the other dataset's displayed volume.
+    reg_group: Option<(usize, usize)>,
+    /// Dataset whose displayed volume is the moving image of a group run.
+    /// Its own dataset is a normal choice: a planning CT and the 4DCT of the
+    /// same patient usually arrive together.
+    reg_group_moving: usize,
     /// The payload carries the slot that was used as the fixed image.
     reg_job: Option<SegJob<RegOutcome>>,
     /// Fixed-image slot for the *next* registration run (0 = A, 1 = B).
@@ -881,6 +940,9 @@ pub struct ViewerApp {
     tree_action: Option<TreeAction>,
     /// Deferred right-click action on a structure set / segmentation series.
     set_action: Option<SetAction>,
+    /// A study-level object the tree asked to remove, applied after the
+    /// panel has been drawn (it borrows the study while drawing).
+    obj_remove: Option<ObjRef>,
     /// Deferred right-click action on structures / segments.
     item_action: Option<ItemAction>,
     /// The rename dialog, when open.
@@ -934,7 +996,7 @@ pub struct ViewerApp {
     // Tools ▶ PACS: the patient archive window.
     /// The window, when open.
     pacs: Option<PacsWindow>,
-    /// The archive job in flight — a scan, an import, an upload or a removal.
+    /// The archive job in flight - a scan, an import, an upload or a removal.
     pacs_job: Option<Job<anyhow::Result<PacsOutcome>>>,
 
     // Tools ▶ Downloaded models: the inventory window.
@@ -957,14 +1019,14 @@ pub struct ViewerApp {
     /// Finished result awaiting organ selection.
     autoseg_pending: Option<AutosegPending>,
 
-    // Body / External contouring (see `bodymask`) — the one tool that can
+    // Body / External contouring (see `bodymask`) - the one tool that can
     // answer with no network at all.
     body_job: Option<SegJob<bodymask::BodyResult>>,
     body_slot: usize,
     /// The tool window, when open; it stays open across runs.
     body_dialog: Option<body_win::BodyDialog>,
 
-    // Dose–volume histograms (see `dvh`), in a window of their own.
+    // Dose-volume histograms (see `dvh`), in a window of their own.
     dvh_open: bool,
     dvh_dialog: Option<dvh_win::DvhDialog>,
     dvh_job: Option<Job<anyhow::Result<dvh_win::DvhDone>>>,
@@ -1021,21 +1083,31 @@ pub struct ViewerApp {
     wl_preset: Option<usize>,
 
     /// *Modules ▶ Image registration*: the registration section is part of
-    /// the side panel. Persisted between runs.
+    /// the modules panel. Persisted between runs.
     module_registration: bool,
     /// *Modules ▶ Image simulation*: the simulation section is part of the
-    /// side panel. Persisted between runs.
+    /// modules panel. Persisted between runs.
     module_simulation: bool,
-    /// The side panel is expanded (View ▶ Left panel, F9, or the arrow on
-    /// the panel edge). Collapsed, the views have the whole window.
+    /// *Modules ▶ Structures propagation*: the propagation section is part
+    /// of the modules panel. Persisted between runs.
+    module_propagation: bool,
+    /// The left panel is expanded (View ▶ Data tree, F9, or the arrow on the
+    /// panel edge). It holds the data tree and nothing else.
     side_open: bool,
+    /// The right panel is expanded (View ▶ Modules, F10, or the arrow on the
+    /// panel edge). It holds the module sections. Collapse both and the
+    /// views have the whole window.
+    right_open: bool,
 
     /// Light / dark / follow-the-system appearance, persisted between runs.
     theme: egui::ThemePreference,
     /// Which graphics backend the *next* run will use. Read at startup by
     /// `main`, before the window exists, so changing it here only takes
-    /// effect after a restart — which the menu says out loud.
+    /// effect after a restart - which the menu says out loud.
     graphics_backend: crate::gfx::Backend,
+    /// What the graphics library actually started with, which is not always
+    /// what was asked for: `Settings > Graphics backend` reports this one.
+    active_backend: Option<crate::gfx::Backend>,
     /// Non-fatal note shown in the View menu if the settings file could not
     /// be written (e.g. a read-only installation folder).
     settings_error: Option<String>,
@@ -1088,6 +1160,14 @@ impl ViewerApp {
             link_studies: true,
             hovered_slot: 0,
             loading: None,
+            // What the last run ended with, ready for the start screen's
+            // *Restore the last session*; it becomes this run's session as
+            // soon as anything is loaded.
+            session: [Vec::new(), Vec::new()],
+            last_session: prefs.session.clone(),
+            restore_queue: Vec::new(),
+            archive_has_data: false,
+            archive_checked_at: f64::NEG_INFINITY,
             pending_load: None,
             pending_load_files: None,
             error: None,
@@ -1120,6 +1200,9 @@ impl ViewerApp {
             drr_job: None,
             propagate_dialog: None,
             propagate_job: None,
+            group_registration: None,
+            reg_group: None,
+            reg_group_moving: 0,
             sim_source: 0,
             sim_params: SimParams::default(),
             sim_job: None,
@@ -1151,6 +1234,7 @@ impl ViewerApp {
             d3_windows: Vec::new(),
             tree_action: None,
             set_action: None,
+            obj_remove: None,
             item_action: None,
             rename: None,
             rename_request: None,
@@ -1222,9 +1306,15 @@ impl ViewerApp {
             wl_preset: None,
             module_registration: prefs.module_registration,
             module_simulation: prefs.module_simulation,
+            module_propagation: prefs.module_propagation,
             side_open: true,
+            right_open: true,
             theme: prefs.theme,
             graphics_backend: prefs.graphics_backend,
+            active_backend: cc
+                .wgpu_render_state
+                .as_ref()
+                .map(|r| crate::gfx::Backend::from_wgpu(r.adapter.get_info().backend)),
             settings_error: None,
         };
         if let Some(p) = initial_a {
@@ -1265,6 +1355,8 @@ impl ViewerApp {
             archive_dir,
             module_registration: self.module_registration,
             module_simulation: self.module_simulation,
+            module_propagation: self.module_propagation,
+            session: self.session.clone(),
             graphics_backend: self.graphics_backend,
         }) {
             Ok(()) => self.settings_error = None,
@@ -1291,7 +1383,7 @@ impl ViewerApp {
 
     /// Put the crosshair of `slot` back at its volume center and follow it
     /// with that slot's three slices. The other dataset is left alone even
-    /// when crosshair linking is on — a reset is per-dataset, and "Reset all
+    /// when crosshair linking is on - a reset is per-dataset, and "Reset all
     /// views" recenters both anyway.
     pub(super) fn center_cursor(&mut self, slot: usize) {
         let Some(study) = &self.slots[slot].study else {
@@ -1306,8 +1398,60 @@ impl ViewerApp {
         self.sync_views_to_cursor(slot, None);
     }
 
+    /// Does the local archive hold any patient? Re-read at most twice a
+    /// second, since the start screen asks every frame.
+    pub(super) fn archive_has_data(&mut self, now: f64) -> bool {
+        if now - self.archive_checked_at < 0.5 {
+            return self.archive_has_data;
+        }
+        self.archive_checked_at = now;
+        let root = crate::archive::root_from_setting(&self.archive_dir);
+        self.archive_has_data = crate::archive::Archive::new(root).has_patients();
+        self.archive_has_data
+    }
+
+    /// Is there a session from the last run to offer?
+    pub(super) fn has_last_session(&self) -> bool {
+        self.last_session.iter().any(|paths| !paths.is_empty())
+    }
+
+    /// Load again what the program was showing when it was last closed.
+    ///
+    /// Folders move and get cleaned up between sessions, so the sources are
+    /// checked first: if any of them is gone the session is dropped, with a
+    /// message saying so, and the start screen no longer offers it.
+    pub(super) fn restore_last_session(&mut self) {
+        let missing: Vec<String> = self
+            .last_session
+            .iter()
+            .flatten()
+            .filter(|p| !p.exists())
+            .map(|p| p.display().to_string())
+            .collect();
+        if !missing.is_empty() {
+            self.error = Some(format!(
+                "The last session cannot be restored. This is no longer on \
+                 disk:\n{}",
+                missing.join("\n")
+            ));
+            self.last_session = [Vec::new(), Vec::new()];
+            self.session = [Vec::new(), Vec::new()];
+            self.persist_settings();
+            return;
+        }
+        if !self.last_session[1].is_empty() {
+            self.comparison = true;
+        }
+        for (slot, paths) in self.last_session.clone().iter().enumerate() {
+            for path in paths {
+                self.restore_queue.push((slot, path.clone()));
+            }
+        }
+    }
+
     pub(super) fn close_comparison(&mut self) {
         self.slots[1] = StudySlot::empty();
+        self.forget_sources(1);
         self.comparison = false;
         self.hovered_slot = 0;
         self.planar_windows.retain(|w| w.slot != 1);
@@ -1324,13 +1468,22 @@ impl ViewerApp {
 
     /// Pick one or more DICOM files.
     ///
-    /// "All files" comes first because DICOM files very often have no
-    /// extension at all; the `.dcm` filter is the convenience, not the rule.
+    /// **No name filter at all**, deliberately. A DICOM file is one whose
+    /// header parses, which is a question only [`crate::loader`] can answer
+    /// and the file name never can: real archives are full of `IM_0001`,
+    /// `I0000001`, `0001.DCM`, `image.ima` and `1.2.840...` in every mixture
+    /// of upper and lower case, and plenty with no extension whatsoever.
+    ///
+    /// An extension filter here can only ever hide such a file from the
+    /// person trying to open it, and it also decides what the platform
+    /// dialog does with the name afterwards - the file-type list is what
+    /// carries the "default extension" a dialog may append to what comes
+    /// back. Neither is worth a convenience nobody asked for: the dialog
+    /// lists everything, and the loader says what was and was not DICOM,
+    /// which it has to do anyway for the files that did parse.
     pub(super) fn pick_files(title: &str) -> Option<Vec<PathBuf>> {
         rfd::FileDialog::new()
             .set_title(title)
-            .add_filter("All files", &["*"])
-            .add_filter("DICOM", &["dcm", "DCM", "ima", "IMA", "dic", "img"])
             .pick_files()
             .filter(|v| !v.is_empty())
     }
@@ -1364,6 +1517,14 @@ impl eframe::App for ViewerApp {
                 self.start_load(slot, path);
             } else if let Some((slot, paths)) = self.pending_load_files.take() {
                 self.start_load_files(slot, paths);
+            } else if !self.restore_queue.is_empty() {
+                // One source of the session being restored at a time.
+                let (slot, path) = self.restore_queue.remove(0);
+                if path.is_dir() {
+                    self.start_load(slot, path);
+                } else {
+                    self.start_load_files(slot, vec![path]);
+                }
             }
         }
 
@@ -1464,7 +1625,7 @@ impl eframe::App for ViewerApp {
             self.set_cursor(fixed_slot, cursor, usize::MAX);
         }
 
-        // Poll an archive job — a scan, an import, an upload or a removal.
+        // Poll an archive job - a scan, an import, an upload or a removal.
         match poll_job(&mut self.pacs_job, &ctx, "Archive", &mut self.error) {
             Some(Ok(outcome)) => self.on_pacs_done(outcome),
             Some(Err(e)) => self.error = Some(format!("Archive: {e:#}")),
@@ -1502,17 +1663,21 @@ impl eframe::App for ViewerApp {
         // focused): Ctrl+Z undo, Esc cancels a region-grow drag, [ ] resize
         // the brush.
         if !ctx.egui_wants_keyboard_input() {
-            let (undo, esc, smaller, bigger, toggle_side) = ctx.input(|i| {
+            let (undo, esc, smaller, bigger, toggle_side, toggle_right) = ctx.input(|i| {
                 (
                     i.modifiers.command && i.key_pressed(egui::Key::Z),
                     i.key_pressed(egui::Key::Escape),
                     i.key_pressed(egui::Key::OpenBracket),
                     i.key_pressed(egui::Key::CloseBracket),
                     i.key_pressed(egui::Key::F9),
+                    i.key_pressed(egui::Key::F10),
                 )
             });
             if toggle_side {
                 self.side_open = !self.side_open;
+            }
+            if toggle_right {
+                self.right_open = !self.right_open;
             }
             if undo {
                 let slot = self.hovered_slot.min(1);
@@ -1534,6 +1699,7 @@ impl eframe::App for ViewerApp {
         self.menu_bar(ui, &ctx);
         self.top_bar(ui);
         self.side_panel(ui);
+        self.modules_panel(ui);
         self.status_bar(ui);
         self.central_views(ui);
         self.planar_windows_ui(&ctx);
@@ -1543,6 +1709,9 @@ impl eframe::App for ViewerApp {
         }
         if let Some(action) = self.set_action.take() {
             self.apply_set_action(action);
+        }
+        if let Some(obj) = self.obj_remove.take() {
+            self.remove_object(obj);
         }
         if let Some(action) = self.item_action.take() {
             self.apply_item_action(action);

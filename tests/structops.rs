@@ -37,7 +37,7 @@ fn grid(up: bool) -> Grid {
     }
 }
 
-/// A square contour on every slice, in patient coordinates — an RT structure
+/// A square contour on every slice, in patient coordinates - an RT structure
 /// as a file would carry it.
 fn boxed_roi(name: &str, lo: [f64; 2], hi: [f64; 2], g: &Grid) -> Roi {
     let contours = (0..DIMS[2])

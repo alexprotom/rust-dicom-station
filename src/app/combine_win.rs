@@ -1,8 +1,8 @@
 //! The structure-algebra window: combining contours and segmentations.
 //!
 //! Its one job that the core module ([`crate::structops`]) cannot do is
-//! deciding *what the operands are*. Everything else — the four operations,
-//! the margins, the tidying — is arithmetic; picking "the GTV from the second
+//! deciding *what the operands are*. Everything else - the four operations,
+//! the margins, the tidying - is arithmetic; picking "the GTV from the second
 //! structure set of dataset A" out of a data tree, rasterizing it onto the
 //! displayed lattice, and putting the answer back as whichever kind the user
 //! wants is the part that has to know about the application.
@@ -64,7 +64,7 @@ pub(super) struct CombineDialog {
     pub cleanup: Cleanup,
     pub name: String,
     pub output: Output,
-    /// Interpreted type given to an RT structure result — PTV, ORGAN, …
+    /// Interpreted type given to an RT structure result - PTV, ORGAN, …
     pub roi_type: String,
     pub status: Option<String>,
 }
@@ -89,7 +89,7 @@ struct CombineRequest {
     roi_type: String,
 }
 
-/// The interpreted types offered for an RT structure result — the ones a
+/// The interpreted types offered for an RT structure result - the ones a
 /// planning system actually branches on.
 const ROI_TYPES: [&str; 7] = [
     "ORGAN",
@@ -103,7 +103,7 @@ const ROI_TYPES: [&str; 7] = [
 
 impl ViewerApp {
     /// Every structure and segment of `slot` that can be an operand, as
-    /// (reference, label) — the pick list, and what the summary line names.
+    /// (reference, label) - the pick list, and what the summary line names.
     pub(super) fn combine_candidates(&self, slot: usize) -> Vec<(ItemRef, String)> {
         let mut out = Vec::new();
         let Some(study) = self.slots[slot].study.as_ref() else {
@@ -259,7 +259,7 @@ impl ViewerApp {
             roi_type: d.roi_type.clone(),
         };
         let progress = Arc::new(Progress::default());
-        progress.set("Preparing…");
+        progress.set("Preparing");
         self.combine_slot = slot;
         self.combine_job = Some(Job::spawn(progress, move |p| {
             let t0 = std::time::Instant::now();
@@ -284,7 +284,7 @@ impl ViewerApp {
         }
         if result.combined.voxels == 0 {
             self.error = Some(format!(
-                "'{}' came out empty. Check the order of the list — a subtraction with \
+                "'{}' came out empty. Check the order of the list - a subtraction with \
                  its operands the wrong way round is the usual reason.",
                 result.name
             ));
@@ -364,7 +364,7 @@ impl ViewerApp {
                 ui.label(
                     "Builds one structure out of others: union, intersection, subtraction \
                      or symmetric difference, with a margin on any of them. Contours and \
-                     segmentations mix freely — each is rasterized onto the displayed \
+                     segmentations mix freely - each is rasterized onto the displayed \
                      series first.",
                 );
                 ui.separator();
@@ -518,7 +518,7 @@ impl ViewerApp {
                         );
                     ui.add_enabled_ui(!d.cleanup.keep_largest, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label("…or drop pieces under:");
+                            ui.label("or drop pieces under:");
                             ui.add(
                                 egui::DragValue::new(&mut d.cleanup.min_volume_cm3)
                                     .range(0.0..=1000.0)
@@ -554,7 +554,7 @@ impl ViewerApp {
                 });
 
                 ui.separator();
-                // The recipe, spelled out — the cheapest possible guard
+                // The recipe, spelled out - the cheapest possible guard
                 // against an operand list in the wrong order.
                 ui.label(egui::RichText::new(recipe_line(d, &labels)).italics());
                 ui.separator();
@@ -611,7 +611,7 @@ impl ViewerApp {
     }
 }
 
-/// `PTV ∪ Nodes − (Cord + 5 mm)` — the recipe as one line of text.
+/// `PTV ∪ Nodes − (Cord + 5 mm)` - the recipe as one line of text.
 fn recipe_line(d: &CombineDialog, labels: &[String]) -> String {
     if d.rows.is_empty() {
         return "Nothing selected yet.".to_string();
@@ -674,8 +674,8 @@ mod tests {
 
     #[test]
     fn the_tool_names_itself_like_the_others() {
-        assert_eq!(COMBINE.title(0), "∪ Combine structures — dataset A");
-        assert_eq!(COMBINE.menu_entry(1), "∪ Combine structures in dataset B…");
+        assert_eq!(COMBINE.title(0), "∪ Combine structures - dataset A");
+        assert_eq!(COMBINE.menu_entry(1), "∪ Combine structures in dataset B");
         assert_eq!(COMBINE.short_button(), "∪ Combine");
     }
 

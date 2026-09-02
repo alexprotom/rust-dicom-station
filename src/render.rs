@@ -221,14 +221,14 @@ pub struct RoiPlaneGraphics {
 ///
 /// Axial: contours whose plane lies within half a slice of `slice` are drawn
 /// as closed polylines. Sagittal/coronal: each axial contour is intersected
-/// with the viewing plane; interior runs are found by even–odd pairing of the
+/// with the viewing plane; interior runs are found by even-odd pairing of the
 /// crossings and drawn as short vertical boundary ticks (plus horizontal caps
 /// where the structure begins/ends along the stack).
 pub fn roi_on_plane(vol: &Volume, roi: &Roi, plane: ViewPlane, slice: usize) -> RoiPlaneGraphics {
     let mut g = RoiPlaneGraphics::default();
     let nz = vol.dims[2] as f64;
 
-    // Slice indices (rounded k) occupied by this ROI — used for end caps.
+    // Slice indices (rounded k) occupied by this ROI - used for end caps.
     let mut k_occupied: Vec<i64> = Vec::new();
     if plane != ViewPlane::Axial {
         for c in &roi.contours {

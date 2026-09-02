@@ -2,9 +2,9 @@
 //!
 //! Everything in the port that is not a matrix multiply goes through this
 //! module, for two reasons. The first is that these are the operations whose
-//! *semantics* differ between frameworks — padding conventions, the
+//! *semantics* differ between frameworks - padding conventions, the
 //! half-pixel rule in interpolation, whether a `LayerNorm` reduces over the
-//! channel axis or the last one — and a single definition is a single place
+//! channel axis or the last one - and a single definition is a single place
 //! to be right. The second is that `tests/data/medsam2-ops.safetensors`
 //! records PyTorch's answer for each of them on a small input, so the
 //! assertions at the bottom of this file are the port's contract with the
@@ -92,7 +92,7 @@ pub fn conv2d<B: Backend>(
     )
 }
 
-/// `ConvTranspose2d` with kernel = stride = 2 — the decoder's upscaling.
+/// `ConvTranspose2d` with kernel = stride = 2 - the decoder's upscaling.
 pub fn conv_transpose2d_2x<B: Backend>(
     x: Tensor<B, 4>,
     w: &Tensor<B, 4>,
@@ -106,12 +106,12 @@ pub fn conv_transpose2d_2x<B: Backend>(
     )
 }
 
-/// 2 x 2 max pooling, `ceil_mode = false` — Hiera's query and residual pooling.
+/// 2 x 2 max pooling, `ceil_mode = false` - Hiera's query and residual pooling.
 pub fn max_pool2x2<B: Backend>(x: Tensor<B, 4>) -> Tensor<B, 4> {
     max_pool2d(x, [2, 2], [2, 2], [0, 0], [1, 1], false)
 }
 
-/// Nearest-neighbour upsampling by 2 — the FPN's top-down path.
+/// Nearest-neighbour upsampling by 2 - the FPN's top-down path.
 pub fn upsample_nearest_2x<B: Backend>(x: Tensor<B, 4>) -> Tensor<B, 4> {
     let [_, _, h, w] = x.dims();
     interpolate(
@@ -136,7 +136,7 @@ pub fn resize_bilinear<B: Backend>(x: Tensor<B, 4>, size: [usize; 2]) -> Tensor<
     )
 }
 
-/// Bicubic resize with the half-pixel rule — used exactly once, to stretch
+/// Bicubic resize with the half-pixel rule - used exactly once, to stretch
 /// the trunk's 7 x 7 background position embedding over the token grid.
 pub fn resize_bicubic<B: Backend>(x: Tensor<B, 4>, size: [usize; 2]) -> Tensor<B, 4> {
     interpolate(
@@ -166,7 +166,7 @@ pub fn layer_norm<B: Backend, const D: usize>(
 
 /// SAM 2's `LayerNorm2d`: statistics over the **channel** axis of an
 /// `[N, C, H, W]` tensor, per spatial location, with a per-channel affine.
-/// This is not `nn.LayerNorm` on a permuted view — mixing the two up is
+/// This is not `nn.LayerNorm` on a permuted view - mixing the two up is
 /// silent and wrong.
 pub fn layer_norm_2d<B: Backend>(
     x: Tensor<B, 4>,
@@ -186,7 +186,7 @@ pub fn layer_norm_2d<B: Backend>(
 
 /// Scaled dot-product attention over `[batch, heads, tokens, head_dim]`.
 ///
-/// `q` may be shorter than `k` — Hiera's query-pooled blocks produce exactly
+/// `q` may be shorter than `k` - Hiera's query-pooled blocks produce exactly
 /// that, and so does the memory attention.
 pub fn sdpa<B: Backend>(q: Tensor<B, 4>, k: Tensor<B, 4>, v: Tensor<B, 4>) -> Tensor<B, 4> {
     let dh = q.dims()[3];

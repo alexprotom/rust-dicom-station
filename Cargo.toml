@@ -1,6 +1,6 @@
 [package]
 name = "rust-dicom-station"
-version = "0.7.5"
+version = "0.7.8"
 edition = "2021"
 description = "Fast, robust DICOM / RT DICOM viewer in pure Rust (CT/MR volumes, RTSTRUCT, RTDOSE, RTPLAN) with a three-view MPR layout"
 license = "MIT"
@@ -21,14 +21,14 @@ walkdir = "2.5"
 gemm = "0.18"                       # pure-Rust SIMD GEMM kernels (CPU conv engine)
 serde_json = "1"                    # nnU-Net plans.json, CLIP vocab.json
 zip = { version = "2", default-features = false, features = ["deflate"] }
-# weight download — rustls (pure Rust TLS) with the OS trust store, so
+# weight download - rustls (pure Rust TLS) with the OS trust store, so
 # corporate/clinical TLS-inspection proxies with custom CAs work
 ureq = { version = "2", features = ["native-certs"] }
 safetensors = "0.8"                 # converted-weight cache format
 # Neural-network backend. Always compiled: the MedSAM2 engine is written once
 # against a `burn` backend and falls back to the pure-Rust `ndarray` one when
 # there is no usable GPU adapter. The `gpu` feature adds the wgpu backend
-# (Vulkan / DX12 / Metal — no CUDA toolkit needed), which SegVol's image
+# (Vulkan / DX12 / Metal - no CUDA toolkit needed), which SegVol's image
 # encoder also uses.
 burn = { version = "0.21", default-features = false, features = ["std", "ndarray"] }
 

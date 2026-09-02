@@ -1,7 +1,7 @@
 //! RT Dose (RTDOSE) parsing and trilinear dose sampling in patient space.
 //!
 //! Pixel data is decoded manually (16- or 32-bit, signed or unsigned,
-//! little-endian native encoding — which covers effectively all RTDOSE files
+//! little-endian native encoding - which covers effectively all RTDOSE files
 //! in the wild) and converted to physical dose via DoseGridScaling.
 
 use std::path::Path;

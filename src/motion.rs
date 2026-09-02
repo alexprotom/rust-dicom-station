@@ -1,17 +1,17 @@
 //! Geometric motion analysis over 4D phase series.
 //!
-//! Everything in here is arithmetic on masks and centroids — no UI, no
+//! Everything in here is arithmetic on masks and centroids - no UI, no
 //! DICOM, no registration engine. The 4D motion tool feeds it the per-phase
 //! masks its registrations produced; this module turns them into the
 //! numbers a physicist reports: centroid trajectories, displacement
-//! magnitudes, peak-to-peak amplitudes, target–reference drift, direction-
+//! magnitudes, peak-to-peak amplitudes, target-reference drift, direction-
 //! wise correlation with significance, ITV volumes, and structure-overlap
 //! measures (Dice, HD95, mean surface distance).
 //!
 //! Conventions: coordinates are patient LPS in millimetres, so the
-//! anatomical directions are x = right–left (RL), y = anterior–posterior
-//! (AP), z = inferior–superior (SI). Volumes are cm³. Peak-to-peak of a
-//! trajectory is the largest pairwise distance between its points — the
+//! anatomical directions are x = right-left (RL), y = anterior-posterior
+//! (AP), z = inferior-superior (SI). Volumes are cm³. Peak-to-peak of a
+//! trajectory is the largest pairwise distance between its points - the
 //! amplitude of the motion, independent of which phase is the reference.
 
 use crate::geometry::Vec3;
@@ -72,7 +72,7 @@ pub fn volume_cm3(mask: &[u8], grid: &Grid) -> f64 {
     mask.iter().filter(|&&v| v != 0).count() as f64 * vox
 }
 
-/// Largest pairwise distance between the points — the peak-to-peak
+/// Largest pairwise distance between the points - the peak-to-peak
 /// amplitude of a trajectory.
 pub fn peak_to_peak(points: &[Vec3]) -> f64 {
     let mut best = 0.0f64;
@@ -249,7 +249,7 @@ fn ln_gamma(x: f64) -> f64 {
 pub struct Overlap {
     pub vol_a_cm3: f64,
     pub vol_b_cm3: f64,
-    /// Dice similarity coefficient, 0–1.
+    /// Dice similarity coefficient, 0-1.
     pub dice: f64,
     /// 95th-percentile symmetric Hausdorff distance, mm.
     pub hd95_mm: f64,
@@ -313,7 +313,7 @@ pub fn overlap(a: &[u8], b: &[u8], grid: &Grid) -> Option<Overlap> {
 }
 
 /// Push the distance (mm) to the other structure for every surface voxel of
-/// `mask` — a set voxel with an unset 6-neighbour (volume faces count as
+/// `mask` - a set voxel with an unset 6-neighbour (volume faces count as
 /// boundary).
 fn collect_surface_distances(
     mask: &[u8],
@@ -459,10 +459,10 @@ pub struct ItvResult {
 /// Everything one 4D motion run measured.
 #[derive(Clone, Debug)]
 pub struct MotionReport {
-    /// `#1 A · 4D CT — Thorax (10 phases) · ref 0%`, the run's identity in
+    /// `#1 A · 4D CT - Thorax (10 phases) · ref 0%`, the run's identity in
     /// the UI: numbered, so two runs on the same group stay distinguishable.
     pub run_name: String,
-    /// "A" or "B" — which dataset the run analysed.
+    /// "A" or "B" - which dataset the run analysed.
     pub slot_name: String,
     pub patient: String,
     /// Phase labels in order, e.g. `["0%", "10%", …]`.
@@ -472,7 +472,7 @@ pub struct MotionReport {
     /// Target trajectories, one per (target, model).
     pub tracks: Vec<Track>,
     /// The reference structure's trajectories (e.g. the heart), when one
-    /// was chosen — same phases, one per model.
+    /// was chosen - same phases, one per model.
     pub reference_tracks: Vec<Track>,
     /// Name of the reference structure, when one was chosen.
     pub reference_structure: Option<String>,

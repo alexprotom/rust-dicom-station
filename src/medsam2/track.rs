@@ -9,7 +9,7 @@
 //!
 //! * every **prompted** slice, at temporal index 6;
 //! * the six tracked slices at `i-6 … i-1`, at temporal indices 0 … 5, with
-//!   index 0 being `i-1` — missing ones are simply skipped;
+//!   index 0 being `i-1` - missing ones are simply skipped;
 //! * up to sixteen **object pointers**, one per slice already decided, each
 //!   256-wide vector split into four 64-wide tokens that share one projected
 //!   sine encoding of how far away that slice is.
@@ -37,7 +37,7 @@ use super::sam::SamHead;
 pub struct SliceMemory<B: Backend> {
     /// `[1, tokens, MEM_DIM]`, flattened from the memory encoder's map.
     pub features: Tensor<B, 3>,
-    /// `[1, tokens, MEM_DIM]`, the spatial sine encoding — the temporal one
+    /// `[1, tokens, MEM_DIM]`, the spatial sine encoding - the temporal one
     /// is added at assembly time, because it depends on the distance to the
     /// slice being tracked.
     pub pos: Tensor<B, 3>,
@@ -214,7 +214,7 @@ impl<B: Backend> MemoryBank<B> {
 
 /// What one slice's segmentation produced.
 pub struct SliceOutput<B: Backend> {
-    /// `[1, 1, 128, 128]` — the network's own resolution, and what a caller
+    /// `[1, 1, 128, 128]` - the network's own resolution, and what a caller
     /// should resize to the slice's real size.
     pub low_res_masks: Tensor<B, 4>,
     /// `[1, 1, 512, 512]`, as the memory encoder saw it.
@@ -226,8 +226,8 @@ pub struct SliceOutput<B: Backend> {
 pub enum Prompt<B: Backend> {
     /// Clicks, or the two corners of a box.
     Points(Vec<Point>),
-    /// An existing binary mask at the network's resolution, `[1, 1, 512, 512]`
-    /// — a contour the user already has, propagated.
+    /// An existing binary mask at the network's resolution, `[1, 1, 512, 512]` -
+    /// a contour the user already has, propagated.
     Mask(Tensor<B, 4>),
 }
 
@@ -280,7 +280,7 @@ impl<'a, B: Backend> Tracker<'a, B> {
             None => self.model.without_memory(feats),
         };
         // A slice with no prompt has zero points, which does qualify for
-        // multi-mask output — the reference picks the best of three by
+        // multi-mask output - the reference picks the best of three by
         // predicted IoU on every tracked slice.
         let out = self
             .model
@@ -390,7 +390,7 @@ mod tests {
         // forwards from 5: the prompt at 8 is in the future, so no pointer
         assert_eq!(b.pointer_entries(5, false), vec![]);
         // backwards it counts, and the sign flip makes its offset positive
-        // again — `use_signed_tpos_enc_to_obj_ptrs` measures distance in the
+        // again - `use_signed_tpos_enc_to_obj_ptrs` measures distance in the
         // direction of travel, not in slice order.
         assert_eq!(
             b.pointer_entries(5, true),

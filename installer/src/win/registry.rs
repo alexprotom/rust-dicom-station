@@ -185,7 +185,7 @@ pub fn delete_tree(root: HKEY, path: &str) -> Result<()> {
         if err.is_ok() {
             return Ok(());
         }
-        // ERROR_FILE_NOT_FOUND (2) — already gone.
+        // ERROR_FILE_NOT_FOUND (2) - already gone.
         if err.0 == 2 {
             return Ok(());
         }

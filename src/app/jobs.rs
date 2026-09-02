@@ -8,12 +8,41 @@
 
 use super::*;
 
+use std::path::Path;
+
 impl ViewerApp {
+    /// Note that a dataset was loaded from here, so *Restore the last
+    /// session* can put it back on the next run. Repeated loads of the same
+    /// folder are one entry, and the list is written out as it changes: the
+    /// program is not always closed politely.
+    pub(super) fn remember_source(&mut self, slot: usize, path: &Path) {
+        let slot = slot.min(1);
+        // Absolute, because the next run will not have this working
+        // directory: a relative path from the command line would restore
+        // nothing (or, worse, something else).
+        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        if self.session[slot].contains(&path) {
+            return;
+        }
+        self.session[slot].push(path);
+        self.persist_settings();
+    }
+
+    /// A dataset was emptied: it is no longer part of the session.
+    pub(super) fn forget_sources(&mut self, slot: usize) {
+        if self.session[slot.min(1)].is_empty() {
+            return;
+        }
+        self.session[slot.min(1)].clear();
+        self.persist_settings();
+    }
+
     pub(super) fn start_load(&mut self, slot: usize, path: PathBuf) {
         if self.loading.is_some() {
             self.pending_load = Some((slot, path));
             return;
         }
+        self.remember_source(slot, &path);
         let progress = Arc::new(Progress::default());
         let (tx, rx) = mpsc::channel();
         let p2 = progress.clone();
@@ -36,6 +65,9 @@ impl ViewerApp {
         if self.loading.is_some() {
             self.pending_load_files = Some((slot, paths));
             return;
+        }
+        for p in &paths {
+            self.remember_source(slot, p);
         }
         let origin = match paths.len() {
             1 => paths[0].display().to_string(),
@@ -74,7 +106,7 @@ impl ViewerApp {
 
     /// A folder finished loading (*File ▶ Add DICOM folder*): merge it into
     /// an occupied slot, or install it into an empty one. Merging leaves the
-    /// displayed volume and all selections untouched — the new patients /
+    /// displayed volume and all selections untouched - the new patients /
     /// studies / series simply appear in the data tree.
     pub(super) fn absorb_loaded_study(&mut self, slot: usize, study: LoadedStudy) {
         let Some(dest) = self.slots[slot].study.as_mut() else {
@@ -278,7 +310,7 @@ impl ViewerApp {
 
         let src = study.clone();
         let progress = Arc::new(Progress::default());
-        progress.set("starting…");
+        progress.set("starting");
         let p2 = progress.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -307,7 +339,7 @@ impl ViewerApp {
         }
         let src = study.clone();
         let progress = Arc::new(Progress::default());
-        progress.set("starting…");
+        progress.set("starting");
         let p2 = progress.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -332,7 +364,7 @@ impl ViewerApp {
         }
         let params = self.gen_params.clone();
         let progress = Arc::new(Progress::default());
-        progress.set("starting…");
+        progress.set("starting");
         let p2 = progress.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -360,7 +392,7 @@ impl ViewerApp {
         let (slot, variant, device, parts) = (d.slot, d.variant, d.device, d.parts);
         self.persist_settings();
         let progress = Arc::new(Progress::default());
-        progress.set("Starting auto-segmentation…");
+        progress.set("Starting auto-segmentation");
         self.autoseg_slot = slot;
         self.autoseg_job = Some(Job::spawn(progress, move |p| {
             (
@@ -399,7 +431,7 @@ impl ViewerApp {
             return;
         }
         let progress = Arc::new(Progress::default());
-        progress.set("starting…");
+        progress.set("starting");
         let p2 = progress.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -437,7 +469,7 @@ impl ViewerApp {
         let files = scan.files.clone();
         let root = scan.root.clone();
         let progress = Arc::new(Progress::default());
-        progress.set("starting…");
+        progress.set("starting");
         let p2 = progress.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {

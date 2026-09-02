@@ -3,7 +3,7 @@
 //! Auto-segmentation (TotalSegmentator), prompt segmentation (SegVol) and
 //! slice propagation (MedSAM2) are different conversations with the user,
 //! but they are the same *kind* of tool: a window per dataset with the same
-//! bones — a one-line description, the tool's own inputs, an `Options`
+//! bones - a one-line description, the tool's own inputs, an `Options`
 //! section holding the compute device and the model folder, one line about
 //! the weights' licence, and a button row that turns into a progress row
 //! while the network runs. This module holds those bones, so the three
@@ -27,7 +27,7 @@ pub(super) struct ToolInfo {
     pub verb: &'static str,
 }
 
-/// Every glyph in this file — and in the rest of the interface — has to be
+/// Every glyph in this file - and in the rest of the interface - has to be
 /// one egui's bundled fonts actually carry, or it comes out as an empty box
 /// on the user's screen. The microscope stands for the tool that examines
 /// the whole scan by itself; a robot would have read better and does not
@@ -72,23 +72,23 @@ pub(super) const MOTION: ToolInfo = ToolInfo {
 };
 
 impl ToolInfo {
-    /// `🔬 Auto-segmentation — dataset A`, the window title.
+    /// `🔬 Auto-segmentation - dataset A`, the window title.
     pub fn title(&self, slot: usize) -> String {
         format!(
-            "{} {} — dataset {}",
+            "{} {} - dataset {}",
             self.glyph, self.name, SLOT_NAMES[slot]
         )
     }
-    /// `🔬 Auto-segmentation results — dataset A`, a companion window.
+    /// `🔬 Auto-segmentation results - dataset A`, a companion window.
     pub fn titled(&self, what: &str, slot: usize) -> String {
         format!(
-            "{} {} {what} — dataset {}",
+            "{} {} {what} - dataset {}",
             self.glyph, self.name, SLOT_NAMES[slot]
         )
     }
     /// `🔬 Auto-segment dataset A…`, the menu entry.
     pub fn menu_entry(&self, slot: usize) -> String {
-        format!("{} {} dataset {}…", self.glyph, self.verb, SLOT_NAMES[slot])
+        format!("{} {} dataset {}", self.glyph, self.verb, SLOT_NAMES[slot])
     }
     /// `🔬 Auto…`, the small sidebar button.
     pub fn short_button(&self) -> String {
@@ -98,13 +98,13 @@ impl ToolInfo {
 }
 
 /// One line every tool window ends its options with.
-pub(super) const RESEARCH_NOTE: &str = "Research / QA use — not a medical device.";
+pub(super) const RESEARCH_NOTE: &str = "Research / QA use - not a medical device.";
 
 /// The message shown when a run finishes on a dataset that was replaced
 /// meanwhile.
 pub(super) fn stale_result(tool: &ToolInfo) -> String {
     format!(
-        "{} finished, but the dataset changed while it was running — the result was discarded.",
+        "{} finished, but the dataset changed while it was running - the result was discarded.",
         tool.name
     )
 }
@@ -147,7 +147,7 @@ impl ViewerApp {
         self.add_colored_segmentation(slot, name, color, dims, mask)
     }
 
-    /// [`Self::add_segmentation`] keeping a colour the caller already has —
+    /// [`Self::add_segmentation`] keeping a colour the caller already has -
     /// a propagated structure should arrive in the colour it left in, not in
     /// the next one off the palette.
     pub(super) fn add_colored_segmentation(
@@ -169,7 +169,7 @@ impl ViewerApp {
         s.active_seg
     }
 
-    /// The tool that is running on `slot`, with its progress — for the
+    /// The tool that is running on `slot`, with its progress - for the
     /// sidebar, which shows one line whichever engine it is.
     pub(super) fn running_tool(&self, slot: usize) -> Option<(&ToolInfo, &Arc<Progress>)> {
         if let Some(job) = self
@@ -223,7 +223,7 @@ pub(super) fn device_row(ui: &mut egui::Ui, pref: &mut DevicePref) {
         for p in DevicePref::ALL {
             let hint = match p {
                 DevicePref::Auto => "Use the GPU when one is available, else the CPU",
-                DevicePref::Gpu => "Any GPU via wgpu (Vulkan / DX12 / Metal) — no CUDA needed",
+                DevicePref::Gpu => "Any GPU via wgpu (Vulkan / DX12 / Metal) - no CUDA needed",
                 DevicePref::Cpu => "Every core, no GPU",
             };
             ui.radio_value(pref, p, p.label()).on_hover_text(hint);
@@ -231,7 +231,7 @@ pub(super) fn device_row(ui: &mut egui::Ui, pref: &mut DevicePref) {
     });
 }
 
-/// `Model folder: [ ... ] 📁` — the root every engine downloads into.
+/// `Model folder: [ ... ] 📁` - the root every engine downloads into.
 /// Returns true when the browse button was clicked.
 pub(super) fn models_root_row(ui: &mut egui::Ui, models_dir: &mut String) -> bool {
     let mut browse = false;
@@ -264,7 +264,7 @@ pub(super) fn models_dir_row(ui: &mut egui::Ui, models_dir: &mut String, engine:
     browse
 }
 
-/// The tool window each engine belongs to — the glyph and name the model
+/// The tool window each engine belongs to - the glyph and name the model
 /// manager labels its rows with.
 pub(super) fn tool_of(engine: Engine) -> &'static ToolInfo {
     match engine {
@@ -286,12 +286,12 @@ pub(super) fn weights_licence(engine: Engine) -> (&'static str, bool) {
         ),
         Engine::SegVol => (
             "Weights: no licence declaration in the model repository, training corpus \
-             partly non-commercial — downloaded to this machine at your request only, \
+             partly non-commercial - downloaded to this machine at your request only, \
              never redistributed.",
             true,
         ),
         Engine::MedSam2 => (
-            "Weights: CC-BY-SA-4.0 with a 'research and education only' model card — \
+            "Weights: CC-BY-SA-4.0 with a 'research and education only' model card - \
              downloaded to this machine at your request only, never redistributed.",
             true,
         ),
@@ -318,7 +318,7 @@ pub(super) fn progress_row(ui: &mut egui::Ui, progress: &Progress) -> bool {
     }
     ui.add(egui::ProgressBar::new(progress.frac()).show_percentage());
     let msg = progress.get();
-    ui.label(if msg.is_empty() { "Working…" } else { &msg });
+    ui.label(if msg.is_empty() { "Working" } else { &msg });
     ui.button("Cancel").clicked()
 }
 
@@ -328,17 +328,17 @@ mod tests {
 
     #[test]
     fn titles_menu_entries_and_buttons_follow_one_pattern() {
-        assert_eq!(AUTOSEG.title(0), "🔬 Auto-segmentation — dataset A");
+        assert_eq!(AUTOSEG.title(0), "🔬 Auto-segmentation - dataset A");
         assert_eq!(
             AUTOSEG.titled("results", 1),
-            "🔬 Auto-segmentation results — dataset B"
+            "🔬 Auto-segmentation results - dataset B"
         );
-        assert_eq!(PROMPT_SEG.menu_entry(1), "💬 Prompt-segment dataset B…");
-        assert_eq!(SLICE_PROP.menu_entry(0), "⏩ Propagate through dataset A…");
+        assert_eq!(PROMPT_SEG.menu_entry(1), "💬 Prompt-segment dataset B");
+        assert_eq!(SLICE_PROP.menu_entry(0), "⏩ Propagate through dataset A");
         assert_eq!(AUTOSEG.short_button(), "🔬 Auto");
         assert_eq!(PROMPT_SEG.short_button(), "💬 Prompt");
         assert_eq!(SLICE_PROP.short_button(), "⏩ Propagate");
-        assert_eq!(BODY_CONTOUR.menu_entry(0), "👤 Body-contour dataset A…");
+        assert_eq!(BODY_CONTOUR.menu_entry(0), "👤 Body-contour dataset A");
         assert_eq!(MOTION.short_button(), "📈 Motion");
         let mut glyphs = vec![
             AUTOSEG.glyph,

@@ -16,7 +16,7 @@
 //!
 //! The stages follow plastimatch's own vocabulary:
 //!
-//! 1. `xform=align_center` — a translation matching the centres of gravity
+//! 1. `xform=align_center` - a translation matching the centres of gravity
 //!    of the two thresholded images. Cheap, and it removes the gross offset
 //!    a deformable model should never have to represent.
 //! 2. `xform=bspline` per resolution level, coarse to fine, with
@@ -25,7 +25,7 @@
 //! **Metric.** `mse` is the mean squared difference; `mi` is Mattes mutual
 //! information over a 32 × 32 joint histogram with a zero-order Parzen
 //! window on the fixed image and a cubic B-spline window on the moving one
-//! (Mattes et al., IEEE TMI 2003) — the only metric here that survives two
+//! (Mattes et al., IEEE TMI 2003) - the only metric here that survives two
 //! modalities. Both are dimensionless in the cost below: the squared
 //! difference is divided by the fixed image's variance, so the regularizer's
 //! weight means the same thing whatever the images contain.
@@ -48,8 +48,8 @@ use super::*;
 /// How many samples one level may use before the eligible list is thinned.
 /// "Dense" means every eligible voxel; on a 512³ study that is tens of
 /// millions, and an exact gradient over all of them is not what anybody
-/// wants to wait for. The cap keeps the engine's character — the same
-/// deterministic sample set every iteration — while bounding the cost.
+/// wants to wait for. The cap keeps the engine's character - the same
+/// deterministic sample set every iteration - while bounding the cost.
 const MAX_DENSE_SAMPLES: usize = 400_000;
 
 /// Joint-histogram bins per axis for Mattes mutual information.
@@ -384,7 +384,7 @@ impl Level<'_> {
             }
         }
         // ∂(−MI)/∂I_moving(y_k): only the joint and the moving marginal
-        // depend on the transform — the fixed marginal cannot.
+        // depend on the transform - the fixed marginal cannot.
         let scale = -inv / self.mi.m_step;
         let scalars: Vec<f64> = mapped
             .par_iter()
@@ -416,7 +416,7 @@ impl Level<'_> {
 /// `E = (λ / N) Σ_interior Σ_components [ (∂²c/∂x²)² + (∂²c/∂y²)² +
 /// (∂²c/∂z²)² + 2(∂²c/∂x∂y)² + 2(∂²c/∂x∂z)² + 2(∂²c/∂y∂z)² ]`, evaluated by
 /// second differences on the lattice and divided by the lattice spacing
-/// squared so the whole term is dimensionless — the same λ then means the
+/// squared so the whole term is dimensionless - the same λ then means the
 /// same amount of smoothing whatever the grid spacing and the image size.
 ///
 /// The energy is quadratic in the coefficients, so what is added to `grad`
@@ -687,7 +687,7 @@ pub(super) fn run(setup: &RegSetup, progress: &Progress) -> Result<EngineOutput>
     let levels = setup.fixed.len();
 
     // ---- stage 1: align_center -----------------------------------------
-    // Skipped for a local run and for a refinement — both already start from
+    // Skipped for a local run and for a refinement - both already start from
     // an alignment, and matching the centres of gravity of a structure
     // against the whole moving image would undo it.
     let base_transform = match params.start.as_deref() {
@@ -695,7 +695,7 @@ pub(super) fn run(setup: &RegSetup, progress: &Progress) -> Result<EngineOutput>
         None => {
             let mut rigid = RigidTransform::identity(setup.center);
             if params.region.is_none() {
-                progress.set("align_center: matching the centres of gravity…");
+                progress.set("align_center: matching the centres of gravity");
                 let cf = eligible_center_of_gravity(&setup.fixed[0]);
                 let cm = center_of_gravity(&setup.moving[0], params.fixed_threshold);
                 if let (Some(cf), Some(cm)) = (cf, cm) {
@@ -715,7 +715,7 @@ pub(super) fn run(setup: &RegSetup, progress: &Progress) -> Result<EngineOutput>
         params.grid_spacing_mm,
     );
     if bspline.coeffs.is_empty() {
-        bail!("the B-spline lattice is empty — the grid spacing is larger than the image");
+        bail!("the B-spline lattice is empty - the grid spacing is larger than the image");
     }
     let mut total_evals = 0usize;
     let mut final_cost = f64::MAX;
@@ -740,7 +740,7 @@ pub(super) fn run(setup: &RegSetup, progress: &Progress) -> Result<EngineOutput>
             levels,
             samples.len()
         );
-        progress.set(format!("{label}: preparing…"));
+        progress.set(format!("{label}: preparing"));
         let base: Vec<Vec3> = samples
             .par_iter()
             .map(|&(x, _)| base_transform.map(x))

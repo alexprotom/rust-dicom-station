@@ -4,9 +4,9 @@
 //!
 //! The two kinds are deliberately symmetric. An RT structure set stores
 //! contours in patient coordinates; a segmentation series stores voxel masks
-//! on a lattice. A transfer between them is therefore a conversion —
+//! on a lattice. A transfer between them is therefore a conversion -
 //! [`segmentation::rasterize_roi`] one way, [`segmentation::mask_to_roi`] the
-//! other — and a transfer between two segmentation series on different
+//! other - and a transfer between two segmentation series on different
 //! lattices is a resampling. Doing it here, once, is what lets the context
 //! menus offer every series of both datasets as a destination without caring
 //! which kind the user picked.
@@ -127,7 +127,7 @@ impl ViewerApp {
 
     /// Re-point a series at another image series of the same dataset.
     ///
-    /// For contours this is bookkeeping — they are in patient coordinates
+    /// For contours this is bookkeeping - they are in patient coordinates
     /// either way. For a segmentation series it also decides which volume
     /// its masks are resampled onto, which is why the rebind follows.
     fn connect_set(&mut self, r: SetRef, uid: &str) {
@@ -171,7 +171,7 @@ impl ViewerApp {
         let to = 1 - from.slot;
         if self.slots[to].study.is_none() {
             self.error = Some(format!(
-                "dataset {} is empty — load a study into it before moving series there",
+                "dataset {} is empty - load a study into it before moving series there",
                 SLOT_NAMES[to]
             ));
             return;
@@ -211,7 +211,7 @@ impl ViewerApp {
         self.settings_gen += 1;
     }
 
-    /// Write a segmentation series — or just the chosen segments of it — as a
+    /// Write a segmentation series - or just the chosen segments of it - as a
     /// standalone DICOM SEG file.
     ///
     /// A subset is written as a series in its own right: same lattice, same
@@ -243,7 +243,7 @@ impl ViewerApp {
         };
         if ser.segs.iter().all(|s| s.count == 0) {
             self.error =
-                Some("nothing to write — the chosen segmentation(s) have no voxels".into());
+                Some("nothing to write - the chosen segmentation(s) have no voxels".into());
             return;
         }
         let stem: String = ser
@@ -449,7 +449,7 @@ impl ViewerApp {
                 Some(i) => to.idx = i,
                 None => {
                     self.error = Some(format!(
-                        "dataset {} is empty — load a study into it first",
+                        "dataset {} is empty - load a study into it first",
                         SLOT_NAMES[to.slot]
                     ));
                     return;
@@ -482,7 +482,7 @@ impl ViewerApp {
                 for seg in &src_segs {
                     let roi = segmentation::mask_to_roi(seg, &src_grid, 0);
                     if roi.contours.is_empty() {
-                        notes.push(format!("'{}' is empty — nothing was copied", seg.name));
+                        notes.push(format!("'{}' is empty - nothing was copied", seg.name));
                         continue;
                     }
                     new_rois.push(roi);

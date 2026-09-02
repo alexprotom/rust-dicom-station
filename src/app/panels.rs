@@ -1,37 +1,82 @@
-//! The side panel and its per-dataset sections.
+//! The two side panels and their sections.
 //!
-//! Each section renders one kind of loaded object -- series, structures,
-//! segmentations, dose, plan, planar images, registrations, records. The
-//! optional registration and simulation sections live in `reg_panel.rs`.
+//! The left panel is the data tree and nothing else: one section per kind of
+//! loaded object - series, structures, segmentations, dose, plan, planar
+//! images, registrations, records - under one node per dataset.
+//!
+//! The right panel holds the modules, each one turned on and off in the
+//! Modules menu: image registration and image simulation (both in
+//! `reg_panel.rs`) and structures propagation (`propagate_win.rs`).
+//!
+//! Both panels are built the same way, by [`ViewerApp::edge_panel`]: a thin
+//! strip along the window edge carrying the show / hide arrow, and beside it
+//! the panel itself, which can also be dragged shut and pulled back open.
+//! F9 works the left one, F10 the right.
 
 use super::*;
 
+/// What tells one edge panel from the other.
+struct EdgePanel {
+    /// Keys the panel, its strip and its remembered width.
+    id: &'static str,
+    /// Which edge it lives on.
+    left: bool,
+    /// Width it opens at the first time.
+    width: f32,
+    /// What the hover text calls it.
+    name: &'static str,
+    /// The shortcut the hover text names.
+    key: &'static str,
+}
+
 impl ViewerApp {
-    // -- Side panel -------------------------------------------------------
-    pub(super) fn side_panel(&mut self, ui: &mut egui::Ui) {
-        if self.slots[0].study.is_none() && self.slots[1].study.is_none() {
-            return;
-        }
-        // A thin strip along the window edge carries the show / hide arrow.
-        // It stays there when the panel is gone — otherwise nothing on
-        // screen would say how to get it back (View ▶ Left panel and F9 do
-        // the same).
+    /// One edge panel: the strip with the show / hide arrow, and the panel
+    /// beside it.
+    ///
+    /// The strip stays there when the panel is gone - otherwise nothing on
+    /// screen would say how to get it back, and only the shortcut would.
+    ///
+    /// `open` is the flag the caller keeps: `show_collapsible` wants it by
+    /// reference, which the body's `&mut self` cannot share, so it travels
+    /// in and out through the return value.
+    fn edge_panel(
+        ui: &mut egui::Ui,
+        p: EdgePanel,
+        open: bool,
+        body: impl FnOnce(&mut egui::Ui),
+    ) -> bool {
+        let EdgePanel {
+            id,
+            left,
+            width,
+            name,
+            key,
+        } = p;
+        let mut open = open;
         let strip = egui::Frame::new()
             .fill(ui.visuals().panel_fill)
             .inner_margin(egui::Margin::symmetric(1, 4));
-        egui::Panel::left(egui::Id::new("side_toggle"))
+        // The arrow always points the way the panel would move.
+        let glyph = match (left, open) {
+            (true, true) | (false, false) => "◀",
+            _ => "▶",
+        };
+        let hint = if open {
+            format!("Hide the {name} panel ({key})")
+        } else {
+            format!("Show the {name} panel ({key})")
+        };
+        let toggle = egui::Id::new((id, "toggle"));
+        let strip_panel = if left {
+            egui::Panel::left(toggle)
+        } else {
+            egui::Panel::right(toggle)
+        };
+        strip_panel
             .exact_size(22.0)
             .resizable(false)
             .frame(strip)
             .show(ui, |ui| {
-                let (glyph, hint) = if self.side_open {
-                    (
-                        "◀",
-                        "Hide the left panel — the views take the whole window (F9)",
-                    )
-                } else {
-                    ("▶", "Show the left panel (F9)")
-                };
                 if ui
                     .add(
                         egui::Button::new(glyph)
@@ -41,35 +86,82 @@ impl ViewerApp {
                     .on_hover_text(hint)
                     .clicked()
                 {
-                    self.side_open = !self.side_open;
+                    open = !open;
                 }
             });
-        // `show_collapsible` also lets the panel be dragged shut and pulled
-        // back open by its edge; it wants the flag by reference, which the
-        // body's `&mut self` cannot share, so it travels via a local.
-        let mut open = self.side_open;
-        egui::Panel::left(egui::Id::new("side"))
+        let panel = if left {
+            egui::Panel::left(egui::Id::new(id))
+        } else {
+            egui::Panel::right(egui::Id::new(id))
+        };
+        panel
             .resizable(true)
-            .default_size(280.0)
+            .default_size(width)
             .show_collapsible(ui, &mut open, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    // The two optional modules (Modules menu) come first,
-                    // then one data tree per loaded dataset.
-                    if self.module_registration {
-                        self.registration_section(ui);
-                    }
-                    if self.module_simulation {
-                        self.simulation_section(ui);
-                    }
-                    for slot in 0..2 {
-                        if self.slots[slot].study.is_none() {
-                            continue;
-                        }
-                        self.study_section(ui, slot);
-                    }
-                });
+                egui::ScrollArea::vertical().show(ui, body);
             });
-        self.side_open = open;
+        open
+    }
+
+    // -- Left panel: the data tree ----------------------------------------
+    pub(super) fn side_panel(&mut self, ui: &mut egui::Ui) {
+        if self.slots[0].study.is_none() && self.slots[1].study.is_none() {
+            return;
+        }
+        self.side_open = Self::edge_panel(
+            ui,
+            EdgePanel {
+                id: "side",
+                left: true,
+                width: 280.0,
+                name: "data tree",
+                key: "F9",
+            },
+            self.side_open,
+            |ui| {
+                for slot in 0..2 {
+                    if self.slots[slot].study.is_none() {
+                        continue;
+                    }
+                    self.study_section(ui, slot);
+                }
+            },
+        );
+    }
+
+    // -- Right panel: the modules -----------------------------------------
+    /// Every module the Modules menu has turned on, one section each. The
+    /// panel is not built at all while they are all off, so an untouched
+    /// installation looks exactly as it did before there was one.
+    pub(super) fn modules_panel(&mut self, ui: &mut egui::Ui) {
+        if self.slots[0].study.is_none() && self.slots[1].study.is_none() {
+            return;
+        }
+        if !self.module_registration && !self.module_simulation && !self.module_propagation {
+            return;
+        }
+        self.right_open = Self::edge_panel(
+            ui,
+            EdgePanel {
+                id: "modules",
+                left: false,
+                width: 320.0,
+                name: "modules",
+                key: "F10",
+            },
+            self.right_open,
+            |ui| {
+                if self.module_registration {
+                    self.registration_section(ui);
+                }
+                if self.module_simulation {
+                    self.simulation_section(ui);
+                }
+                if self.module_propagation {
+                    self.propagate_section(ui);
+                }
+            },
+        );
     }
 
     /// A tree node whose title wraps over as many lines as it needs.
@@ -120,9 +212,84 @@ impl ViewerApp {
         resp
     }
 
+    /// A tree node whose header carries a tick box in front of the title:
+    /// the object it stands for is drawn in the views, or it is not.
+    ///
+    /// Same wrapping behaviour as [`Self::wrapped_node`]; the tick box is
+    /// part of the header row, so it reads as one line.
+    fn checked_node<R>(
+        ui: &mut egui::Ui,
+        id_salt: impl std::hash::Hash + std::fmt::Debug,
+        default_open: bool,
+        shown: &mut bool,
+        title: impl Into<String>,
+        body: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> egui::Response {
+        let id = ui.make_persistent_id(id_salt);
+        let state = egui::collapsing_header::CollapsingState::load_with_default_open(
+            ui.ctx(),
+            id,
+            default_open,
+        );
+        let title = title.into();
+        let (_, header, _) = state
+            .show_header(ui, |ui| {
+                ui.checkbox(shown, "")
+                    .on_hover_text("Show this in the views");
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(title).text_style(egui::TextStyle::Button),
+                    )
+                    .wrap()
+                    .sense(egui::Sense::click()),
+                )
+            })
+            .body(body);
+        let resp = header.inner;
+        if resp.clicked() {
+            let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                id,
+                default_open,
+            );
+            state.toggle(ui);
+            state.store(ui.ctx());
+        }
+        resp
+    }
+
     /// Study transform simulator: apply a known rigid motion + optional
     /// Gaussian deformation to a study and generate the result into the
     /// other slot (the generated study is exportable via *File ▶ Export*).
+    /// One series row of the data tree, carrying the same tick box the items
+    /// inside it carry.
+    ///
+    /// The views draw one set of each kind at a time, so the box behaves as a
+    /// radio: ticking a row makes it the shown one, and unticking the shown
+    /// row leaves the views with none of that kind. Selection and visibility
+    /// are the same thing here, exactly as they are for a single ROI.
+    ///
+    /// Returns `(tick clicked, the label's response)`.
+    fn series_row(
+        ui: &mut egui::Ui,
+        active: bool,
+        shown: bool,
+        title: String,
+    ) -> (bool, egui::Response) {
+        let mut ticked = active && shown;
+        let mut toggled = false;
+        let resp = ui
+            .horizontal(|ui| {
+                toggled = ui
+                    .checkbox(&mut ticked, "")
+                    .on_hover_text("Show this series in the views")
+                    .clicked();
+                ui.add(egui::Button::selectable(active, title).wrap())
+            })
+            .inner;
+        (toggled, resp)
+    }
+
     pub(super) fn simulation_section(&mut self, ui: &mut egui::Ui) {
         if self.slots[0].study.is_none() && self.slots[1].study.is_none() {
             return;
@@ -204,7 +371,7 @@ impl ViewerApp {
     }
 
     pub(super) fn study_section(&mut self, ui: &mut egui::Ui, slot: usize) {
-        // Plain header — the patient(s) always appear as tree nodes below.
+        // Plain header - the patient(s) always appear as tree nodes below.
         let header = format!("Dataset {}", SLOT_NAMES[slot]);
         let ch = egui::CollapsingHeader::new(egui::RichText::new(header).strong())
             .id_salt(("study_hdr", slot))
@@ -212,10 +379,10 @@ impl ViewerApp {
             .show(ui, |ui| {
                 // Patient ▶ study ▶ category ▶ series. Everything that
                 // carries a StudyInstanceUID lives inside a study node; the
-                // rest — planar images have no study link at all, REG objects
+                // rest - planar images have no study link at all, REG objects
                 // and records belong to a frame of reference rather than a
                 // study, and the dose display settings are shared by both
-                // datasets — stays at dataset level below it.
+                // datasets - stays at dataset level below it.
                 self.data_tree(ui, slot);
                 self.dose_display_section(ui, slot);
                 self.planar_section(ui, slot);
@@ -270,7 +437,7 @@ impl ViewerApp {
             let mut act: Option<TreeAction> = None;
             let mut rename = None;
             resp.context_menu(|ui| {
-                if ui.button("✏ Rename patient…").clicked() {
+                if ui.button("✏ Rename").clicked() {
                     rename = Some(RenameTarget::Patient {
                         slot,
                         key: key.clone(),
@@ -292,7 +459,7 @@ impl ViewerApp {
                     }
                 }
                 ui.separator();
-                if ui.button("Remove patient").clicked() {
+                if ui.button("🗑 Remove").clicked() {
                     act = Some(TreeAction {
                         from: slot,
                         sel: TreeSel::Patient(key.clone()),
@@ -326,7 +493,7 @@ impl ViewerApp {
             let mut act: Option<TreeAction> = None;
             let mut rename = None;
             resp.context_menu(|ui| {
-                if ui.button("✏ Rename study…").clicked() {
+                if ui.button("✏ Rename").clicked() {
                     rename = Some(RenameTarget::Study {
                         slot,
                         uid: uid.clone(),
@@ -348,7 +515,7 @@ impl ViewerApp {
                     }
                 }
                 ui.separator();
-                if ui.button("Remove study").clicked() {
+                if ui.button("🗑 Remove").clicked() {
                     act = Some(TreeAction {
                         from: slot,
                         sel: TreeSel::Study(uid.clone()),
@@ -376,10 +543,20 @@ impl ViewerApp {
         si: usize,
         node: &StudyNode,
     ) {
+        // A study opens showing the images being looked at and the
+        // structures drawn on them. Everything else - dose, plans, planar
+        // images, registrations, records - is a click away, so a tree of a
+        // real study is readable the moment it appears.
+        let active = self.slots[slot]
+            .study
+            .as_ref()
+            .map(|st| st.active_series)
+            .unwrap_or(0);
         for (mi, (modality, idxs)) in node.modalities.iter().enumerate() {
             let me = &mut *self;
             let title = format!("{modality} ({})", idxs.len());
-            Self::wrapped_node(ui, ("mod", slot, pi, si, mi), true, title, |ui| {
+            let showing = idxs.contains(&active);
+            Self::wrapped_node(ui, ("mod", slot, pi, si, mi), showing, title, |ui| {
                 me.series_rows(ui, slot, idxs)
             });
         }
@@ -433,7 +610,7 @@ impl ViewerApp {
                     switch_to = Some(i);
                 }
                 resp.context_menu(|ui| {
-                    if ui.button("✏ Rename series…").clicked() {
+                    if ui.button("✏ Rename").clicked() {
                         rename = Some(RenameTarget::Series { slot, idx: i });
                         ui.close();
                     }
@@ -473,7 +650,7 @@ impl ViewerApp {
                         }
                     });
                     ui.separator();
-                    if ui.button("Remove series").clicked() {
+                    if ui.button("🗑 Remove").clicked() {
                         act = Some(TreeAction {
                             from: slot,
                             sel: TreeSel::Series(i),
@@ -526,9 +703,9 @@ impl ViewerApp {
                     let se = &study.series[sidx];
                     let tag = m.role.tag();
                     let label = if tag.is_empty() {
-                        format!("{} — {} ({} sl.)", m.label, se.description, se.files.len())
+                        format!("{} - {} ({} sl.)", m.label, se.description, se.files.len())
                     } else {
-                        format!("{tag} — {} ({} sl.)", se.description, se.files.len())
+                        format!("{tag} - {} ({} sl.)", se.description, se.files.len())
                     };
                     (mi, sidx, label)
                 })
@@ -540,7 +717,8 @@ impl ViewerApp {
         let mut switch_to = None;
         let mut fourd: Option<FourDAction> = None;
         let mut rename = None;
-        let resp = Self::wrapped_node(ui, ("fourd", slot, pi, si, gi), true, title, |ui| {
+        let showing = rows.iter().any(|(_, sidx, _)| *sidx == active);
+        let resp = Self::wrapped_node(ui, ("fourd", slot, pi, si, gi), showing, title, |ui| {
             for (mi, sidx, label) in &rows {
                 let resp = ui.add(egui::Button::selectable(*sidx == active, label).wrap());
                 if resp.clicked() && *sidx != active {
@@ -602,11 +780,11 @@ impl ViewerApp {
             }
         });
         resp.context_menu(|ui| {
-            if ui.button("✏ Rename group…").clicked() {
+            if ui.button("✏ Rename").clicked() {
                 rename = Some(RenameTarget::FourD { slot, idx: gi });
                 ui.close();
             }
-            if ui.button("📈 Motion / ITV analysis…").clicked() {
+            if ui.button("📈 Motion / ITV analysis").clicked() {
                 fourd = Some(FourDAction::Analyse { slot, group: gi });
                 ui.close();
             }
@@ -645,7 +823,7 @@ impl ViewerApp {
             FourDAction::Redetect { slot } => {
                 if let Some(study) = self.slots[slot].study.as_mut() {
                     // An explicit re-detect is the one action that clears
-                    // dissolved tombstones — the user asked for detection.
+                    // dissolved tombstones - the user asked for detection.
                     study.fourd_groups.retain(|g| !g.dissolved);
                     study.refresh_fourd();
                 }
@@ -774,7 +952,7 @@ impl ViewerApp {
     /// where it goes, and whether it stays.
     fn set_context_menu(&self, ui: &mut egui::Ui, here: SetRef, out: &mut Option<SetAction>) {
         let other = SLOT_NAMES[1 - here.slot];
-        if ui.button("✏ Rename series…").clicked() {
+        if ui.button("✏ Rename").clicked() {
             *out = Some(SetAction::Rename(here));
             ui.close();
         }
@@ -836,7 +1014,7 @@ impl ViewerApp {
         if here.kind == SetKind::Segmentations {
             ui.separator();
             if ui
-                .button("💾 Export as DICOM SEG…")
+                .button("💾 Export as DICOM SEG")
                 .on_hover_text("Write this series as one DICOM Segmentation file")
                 .clicked()
             {
@@ -848,17 +1026,14 @@ impl ViewerApp {
             }
         }
         ui.separator();
-        if ui
-            .button(format!("🗑 Remove this {}", here.kind.series_name()))
-            .clicked()
-        {
+        if ui.button("🗑 Remove").clicked() {
             *out = Some(SetAction::Remove(here));
             ui.close();
         }
     }
 
     /// Every structure set and segmentation series of both datasets, as the
-    /// destinations of a *Copy to ▶* / *Move to ▶* submenu — plus the two
+    /// destinations of a *Copy to ▶* / *Move to ▶* submenu - plus the two
     /// "make me a new one" entries, so a transfer never needs preparing.
     fn destination_menu(&self, ui: &mut egui::Ui, from: SetRef) -> Option<SetRef> {
         let mut picked = None;
@@ -953,7 +1128,7 @@ impl ViewerApp {
         } else {
             format!("'{label}'")
         };
-        if ui.button(format!("✏ Rename '{label}'…")).clicked() {
+        if ui.button("✏ Rename").clicked() {
             *out = Some(ItemAction::Rename { from, idx: clicked });
             ui.close();
         }
@@ -980,9 +1155,9 @@ impl ViewerApp {
         });
         ui.separator();
         if ui
-            .button(format!("∪ Combine {what}…"))
+            .button(format!("∪ Combine {what}"))
             .on_hover_text(
-                "Open the structure-algebra window with these as its operands — union, \
+                "Open the structure-algebra window with these as its operands - union, \
                  intersection, subtraction, margins",
             )
             .clicked()
@@ -994,9 +1169,9 @@ impl ViewerApp {
             ui.close();
         }
         if ui
-            .button(format!("📊 Plot {what} on a DVH…"))
+            .button(format!("📊 Plot {what} on a DVH"))
             .on_hover_text(
-                "Open the dose–volume histogram window with these structures against \
+                "Open the dose-volume histogram window with these structures against \
                  the loaded dose",
             )
             .clicked()
@@ -1010,7 +1185,7 @@ impl ViewerApp {
         if from.kind == SetKind::Segmentations {
             ui.separator();
             if ui
-                .button(format!("💾 Export {what} as DICOM SEG…"))
+                .button(format!("💾 Export {what} as DICOM SEG"))
                 .on_hover_text("Writes just these segments, as a SEG series of their own")
                 .clicked()
             {
@@ -1022,7 +1197,7 @@ impl ViewerApp {
             }
         }
         ui.separator();
-        if ui.button(format!("🗑 Remove {what}")).clicked() {
+        if ui.button("🗑 Remove").clicked() {
             *out = Some(ItemAction::Remove {
                 from,
                 items: items.clone(),
@@ -1052,7 +1227,7 @@ impl ViewerApp {
     }
 
     /// The *Copy to / Move to / Remove / Export* buttons that act on whatever
-    /// is ticked, added inline so they share one row with *All* / *None* — a
+    /// is ticked, added inline so they share one row with *All* / *None* - a
     /// multi-item action should not have to be found by right-clicking
     /// exactly the right row.
     fn selection_buttons(
@@ -1138,6 +1313,8 @@ impl ViewerApp {
         // need to list the other dataset's series), so the one piece of
         // mutable state in the list is edited on a copy and written back.
         let mut vis = std::mem::take(&mut self.slots[slot].roi_visible);
+        let structs_shown = self.slots[slot].structs_shown;
+        let mut new_shown: Option<bool> = None;
         let mut new_active: Option<usize> = None;
         let mut set_act: Option<SetAction> = None;
         let mut item_act: Option<ItemAction> = None;
@@ -1193,19 +1370,33 @@ impl ViewerApp {
                     } else {
                         &set.label
                     };
-                    let resp = ui.add(
-                        egui::Button::selectable(
-                            active_set == Some(i),
-                            format!(
-                                "▣ {name} ({} ROIs){}",
-                                set.rois.len(),
-                                Self::series_suffix(study, &set.referenced_series_uid)
-                            ),
-                        )
-                        .wrap(),
+                    let (toggled, resp) = Self::series_row(
+                        ui,
+                        active_set == Some(i),
+                        structs_shown,
+                        format!(
+                            "{name} ({} ROIs){}",
+                            set.rois.len(),
+                            Self::series_suffix(study, &set.referenced_series_uid)
+                        ),
                     );
-                    if resp.clicked() && active_set != Some(i) {
-                        new_active = Some(i);
+                    if toggled {
+                        // Ticking a set shows it; unticking the shown one
+                        // leaves the views with no contours.
+                        if active_set == Some(i) && structs_shown {
+                            new_shown = Some(false);
+                        } else {
+                            new_active = Some(i);
+                            new_shown = Some(true);
+                        }
+                    }
+                    if resp.clicked() {
+                        if active_set == Some(i) {
+                            new_shown = Some(!structs_shown);
+                        } else {
+                            new_active = Some(i);
+                            new_shown = Some(true);
+                        }
                     }
                     resp.context_menu(|ui| me.set_context_menu(ui, here, &mut set_act));
                     resp.on_hover_text(format!(
@@ -1278,7 +1469,7 @@ impl ViewerApp {
                         });
                         resp.on_hover_text(format!(
                             "ROI {} · {} contour(s)\nShift-click: tick or untick the whole \
-                             range from the last one\nright-click: copy / move / remove — \
+                             range from the last one\nright-click: copy / move / remove - \
                              every ticked structure at once",
                             roi.number,
                             roi.contours.len()
@@ -1288,6 +1479,9 @@ impl ViewerApp {
             });
         }
         self.slots[slot].roi_visible = vis;
+        if let Some(on) = new_shown {
+            self.slots[slot].structs_shown = on;
+        }
         if new_anchor.is_some() {
             self.tick_anchor = new_anchor;
         }
@@ -1333,7 +1527,7 @@ impl ViewerApp {
         let active_here = self.slots[slot]
             .seg_series_idx()
             .filter(|i| which.contains(i));
-        // (name, colour, visible, cm³) of the active series' segments — the
+        // (name, colour, visible, cm³) of the active series' segments - the
         // editable columns live on this copy, see `structures_section`.
         let mut rows: Vec<(String, [u8; 3], bool, f64)> = {
             let s = &self.slots[slot];
@@ -1358,6 +1552,8 @@ impl ViewerApp {
         let mut cancel_tool = false;
         let mut set_all: Option<bool> = None;
         let mut new_active_series: Option<usize> = None;
+        let segs_shown = self.slots[slot].segs_shown;
+        let mut new_segs_shown: Option<bool> = None;
         let mut activate: Option<usize> = None;
         let mut set_act: Option<SetAction> = None;
         let mut item_act: Option<ItemAction> = None;
@@ -1377,188 +1573,213 @@ impl ViewerApp {
                 Some(_) => format!("Segmentations ({n_vis}/{n_segs})"),
                 None => format!("Segmentations ({})", which.len()),
             };
-            Self::wrapped_node(ui, ("segs", slot, pat, stu), true, title, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    if ui
-                        .add_enabled(has_volume, egui::Button::new("New series").small())
-                        .on_hover_text(if has_volume {
-                            "An empty segmentation series, drawn on the displayed image \
-                             series — exports as one DICOM SEG file"
-                        } else {
-                            "This dataset has no image volume to draw on"
-                        })
-                        .clicked()
-                    {
-                        new_series = true;
-                    }
-                    for (tool, hint) in [
-                        (
-                            &BODY_CONTOUR,
-                            "Outline the patient without the couch, the chair or the \
-                             immobilisation (EXTERNAL)",
-                        ),
-                        (
-                            &COMBINE,
-                            "Build one structure out of others: union, intersection, \
-                             subtraction, margins",
-                        ),
-                        (
-                            &AUTOSEG,
-                            "Automatic multi-organ segmentation (TotalSegmentator, \
-                             117 structures)",
-                        ),
-                        (
-                            &PROMPT_SEG,
-                            "Segment whatever the crosshair points at — a box, a click \
-                             or a structure name (SegVol)",
-                        ),
-                        (
-                            &SLICE_PROP,
-                            "Box a structure on one slice and follow it through the \
-                             stack (MedSAM2)",
-                        ),
-                    ] {
+            Self::wrapped_node(
+                ui,
+                ("segs", slot, pat, stu),
+                !which.is_empty(),
+                title,
+                |ui| {
+                    ui.horizontal_wrapped(|ui| {
                         if ui
-                            .add_enabled(has_volume, egui::Button::new(tool.short_button()).small())
+                            .add_enabled(has_volume, egui::Button::new("New series").small())
                             .on_hover_text(if has_volume {
-                                hint
+                                "An empty segmentation series, drawn on the displayed image \
+                             series - exports as one DICOM SEG file"
                             } else {
-                                "This dataset has no image volume to segment"
+                                "This dataset has no image volume to draw on"
                             })
                             .clicked()
                         {
-                            open_tool = Some(tool);
+                            new_series = true;
                         }
-                    }
-                });
-                for &i in which {
-                    let Some(sr) = series.get(i) else { continue };
-                    let here = SetRef {
-                        slot,
-                        kind: SetKind::Segmentations,
-                        idx: i,
-                    };
-                    let resp = ui.add(
-                        egui::Button::selectable(
+                        for (tool, hint) in [
+                            (
+                                &BODY_CONTOUR,
+                                "Outline the patient without the couch, the chair or the \
+                             immobilisation (EXTERNAL)",
+                            ),
+                            (
+                                &COMBINE,
+                                "Build one structure out of others: union, intersection, \
+                             subtraction, margins",
+                            ),
+                            (
+                                &AUTOSEG,
+                                "Automatic multi-organ segmentation (TotalSegmentator, \
+                             117 structures)",
+                            ),
+                            (
+                                &PROMPT_SEG,
+                                "Segment whatever the crosshair points at - a box, a click \
+                             or a structure name (SegVol)",
+                            ),
+                            (
+                                &SLICE_PROP,
+                                "Box a structure on one slice and follow it through the \
+                             stack (MedSAM2)",
+                            ),
+                        ] {
+                            if ui
+                                .add_enabled(
+                                    has_volume,
+                                    egui::Button::new(tool.short_button()).small(),
+                                )
+                                .on_hover_text(if has_volume {
+                                    hint
+                                } else {
+                                    "This dataset has no image volume to segment"
+                                })
+                                .clicked()
+                            {
+                                open_tool = Some(tool);
+                            }
+                        }
+                    });
+                    for &i in which {
+                        let Some(sr) = series.get(i) else { continue };
+                        let here = SetRef {
+                            slot,
+                            kind: SetKind::Segmentations,
+                            idx: i,
+                        };
+                        let (toggled, resp) = Self::series_row(
+                            ui,
                             active_here == Some(i),
+                            segs_shown,
                             format!(
-                                "✏ {} ({} segments){}",
+                                "{} ({} segments){}",
                                 sr.label,
                                 sr.segs.len(),
                                 Self::series_suffix(study, &sr.referenced_series_uid)
                             ),
-                        )
-                        .wrap(),
-                    );
-                    if resp.clicked() && active_here != Some(i) {
-                        new_active_series = Some(i);
-                    }
-                    resp.context_menu(|ui| me.set_context_menu(ui, here, &mut set_act));
-                    resp.on_hover_text(format!(
-                        "{}\nright-click: connect to another image series, copy / move \
-                         to the other dataset, export as DICOM SEG, remove",
-                        if sr.file_name.is_empty() {
-                            "created here"
-                        } else {
-                            &sr.file_name
-                        }
-                    ));
-                }
-                let Some(active_series) = active_here else {
-                    return;
-                };
-                // Masks of a series drawn on another image series are on that
-                // series' lattice — nothing here can index them.
-                if !study.has_volume() {
-                    ui.weak(
-                        "this dataset has no image volume — add the image series these \
-                         segments were drawn on to see and edit them",
-                    );
-                    return;
-                }
-                if series[active_series].grid.dims != study.volume.dims {
-                    ui.weak(
-                        "drawn on another image series — display that series to see and \
-                         edit these segments",
-                    );
-                    return;
-                }
-                if let Some((glyph, msg, frac)) = &running {
-                    ui.horizontal(|ui| {
-                        ui.label(*glyph);
-                        ui.add(
-                            egui::ProgressBar::new(*frac)
-                                .desired_width(120.0)
-                                .show_percentage(),
                         );
-                        if ui.small_button("Cancel").clicked() {
-                            cancel_tool = true;
+                        if toggled {
+                            if active_here == Some(i) && segs_shown {
+                                new_segs_shown = Some(false);
+                            } else {
+                                new_active_series = Some(i);
+                                new_segs_shown = Some(true);
+                            }
                         }
-                    });
-                    ui.weak(msg);
-                }
-                let here = SetRef {
-                    slot,
-                    kind: SetKind::Segmentations,
-                    idx: active_series,
-                };
-                let selection: Vec<usize> = rows
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, r)| r.2)
-                    .map(|(i, _)| i)
-                    .collect();
-                ui.horizontal_wrapped(|ui| {
-                    if ui
-                        .small_button("New")
-                        .on_hover_text("An empty segmentation to paint with 🎨 / ✨ in the views")
-                        .clicked()
-                    {
-                        make_new = true;
-                    }
-                    if ui
-                        .small_button("All")
-                        .on_hover_text("Show and select every segmentation")
-                        .clicked()
-                    {
-                        set_all = Some(true);
-                    }
-                    if ui.small_button("None").clicked() {
-                        set_all = Some(false);
-                    }
-                    me.selection_buttons(ui, here, &selection, &mut item_act);
-                });
-                let anchor = me.tick_anchor.filter(|(r, _)| *r == here).map(|(_, i)| i);
-                // The check boxes are edited on `ticks` so a Shift-range can
-                // reach rows the loop has already drawn.
-                let mut ticks: Vec<bool> = rows.iter().map(|r| r.2).collect();
-                for (i, row) in rows.iter_mut().enumerate() {
-                    let name = row.0.clone();
-                    ui.horizontal(|ui| {
-                        ui.color_edit_button_srgb(&mut row.1);
-                        let tick = ui.checkbox(&mut ticks[i], "").on_hover_text(
-                            "Show / select this segmentation\nShift-click: tick or untick \
-                             the whole range from the last one",
-                        );
-                        if tick.clicked() {
-                            new_anchor = Some((here, apply_tick(&mut ticks, i, shift, anchor)));
-                        }
-                        let resp = ui
-                            .add(egui::Button::selectable(i == active_seg, name.clone()).wrap())
-                            .on_hover_text("Click to make this the segmentation the tools edit");
                         if resp.clicked() {
-                            activate = Some(i);
+                            if active_here == Some(i) {
+                                new_segs_shown = Some(!segs_shown);
+                            } else {
+                                new_active_series = Some(i);
+                                new_segs_shown = Some(true);
+                            }
                         }
-                        resp.context_menu(|ui| {
-                            me.item_context_menu(ui, here, i, &name, &selection, &mut item_act)
+                        resp.context_menu(|ui| me.set_context_menu(ui, here, &mut set_act));
+                        resp.on_hover_text(format!(
+                            "{}\nright-click: connect to another image series, copy / move \
+                         to the other dataset, export as DICOM SEG, remove",
+                            if sr.file_name.is_empty() {
+                                "created here"
+                            } else {
+                                &sr.file_name
+                            }
+                        ));
+                    }
+                    let Some(active_series) = active_here else {
+                        return;
+                    };
+                    // Masks of a series drawn on another image series are on that
+                    // series' lattice, so nothing here can index them.
+                    if !study.has_volume() {
+                        ui.weak(
+                            "this dataset has no image volume - add the image series these \
+                         segments were drawn on to see and edit them",
+                        );
+                        return;
+                    }
+                    if series[active_series].grid.dims != study.volume.dims {
+                        ui.weak(
+                            "drawn on another image series - display that series to see and \
+                         edit these segments",
+                        );
+                        return;
+                    }
+                    if let Some((glyph, msg, frac)) = &running {
+                        ui.horizontal(|ui| {
+                            ui.label(*glyph);
+                            ui.add(
+                                egui::ProgressBar::new(*frac)
+                                    .desired_width(120.0)
+                                    .show_percentage(),
+                            );
+                            if ui.small_button("Cancel").clicked() {
+                                cancel_tool = true;
+                            }
                         });
-                        ui.weak(format!("{:.1} cm³", row.3));
+                        ui.weak(msg);
+                    }
+                    let here = SetRef {
+                        slot,
+                        kind: SetKind::Segmentations,
+                        idx: active_series,
+                    };
+                    let selection: Vec<usize> = rows
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, r)| r.2)
+                        .map(|(i, _)| i)
+                        .collect();
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .small_button("New")
+                            .on_hover_text(
+                                "An empty segmentation to paint with 🎨 / ✨ in the views",
+                            )
+                            .clicked()
+                        {
+                            make_new = true;
+                        }
+                        if ui
+                            .small_button("All")
+                            .on_hover_text("Show and select every segmentation")
+                            .clicked()
+                        {
+                            set_all = Some(true);
+                        }
+                        if ui.small_button("None").clicked() {
+                            set_all = Some(false);
+                        }
+                        me.selection_buttons(ui, here, &selection, &mut item_act);
                     });
-                }
-                for (row, on) in rows.iter_mut().zip(ticks) {
-                    row.2 = on;
-                }
-            });
+                    let anchor = me.tick_anchor.filter(|(r, _)| *r == here).map(|(_, i)| i);
+                    // The check boxes are edited on `ticks` so a Shift-range can
+                    // reach rows the loop has already drawn.
+                    let mut ticks: Vec<bool> = rows.iter().map(|r| r.2).collect();
+                    for (i, row) in rows.iter_mut().enumerate() {
+                        let name = row.0.clone();
+                        ui.horizontal(|ui| {
+                            ui.color_edit_button_srgb(&mut row.1);
+                            let tick = ui.checkbox(&mut ticks[i], "").on_hover_text(
+                                "Show / select this segmentation\nShift-click: tick or untick \
+                             the whole range from the last one",
+                            );
+                            if tick.clicked() {
+                                new_anchor = Some((here, apply_tick(&mut ticks, i, shift, anchor)));
+                            }
+                            let resp = ui
+                                .add(egui::Button::selectable(i == active_seg, name.clone()).wrap())
+                                .on_hover_text(
+                                    "Click to make this the segmentation the tools edit",
+                                );
+                            if resp.clicked() {
+                                activate = Some(i);
+                            }
+                            resp.context_menu(|ui| {
+                                me.item_context_menu(ui, here, i, &name, &selection, &mut item_act)
+                            });
+                            ui.weak(format!("{:.1} cm³", row.3));
+                        });
+                    }
+                    for (row, on) in rows.iter_mut().zip(ticks) {
+                        row.2 = on;
+                    }
+                },
+            );
         }
         if let Some(v) = set_all {
             rows.iter_mut().for_each(|r| r.2 = v);
@@ -1591,6 +1812,9 @@ impl ViewerApp {
             s.active_seg_series = i;
             s.active_seg = 0;
             self.settings_gen += 1;
+        }
+        if let Some(on) = new_segs_shown {
+            self.slots[slot].segs_shown = on;
         }
         if let Some(i) = activate {
             self.slots[slot].active_seg = i;
@@ -1634,6 +1858,12 @@ impl ViewerApp {
             return;
         }
         let mut rename: Option<RenameTarget> = None;
+        let mut remove: Option<ObjRef> = None;
+        // The views draw one dose grid at a time, so the tick boxes work as
+        // a set of one: ticking a grid shows it and unticks the others,
+        // unticking takes dose off the images altogether.
+        let mut shown_dose: Option<Option<usize>> = None;
+        let dose_on = self.dose_mode != DoseMode::Off;
         {
             let StudySlot {
                 study,
@@ -1648,22 +1878,42 @@ impl ViewerApp {
             let hdr = Self::wrapped_node(
                 ui,
                 ("dose", slot, pat, stu),
-                true,
+                false,
                 format!("Dose ({})", which.len()),
                 |ui| {
                     for &i in which {
                         let Some(d) = doses.get(i) else { continue };
-                        let resp =
-                            ui.add(egui::Button::selectable(i == picked, d.label.clone()).wrap());
-                        if resp.clicked() {
+                        let mut on = dose_on && i == picked;
+                        let resp = ui.checkbox(&mut on, d.label.clone());
+                        if resp.changed() {
+                            shown_dose = Some(on.then_some(i));
+                            if on {
+                                picked = i;
+                            }
+                        } else if resp.clicked() {
                             picked = i;
                         }
                         resp.on_hover_text(format!(
-                            "{}  max {:.2} {}",
+                            "{}  max {:.2} {}\nright-click: rename or remove",
                             d.summation_type,
                             d.max_dose,
                             d.units.to_lowercase()
-                        ));
+                        ))
+                        .context_menu(|ui| {
+                            if ui.button("✏ Rename").clicked() {
+                                rename = Some(RenameTarget::Dose { slot, idx: i });
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("🗑 Remove").clicked() {
+                                remove = Some(ObjRef {
+                                    slot,
+                                    kind: ObjKind::Dose,
+                                    idx: i,
+                                });
+                                ui.close();
+                            }
+                        });
                     }
                     let Some(d) = doses.get(picked) else { return };
                     ui.weak(format!(
@@ -1703,19 +1953,29 @@ impl ViewerApp {
                 },
             );
             *active_dose = picked;
-            hdr.context_menu(|ui| {
-                if ui.button("✏ Rename this dose…").clicked() {
-                    rename = Some(RenameTarget::Dose { slot, idx: picked });
-                    ui.close();
+            let _ = &hdr;
+        }
+        if let Some(pick) = shown_dose {
+            match pick {
+                // Ticking a grid turns dose display on if it was off; the
+                // *Dose display* section decides how it is drawn.
+                Some(_) if self.dose_mode == DoseMode::Off => {
+                    self.dose_mode = DoseMode::Colorwash;
                 }
-            });
+                None => self.dose_mode = DoseMode::Off,
+                _ => {}
+            }
+            self.settings_gen += 1;
         }
         if rename.is_some() {
             self.rename_request = rename;
         }
+        if remove.is_some() {
+            self.obj_remove = remove;
+        }
     }
 
-    /// How dose is drawn — colorwash, isodose lines, opacity, threshold and
+    /// How dose is drawn - colorwash, isodose lines, opacity, threshold and
     /// the isodose ladder. Shared by both datasets, so it is shown once, at
     /// dataset level, under the first dataset that actually has dose.
     pub(super) fn dose_display_section(&mut self, ui: &mut egui::Ui, slot: usize) {
@@ -1731,7 +1991,7 @@ impl ViewerApp {
         let mut mode = self.dose_mode;
         let mut opacity = self.dose_opacity;
         let mut threshold = self.dose_threshold_pct;
-        Self::wrapped_node(ui, ("dose_display", slot), true, "Dose display", |ui| {
+        Self::wrapped_node(ui, ("dose_display", slot), false, "Dose display", |ui| {
             egui::ComboBox::from_id_salt(("dose_mode", slot))
                 .selected_text(mode.label())
                 .show_ui(ui, |ui| {
@@ -1772,18 +2032,32 @@ impl ViewerApp {
             return;
         }
         let mut rename: Option<RenameTarget> = None;
+        let mut remove: Option<ObjRef> = None;
+        // One flag per plan, defaulting to shown: what is drawn from a plan
+        // is its isocenters, and a plan the user has unticked keeps them out
+        // of the views.
+        let n_plans = self.slots[slot]
+            .study
+            .as_ref()
+            .map(|s| s.plans.len())
+            .unwrap_or(0);
+        let mut visible = std::mem::take(&mut self.slots[slot].plan_visible);
+        visible.resize(n_plans, true);
         {
             let Some(study) = &self.slots[slot].study else {
+                self.slots[slot].plan_visible = visible;
                 return;
             };
-            for (n, &pi) in which.iter().enumerate() {
+            for &pi in which {
                 let Some(plan) = study.plans.get(pi) else {
                     continue;
                 };
-                let plan_hdr = Self::wrapped_node(
+                let mut shown = visible.get(pi).copied().unwrap_or(true);
+                let plan_hdr = Self::checked_node(
                     ui,
                     ("plan", slot, pat, stu, pi),
-                    n == 0,
+                    false,
+                    &mut shown,
                     format!(
                         "Plan: {}",
                         if plan.label.is_empty() {
@@ -1864,24 +2138,24 @@ impl ViewerApp {
                                         ui.label(
                                             b.gantry_angle
                                                 .map(|g| format!("{g:.0}"))
-                                                .unwrap_or_else(|| "–".into()),
+                                                .unwrap_or_else(|| "-".into()),
                                         );
                                         ui.label(
                                             b.couch_angle
                                                 .map(|c| format!("{c:.0}"))
-                                                .unwrap_or_else(|| "–".into()),
+                                                .unwrap_or_else(|| "-".into()),
                                         );
                                         ui.label(match (b.energy_min, b.energy_max) {
                                             (Some(a), Some(bb)) if (a - bb).abs() > 0.01 => {
-                                                format!("{a:.0}–{bb:.0}")
+                                                format!("{a:.0}-{bb:.0}")
                                             }
                                             (Some(a), _) => format!("{a:.0}"),
-                                            _ => "–".into(),
+                                            _ => "-".into(),
                                         });
                                         ui.label(
                                             b.meterset
                                                 .map(|m| format!("{m:.1}"))
-                                                .unwrap_or_else(|| "–".into()),
+                                                .unwrap_or_else(|| "-".into()),
                                         );
                                         ui.label(format!("{}", b.n_control_points));
                                         ui.end_row();
@@ -1890,16 +2164,32 @@ impl ViewerApp {
                         }
                     },
                 );
+                if let Some(flag) = visible.get_mut(pi) {
+                    *flag = shown;
+                }
                 plan_hdr.context_menu(|ui| {
-                    if ui.button("✏ Rename plan…").clicked() {
+                    if ui.button("✏ Rename").clicked() {
                         rename = Some(RenameTarget::Plan { slot, idx: pi });
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("🗑 Remove").clicked() {
+                        remove = Some(ObjRef {
+                            slot,
+                            kind: ObjKind::Plan,
+                            idx: pi,
+                        });
                         ui.close();
                     }
                 });
             }
         }
+        self.slots[slot].plan_visible = visible;
         if rename.is_some() {
             self.rename_request = rename;
+        }
+        if remove.is_some() {
+            self.obj_remove = remove;
         }
     }
 
@@ -1914,7 +2204,15 @@ impl ViewerApp {
             return;
         }
         let mut open_idx = None;
+        let mut close_idx = None;
         let mut rename: Option<RenameTarget> = None;
+        let mut remove: Option<ObjRef> = None;
+        let open_windows: Vec<usize> = self
+            .planar_windows
+            .iter()
+            .filter(|w| w.slot == slot && w.open)
+            .map(|w| w.idx)
+            .collect();
         // Normally a side note beneath the tree; for a dataset with no image
         // volume these *are* the images, so the section opens itself.
         let sole_content = !self.slots[slot].has_volume();
@@ -1927,24 +2225,53 @@ impl ViewerApp {
                     for (i, img) in study.planar_images.iter().enumerate() {
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(format!("[{}]", img.modality)).weak());
-                            let resp = ui
-                                .label(&img.label)
-                                .on_hover_text("right-click: rename this image");
-                            resp.context_menu(|ui| {
-                                if ui.button("✏ Rename image…").clicked() {
+                            // A planar image is shown in a window of its own,
+                            // so the tick box is that window.
+                            let mut shown = open_windows.contains(&i);
+                            let resp = ui.checkbox(&mut shown, &img.label);
+                            if resp.changed() {
+                                if shown {
+                                    open_idx = Some(i);
+                                } else {
+                                    close_idx = Some(i);
+                                }
+                            }
+                            resp.on_hover_text(
+                                "Show this image in its own window\nright-click: rename or remove",
+                            )
+                            .context_menu(|ui| {
+                                if ui.button("✏ Rename").clicked() {
                                     rename = Some(RenameTarget::Planar { slot, idx: i });
                                     ui.close();
                                 }
+                                ui.separator();
+                                if ui.button("🗑 Remove").clicked() {
+                                    remove = Some(ObjRef {
+                                        slot,
+                                        kind: ObjKind::Planar,
+                                        idx: i,
+                                    });
+                                    ui.close();
+                                }
                             });
-                            if ui.small_button("View").clicked() {
-                                open_idx = Some(i);
-                            }
                         });
                     }
                 });
         }
         if rename.is_some() {
             self.rename_request = rename;
+        }
+        if remove.is_some() {
+            self.obj_remove = remove;
+        }
+        if let Some(i) = close_idx {
+            for w in self
+                .planar_windows
+                .iter_mut()
+                .filter(|w| w.slot == slot && w.idx == i)
+            {
+                w.open = false;
+            }
         }
         if let Some(i) = open_idx {
             if let Some(w) = self
@@ -1982,6 +2309,7 @@ impl ViewerApp {
         let mut apply: Option<(registration::RigidTransform, usize)> = None;
         let mut apply_grid: Option<(usize, usize)> = None;
         let mut rename: Option<RenameTarget> = None;
+        let mut remove: Option<ObjRef> = None;
         {
             let study = self.slots[slot].study.as_ref().unwrap();
             // Frame-of-reference UIDs of the loaded volumes for hints.
@@ -2016,8 +2344,17 @@ impl ViewerApp {
                             )
                             .on_hover_text("right-click: rename this registration");
                         resp.context_menu(|ui| {
-                            if ui.button("✏ Rename registration…").clicked() {
+                            if ui.button("✏ Rename").clicked() {
                                 rename = Some(RenameTarget::Registration { slot, idx: ri });
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("🗑 Remove").clicked() {
+                                remove = Some(ObjRef {
+                                    slot,
+                                    kind: ObjKind::Registration,
+                                    idx: ri,
+                                });
                                 ui.close();
                             }
                         });
@@ -2114,7 +2451,7 @@ impl ViewerApp {
                                     });
                                 }
                                 None => {
-                                    ui.weak("  (matrix is not a pure rigid transform — cannot apply)");
+                                    ui.weak("  (matrix is not a pure rigid transform - cannot apply)");
                                 }
                             }
                         }
@@ -2140,13 +2477,13 @@ impl ViewerApp {
                                     );
                                     let hint = match src_hint {
                                         Some(s) if s == fixed => {
-                                            "The grid's own frame of reference matches this                                              dataset — this is the direction the file means"
+                                            "The grid's own frame of reference matches this                                              dataset - this is the direction the file means"
                                         }
                                         Some(_) => {
                                             "The grid's frame of reference matches the *other*                                              dataset; applying it this way round inverts what                                              the file says"
                                         }
                                         None => {
-                                            "Neither loaded dataset matches the grid's frame of                                              reference — check that this is the right pair"
+                                            "Neither loaded dataset matches the grid's frame of                                              reference - check that this is the right pair"
                                         }
                                     };
                                     if ui
@@ -2196,6 +2533,7 @@ impl ViewerApp {
     /// RT (Ion) Beams Treatment Records: per-beam delivered metersets.
     pub(super) fn records_section(&mut self, ui: &mut egui::Ui, slot: usize) {
         let mut rename: Option<RenameTarget> = None;
+        let mut remove: Option<ObjRef> = None;
         {
             let Some(study) = &self.slots[slot].study else {
                 return;
@@ -2230,8 +2568,17 @@ impl ViewerApp {
                         )
                         .on_hover_text("right-click: rename this record");
                     resp.context_menu(|ui| {
-                        if ui.button("✏ Rename record…").clicked() {
+                        if ui.button("✏ Rename").clicked() {
                             rename = Some(RenameTarget::Record { slot, idx: ri });
+                            ui.close();
+                        }
+                        ui.separator();
+                        if ui.button("🗑 Remove").clicked() {
+                            remove = Some(ObjRef {
+                                slot,
+                                kind: ObjKind::Record,
+                                idx: ri,
+                            });
                             ui.close();
                         }
                     });
@@ -2261,25 +2608,25 @@ impl ViewerApp {
                                 ui.label(
                                     b.specified_meterset
                                         .map(|m| format!("{m:.1}"))
-                                        .unwrap_or_else(|| "–".into()),
+                                        .unwrap_or_else(|| "-".into()),
                                 );
                                 ui.label(
                                     b.delivered_meterset
                                         .map(|m| format!("{m:.1}"))
-                                        .unwrap_or_else(|| "–".into()),
+                                        .unwrap_or_else(|| "-".into()),
                                 );
                                 ui.label(match (b.specified_meterset, b.delivered_meterset) {
                                     (Some(s), Some(d)) if s > 1e-9 => {
                                         format!("{:+.1}", 100.0 * (d - s) / s)
                                     }
-                                    _ => "–".into(),
+                                    _ => "-".into(),
                                 });
                                 let status = if b.termination_status.is_empty() {
-                                    "–"
+                                    "-"
                                 } else {
                                     &b.termination_status
                                 };
-                                if status == "NORMAL" || status == "–" {
+                                if status == "NORMAL" || status == "-" {
                                     ui.label(status);
                                 } else {
                                     let c = alert_color(ui.visuals());
@@ -2293,6 +2640,9 @@ impl ViewerApp {
         }
         if rename.is_some() {
             self.rename_request = rename;
+        }
+        if remove.is_some() {
+            self.obj_remove = remove;
         }
     }
 
@@ -2321,14 +2671,14 @@ impl ViewerApp {
 pub(super) struct StudyNode {
     uid: String,
     title: String,
-    /// Image series of this study, grouped by modality in first-seen order —
+    /// Image series of this study, grouped by modality in first-seen order -
     /// the CT / MR / US level DICOM implies but does not store as a node.
     modalities: Vec<(String, Vec<usize>)>,
     structs: Vec<usize>,
     segs: Vec<usize>,
     doses: Vec<usize>,
     plans: Vec<usize>,
-    /// 4D groups of this study — indices into `LoadedStudy::fourd_groups`.
+    /// 4D groups of this study - indices into `LoadedStudy::fourd_groups`.
     fourd: Vec<usize>,
 }
 
@@ -2343,7 +2693,7 @@ pub(super) struct PatientNode {
 ///
 /// Series carry the patient and study they belong to, so those two levels
 /// fall straight out of them. The RT objects carry a StudyInstanceUID as
-/// well, but not always a usable one — a set built in the application from a
+/// well, but not always a usable one - a set built in the application from a
 /// series that had none, or a file written by a tool that left it blank. An
 /// object whose study is not in the tree is therefore filed under the study
 /// of the image series it references, and failing that under the first study
@@ -2351,7 +2701,7 @@ pub(super) struct PatientNode {
 /// a level away from where its header claims it lives.
 pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
     // Series filed under a 4D group render inside that node, not under
-    // their modality — one series, one place in the tree.
+    // their modality - one series, one place in the tree.
     let mut grouped = vec![false; study.series.len()];
     for g in &study.fourd_groups {
         if g.dissolved {
@@ -2399,7 +2749,7 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
                     if se.study_description.is_empty() {
                         String::new()
                     } else {
-                        format!(" — {}", se.study_description)
+                        format!(" - {}", se.study_description)
                     }
                 );
                 p.studies.push(StudyNode {
@@ -2430,7 +2780,7 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
     }
 
     // File each 4D group under its study node (falling back to the study of
-    // its first surviving series, then to the first study — same rule as
+    // its first surviving series, then to the first study - same rule as
     // the RT objects below).
     for (gi, g) in study.fourd_groups.iter().enumerate() {
         if g.dissolved {
@@ -2456,7 +2806,7 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
 
     // Studies that no image series announced.
     //
-    // A dataset does not have to contain images at all — a folder or a file
+    // A dataset does not have to contain images at all - a folder or a file
     // selection can hold nothing but a structure set, a plan, a dose grid or
     // a handful of RT images. Those objects carry their own Study Instance
     // UID, so a study node is made from it and filed under the patient the
@@ -2535,7 +2885,7 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
                     if m.study_description.is_empty() {
                         String::new()
                     } else {
-                        format!(" — {}", m.study_description)
+                        format!(" - {}", m.study_description)
                     }
                 );
                 patients[pi].studies.push(StudyNode {
@@ -2613,7 +2963,7 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
 /// row's *new* value is what the span is filled with: tick one row and
 /// Shift-tick a later one and everything between turns on; untick and
 /// Shift-untick and it all turns off. Rows outside the span are never
-/// touched — the box is a visibility toggle as much as a selection, and
+/// touched - the box is a visibility toggle as much as a selection, and
 /// silently hiding structures the user did not point at would be worse than
 /// any convenience gained.
 fn apply_tick(vis: &mut [bool], i: usize, shift: bool, anchor: Option<usize>) -> usize {
@@ -2782,7 +3132,7 @@ mod layout_tests {
         assert_eq!(
             layout[0].studies[1].structs,
             vec![1],
-            "no study of its own — filed under the study of the series it references"
+            "no study of its own - filed under the study of the series it references"
         );
         assert_eq!(
             layout[1].studies[0].segs,
@@ -2797,7 +3147,7 @@ mod layout_tests {
         assert_eq!(total, 3, "every structure set is reachable exactly once");
     }
 
-    /// A dataset can hold no image series at all — a folder of RT images, a
+    /// A dataset can hold no image series at all - a folder of RT images, a
     /// structure set opened on its own. Its objects must still be in the
     /// tree, under a patient and a study, or there is no way to reach them.
     #[test]

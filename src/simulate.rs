@@ -159,7 +159,7 @@ pub fn generate_transformed_study(
     let t = SimTransform::new(params, center);
 
     // ---- Volume: V_new(x) = V_old(T⁻¹(x)) ------------------------------
-    progress.set("Resampling volume…");
+    progress.set("Resampling volume");
     let [nx, ny, nz] = vol.dims;
     let fill = vol.min_value as f32;
     let mut data = vec![0i16; nx * ny * nz];
@@ -206,7 +206,7 @@ pub fn generate_transformed_study(
     };
 
     // ---- Structures: contour points mapped forward (every set) ---------
-    progress.set("Transforming structures…");
+    progress.set("Transforming structures");
     let structure_sets = src
         .structure_sets
         .iter()
@@ -241,7 +241,7 @@ pub fn generate_transformed_study(
     // ---- Dose grids: resampled on their own geometry -------------------
     let mut doses = Vec::with_capacity(src.doses.len());
     for (di, d) in src.doses.iter().enumerate() {
-        progress.set(format!("Resampling dose {}/{}…", di + 1, src.doses.len()));
+        progress.set(format!("Resampling dose {}/{}", di + 1, src.doses.len()));
         let [dnx, dny, dnf] = d.dims;
         let mut ddata = vec![0.0f32; dnx * dny * dnf];
         let ddu = d.row_dir * d.spacing[0];
@@ -356,7 +356,7 @@ pub fn generate_transformed_study(
         treat_records: src.treat_records.clone(),
         fourd_groups: Vec::new(),
         warnings: vec![format!(
-            "Simulated dataset — ground truth: {}",
+            "Simulated dataset - ground truth: {}",
             params.describe()
         )],
         default_window: src.default_window,

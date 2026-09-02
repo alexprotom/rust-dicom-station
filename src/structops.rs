@@ -8,7 +8,7 @@
 //! whether the thing you want to combine happens to be a contour or a
 //! painted mask.
 //!
-//! So this module works in one currency — a binary mask on one lattice — and
+//! So this module works in one currency - a binary mask on one lattice - and
 //! the caller converts on the way in and out. An RT structure is rasterized
 //! onto the grid ([`segmentation::rasterize_roi`]), a segmentation is already
 //! there, and the result goes back as either kind. Mixing them is then not a
@@ -107,7 +107,7 @@ impl BoolOp {
 /// has to mean the same thing on an axial CT, a coronal MR and an obliquely
 /// acquired series; the direction cosines decide which array axis that is and
 /// which way along it. Positive grows, negative shrinks, and the two may be
-/// mixed — the expansion runs first, then the contraction.
+/// mixed - the expansion runs first, then the contraction.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Margin {
     pub right: f64,
@@ -214,11 +214,11 @@ impl Margin {
         let (grow, shrink) = self.to_radii(grid);
         let mut out = mask.to_vec();
         if morph_any(&grow) {
-            sink.report(0.0, "Expanding…");
+            sink.report(0.0, "Expanding");
             out = morph::dilate_radii(&out, grid.dims, grid.spacing, &grow);
         }
         if morph_any(&shrink) {
-            sink.report(0.5, "Contracting…");
+            sink.report(0.5, "Contracting");
             out = morph::erode_radii(&out, grid.dims, grid.spacing, &shrink);
         }
         out
@@ -232,7 +232,7 @@ fn morph_any(r: &Radii) -> bool {
 /// Tidying applied to the finished mask.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Cleanup {
-    /// Close interior cavities, slice by slice — the same reasoning as the
+    /// Close interior cavities, slice by slice - the same reasoning as the
     /// body contour: a lung drains through the trachea, so a three-
     /// dimensional fill would leave it open.
     pub fill_holes: bool,
@@ -263,15 +263,15 @@ impl Cleanup {
 
     pub fn apply(&self, mask: &mut Vec<u8>, grid: &Grid, sink: &dyn ProgressSink) {
         if self.close_mm > 0.0 {
-            sink.report(0.0, "Smoothing…");
+            sink.report(0.0, "Smoothing");
             *mask = morph::close_mm(mask, grid.dims, grid.spacing, self.close_mm);
         }
         if self.fill_holes {
-            sink.report(0.4, "Filling cavities…");
+            sink.report(0.4, "Filling cavities");
             morph::fill_holes_2d(mask, grid.dims, grid.canonical_axes().0[0]);
         }
         if self.keep_largest || self.min_volume_cm3 > 0.0 {
-            sink.report(0.7, "Dropping small pieces…");
+            sink.report(0.7, "Dropping small pieces");
             let voxel_cm3 = grid.spacing[0] * grid.spacing[1] * grid.spacing[2] / 1000.0;
             let comps = morph::components(mask, grid.dims);
             let keep: Vec<&morph::Component> = if self.keep_largest {
@@ -316,7 +316,7 @@ pub struct Combined {
     pub mask: Vec<u8>,
     pub voxels: u64,
     pub cm3: f64,
-    /// Separate pieces in the result — worth saying, because a subtraction
+    /// Separate pieces in the result - worth saying, because a subtraction
     /// that cuts a structure in two is rarely what was intended.
     pub pieces: usize,
 }
@@ -340,7 +340,7 @@ impl std::fmt::Debug for Combined {
 pub fn combine(recipe: &Recipe, grid: &Grid, sink: &dyn ProgressSink) -> Result<Combined> {
     let n = grid.dims[0] * grid.dims[1] * grid.dims[2];
     if recipe.operands.is_empty() {
-        bail!("nothing to combine — add at least one structure");
+        bail!("nothing to combine - add at least one structure");
     }
     if recipe.op == BoolOp::Subtract && recipe.operands.len() < 2 {
         bail!("a subtraction needs something to subtract");
@@ -357,7 +357,7 @@ pub fn combine(recipe: &Recipe, grid: &Grid, sink: &dyn ProgressSink) -> Result<
     let steps = recipe.operands.len() as f32 + 2.0;
     let mut acc = vec![0u8; n];
     for (i, operand) in recipe.operands.iter().enumerate() {
-        sink.report(i as f32 / steps, &format!("Preparing '{}'…", operand.name));
+        sink.report(i as f32 / steps, &format!("Preparing '{}'", operand.name));
         if sink.cancelled() {
             bail!(crate::progress::CANCELLED);
         }
@@ -373,11 +373,11 @@ pub fn combine(recipe: &Recipe, grid: &Grid, sink: &dyn ProgressSink) -> Result<
         bail!(crate::progress::CANCELLED);
     }
     if !recipe.margin.is_none() {
-        sink.report(recipe.operands.len() as f32 / steps, "Applying the margin…");
+        sink.report(recipe.operands.len() as f32 / steps, "Applying the margin");
         acc = recipe.margin.apply(&acc, grid, &crate::progress::Quiet);
     }
     if !recipe.cleanup.is_none() {
-        sink.report((recipe.operands.len() as f32 + 1.0) / steps, "Cleaning up…");
+        sink.report((recipe.operands.len() as f32 + 1.0) / steps, "Cleaning up");
         recipe
             .cleanup
             .apply(&mut acc, grid, &crate::progress::Quiet);

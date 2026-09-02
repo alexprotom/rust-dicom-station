@@ -1,7 +1,7 @@
 //! Where a network runs: the user's preference, and the one wgpu device.
 //!
-//! Every engine offers the same choice — the GPU when there is one, else the
-//! CPU — and every GPU path has the same two hazards: `burn`/`wgpu` report a
+//! Every engine offers the same choice - the GPU when there is one, else the
+//! CPU - and every GPU path has the same two hazards: `burn`/`wgpu` report a
 //! missing or broken adapter by panicking rather than returning an error, and
 //! a readback can fail. [`GpuContext::try_new`] proves the device works with
 //! a tiny computation before anything depends on it, and [`guarded`] turns a
@@ -78,7 +78,7 @@ pub fn guarded<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
         .map_err(|_| anyhow::anyhow!("GPU inference failed (backend panic)"))?
 }
 
-/// A validated wgpu device (Vulkan / DX12 / Metal — no vendor toolkit).
+/// A validated wgpu device (Vulkan / DX12 / Metal - no vendor toolkit).
 #[cfg(feature = "gpu")]
 pub struct GpuContext {
     device: burn::backend::wgpu::WgpuDevice,

@@ -18,7 +18,7 @@ use crate::nn::params::Params;
 pub struct SegVolNet {
     pub vit: Vit,
     /// GPU image encoder, attached after build when a usable adapter exists.
-    /// The CPU encoder stays resident regardless — it is the fallback when a
+    /// The CPU encoder stays resident regardless - it is the fallback when a
     /// window fails on the device mid-run.
     #[cfg(feature = "gpu")]
     gpu_vit: Option<super::gpu::GpuVit>,

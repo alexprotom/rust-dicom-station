@@ -4,7 +4,7 @@
 //! This is a native re-implementation of what an elastix parameter file with
 //! `Optimizer AdaptiveStochasticGradientDescent`, `ImageSampler
 //! RandomCoordinate`, `NewSamplesEveryIteration true` and
-//! `Metric AdvancedMeanSquares` asks for — the toolbox's own defaults. The
+//! `Metric AdvancedMeanSquares` asks for - the toolbox's own defaults. The
 //! defining property is that the metric and its gradient are estimated from
 //! a few thousand fresh random samples per iteration rather than from the
 //! whole image: an iteration costs almost nothing, so thousands of them are
@@ -91,7 +91,7 @@ fn asgd(
         let (m, valid) = eval(&params, &mut grad, &mut rng);
         metric = m;
         if valid < 0.25 {
-            // Too few samples map into the moving image — undo the step and
+            // Too few samples map into the moving image - undo the step and
             // damp (comparable to elastix's RequiredRatioOfValidSamples).
             for i in 0..n {
                 params[i] += gamma * prev_grad[i];
@@ -169,7 +169,7 @@ pub(super) fn run(setup: &RegSetup, progress: &Progress) -> Result<EngineOutput>
     // A *local* deformable run skips it for a different reason: a rigid body
     // fitted to one structure would be applied to the whole volume, moving
     // anatomy nobody asked about. Confined to the lattice, the correction
-    // stays where the structure is — which is what "local" has to mean.
+    // stays where the structure is - which is what "local" has to mean.
     let start = params.start.as_deref();
     let refining =
         params.method == RegMethod::ElastixBSpline && (start.is_some() || params.region.is_some());

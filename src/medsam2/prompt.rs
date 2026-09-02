@@ -2,7 +2,7 @@
 //!
 //! Sparse prompts (clicks and box corners) become one token each, positioned
 //! by a **random Fourier** encoding whose Gaussian matrix is a buffer in the
-//! checkpoint — the one non-parameter tensor in the file. Dense prompts (an
+//! checkpoint - the one non-parameter tensor in the file. Dense prompts (an
 //! existing mask) are convolved down to the embedding grid instead; when
 //! there is no mask, a single learned `no_mask` embedding is broadcast over
 //! it.
@@ -12,7 +12,7 @@
 //! it turns the box into two points labelled 2 and 3, which makes
 //! `pad = (boxes is None)` true and appends a `not_a_point` token. So a box
 //! prompt is **three** sparse tokens, and a propagated slice with no prompt at
-//! all is **two** — a synthesized `(0, 0)` point with label -1, plus the same
+//! all is **two** - a synthesized `(0, 0)` point with label -1, plus the same
 //! padding token.
 
 use anyhow::Result;

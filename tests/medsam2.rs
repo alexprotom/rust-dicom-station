@@ -1,7 +1,7 @@
 //! The MedSAM2 engine, end to end, without a checkpoint.
 //!
 //! Every module is built from a synthetic state dict generated out of
-//! [`layout::expected`] — which means these tests fail if a loader asks for a
+//! [`layout::expected`] - which means these tests fail if a loader asks for a
 //! key or a shape the derived inventory does not contain, and they run in CI
 //! with no download and no network. What they do *not* check is arithmetic;
 //! that is `tests/reference.rs`, which needs a reference dump.
@@ -22,7 +22,7 @@ type B = burn::backend::NdArray;
 /// A state dict with the right keys and shapes and made-up values.
 ///
 /// Normalization gains start at one and everything else is small, so a
-/// forward pass through twelve residual blocks stays finite — the point is to
+/// forward pass through twelve residual blocks stays finite - the point is to
 /// exercise the plumbing, not to produce a mask.
 fn synthetic_params() -> Params {
     let mut state = 0x2026_0825_u64;
@@ -329,8 +329,8 @@ fn a_preview_agrees_with_the_prompted_slice_and_reuses_its_features() {
         ..Config::default()
     };
 
-    // What "reuses its features" means is that the *image encoder* — the
-    // expensive half — runs once and once only. Counting the encodes says
+    // What "reuses its features" means is that the *image encoder* - the
+    // expensive half - runs once and once only. Counting the encodes says
     // that exactly; timing the calls would only say how loaded the machine
     // is, which on a shared CI runner is not a property of this code.
     assert_eq!(
@@ -352,8 +352,8 @@ fn a_preview_agrees_with_the_prompted_slice_and_reuses_its_features() {
     );
 
     // The same prompt through the full path must decide that slice the same
-    // way — the preview is the propagation's first step, not an approximation
-    // — and must take the encoded slice from the cache rather than redo it.
+    // way - the preview is the propagation's first step, not an approximation -
+    // and must take the encoded slice from the cache rather than redo it.
     let full = engine
         .propagate(&prepared, 1, &prompt, &cfg, &Quiet)
         .expect("propagate");
@@ -381,7 +381,7 @@ fn a_preview_agrees_with_the_prompted_slice_and_reuses_its_features() {
     eprintln!("preview: {cold:?} cold, {warm:?} warm");
 
     // Clearing the cache is what makes the next prompt pay for the encoder
-    // again — otherwise the count above would prove nothing.
+    // again - otherwise the count above would prove nothing.
     engine.clear_cache();
     engine
         .preview(&prepared, 1, &prompt, &cfg)

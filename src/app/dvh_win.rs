@@ -1,10 +1,10 @@
-//! *Tools ▶ 📊 Dose–volume histograms*: the plot, the table and the
+//! *Tools ▶ 📊 Dose-volume histograms*: the plot, the table and the
 //! constraint check, in a window that can be put on its own monitor.
 //!
 //! The window is deliberately a *review* tool rather than a dialog. It stays
 //! open, recomputes when the picks change, and shows three things at once
 //! because that is how a plan is actually read: the curves for shape, the
-//! table for the numbers a report quotes, and — when a protocol is loaded —
+//! table for the numbers a report quotes, and - when a protocol is loaded -
 //! the pass/fail column that says whether the plan is acceptable.
 //!
 //! Two design points worth stating, because both are easy to get wrong in a
@@ -18,7 +18,7 @@
 //!
 //! * **A structure sticking out of the dose grid is called out.** Those
 //!   voxels are counted at zero dose, which drags the curve down and is the
-//!   honest reading — but silently, it looks like a cold structure rather
+//!   honest reading - but silently, it looks like a cold structure rather
 //!   than a truncated calculation, so the window says so in the table and
 //!   in a warning line.
 //!
@@ -154,7 +154,7 @@ impl ViewerApp {
         out
     }
 
-    /// The prescription of the first plan that declares one — what the
+    /// The prescription of the first plan that declares one - what the
     /// percentage dose axis is measured against until the user says
     /// otherwise.
     fn prescription(&self) -> Option<(f64, String)> {
@@ -257,7 +257,7 @@ impl ViewerApp {
         }
         let req = DvhRequest { items, doses };
         let progress = Arc::new(Progress::default());
-        progress.set("Sampling dose…");
+        progress.set("Sampling dose");
         self.dvh_job = Some(Job::spawn(progress, move |p| {
             let t0 = std::time::Instant::now();
             let total = (req.items.len() * req.doses.len()).max(1);
@@ -303,7 +303,7 @@ impl ViewerApp {
             done.elapsed_secs,
             match truncated {
                 0 => String::new(),
-                n => format!(" — {n} extend outside the dose grid"),
+                n => format!(" - {n} extend outside the dose grid"),
             }
         ));
         d.curves = done.curves;
@@ -332,7 +332,7 @@ impl ViewerApp {
         detach::tool_window(
             ctx,
             "dvh",
-            "📊 Dose–volume histograms",
+            "📊 Dose-volume histograms",
             &mut open,
             detach::WinOpts::size(880.0, 620.0),
             |ui| {
@@ -359,7 +359,7 @@ impl ViewerApp {
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Structures:");
                     egui::ComboBox::from_id_salt("dvh_add_struct")
-                        .selected_text("add…")
+                        .selected_text("add")
                         .width(200.0)
                         .show_ui(ui, |ui| {
                             for (r, label) in &struct_list {
@@ -400,9 +400,9 @@ impl ViewerApp {
                 // ---- axes ---------------------------------------------
                 ui.horizontal_wrapped(|ui| {
                     ui.selectable_value(&mut d.cumulative, true, "Cumulative")
-                        .on_hover_text("Volume receiving at least each dose — the usual view");
+                        .on_hover_text("Volume receiving at least each dose - the usual view");
                     ui.selectable_value(&mut d.cumulative, false, "Differential")
-                        .on_hover_text("Volume in each dose bin — where the cold spots are");
+                        .on_hover_text("Volume in each dose bin - where the cold spots are");
                     ui.separator();
                     ui.label("Dose:");
                     ui.selectable_value(&mut d.dose_relative, false, "Gy");
@@ -413,7 +413,7 @@ impl ViewerApp {
                     rel.clone().on_hover_text(if has_ref {
                         "Per cent of the reference dose"
                     } else {
-                        "No plan in this study declares a prescription — type one"
+                        "No plan in this study declares a prescription - type one"
                     });
                     if rel.clicked() {
                         d.dose_relative = true;
@@ -470,11 +470,19 @@ impl ViewerApp {
                     }
                     let resp = ui.add(
                         egui::TextEdit::singleline(&mut d.new_metric)
-                            .hint_text("D98%, V20Gy, D2cc…")
+                            .hint_text("D98%, V20Gy, D2cc")
                             .desired_width(110.0),
                     );
-                    let add = ui.small_button("➕").clicked()
-                        || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                    // Nothing typed, nothing to add: the button stays dead
+                    // rather than answering a click with an error.
+                    let named = !d.new_metric.trim().is_empty();
+                    let add = ui
+                        .add_enabled(named, egui::Button::new("➕").small())
+                        .on_disabled_hover_text("Type a metric first, for example D95%")
+                        .clicked()
+                        || (named
+                            && resp.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                     if add {
                         match Metric::parse(&d.new_metric) {
                             Some(m) => {
@@ -485,7 +493,7 @@ impl ViewerApp {
                             }
                             None if !d.new_metric.trim().is_empty() => {
                                 d.status = Some(format!(
-                                    "'{}' is not a metric — try D95%, D2cc, V20Gy or Dmean.",
+                                    "'{}' is not a metric - try D95%, D2cc, V20Gy or Dmean.",
                                     d.new_metric.trim()
                                 ));
                             }
@@ -502,19 +510,19 @@ impl ViewerApp {
                 } else {
                     let v = dvh::check(&d.constraints, &d.curves);
                     let failed = v.iter().filter(|x| !x.pass).count();
-                    format!("Constraints — {} of {} met", v.len() - failed, v.len())
+                    format!("Constraints - {} of {} met", v.len() - failed, v.len())
                 };
                 egui::CollapsingHeader::new(header)
                     .default_open(d.show_constraints)
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            if ui.button("Load protocol…").clicked() {
+                            if ui.button("Load protocol").clicked() {
                                 load_protocol = true;
                             }
                             if ui
                                 .add_enabled(
                                     !d.constraints.is_empty(),
-                                    egui::Button::new("Save protocol…"),
+                                    egui::Button::new("Save protocol"),
                                 )
                                 .clicked()
                             {
@@ -539,13 +547,13 @@ impl ViewerApp {
                 ui.separator();
                 ui.horizontal(|ui| {
                     if ui
-                        .add_enabled(!d.curves.is_empty(), egui::Button::new("Export curves…"))
+                        .add_enabled(!d.curves.is_empty(), egui::Button::new("Export curves"))
                         .clicked()
                     {
                         export = Some(true);
                     }
                     if ui
-                        .add_enabled(!d.curves.is_empty(), egui::Button::new("Export table…"))
+                        .add_enabled(!d.curves.is_empty(), egui::Button::new("Export table"))
                         .clicked()
                     {
                         export = Some(false);
@@ -741,7 +749,7 @@ fn constraint_table(ui: &mut egui::Ui, d: &DvhDialog) {
             ui.end_row();
             for v in &verdicts {
                 let (mark, color) = match (v.value.is_some(), v.pass) {
-                    (false, _) => ("—", warn_color(ui.visuals())),
+                    (false, _) => ("-", warn_color(ui.visuals())),
                     (true, true) => ("✔", egui::Color32::from_rgb(60, 160, 80)),
                     (true, false) => ("✖", egui::Color32::from_rgb(200, 70, 70)),
                 };
@@ -759,7 +767,7 @@ fn constraint_table(ui: &mut egui::Ui, d: &DvhDialog) {
                 ));
                 match v.value {
                     Some(x) => ui.label(egui::RichText::new(format!("{x:.2}")).color(color)),
-                    None => ui.label("—"),
+                    None => ui.label("-"),
                 };
                 ui.end_row();
             }
@@ -835,8 +843,10 @@ fn plot(ui: &mut egui::Ui, d: &DvhDialog, height: f32) {
         dvh::nice_units(&d.curves[0].units)
     };
     // Room for the axis labels; the legend sits inside the panel.
+    // Left margin holds the turned-on-its-side volume caption and the tick
+    // numbers beside it, so it has to be wider than the numbers alone.
     let rect = egui::Rect::from_min_max(
-        outer.min + egui::vec2(52.0, 10.0),
+        outer.min + egui::vec2(60.0, 10.0),
         outer.max - egui::vec2(12.0, 30.0),
     );
     let x_max = d
@@ -921,16 +931,21 @@ fn plot(ui: &mut egui::Ui, d: &DvhDialog, height: f32) {
         font.clone(),
         vis.text_color(),
     );
-    painter.text(
-        egui::pos2(outer.left() + 2.0, rect.top()),
-        egui::Align2::LEFT_TOP,
-        if d.volume_relative {
-            "Volume [%]".to_string()
-        } else {
-            "Volume [cm³]".to_string()
-        },
-        font.clone(),
-        vis.text_color(),
+    // Turned on its side and centred on the axis. Drawn flat in the corner it
+    // ran straight through the topmost tick number.
+    let caption = if d.volume_relative {
+        "Volume [%]".to_string()
+    } else {
+        "Volume [cm³]".to_string()
+    };
+    let galley = painter.layout_no_wrap(caption, font.clone(), vis.text_color());
+    let anchor = egui::pos2(
+        outer.left() + 2.0,
+        (rect.center().y + galley.size().x / 2.0).min(rect.bottom()),
+    );
+    painter.add(
+        egui::epaint::TextShape::new(anchor, galley, vis.text_color())
+            .with_angle(-std::f32::consts::FRAC_PI_2),
     );
 
     // ---- the curves ----

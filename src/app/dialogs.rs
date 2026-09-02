@@ -43,7 +43,6 @@ impl ViewerApp {
         self.anonymize_window(ctx);
         self.models_window(ctx);
         self.pacs_window(ctx);
-        self.propagate_window(ctx);
         self.drr_window(ctx);
         self.export_window(ctx);
         self.rename_window(ctx);
@@ -87,7 +86,7 @@ impl ViewerApp {
     }
 
     /// The auto-segmentation tool window: model variant, compute device and
-    /// model folder, then the run — whose progress replaces the buttons.
+    /// model folder, then the run - whose progress replaces the buttons.
     pub(super) fn autoseg_run_window(&mut self, ctx: &egui::Context) {
         let Some(d) = &mut self.autoseg_dialog else {
             return;
@@ -125,20 +124,20 @@ impl ViewerApp {
                 for (variant, name, hint) in [
                     (
                         autoseg::Variant::Fast3mm,
-                        "3 mm — fast",
+                        "3 mm - fast",
                         "Single model, all 117 structures. Good quality, \
                          practical on any CPU.",
                     ),
                     (
                         autoseg::Variant::HighRes15mm,
-                        "1.5 mm — high quality",
-                        "Five sub-models at full resolution — the reference \
+                        "1.5 mm - high quality",
+                        "Five sub-models at full resolution - the reference \
                          quality. Slow without a GPU.",
                     ),
                     (
                         autoseg::Variant::Preview6mm,
-                        "6 mm — preview",
-                        "Coarse but very fast — a quick look.",
+                        "6 mm - preview",
+                        "Coarse but very fast - a quick look.",
                     ),
                 ] {
                     let need = autoseg::download_needed(variant, d.parts, &models_dir);
@@ -241,7 +240,7 @@ impl ViewerApp {
             detach::WinOpts::default(),
             |ui| {
                 ui.label(format!(
-                    "{} structures found on dataset {} — {} · {:.0} s",
+                    "{} structures found on dataset {} - {} · {:.0} s",
                     p.result.organs.len(),
                     SLOT_NAMES[p.slot],
                     p.result.device,
@@ -350,7 +349,7 @@ impl ViewerApp {
                             .desired_width(360.0)
                             .hint_text("folder to write the DICOM files into"),
                     );
-                    if ui.button("📂 Browse…").clicked() {
+                    if ui.button("📂 Browse").clicked() {
                         browse = true;
                     }
                     if ui
@@ -392,7 +391,7 @@ impl ViewerApp {
                         ui.end_row();
 
                         ui.label("Phantom shift X / Y (mm)")
-                            .on_hover_text("Shifts the whole phantom — for registration tests");
+                            .on_hover_text("Shifts the whole phantom - for registration tests");
                         ui.horizontal(|ui| {
                             ui.add(
                                 egui::DragValue::new(&mut self.gen_params.shift_x)
@@ -479,7 +478,7 @@ impl ViewerApp {
     }
 
     /// The anonymizer tool window: pick a folder, scan it, review every
-    /// identifying tag (current values, proposed replacement — editable),
+    /// identifying tag (current values, proposed replacement - editable),
     /// then rewrite the files.
     pub(super) fn anonymize_window(&mut self, ctx: &egui::Context) {
         if !self.anon_open {
@@ -539,7 +538,7 @@ impl ViewerApp {
                             .desired_width(420.0)
                             .hint_text("folder to scan (recursively)"),
                     );
-                    if ui.button("📂 Browse…").clicked() {
+                    if ui.button("📂 Browse").clicked() {
                         browse_in = true;
                     }
                     if ui
@@ -565,7 +564,7 @@ impl ViewerApp {
                         .collect::<Vec<_>>()
                         .join(", ");
                     ui.weak(format!(
-                        "{} DICOM file(s) ({mods}) — {} unique UID(s), {} private element(s)",
+                        "{} DICOM file(s) ({mods}) - {} unique UID(s), {} private element(s)",
                         scan.files.len(),
                         scan.uid_count,
                         scan.private_count
@@ -659,7 +658,7 @@ impl ViewerApp {
                         )
                         .on_hover_text(
                             "Every study / series / SOP instance / frame-of-reference UID is \
-                             replaced by a fresh one — the same original always maps to the \
+                             replaced by a fresh one - the same original always maps to the \
                              same new UID, so cross-references stay valid",
                         );
                         ui.checkbox(
@@ -682,13 +681,13 @@ impl ViewerApp {
                                 .hint_text("output folder (files keep their relative paths)"),
                         );
                         if ui
-                            .add_enabled(!self.anon_in_place, egui::Button::new("📂 Browse…"))
+                            .add_enabled(!self.anon_in_place, egui::Button::new("📂 Browse"))
                             .clicked()
                         {
                             browse_out = true;
                         }
                         ui.checkbox(&mut self.anon_in_place, "overwrite in place")
-                            .on_hover_text("Rewrites the original files — no copy is kept");
+                            .on_hover_text("Rewrites the original files - no copy is kept");
                     });
 
                     ui.add_space(6.0);
@@ -712,7 +711,7 @@ impl ViewerApp {
         );
 
         if !open {
-            // Closing the window forgets everything that was scanned — the
+            // Closing the window forgets everything that was scanned - the
             // findings (they contain patient identity!), any running scan,
             // the result line and the derived output path. Only the folder
             // field is kept for convenience.
@@ -721,7 +720,7 @@ impl ViewerApp {
             self.anon_result = None;
             self.anon_out.clear();
             self.anon_in_place = false;
-            // A running rewrite is not aborted — the background thread
+            // A running rewrite is not aborted - the background thread
             // finishes writing; only its completion message is dropped.
             self.anon_apply_job = None;
         }
@@ -787,7 +786,7 @@ impl ViewerApp {
                             .desired_width(420.0)
                             .hint_text("output folder (created if missing)"),
                     );
-                    if ui.button("📂 Browse…").clicked() {
+                    if ui.button("📂 Browse").clicked() {
                         browse = true;
                     }
                 });
@@ -829,7 +828,7 @@ impl ViewerApp {
                                         f.name
                                     );
                                     ui.checkbox(&mut f.enabled, label).on_hover_text(format!(
-                                        "VR {} — unchecked: the tag is left out of the \
+                                        "VR {} - unchecked: the tag is left out of the \
                                          exported files",
                                         f.vr
                                     ));
@@ -891,7 +890,7 @@ impl ViewerApp {
             },
         );
 
-        // A running export is not aborted when the window closes — the
+        // A running export is not aborted when the window closes - the
         // background thread finishes writing; only its message is dropped.
         self.export_open = open;
         if !open {

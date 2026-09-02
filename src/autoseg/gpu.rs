@@ -1,6 +1,6 @@
 //! GPU inference backend via `burn`'s wgpu backend (Vulkan / DX12 / Metal).
 //!
-//! Works on any GPU wgpu can drive — NVIDIA, AMD, Intel, Apple — with no
+//! Works on any GPU wgpu can drive - NVIDIA, AMD, Intel, Apple - with no
 //! vendor toolkit; kernels are generated and autotuned by burn/cubecl at
 //! runtime. The network weights are uploaded once per model; each sliding-
 //! window patch is transferred, run, and the logits read back.

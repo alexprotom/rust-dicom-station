@@ -1,6 +1,6 @@
 //! Theme-dependent colors.
 //!
-//! The image viewports stay black in both themes — that is the convention in
+//! The image viewports stay black in both themes - that is the convention in
 //! clinical viewers, keeps grayscale windowing and the dose colorwash reading
 //! correctly, and lets the overlay annotations use one fixed palette. Only the
 //! surrounding chrome and the few hand-painted accents follow the theme.
@@ -25,7 +25,7 @@ pub(super) fn empty_row_color(visuals: &egui::Visuals) -> Color32 {
     }
 }
 
-/// Amber accent for warnings — darkened in light mode, where pale yellow on
+/// Amber accent for warnings - darkened in light mode, where pale yellow on
 /// white is unreadable.
 pub(super) fn warn_color(visuals: &egui::Visuals) -> Color32 {
     if visuals.dark_mode {
@@ -69,7 +69,7 @@ mod theme_tests {
     }
 
     /// The hand-picked accents must stay legible on the panel background of
-    /// *both* themes — a pale amber that works on near-black is unreadable on
+    /// *both* themes - a pale amber that works on near-black is unreadable on
     /// egui's light `panel_fill` (gray 248), which is exactly the regression
     /// this guards against. 4.5 is the WCAG AA threshold for body text.
     #[test]

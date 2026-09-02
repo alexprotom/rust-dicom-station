@@ -14,7 +14,7 @@ use crate::geometry::Vec3;
 /// annotated correctly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ViewPlane {
-    /// (i, j) plane at fixed k — native acquisition plane.
+    /// (i, j) plane at fixed k - native acquisition plane.
     Axial,
     /// (j, k) plane at fixed i.
     Sagittal,
@@ -59,7 +59,7 @@ pub struct Grid {
 
 impl Grid {
     /// Find the permutation and flips that carry a lattice's own axes onto the
-    /// canonical `[S, A, R]` order — superior, anterior and right, each
+    /// canonical `[S, A, R]` order - superior, anterior and right, each
     /// increasing with the array index.
     ///
     /// Every inference engine wants this: it is what `nibabel`'s
@@ -132,7 +132,7 @@ impl Grid {
         ]
     }
 
-    /// Same lattice to within a fraction of a voxel — the test that decides
+    /// Same lattice to within a fraction of a voxel - the test that decides
     /// whether a mask can be reused as it is instead of being resampled.
     pub fn matches(&self, other: &Grid) -> bool {
         if self.dims != other.dims {
@@ -175,7 +175,7 @@ pub struct Volume {
 impl Volume {
     /// A volume with no voxels, for a dataset that carries no image series.
     ///
-    /// A dataset does not have to contain a reconstructable volume — a folder
+    /// A dataset does not have to contain a reconstructable volume - a folder
     /// or a handful of files can hold nothing but RT images, a structure set
     /// or a plan, and those are legitimate things to open. Rather than making
     /// [`crate::loader::LoadedStudy::volume`] optional and forcing a hundred
@@ -186,7 +186,7 @@ impl Volume {
     /// of zero would divide in [`Volume::patient_to_voxel`] and make
     /// [`Grid::matches`] false even against itself, and zero direction
     /// vectors would label every view edge the same way. Nothing should read
-    /// this geometry — [`Volume::is_empty`] says not to — but if something
+    /// this geometry - [`Volume::is_empty`] says not to - but if something
     /// does, it gets an answer that is merely useless rather than poisonous.
     pub fn empty() -> Volume {
         Volume {
@@ -203,7 +203,7 @@ impl Volume {
         }
     }
 
-    /// No voxels — nothing to display, sample, register or segment.
+    /// No voxels - nothing to display, sample, register or segment.
     ///
     /// Every feature that needs image data asks this first; see
     /// [`Volume::empty`].
@@ -297,7 +297,7 @@ impl Volume {
     /// top-left origin as displayed).
     ///
     /// Display conventions:
-    /// * Axial: stored orientation (row 0 top) — radiological convention for
+    /// * Axial: stored orientation (row 0 top) - radiological convention for
     ///   HFS axial data.
     /// * Sagittal: horizontal = j, vertical = k *flipped* (last slice at top,
     ///   i.e. superior up for ascending axial stacks).
@@ -323,7 +323,7 @@ impl Volume {
             return;
         }
         // Reformatted planes read across the slice stride, so every element
-        // is its own cache line. Rows are independent — run them in parallel.
+        // is its own cache line. Rows are independent - run them in parallel.
         out.clear();
         out.resize(w * h, 0);
         match plane {
@@ -415,7 +415,7 @@ impl Volume {
     }
 
     /// Find the permutation and flips that carry a volume's own axes onto the
-    /// canonical `[S, A, R]` order — see [`Grid::canonical_axes`].
+    /// canonical `[S, A, R]` order - see [`Grid::canonical_axes`].
     pub fn canonical_axes(&self) -> ([usize; 3], [bool; 3]) {
         self.grid().canonical_axes()
     }

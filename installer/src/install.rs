@@ -45,7 +45,7 @@ pub struct Manifest {
 impl Manifest {
     pub fn render(&self) -> String {
         let mut out = String::from(
-            "# rust-dicom-station install manifest — used by uninstall.exe.\n\
+            "# rust-dicom-station install manifest - used by uninstall.exe.\n\
              # Editing this file changes what the uninstaller removes.\n",
         );
         out.push_str(&format!("version = {}\n", self.version));
@@ -96,13 +96,13 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
     let step = |f: f32, s: &str| sink(Event::Progress(f, s.to_string()));
 
     // ---- preflight -------------------------------------------------------
-    step(0.0, "Preparing…");
+    step(0.0, "Preparing");
     std::fs::create_dir_all(&opts.dir)
         .with_context(|| format!("create install directory {}", opts.dir.display()))?;
     check_writable(&opts.dir)?;
     if is_running(&opts.exe_path()) {
         bail!(
-            "{} is currently running from {} — close it and start the installer again",
+            "{} is currently running from {} - close it and start the installer again",
             APP_NAME,
             opts.dir.display()
         );
@@ -145,7 +145,7 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
     save_manifest(&manifest)?;
 
     // ---- uninstaller ------------------------------------------------------
-    step(0.57, "Writing the uninstaller…");
+    step(0.57, "Writing the uninstaller");
     write_uninstaller(payload, &opts.uninstaller_path())?;
     manifest.files.push(UNINSTALLER_EXE.to_string());
     log(format!(
@@ -155,7 +155,7 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
 
     // ---- settings seed ----------------------------------------------------
     // Two things the viewer must be told before its first run: which graphics
-    // backend to start on, and — when it is not the default — where the model
+    // backend to start on, and - when it is not the default - where the model
     // folder is. They are written twice, on purpose, because neither place
     // alone is enough.
     //
@@ -167,8 +167,8 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
     //
     // The settings file of whoever is running the installer is then updated
     // as well, because it wins over the defaults and would otherwise keep an
-    // older answer. Someone re-running the installer to change the backend —
-    // which is exactly why the page exists — must actually get the change.
+    // older answer. Someone re-running the installer to change the backend -
+    // which is exactly why the page exists - must actually get the change.
     let mut wanted: Vec<(&str, String)> =
         vec![(SETTINGS_GRAPHICS_KEY, opts.graphics.key().to_string())];
     if opts.models_dir != default_models_dir(opts.scope, &opts.dir) {
@@ -213,7 +213,7 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
     save_manifest(&manifest)?;
 
     // ---- shortcuts --------------------------------------------------------
-    step(0.60, "Creating shortcuts…");
+    step(0.60, "Creating shortcuts");
     shortcut::init_com();
     if opts.start_menu_shortcut {
         let link = crate::win::start_menu_programs()?.join(format!("{APP_NAME}.lnk"));
@@ -243,7 +243,7 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
     save_manifest(&manifest)?;
 
     // ---- registry ---------------------------------------------------------
-    step(0.65, "Registering the application…");
+    step(0.65, "Registering the application");
     let hive = opts.scope.hive();
     write_uninstall_entry(opts, hive, total_bytes, &manifest.version)?;
     log(format!("Listed in Apps & features ({})", hive.label()));
@@ -264,18 +264,18 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
     save_manifest(&manifest)?;
 
     // ---- dependencies -----------------------------------------------------
-    step(0.70, "Checking dependencies…");
+    step(0.70, "Checking dependencies");
     match deps::vcredist_state() {
         deps::Dependency::Present => log("Visual C++ runtime: already installed".into()),
         deps::Dependency::Missing if opts.install_vcredist => {
-            log("Visual C++ runtime: missing — downloading from Microsoft".into());
+            log("Visual C++ runtime: missing - downloading from Microsoft".into());
             deps::install_vcredist(&|f, msg| {
                 sink(Event::Progress(0.70 + 0.10 * f, msg.to_string()))
             })?;
             log("Visual C++ runtime: installed".into());
         }
         deps::Dependency::Missing => {
-            log("Visual C++ runtime: missing — skipped (the viewer may not start)".into())
+            log("Visual C++ runtime: missing - skipped (the viewer may not start)".into())
         }
     }
     if cancel.load(Ordering::Relaxed) {
@@ -284,7 +284,7 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
 
     // ---- optional model weights ------------------------------------------
     if opts.models != Models::None {
-        step(0.80, "Downloading the auto-segmentation weights…");
+        step(0.80, "Downloading the auto-segmentation weights");
         crate::models::prefetch(
             opts.models,
             &opts.models_dir,
@@ -377,7 +377,7 @@ fn write_file_association(opts: &Options, hive: registry::Hive) -> Result<()> {
     }
 
     // "Open with Rust DICOM Station" on a folder, and on the empty space inside
-    // one — the viewer takes a directory as its argument.
+    // one - the viewer takes a directory as its argument.
     for base in [
         format!(r"{classes}\Directory\shell\{PRODUCT_ID}"),
         format!(r"{classes}\Directory\Background\shell\{PRODUCT_ID}"),
@@ -404,7 +404,7 @@ fn payload_version(payload: &Payload) -> String {
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
 }
 
-/// Writability probe — cheaper and more honest than inspecting ACLs.
+/// Writability probe - cheaper and more honest than inspecting ACLs.
 fn check_writable(dir: &Path) -> Result<()> {
     let probe = dir.join(".rds-write-test");
     match std::fs::write(&probe, b"x") {
@@ -433,7 +433,7 @@ fn is_running(exe: &Path) -> bool {
 /// line exactly as it was.
 ///
 /// The file belongs to the user and may hold keys this installer has never
-/// heard of — written by a newer viewer, or by hand. Rewriting it wholesale
+/// heard of - written by a newer viewer, or by hand. Rewriting it wholesale
 /// would throw those away, so an existing line is replaced in place and a
 /// missing one is appended. Comments and blank lines are untouched.
 fn merge_setting(text: &str, key: &str, value: &str) -> String {

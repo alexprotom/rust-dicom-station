@@ -6,7 +6,7 @@
 //! is known exactly, and land within a tolerance of it at probe points. The
 //! two intensity engines are held to the same phantom so their results are
 //! comparable; the landmark warp and the local runs are checked on what is
-//! specific to them — exactness at the landmarks, and leaving the rest of
+//! specific to them - exactness at the landmarks, and leaving the rest of
 //! the volume alone.
 
 use rust_dicom_station::geometry::Vec3;
@@ -272,7 +272,7 @@ fn plastimatch_bspline_recovers_gaussian_bump() {
         method: RegMethod::PlastimatchBSpline,
         levels: 3,
         // A dense exact gradient converges in tens of iterations, not
-        // hundreds — that is the whole trade against the stochastic engine.
+        // hundreds - that is the whole trade against the stochastic engine.
         iterations: 60,
         grid_spacing_mm: 24.0,
         regularization: 0.01,
@@ -323,7 +323,7 @@ fn plastimatch_mutual_information_survives_an_inverted_contrast() {
     let spacing = 3.5;
     let fixed = make_volume(n, spacing, phantom);
     // The same anatomy, deformed by the same bump, but with the soft-tissue
-    // contrast inverted — air untouched, so the body mask still works. Mean
+    // contrast inverted - air untouched, so the body mask still works. Mean
     // squares has no minimum at the truth here; mutual information does.
     let moving = make_volume(n, spacing, |q| {
         let mut x = q;

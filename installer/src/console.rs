@@ -52,7 +52,7 @@ pub fn run_install(payload: Payload, mut opts: Options, silent: bool) -> Result<
     let sink = |ev: Event| printer.handle(ev);
     install::run(&opts, &payload, &sink, &cancel)?;
     println!("\nInstalled into {}", opts.dir.display());
-    if opts.launch_after && !silent && ask_yes_no("Start the viewer now?", false)? {
+    if opts.launch_after && !silent && ask_yes_no(&format!("Start {APP_NAME} now?"), false)? {
         crate::win::shell_execute(&opts.exe_path(), "", false)?;
     }
     Ok(())
@@ -119,8 +119,8 @@ fn yes_no(b: bool) -> &'static str {
 
 /// The text-mode equivalent of the wizard's graphics page.
 ///
-/// The default is whatever the caller already has — `Vulkan` unless
-/// `--graphics` said otherwise — so pressing Enter is always the right
+/// The default is whatever the caller already has - `Vulkan` unless
+/// `--graphics` said otherwise - so pressing Enter is always the right
 /// answer on a machine with nothing wrong with it.
 fn ask_graphics(current: Graphics) -> Result<Graphics> {
     let choices = Graphics::ALL;
@@ -143,7 +143,7 @@ fn ask_graphics(current: Graphics) -> Result<Graphics> {
         if line.is_empty() {
             return Ok(current);
         }
-        // A number from the list, or the name itself — both are things
+        // A number from the list, or the name itself - both are things
         // people type, and neither is worth rejecting.
         if let Ok(n) = line.parse::<usize>() {
             if (1..=choices.len()).contains(&n) {

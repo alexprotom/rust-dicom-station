@@ -1,7 +1,7 @@
 # Bundled example data
 
 `example_data/` holds a small real patient study (137 MB) so the viewer
-can be exercised on clinical data, not only the synthetic phantom — two
+can be exercised on clinical data, not only the synthetic phantom - two
 breathing phases of a 4DCT, each with its own RT Structure Set:
 
 ```
@@ -51,18 +51,18 @@ collection. If you use it, cite the data and the associated publications:
 > Keall, P. J., Lu, J., & Williamson, J. F. (2017). A longitudinal
 > four-dimensional computed tomography and cone beam computed tomography
 > dataset for image-guided radiation therapy research in lung cancer.
-> *Medical Physics*, 44(2), 762–771. <https://doi.org/10.1002/mp.12059>
+> *Medical Physics*, 44(2), 762-771. <https://doi.org/10.1002/mp.12059>
 >
 > **TCIA.** Clark, K., Vendt, B., Smith, K., Freymann, J., Kirby, J.,
 > Koppel, P., Moore, S., Phillips, S., Maffitt, D., Pringle, M., Tarbox,
 > L., & Prior, F. (2013). The Cancer Imaging Archive (TCIA): Maintaining
 > and Operating a Public Information Repository. *Journal of Digital
-> Imaging*, 26(6), 1045–1057. <https://doi.org/10.1007/s10278-013-9622-6>
+> Imaging*, 26(6), 1045-1057. <https://doi.org/10.1007/s10278-013-9622-6>
 
 ## Anonymization
 
 The TCIA data is already de-identified; the copy here was additionally
-rewritten to minimal, readable identifiers — patient `lung_p1`, and a UID
+rewritten to minimal, readable identifiers - patient `lung_p1`, and a UID
 tree that is easy to read in a debugger:
 
 | | phase_000 | phase_050 |
@@ -73,8 +73,8 @@ tree that is easy to read in a debugger:
 
 with `1.2.3.4.5.1` as the shared Study Instance UID and `1.2.3.4.5.2` as
 the shared Frame of Reference UID. Everything not needed to render the
-images and contours — accession number, device manufacturer and model,
-software versions, acquisition dates and private tags — was dropped; pixel
+images and contours - accession number, device manufacturer and model,
+software versions, acquisition dates and private tags - was dropped; pixel
 data, geometry, ROI names, colors, types and contour points are untouched,
 and every RTSTRUCT image reference still resolves to a slice of its own
 series. The built-in anonymizer (*Tools ▶ 🔏 Anonymize DICOM folder…*, see

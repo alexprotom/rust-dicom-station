@@ -128,7 +128,7 @@ pub struct ExportField {
     pub vr: VR,
     /// The value that will be written (empty ⇒ zero-length element).
     pub value: String,
-    /// What the study itself carried — the dialog's “↺” restores it.
+    /// What the study itself carried - the dialog's “↺” restores it.
     pub suggested: String,
     /// Unchecked rows are skipped entirely (the tag is not written).
     pub enabled: bool,
@@ -266,7 +266,7 @@ impl ExportParams {
 struct Ctx<'a> {
     study_uid: String,
     for_uid: String,
-    /// Date / time stamped on the RT objects — the StudyDate / StudyTime
+    /// Date / time stamped on the RT objects - the StudyDate / StudyTime
     /// fields of `params` when set, today otherwise.
     date: String,
     time: String,
@@ -455,7 +455,7 @@ pub fn export_study(
 
     for k in 0..nz {
         if k % 20 == 0 {
-            progress.set(format!("Writing CT slice {}/{}…", k + 1, nz));
+            progress.set(format!("Writing CT slice {}/{}", k + 1, nz));
         }
         let sop_uid = new_uid();
         ct_sop_uids.push(sop_uid.clone());
@@ -543,7 +543,7 @@ pub fn export_study(
     // ---- RTSTRUCT (one file per structure set) ----------------------------
     for (si, ss) in study.structure_sets.iter().enumerate() {
         progress.set(format!(
-            "Writing RTSTRUCT {}/{}…",
+            "Writing RTSTRUCT {}/{}",
             si + 1,
             study.structure_sets.len()
         ));
@@ -557,11 +557,7 @@ pub fn export_study(
         if ser.segs.iter().all(|s| s.count == 0) {
             continue;
         }
-        progress.set(format!(
-            "Writing SEG {}/{}…",
-            gi + 1,
-            study.seg_series.len()
-        ));
+        progress.set(format!("Writing SEG {}/{}", gi + 1, study.seg_series.len()));
         // The exported image slices may only be claimed as the source of a
         // series that actually sits on their lattice.
         let same_grid = ser.grid.matches(&vol.grid());
@@ -581,7 +577,7 @@ pub fn export_study(
 
     // ---- RTDOSE (16-bit, rescaled) ----------------------------------------
     for (di, d) in study.doses.iter().enumerate() {
-        progress.set(format!("Writing RTDOSE {}/{}…", di + 1, study.doses.len()));
+        progress.set(format!("Writing RTDOSE {}/{}", di + 1, study.doses.len()));
         let [dnx, dny, dnf] = d.dims;
         let scaling = (d.max_dose as f64 / 60000.0).max(1e-9);
         let mut o = InMemDicomObject::new_empty();
@@ -686,7 +682,7 @@ pub fn export_study(
 
     // ---- RTPLAN (skeleton with prescription, fractionation, beams) --------
     for (pi, plan) in study.plans.iter().enumerate() {
-        progress.set(format!("Writing RTPLAN {}/{}…", pi + 1, study.plans.len()));
+        progress.set(format!("Writing RTPLAN {}/{}", pi + 1, study.plans.len()));
         let ion = plan.plan_kind == "Ion"
             || plan
                 .beams
@@ -870,7 +866,7 @@ pub const SOP_DEFORMABLE_REG: &str = "1.2.840.10008.5.1.4.1.1.66.3";
 
 // The IOD's own tags. Written by number rather than by dictionary name so
 // the file does not depend on which release of the data dictionary is
-// linked — these five have not moved since Supplement 73.
+// linked - these five have not moved since Supplement 73.
 const TAG_DEFORMABLE_REGISTRATION_SEQ: Tag = Tag(0x0064, 0x0002);
 const TAG_SOURCE_FRAME_OF_REFERENCE_UID: Tag = Tag(0x0064, 0x0003);
 const TAG_DEFORMABLE_REGISTRATION_GRID_SEQ: Tag = Tag(0x0064, 0x0005);
@@ -906,7 +902,7 @@ fn put_of(o: &mut InMemDicomObject, tag: Tag, vals: Vec<f32>) {
     ));
 }
 
-/// An identity 4 × 4 matrix registration item — the pre- and post-
+/// An identity 4 × 4 matrix registration item - the pre- and post-
 /// deformation slots of the IOD, which this writer never uses because the
 /// grid it writes already carries the *total* displacement.
 fn identity_matrix_item() -> InMemDicomObject {
@@ -929,11 +925,11 @@ fn identity_matrix_item() -> InMemDicomObject {
 
 /// Everything a Deformable Spatial Registration needs besides the field.
 pub struct DvfExport<'a> {
-    /// Frame of Reference the field's own lattice lives in — the *fixed*
+    /// Frame of Reference the field's own lattice lives in - the *fixed*
     /// dataset, since that is the domain a recovered transform is
     /// parameterized on.
     pub source_for_uid: &'a str,
-    /// Frame of Reference the displacements point into — the *moving*
+    /// Frame of Reference the displacements point into - the *moving*
     /// dataset.
     pub target_for_uid: &'a str,
     pub study_uid: &'a str,
@@ -988,7 +984,7 @@ pub fn write_deformable_registration(
         ],
     );
     put_fd(&mut grid, TAG_GRID_RESOLUTION, &field.spacing);
-    // Column-fastest, then rows, then planes — the order the lattice is
+    // Column-fastest, then rows, then planes - the order the lattice is
     // already stored in, and the one the standard prescribes.
     let mut data = Vec::with_capacity(field.data.len() * 3);
     for v in &field.data {
@@ -1068,15 +1064,15 @@ fn sanitize_cs(s: &str) -> String {
     out
 }
 
-/// Write only the objects this application produces — RT structure sets and
-/// DICOM Segmentation series — into `dir`, keeping the study and frame of
+/// Write only the objects this application produces - RT structure sets and
+/// DICOM Segmentation series - into `dir`, keeping the study and frame of
 /// reference each already belongs to.
 ///
 /// This is the other half of [`export_study`], and the difference is the
 /// whole point: a full export invents a new study so the result stands on
 /// its own, whereas contours and segments drawn on a study that already
 /// exists must attach *to that study*. Fresh SOP Instance UIDs, original
-/// Study Instance UID and Frame of Reference UID — which is exactly what
+/// Study Instance UID and Frame of Reference UID - which is exactly what
 /// sending derived objects back to an archive means.
 ///
 /// Returns the number of files written.
@@ -1110,7 +1106,7 @@ pub fn export_derived(
             continue;
         }
         progress.set(format!(
-            "Writing RTSTRUCT {}/{}…",
+            "Writing RTSTRUCT {}/{}",
             si + 1,
             study.structure_sets.len()
         ));
@@ -1134,11 +1130,7 @@ pub fn export_derived(
         if ser.segs.iter().all(|s| s.count == 0) {
             continue;
         }
-        progress.set(format!(
-            "Writing SEG {}/{}…",
-            gi + 1,
-            study.seg_series.len()
-        ));
+        progress.set(format!("Writing SEG {}/{}", gi + 1, study.seg_series.len()));
         let study_uid = study_of(&ser.study_uid, &ser.referenced_series_uid);
         let for_uid = if ser.grid.frame_of_reference_uid.is_empty() {
             vol_for.clone()

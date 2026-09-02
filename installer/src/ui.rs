@@ -115,12 +115,12 @@ pub fn run_uninstall(target: Target) -> Result<()> {
 /// Open the wizard window.
 ///
 /// The installer draws with the same library as the viewer, on the same
-/// machine — so the broken Vulkan driver that stops the viewer stops the
+/// machine - so the broken Vulkan driver that stops the viewer stops the
 /// setup program too, and the setup program is where the page that fixes it
 /// lives. The window is therefore *attempted* rather than opened: first
 /// whatever `wgpu` would pick on its own (which already honours
-/// `WGPU_BACKEND`), then Direct3D 12, then Vulkan. A backend that fails —
-/// by error or by panicking inside the driver — costs a line on standard
+/// `WGPU_BACKEND`), then Direct3D 12, then Vulkan. A backend that fails -
+/// by error or by panicking inside the driver - costs a line on standard
 /// error instead of the installation.
 ///
 /// Falling back is also an answer: if this window only appeared on Direct3D
@@ -143,7 +143,7 @@ fn launch(app: SetupApp, title: &str) -> Result<()> {
     for (i, attempt) in order.iter().enumerate() {
         if i > 0 {
             eprintln!(
-                "{APP_NAME} setup: {} did not work, trying {}…",
+                "{APP_NAME} setup: {} did not work, trying {}",
                 order[i - 1].label,
                 attempt.label
             );
@@ -180,7 +180,7 @@ fn launch(app: SetupApp, title: &str) -> Result<()> {
 struct Attempt {
     label: &'static str,
     /// `None` leaves `wgpu`'s own default in place, which is what an
-    /// unremarkable machine — and anyone who set `WGPU_BACKEND` — should get.
+    /// unremarkable machine - and anyone who set `WGPU_BACKEND` - should get.
     bits: Option<eframe::wgpu::Backends>,
     /// What to preselect on the graphics page when this is the attempt that
     /// works. `None` for the first try, which says nothing about the machine.
@@ -237,7 +237,7 @@ impl Attempt {
         let slot = slot.clone();
         // `NativeOptions` holds boxed callbacks that are not `UnwindSafe`,
         // which is a fair warning in general and irrelevant here: nothing is
-        // read back after a failed attempt — the next one builds its own.
+        // read back after a failed attempt - the next one builds its own.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             eframe::run_native(
                 title,
@@ -358,7 +358,11 @@ impl eframe::App for SetupApp {
             ui.add_space(8.0);
             ui.heading(title);
             ui.label(
-                RichText::new("A fast DICOM / RT DICOM viewer written entirely in Rust").weak(),
+                RichText::new(
+                    "Open-source software designed for the medical imaging, radiotherapy \
+                     research, analysis and QA",
+                )
+                .weak(),
             );
             ui.add_space(8.0);
         });
@@ -395,7 +399,7 @@ impl SetupApp {
             ui.checkbox(&mut self.accepted, "I accept the license terms");
         } else {
             self.accepted = true;
-            ui.label("MIT-licensed software. Not a medical device — for research and QA only.");
+            ui.label("MIT-licensed software. Not a medical device - for research and QA only.");
         }
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -444,7 +448,7 @@ impl SetupApp {
                     self.opts.set_dir(PathBuf::from(self.dir_text.trim()));
                     self.models_dir_text = self.opts.models_dir.to_string_lossy().to_string();
                 }
-                if ui.button("Browse…").clicked() {
+                if ui.button("Browse").clicked() {
                     if let Some(d) = rfd::FileDialog::new()
                         .set_title("Choose the installation folder")
                         .pick_folder()
@@ -492,7 +496,7 @@ impl SetupApp {
             ui.label(
                 RichText::new(
                     "Graphics: drawing uses Direct3D 12 or Vulkan through the display driver \
-                     already on this machine — nothing to install. The next page chooses \
+                     already on this machine - nothing to install. The next page chooses \
                      which one.",
                 )
                 .weak(),
@@ -526,7 +530,7 @@ impl SetupApp {
                     let bytes = models::download_size(self.opts.models, &self.opts.models_dir);
                     ui.label(
                         RichText::new(format!(
-                            "{} still to download from the TotalSegmentator release — this can \
+                            "{} still to download from the TotalSegmentator release - this can \
                              take a while.",
                             human_size(bytes)
                         ))
@@ -568,7 +572,7 @@ impl SetupApp {
     /// should start on.
     ///
     /// Vulkan is preselected because it is right on the overwhelming majority
-    /// of machines. The page exists for the rest — and when the installer's
+    /// of machines. The page exists for the rest - and when the installer's
     /// own window had to fall back to get here, the answer is already known
     /// and filled in.
     fn graphics(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -582,9 +586,9 @@ impl SetupApp {
             ui.add_space(4.0);
             ui.label(
                 RichText::new(
-                    "This is only the starting choice — it can be changed at any time under \
-                     View ▸ Graphics backend, and the viewer falls back on its own if the \
-                     one chosen here does not work.",
+                    "This is only the starting choice. It can be changed at any time under \
+                     Settings > Graphics backend, and the viewer falls back on its own if \
+                     the one chosen here does not work.",
                 )
                 .weak(),
             );
@@ -675,7 +679,7 @@ impl SetupApp {
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             if self.is_install() && self.error.is_none() {
-                ui.checkbox(&mut self.opts.launch_after, "Start the viewer now");
+                ui.checkbox(&mut self.opts.launch_after, format!("Start {APP_NAME} now"));
             }
             if ui.button("Close").clicked() {
                 if self.is_install() && self.error.is_none() && self.opts.launch_after {

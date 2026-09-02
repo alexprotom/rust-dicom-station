@@ -1,11 +1,11 @@
-//! The body-contour tool window — the fourth of the segmentation tools, and
+//! The body-contour tool window - the fourth of the segmentation tools, and
 //! the only one that can answer without a network.
 //!
 //! It shares its bones with the other three ([`super::seg_engines`]): a
 //! description, the tool's own inputs, an `Options` section, a licence line
 //! and a button row that becomes a progress row while a run is in flight.
 //! What it does differently is that its *method* choice changes what the
-//! rest of the window means — the classical method has no device, no model
+//! rest of the window means - the classical method has no device, no model
 //! and nothing to download, so those rows appear only when they matter.
 //!
 //! The window re-seeds its thresholds from the displayed series' modality
@@ -23,7 +23,7 @@ pub(super) struct BodyDialog {
     pub slot: usize,
     pub params: BodyParams,
     /// The modality the parameters were seeded from, so a series switch can
-    /// re-seed them — and only then.
+    /// re-seed them - and only then.
     pub seeded_for: String,
     /// One-line summary of the last finished run.
     pub status: Option<String>,
@@ -91,7 +91,7 @@ impl ViewerApp {
         };
         self.persist_settings();
         let progress = Arc::new(Progress::default());
-        progress.set("Preparing…");
+        progress.set("Preparing");
         self.body_slot = slot;
         self.body_job = Some(Job::spawn(progress, move |p| {
             (
@@ -102,7 +102,7 @@ impl ViewerApp {
     }
 
     /// A run finished: verify the slot still shows the same volume, land the
-    /// mask, and — when asked — file it as an RTSTRUCT `EXTERNAL` too.
+    /// mask, and - when asked - file it as an RTSTRUCT `EXTERNAL` too.
     pub(super) fn on_body_done(&mut self, slot: usize, result: BodyResult) {
         if !self.slot_still_shows(slot, result.volume_dims, &result.frame_of_reference_uid) {
             self.error = Some(stale_result(&BODY_CONTOUR));
@@ -110,7 +110,7 @@ impl ViewerApp {
         }
         if result.voxels == 0 {
             self.error = Some(
-                "The body contour came out empty — lower the threshold, or reduce the \
+                "The body contour came out empty - lower the threshold, or reduce the \
                  opening radius."
                     .into(),
             );
@@ -153,7 +153,7 @@ impl ViewerApp {
         };
         if let Some(d) = &mut self.body_dialog {
             d.status = Some(format!(
-                "✔ {}: {:.0} cm³{pieces} in {:.1} s{device} — {:.0} cm³ of couch, chair, \
+                "✔ {}: {:.0} cm³{pieces} in {:.1} s{device} - {:.0} cm³ of couch, chair, \
                  immobilisation and stray objects left out{}",
                 result.name,
                 result.cm3,
@@ -218,7 +218,7 @@ impl ViewerApp {
             |ui| {
                 ui.label(
                     "Finds the patient's outer surface and leaves the couch, the chair and \
-                     the immobilisation outside it — the EXTERNAL structure everything \
+                     the immobilisation outside it - the EXTERNAL structure everything \
                      downstream starts from.",
                 );
                 ui.separator();
@@ -278,7 +278,7 @@ impl ViewerApp {
                     ui.add(egui::TextEdit::singleline(&mut d.params.name).desired_width(140.0));
                     ui.checkbox(&mut d.params.make_external, "as EXTERNAL structure")
                         .on_hover_text(
-                            "Also file the result as an RTSTRUCT ROI of type EXTERNAL — \
+                            "Also file the result as an RTSTRUCT ROI of type EXTERNAL - \
                              what a planning system looks for to find the patient surface. \
                              It rides the DICOM export like any other contour.",
                         );
@@ -360,8 +360,8 @@ impl ViewerApp {
                     )
                     .on_hover_text(
                         "What the opening shaved off the body's own surface is always \
-                             given back. What stands clear of it — an ear, a nose, a \
-                             fingertip — is given back if it is small enough; a pad, a \
+                             given back. What stands clear of it - an ear, a nose, a \
+                             fingertip - is given back if it is small enough; a pad, a \
                              blanket or a bolus is not.",
                     );
                     ui.add_enabled_ui(d.params.recover_thin, |ui| {
@@ -478,7 +478,7 @@ impl ViewerApp {
 const DEFAULT_MR_FRACTION: f32 = 0.12;
 const DEFAULT_BIAS_SIGMA_MM: f64 = 40.0;
 
-/// The threshold row — a different question on CT and on MR, so a different
+/// The threshold row - a different question on CT and on MR, so a different
 /// row rather than one control that means two things.
 fn foreground_row(ui: &mut egui::Ui, fg: &mut Foreground) {
     match fg {
@@ -557,8 +557,8 @@ mod tests {
 
     #[test]
     fn the_tool_names_itself_like_the_others() {
-        assert_eq!(BODY_CONTOUR.title(0), "👤 Body contour — dataset A");
-        assert_eq!(BODY_CONTOUR.menu_entry(1), "👤 Body-contour dataset B…");
+        assert_eq!(BODY_CONTOUR.title(0), "👤 Body contour - dataset A");
+        assert_eq!(BODY_CONTOUR.menu_entry(1), "👤 Body-contour dataset B");
         assert_eq!(BODY_CONTOUR.short_button(), "👤 Body");
     }
 

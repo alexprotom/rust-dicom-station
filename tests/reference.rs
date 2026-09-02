@@ -1,7 +1,7 @@
 //! Numerical agreement with the reference implementation.
 //!
 //! These tests need the two files produced by
-//! `tools/gen_reference_activations.py` — a randomly initialized SAM 2.1-T at
+//! `tools/gen_reference_activations.py` - a randomly initialized SAM 2.1-T at
 //! 512 and its activations. They are ~160 MB and are not committed, so every
 //! test here is skipped (and says so) when `MEDSAM2_REF` does not point at
 //! them:
@@ -333,7 +333,7 @@ fn the_memory_attention_matches_the_reference() {
     );
     let mut worst = r.compare(out.swap_dims(0, 1), "memattn.out");
 
-    // and one frame with no pointers at all — the first propagated slice
+    // and one frame with no pointers at all - the first propagated slice
     let out = attn.forward(
         seq("memattn.curr"),
         seq("memattn.curr_pos"),

@@ -6,7 +6,7 @@
 //! mechanically from the geometry in [`super::config`], so [`expected`] builds
 //! all 471 key/shape pairs from it and the tests assert that they sum to the
 //! published parameter count. A checkpoint is then accepted only if it agrees
-//! with that derivation key for key — which catches both a drifted upstream
+//! with that derivation key for key - which catches both a drifted upstream
 //! file and a mistake in our own understanding of the architecture, and needs
 //! no 156 MB download to run.
 //!
@@ -59,7 +59,7 @@ pub fn group_of(key: &str) -> &'static str {
 /// when `directly_add_no_mem_embed` is false. MedSAM2's config sets it true,
 /// so the conditioning slice takes the short-circuit path (`no_mem_embed`
 /// added straight onto the features) and this tensor is never read. It is the
-/// only dead weight in the checkpoint — note in particular that
+/// only dead weight in the checkpoint - note in particular that
 /// `mask_downsample` is *not* dead here, because this engine does accept mask
 /// prompts.
 pub fn is_dead_weight(key: &str) -> bool {
@@ -79,7 +79,7 @@ impl Builder {
         self.put(format!("{p}.weight"), vec![out, inp]);
         self.put(format!("{p}.bias"), vec![out]);
     }
-    /// `nn.LayerNorm(n)` and the channels-first `LayerNorm2d(n)` — same pair.
+    /// `nn.LayerNorm(n)` and the channels-first `LayerNorm2d(n)` - same pair.
     fn norm(&mut self, p: &str, n: usize) {
         self.put(format!("{p}.weight"), vec![n]);
         self.put(format!("{p}.bias"), vec![n]);

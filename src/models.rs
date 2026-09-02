@@ -112,7 +112,7 @@ pub fn migrate_legacy_layout(root: &Path) -> Vec<Engine> {
 
 /// Which download an inventory row stands for.
 ///
-/// Each engine already describes its own published files —
+/// Each engine already describes its own published files -
 /// [`autoseg::weights::ModelSpec`], [`segvol::weights::CHECKPOINT`],
 /// [`medsam2::weights::Variant`]. This enum only records *which* of them a
 /// row is, so [`ensure`] can hand the actual work straight back to the engine
@@ -148,7 +148,7 @@ pub struct ModelAsset {
     /// With all of these present the model runs with no network access.
     pub ready: Vec<String>,
     /// Files the download leaves behind that nothing reads once the model is
-    /// ready — the raw checkpoint, interrupted temporaries. Removing them
+    /// ready - the raw checkpoint, interrupted temporaries. Removing them
     /// frees disk without costing anything.
     pub spare: Vec<String>,
 }
@@ -170,7 +170,7 @@ impl ModelAsset {
 pub struct AssetStatus {
     /// Every file needed to run offline is present.
     pub ready: bool,
-    /// Some — but not all — of them are.
+    /// Some - but not all - of them are.
     pub partial: bool,
     /// Bytes this model occupies, including the spare files.
     pub bytes: u64,
@@ -184,17 +184,17 @@ pub fn inventory() -> Vec<ModelAsset> {
 
     for spec in autoseg::weights::all_specs() {
         let detail = if spec.key == autoseg::weights::SPEC_3MM.key {
-            "All 117 structures at 3 mm — the fast default."
+            "All 117 structures at 3 mm - the fast default."
         } else if spec.key == autoseg::weights::SPEC_6MM.key {
-            "Coarse preview quality — the quickest look."
+            "Coarse preview quality - the quickest look."
         } else if spec.key == autoseg::weights::SPEC_BODY_6MM.key {
-            "Patient outline, 6 mm — what the body-contour tool's model-assisted \
+            "Patient outline, 6 mm - what the body-contour tool's model-assisted \
              method uses. Plenty, because it only decides which side of the skin \
              a voxel is on."
         } else if spec.key == autoseg::weights::SPEC_BODY_15MM.key {
             "Patient outline at full resolution; slower, for the same decision."
         } else if spec.key == autoseg::weights::SPEC_BODY_MR.key {
-            "Patient outline on MR — the body-contour tool's model for MR series."
+            "Patient outline on MR - the body-contour tool's model for MR series."
         } else {
             "Full-resolution sub-model; the five together are the reference quality."
         };
@@ -221,7 +221,7 @@ pub fn inventory() -> Vec<ModelAsset> {
         kind: AssetKind::SegVol,
         engine: Engine::SegVol,
         key: format!("{}/weights", Engine::SegVol.subdir()),
-        label: "SegVol — network weights".to_string(),
+        label: "SegVol - network weights".to_string(),
         detail: "3-D ViT image encoder, SAM-style prompt encoder and mask decoder \
                  (box and point prompts).",
         download_bytes: segvol::weights::CHECKPOINT.bytes,
@@ -233,7 +233,7 @@ pub fn inventory() -> Vec<ModelAsset> {
         kind: AssetKind::SegVolText,
         engine: Engine::SegVol,
         key: format!("{}/tokenizer", Engine::SegVol.subdir()),
-        label: "SegVol — CLIP tokenizer".to_string(),
+        label: "SegVol - CLIP tokenizer".to_string(),
         detail: "Byte-pair vocabulary and merge table; only *text* prompts need it.",
         download_bytes: segvol::weights::CLIP_FILES.iter().map(|f| f.bytes).sum(),
         subdir: "",
@@ -249,7 +249,7 @@ pub fn inventory() -> Vec<ModelAsset> {
             kind: AssetKind::MedSam2(v),
             engine: Engine::MedSam2,
             key: format!("{}/{}", Engine::MedSam2.subdir(), v.key()),
-            label: format!("MedSAM2 — {}", v.label()),
+            label: format!("MedSAM2 - {}", v.label()),
             detail: "SAM 2.1-T fine-tune with the memory bank; one architecture, \
                      one loader, a choice of training data.",
             download_bytes: v.file().bytes,
@@ -294,7 +294,7 @@ pub fn status(asset: &ModelAsset, root: &Path) -> AssetStatus {
 /// Download and convert one model if it is not ready yet.
 ///
 /// The work is the engine's own first-use path, so a model prepared here is
-/// bit for bit the one a run would have prepared — there is no second
+/// bit for bit the one a run would have prepared - there is no second
 /// download route to keep in step.
 pub fn ensure(asset: &ModelAsset, root: &Path, sink: &dyn ProgressSink) -> Result<()> {
     let dir = engine_dir(root, asset.engine);
@@ -338,8 +338,8 @@ fn delete(dir: &Path, names: &[String]) -> Result<u64> {
 
 /// Remove everything one model owns; returns the bytes freed.
 ///
-/// Only the file names the inventory lists are deleted — never a whole
-/// folder — so a model folder the user also keeps something else in survives
+/// Only the file names the inventory lists are deleted - never a whole
+/// folder - so a model folder the user also keeps something else in survives
 /// intact. The model's own sub-folder is removed afterwards if it came out
 /// empty.
 pub fn remove(asset: &ModelAsset, root: &Path) -> Result<u64> {
@@ -449,7 +449,7 @@ mod tests {
         std::fs::write(dir.join(&asset.spare[0]), vec![0u8; 2048]).unwrap();
         let s = status(&asset, &root);
         assert!(!s.ready && s.partial && s.bytes == 2048 && s.spare_bytes == 0);
-        // With the converted cache beside it, it is — and the source is spare.
+        // With the converted cache beside it, it is - and the source is spare.
         std::fs::write(dir.join(&asset.ready[0]), vec![0u8; 1024]).unwrap();
         let s = status(&asset, &root);
         assert!(s.ready && !s.partial);

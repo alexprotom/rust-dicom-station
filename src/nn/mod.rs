@@ -2,7 +2,7 @@
 //!
 //! Nothing in here knows about a particular architecture. It is the part of
 //! running a published PyTorch model natively that every engine needs, and
-//! all three — [`autoseg`] (nnU-Net), [`segvol`] and [`medsam2`] — are built
+//! all three - [`autoseg`] (nnU-Net), [`segvol`] and [`medsam2`] - are built
 //! on it and follow the same path: fetch the checkpoint once ([`cache`]),
 //! parse the torch pickle ([`pickle`]), convert to `safetensors`, load from
 //! that cache ever after, pick a device ([`device`]), and assemble the

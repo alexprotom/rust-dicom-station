@@ -30,7 +30,7 @@ pub fn discover(dir: Option<PathBuf>) -> Result<Target> {
     let manifest_path = dir.join(MANIFEST_FILE);
     let text = std::fs::read_to_string(&manifest_path).with_context(|| {
         format!(
-            "{} not found — this uninstaller must run from the folder it was installed into",
+            "{} not found - this uninstaller must run from the folder it was installed into",
             manifest_path.display()
         )
     })?;
@@ -67,7 +67,7 @@ pub fn relaunch_from_temp(target: &Target, extra_args: &[&str]) -> Result<std::p
         .with_context(|| format!("start {}", tmp.display()))
 }
 
-/// Remove the installation. `remove_models` also deletes the model root —
+/// Remove the installation. `remove_models` also deletes the model root -
 /// every engine's downloads, not only what the installer fetched.
 pub fn run(target: &Target, remove_models: bool, sink: Sink) -> Result<()> {
     let log = |s: String| sink(Event::Log(s));
@@ -82,11 +82,11 @@ pub fn run(target: &Target, remove_models: bool, sink: Sink) -> Result<()> {
             .open(&app_exe)
             .is_err()
     {
-        bail!("{APP_NAME} is still running — close it and try again");
+        bail!("{APP_NAME} is still running - close it and try again");
     }
 
     // ---- registry ---------------------------------------------------------
-    step(0.05, "Removing registry entries…");
+    step(0.05, "Removing registry entries");
     let hive = if m.machine_wide {
         Hive::LocalMachine
     } else {
@@ -124,7 +124,7 @@ pub fn run(target: &Target, remove_models: bool, sink: Sink) -> Result<()> {
     }
 
     // ---- shortcuts --------------------------------------------------------
-    step(0.15, "Removing shortcuts…");
+    step(0.15, "Removing shortcuts");
     for link in &m.shortcuts {
         if link.exists() {
             match std::fs::remove_file(link) {
@@ -135,7 +135,7 @@ pub fn run(target: &Target, remove_models: bool, sink: Sink) -> Result<()> {
     }
 
     // ---- files ------------------------------------------------------------
-    step(0.25, "Removing program files…");
+    step(0.25, "Removing program files");
     let total = m.files.len().max(1) as f32;
     let mut dirs: Vec<PathBuf> = Vec::new();
     for (i, rel) in m.files.iter().enumerate() {
@@ -158,7 +158,7 @@ pub fn run(target: &Target, remove_models: bool, sink: Sink) -> Result<()> {
             }
             p = d.parent().map(Path::to_path_buf);
         }
-        step(0.25 + 0.45 * (i as f32 / total), "Removing program files…");
+        step(0.25 + 0.45 * (i as f32 / total), "Removing program files");
     }
     // Deepest first, and only when empty.
     dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
@@ -168,7 +168,7 @@ pub fn run(target: &Target, remove_models: bool, sink: Sink) -> Result<()> {
 
     // ---- model folder -----------------------------------------------------
     if remove_models && !m.models_dir.as_os_str().is_empty() && m.models_dir.exists() {
-        step(0.75, "Removing the model folder…");
+        step(0.75, "Removing the model folder");
         match std::fs::remove_dir_all(&m.models_dir) {
             Ok(()) => log(format!("Removed {}", m.models_dir.display())),
             Err(e) => log(format!("Could not remove {}: {e}", m.models_dir.display())),
@@ -188,14 +188,14 @@ pub fn run(target: &Target, remove_models: bool, sink: Sink) -> Result<()> {
     }
 
     // ---- the last few files -----------------------------------------------
-    step(0.9, "Cleaning up…");
+    step(0.9, "Cleaning up");
     let _ = remove_with_retry(&dir.join(MANIFEST_FILE));
     let _ = remove_with_retry(&dir.join(UNINSTALLER_EXE));
     // Only removes the folder when nothing unexpected is left in it.
     match std::fs::remove_dir(dir) {
         Ok(()) => log(format!("Removed {}", dir.display())),
         Err(_) => log(format!(
-            "Left {} in place — it still contains files that were not installed by the setup",
+            "Left {} in place - it still contains files that were not installed by the setup",
             dir.display()
         )),
     }
@@ -230,7 +230,7 @@ fn remove_with_retry(path: &Path) -> std::io::Result<()> {
     last
 }
 
-/// Delete the now-empty folders the installer itself created around a path —
+/// Delete the now-empty folders the installer itself created around a path -
 /// never anything the user might have named.
 fn prune_empty_parents(start: &Path) {
     let mut parent = start.parent();

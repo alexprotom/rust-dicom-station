@@ -4,11 +4,11 @@ Intensity- and landmark-based registration between the two loaded datasets:
 three independent engines, per-run analytics, a deformation vector field
 you can see and export, and the option to restrict any of it to a single
 structure. elastix and plastimatch are C++/ITK toolboxes; nothing of either
-is linked — the algorithms are **re-implemented natively in Rust**.
+is linked - the algorithms are **re-implemented natively in Rust**.
 
 ![registration](screenshot_registration.png)
 
-*Deformable registration of two breathing phases: the sidebar reports the
+*Deformable registration of two breathing phases: the module reports the
 recovered transform and metric improvement; the fusion overlay shows aligned
 anatomy in gray, residual respiratory mismatch as magenta/green fringes.*
 
@@ -21,15 +21,15 @@ anatomy in gray, residual respiratory mismatch as magenta/green fringes.*
 | gradient | stochastic estimate | stochastic estimate | exact analytic | closed form |
 | optimizer | ASGD | ASGD | L-BFGS + line search | direct solve |
 | metric | mean squares | mean squares | mean squares **or** Mattes MI | landmark residual |
-| regularizer | — | — | bending energy | stiffness |
+| regularizer | - | - | bending energy | stiffness |
 | deterministic | seeded | seeded | yes | yes |
 | multi-modal | no | no | yes (MI) | yes |
 
-### elastix — stochastic sampling and ASGD
+### elastix - stochastic sampling and ASGD
 
-A native re-implementation of elastix's own defaults — `Optimizer
+A native re-implementation of elastix's own defaults - `Optimizer
 AdaptiveStochasticGradientDescent`, `ImageSampler RandomCoordinate`,
-`NewSamplesEveryIteration true` and `Metric AdvancedMeanSquares` — and the
+`NewSamplesEveryIteration true` and `Metric AdvancedMeanSquares` - and the
 engine to reach for first: iterations are cheap, so thousands are
 affordable, and the estimate's noise carries the search past small local
 minima.
@@ -42,7 +42,7 @@ minima.
   drawn from a pre-built eligible-voxel list, so every draw is a hit.
 * **Metric:** mean squared difference with analytic gradients.
 * **Optimizer:** Adaptive Stochastic Gradient Descent (Klein et al., IJCV
-  2009 — elastix's default) with automatic gain estimation, the sigmoid
+  2009 - elastix's default) with automatic gain estimation, the sigmoid
   time-adaptation rule and a trust-region step cap.
 * **Rigid:** 6-DOF Euler transform about the fixed-image centre, with
   automatic rotation/translation parameter scaling.
@@ -50,13 +50,13 @@ minima.
   deformation (`FinalGridSpacingInPhysicalUnits`, default 32 mm), optimized
   coarse-to-fine across the pyramid.
 
-### plastimatch — a dense exact gradient and L-BFGS
+### plastimatch - a dense exact gradient and L-BFGS
 
 Following plastimatch's `bspline` (Shackleford et al., *High performance
-deformable image registration algorithms for manycore processors*) — the
+deformable image registration algorithms for manycore processors*) - the
 opposite trade: far more work per iteration, far fewer of them.
 
-1. `xform=align_center` — a translation matching the centres of gravity of
+1. `xform=align_center` - a translation matching the centres of gravity of
    the two thresholded images. Skipped for a local run or a refinement,
    which already start aligned.
 2. `xform=bspline` per resolution level, coarse to fine: the cost and its
@@ -67,7 +67,7 @@ opposite trade: far more work per iteration, far fewer of them.
   image's variance, so the cost is dimensionless. `mi` is **Mattes mutual
   information** over a 32 × 32 joint histogram, zero-order Parzen window on
   the fixed image and cubic B-spline window on the moving one (Mattes et
-  al., IEEE TMI 2003) — the multi-modal (CT–MR, CT–CBCT) option.
+  al., IEEE TMI 2003) - the multi-modal (CT-MR, CT-CBCT) option.
 * **Regularizer.** `young_modulus` weights the discrete bending energy of
   the control lattice (second differences, mixed terms counted twice), made
   dimensionless by the lattice spacing; its gradient is exact.
@@ -76,12 +76,12 @@ opposite trade: far more work per iteration, far fewer of them.
   box constraints, which B-spline coefficients lack.
 
 "Dense" is capped at 400 000 samples per level, thinned deterministically
-so the set is the same on every iteration — on a 512³ study every eligible
+so the set is the same on every iteration - on a 512³ study every eligible
 voxel is tens of millions.
 
-### plastimatch — landmark warp
+### plastimatch - landmark warp
 
-`landmark_warp` interpolates paired points and reads no image intensity —
+`landmark_warp` interpolates paired points and reads no image intensity -
 for CT against MR, a post-operative cavity, anatomy that genuinely changed,
 or when specific anatomical points must be honoured and nothing else.
 
@@ -107,8 +107,8 @@ and, after a run, its residual.
 
 ## Running a registration
 
-*Modules ▶ Image registration* puts the section — method, region,
-parameters, landmarks, result and vector field — in the left panel. With
+*Modules ▶ Image registration* puts the section - method, region,
+parameters, landmarks, result and vector field - in the right panel. With
 two datasets loaded it registers one onto the other, **B ▶ A** or **A ▶ B**
 (the second-named is the fixed image and receives the fusion overlay), on a
 background thread with progress and a **Cancel** button.
@@ -122,9 +122,24 @@ rigid pre-alignment plus three B-spline resolution levels, 1800 iterations
 total, ≈ 20 s on a desktop CPU, driving the mean-squared HU difference from
 ≈ 9700 to ≈ 1800.
 
+## Against a 4D group
+
+The **Fixed image** row offers, besides the other dataset's displayed volume,
+**every phase of a 4D group** of either dataset. That runs one registration
+per phase against the moving dataset's displayed volume: the phases of one
+acquisition differ by breathing, so a single transform for the group would be
+answering a question nobody asked.
+
+The moving image can be the group's own dataset - a planning CT and the 4DCT
+of the same patient usually arrive together - or the other one. Each phase
+reports its own metric line, and the transforms are kept so that propagating
+structures onto the same group afterwards costs no registration
+([propagation.md](propagation.md)). **Clear group registration** drops them,
+as does clearing the registration.
+
 ## Local registration
 
-Any method can be restricted to a **region** — an RTSTRUCT ROI or a painted
+Any method can be restricted to a **region** - an RTSTRUCT ROI or a painted
 segmentation of the fixed dataset, dilated by a margin. Three things change:
 
 * samples come from inside the region only;
@@ -144,7 +159,7 @@ constrains the boundary being aligned.
 
 **▶ Refine** recovers a correction *on top of* the active registration: the
 moving image is sampled through the existing transform plus the new
-deformation, and the result is the two composed — typically a global
+deformation, and the result is the two composed - typically a global
 registration, then a local refinement on the structure that matters, leaving
 the rest of the patient on the global result.
 
@@ -155,16 +170,16 @@ deformation model. The **Analysis** section is measured on the transform
 itself, on a lattice over the fixed image (or the region), so it means the
 same for every method:
 
-* **Best-fitting rigid body** — the orthogonal Procrustes fit: translation,
+* **Best-fitting rigid body** - the orthogonal Procrustes fit: translation,
   three Euler angles in the same `Rz Ry Rx` convention as the rigid
   transform, and the RMS residual those six numbers do *not* explain.
-* **Displacements** — min / mean / p95 / max / RMS of `|T(p) − p|` in
+* **Displacements** - min / mean / p95 / max / RMS of `|T(p) − p|` in
   millimetres, plus the mean *vector* (systematic shift vs. scattered local
   motion).
-* **Jacobian determinant** — `det(I + ∂d/∂x)` by central differences: above
+* **Jacobian determinant** - `det(I + ∂d/∂x)` by central differences: above
   1 the tissue expanded, below 1 it compressed, at or below zero it folded.
   The folded fraction is reported; a regularized B-spline should show none.
-* **Per structure** — mean and maximum displacement over each contoured
+* **Per structure** - mean and maximum displacement over each contoured
   structure's own points: "the tumour moved 9 mm and the cord 0.4 mm"
   rather than "4 mm on average".
 
@@ -175,7 +190,7 @@ channel (aligned anatomy gray, mismatch magenta/green) with a blend slider;
 the cross-study crosshair link maps through the recovered transform, inverse
 included.
 
-The **vector field** is the transform sampled onto a regular lattice — once,
+The **vector field** is the transform sampled onto a regular lattice - once,
 not per pixel on every repaint: a B-spline evaluation is 64 weighted
 lookups, a landmark warp a sum over every landmark. It is drawn in all three
 MPR views of the fixed dataset and, optionally, in the 3D window:
@@ -183,7 +198,7 @@ MPR views of the fixed dataset and, optionally, in the 3D window:
 * **Arrows** from where anatomy is to where it goes, exaggerated by an
   adjustable factor (millimetre motion is invisible at 1×) and coloured by
   magnitude; out-of-plane displacement becomes a disc sized by that component.
-* **Deformed grid** — the sampling lattice pushed through the deformation:
+* **Deformed grid** - the sampling lattice pushed through the deformation:
   warped graph paper, showing compression and expansion.
 * Lattice spacing, arrow scale and colouring are adjustable; changing the
   spacing re-samples on a worker thread.
@@ -208,15 +223,15 @@ mapping, `T(p) − p`.
 
 ## Propagating structures
 
-Once aligned, contours drawn on one dataset can be carried to the other —
+Once aligned, contours drawn on one dataset can be carried to the other -
 see [propagation.md](propagation.md).
 
 ## Transform simulator (registration QA)
 
-The *Simulation* sidebar section applies an **exactly known** transform —
+The *Simulation* module section applies an **exactly known** transform -
 rigid motion (translation + Euler rotation about the volume centre) plus an
 optional local Gaussian deformation (amplitude vector + σ, centred at the
-crosshair) — to a loaded dataset and generates the result into the other
+crosshair) - to a loaded dataset and generates the result into the other
 slot: the CT is resampled through the inverse transform; structure contours,
 dose grids and plan isocentres are carried along. The applied parameters
 stay displayed as ground truth. Any dataset, original or simulated, can then
@@ -254,7 +269,7 @@ region.
 ## Notes
 
 Deformable results are intensity-driven: displacements inside large uniform
-regions are interpolated from the control lattice rather than measured — the
+regions are interpolated from the control lattice rather than measured - the
 Jacobian and per-structure displacements tell the difference. Mean squares
-assumes comparable intensities (CT–CT); for CT–MR use the plastimatch engine
+assumes comparable intensities (CT-CT); for CT-MR use the plastimatch engine
 with mutual information, or place landmarks.

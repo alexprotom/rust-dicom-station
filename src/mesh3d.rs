@@ -3,13 +3,13 @@
 //!
 //! Pipeline per ROI (pure Rust, background thread):
 //! 1. rasterize the planar contours into a patient-axis-aligned binary mask
-//!    (even–odd scanline fill, contours extruded to the nearest mask layers);
+//!    (even-odd scanline fill, contours extruded to the nearest mask layers);
 //! 2. extract the boundary surface with the **surface nets** algorithm
 //!    (one vertex per mixed cell, quads across sign-changing grid edges);
 //! 3. Laplacian smoothing (3 iterations) to remove voxel staircase artifacts;
 //! 4. area-weighted per-vertex normals for Gouraud shading.
 //!
-//! Painted segmentations skip step 1 — their voxel mask feeds the same
+//! Painted segmentations skip step 1 - their voxel mask feeds the same
 //! surface-nets pipeline directly via [`mesh_from_mask`].
 //!
 //! The result is comparable to the segmentation surfaces shown by tools like
@@ -29,7 +29,7 @@ pub struct RoiMesh {
     /// Index of the ROI within the structure set (drives visibility).
     pub roi_index: usize,
     pub color: [u8; 3],
-    /// EXTERNAL / body contour — drawn translucent so interior structures
+    /// EXTERNAL / body contour - drawn translucent so interior structures
     /// stay visible (as in 3D Slicer).
     pub external: bool,
     /// Vertex positions in patient coordinates (mm).
@@ -51,7 +51,7 @@ pub fn build_meshes(ss: &StructureSet, progress: &Progress) -> Vec<RoiMesh> {
         .filter_map(|(i, roi)| {
             let m = build_roi_mesh(i, roi);
             let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            progress.set(format!("Meshing structures… {d}/{n}"));
+            progress.set(format!("Meshing structures {d}/{n}"));
             m
         })
         .collect();
@@ -139,7 +139,7 @@ fn build_roi_mesh(roi_index: usize, roi: &Roi) -> Option<RoiMesh> {
             if (gzv - z).abs() > half_slab {
                 return;
             }
-            // Even–odd scanline fill across all contours of this plane. The
+            // Even-odd scanline fill across all contours of this plane. The
             // crossing buffer is reused down the layer rather than reallocated
             // for every scanline.
             let mut xs: Vec<f64> = Vec::new();
@@ -382,8 +382,8 @@ fn net_surface(
 
     // ---- Laplacian smoothing --------------------------------------------
     // Vertex adjacency in compressed-row form. Storing it as a `Vec` per
-    // vertex deduplicated by linear scan meant one heap allocation per vertex
-    // — on a body contour that is well over a hundred thousand allocations.
+    // vertex deduplicated by linear scan meant one heap allocation per vertex -
+    // on a body contour that is well over a hundred thousand allocations.
     let nv = verts.len();
     let mut start = vec![0u32; nv + 1];
     for t in &tris {
