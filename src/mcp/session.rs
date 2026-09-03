@@ -357,6 +357,47 @@ impl Session {
             .add_root(path, label);
     }
 
+    // ---- paths ------------------------------------------------------------
+
+    /// Resolve a path the client sent, accepting the labels the redactor
+    /// reports folders under.
+    ///
+    /// Every path that leaves the server has its root replaced by a label:
+    /// `root1/...`, `output/...`, `output/session/...`. A client only ever
+    /// sees those, so it must be able to send them back - the folder
+    /// `anonymize` reports is exactly what `open_dataset` is given next.
+    /// A label prefix is mapped to its folder here, then the result goes
+    /// through the configured-roots check like any literal path.
+    pub fn resolve_input(&self, given: &std::path::Path) -> Result<(PathBuf, String)> {
+        let text = given.to_string_lossy().replace('\\', "/");
+        let text = text.trim_start_matches("./");
+        let mut candidates: Vec<(String, &std::path::Path)> = Vec::new();
+        if let Some(d) = &self.out_dir {
+            candidates.push(("output/session".to_string(), d.as_path()));
+        }
+        if let Some(o) = &self.config.output_dir {
+            candidates.push(("output".to_string(), o.as_path()));
+        }
+        for (i, r) in self.config.roots.iter().enumerate() {
+            candidates.push((format!("root{}", i + 1), r.as_path()));
+        }
+        // Longest label first, so `output/session` wins over `output`.
+        candidates.sort_by_key(|c| std::cmp::Reverse(c.0.len()));
+        for (label, folder) in candidates {
+            let rest = match text.strip_prefix(&label) {
+                Some("") => "",
+                Some(r) if r.starts_with('/') => r.trim_start_matches('/'),
+                _ => continue,
+            };
+            let mut p = folder.to_path_buf();
+            if !rest.is_empty() {
+                p.push(rest);
+            }
+            return self.config.resolve_input(&p);
+        }
+        self.config.resolve_input(given)
+    }
+
     // ---- output -----------------------------------------------------------
 
     /// The session's output folder, `output_dir/rds-mcp-YYYYMMDD-HHMMSS`,

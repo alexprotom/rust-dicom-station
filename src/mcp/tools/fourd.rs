@@ -16,7 +16,7 @@ use crate::fourd::Role;
 use crate::motion::{MotionModel, MotionReport};
 use crate::progress::Progress;
 use crate::registration::{RegMethod, RegParams};
-use crate::workflow::{self, group, motion};
+use crate::workflow::{self, anchored, group, motion, select};
 
 pub fn list_4d_groups(core: &mut Core, a: DatasetArgs, _p: &Progress) -> Result<Value> {
     let ds = core.session.dataset(&a.dataset)?;
@@ -88,7 +88,8 @@ pub struct GroupArgs {
     #[serde(default)]
     pub structures: Vec<StructureArg>,
     /// `elastix_bspline` (default) or `plastimatch_bspline`; a rigid method
-    /// is refused, the phases differ by breathing.
+    /// is refused, the phases differ by breathing. With an `anchor` this is
+    /// the refinement stage's method.
     #[serde(default)]
     pub method: Option<String>,
     #[serde(default)]
@@ -96,7 +97,50 @@ pub struct GroupArgs {
     #[serde(default)]
     pub iterations: Option<usize>,
     #[serde(default)]
+    pub samples: Option<usize>,
+    #[serde(default)]
     pub grid_spacing_mm: Option<f64>,
+    /// A structure contoured on the source *and* on every phase (in each
+    /// phase's own structure set), for example the heart. The run is then
+    /// anchored on it: centroids matched first (the two images need not
+    /// overlap at all), a rigid registration sampling only the structure
+    /// plus `anchor_margin_mm`, then a local deformable refinement unless
+    /// `rigid_only`. The structure travels with the others and its overlap
+    /// with the phase's own contour is reported as the check. This is the
+    /// way to bring a cardiac CT onto a 4DCT.
+    #[serde(default)]
+    pub anchor: Option<StructureArg>,
+    /// Dilation of the anchor that bounds the registration, mm.
+    #[serde(default = "default_anchor_margin")]
+    pub anchor_margin_mm: f64,
+    /// Anchored run: stop after the rigid stage.
+    #[serde(default)]
+    pub rigid_only: bool,
+    /// After landing: morphological closing radius, mm (gaps narrower than
+    /// twice this are bridged; a cloud of pieces becomes one surface).
+    #[serde(default)]
+    pub close_mm: f64,
+    /// After landing (and closing): fill the interior, so a surface becomes
+    /// a solid.
+    #[serde(default)]
+    pub fill: bool,
+    /// Where the propagated structures are filed on each phase:
+    /// `segmentation` (default; a new segmentation series bound to the
+    /// phase) or `structure_set` (contours appended to the phase's own RT
+    /// structure set, the one that references the phase's series; a new set
+    /// bound to it when there is none).
+    #[serde(default)]
+    pub land: Option<String>,
+    /// Anchored run: what the registration compares. `contours` (default)
+    /// matches the anchor's surfaces through their signed distance maps,
+    /// indifferent to contrast agent and cardiac phase; `intensity` matches
+    /// the images inside the region.
+    #[serde(default)]
+    pub anchor_by: Option<String>,
+}
+
+fn default_anchor_margin() -> f64 {
+    10.0
 }
 
 pub fn propagate_to_group(core: &mut Core, a: GroupArgs, p: &Progress) -> Result<Value> {
@@ -122,6 +166,7 @@ pub fn propagate_to_group(core: &mut Core, a: GroupArgs, p: &Progress) -> Result
             .structure(&src_ds_id, &s.structure, s.set.as_deref())?;
         subjects.push(st.subject_on(&src_grid)?);
     }
+    let land = parse_landing(a.land.as_deref())?;
     let method = match &a.method {
         Some(m) => parse_method(m)?,
         None => RegMethod::ElastixBSpline,
@@ -139,13 +184,22 @@ pub fn propagate_to_group(core: &mut Core, a: GroupArgs, p: &Progress) -> Result
     if let Some(v) = a.iterations {
         params.iterations = v.clamp(1, 5000);
     }
+    if let Some(v) = a.samples {
+        params.samples = v.clamp(100, 200_000);
+    }
     if let Some(v) = a.grid_spacing_mm {
         params.grid_spacing_mm = v.clamp(4.0, 200.0);
     }
-    // Transforms already made for this group from this moving series.
     let moving_uid = core.session.dataset(&src_ds_id)?.study.series[moving_idx]
         .uid
         .clone();
+    if let Some(anchor) = &a.anchor {
+        return propagate_anchored(
+            core, &a, anchor, src_ds_id, gi, phases, group_name, moving_idx, moving_uid, src_vol,
+            subjects, params, p,
+        );
+    }
+    // Transforms already made for this group from this moving series.
     let cached: Vec<Option<Arc<crate::registration::Transform3>>> =
         match core.session.group_registrations.iter().find(|g| {
             g.dataset == a.dataset && g.group == gi && g.moving == (src_ds_id.clone(), moving_idx)
@@ -168,6 +222,10 @@ pub fn propagate_to_group(core: &mut Core, a: GroupArgs, p: &Progress) -> Result
         phases,
         cached,
         params,
+        finish: crate::propagate::Finish {
+            close_mm: a.close_mm.clamp(0.0, 50.0),
+            fill: a.fill,
+        },
         group_name: group_name.clone(),
         group: gi,
         moving_slot: 0,
@@ -185,25 +243,19 @@ pub fn propagate_to_group(core: &mut Core, a: GroupArgs, p: &Progress) -> Result
             .map(|it| {
                 json!({
                     "structure": clean_text(&it.name),
-                    "source_cm3": round1(it.source_cm3),
-                    "result_cm3": round1(it.result_cm3),
+                    "source_cm3": round2(it.source_cm3),
+                    "mapped_cm3": round2(it.mapped_cm3),
+                    "result_cm3": round2(it.result_cm3),
                     "voxels": it.voxels,
                 })
             })
             .collect();
-        let mut set = String::new();
-        if let Some(series) = ph.seg_series(&group_name) {
-            set = series.label.clone();
-            core.session
-                .dataset_mut(&a.dataset)?
-                .study
-                .seg_series
-                .push(series);
-        }
+        let set = file_phase(core, &a.dataset, &group_name, ph, land)?;
         phase_reports.push(json!({
             "phase": clean_text(&ph.label),
             "registration": ph.metric_line,
             "set": clean_text(&set),
+            "landed_as": land.label(),
             "structures": items,
         }));
         regs.push(PhaseReg {
@@ -232,6 +284,194 @@ pub fn propagate_to_group(core: &mut Core, a: GroupArgs, p: &Progress) -> Result
         "source": { "dataset": src_ds_id, "series": moving_idx + 1 },
         "transforms_reused": reused,
         "phases": phase_reports,
+    }))
+}
+
+fn parse_landing(s: Option<&str>) -> Result<group::Landing> {
+    Ok(match s.map(str::trim) {
+        None | Some("") | Some("segmentation") => group::Landing::Segmentation,
+        Some("structure_set") | Some("rtstruct") => group::Landing::StructureSet,
+        Some(other) => bail!("land must be segmentation or structure_set (got '{other}')"),
+    })
+}
+
+/// File one phase's propagated structures on the dataset, the way `land`
+/// asks; returns the label of the set they went into.
+fn file_phase(
+    core: &mut Core,
+    dataset: &str,
+    group_name: &str,
+    ph: &group::PhaseOutcome,
+    land: group::Landing,
+) -> Result<String> {
+    let ds = core.session.dataset_mut(dataset)?;
+    Ok(match land {
+        group::Landing::Segmentation => match ph.seg_series(group_name) {
+            Some(series) => {
+                let label = series.label.clone();
+                ds.study.seg_series.push(series);
+                label
+            }
+            None => String::new(),
+        },
+        group::Landing::StructureSet => group::land_in_structure_set(
+            &mut ds.study,
+            &ph.series_uid,
+            &ph.study_uid,
+            &ph.grid,
+            &ph.items,
+            &format!("{} {}", group_name, ph.label),
+        )
+        .map(|(label, _)| label)
+        .unwrap_or_default(),
+    })
+}
+
+/// The anchored variant of [`propagate_to_group`]: see
+/// [`crate::workflow::anchored`].
+#[allow(clippy::too_many_arguments)]
+fn propagate_anchored(
+    core: &mut Core,
+    a: &GroupArgs,
+    anchor: &StructureArg,
+    src_ds_id: String,
+    gi: usize,
+    phases: Vec<(String, crate::loader::SeriesInfo)>,
+    group_name: String,
+    moving_idx: usize,
+    moving_uid: String,
+    src_vol: Arc<crate::volume::Volume>,
+    subjects: Vec<crate::propagate::Subject>,
+    params: RegParams,
+    p: &Progress,
+) -> Result<Value> {
+    let src_anchor =
+        core.session
+            .structure(&src_ds_id, &anchor.structure, anchor.set.as_deref())?;
+    // The anchor on every phase: the contour drawn on that phase's series.
+    let mut anchored = Vec::with_capacity(phases.len());
+    {
+        let ds = core.session.dataset(&a.dataset)?;
+        for (label, series) in phases {
+            let Some(st) = select::find_on_series(&ds.study, &anchor.structure, &series.uid, "")
+            else {
+                bail!(
+                    "no structure '{}' for phase '{}' of {}; an anchored run needs it contoured \
+                     on every phase",
+                    anchor.structure,
+                    label,
+                    a.dataset
+                );
+            };
+            anchored.push(anchored::AnchoredPhase {
+                label,
+                series,
+                anchor: st,
+            });
+        }
+    }
+    let land = parse_landing(a.land.as_deref())?;
+    let mode = match a.anchor_by.as_deref().map(str::trim) {
+        None | Some("") | Some("contours") => anchored::AnchorMode::Contours,
+        Some("intensity") => anchored::AnchorMode::Intensity,
+        Some(other) => bail!("anchor_by must be contours or intensity (got '{other}')"),
+    };
+    let rigid = anchored::default_rigid(&params);
+    let deformable = (!a.rigid_only).then(|| anchored::default_deformable(&params));
+    let req = anchored::AnchoredRequest {
+        src_vol,
+        src_anchor,
+        subjects,
+        phases: anchored,
+        margin_mm: a.anchor_margin_mm,
+        mode,
+        rigid,
+        deformable,
+        finish: crate::propagate::Finish {
+            close_mm: a.close_mm.clamp(0.0, 50.0),
+            fill: a.fill,
+        },
+        group_name: group_name.clone(),
+        group: gi,
+        moving_slot: 0,
+        moving_series_uid: moving_uid,
+    };
+    let out = anchored::run(req, p)?;
+
+    let mut phase_reports = Vec::new();
+    let mut regs = Vec::new();
+    for (ph, qa) in out.group.phases.iter().zip(&out.qa) {
+        let items: Vec<Value> = ph
+            .items
+            .iter()
+            .map(|it| {
+                json!({
+                    "structure": clean_text(&it.name),
+                    "source_cm3": round2(it.source_cm3),
+                    "mapped_cm3": round2(it.mapped_cm3),
+                    "result_cm3": round2(it.result_cm3),
+                    "voxels": it.voxels,
+                })
+            })
+            .collect();
+        let set = file_phase(core, &a.dataset, &group_name, ph, land)?;
+        phase_reports.push(json!({
+            "phase": clean_text(&ph.label),
+            "registration": ph.metric_line,
+            "set": clean_text(&set),
+            "landed_as": land.label(),
+            "structures": items,
+            "anchor_check": {
+                "anchor": clean_text(&qa.anchor),
+                "initial_shift_mm": round1(qa.initial_shift_mm),
+                "rigid": qa.rigid_line,
+                "deformable": qa.deformable_line,
+                "displacement_p95_mm": qa.displacement_p95_mm.map(round2),
+                "folded_fraction": qa.folded_fraction.map(round3),
+                "dice": qa.overlap.as_ref().map(|o| round3(o.dice)),
+                "hd95_mm": qa.overlap.as_ref().map(|o| round2(o.hd95_mm)),
+                "mean_surface_distance_mm": qa.overlap.as_ref().map(|o| round2(o.msd_mm)),
+                "centroid_shift_mm": qa.overlap.as_ref().and_then(|o| o.centroid_shift()).map(vec3),
+                "verdict": qa.verdict(),
+            },
+        }));
+        regs.push(PhaseReg {
+            label: ph.label.clone(),
+            series_uid: ph.series_uid.clone(),
+            transform: ph.transform.clone(),
+            metric_line: ph.metric_line.clone(),
+        });
+    }
+    core.session.group_registrations.retain(|g| {
+        !(g.dataset == a.dataset && g.group == gi && g.moving == (src_ds_id.clone(), moving_idx))
+    });
+    let id = core.session.mint("greg");
+    core.session.group_registrations.push(GroupRegistration {
+        id: id.clone(),
+        dataset: a.dataset.clone(),
+        group: gi,
+        group_name: group_name.clone(),
+        moving: (src_ds_id.clone(), moving_idx),
+        phases: regs,
+    });
+    let worst = out
+        .qa
+        .iter()
+        .filter_map(|q| q.overlap.as_ref().map(|o| o.dice))
+        .fold(f64::NAN, f64::min);
+    Ok(json!({
+        "greg": id,
+        "dataset": a.dataset,
+        "group": clean_text(&group_name),
+        "source": { "dataset": src_ds_id, "series": moving_idx + 1 },
+        "anchor": clean_text(&anchor.structure),
+        "anchor_by": mode.label(),
+        "stages": if a.rigid_only { "centroids, rigid" } else { "centroids, rigid, deformable" },
+        "worst_anchor_dice": if worst.is_nan() { None } else { Some(round3(worst)) },
+        "phases": phase_reports,
+        "note": "each phase's transform maps the phase onto the source; the anchor's Dice \
+                 against the phase's own contour is the check on everything that travelled \
+                 with it",
     }))
 }
 

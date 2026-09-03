@@ -139,6 +139,7 @@ fn one_volume_onto_every_phase_reuses_cached_transforms() {
         phases: phases.clone(),
         cached: vec![None; 3],
         params: params.clone(),
+        finish: Default::default(),
         group_name: g.name.clone(),
         group: 0,
         moving_slot: 0,
@@ -164,6 +165,7 @@ fn one_volume_onto_every_phase_reuses_cached_transforms() {
         phases,
         cached,
         params,
+        finish: Default::default(),
         group_name: g.name.clone(),
         group: 0,
         moving_slot: 0,
@@ -194,5 +196,290 @@ fn structures_are_found_by_name_and_set() {
         .mask_on(&grid)
         .unwrap();
     assert!(mask.contains(&1));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_structure_is_found_on_its_own_series_first() {
+    let dir = common::target_dir("test_workflow_on_series");
+    let folder = common::fourd_folder(&dir, SHIFTS);
+    let study = loader::load_directory(&folder, &Progress::default()).unwrap();
+    let phases = workflow::phases_of(&study.fourd_groups[0], &study.series).unwrap();
+    // The structure set was drawn on phase 0 and says so; asked about phase
+    // 0 it is found by that reference, asked about another phase the search
+    // widens to the study rather than coming back empty.
+    for (label, series) in &phases {
+        let body = select::find_on_series(&study, "body", &series.uid, "");
+        assert!(body.is_some(), "BODY resolves for phase {label}");
+    }
+    assert!(select::find_on_series(&study, "LIVER", &phases[0].1.uid, "").is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The anchored run on the phantom filed in another frame: the outcome
+/// and the name of the group, for the two modes' assertions.
+fn anchored_case(
+    tag: &str,
+    mode: rust_dicom_station::workflow::anchored::AnchorMode,
+) -> (
+    rust_dicom_station::workflow::anchored::AnchoredOutcome,
+    rust_dicom_station::geometry::Vec3,
+) {
+    use rust_dicom_station::geometry::Vec3;
+    use rust_dicom_station::volume::Volume;
+    use rust_dicom_station::workflow::anchored;
+    use std::sync::Arc;
+
+    let dir = common::target_dir(tag);
+    let folder = common::fourd_folder(&dir, SHIFTS);
+    let study = loader::load_directory(&folder, &Progress::default()).unwrap();
+    let g = &study.fourd_groups[0];
+    let phases = workflow::phases_of(g, &study.series).unwrap();
+
+    // The source: the phase-0 phantom filed in another frame of reference,
+    // 600 mm away in patient coordinates - the way a cardiac CT and a 4DCT
+    // of one patient sit. Its structures go with it, since masks live in
+    // voxel space.
+    let offset = Vec3::new(30.0, -250.0, 600.0);
+    // Phase 0 explicitly: the displayed series of a 4D study is whichever
+    // the loader put first, and the target's expected positions below are
+    // relative to phase 0.
+    let (phase0, _, _) = loader::load_series_volume(&phases[0].1, &Progress::default()).unwrap();
+    let mut src: Volume = phase0;
+    let grid0 = src.grid();
+    src.origin = src.origin + offset;
+    src.frame_of_reference_uid = "1.2.3.4.5.6.7.8.9".into();
+    let src = Arc::new(src);
+    let src_grid = src.grid();
+    let on_source = |name: &str| {
+        // Rasterized on phase 0's lattice, then filed on the shifted one:
+        // the same voxels, so the structure moved with the image.
+        let mask = select::find(&study, name, None)
+            .unwrap()
+            .mask_on(&grid0)
+            .unwrap();
+        select::Structure {
+            name: name.to_string(),
+            color: [200, 40, 40],
+            source: select::Source::Mask {
+                mask,
+                grid: src_grid.clone(),
+            },
+        }
+    };
+    let src_anchor = on_source("BODY");
+    let target = on_source("TARGET");
+    let subjects = vec![target.subject_on(&src_grid).unwrap()];
+    let anchored_phases: Vec<_> = phases
+        .iter()
+        .map(|(label, series)| anchored::AnchoredPhase {
+            label: label.clone(),
+            series: series.clone(),
+            anchor: select::find_on_series(&study, "BODY", &series.uid, "").unwrap(),
+        })
+        .collect();
+    let base = RegParams {
+        levels: 2,
+        iterations: 150,
+        samples: 2000,
+        grid_spacing_mm: 16.0,
+        ..RegParams::default()
+    };
+    let req = anchored::AnchoredRequest {
+        src_vol: src.clone(),
+        src_anchor,
+        subjects,
+        phases: anchored_phases,
+        margin_mm: 10.0,
+        mode,
+        rigid: anchored::default_rigid(&base),
+        deformable: Some(anchored::default_deformable(&base)),
+        finish: Default::default(),
+        group_name: g.name.clone(),
+        group: 0,
+        moving_slot: 0,
+        moving_series_uid: study.series[0].uid.clone(),
+    };
+    let t0 = std::time::Instant::now();
+    let out = anchored::run(req, &Progress::default()).expect("the anchored run works");
+    eprintln!(
+        "anchored run ({}): {:.1} s",
+        mode.label(),
+        t0.elapsed().as_secs_f64()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    (out, offset)
+}
+
+#[test]
+fn a_volume_in_another_frame_is_anchored_on_a_structure_and_lands() {
+    use rust_dicom_station::motion;
+    use rust_dicom_station::workflow::anchored::AnchorMode;
+
+    let (out, offset) = anchored_case("test_workflow_anchored", AnchorMode::Intensity);
+    assert_eq!(out.group.phases.len(), 3);
+    assert_eq!(out.qa.len(), 3);
+
+    let mut centroids = Vec::new();
+    for (ph, qa) in out.group.phases.iter().zip(&out.qa) {
+        eprintln!("{}  |  {}", ph.metric_line, qa.line());
+        assert!(
+            (qa.initial_shift_mm - offset.length()).abs() < 5.0,
+            "the initialisation closed the frame offset: {:.1} vs {:.1} mm",
+            qa.initial_shift_mm,
+            offset.length()
+        );
+        let o = qa.overlap.as_ref().expect("the anchor landed");
+        assert!(
+            o.dice > 0.9,
+            "phase {}: the body lands on the body (Dice {:.3})",
+            ph.label,
+            o.dice
+        );
+        assert_eq!(qa.verdict(), "good");
+        // The target and the anchor both travelled; the target is item 0.
+        assert_eq!(ph.items.len(), 2);
+        let t = &ph.items[0];
+        assert_eq!(t.name, "TARGET");
+        assert!(t.voxels > 0, "the target lands on {}", ph.label);
+        assert!(
+            (t.result_cm3 - t.source_cm3).abs() / t.source_cm3 < 0.3,
+            "volume roughly preserved on {}: {:.1} -> {:.1}",
+            ph.label,
+            t.source_cm3,
+            t.result_cm3
+        );
+        centroids.push(motion::centroid_mm(&t.mask, &ph.grid).unwrap());
+        assert!(ph.seg_series("g").is_some());
+    }
+    // The deformable refinement on the body region carries the target to
+    // where each phase has it: y = 0, 6, 3 mm relative to phase 0.
+    for (i, expect) in SHIFTS.iter().enumerate() {
+        let dy = centroids[i].y - centroids[0].y;
+        eprintln!("phase {i}: target dy = {dy:.2} mm (expected {expect})");
+        assert!(
+            (dy - expect).abs() < 2.0,
+            "phase {i}: the target landed {dy:.2} mm away, expected {expect} mm"
+        );
+    }
+}
+
+#[test]
+fn the_contours_of_the_anchor_are_matched_without_looking_at_the_image() {
+    use rust_dicom_station::workflow::anchored::AnchorMode;
+
+    let (out, _) = anchored_case("test_workflow_anchored_contours", AnchorMode::Contours);
+    for (ph, qa) in out.group.phases.iter().zip(&out.qa) {
+        eprintln!("{}  |  {}", ph.metric_line, qa.line());
+        assert!(ph.metric_line.starts_with("contours rigid"));
+        let o = qa.overlap.as_ref().expect("the anchor landed");
+        assert!(
+            o.dice > 0.95,
+            "phase {}: a surface fit of the body against itself (Dice {:.3})",
+            ph.label,
+            o.dice
+        );
+        assert!(
+            qa.folded_fraction.unwrap() < 1e-3,
+            "phase {}: a smooth fit does not fold ({:?})",
+            ph.label,
+            qa.folded_fraction
+        );
+        let t = &ph.items[0];
+        assert!(t.voxels > 0);
+        assert!(
+            (t.result_cm3 - t.mapped_cm3).abs() < 0.05 * t.mapped_cm3 + 0.1,
+            "the filed volume is the mapped volume: {} vs {}",
+            t.result_cm3,
+            t.mapped_cm3
+        );
+    }
+}
+
+#[test]
+fn propagated_structures_can_land_in_each_phases_own_structure_set() {
+    let dir = common::target_dir("test_workflow_land_rtstruct");
+    let folder = common::fourd_folder(&dir, SHIFTS);
+    let mut study = loader::load_directory(&folder, &Progress::default()).unwrap();
+    let g = study.fourd_groups[0].clone();
+    let phases = workflow::phases_of(&g, &study.series).unwrap();
+    let target = select::find(&study, "TARGET", None).unwrap();
+    let req = group::GroupRequest {
+        src_vol: study.volume.clone(),
+        subjects: vec![target.subject_on(&study.volume.grid()).unwrap()],
+        phases: phases.clone(),
+        cached: vec![None; 3],
+        params: RegParams {
+            method: RegMethod::PlastimatchBSpline,
+            levels: 2,
+            iterations: 40,
+            grid_spacing_mm: 16.0,
+            ..RegParams::default()
+        },
+        finish: Default::default(),
+        group_name: g.name.clone(),
+        group: 0,
+        moving_slot: 0,
+        moving_series_uid: study.series[0].uid.clone(),
+    };
+    let out = group::run(req, &Progress::default()).unwrap();
+    let sets_before = study.structure_sets.len();
+    // Phase 0 has a structure set of its own (it references the series);
+    // the other phases have none and get one bound to them.
+    for ph in &out.phases {
+        let (label, names) = group::land_in_structure_set(
+            &mut study,
+            &ph.series_uid,
+            &ph.study_uid,
+            &ph.grid,
+            &ph.items,
+            &format!("{} {}", g.name, ph.label),
+        )
+        .expect("the target landed as contours");
+        // Phase 0's set already holds the planner's TARGET: the landed one
+        // gets a counter rather than a duplicate name.
+        let expect = if ph.series_uid == phases[0].1.uid {
+            "TARGET (2)"
+        } else {
+            "TARGET"
+        };
+        assert_eq!(names, [expect], "phase {}: {label}", ph.label);
+        let ss = study
+            .structure_sets
+            .iter()
+            .rfind(|ss| ss.referenced_series_uid == ph.series_uid)
+            .expect("a set bound to the phase");
+        assert_eq!(ss.label, label);
+        assert!(ss
+            .rois
+            .iter()
+            .any(|r| r.name == expect && !r.contours.is_empty()));
+    }
+    assert_eq!(
+        study.structure_sets.len(),
+        sets_before + 2,
+        "two phases had no set and got one; phase 0's own set was extended"
+    );
+    // Landing the same thing again does not overwrite: the name is suffixed.
+    let ph = &out.phases[1];
+    let (_, names) = group::land_in_structure_set(
+        &mut study,
+        &ph.series_uid,
+        &ph.study_uid,
+        &ph.grid,
+        &ph.items,
+        "x",
+    )
+    .unwrap();
+    assert_eq!(names, ["TARGET (2)"]);
+    // The landed contour rasterizes back to about the mask it came from.
+    let landed = select::find_on_series(&study, "TARGET", &ph.series_uid, "").unwrap();
+    let back = landed.mask_on(&ph.grid).unwrap();
+    let n_back = back.iter().filter(|v| **v != 0).count();
+    let n_mask = ph.items[0].voxels;
+    assert!(
+        (n_back as f64 - n_mask as f64).abs() < 0.2 * n_mask as f64,
+        "contours round-trip: {n_back} vs {n_mask} voxels"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

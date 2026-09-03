@@ -15,6 +15,7 @@
 //! * the numerics are the engines' (`registration`, `propagate`, `motion`);
 //!   this layer only sequences them.
 
+pub mod anchored;
 pub mod group;
 pub mod motion;
 pub mod select;

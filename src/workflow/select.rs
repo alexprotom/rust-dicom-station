@@ -165,3 +165,56 @@ pub fn find(study: &LoadedStudy, name: &str, set_label: Option<&str>) -> Option<
     };
     exact.or_else(lax).and_then(|e| structure(study, e))
 }
+
+/// Find a structure by name *on one image series*: the contour of it drawn
+/// on that series, not a namesake from another phase.
+///
+/// A 4D study carries one structure set per phase, each with its own
+/// "heart"; [`find`] would hand back the last of them whichever phase is
+/// asked about. Here a set that references the series (or, failing that,
+/// its frame of reference) wins; only when none does is the search widened
+/// to the whole study, so a structure set that names no series still works.
+pub fn find_on_series(
+    study: &LoadedStudy,
+    name: &str,
+    series_uid: &str,
+    frame_of_reference_uid: &str,
+) -> Option<Structure> {
+    let all = list(study);
+    let lower = name.to_lowercase();
+    let named = |e: &&Entry| e.name == name || e.name.to_lowercase() == lower;
+    let bound_to = |e: &Entry, by_series: bool| -> bool {
+        let (series, frame) = match e.kind {
+            Kind::Roi => {
+                let ss = &study.structure_sets[e.set];
+                (
+                    ss.referenced_series_uid.as_str(),
+                    ss.frame_of_reference_uid.as_str(),
+                )
+            }
+            Kind::Segment => {
+                let sr = &study.seg_series[e.set];
+                (
+                    sr.referenced_series_uid.as_str(),
+                    sr.grid.frame_of_reference_uid.as_str(),
+                )
+            }
+        };
+        if by_series {
+            !series.is_empty() && series == series_uid
+        } else {
+            !frame.is_empty() && frame == frame_of_reference_uid
+        }
+    };
+    let pick = |by_series: bool| {
+        all.iter()
+            .filter(named)
+            .filter(|e| bound_to(e, by_series))
+            .rfind(|e| e.name == name)
+            .or_else(|| all.iter().filter(named).rfind(|e| bound_to(e, by_series)))
+    };
+    pick(true)
+        .or_else(|| pick(false))
+        .and_then(|e| structure(study, e))
+        .or_else(|| find(study, name, None))
+}

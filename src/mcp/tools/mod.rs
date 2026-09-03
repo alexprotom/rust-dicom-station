@@ -98,10 +98,12 @@ registry! {
     // ---- register and propagate -------------------------------------
     "register" => (register::RegisterArgs, register::register, true,
         "Register a moving series onto a fixed series. method: elastix_rigid, elastix_bspline, \
-         plastimatch_bspline. region restricts a deformable run to a structure (plus margin) of \
-         the fixed dataset, which makes it local; start refines an earlier registration instead \
-         of replacing it. Returns a reg handle and the quality analysis. The transform maps fixed \
-         patient coordinates to moving ones."),
+         plastimatch_bspline. region restricts the run to a structure (plus margin) of the \
+         fixed dataset, which makes it local; start refines an earlier registration instead \
+         of replacing it; init says where the search starts (auto: the identity when the \
+         images overlap, else their centres of gravity; or a structure contoured on both). \
+         Returns a reg handle and the quality analysis. The transform maps fixed patient \
+         coordinates to moving ones."),
     "describe_registration" => (register::RegArgs, register::describe_registration, false,
         "The numbers of an earlier registration again."),
     "propagate" => (register::PropagateArgs, register::propagate, true,
@@ -116,7 +118,11 @@ registry! {
         "Register one series onto every phase of a 4D group (deformable, one registration per \
          phase) and carry structures across onto each phase. The per-phase transforms are kept \
          as a greg handle and reused by a later call with the same series and group. Empty \
-         structures means register only."),
+         structures means register only. anchor: a structure contoured on the source and on \
+         every phase (the heart, say) makes the run anchored on it - centroids matched, a rigid \
+         fit on the structure plus a margin, then a local deformable refinement - and reports \
+         the anchor's Dice against each phase's own contour. Use it for a cardiac CT onto a \
+         4DCT, where the two images share no frame of reference."),
     "analyse_motion" => (fourd::MotionArgs, fourd::analyse_motion, true,
         "The 4D motion pipeline: register the reference phase to every other phase (rigid, then \
          deformable on top), propagate the targets, and measure centroid tracks, peak-to-peak \

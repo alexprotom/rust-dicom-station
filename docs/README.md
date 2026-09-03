@@ -8,6 +8,7 @@ Each page here covers one area.
 | [rt-objects.md](rt-objects.md) | RTSTRUCT, RTDOSE, RTPLAN, REG, RT treatment records, and how their reference chains are resolved |
 | [registration.md](registration.md) | The four registration engines, local registration, analytics, vector fields, fusion, the transform simulator, verification |
 | [propagation.md](propagation.md) | Carrying contours and segmentations across a registration |
+| [star-target-propagation.md](star-target-propagation.md) | Step by step: a cardiac target from the CCT onto every 4DCT phase, anchored on the heart, in the viewer and from the MCP server |
 | [motion-4d.md](motion-4d.md) | 4D groups, the per-phase register ▸ propagate ▸ measure pipeline, motion metrics, ITV generation, the results window, structure comparison and transfer |
 | [drr.md](drr.md) | Digitally reconstructed radiographs: the two projectors, the geometry, the comparison |
 | [dvh.md](dvh.md) | Dose-volume histograms: sampling, axes, metrics, protocol constraints, CSV export, the analytic phantom |

@@ -203,7 +203,7 @@ impl ViewerApp {
                         // The transform maps fixed → moving. Whichever of the
                         // two this window shows, the *other* dataset has to
                         // come the other way round.
-                        let inverse = reg.fixed_slot == w.slot;
+                        let inverse = reg.shows_fixed(w.slot, &self.slots);
                         let t = reg.result.transform.clone();
                         let progress = Arc::new(Progress::default());
                         progress.set("starting");
@@ -268,7 +268,7 @@ impl ViewerApp {
             let reg_here = self
                 .registration
                 .as_ref()
-                .filter(|r| r.fixed_slot == w.slot)
+                .filter(|r| r.shows_fixed(w.slot, &self.slots))
                 .map(|r| (r.field.clone(), r.result.method.short()));
             let registered = self.registration.is_some();
             let title = format!("3D structures - dataset {}", SLOT_NAMES[w.slot]);

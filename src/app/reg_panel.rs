@@ -23,6 +23,21 @@ pub(super) enum RegRoi {
     Segmentation(usize),
 }
 
+/// Where the next registration starts its search (see
+/// [`crate::registration::Init`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum RegInit {
+    /// The identity when the images overlap, the centres of gravity when
+    /// they do not.
+    Auto,
+    Identity,
+    /// Match the centres of gravity.
+    Gravity,
+    /// Match the centroids of one structure of the fixed dataset with its
+    /// namesake on the moving dataset.
+    Structure(RegRoi),
+}
+
 /// What a registration run hands back: the result, the vector field sampled
 /// from it, and the region it was restricted to (kept so the field can be
 /// re-sampled later without rebuilding the mask).
@@ -30,6 +45,27 @@ pub(super) struct RegOutcome {
     pub result: RegistrationResult,
     pub field: VectorField,
     pub region: Option<Arc<RegionMask>>,
+    /// The two images the run was on.
+    pub fixed: RegImage,
+    pub moving: RegImage,
+}
+
+/// One registered image: where it lives and its volume.
+#[derive(Clone)]
+pub(super) struct RegImage {
+    pub slot: usize,
+    pub uid: String,
+    pub vol: Arc<Volume>,
+}
+
+/// An image the module can be pointed at: a series of a loaded dataset,
+/// with its label for the pickers.
+#[derive(Clone)]
+pub(super) struct RegChoice {
+    pub pick: RegPick,
+    pub label: String,
+    /// Whether it is the volume its slot displays right now.
+    pub displayed: bool,
 }
 
 impl ViewerApp {
@@ -110,6 +146,164 @@ impl ViewerApp {
         Ok(None)
     }
 
+    /// The initialisation choices the fixed dataset offers.
+    fn init_choices_for(&self, slot: usize) -> Vec<(RegInit, String)> {
+        let mut out = vec![
+            (RegInit::Auto, "Automatic".to_string()),
+            (RegInit::Identity, "Identity".to_string()),
+            (RegInit::Gravity, "Centres of gravity".to_string()),
+        ];
+        for (choice, label) in self.region_choices_for(slot) {
+            if choice != RegRoi::Whole {
+                out.push((RegInit::Structure(choice), format!("Centroids of {label}")));
+            }
+        }
+        out
+    }
+
+    /// Turn the panel's initialisation choice into what the engine takes:
+    /// for a structure, its centroid on the fixed dataset and the centroid
+    /// of the structure of the same name on the moving one.
+    ///
+    /// The moving side's structure is the one drawn on the moving *series*
+    /// (a 4DCT carries one heart per phase), found through the series it
+    /// references; the moving volume must be on display for its lattice.
+    pub(super) fn build_init(&self, fixed: RegPick, moving: RegPick) -> Result<registration::Init> {
+        use crate::registration::Init;
+        let RegInit::Structure(choice) = self.reg_init else {
+            return Ok(match self.reg_init {
+                RegInit::Identity => Init::Identity,
+                RegInit::Gravity => Init::CenterOfGravity,
+                _ => Init::Auto,
+            });
+        };
+        let region = self
+            .region_for(fixed.slot, choice, 0.0)?
+            .ok_or_else(|| anyhow!("pick a structure to start from"))?;
+        let name = region.name.clone();
+        let fstudy = self.slots[fixed.slot]
+            .study
+            .as_ref()
+            .ok_or_else(|| anyhow!("dataset {} is not loaded", SLOT_NAMES[fixed.slot]))?;
+        let mstudy = self.slots[moving.slot]
+            .study
+            .as_ref()
+            .ok_or_else(|| anyhow!("dataset {} is not loaded", SLOT_NAMES[moving.slot]))?;
+        let fgrid = fstudy.volume.grid();
+        let fc = crate::motion::centroid_mm(region.mask(), &fgrid)
+            .ok_or_else(|| anyhow!("'{name}' is empty on the fixed image"))?;
+        let mseries = mstudy
+            .series
+            .get(moving.series)
+            .ok_or_else(|| anyhow!("the moving series is gone"))?;
+        let ms = crate::workflow::select::find_on_series(mstudy, &name, &mseries.uid, "")
+            .ok_or_else(|| {
+                anyhow!(
+                    "dataset {} has no structure '{name}' to match the centroids with",
+                    SLOT_NAMES[moving.slot]
+                )
+            })?;
+        let mvol = self
+            .pick_displayed_volume(moving)
+            .ok_or_else(|| anyhow!("display the moving image to start from a structure"))?;
+        let mgrid = mvol.grid();
+        let mc = crate::motion::centroid_mm(&ms.mask_on(&mgrid)?, &mgrid)
+            .ok_or_else(|| anyhow!("'{name}' is empty on the moving image"))?;
+        Ok(Init::Points {
+            fixed: fc,
+            moving: mc,
+        })
+    }
+
+    // -- the images ---------------------------------------------------------
+
+    /// Every image series either dataset offers.
+    pub(super) fn reg_choices(&self) -> Vec<RegChoice> {
+        let mut out = Vec::new();
+        for (slot, name) in SLOT_NAMES.iter().enumerate() {
+            let Some(st) = self.slots[slot].study.as_ref() else {
+                continue;
+            };
+            for (i, se) in st.series.iter().enumerate() {
+                let desc: String = se.description.chars().take(28).collect();
+                out.push(RegChoice {
+                    pick: RegPick { slot, series: i },
+                    label: format!("{name} · {} {desc}", i + 1),
+                    displayed: st.has_volume() && i == st.active_series,
+                });
+            }
+        }
+        out
+    }
+
+    /// Keep the two picks pointing at series that exist: a pick whose
+    /// dataset went, or whose series is gone, falls back to the displayed
+    /// series of its slot, and the moving image to the other dataset's.
+    fn settle_reg_picks(&mut self) {
+        let displayed = |slot: usize, slots: &[StudySlot; 2]| -> Option<RegPick> {
+            let st = slots[slot].study.as_ref()?;
+            (!st.series.is_empty()).then(|| RegPick {
+                slot,
+                series: st.active_series.min(st.series.len() - 1),
+            })
+        };
+        let valid = |p: RegPick, slots: &[StudySlot; 2]| {
+            slots[p.slot]
+                .study
+                .as_ref()
+                .is_some_and(|st| p.series < st.series.len())
+        };
+        if !valid(self.reg_fixed, &self.slots) {
+            if let Some(p) = displayed(0, &self.slots).or_else(|| displayed(1, &self.slots)) {
+                self.reg_fixed = p;
+            }
+        }
+        if !valid(self.reg_moving, &self.slots) || self.reg_moving == self.reg_fixed {
+            let other = 1 - self.reg_fixed.slot;
+            let fallback = displayed(other, &self.slots).or_else(|| {
+                // One dataset: the next series of the same one, when it has
+                // more than one - a cardiac CT beside its 4DCT.
+                let st = self.slots[self.reg_fixed.slot].study.as_ref()?;
+                (st.series.len() > 1).then(|| RegPick {
+                    slot: self.reg_fixed.slot,
+                    series: (self.reg_fixed.series + 1) % st.series.len(),
+                })
+            });
+            if let Some(p) = fallback {
+                self.reg_moving = p;
+            }
+        }
+    }
+
+    /// The series a pick names, and whether its slot displays it.
+    fn pick_series(&self, p: RegPick) -> Option<(loader::SeriesInfo, bool)> {
+        let st = self.slots[p.slot].study.as_ref()?;
+        let se = st.series.get(p.series)?.clone();
+        Some((se, st.has_volume() && st.active_series == p.series))
+    }
+
+    /// The volume of a pick when its slot displays it.
+    fn pick_displayed_volume(&self, p: RegPick) -> Option<Arc<Volume>> {
+        let (_, shown) = self.pick_series(p)?;
+        shown.then(|| self.slots[p.slot].study.as_ref().unwrap().volume.clone())
+    }
+
+    /// Install a finished run as the active registration.
+    pub(super) fn install_registration(&mut self, out: RegOutcome) {
+        self.registration = Some(ActiveRegistration {
+            result: out.result,
+            fixed_slot: out.fixed.slot,
+            fixed_uid: out.fixed.uid,
+            fixed_vol: out.fixed.vol,
+            moving_slot: out.moving.slot,
+            moving_uid: out.moving.uid,
+            moving_vol: out.moving.vol,
+            field: Arc::new(out.field),
+            region: out.region,
+        });
+        self.reg_gen += 1;
+    }
+
     // -- running -----------------------------------------------------------
 
     /// Everything a run needs, from the current panel state.
@@ -121,7 +315,7 @@ impl ViewerApp {
         let start = if refine {
             self.registration
                 .as_ref()
-                .filter(|r| r.fixed_slot == self.reg_fixed_slot.min(1))
+                .filter(|r| r.fixed_slot == self.reg_fixed.slot)
                 .map(|r| r.result.transform.clone())
         } else {
             None
@@ -139,26 +333,43 @@ impl ViewerApp {
             landmark: self.reg_landmark,
             landmarks: self.reg_landmarks.clone(),
             region,
+            init: registration::Init::Auto,
             start,
         }
     }
 
-    /// Start a registration (or a refinement of the active one).
+    /// Start a registration (or a refinement of the active one) between
+    /// the two picked images. An image that is not on display is loaded on
+    /// the worker thread first.
     pub(super) fn start_registration(&mut self, refine: bool) {
         if self.reg_job.is_some() {
             return;
         }
-        let fixed_slot = self.reg_fixed_slot.min(1);
-        let moving_slot = 1 - fixed_slot;
-        let (Some(f), Some(m)) = (
-            &self.slots[fixed_slot].study,
-            &self.slots[moving_slot].study,
-        ) else {
-            self.error = Some("Registration needs two loaded studies (comparison mode)".into());
+        self.settle_reg_picks();
+        let (fpick, mpick) = (self.reg_fixed, self.reg_moving);
+        if fpick == mpick {
+            self.error = Some("The fixed and the moving image are the same series.".into());
+            return;
+        }
+        let (Some((fseries, fshown)), Some((mseries, mshown))) =
+            (self.pick_series(fpick), self.pick_series(mpick))
+        else {
+            self.error = Some("Pick a fixed and a moving image.".into());
             return;
         };
-        let fixed = f.volume.clone();
-        let moving = m.volume.clone();
+        let fixed_slot = fpick.slot;
+        // A region and a structure start come from contours rasterized on
+        // the fixed image, which the module reads from the displayed volume.
+        if !fshown
+            && (self.reg_roi != RegRoi::Whole || matches!(self.reg_init, RegInit::Structure(_)))
+        {
+            self.error = Some(
+                "Display the fixed image (click its series in the data tree) to use a region \
+                 or a structure as the start."
+                    .into(),
+            );
+            return;
+        }
         let region = match self.build_region(fixed_slot) {
             Ok(r) => r,
             Err(e) => {
@@ -166,7 +377,16 @@ impl ViewerApp {
                 return;
             }
         };
-        let params = self.current_reg_params(region.clone(), refine);
+        let mut params = self.current_reg_params(region.clone(), refine);
+        match self.build_init(fpick, mpick) {
+            Ok(init) => params.init = init,
+            Err(e) => {
+                self.error = Some(format!("Registration start: {e:#}"));
+                return;
+            }
+        }
+        let fixed_ready = fshown.then(|| self.pick_displayed_volume(fpick)).flatten();
+        let moving_ready = mshown.then(|| self.pick_displayed_volume(mpick)).flatten();
         if params.method == RegMethod::PlastimatchLandmark && params.landmarks.is_empty() {
             self.error = Some(
                 "The landmark warp needs paired points: put the crosshair on the same \
@@ -180,16 +400,37 @@ impl ViewerApp {
         let progress = Arc::new(Progress::default());
         progress.set("starting");
         self.reg_job = Some(Job::spawn(progress, move |p| {
-            let out = registration::register(&fixed, &moving, &params, p).map(|result| {
+            let load = |ready: Option<Arc<Volume>>, se: &loader::SeriesInfo, what: &str| match ready
+            {
+                Some(v) => Ok(v),
+                None => {
+                    p.set(format!("Loading the {what} image"));
+                    loader::load_series_volume(se, p).map(|(v, _, _)| Arc::new(v))
+                }
+            };
+            let run = || -> anyhow::Result<RegOutcome> {
+                let fixed = load(fixed_ready, &fseries, "fixed")?;
+                let moving = load(moving_ready, &mseries, "moving")?;
+                let result = registration::register(&fixed, &moving, &params, p)?;
                 p.set("Sampling the vector field");
                 let field = VectorField::sample(&fixed, &result.transform, region.as_deref(), step);
-                RegOutcome {
+                Ok(RegOutcome {
                     result,
                     field,
                     region,
-                }
-            });
-            (fixed_slot, out)
+                    fixed: RegImage {
+                        slot: fpick.slot,
+                        uid: fseries.uid.clone(),
+                        vol: fixed,
+                    },
+                    moving: RegImage {
+                        slot: mpick.slot,
+                        uid: mseries.uid.clone(),
+                        vol: moving,
+                    },
+                })
+            };
+            (fixed_slot, run())
         }));
     }
 
@@ -220,13 +461,28 @@ impl ViewerApp {
         fixed_slot: usize,
     ) {
         let transform = Arc::new(transform);
-        let Some(study) = &self.slots[fixed_slot].study else {
+        let moving_slot = 1 - fixed_slot;
+        let (Some(fstudy), Some(mstudy)) = (
+            &self.slots[fixed_slot].study,
+            &self.slots[moving_slot].study,
+        ) else {
+            self.error =
+                Some("A transform from a file pairs the two displayed datasets; load both.".into());
             return;
+        };
+        if !fstudy.has_volume() || !mstudy.has_volume() {
+            return;
+        }
+        let uid_of = |st: &LoadedStudy| {
+            st.series
+                .get(st.active_series)
+                .map(|se| se.uid.clone())
+                .unwrap_or_default()
         };
         // A transform installed from elsewhere (a REG object in the tree, a
         // propagation) needs the section that shows and clears it.
         self.module_registration = true;
-        let vol = study.volume.clone();
+        let vol = fstudy.volume.clone();
         let analysis = analysis::analyse(&vol, &transform, None);
         let field = VectorField::sample(&vol, &transform, None, self.field_step_mm);
         self.registration = Some(ActiveRegistration {
@@ -242,10 +498,15 @@ impl ViewerApp {
                 analysis,
             },
             fixed_slot,
+            fixed_uid: uid_of(fstudy),
+            fixed_vol: vol,
+            moving_slot,
+            moving_uid: uid_of(mstudy),
+            moving_vol: mstudy.volume.clone(),
             field: Arc::new(field),
             region: None,
         });
-        self.fusion_on = self.slots[0].has_volume() && self.slots[1].has_volume();
+        self.fusion_on = true;
         self.reg_gen += 1;
         let cursor = self.slots[fixed_slot].cursor;
         self.set_cursor(fixed_slot, cursor, usize::MAX);
@@ -275,10 +536,7 @@ impl ViewerApp {
         let Some(reg) = &self.registration else {
             return;
         };
-        let Some(study) = &self.slots[reg.fixed_slot].study else {
-            return;
-        };
-        let vol = study.volume.clone();
+        let vol = reg.fixed_vol.clone();
         let t = reg.result.transform.clone();
         let region = reg.region.clone();
         let step = self.field_step_mm;
@@ -290,13 +548,20 @@ impl ViewerApp {
 
     /// Add a landmark pair from the two crosshairs.
     fn add_landmark_pair(&mut self) {
-        let fixed_slot = self.reg_fixed_slot.min(1);
-        let moving_slot = 1 - fixed_slot;
+        let (fixed_slot, moving_slot) = (self.reg_fixed.slot, self.reg_moving.slot);
         let point = |s: &StudySlot| -> Option<Vec3> {
             let st = s.study.as_ref()?;
             let c = s.cursor;
             Some(st.volume.voxel_to_patient(c[0], c[1], c[2]))
         };
+        if fixed_slot == moving_slot {
+            self.error = Some(
+                "Landmarks are picked with the two crosshairs, one per dataset: load the \
+                 moving image in the other dataset for that."
+                    .into(),
+            );
+            return;
+        }
         let (Some(f), Some(m)) = (
             point(&self.slots[fixed_slot]),
             point(&self.slots[moving_slot]),
@@ -335,8 +600,9 @@ impl ViewerApp {
                 .default_open(true)
                 .show(ui, |ui| {
                     ui.weak(
-                        "Load a second dataset (File > Add DICOM folder to B) - \
-                         registration aligns one onto the other",
+                        "Load a second dataset (File > Add DICOM folder to B), or a dataset \
+                         with more than one image series - registration aligns one image \
+                         onto another",
                     );
                 });
             ui.separator();
@@ -351,7 +617,7 @@ impl ViewerApp {
         let mut drop_landmark: Option<usize> = None;
         let mut clear_landmarks = false;
         let mut save_field = false;
-        let mut run_group: Option<(usize, usize, usize)> = None;
+        let mut run_group: Option<(RegPick, usize, usize)> = None;
         let mut clear_group = false;
         // 4D groups either dataset offers, keyed the way `reg_group` is.
         let group_choices: Vec<((usize, usize), String)> = self
@@ -387,80 +653,98 @@ impl ViewerApp {
                     return;
                 }
 
-                let fixed_slot = self.reg_fixed_slot.min(1);
-                ui.horizontal(|ui| {
-                    ui.label("Direction");
-                    ui.selectable_value(&mut self.reg_fixed_slot, 0, "B ▶ A")
-                        .on_hover_text("B is deformed/moved onto A; fusion shown on A");
-                    ui.selectable_value(&mut self.reg_fixed_slot, 1, "A ▶ B")
-                        .on_hover_text("A is deformed/moved onto B; fusion shown on B");
-                });
-
-                // ---- fixed image: the other dataset, or every phase ----
-                // A single volume against a 4D group is one registration per
-                // phase, not one for the group: the phases differ by
-                // breathing, which is the whole reason the acquisition exists.
-                if !group_choices.is_empty() {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label("Fixed image");
-                        let current = match self.reg_group {
-                            None => format!("dataset {} (displayed)", SLOT_NAMES[fixed_slot]),
-                            Some(k) => group_choices
-                                .iter()
-                                .find(|(g, _)| *g == k)
-                                .map(|(_, l)| l.clone())
-                                .unwrap_or_default(),
-                        };
-                        let before = self.reg_group;
-                        egui::ComboBox::from_id_salt("reg_fixed_image")
-                            .selected_text(current)
-                            .width(190.0)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut self.reg_group,
-                                    None,
-                                    format!("dataset {} (displayed)", SLOT_NAMES[fixed_slot]),
-                                );
-                                for (key, label) in &group_choices {
-                                    ui.selectable_value(&mut self.reg_group, Some(*key), label);
-                                }
-                            });
-                        // Picking a group aims the moving image at the other
-                        // dataset, which is what it usually is; the row below
-                        // moves it back when the two live together.
-                        if let (true, Some((gslot, _))) = (before != self.reg_group, self.reg_group)
-                        {
-                            self.reg_group_moving = 1 - gslot;
-                        }
-                    });
-                    if let Some((gslot, _)) = self.reg_group {
-                        ui.horizontal(|ui| {
-                            ui.label("Moving image");
-                            for (slot, name) in SLOT_NAMES.iter().enumerate() {
-                                let loaded = self.slots[slot].has_volume();
-                                ui.add_enabled_ui(loaded, |ui| {
-                                    ui.selectable_value(
-                                        &mut self.reg_group_moving,
-                                        slot,
-                                        format!("dataset {name}"),
+                // ---- the two images ----
+                // Any series of either dataset can be the fixed or the moving
+                // image - the displayed ones, a phase of a 4DCT, a cardiac CT
+                // against a phase of the same dataset. The fixed image may
+                // also be every phase of a 4D group: one registration per
+                // phase, since the phases differ by breathing, which is the
+                // whole reason the acquisition exists.
+                self.settle_reg_picks();
+                let choices = self.reg_choices();
+                let fixed_slot = self.reg_fixed.slot;
+                let label_of = |p: RegPick| {
+                    choices
+                        .iter()
+                        .find(|c| c.pick == p)
+                        .map(|c| c.label.clone())
+                        .unwrap_or_else(|| "(none)".into())
+                };
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Fixed image");
+                    let current = match self.reg_group {
+                        None => label_of(self.reg_fixed),
+                        Some(k) => group_choices
+                            .iter()
+                            .find(|(g, _)| *g == k)
+                            .map(|(_, l)| l.clone())
+                            .unwrap_or_default(),
+                    };
+                    egui::ComboBox::from_id_salt("reg_fixed_image")
+                        .selected_text(current)
+                        .width(230.0)
+                        .show_ui(ui, |ui| {
+                            for c in &choices {
+                                let mark = if c.displayed { " (displayed)" } else { "" };
+                                if ui
+                                    .selectable_label(
+                                        self.reg_group.is_none() && self.reg_fixed == c.pick,
+                                        format!("{}{mark}", c.label),
                                     )
-                                    .on_hover_text(
-                                        if slot == gslot {
-                                            "The displayed series of the dataset the group is \
-                                         in - a planning CT beside its own 4DCT"
-                                        } else {
-                                            "The displayed series of the other dataset"
-                                        },
-                                    );
-                                });
+                                    .clicked()
+                                {
+                                    self.reg_fixed = c.pick;
+                                    self.reg_group = None;
+                                }
                             }
-                        });
-                        ui.weak(
-                            "Every phase is registered on its own. The transforms are kept, \
-                             so sending structures to the same group afterwards costs no \
-                             registration at all.",
+                            if !group_choices.is_empty() {
+                                ui.separator();
+                                for (key, label) in &group_choices {
+                                    ui.selectable_value(
+                                        &mut self.reg_group,
+                                        Some(*key),
+                                        format!("every phase of {label}"),
+                                    );
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "The image the other is aligned onto; the transform maps its \
+                             coordinates into the moving image's. A series that is not on \
+                             display is loaded for the run.",
                         );
-                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Moving image");
+                    egui::ComboBox::from_id_salt("reg_moving_image")
+                        .selected_text(label_of(self.reg_moving))
+                        .width(230.0)
+                        .show_ui(ui, |ui| {
+                            for c in &choices {
+                                let mark = if c.displayed { " (displayed)" } else { "" };
+                                ui.selectable_value(
+                                    &mut self.reg_moving,
+                                    c.pick,
+                                    format!("{}{mark}", c.label),
+                                );
+                            }
+                        })
+                        .response
+                        .on_hover_text("The image that is moved and deformed onto the fixed one");
+                });
+                if self.reg_group.is_some() {
+                    ui.weak(
+                        "Every phase is registered on its own against the moving image. The \
+                         transforms are kept, so sending structures to the same group \
+                         afterwards costs no registration at all.",
+                    );
+                } else if self.reg_fixed.slot == self.reg_moving.slot {
+                    ui.weak(
+                        "Two series of one dataset. The fusion overlay needs each on display \
+                         in its own dataset: load the same folder as the other dataset to \
+                         see it; propagation works either way.",
+                    );
                 }
 
                 // ---- method ----
@@ -521,6 +805,38 @@ impl ViewerApp {
                         );
                     });
                 }
+
+                // ---- initialisation ----
+                let init_choices = self.init_choices_for(fixed_slot);
+                if !init_choices.iter().any(|(c, _)| *c == self.reg_init) {
+                    self.reg_init = RegInit::Auto;
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Start from");
+                    let current = init_choices
+                        .iter()
+                        .find(|(c, _)| *c == self.reg_init)
+                        .map(|(_, l)| l.clone())
+                        .unwrap_or_default();
+                    egui::ComboBox::from_id_salt("reg_init")
+                        .selected_text(current)
+                        .width(190.0)
+                        .show_ui(ui, |ui| {
+                            for (choice, label) in &init_choices {
+                                ui.selectable_value(&mut self.reg_init, *choice, label);
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "Where the search begins. The engines take steps of a few \
+                             millimetres, so two images that do not overlap at the identity \
+                             (different frames of reference: a cardiac CT and a 4DCT) never \
+                             find each other. Automatic keeps the identity when they overlap \
+                             and matches the centres of gravity when they do not; a \
+                             structure contoured on both datasets matches its centroids, \
+                             which is the surest start for an organ.",
+                        );
+                });
 
                 // ---- parameters ----
                 egui::CollapsingHeader::new("Parameters")
@@ -600,26 +916,23 @@ impl ViewerApp {
                 // ---- run ----
                 if let Some((gslot, group)) = self.reg_group {
                     let n = self.group_phase_count(gslot, group);
-                    let moving_ok = self.slots[self.reg_group_moving].has_volume();
+                    let moving_ok = self.pick_series(self.reg_moving).is_some();
                     ui.horizontal(|ui| {
                         if ui
                             .add_enabled(
                                 n >= 2 && moving_ok && self.propagate_job.is_none(),
                                 egui::Button::new(format!("▶ Register {n} phases")),
                             )
-                            .on_hover_text(
-                                "One registration per phase, against the displayed volume \
-                                 of the other dataset",
-                            )
+                            .on_hover_text("One registration per phase, against the moving image")
                             .clicked()
                         {
-                            run_group = Some((self.reg_group_moving, gslot, group));
+                            run_group = Some((self.reg_moving, gslot, group));
                         }
                     });
                     if self.propagate_job.is_some() {
                         ui.weak("A run against a group is already going.");
                     } else if !moving_ok {
-                        ui.weak("The moving dataset has no image volume.");
+                        ui.weak("Pick a moving image.");
                     }
                 } else {
                     let can_refine = self
@@ -678,8 +991,7 @@ impl ViewerApp {
                 if let Some(reg) = &self.registration {
                     ui.separator();
                     let res = &reg.result;
-                    let moving = SLOT_NAMES[1 - reg.fixed_slot];
-                    let fixed = SLOT_NAMES[reg.fixed_slot];
+                    let (fixed, moving) = reg.describe(&self.slots);
                     ui.label(
                         egui::RichText::new(format!(
                             "✔ {}  ({moving} ▶ {fixed})",
@@ -687,6 +999,7 @@ impl ViewerApp {
                         ))
                         .strong(),
                     );
+                    ui.weak(format!("fixed {fixed}, moving {moving}"));
                     if let Some(r) = &res.region {
                         ui.weak(format!("restricted to {r}"));
                     }
@@ -705,7 +1018,31 @@ impl ViewerApp {
                             )
                         });
 
-                    ui.checkbox(&mut self.fusion_on, format!("Fusion overlay on {fixed}"));
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.fusion_on, "Fusion overlay on");
+                        ui.selectable_value(
+                            &mut self.fusion_side,
+                            FusionSide::Fixed,
+                            format!("fixed ({fixed})"),
+                        )
+                        .on_hover_text("The moving image warped onto the fixed one");
+                        ui.selectable_value(
+                            &mut self.fusion_side,
+                            FusionSide::Moving,
+                            format!("moving ({moving})"),
+                        )
+                        .on_hover_text("The fixed image carried back onto the moving one");
+                    });
+                    let shown = match self.fusion_side {
+                        FusionSide::Fixed => reg.shows_fixed(reg.fixed_slot, &self.slots),
+                        FusionSide::Moving => reg.shows_moving(reg.moving_slot, &self.slots),
+                    };
+                    if self.fusion_on && !shown {
+                        ui.weak(
+                            "That image is not on display: click its series in the data \
+                             tree to see the overlay.",
+                        );
+                    }
                     ui.add(
                         egui::Slider::new(&mut self.fusion_weight, 0.0..=1.0).text("Fusion blend"),
                     );
@@ -788,7 +1125,7 @@ impl ViewerApp {
                             )
                             .clicked()
                         {
-                            propagate_from = Some(reg.fixed_slot);
+                            propagate_from = Some(reg.moving_slot);
                         }
                         if ui.button("Clear registration").clicked() {
                             clear = true;
@@ -802,8 +1139,14 @@ impl ViewerApp {
             self.group_registration = None;
             self.reg_gen += 1;
         }
-        if let Some((moving_slot, gslot, group)) = run_group {
-            self.start_group_run(moving_slot, gslot, group, Vec::new());
+        if let Some((moving, gslot, group)) = run_group {
+            self.start_group_run(
+                moving,
+                gslot,
+                group,
+                Vec::new(),
+                crate::propagate::Finish::default(),
+            );
         }
         if let Some(slot) = propagate_from {
             self.open_propagate_module(slot);

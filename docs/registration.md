@@ -107,15 +107,39 @@ and, after a run, its residual.
 
 ## Running a registration
 
-*Modules ▶ Image registration* puts the section - method, region,
-parameters, landmarks, result and vector field - in the right panel. With
-two datasets loaded it registers one onto the other, **B ▶ A** or **A ▶ B**
-(the second-named is the fixed image and receives the fusion overlay), on a
-background thread with progress and a **Cancel** button.
+*Modules ▶ Image registration* puts the section - the two images, method,
+region, parameters, landmarks, result and vector field - in the right panel.
+**Fixed image** and **Moving image** each name one image series of either
+dataset: the displayed ones, a phase of a 4DCT, or two series of one dataset
+(a cardiac CT and a phase of the 4DCT it arrived with). A series that is not
+on display is loaded for the run. The fixed image may also be *every phase
+of a 4D group*, which is one registration per phase (below). The run goes
+on a background thread with progress and a **Cancel** button.
+
+The result names both images, and **Fusion overlay on** chooses which one
+carries the overlay: on the fixed image the moving one is warped onto it, on
+the moving image the fixed one comes back through the inverse. The overlay,
+the vector field and the crosshair link appear in whichever dataset displays
+that image, so two series of one dataset show the fusion once the same
+folder is loaded as the other dataset too; propagation works either way.
 
 The transform maps **fixed → moving** patient coordinates, as in elastix,
 ITK and plastimatch; the inverse (for the crosshair link and propagation) is
 exact for the rigid part and a fixed-point iteration for the deformable one.
+
+**Start from** says where the search begins. The engines take steps of a
+few millimetres, so two images that do not overlap at the identity never
+find each other: a cardiac CT and a 4DCT of one patient are two
+acquisitions in two frames of reference, hundreds of millimetres apart in
+patient coordinates, and a run started from the identity has no gradient to
+follow (it now says so rather than returning the identity as a result).
+*Automatic* keeps the identity when the images overlap - every same-frame
+pair, so nothing changes for those - and matches the centres of gravity when
+they do not (elastix's `AutomaticTransformInitialization`, what the
+plastimatch engine always did as `align_center`). *Centroids of a
+structure* matches one structure contoured on both datasets, which is the
+surest start for an organ: the heart on a cardiac CT and on a planning CT.
+A local run always starts from the identity.
 
 On the bundled data (512 × 512 × 133 CT, two breathing phases): elastix
 rigid pre-alignment plus three B-spline resolution levels, 1800 iterations
@@ -124,14 +148,13 @@ total, ≈ 20 s on a desktop CPU, driving the mean-squared HU difference from
 
 ## Against a 4D group
 
-The **Fixed image** row offers, besides the other dataset's displayed volume,
-**every phase of a 4D group** of either dataset. That runs one registration
-per phase against the moving dataset's displayed volume: the phases of one
-acquisition differ by breathing, so a single transform for the group would be
-answering a question nobody asked.
+The **Fixed image** list ends with **every phase of a 4D group** of either
+dataset. That runs one registration per phase against the moving image: the
+phases of one acquisition differ by breathing, so a single transform for the
+group would be answering a question nobody asked.
 
-The moving image can be the group's own dataset - a planning CT and the 4DCT
-of the same patient usually arrive together - or the other one. Each phase
+The moving image can be any series - of the group's own dataset (a planning
+CT or a cardiac CT beside its 4DCT) or of the other one. Each phase
 reports its own metric line, and the transforms are kept so that propagating
 structures onto the same group afterwards costs no registration
 ([propagation.md](propagation.md)). **Clear group registration** drops them,

@@ -11,14 +11,37 @@
 use std::sync::Arc;
 
 use crate::dicomseg::SegSeries;
-use crate::loader::{self, SeriesInfo};
+use crate::loader::{self, LoadedStudy, SeriesInfo};
 use crate::progress::Progress;
-use crate::propagate::{self, Propagated, Subject};
+use crate::propagate::{self, Finish, Propagated, Subject};
 use crate::registration::{self, RegParams, Transform3};
-use crate::segmentation::Segmentation;
+use crate::rtstruct::{Roi, StructureSet};
+use crate::segmentation::{self, Segmentation};
 use crate::volume::{Grid, Volume};
 
 use anyhow::{Context, Result};
+
+/// Where propagated structures are filed on their destination image.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Landing {
+    /// A new segmentation series bound to the image series (editable masks).
+    #[default]
+    Segmentation,
+    /// The image series' own RT structure set, as contours - the set that
+    /// references the series, or a new one bound to it when there is none.
+    /// A 4DCT with one structure set per phase gets the target next to that
+    /// phase's heart, which is where a planning system expects it.
+    StructureSet,
+}
+
+impl Landing {
+    pub fn label(self) -> &'static str {
+        match self {
+            Landing::Segmentation => "segmentation series",
+            Landing::StructureSet => "structure set",
+        }
+    }
+}
 
 /// Everything the worker needs for a run against a 4D group.
 pub struct GroupRequest {
@@ -33,6 +56,8 @@ pub struct GroupRequest {
     pub cached: Vec<Option<Arc<Transform3>>>,
     /// Must be deformable: phases of one acquisition differ by breathing.
     pub params: RegParams,
+    /// What is done to each landed mask (closing, filling).
+    pub finish: Finish,
     pub group_name: String,
     pub group: usize,
     pub moving_slot: usize,
@@ -84,6 +109,79 @@ impl PhaseOutcome {
     }
 }
 
+/// File propagated masks as contours in the structure set of `series_uid`
+/// within `study`: the set that references the series (the last such, the
+/// most recent), or a new in-memory set bound to it. Empty items are
+/// skipped. Returns the label of the set and the names filed, or `None`
+/// when nothing landed.
+///
+/// Names that already exist in the set are suffixed with a counter, so a
+/// second run adds `target (2)` rather than a second `target`.
+pub fn land_in_structure_set(
+    study: &mut LoadedStudy,
+    series_uid: &str,
+    study_uid: &str,
+    grid: &Grid,
+    items: &[Propagated],
+    new_set_label: &str,
+) -> Option<(String, Vec<String>)> {
+    let rois: Vec<Roi> = items
+        .iter()
+        .filter(|it| it.voxels > 0)
+        .map(|it| {
+            let seg =
+                Segmentation::from_label_map(it.name.clone(), it.color, grid.dims, &it.mask, 1);
+            let mut roi = segmentation::mask_to_roi(&seg, grid, 0);
+            roi.roi_type = "GTV".into();
+            roi
+        })
+        .filter(|r| !r.contours.is_empty())
+        .collect();
+    if rois.is_empty() {
+        return None;
+    }
+    let set = match study
+        .structure_sets
+        .iter()
+        .rposition(|ss| ss.referenced_series_uid == series_uid)
+    {
+        Some(i) => i,
+        None => {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            study.structure_sets.push(StructureSet {
+                label: new_set_label.to_string(),
+                frame_of_reference_uid: grid.frame_of_reference_uid.clone(),
+                sop_instance_uid: format!("2.25.{stamp}"),
+                series_instance_uid: format!("2.25.{stamp}.1"),
+                study_uid: study_uid.to_string(),
+                referenced_series_uid: series_uid.to_string(),
+                file_name: "propagated".into(),
+                rois: Vec::new(),
+            });
+            study.structure_sets.len() - 1
+        }
+    };
+    let ss = &mut study.structure_sets[set];
+    let mut names = Vec::new();
+    for mut roi in rois {
+        roi.number = ss.rois.iter().map(|r| r.number).max().unwrap_or(0) + 1;
+        if ss.rois.iter().any(|r| r.name == roi.name) {
+            let base = roi.name.clone();
+            let mut n = 2;
+            while ss.rois.iter().any(|r| r.name == format!("{base} ({n})")) {
+                n += 1;
+            }
+            roi.name = format!("{base} ({n})");
+        }
+        names.push(roi.name.clone());
+        ss.rois.push(roi);
+    }
+    Some((ss.label.clone(), names))
+}
+
 /// What a run against a whole 4D group hands back.
 pub struct GroupOutcome {
     pub group_name: String,
@@ -126,8 +224,11 @@ pub fn run(req: GroupRequest, p: &Progress) -> Result<GroupOutcome> {
         } else {
             p.set_phase(base + span * 0.8, span * 0.2);
             p.set(format!("Phase {label}: propagating ({}/{n})", i + 1));
-            propagate::propagate(&req.src_vol, &vol, &transform, false, &req.subjects, p)
-                .with_context(|| format!("phase '{label}'"))?
+            let mut items =
+                propagate::propagate(&req.src_vol, &vol, &transform, false, &req.subjects, p)
+                    .with_context(|| format!("phase '{label}'"))?;
+            req.finish.apply_all(&mut items, &vol.grid(), p);
+            items
         };
         phases.push(PhaseOutcome {
             label: label.clone(),

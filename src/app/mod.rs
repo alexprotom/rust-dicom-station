@@ -70,7 +70,7 @@ mod views;
 use drr_win::DrrDialog;
 use pacs_win::{PacsOutcome, PacsWindow};
 use propagate_win::{GroupRegistration, PropOutcome, PropagateDialog};
-use reg_panel::{RegOutcome, RegRoi};
+use reg_panel::{RegImage, RegInit, RegOutcome, RegRoi};
 use rename::{RenameDialog, RenameTarget};
 use seg_engines::*;
 use theme::*;
@@ -388,6 +388,15 @@ impl StudySlot {
     /// rather than `study.is_some()`.
     fn has_volume(&self) -> bool {
         self.study.as_ref().is_some_and(|st| st.has_volume())
+    }
+
+    /// Series UID of the displayed volume, when there is one.
+    fn displayed_uid(&self) -> Option<&str> {
+        let st = self.study.as_ref()?;
+        if !st.has_volume() {
+            return None;
+        }
+        st.series.get(st.active_series).map(|se| se.uid.as_str())
     }
 
     /// Index of the segmentation series the tools edit, clamped to what the
@@ -780,19 +789,85 @@ struct PlanarWindow {
     tex_wl: (f32, f32),
 }
 
-/// A completed registration plus the direction it was run in.
+/// A completed registration plus the two images it was run on.
+///
+/// The images are named by dataset slot and series UID, and their volumes
+/// are kept: a registration may pair any two series - the displayed one of
+/// A with a phase of B, or a cardiac CT with a 4DCT phase of the *same*
+/// dataset - so nothing here assumes the two slots display them. The views
+/// check, per slot, whether what is on show is the fixed or the moving
+/// image and draw the fusion, the field and the crosshair link accordingly.
 struct ActiveRegistration {
     result: RegistrationResult,
-    /// The fixed image's slot; the transform maps this slot's patient
-    /// coordinates into the other (moving) slot's. The fusion overlay is
-    /// drawn on this slot's views.
+    /// The fixed image: the transform maps its patient coordinates into the
+    /// moving image's. The field is sampled on it and drawn where it shows.
     fixed_slot: usize,
+    fixed_uid: String,
+    fixed_vol: Arc<Volume>,
+    /// The moving image.
+    moving_slot: usize,
+    moving_uid: String,
+    moving_vol: Arc<Volume>,
     /// The displacement field sampled from the transform, so the views draw
     /// a lattice lookup instead of evaluating the transform per pixel.
     field: Arc<VectorField>,
     /// The region the run was restricted to, kept so the field can be
     /// re-sampled at a different lattice without rebuilding the mask.
     region: Option<Arc<RegionMask>>,
+}
+
+impl ActiveRegistration {
+    /// Whether `slot` currently displays the fixed image.
+    fn shows_fixed(&self, slot: usize, slots: &[StudySlot; 2]) -> bool {
+        slot == self.fixed_slot && slots[slot].displayed_uid() == Some(self.fixed_uid.as_str())
+    }
+
+    /// Whether `slot` currently displays the moving image.
+    fn shows_moving(&self, slot: usize, slots: &[StudySlot; 2]) -> bool {
+        slot == self.moving_slot && slots[slot].displayed_uid() == Some(self.moving_uid.as_str())
+    }
+
+    /// Whether the fusion overlay belongs on `slot` for the chosen side:
+    /// on the fixed image, the moving one is warped onto it; on the moving
+    /// image, the fixed one comes the other way.
+    fn fusion_on_slot(&self, slot: usize, side: FusionSide, slots: &[StudySlot; 2]) -> bool {
+        match side {
+            FusionSide::Fixed => self.shows_fixed(slot, slots),
+            FusionSide::Moving => self.shows_moving(slot, slots),
+        }
+    }
+
+    /// `A · 3 CCT ...` for the two images.
+    fn describe(&self, slots: &[StudySlot; 2]) -> (String, String) {
+        let name = |slot: usize, uid: &str| {
+            let series = slots[slot]
+                .study
+                .as_ref()
+                .and_then(|st| st.series.iter().position(|se| se.uid == uid))
+                .map(|i| format!("{}", i + 1))
+                .unwrap_or_else(|| "?".into());
+            format!("{} · {series}", SLOT_NAMES[slot])
+        };
+        (
+            name(self.fixed_slot, &self.fixed_uid),
+            name(self.moving_slot, &self.moving_uid),
+        )
+    }
+}
+
+/// Which of the two registered images the fusion overlay is drawn on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FusionSide {
+    Fixed,
+    Moving,
+}
+
+/// One image series of one dataset, as the registration module names it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct RegPick {
+    pub slot: usize,
+    /// Index into the study's series list.
+    pub series: usize,
 }
 
 // Application
@@ -838,18 +913,18 @@ pub struct ViewerApp {
     /// Which 4D group the registration module runs against, when it runs
     /// against one rather than the other dataset's displayed volume.
     reg_group: Option<(usize, usize)>,
-    /// Dataset whose displayed volume is the moving image of a group run.
-    /// Its own dataset is a normal choice: a planning CT and the 4DCT of the
-    /// same patient usually arrive together.
-    reg_group_moving: usize,
     /// The payload carries the slot that was used as the fixed image.
     reg_job: Option<SegJob<RegOutcome>>,
     /// Fixed-image slot for the *next* registration run (0 = A, 1 = B).
-    reg_fixed_slot: usize,
     fusion_on: bool,
     fusion_weight: f32,
     /// Bumped when the registration result changes → fusion cache rebuild.
     reg_gen: u64,
+    /// The fixed and the moving image of the next run.
+    reg_fixed: RegPick,
+    reg_moving: RegPick,
+    /// Which image the fusion overlay is drawn on.
+    fusion_side: FusionSide,
     /// Which algorithm the next run uses.
     reg_method: RegMethod,
     /// What the plastimatch engine minimizes.
@@ -870,6 +945,8 @@ pub struct ViewerApp {
     reg_roi: RegRoi,
     /// Margin the region is grown by, mm.
     reg_margin_mm: f64,
+    /// Where the next run starts its search.
+    reg_init: RegInit,
 
     // The deformation vector field of the active registration.
     field_on: bool,
@@ -1181,7 +1258,9 @@ impl ViewerApp {
             notice: None,
             registration: None,
             reg_job: None,
-            reg_fixed_slot: 0,
+            reg_fixed: RegPick { slot: 0, series: 0 },
+            reg_moving: RegPick { slot: 1, series: 0 },
+            fusion_side: FusionSide::Fixed,
             fusion_on: false,
             fusion_weight: 1.0,
             reg_gen: 0,
@@ -1197,6 +1276,7 @@ impl ViewerApp {
             reg_landmarks: Vec::new(),
             reg_roi: RegRoi::Whole,
             reg_margin_mm: 10.0,
+            reg_init: RegInit::Auto,
             field_on: false,
             field_style: FieldStyle::Arrows,
             field_step_mm: 12.0,
@@ -1209,7 +1289,6 @@ impl ViewerApp {
             propagate_job: None,
             group_registration: None,
             reg_group: None,
-            reg_group_moving: 0,
             sim_source: 0,
             sim_params: SimParams::default(),
             sim_job: None,
@@ -1615,14 +1694,8 @@ impl eframe::App for ViewerApp {
         if let Some((fixed_slot, out)) =
             poll_tool_job(&mut self.reg_job, &ctx, "Registration", &mut self.error)
         {
-            self.registration = Some(ActiveRegistration {
-                result: out.result,
-                fixed_slot,
-                field: Arc::new(out.field),
-                region: out.region,
-            });
+            self.install_registration(out);
             self.fusion_on = true;
-            self.reg_gen += 1;
             // Re-propagate the crosshair through the new transform.
             let cursor = self.slots[fixed_slot].cursor;
             self.set_cursor(fixed_slot, cursor, usize::MAX);
