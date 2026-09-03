@@ -253,7 +253,7 @@ src/
                       preview / refine / propagate loop, the resident session (MedSAM2)
     propagate_win.rs  the Structures propagation module: onto the other dataset,
                       or onto every phase of a 4D group through workflow::group
-                      (transforms kept for the next run)
+                      or workflow::anchored (transforms kept for the next run)
     motion_win.rs     the 4D motion / ITV window; the pipeline itself is
                       workflow::motion
     motion_results.rs the motion results window: charts, tables, correlations,
@@ -300,9 +300,11 @@ src/
   drr.rs            DRR: IEC cone-beam geometry, Siddon exact tracing and
                     ITK-style interpolating ray-casting                          Sim
   registration.rs   parameters, transforms (rigid, B-spline, RBF, field,
-                    composite), region masks, pyramid, samplers, dispatch        Reg
+                    composite), region masks, pyramid, samplers, the
+                    initialisation (identity, centres of gravity, two points),
+                    dispatch                                                    Reg
     elastix.rs        stochastic sampling + ASGD, rigid and B-spline stages
-    plastimatch.rs    align_center, dense analytic gradient, bending energy,
+    plastimatch.rs    dense analytic gradient, bending energy,
                       Mattes mutual information, L-BFGS
     landmark.rs       thin-plate / Gaussian / Wendland RBF warp, dense solve
     analysis.rs       6-DOF Procrustes fit, displacement and Jacobian statistics
@@ -331,6 +333,9 @@ src/
                       measure ▸ ITV), moved out of motion_win.rs
     group.rs          one volume onto every phase of a group, one registration
                       per phase, transforms reusable; moved out of propagate_win.rs
+    anchored.rs       the same anchored on a structure contoured on both sides
+                      (a cardiac CT onto a 4DCT by the heart): centroids, a rigid
+                      fit on the structure, a local refinement, Dice as the check
 
   mcp/              the MCP server behind rds-mcp (cargo feature `mcp`)         MCP
     config.rs         the operator's mcp.toml: roots, output folder, PHI policy

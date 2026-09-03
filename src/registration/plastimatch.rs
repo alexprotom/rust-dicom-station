@@ -82,45 +82,6 @@ fn dbeta3(t: f64) -> f64 {
     }
 }
 
-/// Centre of gravity of the voxels at or above `threshold`.
-fn center_of_gravity(img: &RegImage, threshold: f32) -> Option<Vec3> {
-    let [nx, ny, _] = img.dims;
-    let (sum, n) = img
-        .data
-        .par_iter()
-        .enumerate()
-        .filter(|(_, &v)| v >= threshold)
-        .map(|(o, _)| {
-            let k = o / (nx * ny);
-            let rem = o - k * nx * ny;
-            (
-                img.index_to_patient((rem % nx) as f64, (rem / nx) as f64, k as f64),
-                1usize,
-            )
-        })
-        .reduce(|| (Vec3::ZERO, 0), |a, b| (a.0 + b.0, a.1 + b.1));
-    (n > 0).then(|| sum * (1.0 / n as f64))
-}
-
-/// Centre of gravity of the eligible voxels of a prepared fixed image.
-fn eligible_center_of_gravity(img: &RegImage) -> Option<Vec3> {
-    let [nx, ny, _] = img.dims;
-    let (sum, n) = img
-        .eligible
-        .par_iter()
-        .map(|&o| {
-            let o = o as usize;
-            let k = o / (nx * ny);
-            let rem = o - k * nx * ny;
-            (
-                img.index_to_patient((rem % nx) as f64, (rem / nx) as f64, k as f64),
-                1usize,
-            )
-        })
-        .reduce(|| (Vec3::ZERO, 0), |a, b| (a.0 + b.0, a.1 + b.1));
-    (n > 0).then(|| sum * (1.0 / n as f64))
-}
-
 /// The bins and scales one level's mutual information is computed over.
 #[derive(Clone, Copy)]
 struct MiScale {
@@ -687,24 +648,16 @@ pub(super) fn run(setup: &RegSetup, progress: &Progress) -> Result<EngineOutput>
     let levels = setup.fixed.len();
 
     // ---- stage 1: align_center -----------------------------------------
-    // Skipped for a local run and for a refinement - both already start from
-    // an alignment, and matching the centres of gravity of a structure
-    // against the whole moving image would undo it.
+    // Resolved by the caller (see `Init`): skipped for a local run and for a
+    // refinement - both already start from an alignment, and matching the
+    // centres of gravity of a structure against the whole moving image would
+    // undo it.
     let base_transform = match params.start.as_deref() {
         Some(s) => s.clone(),
-        None => {
-            let mut rigid = RigidTransform::identity(setup.center);
-            if params.region.is_none() {
-                progress.set("align_center: matching the centres of gravity");
-                let cf = eligible_center_of_gravity(&setup.fixed[0]);
-                let cm = center_of_gravity(&setup.moving[0], params.fixed_threshold);
-                if let (Some(cf), Some(cm)) = (cf, cm) {
-                    let t = cm - cf;
-                    rigid = RigidTransform::new([0.0, 0.0, 0.0, t.x, t.y, t.z], setup.center);
-                }
-            }
-            Transform3::rigid_only(rigid)
-        }
+        // `setup.init` is the centre-of-gravity match for a global run with
+        // the default initialisation (this engine's own `align_center`), the
+        // identity for a local one, or whatever the caller asked for.
+        None => Transform3::rigid_only(setup.init.clone()),
     };
     let rigid = base_transform.rigid.clone();
 

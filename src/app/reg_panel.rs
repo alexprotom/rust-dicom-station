@@ -23,6 +23,21 @@ pub(super) enum RegRoi {
     Segmentation(usize),
 }
 
+/// Where the next registration starts its search (see
+/// [`crate::registration::Init`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum RegInit {
+    /// The identity when the images overlap, the centres of gravity when
+    /// they do not.
+    Auto,
+    Identity,
+    /// Match the centres of gravity.
+    Gravity,
+    /// Match the centroids of one structure of the fixed dataset with its
+    /// namesake on the moving dataset.
+    Structure(RegRoi),
+}
+
 /// What a registration run hands back: the result, the vector field sampled
 /// from it, and the region it was restricted to (kept so the field can be
 /// re-sampled later without rebuilding the mask).
@@ -110,6 +125,64 @@ impl ViewerApp {
         Ok(None)
     }
 
+    /// The initialisation choices the fixed dataset offers.
+    fn init_choices_for(&self, slot: usize) -> Vec<(RegInit, String)> {
+        let mut out = vec![
+            (RegInit::Auto, "Automatic".to_string()),
+            (RegInit::Identity, "Identity".to_string()),
+            (RegInit::Gravity, "Centres of gravity".to_string()),
+        ];
+        for (choice, label) in self.region_choices_for(slot) {
+            if choice != RegRoi::Whole {
+                out.push((RegInit::Structure(choice), format!("Centroids of {label}")));
+            }
+        }
+        out
+    }
+
+    /// Turn the panel's initialisation choice into what the engine takes:
+    /// for a structure, its centroid on the fixed dataset and the centroid
+    /// of the structure of the same name on the moving one.
+    pub(super) fn build_init(&self, fixed_slot: usize) -> Result<registration::Init> {
+        use crate::registration::Init;
+        let RegInit::Structure(choice) = self.reg_init else {
+            return Ok(match self.reg_init {
+                RegInit::Identity => Init::Identity,
+                RegInit::Gravity => Init::CenterOfGravity,
+                _ => Init::Auto,
+            });
+        };
+        let moving_slot = 1 - fixed_slot;
+        let fixed = self
+            .region_for(fixed_slot, choice, 0.0)?
+            .ok_or_else(|| anyhow!("pick a structure to start from"))?;
+        let name = fixed.name.clone();
+        let fstudy = self.slots[fixed_slot]
+            .study
+            .as_ref()
+            .ok_or_else(|| anyhow!("dataset {} is not loaded", SLOT_NAMES[fixed_slot]))?;
+        let mstudy = self.slots[moving_slot]
+            .study
+            .as_ref()
+            .ok_or_else(|| anyhow!("dataset {} is not loaded", SLOT_NAMES[moving_slot]))?;
+        let fgrid = fstudy.volume.grid();
+        let fc = crate::motion::centroid_mm(fixed.mask(), &fgrid)
+            .ok_or_else(|| anyhow!("'{name}' is empty on dataset {}", SLOT_NAMES[fixed_slot]))?;
+        let ms = crate::workflow::select::find(mstudy, &name, None).ok_or_else(|| {
+            anyhow!(
+                "dataset {} has no structure '{name}' to match the centroids with",
+                SLOT_NAMES[moving_slot]
+            )
+        })?;
+        let mgrid = mstudy.volume.grid();
+        let mc = crate::motion::centroid_mm(&ms.mask_on(&mgrid)?, &mgrid)
+            .ok_or_else(|| anyhow!("'{name}' is empty on dataset {}", SLOT_NAMES[moving_slot]))?;
+        Ok(Init::Points {
+            fixed: fc,
+            moving: mc,
+        })
+    }
+
     // -- running -----------------------------------------------------------
 
     /// Everything a run needs, from the current panel state.
@@ -139,6 +212,7 @@ impl ViewerApp {
             landmark: self.reg_landmark,
             landmarks: self.reg_landmarks.clone(),
             region,
+            init: registration::Init::Auto,
             start,
         }
     }
@@ -166,7 +240,14 @@ impl ViewerApp {
                 return;
             }
         };
-        let params = self.current_reg_params(region.clone(), refine);
+        let mut params = self.current_reg_params(region.clone(), refine);
+        match self.build_init(fixed_slot) {
+            Ok(init) => params.init = init,
+            Err(e) => {
+                self.error = Some(format!("Registration start: {e:#}"));
+                return;
+            }
+        }
         if params.method == RegMethod::PlastimatchLandmark && params.landmarks.is_empty() {
             self.error = Some(
                 "The landmark warp needs paired points: put the crosshair on the same \
@@ -521,6 +602,38 @@ impl ViewerApp {
                         );
                     });
                 }
+
+                // ---- initialisation ----
+                let init_choices = self.init_choices_for(fixed_slot);
+                if !init_choices.iter().any(|(c, _)| *c == self.reg_init) {
+                    self.reg_init = RegInit::Auto;
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Start from");
+                    let current = init_choices
+                        .iter()
+                        .find(|(c, _)| *c == self.reg_init)
+                        .map(|(_, l)| l.clone())
+                        .unwrap_or_default();
+                    egui::ComboBox::from_id_salt("reg_init")
+                        .selected_text(current)
+                        .width(190.0)
+                        .show_ui(ui, |ui| {
+                            for (choice, label) in &init_choices {
+                                ui.selectable_value(&mut self.reg_init, *choice, label);
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "Where the search begins. The engines take steps of a few \
+                             millimetres, so two images that do not overlap at the identity \
+                             (different frames of reference: a cardiac CT and a 4DCT) never \
+                             find each other. Automatic keeps the identity when they overlap \
+                             and matches the centres of gravity when they do not; a \
+                             structure contoured on both datasets matches its centroids, \
+                             which is the surest start for an organ.",
+                        );
+                });
 
                 // ---- parameters ----
                 egui::CollapsingHeader::new("Parameters")

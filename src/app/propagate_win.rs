@@ -13,6 +13,7 @@
 
 use super::*;
 use crate::propagate::{self, Propagated, Subject};
+use crate::workflow::anchored::{self, AnchoredOutcome};
 pub(super) use crate::workflow::group::{run as run_group, GroupOutcome, GroupRequest};
 
 /// Where a propagation run puts its results.
@@ -41,6 +42,12 @@ pub(super) struct PropagateDialog {
     /// Refine the registration on this region of the *fixed* dataset first.
     pub local: RegRoi,
     pub local_margin_mm: f64,
+    /// Against a group: the structure of the *source* the run is anchored
+    /// on (contoured on every phase too), or `Whole` for a plain run.
+    pub anchor: RegRoi,
+    pub anchor_margin_mm: f64,
+    /// Anchored run: refine deformably after the rigid stage.
+    pub anchor_deformable: bool,
     /// What the last run produced.
     pub summary: Vec<String>,
 }
@@ -54,6 +61,9 @@ impl Default for PropagateDialog {
             segs: Vec::new(),
             local: RegRoi::Whole,
             local_margin_mm: 10.0,
+            anchor: RegRoi::Whole,
+            anchor_margin_mm: 10.0,
+            anchor_deformable: true,
             summary: Vec::new(),
         }
     }
@@ -73,6 +83,8 @@ pub(super) enum PropOutcome {
     /// One result per phase of a 4D group, each with the registration that
     /// put it there.
     Group(GroupOutcome),
+    /// The same, anchored on a structure, with the per-phase check.
+    Anchored(AnchoredOutcome),
 }
 
 /// The per-phase transforms of one 4D group, kept so a later propagation
@@ -312,6 +324,116 @@ impl ViewerApp {
         }));
     }
 
+    /// Start a run against every phase of a 4D group anchored on a
+    /// structure: the source's `anchor` is matched to its namesake on each
+    /// phase (centroids, then a rigid fit on the structure, then optionally a
+    /// local deformable refinement), and `subjects` travel through that.
+    ///
+    /// This is how a cardiac CT meets a 4DCT: the two share no frame of
+    /// reference, and only the heart is worth matching.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn start_anchored_run(
+        &mut self,
+        moving_slot: usize,
+        slot: usize,
+        group: usize,
+        anchor: RegRoi,
+        margin_mm: f64,
+        deformable: bool,
+        subjects: Vec<Subject>,
+    ) {
+        if self.propagate_job.is_some() {
+            return;
+        }
+        let Some(src) = self.slots[moving_slot].study.as_ref() else {
+            self.error = Some("This needs a loaded source dataset".into());
+            return;
+        };
+        let src_vol = src.volume.clone();
+        let moving_series_uid = src
+            .series
+            .get(src.active_series)
+            .map(|s| s.uid.clone())
+            .unwrap_or_default();
+        // The anchor on the source, as a frozen structure.
+        let src_anchor = match anchor {
+            RegRoi::Structure(i) => self.slots[moving_slot]
+                .active_structures()
+                .and_then(|ss| ss.rois.get(i))
+                .map(crate::workflow::select::Structure::from_roi),
+            RegRoi::Segmentation(i) => {
+                let segs = self.slots[moving_slot].segs();
+                segs.get(i).map(|seg| crate::workflow::select::Structure {
+                    name: seg.name.clone(),
+                    color: seg.color,
+                    source: crate::workflow::select::Source::Mask {
+                        mask: seg.mask.clone(),
+                        grid: src_vol.grid(),
+                    },
+                })
+            }
+            RegRoi::Whole => None,
+        };
+        let Some(src_anchor) = src_anchor else {
+            self.error = Some("Pick the structure to anchor the run on.".into());
+            return;
+        };
+        let Some(study) = self.slots[slot].study.as_ref() else {
+            return;
+        };
+        let Some(g) = study.fourd_groups.get(group) else {
+            self.error = Some("That 4D group is gone - pick it again.".into());
+            return;
+        };
+        let phases = match crate::workflow::phases_of(g, &study.series) {
+            Ok(p) => p,
+            Err(e) => {
+                self.error = Some(format!("{e}"));
+                return;
+            }
+        };
+        // The anchor on every phase: the contour drawn on that phase.
+        let mut anchored = Vec::with_capacity(phases.len());
+        for (label, series) in phases {
+            let Some(st) =
+                crate::workflow::select::find_on_series(study, &src_anchor.name, &series.uid, "")
+            else {
+                self.error = Some(format!(
+                    "Phase {label} has no structure '{}'; an anchored run needs it contoured \
+                     on every phase.",
+                    src_anchor.name
+                ));
+                return;
+            };
+            anchored.push(anchored::AnchoredPhase {
+                label,
+                series,
+                anchor: st,
+            });
+        }
+        let base = self.current_reg_params(None, false);
+        let rigid = anchored::default_rigid(&base);
+        let deformable = deformable.then(|| anchored::default_deformable(&base));
+        let req = anchored::AnchoredRequest {
+            src_vol,
+            src_anchor,
+            subjects,
+            phases: anchored,
+            margin_mm: margin_mm.max(0.0),
+            rigid,
+            deformable,
+            group_name: g.name.clone(),
+            group,
+            moving_slot,
+            moving_series_uid,
+        };
+        let progress = Arc::new(Progress::default());
+        progress.set("starting");
+        self.propagate_job = Some(Job::spawn(progress, move |p| {
+            (slot, anchored::run(req, p).map(PropOutcome::Anchored))
+        }));
+    }
+
     /// Start the propagation (with its optional local refinement) on a
     /// worker thread.
     fn start_propagation(&mut self) {
@@ -323,14 +445,31 @@ impl ViewerApp {
         };
         if let PropTarget::Group { slot, group } = d.target {
             let moving_slot = d.src_slot;
+            let anchor = d.anchor;
+            let (margin, deformable) = (d.anchor_margin_mm, d.anchor_deformable);
+            // An anchored run carries the anchor itself as its check, so
+            // nothing else need be ticked.
             let subjects = match self.propagate_subjects(d) {
                 Ok(s) => s,
+                Err(_) if anchor != RegRoi::Whole => Vec::new(),
                 Err(e) => {
                     self.error = Some(format!("Propagation: {e}"));
                     return;
                 }
             };
-            self.start_group_run(moving_slot, slot, group, subjects);
+            if anchor != RegRoi::Whole {
+                self.start_anchored_run(
+                    moving_slot,
+                    slot,
+                    group,
+                    anchor,
+                    margin,
+                    deformable,
+                    subjects,
+                );
+            } else {
+                self.start_group_run(moving_slot, slot, group, subjects);
+            }
             return;
         }
         let Some(reg) = &self.registration else {
@@ -434,6 +573,15 @@ impl ViewerApp {
         let lines = match out {
             PropOutcome::One { items, refined } => self.install_one(dst_slot, items, refined),
             PropOutcome::Group(g) => self.install_group(dst_slot, g),
+            PropOutcome::Anchored(a) => {
+                let mut lines = self.install_group(dst_slot, a.group);
+                lines.push(String::new());
+                lines.push("Anchor check (propagated against the phase's own contour)".into());
+                for q in &a.qa {
+                    lines.push(format!("   {} [{}]", q.line(), q.verdict()));
+                }
+                lines
+            }
         };
         if let Some(d) = &mut self.propagate_dialog {
             d.summary = lines;
@@ -576,6 +724,9 @@ impl ViewerApp {
             .map(|(fixed, _, _)| self.region_choices_for(*fixed))
             .unwrap_or_default();
         let group_choices = self.propagate_group_choices();
+        // Anchors are structures of the *source*: that is where they must
+        // exist, and every phase must carry one of the same name.
+        let anchor_choices = self.region_choices_for(src_slot);
         // A group that was removed while the module sat open leaves a stale
         // choice behind; fall back rather than run against nothing.
         if !matches!(d.target, PropTarget::Other)
@@ -584,21 +735,28 @@ impl ViewerApp {
             d.target = PropTarget::Other;
         }
         let to_group = matches!(d.target, PropTarget::Group { .. });
+        if !anchor_choices.iter().any(|(c, _)| *c == d.anchor) {
+            d.anchor = RegRoi::Whole;
+        }
+        let anchored = to_group && d.anchor != RegRoi::Whole;
         // Transforms already made for exactly this group from exactly this
         // moving image: the run then costs one load and one pull per phase.
-        let reuse = match (d.target, &self.group_registration) {
-            (PropTarget::Group { slot, group }, Some(gr)) => {
-                gr.slot == slot
-                    && gr.group == group
-                    && gr.moving_slot == src_slot
-                    && self.slots[src_slot]
-                        .study
-                        .as_ref()
-                        .and_then(|st| st.series.get(st.active_series))
-                        .is_some_and(|se| se.uid == gr.moving_series_uid)
-            }
-            _ => false,
-        };
+        // An anchored run always registers afresh: it answers a different
+        // question from the plain one.
+        let reuse = !anchored
+            && match (d.target, &self.group_registration) {
+                (PropTarget::Group { slot, group }, Some(gr)) => {
+                    gr.slot == slot
+                        && gr.group == group
+                        && gr.moving_slot == src_slot
+                        && self.slots[src_slot]
+                            .study
+                            .as_ref()
+                            .and_then(|st| st.series.get(st.active_series))
+                            .is_some_and(|se| se.uid == gr.moving_series_uid)
+                }
+                _ => false,
+            };
         let n_phases = match d.target {
             PropTarget::Group { slot, group } => self.group_phase_count(slot, group),
             PropTarget::Other => 0,
@@ -744,6 +902,69 @@ impl ViewerApp {
                     });
 
                 ui.separator();
+                if to_group {
+                    // Against a group the run may be anchored on a structure
+                    // the source and every phase carry.
+                    egui::CollapsingHeader::new("Anchor on a structure")
+                        .id_salt("prop_anchor")
+                        .default_open(d.anchor != RegRoi::Whole)
+                        .show(ui, |ui| {
+                            ui.label(
+                                "A structure contoured on the source and on every phase (the \
+                                 heart of a cardiac CT and of a 4DCT) is matched first: its \
+                                 centroids are aligned, a rigid fit is made on it alone, then \
+                                 a local deformable refinement. The two images need not share \
+                                 a frame of reference, and the structure travels along as the \
+                                 check: its overlap with each phase's own contour is reported.",
+                            );
+                            ui.horizontal(|ui| {
+                                ui.label("Anchor");
+                                let current = anchor_choices
+                                    .iter()
+                                    .find(|(c, _)| *c == d.anchor)
+                                    .map(|(_, l)| l.clone())
+                                    .unwrap_or_else(|| "None (plain run)".into());
+                                egui::ComboBox::from_id_salt("prop_anchor_roi")
+                                    .selected_text(current)
+                                    .width(200.0)
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut d.anchor,
+                                            RegRoi::Whole,
+                                            "None (plain run)",
+                                        );
+                                        for (choice, label) in &anchor_choices {
+                                            if *choice == RegRoi::Whole {
+                                                continue;
+                                            }
+                                            ui.selectable_value(&mut d.anchor, *choice, label);
+                                        }
+                                    });
+                            });
+                            if d.anchor != RegRoi::Whole {
+                                ui.horizontal(|ui| {
+                                    ui.label("Margin");
+                                    ui.add(
+                                        egui::DragValue::new(&mut d.anchor_margin_mm)
+                                            .speed(1.0)
+                                            .range(0.0..=60.0)
+                                            .suffix(" mm"),
+                                    )
+                                    .on_hover_text(
+                                        "The phase's structure is grown by this much to bound \
+                                         the registration; the boundary is what aligns it.",
+                                    );
+                                    ui.checkbox(&mut d.anchor_deformable, "Refine deformably")
+                                        .on_hover_text(
+                                            "After the rigid fit, a local B-spline on the same \
+                                             region takes up what is not rigid. Off keeps the \
+                                             alignment rigid.",
+                                        );
+                                });
+                            }
+                        });
+                    ui.separator();
+                }
                 // A local refinement refines *the* active registration.
                 // Against a group there is one registration per phase, each
                 // made on the spot, so there is nothing here to refine.
@@ -810,6 +1031,14 @@ impl ViewerApp {
                                     "One segmentation series per phase, each bound to that \
                                      phase's image series, through the transforms the \
                                      registration module already made",
+                                    n_phases >= 2,
+                                )
+                            } else if anchored {
+                                (
+                                    format!("▶ Anchor and propagate to {n_phases} phases"),
+                                    "Per phase: centroids matched, a rigid fit on the anchor, \
+                                     the refinement, then the structures (and the anchor, as \
+                                     the check) carried across",
                                     n_phases >= 2,
                                 )
                             } else if to_group {

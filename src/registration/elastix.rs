@@ -39,7 +39,7 @@ fn asgd(
     progress: &Progress,
     label: &str,
     metric_out: &mut f64,
-) -> Option<(Vec<f64>, usize)> {
+) -> Result<Option<(Vec<f64>, usize)>> {
     let n = params.len();
     let mut rng = XorShift(0x9E3779B97F4A7C15 ^ (n as u64));
     let mut grad = vec![0.0; n];
@@ -51,16 +51,30 @@ fn asgd(
     // single unlucky near-zero draw).
     let mut norms = [0.0f64; 3];
     let mut m0 = 0.0;
+    let mut valid0 = 0.0;
     for norm in &mut norms {
-        let (m, _) = eval(&params, &mut grad, &mut rng);
+        let (m, valid) = eval(&params, &mut grad, &mut rng);
         m0 = m;
+        valid0 = valid;
         *norm = grad.iter().map(|g| g * g).sum::<f64>().sqrt();
+    }
+    if valid0 < 0.25 {
+        // The images barely overlap where the search starts: there is no
+        // gradient to follow, and returning the start unchanged would look
+        // like a result. Say so instead.
+        bail!(
+            "only {:.0} % of the fixed-image samples land inside the moving image at the \
+             starting alignment - the two images do not overlap there. Initialise the \
+             registration (centres of gravity, or a structure contoured on both) before \
+             running it",
+            100.0 * valid0
+        );
     }
     norms.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let g0 = norms[1];
     if g0 < 1e-20 {
         *metric_out = m0;
-        return Some((params, 0));
+        return Ok(Some((params, 0)));
     }
     let a = cfg.delta * (cfg.big_a + 1.0) / g0;
     // Trust region: no single step may move the (scaled) parameter vector by
@@ -77,7 +91,7 @@ fn asgd(
 
     for it in 0..cfg.iterations {
         if progress.cancelled() {
-            return None;
+            return Ok(None);
         }
         let mut gamma = a / (t + cfg.big_a);
         let gnorm: f64 = grad.iter().map(|g| g * g).sum::<f64>().sqrt();
@@ -123,7 +137,7 @@ fn asgd(
         metric = best_metric;
     }
     *metric_out = metric;
-    Some((params, cfg.iterations))
+    Ok(Some((params, cfg.iterations)))
 }
 
 /// The extent the rotation scaling is derived from: the whole fixed volume,
@@ -177,7 +191,7 @@ pub(super) fn run(setup: &RegSetup, progress: &Progress) -> Result<EngineOutput>
     // ---------------- Rigid stage ----------------
     let mut rigid = match start {
         Some(s) => s.rigid.recentered(center),
-        None => RigidTransform::identity(center),
+        None => setup.init.clone(),
     };
     let mut total_iters = 0usize;
     let mut last_metric = f64::MAX;
@@ -268,7 +282,8 @@ pub(super) fn run(setup: &RegSetup, progress: &Progress) -> Result<EngineOutput>
             progress,
             &label,
             &mut mlast,
-        ) else {
+        )?
+        else {
             bail!("registration cancelled");
         };
         rigid = RigidTransform::new(
@@ -406,7 +421,8 @@ pub(super) fn run(setup: &RegSetup, progress: &Progress) -> Result<EngineOutput>
                 progress,
                 &label,
                 &mut mlast,
-            ) else {
+            )?
+            else {
                 bail!("registration cancelled");
             };
             bspline.coeffs = coeffs;

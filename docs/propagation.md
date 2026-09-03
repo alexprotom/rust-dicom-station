@@ -68,6 +68,33 @@ registration is cleared, or when the moving image changes.
 A local refinement belongs to one pair of images, so it is not offered here:
 there is one pair per phase.
 
+### Anchored on a structure
+
+A cardiac CT onto a 4DCT is a different problem from a planning CT onto its
+own 4DCT. The two are separate acquisitions in separate frames of reference,
+so at the identity they do not overlap at all; the cardiac CT is a small,
+sharp, contrast-enhanced volume at one cardiac phase, the 4DCT a wide,
+coarse, unenhanced one at ten respiratory bins, so a registration of the
+whole images would match the wrong things even once it had found the
+patient. What is wanted is narrower: put the heart where the heart is on
+every phase, and carry the target with it.
+
+**Anchor on a structure** does that when the source and every phase carry a
+structure of the same name (`heart_total` on the cardiac CT and in each
+phase's own structure set). Per phase: the two centroids are matched, a
+rigid registration sampling only the phase's structure plus the margin finds
+the rotation and the residual shift, and (unless *Refine deformably* is off)
+a local B-spline on the same region takes up what is not rigid. The ticked
+structures travel through that transform, and the anchor travels with them
+as the check: its Dice, HD95 and centroid distance against the phase's own
+contour are reported per phase with a verdict (good from 0.85, check from
+0.7, poor below). A heart that lands on the heart says the target landed too.
+
+The anchored run always registers afresh; its transforms are kept like any
+group registration's, so a later plain propagation onto the same group
+reuses them. From the MCP server the same run is `propagate_to_group` with
+`anchor`.
+
 ## Using it
 
 1. Register the two datasets (any method; see

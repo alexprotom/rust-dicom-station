@@ -184,7 +184,7 @@ pub fn export_registration(core: &mut Core, a: ExportRegArgs, p: &Progress) -> R
 /// A folder the client may hand to the archive or the viewer: under a root
 /// or under the output folder.
 fn readable_folder(core: &Core, given: &Path) -> Result<PathBuf> {
-    let (real, _) = core.session.config.resolve_input(given)?;
+    let (real, _) = core.session.resolve_input(given)?;
     if !real.is_dir() {
         bail!("'{}' is not a folder", given.display());
     }
@@ -291,21 +291,26 @@ pub struct AnonymizeArgs {
 pub fn anonymize(core: &mut Core, a: AnonymizeArgs, p: &Progress) -> Result<Value> {
     let src = readable_folder(core, &a.path)?;
     let scan = anonymize::scan(&src, p)?;
-    // Everything the scan found goes to the redactor: the values are in
-    // the findings, and the findings never leave this function.
+    // What gets replaced goes to the redactor: the values are in the
+    // findings, and the findings never leave this function. Only the
+    // findings that are replaced, though: the scan also lists the study and
+    // series descriptions, which are kept unless asked otherwise, and
+    // feeding those in would blank ordinary words like "4DCT" or "CCT" from
+    // every later series list.
+    let is_description = |f: &anonymize::TagFinding| {
+        matches!(f.name.as_str(), "StudyDescription" | "SeriesDescription")
+    };
+    let replaced =
+        |f: &anonymize::TagFinding| f.enabled || (a.clear_descriptions && is_description(f));
     let mut values = Vec::new();
-    for f in &scan.findings {
+    for f in scan.findings.iter().filter(|f| replaced(f)) {
         values.extend(f.values.iter().cloned());
     }
     core.session.add_values(values);
     let replacements: Vec<_> = scan
         .findings
         .iter()
-        .filter(|f| {
-            f.enabled
-                || (a.clear_descriptions
-                    && matches!(f.name.as_str(), "StudyDescription" | "SeriesDescription"))
-        })
+        .filter(|f| replaced(f))
         .map(|f| {
             let value = if a.clear_descriptions
                 && matches!(f.name.as_str(), "StudyDescription" | "SeriesDescription")

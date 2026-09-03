@@ -66,9 +66,9 @@ segmentation series added when a name repeats. Series are numbered as
 | `segment_organs` | TotalSegmentator on one series: `fast`, `high` (with `parts` such as `cardiac`) or `preview`; `keep` narrows to named organs |
 | `segment_body` | The patient outline, classically or model-assisted |
 | `combine_structures` | Union / intersect / subtract with margins in mm (uniform or per patient direction) and cleanup |
-| `register`, `describe_registration` | Rigid, elastix B-spline or plastimatch B-spline; `region` makes a deformable run local to a structure of the fixed dataset; `start` refines an earlier registration |
+| `register`, `describe_registration` | Rigid, elastix B-spline or plastimatch B-spline; `region` makes a run local to a structure of the fixed dataset; `start` refines an earlier registration; `init` says where the search starts (automatic, the identity, the centres of gravity, or the centroids of a structure contoured on both) |
 | `propagate` | Carry structures across a registration, to the fixed or the moving side |
-| `propagate_to_group` | One series onto every phase of a 4D group, one deformable registration per phase, transforms kept and reused |
+| `propagate_to_group` | One series onto every phase of a 4D group, one deformable registration per phase, transforms kept and reused. With `anchor` (a structure contoured on the source and on every phase, the heart say) the run is anchored on it: centroids matched, a rigid fit on the structure plus a margin, a local deformable refinement, and the anchor's Dice against each phase's own contour as the check. This is how a cardiac CT meets a 4DCT |
 | `analyse_motion` | The 4D pipeline: tracks, amplitudes, correlation with a reference structure, per-phase QA, ITVs |
 | `compare_structures` | Volumes, centroid offset, Dice, HD95, mean surface distance |
 | `compute_dvh` | DVH curves and metrics against a dose grid, protocol constraints, CSV |
@@ -132,7 +132,10 @@ and fails if any of those values appears in anything the server produced. A
 second test does the same over the real executable's standard output.
 
 **The sandbox.** Paths in tool calls are canonicalized and must lie under a
-configured root (or the output folder, so results can be re-opened). Output
+configured root (or the output folder, so results can be re-opened). A path
+may be given the way the server reports it, under its label: `root1/4DCT`,
+`output/session/anonymized`, so what `anonymize` answers is exactly what
+`open_dataset` takes next. Output
 goes into a per-session folder under `output_dir`; existing files are never
 overwritten and no tool deletes. Model weights are not downloaded unless
 `allow_model_download` is on; a missing model is an error that names the

@@ -69,7 +69,7 @@ mod views;
 use drr_win::DrrDialog;
 use pacs_win::{PacsOutcome, PacsWindow};
 use propagate_win::{GroupRegistration, PropOutcome, PropagateDialog};
-use reg_panel::{RegOutcome, RegRoi};
+use reg_panel::{RegInit, RegOutcome, RegRoi};
 use rename::{RenameDialog, RenameTarget};
 use seg_engines::*;
 use theme::*;
@@ -869,6 +869,8 @@ pub struct ViewerApp {
     reg_roi: RegRoi,
     /// Margin the region is grown by, mm.
     reg_margin_mm: f64,
+    /// Where the next run starts its search.
+    reg_init: RegInit,
 
     // The deformation vector field of the active registration.
     field_on: bool,
@@ -1194,6 +1196,7 @@ impl ViewerApp {
             reg_landmarks: Vec::new(),
             reg_roi: RegRoi::Whole,
             reg_margin_mm: 10.0,
+            reg_init: RegInit::Auto,
             field_on: false,
             field_style: FieldStyle::Arrows,
             field_step_mm: 12.0,

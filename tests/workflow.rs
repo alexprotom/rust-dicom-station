@@ -196,3 +196,147 @@ fn structures_are_found_by_name_and_set() {
     assert!(mask.contains(&1));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_structure_is_found_on_its_own_series_first() {
+    let dir = common::target_dir("test_workflow_on_series");
+    let folder = common::fourd_folder(&dir, SHIFTS);
+    let study = loader::load_directory(&folder, &Progress::default()).unwrap();
+    let phases = workflow::phases_of(&study.fourd_groups[0], &study.series).unwrap();
+    // The structure set was drawn on phase 0 and says so; asked about phase
+    // 0 it is found by that reference, asked about another phase the search
+    // widens to the study rather than coming back empty.
+    for (label, series) in &phases {
+        let body = select::find_on_series(&study, "body", &series.uid, "");
+        assert!(body.is_some(), "BODY resolves for phase {label}");
+    }
+    assert!(select::find_on_series(&study, "LIVER", &phases[0].1.uid, "").is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_volume_in_another_frame_is_anchored_on_a_structure_and_lands() {
+    use rust_dicom_station::geometry::Vec3;
+    use rust_dicom_station::motion;
+    use rust_dicom_station::volume::Volume;
+    use rust_dicom_station::workflow::anchored;
+    use std::sync::Arc;
+
+    let dir = common::target_dir("test_workflow_anchored");
+    let folder = common::fourd_folder(&dir, SHIFTS);
+    let study = loader::load_directory(&folder, &Progress::default()).unwrap();
+    let g = &study.fourd_groups[0];
+    let phases = workflow::phases_of(g, &study.series).unwrap();
+
+    // The source: the phase-0 phantom filed in another frame of reference,
+    // 600 mm away in patient coordinates - the way a cardiac CT and a 4DCT
+    // of one patient sit. Its structures go with it, since masks live in
+    // voxel space.
+    let offset = Vec3::new(30.0, -250.0, 600.0);
+    // Phase 0 explicitly: the displayed series of a 4D study is whichever
+    // the loader put first, and the target's expected positions below are
+    // relative to phase 0.
+    let (phase0, _, _) = loader::load_series_volume(&phases[0].1, &Progress::default()).unwrap();
+    let mut src: Volume = phase0;
+    let grid0 = src.grid();
+    src.origin = src.origin + offset;
+    src.frame_of_reference_uid = "1.2.3.4.5.6.7.8.9".into();
+    let src = Arc::new(src);
+    let src_grid = src.grid();
+    let on_source = |name: &str| {
+        // Rasterized on phase 0's lattice, then filed on the shifted one:
+        // the same voxels, so the structure moved with the image.
+        let mask = select::find(&study, name, None)
+            .unwrap()
+            .mask_on(&grid0)
+            .unwrap();
+        select::Structure {
+            name: name.to_string(),
+            color: [200, 40, 40],
+            source: select::Source::Mask {
+                mask,
+                grid: src_grid.clone(),
+            },
+        }
+    };
+    let src_anchor = on_source("BODY");
+    let target = on_source("TARGET");
+    let subjects = vec![target.subject_on(&src_grid).unwrap()];
+    let anchored_phases: Vec<_> = phases
+        .iter()
+        .map(|(label, series)| anchored::AnchoredPhase {
+            label: label.clone(),
+            series: series.clone(),
+            anchor: select::find_on_series(&study, "BODY", &series.uid, "").unwrap(),
+        })
+        .collect();
+    let base = RegParams {
+        levels: 2,
+        iterations: 150,
+        samples: 2000,
+        grid_spacing_mm: 16.0,
+        ..RegParams::default()
+    };
+    let req = anchored::AnchoredRequest {
+        src_vol: src.clone(),
+        src_anchor,
+        subjects,
+        phases: anchored_phases,
+        margin_mm: 10.0,
+        rigid: anchored::default_rigid(&base),
+        deformable: Some(anchored::default_deformable(&base)),
+        group_name: g.name.clone(),
+        group: 0,
+        moving_slot: 0,
+        moving_series_uid: study.series[0].uid.clone(),
+    };
+    let t0 = std::time::Instant::now();
+    let out = anchored::run(req, &Progress::default()).expect("the anchored run works");
+    eprintln!("anchored run: {:.1} s", t0.elapsed().as_secs_f64());
+    assert_eq!(out.group.phases.len(), 3);
+    assert_eq!(out.qa.len(), 3);
+
+    let mut centroids = Vec::new();
+    for (ph, qa) in out.group.phases.iter().zip(&out.qa) {
+        eprintln!("{}  |  {}", ph.metric_line, qa.line());
+        assert!(
+            (qa.initial_shift_mm - offset.length()).abs() < 5.0,
+            "the initialisation closed the frame offset: {:.1} vs {:.1} mm",
+            qa.initial_shift_mm,
+            offset.length()
+        );
+        let o = qa.overlap.as_ref().expect("the anchor landed");
+        assert!(
+            o.dice > 0.9,
+            "phase {}: the body lands on the body (Dice {:.3})",
+            ph.label,
+            o.dice
+        );
+        assert_eq!(qa.verdict(), "good");
+        // The target and the anchor both travelled; the target is item 0.
+        assert_eq!(ph.items.len(), 2);
+        let t = &ph.items[0];
+        assert_eq!(t.name, "TARGET");
+        assert!(t.voxels > 0, "the target lands on {}", ph.label);
+        assert!(
+            (t.result_cm3 - t.source_cm3).abs() / t.source_cm3 < 0.3,
+            "volume roughly preserved on {}: {:.1} -> {:.1}",
+            ph.label,
+            t.source_cm3,
+            t.result_cm3
+        );
+        centroids.push(motion::centroid_mm(&t.mask, &ph.grid).unwrap());
+        assert!(ph.seg_series(&g.name).is_some());
+    }
+    // The deformable refinement on the body region carries the target to
+    // where each phase has it: y = 0, 6, 3 mm relative to phase 0.
+    for (i, expect) in SHIFTS.iter().enumerate() {
+        let dy = centroids[i].y - centroids[0].y;
+        eprintln!("phase {i}: target dy = {dy:.2} mm (expected {expect})");
+        assert!(
+            (dy - expect).abs() < 2.0,
+            "phase {i}: the target landed {dy:.2} mm away, expected {expect} mm"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

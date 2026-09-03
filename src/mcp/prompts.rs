@@ -40,10 +40,17 @@ dataset has a dose and a plan, and that the 4DCT dataset shows one 4D group with
 (list_4d_groups).
 2. If neither the cardiac CT nor the planning CT has a heart structure, run segment_organs \
 (variant `high`, parts [\"cardiac\"], keep [\"heart\"]) on each; otherwise use the existing one.
-3. register: fixed = planning CT, moving = cardiac CT, method elastix_rigid. Then register \
-again with method elastix_bspline, start = the rigid reg, region = the planning CT's heart with \
-margin 15 mm. Report both analyses (metric before and after, displacement p95, folded \
-fraction).
+3. register: fixed = planning CT, moving = cardiac CT, method elastix_rigid, init = the heart \
+structure's name (the cardiac CT and the planning CT are two acquisitions in two frames of \
+reference, so the search must start from the matched heart centroids, never from the \
+identity). Then register again with method elastix_bspline, start = the rigid reg, region = \
+the planning CT's heart with margin 15 mm. Report both analyses (metric before and after, \
+displacement p95, folded fraction).
+   When there is no planning CT and the 4DCT phases each carry a heart contour (one structure \
+set per phase), skip steps 3 and 4: call propagate_to_group with source = the cardiac CT, \
+anchor = the heart structure, structures = [the target], anchor_margin_mm 10. Report, per \
+phase, the anchor check (Dice, HD95, centroid shift, verdict) and the target's volume before \
+and after; a verdict other than good on any phase is a reason to stop and ask.
 4. propagate the target (and the heart, as a check) with the deformable reg, to = fixed \
 (the planning CT). Report source and result volumes. If the planning CT carries its own target \
 or heart, compare_structures the propagated one against it (Dice, HD95, centroid shift).

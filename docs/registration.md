@@ -117,6 +117,20 @@ The transform maps **fixed → moving** patient coordinates, as in elastix,
 ITK and plastimatch; the inverse (for the crosshair link and propagation) is
 exact for the rigid part and a fixed-point iteration for the deformable one.
 
+**Start from** says where the search begins. The engines take steps of a
+few millimetres, so two images that do not overlap at the identity never
+find each other: a cardiac CT and a 4DCT of one patient are two
+acquisitions in two frames of reference, hundreds of millimetres apart in
+patient coordinates, and a run started from the identity has no gradient to
+follow (it now says so rather than returning the identity as a result).
+*Automatic* keeps the identity when the images overlap - every same-frame
+pair, so nothing changes for those - and matches the centres of gravity when
+they do not (elastix's `AutomaticTransformInitialization`, what the
+plastimatch engine always did as `align_center`). *Centroids of a
+structure* matches one structure contoured on both datasets, which is the
+surest start for an organ: the heart on a cardiac CT and on a planning CT.
+A local run always starts from the identity.
+
 On the bundled data (512 × 512 × 133 CT, two breathing phases): elastix
 rigid pre-alignment plus three B-spline resolution levels, 1800 iterations
 total, ≈ 20 s on a desktop CPU, driving the mean-squared HU difference from

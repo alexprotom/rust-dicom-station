@@ -330,3 +330,115 @@ fn the_heart_sequence_runs_on_the_phantom() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn paths_may_be_given_the_way_the_server_reports_them() {
+    let dir = common::target_dir("test_mcp_tools_labels");
+    let folder = common::fourd_folder(&dir, [0.0, 6.0, 3.0]);
+    let mut core = core_for(&dir);
+    let c = &mut core;
+    // The root by its label, with either separator.
+    let d = call(c, "open_dataset", json!({"path": "root1/4dct"}));
+    assert_eq!(d["dataset"], "ds1");
+    let d = call(c, "open_dataset", json!({"path": "root1\\4dct"}));
+    assert_eq!(d["dataset"], "ds2");
+    call(c, "close_dataset", json!({"dataset": "ds2"}));
+    // What anonymize answers is what open_dataset takes next.
+    let an = call(c, "anonymize", json!({"path": folder, "folder": "copy"}));
+    let reported = an["folder"].as_str().unwrap().to_string();
+    assert!(
+        reported.starts_with("output/session"),
+        "the folder is reported under its label: {reported}"
+    );
+    let d = call(c, "open_dataset", json!({"path": reported}));
+    assert_eq!(d["dataset"], "ds3", "handles are never reused");
+    assert_eq!(d["phi"]["status"], "anonymized");
+    // The series descriptions survive the anonymizer *and* the redactor:
+    // "4DCT" is a word, not a name.
+    let desc: Vec<String> = d["series"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["description"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(
+        desc.iter().any(|s| s.contains("4DCT")),
+        "descriptions are not redacted: {desc:?}"
+    );
+    // A label that is not a folder is refused, as is a stranger's label.
+    let e = fail(c, "open_dataset", json!({"path": "root2/4dct"}));
+    assert!(e.contains("does not exist") || e.contains("outside"), "{e}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_anchored_group_run_reports_the_check() {
+    let dir = common::target_dir("test_mcp_tools_anchor");
+    let folder = common::fourd_folder(&dir, [0.0, 6.0, 3.0]);
+    let mut core = core_for(&dir);
+    let c = &mut core;
+    call(c, "open_dataset", json!({"path": folder}));
+
+    // register accepts a structure as its start.
+    let r = call(
+        c,
+        "register",
+        json!({"fixed": {"dataset": "ds1", "series": 2}, "moving": {"dataset": "ds1", "series": 1},
+               "method": "elastix_rigid", "levels": 2, "iterations": 40, "samples": 1500,
+               "init": "BODY"}),
+    );
+    assert_eq!(r["reg"], "reg1");
+    let e = fail(
+        c,
+        "register",
+        json!({"fixed": {"dataset": "ds1", "series": 2}, "moving": {"dataset": "ds1", "series": 1},
+               "init": "LIVER"}),
+    );
+    assert!(e.contains("LIVER"), "{e}");
+
+    // The anchored run: phase-0's volume onto every phase, anchored on the
+    // body, carrying the target.
+    let g = call(
+        c,
+        "propagate_to_group",
+        json!({"dataset": "ds1", "group": "1", "source_series": 1,
+               "structures": [{"structure": "TARGET"}], "anchor": {"structure": "BODY"},
+               "anchor_margin_mm": 10.0, "levels": 2, "iterations": 100, "samples": 2000,
+               "grid_spacing_mm": 16.0}),
+    );
+    assert_eq!(g["greg"], "greg1");
+    assert_eq!(g["anchor"], "BODY");
+    assert_eq!(g["stages"], "centroids, rigid, deformable");
+    let phases = g["phases"].as_array().unwrap();
+    assert_eq!(phases.len(), 3);
+    for ph in phases {
+        let check = &ph["anchor_check"];
+        assert_eq!(check["anchor"], "BODY");
+        assert!(check["dice"].as_f64().unwrap() > 0.9, "{ph}");
+        assert_eq!(check["verdict"], "good");
+        assert!(check["rigid"].as_str().unwrap().contains("MSD"));
+        assert!(check["deformable"].is_string());
+        let items = ph["structures"].as_array().unwrap();
+        assert_eq!(items.len(), 2, "the target and the anchor travelled");
+        assert!(items.iter().all(|it| it["voxels"].as_u64().unwrap() > 0));
+    }
+    assert!(g["worst_anchor_dice"].as_f64().unwrap() > 0.9);
+    // Rigid only stops after the rigid stage.
+    let g = call(
+        c,
+        "propagate_to_group",
+        json!({"dataset": "ds1", "group": "1", "source_series": 1,
+               "anchor": {"structure": "BODY"}, "rigid_only": true,
+               "levels": 2, "iterations": 40, "samples": 1500}),
+    );
+    assert_eq!(g["stages"], "centroids, rigid");
+    assert!(g["phases"][0]["anchor_check"]["deformable"].is_null());
+    // An anchor no phase carries is refused by name.
+    let e = fail(
+        c,
+        "propagate_to_group",
+        json!({"dataset": "ds1", "group": "1", "anchor": {"structure": "LIVER"}}),
+    );
+    assert!(e.contains("LIVER"), "{e}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

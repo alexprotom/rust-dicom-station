@@ -225,6 +225,8 @@ pub struct RegParams {
     /// Restrict the fixed-image samples and the control lattice to a region -
     /// what makes a registration *local*.
     pub region: Option<Arc<RegionMask>>,
+    /// Where a run without a `start` begins: see [`Init`].
+    pub init: Init,
     /// An alignment to start from and refine rather than replace.
     ///
     /// A deformable run with a start recovers a *correction*: the moving
@@ -251,9 +253,39 @@ impl Default for RegParams {
             landmark: LandmarkParams::default(),
             landmarks: Vec::new(),
             region: None,
+            init: Init::Auto,
             start: None,
         }
     }
+}
+
+/// How a registration is initialised when there is no `start` to refine.
+///
+/// The engines search locally: a rigid step is a few millimetres, so two
+/// images that do not overlap at the identity (a cardiac CT and a 4DCT of
+/// the same patient acquired in different frames of reference sit hundreds
+/// of millimetres apart in patient coordinates) would never find each other.
+/// The initialisation is the translation that brings them together before
+/// the search starts.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub enum Init {
+    /// The identity for images that already overlap; otherwise the centres
+    /// of gravity are matched. A local run (a region) always starts from
+    /// the identity, since matching one structure's centre against the
+    /// whole moving image would undo the alignment it refines. This is what
+    /// the plastimatch engine always did for a global run (`align_center`).
+    #[default]
+    Auto,
+    /// The identity, whatever the overlap.
+    Identity,
+    /// Translate so the centres of gravity coincide (elastix's
+    /// `AutomaticTransformInitialization` with `CenterOfGravity`); the
+    /// identity for a local run.
+    CenterOfGravity,
+    /// Translate so the point `fixed` (fixed patient coordinates) lands on
+    /// `moving` (moving patient coordinates): the centroids of one structure
+    /// contoured on both images, for instance.
+    Points { fixed: Vec3, moving: Vec3 },
 }
 
 // ---------------------------------------------------------------------------
@@ -358,6 +390,11 @@ impl RegionMask {
             *slot = u as usize;
         }
         self.mask[idx[2] * self.dims[0] * self.dims[1] + idx[1] * self.dims[0] + idx[0]] != 0
+    }
+
+    /// The (dilated) mask, one byte per fixed-volume voxel.
+    pub fn mask(&self) -> &[u8] {
+        &self.mask
     }
 
     /// Inclusive voxel bounding box of the dilated region.
@@ -1237,6 +1274,45 @@ fn msd_value(fixed: &RegImage, moving: &RegImage, t: &Transform3, n: usize) -> f
     }
 }
 
+/// Centre of gravity of the voxels at or above `threshold`.
+pub(crate) fn center_of_gravity(img: &RegImage, threshold: f32) -> Option<Vec3> {
+    let [nx, ny, _] = img.dims;
+    let (sum, n) = img
+        .data
+        .par_iter()
+        .enumerate()
+        .filter(|(_, &v)| v >= threshold)
+        .map(|(o, _)| {
+            let k = o / (nx * ny);
+            let rem = o - k * nx * ny;
+            (
+                img.index_to_patient((rem % nx) as f64, (rem / nx) as f64, k as f64),
+                1usize,
+            )
+        })
+        .reduce(|| (Vec3::ZERO, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+    (n > 0).then(|| sum * (1.0 / n as f64))
+}
+
+/// Centre of gravity of the eligible voxels of a prepared fixed image.
+pub(crate) fn eligible_center_of_gravity(img: &RegImage) -> Option<Vec3> {
+    let [nx, ny, _] = img.dims;
+    let (sum, n) = img
+        .eligible
+        .par_iter()
+        .map(|&o| {
+            let o = o as usize;
+            let k = o / (nx * ny);
+            let rem = o - k * nx * ny;
+            (
+                img.index_to_patient((rem % nx) as f64, (rem / nx) as f64, k as f64),
+                1usize,
+            )
+        })
+        .reduce(|| (Vec3::ZERO, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+    (n > 0).then(|| sum * (1.0 / n as f64))
+}
+
 // ---------------------------------------------------------------------------
 // Top-level: build the pyramids and dispatch to an engine
 // ---------------------------------------------------------------------------
@@ -1260,6 +1336,8 @@ pub(crate) struct RegSetup<'a> {
     /// Fixed-image (or region) centre - the point rotations are taken about
     /// and the anchor of the parameter scaling.
     pub center: Vec3,
+    /// The alignment a run without a `start` begins from (about `center`).
+    pub init: RigidTransform,
     pub fixed_vol: &'a Volume,
     pub params: &'a RegParams,
 }
@@ -1277,6 +1355,66 @@ pub(crate) struct EngineOutput {
     pub iterations: usize,
     /// The engine's own final cost, in whatever units it minimizes.
     pub final_metric: f64,
+}
+
+/// The fraction of fixed-image samples that land inside the moving image
+/// at the identity: 1 for two volumes of one frame, 0 for two that do not
+/// overlap at all.
+fn overlap_at_identity(fixed: &RegImage, moving: &RegImage) -> f64 {
+    let mut rng = XorShift(0x2545F4914F6CDD1D);
+    let samples = draw_samples(fixed, 2000, &mut rng);
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let inside = samples
+        .iter()
+        .filter(|&&(p, _)| moving.sample_grad(p).is_some())
+        .count();
+    inside as f64 / samples.len() as f64
+}
+
+/// The rigid transform a run without a `start` begins from, per
+/// [`Init`]. The pyramids are coarsest-first; the centres of gravity come
+/// from the coarsest level, which is what plastimatch's `align_center` used
+/// and is plenty for a starting translation.
+fn resolve_init(
+    params: &RegParams,
+    fixed: &[RegImage],
+    moving: &[RegImage],
+    center: Vec3,
+    progress: &Progress,
+) -> RigidTransform {
+    let translation = |t: Vec3| RigidTransform::new([0.0, 0.0, 0.0, t.x, t.y, t.z], center);
+    let by_gravity = || {
+        progress.set("Initialising: matching the centres of gravity");
+        let cf = eligible_center_of_gravity(&fixed[0]);
+        let cm = center_of_gravity(&moving[0], params.fixed_threshold);
+        match (cf, cm) {
+            (Some(cf), Some(cm)) => translation(cm - cf),
+            _ => RigidTransform::identity(center),
+        }
+    };
+    let local = params.region.is_some();
+    match params.init {
+        Init::Identity => RigidTransform::identity(center),
+        Init::Points { fixed, moving } => translation(moving - fixed),
+        Init::CenterOfGravity if local => RigidTransform::identity(center),
+        Init::CenterOfGravity => by_gravity(),
+        Init::Auto if local => RigidTransform::identity(center),
+        // plastimatch always matched the centres of gravity of a global run;
+        // elastix starts from the identity when the images overlap, which
+        // is every same-frame pair, and only reaches for the centres when
+        // they do not.
+        Init::Auto if params.method == RegMethod::PlastimatchBSpline => by_gravity(),
+        Init::Auto => {
+            let finest = fixed.len() - 1;
+            if overlap_at_identity(&fixed[finest], &moving[finest]) >= 0.5 {
+                RigidTransform::identity(center)
+            } else {
+                by_gravity()
+            }
+        }
+    }
 }
 
 /// Register `moving` onto `fixed`. Returns the transform mapping fixed
@@ -1357,20 +1495,27 @@ pub fn register(
         }
     }
 
+    let init = resolve_init(params, &fixed_pyr, &moving_pyr, center, progress);
     let setup = RegSetup {
         fixed: fixed_pyr,
         moving: moving_pyr,
         center,
+        init,
         fixed_vol,
         params,
     };
 
-    let identity = Transform3::rigid_only(RigidTransform::identity(center));
+    // The "before" of the report is what the engine starts from - the
+    // initialisation, or the alignment being refined.
+    let initial = match &params.start {
+        Some(s) => (**s).clone(),
+        None => Transform3::rigid_only(setup.init.clone()),
+    };
     let finest = setup.finest();
     let initial_msd = msd_value(
         &setup.fixed[finest],
         &setup.moving[finest],
-        &identity,
+        &initial,
         params.samples.max(2000),
     );
 
@@ -1393,7 +1538,7 @@ pub fn register(
             ),
         ),
         Metric::MutualInformation => (
-            plastimatch::mi_value(&setup, &identity),
+            plastimatch::mi_value(&setup, &initial),
             plastimatch::mi_value(&setup, &out.transform),
         ),
     };

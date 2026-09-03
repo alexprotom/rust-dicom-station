@@ -11,9 +11,10 @@ use super::super::phi::clean_text;
 use super::super::session::Registration;
 use super::super::Core;
 use super::session::{round1, round2, round3, vec3};
+use crate::motion;
 use crate::progress::Progress;
 use crate::propagate;
-use crate::registration::{self, Metric, RegMethod, RegParams, RegionMask};
+use crate::registration::{self, Init, Metric, RegMethod, RegParams, RegionMask};
 
 /// One side of a registration: a dataset and, optionally, a series of it.
 #[derive(Deserialize, JsonSchema, Clone)]
@@ -71,13 +72,24 @@ pub struct RegisterArgs {
     /// plastimatch: bending-energy weight.
     #[serde(default)]
     pub regularization: Option<f64>,
-    /// Restrict a deformable run to a structure of the fixed dataset: a
-    /// local registration.
+    /// Restrict the run to a structure of the fixed dataset: a local
+    /// registration (a rigid fit of one organ, or a deformable refinement).
     #[serde(default)]
     pub region: Option<RegionArg>,
     /// A `reg` handle of the same pair to refine rather than replace.
     #[serde(default)]
     pub start: Option<String>,
+    /// Where the search starts: `auto` (the identity when the images
+    /// overlap, otherwise their centres of gravity), `identity`,
+    /// `center_of_gravity`, or a structure name contoured on both datasets
+    /// (`init_moving` names it on the moving side when it differs) whose
+    /// centroids are matched. Two images of one patient in different frames
+    /// of reference do not overlap at the identity and need one of the
+    /// latter.
+    #[serde(default)]
+    pub init: Option<String>,
+    #[serde(default)]
+    pub init_moving: Option<String>,
 }
 
 fn default_method() -> String {
@@ -166,10 +178,28 @@ pub fn register(core: &mut Core, a: RegisterArgs, p: &Progress) -> Result<Value>
             other => bail!("metric must be mean_squares or mutual_information (got '{other}')"),
         };
     }
+    if let Some(init) = a.init.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        params.init = match init {
+            "auto" => Init::Auto,
+            "identity" => Init::Identity,
+            "center_of_gravity" | "centre_of_gravity" | "cog" => Init::CenterOfGravity,
+            name => {
+                let fname = name;
+                let mname = a.init_moving.as_deref().unwrap_or(name);
+                let fs = core.session.structure(&a.fixed.dataset, fname, None)?;
+                let ms = core.session.structure(&a.moving.dataset, mname, None)?;
+                let fc = motion::centroid_mm(&fs.mask_on(&fixed.grid())?, &fixed.grid())
+                    .ok_or_else(|| anyhow::anyhow!("'{fname}' is empty on the fixed volume"))?;
+                let mc = motion::centroid_mm(&ms.mask_on(&moving.grid())?, &moving.grid())
+                    .ok_or_else(|| anyhow::anyhow!("'{mname}' is empty on the moving volume"))?;
+                Init::Points {
+                    fixed: fc,
+                    moving: mc,
+                }
+            }
+        };
+    }
     if let Some(r) = &a.region {
-        if !method.is_deformable() {
-            bail!("a region makes sense for a deformable method only");
-        }
         let s = core
             .session
             .structure(&a.fixed.dataset, &r.structure, r.set.as_deref())?;

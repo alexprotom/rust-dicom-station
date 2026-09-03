@@ -61,7 +61,7 @@ fn scrub_in_memory(study: &mut LoadedStudy, values: &[String], alias: &str) {
 }
 
 pub fn open_dataset(core: &mut Core, a: OpenArgs, p: &Progress) -> Result<Value> {
-    let (real, root_label) = core.session.config.resolve_input(&a.path)?;
+    let (real, root_label) = core.session.resolve_input(&a.path)?;
     let mut study = if a.files.is_empty() {
         if !real.is_dir() {
             bail!(
@@ -73,7 +73,7 @@ pub fn open_dataset(core: &mut Core, a: OpenArgs, p: &Progress) -> Result<Value>
     } else {
         let mut files = Vec::with_capacity(a.files.len());
         for f in &a.files {
-            let (rf, rl) = core.session.config.resolve_input(f)?;
+            let (rf, rl) = core.session.resolve_input(f)?;
             if rl != root_label {
                 bail!("all files of one dataset must be under the same root");
             }

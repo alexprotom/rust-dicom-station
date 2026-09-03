@@ -12,7 +12,7 @@
 use rust_dicom_station::geometry::Vec3;
 use rust_dicom_station::progress::Progress;
 use rust_dicom_station::registration::{
-    register, LandmarkKernel, LandmarkPair, LandmarkParams, Metric, RegMethod, RegParams,
+    register, Init, LandmarkKernel, LandmarkPair, LandmarkParams, Metric, RegMethod, RegParams,
     RegionMask, RigidTransform, VectorField,
 };
 use rust_dicom_station::volume::Volume;
@@ -177,6 +177,149 @@ fn elastix_rigid_recovers_known_transform() {
     );
     assert_eq!(a.jacobian.folded, 0.0);
     assert!(a.samples > 1000);
+}
+
+/// The same phantom filed in another frame of reference: the moving volume
+/// sits `offset` mm away in patient coordinates, with the object in the
+/// middle of it, so at the identity the two do not overlap at all. That is
+/// what a cardiac CT and a 4DCT of one patient look like to the engine.
+fn make_volume_at(n: usize, spacing: f64, offset: Vec3, f: impl Fn(Vec3) -> f32 + Sync) -> Volume {
+    // `f` takes patient coordinates of the moving frame.
+    let mut v = make_volume(n, spacing, |p| f(p + offset));
+    v.origin = v.origin + offset;
+    v
+}
+
+#[test]
+fn two_volumes_that_do_not_overlap_are_initialised_before_the_search() {
+    let n = 64;
+    let spacing = 3.0;
+    // Nothing overlaps at the identity: the moving volume is a whole
+    // volume's width away along y and z.
+    let offset = Vec3::new(20.0, -400.0, 700.0);
+    let small = RigidTransform::new(
+        [
+            1.5f64.to_radians(),
+            -1.0f64.to_radians(),
+            2.0f64.to_radians(),
+            3.0,
+            -2.0,
+            4.0,
+        ],
+        offset,
+    );
+    // T_true maps fixed → moving: shift into the other frame, then the
+    // small motion about the object's centre there.
+    let t_true = |p: Vec3| small.map(p + offset);
+    let fixed = make_volume(n, spacing, phantom);
+    let moving = make_volume_at(n, spacing, offset, |q| {
+        // q is in the moving frame; the object there is the fixed phantom
+        // carried by T_true, so M(T_true x) = F(x).
+        phantom(small.unmap(q) - offset)
+    });
+    let base = RegParams {
+        method: RegMethod::ElastixRigid,
+        levels: 3,
+        iterations: 300,
+        samples: 4000,
+        ..RegParams::default()
+    };
+    let probes = [
+        Vec3::new(0.0, 0.0, 0.0),
+        Vec3::new(40.0, 10.0, 20.0),
+        Vec3::new(-30.0, 25.0, -25.0),
+        Vec3::new(10.0, -40.0, 30.0),
+    ];
+    let max_err = |res: &rust_dicom_station::registration::RegistrationResult| {
+        probes
+            .iter()
+            .map(|&p| (res.transform.map(p) - t_true(p)).length())
+            .fold(0.0, f64::max)
+    };
+
+    // From the identity there is nothing to follow, and the engine says so
+    // rather than handing the identity back as a result.
+    let e = match register(
+        &fixed,
+        &moving,
+        &RegParams {
+            init: Init::Identity,
+            ..base.clone()
+        },
+        &Progress::default(),
+    ) {
+        Ok(_) => panic!("no overlap at the identity, yet a result came back"),
+        Err(e) => e,
+    };
+    assert!(
+        format!("{e:#}").contains("do not overlap"),
+        "the error explains itself: {e:#}"
+    );
+
+    // Automatic: the images do not overlap, so the centres of gravity are
+    // matched and the search starts within a few millimetres of the answer.
+    let res = register(&fixed, &moving, &base, &Progress::default()).expect("auto init runs");
+    let err = max_err(&res);
+    eprintln!(
+        "auto init: MSD {:.1} → {:.1}, max mapping error {err:.2} mm",
+        res.initial_metric, res.final_metric
+    );
+    assert!(
+        res.initial_metric.is_finite(),
+        "the report starts from the initialisation"
+    );
+    assert!(err < 1.5, "max mapping error {err:.2} mm >= 1.5 mm");
+
+    // Two matched points (the centroids of a structure contoured on both):
+    // the object's centre in each frame.
+    let res = register(
+        &fixed,
+        &moving,
+        &RegParams {
+            init: Init::Points {
+                fixed: Vec3::ZERO,
+                moving: small.map(offset),
+            },
+            ..base.clone()
+        },
+        &Progress::default(),
+    )
+    .expect("point init runs");
+    let err = max_err(&res);
+    eprintln!("point init: max mapping error {err:.2} mm");
+    assert!(err < 1.5, "max mapping error {err:.2} mm >= 1.5 mm");
+}
+
+#[test]
+fn a_same_frame_pair_still_starts_from_the_identity() {
+    // The automatic initialisation must not disturb the ordinary case: two
+    // volumes of one frame that overlap start exactly where they used to.
+    let n = 32;
+    let fixed = make_volume(n, 4.0, phantom);
+    let moving = make_volume(n, 4.0, |p| phantom(p - Vec3::new(5.0, 0.0, 0.0)));
+    let params = RegParams {
+        method: RegMethod::ElastixRigid,
+        levels: 1,
+        iterations: 1,
+        samples: 2000,
+        ..RegParams::default()
+    };
+    let res = register(&fixed, &moving, &params, &Progress::default()).unwrap();
+    let auto = res.initial_metric;
+    let res = register(
+        &fixed,
+        &moving,
+        &RegParams {
+            init: Init::Identity,
+            ..params
+        },
+        &Progress::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        auto, res.initial_metric,
+        "auto is the identity when the images overlap"
+    );
 }
 
 /// Ground-truth smooth displacement (fixed → moving), a Gaussian bump.
