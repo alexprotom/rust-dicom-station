@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use dicom_dictionary_std::tags;
-use dicom_object::{InMemDicomObject, OpenFileOptions};
+use dicom_object::InMemDicomObject;
 use dicom_pixeldata::{ConvertOptions, ModalityLutOption, PixelDecoder};
 use rayon::prelude::*;
 
@@ -240,10 +240,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
     let scanned: Vec<Scanned> = files
         .par_iter()
         .filter_map(|path| {
-            let obj = OpenFileOptions::new()
-                .read_until(tags::PIXEL_DATA)
-                .open_file(path)
-                .ok()?;
+            let obj = crate::dicomfile::open_header(path).ok()?;
             let modality = str_of(&obj, tags::MODALITY).unwrap_or_default();
             let sop_class = str_of(&obj, tags::SOP_CLASS_UID).unwrap_or_default();
             let series_uid = str_of(&obj, tags::SERIES_INSTANCE_UID).unwrap_or_default();
@@ -564,8 +561,7 @@ pub fn load_series_volume(
         .files
         .par_iter()
         .map(|path| -> Result<SliceRec> {
-            let obj = dicom_object::open_file(path)
-                .with_context(|| format!("open {}", path.display()))?;
+            let obj = crate::dicomfile::open_full(path)?;
 
             let ipp = f64s_of(&obj, tags::IMAGE_POSITION_PATIENT)
                 .filter(|v| v.len() >= 3)

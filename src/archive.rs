@@ -35,7 +35,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use dicom_dictionary_std::tags;
-use dicom_object::OpenFileOptions;
 
 use crate::loader::str_of;
 use crate::progress::Progress;
@@ -300,10 +299,7 @@ impl Archive {
             if !f.file_type().map(|t| t.is_file()).unwrap_or(false) {
                 continue;
             }
-            let Ok(obj) = OpenFileOptions::new()
-                .read_until(tags::PIXEL_DATA)
-                .open_file(f.path())
-            else {
+            let Ok(obj) = crate::dicomfile::open_header(&f.path()) else {
                 continue;
             };
             files += 1;
@@ -367,10 +363,7 @@ impl Archive {
             if n % 25 == 0 {
                 progress.set(format!("Filing {}/{}", n + 1, files.len()));
             }
-            let Ok(obj) = OpenFileOptions::new()
-                .read_until(tags::PIXEL_DATA)
-                .open_file(path)
-            else {
+            let Ok(obj) = crate::dicomfile::open_header(path) else {
                 sum.skipped += 1;
                 continue;
             };

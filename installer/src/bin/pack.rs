@@ -25,6 +25,9 @@ USAGE:
 OPTIONS:
     --repo <DIR>       repository root (default: the parent of this crate)
     --app <FILE>       viewer executable (default: <repo>/target/release/rust-dicom-station.exe)
+    --mcp <FILE>       MCP server executable (default: <repo>/target/release/rds-mcp.exe,
+                       shipped when it exists; build it with --features mcp)
+    --no-mcp           leave the MCP server out even when it was built
     --setup <FILE>     setup binary to wrap (default: target/release/rds-setup.exe)
     --out <FILE>       installer to write (default: dist/rust-dicom-station-setup.exe)
     --example-data     also ship example_data/ (~137 MB before compression)
@@ -35,6 +38,8 @@ OPTIONS:
 struct Opts {
     repo: PathBuf,
     app: Option<PathBuf>,
+    mcp: Option<PathBuf>,
+    no_mcp: bool,
     setup: Option<PathBuf>,
     out: Option<PathBuf>,
     example_data: bool,
@@ -46,6 +51,8 @@ fn main() -> Result<()> {
     let mut o = Opts {
         repo: crate_dir.parent().unwrap_or(&crate_dir).to_path_buf(),
         app: None,
+        mcp: None,
+        no_mcp: false,
         setup: None,
         out: None,
         example_data: false,
@@ -64,6 +71,8 @@ fn main() -> Result<()> {
             }
             "--repo" => o.repo = PathBuf::from(val("--repo")?),
             "--app" => o.app = Some(PathBuf::from(val("--app")?)),
+            "--mcp" => o.mcp = Some(PathBuf::from(val("--mcp")?)),
+            "--no-mcp" => o.no_mcp = true,
             "--setup" => o.setup = Some(PathBuf::from(val("--setup")?)),
             "--out" => o.out = Some(PathBuf::from(val("--out")?)),
             "--example-data" => o.example_data = true,
@@ -100,6 +109,18 @@ fn main() -> Result<()> {
     // ---- collect the payload ---------------------------------------------
     let version = read_version(&o.repo.join("Cargo.toml")).unwrap_or_else(|| "0.0.0".to_string());
     let mut files: Vec<(String, PathBuf)> = vec![("rust-dicom-station.exe".into(), app.clone())];
+    // The MCP server is a second executable of the same crate (feature
+    // `mcp`); it rides along when it was built, and its absence is not an
+    // error: the viewer works without it.
+    let mcp = o
+        .mcp
+        .clone()
+        .unwrap_or_else(|| o.repo.join("target/release/rds-mcp.exe"));
+    if !o.no_mcp && mcp.is_file() {
+        files.push(("rds-mcp.exe".into(), mcp));
+    } else if o.mcp.is_some() {
+        bail!("{} not found", mcp.display());
+    }
     for name in ["LICENSE.txt", "README.md"] {
         let p = o.repo.join(name);
         if p.is_file() {

@@ -13,6 +13,7 @@
 
 use super::*;
 use crate::propagate::{self, Propagated, Subject};
+pub(super) use crate::workflow::group::{run as run_group, GroupOutcome, GroupRequest};
 
 /// Where a propagation run puts its results.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -100,111 +101,6 @@ pub(super) struct GroupPhaseReg {
     /// propagation pulls along, so it needs no inversion.
     pub transform: Arc<registration::Transform3>,
     pub metric_line: String,
-}
-
-/// What one phase of a 4D group came out with.
-pub(super) struct PhaseOutcome {
-    /// The phase's name within the group: "0%", "50%", "t3".
-    pub label: String,
-    /// The image series the results belong to, and the study it is in.
-    pub series_uid: String,
-    pub study_uid: String,
-    /// The lattice they are on.
-    pub grid: crate::volume::Grid,
-    /// Empty when the run was a registration and nothing else.
-    pub items: Vec<Propagated>,
-    /// Phase → the moving image.
-    pub transform: Arc<registration::Transform3>,
-    /// `MSD 9700 ▶ 1800  (900 iters, 20.1 s)` of that phase's registration,
-    /// or what it says instead when the transform was reused.
-    pub metric_line: String,
-}
-
-/// What a run against a whole 4D group hands back.
-pub(super) struct GroupOutcome {
-    pub group_name: String,
-    /// Which group this was, so the transforms can be filed and found again.
-    pub group: usize,
-    pub moving_slot: usize,
-    pub moving_series_uid: String,
-    pub phases: Vec<PhaseOutcome>,
-}
-
-/// Everything the worker needs for a run against a 4D group.
-struct GroupRequest {
-    /// The moving image: the volume the structures were drawn on.
-    src_vol: Arc<Volume>,
-    /// What to carry across. Empty means register and nothing else.
-    subjects: Vec<Subject>,
-    /// (phase label, the series to load) in temporal order.
-    phases: Vec<(String, crate::loader::SeriesInfo)>,
-    /// A transform already known for that phase, which is then not
-    /// recomputed. Same length and order as `phases`.
-    cached: Vec<Option<Arc<registration::Transform3>>>,
-    params: registration::RegParams,
-    group_name: String,
-    group: usize,
-    moving_slot: usize,
-    moving_series_uid: String,
-}
-
-/// Register the source volume onto every phase of the group and carry the
-/// structures across, one phase at a time.
-///
-/// Each phase gets its own registration: a 4D acquisition is exactly the case
-/// where one transform for the whole group would be wrong, since the point of
-/// the phases is that the anatomy moves between them.
-fn run_group(req: GroupRequest, p: &Progress) -> anyhow::Result<GroupOutcome> {
-    use anyhow::Context;
-    let n = req.phases.len().max(1);
-    let mut phases = Vec::with_capacity(req.phases.len());
-    for (i, (label, series)) in req.phases.iter().enumerate() {
-        let base = i as f32 / n as f32;
-        let span = 1.0 / n as f32;
-        p.set_phase(base, span * 0.25);
-        p.set(format!("Phase {label}: loading ({}/{n})", i + 1));
-        let (vol, _, _) = crate::loader::load_series_volume(series, p)
-            .with_context(|| format!("phase '{label}'"))?;
-        let cached = req.cached.get(i).and_then(|t| t.clone());
-        let (transform, metric_line) = match cached {
-            Some(t) => (t, "transform reused".to_string()),
-            None => {
-                p.set_phase(base + span * 0.25, span * 0.55);
-                p.set(format!("Phase {label}: registering ({}/{n})", i + 1));
-                // Fixed is the phase, moving is the source volume, so the
-                // transform maps phase → source: exactly the destination →
-                // source direction `propagate` pulls along, with no
-                // inversion.
-                let r = registration::register(&vol, &req.src_vol, &req.params, p)
-                    .with_context(|| format!("phase '{label}'"))?;
-                (r.transform.clone(), r.metric_line())
-            }
-        };
-        let items = if req.subjects.is_empty() {
-            Vec::new()
-        } else {
-            p.set_phase(base + span * 0.8, span * 0.2);
-            p.set(format!("Phase {label}: propagating ({}/{n})", i + 1));
-            propagate::propagate(&req.src_vol, &vol, &transform, false, &req.subjects, p)
-                .with_context(|| format!("phase '{label}'"))?
-        };
-        phases.push(PhaseOutcome {
-            label: label.clone(),
-            series_uid: series.uid.clone(),
-            study_uid: series.study_uid.clone(),
-            grid: vol.grid(),
-            items,
-            transform,
-            metric_line,
-        });
-    }
-    Ok(GroupOutcome {
-        group_name: req.group_name,
-        group: req.group,
-        moving_slot: req.moving_slot,
-        moving_series_uid: req.moving_series_uid,
-        phases,
-    })
 }
 
 impl ViewerApp {
@@ -360,25 +256,13 @@ impl ViewerApp {
             self.error = Some("That 4D group is gone - pick it again.".into());
             return;
         };
-        let resolved = g.resolve(&study.series);
-        let mut phases = Vec::new();
-        for (mi, m) in g.members.iter().enumerate() {
-            if m.role != crate::fourd::Role::Phase {
-                continue;
-            }
-            let Some(si) = resolved[mi] else {
-                self.error = Some(format!(
-                    "Phase '{}' of {} has no series any more.",
-                    m.label, g.name
-                ));
+        let phases = match crate::workflow::phases_of(g, &study.series) {
+            Ok(p) => p,
+            Err(e) => {
+                self.error = Some(format!("{e}"));
                 return;
-            };
-            phases.push((m.label.clone(), study.series[si].clone()));
-        }
-        if phases.len() < 2 {
-            self.error = Some("That group has fewer than two phases.".into());
-            return;
-        }
+            }
+        };
         // No region: a refinement belongs to one pair of images, and there
         // is one pair per phase here.
         let mut params = self.current_reg_params(None, true);
@@ -617,28 +501,12 @@ impl ViewerApp {
                 transform: phase.transform.clone(),
                 metric_line: phase.metric_line.clone(),
             });
-            let mut series = crate::dicomseg::SegSeries::new(
-                format!("{} {}", g.group_name, phase.label),
-                phase.grid.clone(),
-                phase.series_uid.clone(),
-                phase.study_uid.clone(),
-            );
-            for item in phase.items {
+            for item in &phase.items {
                 lines.push(format!("   {}", item.summary()));
-                if item.voxels == 0 {
-                    continue;
-                }
-                series.segs.push(Segmentation::from_label_map(
-                    item.name.clone(),
-                    item.color,
-                    phase.grid.dims,
-                    &item.mask,
-                    1,
-                ));
             }
-            if series.segs.is_empty() {
+            let Some(series) = phase.seg_series(&g.group_name) else {
                 continue;
-            }
+            };
             if let Some(study) = self.slots[dst_slot].study.as_mut() {
                 study.seg_series.push(series);
                 self.slots[dst_slot].active_seg_series = study.seg_series.len() - 1;

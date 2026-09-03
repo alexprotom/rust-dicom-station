@@ -386,6 +386,7 @@ mod rename_tests {
                 label: "Set".into(),
                 frame_of_reference_uid: String::new(),
                 sop_instance_uid: "ss1".into(),
+                series_instance_uid: String::new(),
                 study_uid: "st1".into(),
                 referenced_series_uid: "se1".into(),
                 file_name: "RS.dcm".into(),

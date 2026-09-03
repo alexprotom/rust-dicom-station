@@ -14,7 +14,8 @@ re-implementation of [SegVol](https://github.com/BAAI-DCAI/SegVol)
 
 ## Using it
 
-**Tools ▶ 💬 Prompt-segment dataset A…**, or the **💬 Prompt…** button in
+**Tools ▶ 💬 Prompt segmentation** (the dataset is chosen on the window's
+**Dataset A / B** row), or the **💬 Prompt…** button in
 the sidebar *Segmentations* section, opens the tool window (**💬 Prompt
 segmentation - dataset A**; the three engines share one window layout, see
 [architecture.md](architecture.md#the-three-engine-windows)). It stays open

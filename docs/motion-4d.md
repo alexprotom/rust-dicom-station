@@ -40,7 +40,8 @@ modality node so each series has one place.
 
 ## The pipeline (`src/app/motion_win.rs`)
 
-*Tools ▸ 📈 Motion-analyse dataset A/B…*, or right-click a 4D group ▸
+*Tools ▸ 📈 4D motion / ITV* (the dataset is chosen on the window's
+**Dataset A / B** row), or right-click a 4D group ▸
 *Motion / ITV analysis…*. One run:
 
 1. **Reference phase** - chosen in the dialog (default: the 0 % phase).

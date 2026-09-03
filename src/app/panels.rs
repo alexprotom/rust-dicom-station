@@ -3046,6 +3046,7 @@ mod layout_tests {
             label: sop.into(),
             frame_of_reference_uid: String::new(),
             sop_instance_uid: sop.into(),
+            series_instance_uid: String::new(),
             study_uid: study.into(),
             referenced_series_uid: series_uid.into(),
             file_name: String::new(),

@@ -28,7 +28,7 @@ use dicom_core::value::{PrimitiveValue, Value};
 use dicom_core::{DataElement, Length, Tag, VR};
 use dicom_dictionary_std::tags;
 use dicom_object::meta::FileMetaTableBuilder;
-use dicom_object::{InMemDicomObject, OpenFileOptions};
+use dicom_object::InMemDicomObject;
 use rayon::prelude::*;
 
 use crate::progress::Progress;
@@ -161,6 +161,47 @@ fn rules() -> Vec<Rule> {
     ]
 }
 
+/// The tags whose mere presence with a value means the data still names
+/// somebody: the patient's identifiers and contact details, the physicians,
+/// the institution. Derived from [`rules`] so there is one list; the
+/// demographic tags the anonymizer clears too (sex, age, weight, size) and
+/// the device identifiers are left out, because a value there does not by
+/// itself identify a person.
+///
+/// The MCP server's PHI gate is built on this (`mcp::phi`).
+pub fn identity_tags() -> Vec<(Tag, &'static str)> {
+    const NOT_IDENTITY: &[&str] = &[
+        "PatientSex",
+        "PatientAge",
+        "PatientWeight",
+        "PatientSize",
+        "StationName",
+        "DeviceSerialNumber",
+        "StudyID",
+    ];
+    rules()
+        .into_iter()
+        .filter(|r| {
+            matches!(
+                r.suggest,
+                Suggest::Alias | Suggest::Clear | Suggest::Fixed(_)
+            )
+        })
+        .filter(|r| !NOT_IDENTITY.contains(&r.name))
+        .map(|r| (r.tag, r.name))
+        .collect()
+}
+
+/// Whether a value is what the anonymizer itself writes: nothing, or the
+/// `anon_xxxxxx` alias.
+pub fn looks_anonymized(value: &str) -> bool {
+    let v = value.trim().trim_end_matches('\0').trim();
+    if v.is_empty() {
+        return true;
+    }
+    v.len() == 11 && v.starts_with("anon_") && v[5..].chars().all(|c| c.is_ascii_hexdigit())
+}
+
 // ---------------------------------------------------------------------------
 // Scan
 // ---------------------------------------------------------------------------
@@ -203,7 +244,7 @@ pub struct ScanResult {
 
 /// Deterministic alias for the dataset's patient(s): `anon_` + 6 hex digits
 /// derived from the sorted original PatientIDs (falls back to names).
-fn patient_alias(ids: &[String]) -> String {
+pub fn patient_alias(ids: &[String]) -> String {
     let mut h = DefaultHasher::new();
     for id in ids {
         id.hash(&mut h);
@@ -276,10 +317,7 @@ pub fn scan(dir: &Path, progress: &Progress) -> Result<ScanResult> {
             }
             // Header-only read: identifying tags and reference sequences all
             // sit before Pixel Data.
-            let obj = OpenFileOptions::new()
-                .read_until(tags::PIXEL_DATA)
-                .open_file(path)
-                .ok()?;
+            let obj = crate::dicomfile::open_header(path).ok()?;
             let mut uids = HashSet::new();
             let mut private = 0usize;
             walk_stats(&obj, &mut uids, &mut private);
@@ -508,9 +546,7 @@ pub fn apply(
         let per_file: Vec<Result<HashSet<String>>> = files
             .par_iter()
             .map(|path| {
-                let obj = OpenFileOptions::new()
-                    .read_until(tags::PIXEL_DATA)
-                    .open_file(path)
+                let obj = crate::dicomfile::open_header(path)
                     .with_context(|| format!("re-open {}", path.display()))?;
                 let mut u = HashSet::new();
                 let mut private = 0usize;
@@ -548,8 +584,7 @@ pub fn apply(
         .map(|path| -> Result<()> {
             let i = done.fetch_add(1, Ordering::Relaxed);
             progress.set(format!("Anonymizing {}/{}", i + 1, files.len()));
-            let file_obj = dicom_object::open_file(path)
-                .with_context(|| format!("open {}", path.display()))?;
+            let file_obj = crate::dicomfile::open_full(path)?;
             let meta = file_obj.meta().clone();
             let mut obj = file_obj.into_inner();
 

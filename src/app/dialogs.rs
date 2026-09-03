@@ -4,18 +4,6 @@
 use super::*;
 
 impl ViewerApp {
-    /// Open the export dialog for `slot`, pre-filling the DICOM attributes
-    /// from that study (an already-open dialog is re-targeted and refilled).
-    pub(super) fn open_export_dialog(&mut self, slot: usize) {
-        let Some(study) = &self.slots[slot].study else {
-            return;
-        };
-        self.export_params = Some(dicom_export::ExportParams::for_study(study));
-        self.export_slot = slot;
-        self.export_result = None;
-        self.export_open = true;
-    }
-
     // -- Auto-segmentation (TotalSegmentator, see the `autoseg` module) ----
     /// Open the tool window for auto-segmenting the given slot.
     pub(super) fn open_autoseg_dialog(&mut self, slot: usize) {
@@ -88,6 +76,8 @@ impl ViewerApp {
     /// The auto-segmentation tool window: model variant, compute device and
     /// model folder, then the run - whose progress replaces the buttons.
     pub(super) fn autoseg_run_window(&mut self, ctx: &egui::Context) {
+        let has = [self.slots[0].has_volume(), self.slots[1].has_volume()];
+        let mut switch: Option<usize> = None;
         let Some(d) = &mut self.autoseg_dialog else {
             return;
         };
@@ -115,6 +105,7 @@ impl ViewerApp {
             &mut open,
             detach::WinOpts::width(380.0),
             |ui| {
+                switch = dataset_row(ui, d.slot, has, running.is_none());
                 ui.label(
                     "Segments the CT into up to 117 anatomical structures with \
                      TotalSegmentator's nnU-Net models, re-implemented natively in Rust.",
@@ -203,6 +194,10 @@ impl ViewerApp {
                 }
             },
         );
+        if let Some(s) = switch {
+            self.open_autoseg_dialog(s);
+            return;
+        }
         if browse {
             if let Some(dir) = Self::pick_folder("Model folder") {
                 self.models_dir = dir.display().to_string();
@@ -740,177 +735,6 @@ impl ViewerApp {
         }
         if do_apply {
             self.anon_start_apply();
-        }
-    }
-
-    /// The DICOM export dialog: choose the output folder, review and edit
-    /// every patient / study / equipment attribute that will be written,
-    /// then write the study out.
-    pub(super) fn export_window(&mut self, ctx: &egui::Context) {
-        if !self.export_open {
-            return;
-        }
-        let slot = self.export_slot.min(1);
-        if self.slots[slot].study.is_none() {
-            self.export_open = false;
-            return;
-        }
-        let busy = self.export_job.is_some();
-        let mut open = true;
-        let mut browse = false;
-        let mut do_export = false;
-        let mut reset_all = false;
-
-        detach::tool_window(
-            ctx,
-            "export",
-            format!("💾 Export dataset {} as DICOM", SLOT_NAMES[slot]),
-            &mut open,
-            detach::WinOpts::size(720.0, 520.0),
-            |ui| {
-                ui.label(
-                    "Writes the displayed volume (one file per slice) plus every \
-                     structure set, segmentation series (as DICOM SEG), dose grid \
-                     and plan as DICOM objects. The \
-                     attributes below are pre-filled from the loaded study and \
-                     written into every exported file; SOP / series / study instance \
-                     UIDs are always freshly generated, with the cross-references \
-                     between the objects kept consistent.",
-                );
-                ui.add_space(6.0);
-
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Write to").strong());
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.export_dir)
-                            .desired_width(420.0)
-                            .hint_text("output folder (created if missing)"),
-                    );
-                    if ui.button("📂 Browse").clicked() {
-                        browse = true;
-                    }
-                });
-                ui.add_space(4.0);
-
-                let Some(params) = &mut self.export_params else {
-                    return;
-                };
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("DICOM tags").strong());
-                    ui.weak("unchecked rows are not written at all");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .small_button("↺ all")
-                            .on_hover_text("Restore every value to the study's own")
-                            .clicked()
-                        {
-                            reset_all = true;
-                        }
-                    });
-                });
-
-                egui::ScrollArea::vertical()
-                    .max_height((ui.available_height() - 90.0).max(120.0))
-                    .show(ui, |ui| {
-                        egui::Grid::new("export_grid")
-                            .num_columns(2)
-                            .striped(true)
-                            .spacing([10.0, 3.0])
-                            .show(ui, |ui| {
-                                ui.label(egui::RichText::new("Tag").strong());
-                                ui.label(egui::RichText::new("Value").strong());
-                                ui.end_row();
-                                for f in &mut params.fields {
-                                    let label = format!(
-                                        "({:04X},{:04X}) {}",
-                                        f.tag.group(),
-                                        f.tag.element(),
-                                        f.name
-                                    );
-                                    ui.checkbox(&mut f.enabled, label).on_hover_text(format!(
-                                        "VR {} - unchecked: the tag is left out of the \
-                                         exported files",
-                                        f.vr
-                                    ));
-                                    ui.horizontal(|ui| {
-                                        ui.add_enabled(
-                                            f.enabled,
-                                            egui::TextEdit::singleline(&mut f.value)
-                                                .desired_width(300.0)
-                                                .hint_text("(empty)"),
-                                        );
-                                        if f.value != f.suggested
-                                            && ui
-                                                .small_button("↺")
-                                                .on_hover_text(format!(
-                                                    "Back to the study's value: “{}”",
-                                                    if f.suggested.is_empty() {
-                                                        "(empty)"
-                                                    } else {
-                                                        &f.suggested
-                                                    }
-                                                ))
-                                                .clicked()
-                                        {
-                                            f.value = f.suggested.clone();
-                                        }
-                                    });
-                                    ui.end_row();
-                                }
-                            });
-                    });
-
-                ui.add_space(4.0);
-                ui.checkbox(
-                    &mut params.keep_frame_of_reference,
-                    "Keep the source Frame of Reference UID",
-                )
-                .on_hover_text(
-                    "On: the export stays spatially linked to its source study, so the \
-                     two load as a comparable pair.\nOff: a fresh frame of reference \
-                     is generated",
-                );
-
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if let Some(job) = &self.export_job {
-                        ui.spinner();
-                        ui.label(job.progress.get());
-                    } else if ui
-                        .add_enabled(!busy, egui::Button::new("💾 Export"))
-                        .on_hover_text("Write the DICOM files into the output folder")
-                        .clicked()
-                    {
-                        do_export = true;
-                    }
-                    if let Some(msg) = &self.export_result {
-                        ui.label(msg);
-                    }
-                });
-            },
-        );
-
-        // A running export is not aborted when the window closes - the
-        // background thread finishes writing; only its message is dropped.
-        self.export_open = open;
-        if !open {
-            self.export_result = None;
-        }
-        if reset_all {
-            if let Some(params) = &mut self.export_params {
-                for f in &mut params.fields {
-                    f.value = f.suggested.clone();
-                    f.enabled = true;
-                }
-            }
-        }
-        if browse {
-            if let Some(dir) = Self::pick_folder("Select the export output folder") {
-                self.export_dir = dir.display().to_string();
-            }
-        }
-        if do_export {
-            self.start_export();
         }
     }
 }

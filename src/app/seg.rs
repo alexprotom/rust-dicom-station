@@ -347,6 +347,7 @@ impl ViewerApp {
                 label: "Segmentations".into(),
                 frame_of_reference_uid: vol.frame_of_reference_uid.clone(),
                 sop_instance_uid: format!("2.25.{stamp}"),
+                series_instance_uid: format!("2.25.{stamp}.1"),
                 study_uid: active_series
                     .map(|s| s.study_uid.clone())
                     .unwrap_or_default(),

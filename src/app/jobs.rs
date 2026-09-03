@@ -320,16 +320,15 @@ impl ViewerApp {
         self.sim_job = Some(Job { progress, rx });
     }
 
-    /// Export the dialog's dataset as DICOM files into its output folder.
+    /// Run the export plan into its output folder.
+    ///
+    /// Both datasets are handed to the worker, because one run can write out
+    /// series from either - the plan decides which.
     pub(super) fn start_export(&mut self) {
         if self.export_job.is_some() {
             return;
         }
-        let slot = self.export_slot.min(1);
-        let Some(study) = &self.slots[slot].study else {
-            return;
-        };
-        let Some(params) = self.export_params.clone() else {
+        let Some(plan) = self.export_plan.clone() else {
             return;
         };
         let dir = PathBuf::from(self.export_dir.trim());
@@ -337,17 +336,21 @@ impl ViewerApp {
             self.error = Some("Choose an output folder for the export".into());
             return;
         }
-        let src = study.clone();
+        if plan.is_empty() {
+            self.error = Some("Nothing is selected for export".into());
+            return;
+        }
+        let a = self.slots[0].study.clone();
+        let b = self.slots[1].study.clone();
         let progress = Arc::new(Progress::default());
         progress.set("starting");
         let p2 = progress.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let res = dicom_export::export_study(&src, &dir, &params, &p2)
-                .map(|n| (n, dir.display().to_string()));
-            let _ = tx.send(res);
+            let _ = tx.send(export::run(&plan, [a.as_ref(), b.as_ref()], &dir, &p2));
         });
         self.export_result = None;
+        self.export_warnings.clear();
         self.export_job = Some(Job { progress, rx });
     }
 

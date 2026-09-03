@@ -682,6 +682,8 @@ mod tests {
             }
         }
         DoseGrid {
+            sop_instance_uid: String::new(),
+            series_instance_uid: String::new(),
             data,
             dims: [nx, ny, nz],
             spacing: [1.0, 1.0],

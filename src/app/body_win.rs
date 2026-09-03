@@ -189,6 +189,8 @@ impl ViewerApp {
         }
         // Everything that reads the whole of `self` is settled before the
         // dialog is borrowed mutably for the frame.
+        let has = [self.slots[0].has_volume(), self.slots[1].has_volume()];
+        let mut switch: Option<usize> = None;
         let modality = self.slot_modality(slot);
         let idle = self.body_job.is_none();
         let models_dir = models::engine_dir(
@@ -216,6 +218,7 @@ impl ViewerApp {
             &mut open,
             detach::WinOpts::width(430.0),
             |ui| {
+                switch = dataset_row(ui, slot, has, idle);
                 ui.label(
                     "Finds the patient's outer surface and leaves the couch, the chair and \
                      the immobilisation outside it - the EXTERNAL structure everything \
@@ -458,6 +461,10 @@ impl ViewerApp {
                 self.models_dir = dir.display().to_string();
             }
         }
+        if let Some(s) = switch {
+            self.open_body_dialog(s);
+            return;
+        }
         if cancel {
             if let Some(job) = &self.body_job {
                 job.progress.cancel();
@@ -558,7 +565,7 @@ mod tests {
     #[test]
     fn the_tool_names_itself_like_the_others() {
         assert_eq!(BODY_CONTOUR.title(0), "👤 Body contour - dataset A");
-        assert_eq!(BODY_CONTOUR.menu_entry(1), "👤 Body-contour dataset B");
+        assert_eq!(BODY_CONTOUR.menu_entry(), "👤 Body contour");
         assert_eq!(BODY_CONTOUR.short_button(), "👤 Body");
     }
 

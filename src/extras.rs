@@ -42,7 +42,7 @@ pub struct PlanarImage {
 }
 
 pub fn load_planar(path: &Path) -> Result<PlanarImage> {
-    let obj = dicom_object::open_file(path)
+    let obj = crate::dicomfile::open_full(path)
         .with_context(|| format!("open planar image {}", path.display()))?;
     let modality = str_of(&obj, tags::MODALITY).unwrap_or_else(|| "DX".into());
 
@@ -193,8 +193,8 @@ pub fn is_reg_sop(sop: &str) -> bool {
 }
 
 pub fn load_reg(path: &Path) -> Result<SpatialReg> {
-    let obj =
-        dicom_object::open_file(path).with_context(|| format!("open REG {}", path.display()))?;
+    let obj = crate::dicomfile::open_full(path)
+        .with_context(|| format!("open REG {}", path.display()))?;
     let sop = str_of(&obj, tags::SOP_CLASS_UID).unwrap_or_default();
     let deformable = sop == SOP_DEFORMABLE_REG;
     let label = str_of(&obj, tags::CONTENT_DESCRIPTION)
@@ -430,7 +430,7 @@ pub fn is_record_sop(sop: &str) -> bool {
 }
 
 pub fn load_record(path: &Path) -> Result<TreatRecord> {
-    let obj = dicom_object::open_file(path)
+    let obj = crate::dicomfile::open_full(path)
         .with_context(|| format!("open RTRECORD {}", path.display()))?;
     let sop = str_of(&obj, tags::SOP_CLASS_UID).unwrap_or_default();
 

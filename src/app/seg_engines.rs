@@ -86,15 +86,55 @@ impl ToolInfo {
             self.glyph, self.name, SLOT_NAMES[slot]
         )
     }
-    /// `🔬 Auto-segment dataset A…`, the menu entry.
-    pub fn menu_entry(&self, slot: usize) -> String {
-        format!("{} {} dataset {}", self.glyph, self.verb, SLOT_NAMES[slot])
+    /// `🔬 Auto-segmentation`, the menu entry.
+    ///
+    /// The menu names the tool once. Which dataset it works on is a setting
+    /// of the tool, chosen in its window by [`dataset_row`], because a menu
+    /// that lists every tool twice is twice as long and no clearer.
+    pub fn menu_entry(&self) -> String {
+        format!("{} {}", self.glyph, self.name)
     }
     /// `🔬 Auto…`, the small sidebar button.
     pub fn short_button(&self) -> String {
         let short = self.verb.split(['-', ' ']).next().unwrap_or(self.verb);
         format!("{} {short}", self.glyph)
     }
+}
+
+/// The dataset row every tool window starts with.
+///
+/// Returns the newly chosen slot, which the window answers by reopening
+/// itself on that dataset: what a tool carries - the structures picked, the
+/// 4D group, the box drawn on a slice - belongs to one dataset and cannot
+/// follow it to the other. With one dataset loaded there is nothing to
+/// choose and the row is not drawn.
+pub(super) fn dataset_row(
+    ui: &mut egui::Ui,
+    slot: usize,
+    has: [bool; 2],
+    enabled: bool,
+) -> Option<usize> {
+    if has.iter().filter(|h| **h).count() < 2 {
+        return None;
+    }
+    let mut picked = slot;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Dataset").strong());
+        for (i, name) in SLOT_NAMES.iter().enumerate() {
+            let r = ui.add_enabled(
+                enabled && has[i],
+                egui::RadioButton::new(picked == i, *name),
+            );
+            if r.clicked() {
+                picked = i;
+            }
+        }
+        if !enabled {
+            ui.weak("(a run is in flight)");
+        }
+    });
+    ui.separator();
+    (picked != slot).then_some(picked)
 }
 
 /// One line every tool window ends its options with.
@@ -333,12 +373,12 @@ mod tests {
             AUTOSEG.titled("results", 1),
             "🔬 Auto-segmentation results - dataset B"
         );
-        assert_eq!(PROMPT_SEG.menu_entry(1), "💬 Prompt-segment dataset B");
-        assert_eq!(SLICE_PROP.menu_entry(0), "⏩ Propagate through dataset A");
+        assert_eq!(PROMPT_SEG.menu_entry(), "💬 Prompt segmentation");
+        assert_eq!(SLICE_PROP.menu_entry(), "⏩ Slice propagation");
         assert_eq!(AUTOSEG.short_button(), "🔬 Auto");
         assert_eq!(PROMPT_SEG.short_button(), "💬 Prompt");
         assert_eq!(SLICE_PROP.short_button(), "⏩ Propagate");
-        assert_eq!(BODY_CONTOUR.menu_entry(0), "👤 Body-contour dataset A");
+        assert_eq!(BODY_CONTOUR.menu_entry(), "👤 Body contour");
         assert_eq!(MOTION.short_button(), "📈 Motion");
         let mut glyphs = vec![
             AUTOSEG.glyph,

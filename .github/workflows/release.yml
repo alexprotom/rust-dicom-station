@@ -95,8 +95,10 @@ jobs:
             installer
 
       # The viewer is a separate Cargo package/workspace from the installer.
+      # `--features mcp` adds the second executable, rds-mcp.exe, which
+      # rds-pack ships beside the viewer when it finds it.
       - name: Build viewer
-        run: cargo build --release
+        run: cargo build --release --features mcp
 
       # Build rds-setup.exe and rds-pack.exe.
       - name: Build installer

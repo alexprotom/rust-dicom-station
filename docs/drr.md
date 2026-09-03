@@ -84,7 +84,7 @@ is high attenuation, as on a radiograph; the range itself is unchanged, and
 the info rows say which convention was used.
 
 Planar images are viewer-side objects: they are not written by
-*File ▶ Export dataset*, which covers CT, RTSTRUCT, SEG, RTDOSE and RTPLAN.
+*File ▶ Export DICOM*, which covers CT, RTSTRUCT, SEG, RTDOSE and RTPLAN.
 
 ## Where it fits
 

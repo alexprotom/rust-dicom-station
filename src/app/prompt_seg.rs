@@ -222,6 +222,8 @@ impl ViewerApp {
     /// The tool window; while a run is in flight its buttons become the
     /// progress row.
     pub(super) fn segvol_window(&mut self, ctx: &egui::Context) {
+        let has = [self.slots[0].has_volume(), self.slots[1].has_volume()];
+        let mut switch: Option<usize> = None;
         let Some(d) = &mut self.segvol_dialog else {
             return;
         };
@@ -249,6 +251,7 @@ impl ViewerApp {
             &mut open,
             detach::WinOpts::width(380.0),
             |ui| {
+                switch = dataset_row(ui, d.slot, has, running.is_none());
                 ui.label(
                     "Segments whatever the prompt points at - a box, a click or a structure \
                      name - with SegVol, re-implemented natively in Rust. For the lesions and \
@@ -372,6 +375,10 @@ impl ViewerApp {
             if let Some(dir) = Self::pick_folder("Model folder") {
                 self.models_dir = dir.display().to_string();
             }
+        }
+        if let Some(s) = switch {
+            self.open_segvol_dialog(s);
+            return;
         }
         if cancel {
             if let Some(job) = &self.segvol_job {

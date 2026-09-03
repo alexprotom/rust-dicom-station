@@ -7,9 +7,11 @@ pub mod archive;
 pub mod autoseg;
 pub mod bodymask;
 pub mod dicom_export;
+pub mod dicomfile;
 pub mod dicomseg;
 pub mod drr;
 pub mod dvh;
+pub mod export;
 pub mod extras;
 pub mod fourd;
 pub mod gen_test_data;
@@ -36,3 +38,7 @@ pub mod settings;
 pub mod simulate;
 pub mod structops;
 pub mod volume;
+pub mod workflow;
+
+#[cfg(feature = "mcp")]
+pub mod mcp;
