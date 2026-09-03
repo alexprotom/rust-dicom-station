@@ -316,9 +316,12 @@ fn a_same_frame_pair_still_starts_from_the_identity() {
         &Progress::default(),
     )
     .unwrap();
-    assert_eq!(
-        auto, res.initial_metric,
-        "auto is the identity when the images overlap"
+    // The two are the same 2000-sample mean; only the parallel summation
+    // order differs between runs, which is a rounding error, not a start.
+    assert!(
+        (auto - res.initial_metric).abs() <= 1e-9 * auto.abs().max(1.0),
+        "auto is the identity when the images overlap: {auto} vs {}",
+        res.initial_metric
     );
 }
 

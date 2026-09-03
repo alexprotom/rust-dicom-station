@@ -13,7 +13,7 @@ use std::sync::Arc;
 use crate::dicomseg::SegSeries;
 use crate::loader::{self, LoadedStudy, SeriesInfo};
 use crate::progress::Progress;
-use crate::propagate::{self, Propagated, Subject};
+use crate::propagate::{self, Finish, Propagated, Subject};
 use crate::registration::{self, RegParams, Transform3};
 use crate::rtstruct::{Roi, StructureSet};
 use crate::segmentation::{self, Segmentation};
@@ -56,6 +56,8 @@ pub struct GroupRequest {
     pub cached: Vec<Option<Arc<Transform3>>>,
     /// Must be deformable: phases of one acquisition differ by breathing.
     pub params: RegParams,
+    /// What is done to each landed mask (closing, filling).
+    pub finish: Finish,
     pub group_name: String,
     pub group: usize,
     pub moving_slot: usize,
@@ -222,8 +224,11 @@ pub fn run(req: GroupRequest, p: &Progress) -> Result<GroupOutcome> {
         } else {
             p.set_phase(base + span * 0.8, span * 0.2);
             p.set(format!("Phase {label}: propagating ({}/{n})", i + 1));
-            propagate::propagate(&req.src_vol, &vol, &transform, false, &req.subjects, p)
-                .with_context(|| format!("phase '{label}'"))?
+            let mut items =
+                propagate::propagate(&req.src_vol, &vol, &transform, false, &req.subjects, p)
+                    .with_context(|| format!("phase '{label}'"))?;
+            req.finish.apply_all(&mut items, &vol.grid(), p);
+            items
         };
         phases.push(PhaseOutcome {
             label: label.clone(),

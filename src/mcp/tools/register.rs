@@ -276,6 +276,14 @@ pub struct PropagateArgs {
     /// Suffix added to each landed name; default `(from dsN)`.
     #[serde(default)]
     pub suffix: Option<String>,
+    /// After landing: morphological closing radius, mm (gaps narrower than
+    /// twice this are bridged; a cloud of pieces becomes one surface).
+    #[serde(default)]
+    pub close_mm: f64,
+    /// After landing (and closing): fill the interior, so a surface becomes
+    /// a solid.
+    #[serde(default)]
+    pub fill: bool,
 }
 
 pub fn propagate(core: &mut Core, a: PropagateArgs, p: &Progress) -> Result<Value> {
@@ -307,7 +315,13 @@ pub fn propagate(core: &mut Core, a: PropagateArgs, p: &Progress) -> Result<Valu
             .structure(&src.0, &s.structure, s.set.as_deref())?;
         subjects.push(st.subject_on(&src_grid)?);
     }
-    let items = propagate::propagate(&src_vol, &dst_vol, &transform, use_inverse, &subjects, p)?;
+    let mut items =
+        propagate::propagate(&src_vol, &dst_vol, &transform, use_inverse, &subjects, p)?;
+    let finish = propagate::Finish {
+        close_mm: a.close_mm.clamp(0.0, 50.0),
+        fill: a.fill,
+    };
+    finish.apply_all(&mut items, &dst_vol.grid(), p);
     let suffix = a
         .suffix
         .clone()

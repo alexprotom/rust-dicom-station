@@ -47,7 +47,7 @@ use rayon::prelude::*;
 use crate::geometry::Vec3;
 use crate::progress::{ProgressSink, CANCELLED};
 use crate::registration::Transform3;
-use crate::volume::Volume;
+use crate::volume::{Grid, Volume};
 
 use anyhow::{bail, Result};
 
@@ -363,6 +363,87 @@ pub fn propagate(
     Ok(out)
 }
 
+/// What is done to a propagated mask after it lands: a structure that
+/// arrives as a cloud of pieces (an ablation map exported voxel by voxel, a
+/// contour carried onto a coarser lattice) can be closed into one surface
+/// and, if wanted, filled into one solid.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct Finish {
+    /// Morphological closing radius, mm: gaps narrower than twice this are
+    /// bridged. 0 leaves the mask as it landed.
+    pub close_mm: f64,
+    /// Fill the interior afterwards (slice by slice, so a shell becomes a
+    /// solid and a solid stays one).
+    pub fill: bool,
+}
+
+impl Finish {
+    pub fn is_none(&self) -> bool {
+        self.close_mm <= 0.0 && !self.fill
+    }
+
+    /// `closed 2 mm, filled`.
+    pub fn describe(&self) -> String {
+        match (self.close_mm > 0.0, self.fill) {
+            (false, false) => "as landed".into(),
+            (true, false) => format!("closed {:.0} mm", self.close_mm),
+            (false, true) => "filled".into(),
+            (true, true) => format!("closed {:.0} mm, filled", self.close_mm),
+        }
+    }
+
+    /// Apply to a landed structure on `grid`, updating its voxel count and
+    /// filed volume; the mapped volume stays what the transform made of it.
+    ///
+    /// Closing a *cloud* is not the textbook closing: dilation then erosion
+    /// by the same ball gives two nearby points back as two points, since
+    /// the ball never fits between them. So the pieces are dilated by the
+    /// radius (which joins everything closer than twice it) and eroded by
+    /// half of it, leaving one surface about a radius thicker than the
+    /// cloud was. With `fill` the interior is filled between the two, and
+    /// the erosion is the full radius: the solid's surface comes back to
+    /// where the cloud was.
+    pub fn apply(&self, item: &mut Propagated, grid: &Grid, sink: &dyn ProgressSink) {
+        use crate::morphology as morph;
+        if self.is_none() || item.voxels == 0 {
+            return;
+        }
+        let (dims, spacing) = (grid.dims, grid.spacing);
+        let axis = grid.canonical_axes().0[0];
+        if self.close_mm > 0.0 {
+            sink.report(0.0, "Closing gaps");
+            let r = self.close_mm;
+            let mut m = morph::dilate_mm(&item.mask, dims, spacing, r);
+            if self.fill {
+                sink.report(0.4, "Filling");
+                morph::fill_holes_2d(&mut m, dims, axis);
+            }
+            let back = if self.fill { r } else { 0.5 * r };
+            let eroded = morph::erode_mm(&m, dims, spacing, back);
+            // The erosion must not lose what landed: the cloud itself stays.
+            let original = std::mem::take(&mut item.mask);
+            item.mask = eroded
+                .iter()
+                .zip(&original)
+                .map(|(&e, &o)| u8::from(e != 0 || o != 0))
+                .collect();
+        } else if self.fill {
+            sink.report(0.0, "Filling");
+            morph::fill_holes_2d(&mut item.mask, dims, axis);
+        }
+        item.voxels = item.mask.iter().filter(|v| **v != 0).count();
+        item.result_cm3 =
+            item.voxels as f64 * grid.spacing[0] * grid.spacing[1] * grid.spacing[2] / 1000.0;
+    }
+
+    /// Apply to every landed structure.
+    pub fn apply_all(&self, items: &mut [Propagated], grid: &Grid, sink: &dyn ProgressSink) {
+        for it in items {
+            self.apply(it, grid, sink);
+        }
+    }
+}
+
 /// Sub-points per axis a destination voxel is sampled at, at most.
 const MAX_SUBSAMPLES: usize = 4;
 
@@ -549,6 +630,77 @@ mod tests {
             (p.result_cm3 - p.source_cm3).abs() < 0.15 * p.source_cm3,
             "the filed mask keeps the volume: {}",
             p.summary()
+        );
+    }
+
+    #[test]
+    fn a_landed_cloud_can_be_closed_into_one_surface_and_filled() {
+        // A spherical shell sampled as separate dots on a coarse lattice:
+        // closing joins the dots into one surface, filling makes a solid.
+        let dst = vol([40, 40, 40], 1.5, Vec3::new(-30.0, -30.0, -30.0));
+        let [nx, ny, nz] = dst.dims;
+        let mut mask = vec![0u8; nx * ny * nz];
+        let mut dots = 0;
+        for k in 0..nz {
+            for j in 0..ny {
+                for i in 0..nx {
+                    let p = dst.voxel_to_patient(i as f64, j as f64, k as f64);
+                    let r = p.length();
+                    // The shell, every other voxel of it: a cloud.
+                    if (r - 15.0).abs() < 0.8 && (i + j + k) % 2 == 0 {
+                        mask[k * nx * ny + j * nx + i] = 1;
+                        dots += 1;
+                    }
+                }
+            }
+        }
+        let grid = dst.grid();
+        let mut item = Propagated {
+            name: "shell".into(),
+            color: [255, 0, 0],
+            mask,
+            voxels: dots,
+            source_cm3: 0.0,
+            result_cm3: 0.0,
+            mapped_cm3: 0.0,
+        };
+        let pieces = crate::morphology::components(&item.mask, dst.dims).len();
+        assert!(pieces > 50, "a cloud to begin with: {pieces} pieces");
+        // Dots 2.1 mm apart on 1.5 mm voxels: a 3 mm radius joins them.
+        let mut surface = Propagated {
+            name: item.name.clone(),
+            color: item.color,
+            mask: item.mask.clone(),
+            voxels: item.voxels,
+            source_cm3: 0.0,
+            result_cm3: 0.0,
+            mapped_cm3: 0.0,
+        };
+        Finish {
+            close_mm: 3.0,
+            fill: false,
+        }
+        .apply(&mut surface, &grid, &Quiet);
+        let closed = crate::morphology::components(&surface.mask, dst.dims).len();
+        assert_eq!(closed, 1, "closing joins the dots into one surface");
+        assert!(
+            surface.voxels > dots && surface.voxels < 6 * dots,
+            "a surface a few millimetres thick, not a ball: {} from {dots} dots",
+            surface.voxels
+        );
+        // Closed and filled in one go: a solid whose surface is where the
+        // cloud was, so its volume is the ball's.
+        Finish {
+            close_mm: 3.0,
+            fill: true,
+        }
+        .apply(&mut item, &grid, &Quiet);
+        let ball = 4.0 / 3.0 * std::f64::consts::PI * 15.0f64.powi(3) / 1000.0;
+        assert_eq!(crate::morphology::components(&item.mask, dst.dims).len(), 1);
+        assert!(
+            (item.result_cm3 - ball).abs() < 0.2 * ball,
+            "filled to a solid ball: {:.1} cm³ vs {ball:.1}",
+            item.result_cm3
         );
     }
 

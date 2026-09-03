@@ -116,6 +116,14 @@ pub struct GroupArgs {
     /// Anchored run: stop after the rigid stage.
     #[serde(default)]
     pub rigid_only: bool,
+    /// After landing: morphological closing radius, mm (gaps narrower than
+    /// twice this are bridged; a cloud of pieces becomes one surface).
+    #[serde(default)]
+    pub close_mm: f64,
+    /// After landing (and closing): fill the interior, so a surface becomes
+    /// a solid.
+    #[serde(default)]
+    pub fill: bool,
     /// Where the propagated structures are filed on each phase:
     /// `segmentation` (default; a new segmentation series bound to the
     /// phase) or `structure_set` (contours appended to the phase's own RT
@@ -214,6 +222,10 @@ pub fn propagate_to_group(core: &mut Core, a: GroupArgs, p: &Progress) -> Result
         phases,
         cached,
         params,
+        finish: crate::propagate::Finish {
+            close_mm: a.close_mm.clamp(0.0, 50.0),
+            fill: a.fill,
+        },
         group_name: group_name.clone(),
         group: gi,
         moving_slot: 0,
@@ -375,6 +387,10 @@ fn propagate_anchored(
         mode,
         rigid,
         deformable,
+        finish: crate::propagate::Finish {
+            close_mm: a.close_mm.clamp(0.0, 50.0),
+            fill: a.fill,
+        },
         group_name: group_name.clone(),
         group: gi,
         moving_slot: 0,

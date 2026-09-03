@@ -1140,7 +1140,13 @@ impl ViewerApp {
             self.reg_gen += 1;
         }
         if let Some((moving, gslot, group)) = run_group {
-            self.start_group_run(moving, gslot, group, Vec::new());
+            self.start_group_run(
+                moving,
+                gslot,
+                group,
+                Vec::new(),
+                crate::propagate::Finish::default(),
+            );
         }
         if let Some(slot) = propagate_from {
             self.open_propagate_module(slot);

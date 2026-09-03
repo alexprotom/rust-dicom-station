@@ -47,6 +47,23 @@ usual half threshold; for one smaller, every piece lands in the voxel that
 holds most of it. The report lists three volumes: the source's, the mapped
 one (what the deformation made of it) and the filed one (the mask).
 
+## After landing: close, fill
+
+**Then: close gaps / fill** works on each landed mask, for a structure that
+arrives as a cloud (a map exported voxel by voxel, a thin contour on a
+coarser lattice). *Close gaps* dilates every piece by the radius (a
+Euclidean ball from the distance transform, so a millimetre is a millimetre
+on an anisotropic lattice), which joins everything closer than twice the
+radius, then erodes by half of it: one surface about a radius thicker than
+the cloud was. It is deliberately not the textbook closing, which hands two
+nearby points back as two points because the ball never fits between them.
+*Fill* fills the interior slice by slice; with both on, the filling happens
+between the dilation and an erosion by the full radius, so the solid's
+surface comes back to where the cloud was. A solid structure needs neither,
+and the report shows what they changed: the mapped volume stays what the
+transform made of the source while the filed one grows. From the MCP server
+these are `close_mm` and `fill` on `propagate` and `propagate_to_group`.
+
 ## Global and local
 
 **Globally**, propagation uses whatever registration is active; one
@@ -128,10 +145,12 @@ reuses them. From the MCP server the same run is `propagate_to_group` with
    against the same moving image, on display or not.
 2. *Modules ▶ Structures propagation*, or **⇄ Propagate structures** in the
    registration module once it has a result.
-3. Choose where the structures come from (the registration's moving or fixed
-   image; against a group, dataset A or B) and the destination, tick what to
-   carry, pick where they land, optionally an enclosing region to refine on,
-   and press **▶ Propagate**.
+3. Choose the source image (any series of either dataset; through a
+   registration, one of its two images), the structure set or segmentation
+   series to take the structures from (the one drawn on that image is
+   preselected), and the destination; tick what to carry, pick where they
+   land and what is done to them afterwards, optionally an enclosing region
+   to refine on, and press **▶ Propagate**.
 
 **Land as** decides the form of the result. *Segmentation series*: editable
 masks bound to the destination image (on the displayed volume they join the

@@ -47,7 +47,7 @@ use crate::loader::{self, SeriesInfo};
 use crate::morphology;
 use crate::motion::{self, Overlap};
 use crate::progress::Progress;
-use crate::propagate::{self, Subject};
+use crate::propagate::{self, Finish, Subject};
 use crate::registration::{self, Init, RegMethod, RegParams, RegionMask};
 use crate::volume::Volume;
 
@@ -102,6 +102,9 @@ pub struct AnchoredRequest {
     /// The local deformable refinement after the rigid stage; `None` keeps
     /// the alignment rigid.
     pub deformable: Option<RegParams>,
+    /// What is done to each landed structure (not to the anchor, which is
+    /// compared as it landed).
+    pub finish: Finish,
     pub group_name: String,
     pub group: usize,
     pub moving_slot: usize,
@@ -292,8 +295,11 @@ pub fn run(req: AnchoredRequest, p: &Progress) -> Result<AnchoredOutcome> {
 
         p.set_phase(base + span * 0.75, span * 0.25);
         p.set(format!("Phase {label}: propagating ({}/{n})", i + 1));
-        let items = propagate::propagate(&req.src_vol, &vol, &transform, false, &subjects, p)
+        let mut items = propagate::propagate(&req.src_vol, &vol, &transform, false, &subjects, p)
             .with_context(|| format!("phase '{label}'"))?;
+        for it in items.iter_mut().take(anchor_idx) {
+            req.finish.apply(it, &grid, p);
+        }
         let overlap = items
             .get(anchor_idx)
             .filter(|it| it.voxels > 0)
