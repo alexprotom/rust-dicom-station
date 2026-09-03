@@ -13,9 +13,23 @@
 //! than every voxel of the source being asked where it goes. Pushing a
 //! deformed mask forward leaves holes wherever the deformation expands and
 //! double-writes wherever it compresses; pulling asks one question per
-//! destination voxel and answers it exactly. The source mask is sampled
-//! trilinearly and thresholded at ½, so the boundary lands where the
-//! contour really is rather than on the nearest voxel centre.
+//! destination voxel and answers it exactly.
+//!
+//! ## Occupancy, and the volume kept
+//!
+//! A destination voxel is not a point. Asking only at its centre works when
+//! the destination lattice is at least as fine as the structure - and fails
+//! silently when it is not: a target made of 1 mm cubes (an ablation map
+//! exported voxel by voxel) landing on 2 mm slices loses four fifths of its
+//! volume, because most cubes contain no voxel centre. So each destination
+//! voxel is sampled at several sub-points (the number per axis follows the
+//! spacing ratio, up to four) and gets an *occupancy*, the fraction of it
+//! that comes from inside the structure. The sum of the occupancies is the
+//! volume of the structure as the deformation maps it, and that is the
+//! volume the result keeps: the mask is filled with the most-occupied voxels
+//! until it holds exactly that volume. For a structure larger than the
+//! voxels this is the ½ threshold as before; for one smaller, every piece
+//! lands in the voxel that holds most of it instead of vanishing.
 //!
 //! ## The mapping cache
 //!
@@ -59,6 +73,10 @@ pub struct Propagated {
     /// what the deformation compressed or expanded, which is the first thing
     /// worth checking about a propagated contour.
     pub result_cm3: f64,
+    /// Volume of the structure as the transform maps it, cm³, before it was
+    /// filed on the destination lattice: the sum of the occupancies. The
+    /// mask holds this to within one voxel.
+    pub mapped_cm3: f64,
 }
 
 impl Propagated {
@@ -130,13 +148,14 @@ impl MapCache {
         }
     }
 
-    /// Source patient position of a destination voxel.
+    /// Source patient position of a destination point, in (fractional)
+    /// destination voxel indices.
     #[inline]
-    fn at(&self, i: usize, j: usize, k: usize) -> Vec3 {
+    fn at(&self, i: f64, j: f64, k: f64) -> Vec3 {
         let u = [
-            (i - self.lo[0]) as f64 / self.step[0] as f64,
-            (j - self.lo[1]) as f64 / self.step[1] as f64,
-            (k - self.lo[2]) as f64 / self.step[2] as f64,
+            ((i - self.lo[0] as f64) / self.step[0] as f64).max(0.0),
+            ((j - self.lo[1] as f64) / self.step[1] as f64).max(0.0),
+            ((k - self.lo[2] as f64) / self.step[2] as f64).max(0.0),
         ];
         let i0 = (u[0] as usize).min(self.dims[0] - 2);
         let j0 = (u[1] as usize).min(self.dims[1] - 2);
@@ -245,17 +264,19 @@ pub fn propagate(
         // corners of its box across, then keep a generous margin: for a
         // deformable transform the image of a box is not a box, and a
         // clipped structure is a silent error nobody would notice.
+        // The margin covers what a deformable map does inside the box that
+        // its corners do not show: a quarter of the box plus 20 mm. It is
+        // deliberately not the distance the corners travelled - between two
+        // frames of reference that is the whole patient, and the box would
+        // become the volume.
         let (mut dlo, mut dhi) = ([f64::MAX; 3], [f64::MIN; 3]);
-        let mut max_shift = 0.0f64;
         for ci in 0..8 {
             let c = src.voxel_to_patient(
                 if ci & 1 == 0 { slo[0] } else { shi[0] } as f64,
                 if ci & 2 == 0 { slo[1] } else { shi[1] } as f64,
                 if ci & 4 == 0 { slo[2] } else { shi[2] } as f64,
             );
-            let q = to_dst(c);
-            max_shift = max_shift.max((q - c).length());
-            let v = dst.patient_to_voxel(q);
+            let v = dst.patient_to_voxel(to_dst(c));
             for a in 0..3 {
                 dlo[a] = dlo[a].min(v[a]);
                 dhi[a] = dhi[a].max(v[a]);
@@ -264,7 +285,7 @@ pub fn propagate(
         let mut lo = [0usize; 3];
         let mut hi = [0usize; 3];
         for a in 0..3 {
-            let margin = 20.0 / dst.spacing[a] + max_shift / dst.spacing[a] + 4.0;
+            let margin = 20.0 / dst.spacing[a] + 0.25 * (dhi[a] - dlo[a]) + 4.0;
             lo[a] = (dlo[a] - margin).max(0.0) as usize;
             hi[a] = ((dhi[a] + margin) as i64).clamp(0, dst.dims[a] as i64 - 1) as usize;
             if lo[a] > hi[a] {
@@ -280,40 +301,53 @@ pub fn propagate(
                 voxels: 0,
                 source_cm3: source_voxels as f64 * src_vox_cm3,
                 result_cm3: 0.0,
+                mapped_cm3: 0.0,
             });
             continue;
         }
 
         let cache = MapCache::build(dst, lo, hi, &to_src, 3.0);
         let [dnx, dny, dnz] = dst.dims;
-        let mut mask = vec![0u8; dnx * dny * dnz];
         let src_dims = src.dims;
         let src_mask = &s.mask;
-        let rows: Vec<(usize, Vec<u8>)> = (lo[2]..=hi[2])
+        // Sub-points per axis: enough that a source voxel is not skipped
+        // over, capped so a 512³ box stays affordable.
+        let sub = [0, 1, 2]
+            .map(|a| ((dst.spacing[a] / src.spacing[a]).round() as usize).clamp(1, MAX_SUBSAMPLES));
+        let offsets = subpoint_offsets(sub);
+        let weight = 1.0 / offsets.len() as f32;
+        // Occupancy of every destination voxel in the box, as (voxel, o).
+        let rows: Vec<Vec<(usize, f32)>> = (lo[2]..=hi[2])
             .into_par_iter()
             .map(|k| {
-                let mut plane = vec![0u8; dnx * dny];
+                let mut plane = Vec::new();
                 for j in lo[1]..=hi[1] {
                     for i in lo[0]..=hi[0] {
-                        let p = cache.at(i, j, k);
-                        let v = src.patient_to_voxel(p);
-                        if sample_mask(src_mask, src_dims, v) >= 0.5 {
-                            plane[j * dnx + i] = 1;
+                        let mut o = 0.0f32;
+                        for d in &offsets {
+                            let p = cache.at(i as f64 + d[0], j as f64 + d[1], k as f64 + d[2]);
+                            let v = src.patient_to_voxel(p);
+                            o += sample_mask(src_mask, src_dims, v);
+                        }
+                        let o = o * weight;
+                        if o > 0.0 {
+                            plane.push((k * dnx * dny + j * dnx + i, o));
                         }
                     }
                 }
-                (k, plane)
+                plane
             })
             .collect();
+        let mut cells: Vec<(usize, f32)> = rows.into_iter().flatten().collect();
+        let mapped_voxels: f64 = cells.iter().map(|(_, o)| *o as f64).sum();
+        // Fill with the most-occupied voxels until the mapped volume is held.
+        let keep = mapped_voxels.round() as usize;
+        cells.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        let mut mask = vec![0u8; dnx * dny * dnz];
         let mut voxels = 0usize;
-        for (k, plane) in rows {
-            let base = k * dnx * dny;
-            for (o, v) in plane.into_iter().enumerate() {
-                if v != 0 {
-                    mask[base + o] = 1;
-                    voxels += 1;
-                }
-            }
+        for (idx, _) in cells.into_iter().take(keep) {
+            mask[idx] = 1;
+            voxels += 1;
         }
         out.push(Propagated {
             name: s.name.clone(),
@@ -322,10 +356,32 @@ pub fn propagate(
             voxels,
             source_cm3: source_voxels as f64 * src_vox_cm3,
             result_cm3: voxels as f64 * dst_vox_cm3,
+            mapped_cm3: mapped_voxels * dst_vox_cm3,
         });
     }
     sink.report(1.0, "done");
     Ok(out)
+}
+
+/// Sub-points per axis a destination voxel is sampled at, at most.
+const MAX_SUBSAMPLES: usize = 4;
+
+/// The offsets (in destination voxel units, about the centre) of a voxel's
+/// sub-points: `sub[a]` evenly spaced along axis `a`, centred, so one point
+/// per axis is the voxel centre and the pattern never touches the faces.
+fn subpoint_offsets(sub: [usize; 3]) -> Vec<[f64; 3]> {
+    let axis =
+        |n: usize| -> Vec<f64> { (0..n).map(|i| (i as f64 + 0.5) / n as f64 - 0.5).collect() };
+    let (xs, ys, zs) = (axis(sub[0]), axis(sub[1]), axis(sub[2]));
+    let mut out = Vec::with_capacity(sub[0] * sub[1] * sub[2]);
+    for &z in &zs {
+        for &y in &ys {
+            for &x in &xs {
+                out.push([x, y, z]);
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -420,6 +476,79 @@ mod tests {
             (got - (centre + shift)).length() < 0.5,
             "centre {got:?} vs {:?}",
             centre + shift
+        );
+    }
+
+    #[test]
+    fn a_cloud_of_millimetre_cubes_keeps_its_volume_on_a_coarse_lattice() {
+        // The STAR case: an ablation map exported as 1 mm cubes on a 0.5 mm
+        // cardiac CT, carried onto a 4DCT at 1.2 x 1.2 x 2 mm. Centre
+        // sampling lost four fifths of it; the occupancy fill must not.
+        let src = Volume {
+            spacing: [0.5; 3],
+            ..vol([80, 80, 80], 0.5, Vec3::new(-20.0, -20.0, -20.0))
+        };
+        let mut dst = vol([40, 40, 24], 1.2, Vec3::new(-24.0, -24.0, -24.0));
+        dst.spacing = [1.2, 1.2, 2.0];
+        let [nx, ny, nz] = src.dims;
+        let mut mask = vec![0u8; nx * ny * nz];
+        // A pseudo-random cloud of 1 mm cubes (2 x 2 x 2 source voxels) at
+        // integer-millimetre positions, none touching.
+        let mut seed = 12345u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut cubes = 0;
+        while cubes < 150 {
+            let cx = 2 * (4 + (next() % 32) as usize);
+            let cy = 2 * (4 + (next() % 32) as usize);
+            let cz = 2 * (4 + (next() % 32) as usize);
+            let free = (0..3).all(|dz| {
+                (0..3).all(|dy| {
+                    (0..3).all(|dx| mask[(cz + dz) * nx * ny + (cy + dy) * nx + cx + dx] == 0)
+                })
+            });
+            if !free {
+                continue;
+            }
+            for dz in 0..2 {
+                for dy in 0..2 {
+                    for dx in 0..2 {
+                        mask[(cz + dz) * nx * ny + (cy + dy) * nx + cx + dx] = 1;
+                    }
+                }
+            }
+            cubes += 1;
+        }
+        let t = Transform3::rigid_only(RigidTransform::identity(Vec3::ZERO));
+        let out = propagate(
+            &src,
+            &dst,
+            &t,
+            false,
+            &[Subject {
+                name: "cloud".into(),
+                color: [255, 0, 0],
+                mask,
+            }],
+            &Quiet,
+        )
+        .unwrap();
+        let p = &out[0];
+        eprintln!("{}  (mapped {:.3} cm³)", p.summary(), p.mapped_cm3);
+        assert!(
+            (p.mapped_cm3 - p.source_cm3).abs() < 0.1 * p.source_cm3,
+            "the occupancies sum to the source volume: {} vs {}",
+            p.mapped_cm3,
+            p.source_cm3
+        );
+        assert!(
+            (p.result_cm3 - p.source_cm3).abs() < 0.15 * p.source_cm3,
+            "the filed mask keeps the volume: {}",
+            p.summary()
         );
     }
 

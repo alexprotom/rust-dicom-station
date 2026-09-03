@@ -318,8 +318,9 @@ pub fn propagate(core: &mut Core, a: PropagateArgs, p: &Progress) -> Result<Valu
         report.push(json!({
             "structure": clean_text(&it.name),
             "landed_as": clean_text(&format!("{} {suffix}", it.name)),
-            "source_cm3": round1(it.source_cm3),
-            "result_cm3": round1(it.result_cm3),
+            "source_cm3": round2(it.source_cm3),
+            "mapped_cm3": round2(it.mapped_cm3),
+            "result_cm3": round2(it.result_cm3),
             "voxels": it.voxels,
             "summary": it.summary(),
         }));

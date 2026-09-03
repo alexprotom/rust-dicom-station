@@ -13,8 +13,11 @@
 
 use super::*;
 use crate::propagate::{self, Propagated, Subject};
+use crate::volume::Grid;
 use crate::workflow::anchored::{self, AnchoredOutcome};
+use crate::workflow::group::{land_in_structure_set, Landing};
 pub(super) use crate::workflow::group::{run as run_group, GroupOutcome, GroupRequest};
+use crate::workflow::select::Structure;
 
 /// Where a propagation run puts its results.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -48,6 +51,14 @@ pub(super) struct PropagateDialog {
     pub anchor_margin_mm: f64,
     /// Anchored run: refine deformably after the rigid stage.
     pub anchor_deformable: bool,
+    /// Anchored run: match the anchor's contours (distance maps) rather
+    /// than the image intensities.
+    pub anchor_contours: bool,
+    /// Where the results are filed on the destination image.
+    pub landing: Landing,
+    /// Through the active registration: which of its two images the
+    /// structures come from (they land on the other).
+    pub from_side: FusionSide,
     /// What the last run produced.
     pub summary: Vec<String>,
 }
@@ -64,6 +75,9 @@ impl Default for PropagateDialog {
             anchor: RegRoi::Whole,
             anchor_margin_mm: 10.0,
             anchor_deformable: true,
+            anchor_contours: true,
+            landing: Landing::Segmentation,
+            from_side: FusionSide::Moving,
             summary: Vec::new(),
         }
     }
@@ -76,6 +90,9 @@ pub(super) enum PropOutcome {
     /// every one of these as large as the largest.
     One {
         items: Vec<Propagated>,
+        /// The image they landed on.
+        dst_uid: String,
+        dst_grid: Grid,
         /// A local refinement run on the way, which becomes the active
         /// registration so the panel reports what was actually used.
         refined: Option<Box<RegOutcome>>,
@@ -147,20 +164,59 @@ impl ViewerApp {
         d.segs.resize(self.slots[d.src_slot].segs().len(), false);
     }
 
-    /// Collect the masks of everything ticked.
-    fn propagate_subjects(&self, d: &PropagateDialog) -> Result<Vec<Subject>, String> {
+    /// Everything ticked, frozen: contours as they are, painted
+    /// segmentations with the lattice they are on. A run turns them into
+    /// masks on whatever source lattice it maps from, which need not be
+    /// loaded yet.
+    fn propagate_structures(&self, d: &PropagateDialog) -> Result<Vec<Structure>, String> {
+        use crate::workflow::select::Source;
         let slot = d.src_slot;
         let Some(study) = &self.slots[slot].study else {
             return Err(format!("dataset {} is not loaded", SLOT_NAMES[slot]));
         };
-        let vol = &study.volume;
+        let mut out = Vec::new();
+        if let Some(ss) = self.slots[slot].active_structures() {
+            for (i, roi) in ss.rois.iter().enumerate() {
+                if d.structs.get(i).copied().unwrap_or(false) {
+                    out.push(Structure::from_roi(roi));
+                }
+            }
+        }
+        let grid = study.volume.grid();
+        for (i, seg) in self.slots[slot].segs().iter().enumerate() {
+            if d.segs.get(i).copied().unwrap_or(false) && seg.count > 0 {
+                out.push(Structure {
+                    name: seg.name.clone(),
+                    color: seg.color,
+                    source: Source::Mask {
+                        mask: seg.mask.clone(),
+                        grid: grid.clone(),
+                    },
+                });
+            }
+        }
+        if out.is_empty() {
+            return Err("tick at least one structure or segmentation".into());
+        }
+        Ok(out)
+    }
+
+    /// Collect the masks of everything ticked.
+    ///
+    /// Contours are rasterized on `grid`, the lattice of the source image
+    /// the run maps from; painted segmentations must already be on it.
+    fn propagate_subjects(&self, d: &PropagateDialog, grid: &Grid) -> Result<Vec<Subject>, String> {
+        let slot = d.src_slot;
+        if self.slots[slot].study.is_none() {
+            return Err(format!("dataset {} is not loaded", SLOT_NAMES[slot]));
+        }
         let mut out = Vec::new();
         if let Some(ss) = self.slots[slot].active_structures() {
             for (i, roi) in ss.rois.iter().enumerate() {
                 if !d.structs.get(i).copied().unwrap_or(false) {
                     continue;
                 }
-                match segmentation::rasterize_roi(&vol.grid(), roi) {
+                match segmentation::rasterize_roi(grid, roi) {
                     Some(mask) => out.push(Subject {
                         name: roi.name.clone(),
                         color: roi.color,
@@ -177,6 +233,13 @@ impl ViewerApp {
         }
         for (i, seg) in self.slots[slot].segs().iter().enumerate() {
             if d.segs.get(i).copied().unwrap_or(false) && seg.count > 0 {
+                if seg.dims != grid.dims {
+                    return Err(format!(
+                        "'{}' is painted on the displayed volume, not on the registered source \
+                         image; display that image to carry painted segmentations",
+                        seg.name
+                    ));
+                }
                 out.push(Subject {
                     name: seg.name.clone(),
                     color: seg.color,
@@ -243,24 +306,27 @@ impl ViewerApp {
     /// are what a later propagation onto the same group reuses.
     pub(super) fn start_group_run(
         &mut self,
-        moving_slot: usize,
+        moving: RegPick,
         slot: usize,
         group: usize,
-        subjects: Vec<Subject>,
+        structures: Vec<Structure>,
     ) {
         if self.propagate_job.is_some() {
             return;
         }
+        let moving_slot = moving.slot;
         let Some(src) = self.slots[moving_slot].study.as_ref() else {
             self.error = Some("This needs a loaded source dataset".into());
             return;
         };
-        let src_vol = src.volume.clone();
-        let moving_series_uid = src
-            .series
-            .get(src.active_series)
-            .map(|s| s.uid.clone())
-            .unwrap_or_default();
+        let Some(moving_series) = src.series.get(moving.series).cloned() else {
+            self.error = Some("The moving series is gone - pick it again.".into());
+            return;
+        };
+        // The moving volume: the displayed one, or loaded on the worker.
+        let src_ready =
+            (src.has_volume() && src.active_series == moving.series).then(|| src.volume.clone());
+        let moving_series_uid = moving_series.uid.clone();
         let Some(study) = self.slots[slot].study.as_ref() else {
             return;
         };
@@ -306,20 +372,37 @@ impl ViewerApp {
             }
             _ => vec![None; phases.len()],
         };
-        let req = GroupRequest {
-            src_vol,
-            subjects,
-            phases,
-            cached,
-            params,
-            group_name: g.name.clone(),
-            group,
-            moving_slot,
-            moving_series_uid,
-        };
+        let group_name = g.name.clone();
         let progress = Arc::new(Progress::default());
         progress.set("starting");
         self.propagate_job = Some(Job::spawn(progress, move |p| {
+            let src_vol = match src_ready {
+                Some(v) => v,
+                None => {
+                    p.set("Loading the moving image");
+                    match loader::load_series_volume(&moving_series, p) {
+                        Ok((v, _, _)) => Arc::new(v),
+                        Err(e) => return (slot, Err(e)),
+                    }
+                }
+            };
+            let grid = src_vol.grid();
+            let subjects: Vec<Subject> =
+                match structures.iter().map(|s| s.subject_on(&grid)).collect() {
+                    Ok(v) => v,
+                    Err(e) => return (slot, Err(e)),
+                };
+            let req = GroupRequest {
+                src_vol,
+                subjects,
+                phases,
+                cached,
+                params,
+                group_name,
+                group,
+                moving_slot,
+                moving_series_uid,
+            };
             (slot, run_group(req, p).map(PropOutcome::Group))
         }));
     }
@@ -340,6 +423,7 @@ impl ViewerApp {
         anchor: RegRoi,
         margin_mm: f64,
         deformable: bool,
+        contours: bool,
         subjects: Vec<Subject>,
     ) {
         if self.propagate_job.is_some() {
@@ -420,6 +504,11 @@ impl ViewerApp {
             subjects,
             phases: anchored,
             margin_mm: margin_mm.max(0.0),
+            mode: if contours {
+                anchored::AnchorMode::Contours
+            } else {
+                anchored::AnchorMode::Intensity
+            },
             rigid,
             deformable,
             group_name: g.name.clone(),
@@ -446,18 +535,21 @@ impl ViewerApp {
         if let PropTarget::Group { slot, group } = d.target {
             let moving_slot = d.src_slot;
             let anchor = d.anchor;
-            let (margin, deformable) = (d.anchor_margin_mm, d.anchor_deformable);
-            // An anchored run carries the anchor itself as its check, so
-            // nothing else need be ticked.
-            let subjects = match self.propagate_subjects(d) {
-                Ok(s) => s,
-                Err(_) if anchor != RegRoi::Whole => Vec::new(),
-                Err(e) => {
-                    self.error = Some(format!("Propagation: {e}"));
-                    return;
-                }
-            };
+            let (margin, deformable, contours) =
+                (d.anchor_margin_mm, d.anchor_deformable, d.anchor_contours);
             if anchor != RegRoi::Whole {
+                let Some(src_grid) = self.slots[moving_slot]
+                    .study
+                    .as_ref()
+                    .filter(|st| st.has_volume())
+                    .map(|st| st.volume.grid())
+                else {
+                    self.error = Some("The source dataset shows no image volume.".into());
+                    return;
+                };
+                // An anchored run carries the anchor itself as its check, so
+                // nothing else need be ticked.
+                let subjects = self.propagate_subjects(d, &src_grid).unwrap_or_default();
                 self.start_anchored_run(
                     moving_slot,
                     slot,
@@ -465,10 +557,53 @@ impl ViewerApp {
                     anchor,
                     margin,
                     deformable,
+                    contours,
                     subjects,
                 );
             } else {
-                self.start_group_run(moving_slot, slot, group, subjects);
+                let structures = match self.propagate_structures(d) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        self.error = Some(format!("Propagation: {e}"));
+                        return;
+                    }
+                };
+                // The moving image: the one the group is already registered
+                // against when that is a series of this dataset (a cardiac CT
+                // registered from the registration module, on display or
+                // not), otherwise the displayed one.
+                let Some(study) = self.slots[moving_slot].study.as_ref() else {
+                    return;
+                };
+                let registered = self
+                    .group_registration
+                    .as_ref()
+                    .filter(|gr| {
+                        gr.slot == slot && gr.group == group && gr.moving_slot == moving_slot
+                    })
+                    .and_then(|gr| {
+                        study
+                            .series
+                            .iter()
+                            .position(|se| se.uid == gr.moving_series_uid)
+                    });
+                let series = match registered {
+                    Some(i) => i,
+                    None if study.has_volume() => study.active_series,
+                    None => {
+                        self.error = Some("The source dataset shows no image volume.".into());
+                        return;
+                    }
+                };
+                self.start_group_run(
+                    RegPick {
+                        slot: moving_slot,
+                        series,
+                    },
+                    slot,
+                    group,
+                    structures,
+                );
             }
             return;
         }
@@ -476,32 +611,76 @@ impl ViewerApp {
             self.error = Some("Run a registration first - propagation needs one.".into());
             return;
         };
-        let src_slot = d.src_slot;
-        let dst_slot = 1 - src_slot;
-        let subjects = match self.propagate_subjects(d) {
+        // The structures come from one of the two registered images and
+        // land on the other. The transform maps fixed → moving, so landing
+        // on the moving image runs through the inverse.
+        let (src_slot, src_vol, dst_slot, dst_vol, dst_uid, use_inverse) = match d.from_side {
+            FusionSide::Moving => (
+                reg.moving_slot,
+                reg.moving_vol.clone(),
+                reg.fixed_slot,
+                reg.fixed_vol.clone(),
+                reg.fixed_uid.clone(),
+                false,
+            ),
+            FusionSide::Fixed => (
+                reg.fixed_slot,
+                reg.fixed_vol.clone(),
+                reg.moving_slot,
+                reg.moving_vol.clone(),
+                reg.moving_uid.clone(),
+                true,
+            ),
+        };
+        let fixed_slot = reg.fixed_slot;
+        let fixed_vol = reg.fixed_vol.clone();
+        let moving_vol = reg.moving_vol.clone();
+        let (fixed_img, moving_img) = (
+            RegImage {
+                slot: reg.fixed_slot,
+                uid: reg.fixed_uid.clone(),
+                vol: reg.fixed_vol.clone(),
+            },
+            RegImage {
+                slot: reg.moving_slot,
+                uid: reg.moving_uid.clone(),
+                vol: reg.moving_vol.clone(),
+            },
+        );
+        let transform = reg.result.transform.clone();
+        let mut d2 = PropagateDialog {
+            src_slot,
+            ..PropagateDialog::default()
+        };
+        d2.structs = d.structs.clone();
+        d2.segs = d.segs.clone();
+        let subjects = match self.propagate_subjects(&d2, &src_vol.grid()) {
             Ok(s) => s,
             Err(e) => {
                 self.error = Some(format!("Propagation: {e}"));
                 return;
             }
         };
-        let (Some(s), Some(t)) = (&self.slots[src_slot].study, &self.slots[dst_slot].study) else {
-            self.error = Some("Propagation needs two loaded datasets".into());
+        let Some(d) = &self.propagate_dialog else {
             return;
         };
-        let src_vol = s.volume.clone();
-        let dst_vol = t.volume.clone();
-        // The transform maps fixed → moving. Propagating *onto* the moving
-        // dataset therefore runs through the inverse.
-        let fixed_slot = reg.fixed_slot;
-        let use_inverse = dst_slot != fixed_slot;
-        let transform = reg.result.transform.clone();
 
         // The optional local refinement, run before anything is carried.
         let local = d.local;
         let margin = d.local_margin_mm;
         let region = if local == RegRoi::Whole {
             None
+        } else if !self
+            .registration
+            .as_ref()
+            .is_some_and(|r| r.shows_fixed(fixed_slot, &self.slots))
+        {
+            self.error = Some(
+                "Local refinement: display the fixed image (click its series in the data \
+                 tree) - the region is drawn on it."
+                    .into(),
+            );
+            return;
         } else {
             match self.region_for(fixed_slot, local, margin) {
                 Ok(r) => r,
@@ -511,15 +690,8 @@ impl ViewerApp {
                 }
             }
         };
-        let (Some(fx), Some(mv)) = (
-            &self.slots[fixed_slot].study,
-            &self.slots[1 - fixed_slot].study,
-        ) else {
-            return;
-        };
-        let fixed_vol = fx.volume.clone();
-        let moving_vol = mv.volume.clone();
         let mut params = self.current_reg_params(region.clone(), true);
+        params.start = Some(transform.clone());
         // A refinement is a deformation on top of what is there; a rigid
         // method would replace the alignment rather than refine it.
         if !params.method.is_deformable() {
@@ -547,6 +719,8 @@ impl ViewerApp {
                             result,
                             field,
                             region,
+                            fixed: fixed_img,
+                            moving: moving_img,
                         }));
                         t
                     }
@@ -563,7 +737,12 @@ impl ViewerApp {
                 propagate::propagate(&src_vol, &dst_vol, &transform, use_inverse, &subjects, p);
             (
                 dst_slot,
-                items.map(|items| PropOutcome::One { items, refined }),
+                items.map(|items| PropOutcome::One {
+                    items,
+                    dst_uid,
+                    dst_grid: dst_vol.grid(),
+                    refined,
+                }),
             )
         }));
     }
@@ -571,7 +750,12 @@ impl ViewerApp {
     /// A propagation run landed: install the masks (and the refinement).
     pub(super) fn on_propagation_done(&mut self, dst_slot: usize, out: PropOutcome) {
         let lines = match out {
-            PropOutcome::One { items, refined } => self.install_one(dst_slot, items, refined),
+            PropOutcome::One {
+                items,
+                dst_uid,
+                dst_grid,
+                refined,
+            } => self.install_one(dst_slot, &dst_uid, &dst_grid, items, refined),
             PropOutcome::Group(g) => self.install_group(dst_slot, g),
             PropOutcome::Anchored(a) => {
                 let mut lines = self.install_group(dst_slot, a.group);
@@ -589,26 +773,17 @@ impl ViewerApp {
         self.settings_gen += 1;
     }
 
-    /// Results carried onto the displayed volume of one dataset.
+    /// Results carried onto one of the two registered images.
     fn install_one(
         &mut self,
         dst_slot: usize,
+        dst_uid: &str,
+        dst_grid: &Grid,
         items: Vec<Propagated>,
         refined: Option<Box<RegOutcome>>,
     ) -> Vec<String> {
         if let Some(refined) = refined {
-            let fixed_slot = self
-                .registration
-                .as_ref()
-                .map(|r| r.fixed_slot)
-                .unwrap_or(0);
-            self.registration = Some(ActiveRegistration {
-                result: refined.result,
-                fixed_slot,
-                field: Arc::new(refined.field),
-                region: refined.region,
-            });
-            self.reg_gen += 1;
+            self.install_registration(*refined);
             // The refinement is now the active registration - show the
             // section that reports and clears it.
             self.module_registration = true;
@@ -616,18 +791,134 @@ impl ViewerApp {
         let Some(study) = &self.slots[dst_slot].study else {
             return Vec::new();
         };
-        let dims = study.volume.dims;
-        let src = 1 - dst_slot;
-        let mut lines = Vec::new();
-        for item in items {
-            lines.push(item.summary());
-            if item.voxels == 0 {
-                continue;
+        let study_uid = study
+            .series
+            .iter()
+            .find(|se| se.uid == dst_uid)
+            .map(|se| se.study_uid.clone())
+            .unwrap_or_default();
+        let src = self
+            .registration
+            .as_ref()
+            .map(|r| {
+                if r.fixed_uid == dst_uid {
+                    r.moving_slot
+                } else {
+                    r.fixed_slot
+                }
+            })
+            .unwrap_or(1 - dst_slot);
+        let landing = self
+            .propagate_dialog
+            .as_ref()
+            .map(|d| d.landing)
+            .unwrap_or_default();
+        let mut lines: Vec<String> = items.iter().map(|it| it.summary()).collect();
+        let named: Vec<Propagated> = items
+            .into_iter()
+            .map(|mut it| {
+                it.name = format!("{} (from {})", it.name, SLOT_NAMES[src]);
+                it
+            })
+            .collect();
+        match landing {
+            Landing::Segmentation => {
+                if self.slots[dst_slot].displayed_uid() == Some(dst_uid) {
+                    let dims = dst_grid.dims;
+                    for item in &named {
+                        if item.voxels == 0 {
+                            continue;
+                        }
+                        self.add_colored_segmentation(
+                            dst_slot,
+                            item.name.clone(),
+                            item.color,
+                            dims,
+                            &item.mask,
+                        );
+                    }
+                } else if let Some(label) =
+                    self.land_seg_series(dst_slot, dst_uid, &study_uid, dst_grid, &named)
+                {
+                    lines.push(format!("▸ {label}"));
+                }
             }
-            let name = format!("{} (from {})", item.name, SLOT_NAMES[src]);
-            self.add_colored_segmentation(dst_slot, name, item.color, dims, &item.mask);
+            Landing::StructureSet => {
+                if let Some((label, names)) = self.land_rois(
+                    dst_slot,
+                    dst_uid,
+                    &study_uid,
+                    dst_grid,
+                    &named,
+                    "Propagated",
+                ) {
+                    lines.push(format!("▸ {label}: {}", names.join(", ")));
+                }
+            }
         }
         lines
+    }
+
+    /// File propagated masks as a new segmentation series bound to an image
+    /// series of `slot`'s study (the way a phase of a group gets its own),
+    /// for a destination that is not on display. Returns its label.
+    fn land_seg_series(
+        &mut self,
+        slot: usize,
+        series_uid: &str,
+        study_uid: &str,
+        grid: &Grid,
+        items: &[Propagated],
+    ) -> Option<String> {
+        let study = self.slots[slot].study.as_mut()?;
+        let n = study.seg_series.len() + 1;
+        let mut series = crate::dicomseg::SegSeries::new(
+            format!("Propagated {n}"),
+            grid.clone(),
+            series_uid.to_string(),
+            study_uid.to_string(),
+        );
+        for it in items.iter().filter(|it| it.voxels > 0) {
+            series.segs.push(Segmentation::from_label_map(
+                it.name.clone(),
+                it.color,
+                grid.dims,
+                &it.mask,
+                1,
+            ));
+        }
+        if series.segs.is_empty() {
+            return None;
+        }
+        let label = series.label.clone();
+        study.seg_series.push(series);
+        self.settings_gen += 1;
+        Some(label)
+    }
+
+    /// File propagated masks as contours in the structure set of one image
+    /// series of `slot`'s study, keeping the visibility list in step when
+    /// that set is the one on show.
+    fn land_rois(
+        &mut self,
+        slot: usize,
+        series_uid: &str,
+        study_uid: &str,
+        grid: &Grid,
+        items: &[Propagated],
+        new_set_label: &str,
+    ) -> Option<(String, Vec<String>)> {
+        let s = &mut self.slots[slot];
+        let study = s.study.as_mut()?;
+        let landed =
+            land_in_structure_set(study, series_uid, study_uid, grid, items, new_set_label)?;
+        if let Some(ss) = study.structure_sets.get(s.active_structs) {
+            if ss.referenced_series_uid == series_uid {
+                s.roi_visible.resize(ss.rois.len(), true);
+            }
+        }
+        self.settings_gen += 1;
+        Some(landed)
     }
 
     /// Results carried onto every phase of a 4D group.
@@ -639,6 +930,11 @@ impl ViewerApp {
         if self.slots[dst_slot].study.is_none() {
             return Vec::new();
         }
+        let landing = self
+            .propagate_dialog
+            .as_ref()
+            .map(|d| d.landing)
+            .unwrap_or_default();
         let mut lines = Vec::new();
         let mut regs = Vec::new();
         for phase in g.phases {
@@ -652,13 +948,29 @@ impl ViewerApp {
             for item in &phase.items {
                 lines.push(format!("   {}", item.summary()));
             }
-            let Some(series) = phase.seg_series(&g.group_name) else {
-                continue;
-            };
-            if let Some(study) = self.slots[dst_slot].study.as_mut() {
-                study.seg_series.push(series);
-                self.slots[dst_slot].active_seg_series = study.seg_series.len() - 1;
-                self.slots[dst_slot].active_seg = 0;
+            match landing {
+                Landing::Segmentation => {
+                    let Some(series) = phase.seg_series(&g.group_name) else {
+                        continue;
+                    };
+                    if let Some(study) = self.slots[dst_slot].study.as_mut() {
+                        study.seg_series.push(series);
+                        self.slots[dst_slot].active_seg_series = study.seg_series.len() - 1;
+                        self.slots[dst_slot].active_seg = 0;
+                    }
+                }
+                Landing::StructureSet => {
+                    if let Some((label, names)) = self.land_rois(
+                        dst_slot,
+                        &phase.series_uid,
+                        &phase.study_uid,
+                        &phase.grid,
+                        &phase.items,
+                        &format!("{} {}", g.group_name, phase.label),
+                    ) {
+                        lines.push(format!("   ▸ {label}: {}", names.join(", ")));
+                    }
+                }
             }
         }
         // Keep the transforms: propagating another structure set onto the
@@ -693,13 +1005,25 @@ impl ViewerApp {
 
         // Everything the closure needs to read while `self` is borrowed.
         let registered = self.registration.as_ref().map(|r| {
+            let (fixed, moving) = r.describe(&self.slots);
             (
                 r.fixed_slot,
+                r.moving_slot,
+                fixed,
+                moving,
                 r.result.method.label().to_string(),
                 r.result.region.clone(),
             )
         });
         let mut d = self.propagate_dialog.take().unwrap();
+        // Through a registration the source is one of its two images, and
+        // the structure list is that image's dataset's.
+        if let (Some((fs, ms, ..)), PropTarget::Other) = (&registered, d.target) {
+            d.src_slot = match d.from_side {
+                FusionSide::Fixed => *fs,
+                FusionSide::Moving => *ms,
+            };
+        }
         self.sync_propagate_lists(&mut d);
         let src_slot = d.src_slot;
         let dst_slot = 1 - src_slot;
@@ -721,7 +1045,7 @@ impl ViewerApp {
         };
         let local_choices = registered
             .as_ref()
-            .map(|(fixed, _, _)| self.region_choices_for(*fixed))
+            .map(|(fixed, ..)| self.region_choices_for(*fixed))
             .unwrap_or_default();
         let group_choices = self.propagate_group_choices();
         // Anchors are structures of the *source*: that is where they must
@@ -774,8 +1098,26 @@ impl ViewerApp {
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label("From");
-                    ui.selectable_value(&mut d.src_slot, 0, "A");
-                    ui.selectable_value(&mut d.src_slot, 1, "B");
+                    match (&registered, to_group) {
+                        (Some((_, _, fixed, moving, _, _)), false) => {
+                            ui.selectable_value(
+                                &mut d.from_side,
+                                FusionSide::Moving,
+                                format!("moving image ({moving})"),
+                            )
+                            .on_hover_text("Its structures land on the fixed image");
+                            ui.selectable_value(
+                                &mut d.from_side,
+                                FusionSide::Fixed,
+                                format!("fixed image ({fixed})"),
+                            )
+                            .on_hover_text("Its structures land on the moving image");
+                        }
+                        _ => {
+                            ui.selectable_value(&mut d.src_slot, 0, "A");
+                            ui.selectable_value(&mut d.src_slot, 1, "B");
+                        }
+                    }
                 });
                 ui.horizontal_wrapped(|ui| {
                     ui.label("To");
@@ -832,7 +1174,7 @@ impl ViewerApp {
                              first, or send these to a 4D group instead.",
                         );
                     }
-                    (false, Some((fixed, method, region))) => {
+                    (false, Some((_, _, fixed, moving, method, region))) => {
                         ui.weak(format!(
                             "Using: {method}{}",
                             match region {
@@ -841,9 +1183,8 @@ impl ViewerApp {
                             }
                         ));
                         ui.weak(format!(
-                            "Fixed image: dataset {} - the transform is inverted \
-                         automatically for the other direction.",
-                            SLOT_NAMES[*fixed]
+                            "Fixed {fixed}, moving {moving} - the transform is inverted \
+                             automatically for the other direction."
                         ));
                     }
                 }
@@ -901,6 +1242,26 @@ impl ViewerApp {
                         }
                     });
 
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("Land as");
+                    ui.selectable_value(
+                        &mut d.landing,
+                        Landing::Segmentation,
+                        "segmentation series",
+                    )
+                    .on_hover_text(
+                        "A new segmentation series bound to the destination image: \
+                         editable masks, convertible to RTSTRUCT later",
+                    );
+                    ui.selectable_value(&mut d.landing, Landing::StructureSet, "structure set")
+                        .on_hover_text(
+                            "Contours appended to the destination image's own RT structure \
+                             set (the one that references it; a new set when there is none). \
+                             On a 4DCT with one set per phase the target goes next to that \
+                             phase's heart.",
+                        );
+                });
                 ui.separator();
                 if to_group {
                     // Against a group the run may be anchored on a structure
@@ -961,6 +1322,14 @@ impl ViewerApp {
                                              alignment rigid.",
                                         );
                                 });
+                                ui.checkbox(&mut d.anchor_contours, "Match the contours")
+                                    .on_hover_text(
+                                        "The registration compares the anchor's surfaces \
+                                         (signed distance maps of the two contours) instead \
+                                         of the image intensities: a contrast-enhanced \
+                                         cardiac CT and a plain 4DCT cannot be matched by \
+                                         intensity, but their heart contours can.",
+                                    );
                             }
                         });
                     ui.separator();

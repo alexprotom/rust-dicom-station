@@ -405,7 +405,7 @@ impl ViewerApp {
             && self
                 .registration
                 .as_ref()
-                .is_some_and(|r| r.fixed_slot == slot)
+                .is_some_and(|r| r.fusion_on_slot(slot, self.fusion_side, &self.slots))
             && view.fusion_tex.is_some();
         if fusion_active {
             if let Some(tex) = &view.fusion_tex {
@@ -494,7 +494,7 @@ impl ViewerApp {
             && self
                 .registration
                 .as_ref()
-                .is_some_and(|r| r.fixed_slot == slot)
+                .is_some_and(|r| r.shows_fixed(slot, &self.slots))
         {
             let max = self
                 .registration
@@ -1099,9 +1099,13 @@ impl ViewerApp {
             // The transform maps fixed-slot patient coordinates into the
             // moving slot; clicks on the moving study use the inverse.
             let target = match &self.registration {
-                Some(reg) if slot == reg.fixed_slot => reg.result.transform.map(patient),
-                Some(reg) => reg.result.transform.unmap(patient),
-                None => patient,
+                Some(reg) if reg.shows_fixed(slot, &self.slots) => {
+                    reg.result.transform.map(patient)
+                }
+                Some(reg) if reg.shows_moving(slot, &self.slots) => {
+                    reg.result.transform.unmap(patient)
+                }
+                _ => patient,
             };
             if !ostudy.has_volume() {
                 return;
@@ -1358,7 +1362,7 @@ impl ViewerApp {
             && self
                 .registration
                 .as_ref()
-                .is_some_and(|r| r.fixed_slot == slot);
+                .is_some_and(|r| r.shows_fixed(slot, &self.slots));
         if !showing {
             let view = &mut self.slots[slot].views[idx];
             if view.field_key.is_some() {
@@ -1419,27 +1423,30 @@ impl ViewerApp {
         let Some(reg) = &self.registration else {
             return;
         };
-        if reg.fixed_slot != slot {
-            return;
-        }
-        if self.slots[0].study.is_none() || self.slots[1].study.is_none() {
+        // On the fixed image the moving one is warped onto it through the
+        // transform; on the moving image the fixed one comes back through
+        // the inverse. Either way the other volume is the registration's
+        // own copy, whatever the other slot displays.
+        let side = self.fusion_side;
+        if !reg.fusion_on_slot(slot, side, &self.slots) {
             return;
         }
         let transform: Arc<Transform3> = reg.result.transform.clone();
+        let inverse = side == FusionSide::Moving;
+        let bvol: Arc<Volume> = if inverse {
+            reg.fixed_vol.clone()
+        } else {
+            reg.moving_vol.clone()
+        };
         let fixed_slot = reg.fixed_slot;
         let wc = self.window_center;
         let ww = self.window_width.max(1.0);
         let weight = self.fusion_weight.clamp(0.0, 1.0);
 
-        let (left, right) = self.slots.split_at_mut(1);
-        let (a, bvol) = if fixed_slot == 0 {
-            let bvol = &right[0].study.as_ref().unwrap().volume;
-            (&mut left[0], bvol)
-        } else {
-            let bvol = &left[0].study.as_ref().unwrap().volume;
-            (&mut right[0], bvol)
-        };
-        let avol = &a.study.as_ref().unwrap().volume;
+        let a = &mut self.slots[slot];
+        let avol = a.study.as_ref().unwrap().volume.clone();
+        let avol = &avol;
+        let bvol = &bvol;
         let view = &mut a.views[idx];
         let plane = view.plane;
         let slice = view.slice;
@@ -1447,6 +1454,7 @@ impl ViewerApp {
 
         let mut key: u64 = 0x243F6A8885A308D3 ^ self.reg_gen.wrapping_mul(0x9E3779B97F4A7C15);
         for v in [
+            inverse as u64,
             slice as u64,
             wc.to_bits() as u64,
             ww.to_bits() as u64,
@@ -1475,8 +1483,12 @@ impl ViewerApp {
             for (px, out) in row.iter_mut().enumerate() {
                 let a_gray = wl(slice_buf[py * w + px] as f32);
                 let vxl = avol.plane_pixel_to_voxel(plane, slice, px as f64, py as f64);
-                let p_fixed = avol.voxel_to_patient(vxl[0], vxl[1], vxl[2]);
-                let q = transform.map(p_fixed);
+                let p = avol.voxel_to_patient(vxl[0], vxl[1], vxl[2]);
+                let q = if inverse {
+                    transform.unmap(p)
+                } else {
+                    transform.map(p)
+                };
                 let b_gray = bvol.sample_patient(q).map(&wl).unwrap_or(0.0);
                 let g = a_gray + (b_gray - a_gray) * weight;
                 *out = Color32::from_rgb(a_gray as u8, g as u8, a_gray as u8);

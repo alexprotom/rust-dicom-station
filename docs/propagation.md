@@ -30,6 +30,23 @@ Each propagated structure is reported as `name: 164.2 cm³ ▶ 170.1 cm³
 (+3.6 %)` - the volume change the registration panel's Jacobian statistics
 also describe; if the two disagree, look harder at the registration.
 
+## The volume is kept
+
+A destination voxel is not a point. Sampling the source mask only at the
+voxel centre is exact when the destination lattice is at least as fine as
+the structure, and silently wrong when it is not: a target exported as
+1 mm cubes (an ablation map, voxel by voxel) carried onto 2 mm slices lost
+four fifths of its volume that way, because most cubes contained no voxel
+centre. So each destination voxel is sampled at several sub-points (per
+axis as many as the spacing ratio asks for, up to four) and gets an
+*occupancy*, the fraction of it that comes from inside the structure. The
+sum of the occupancies is the volume of the structure as the transform maps
+it, and the mask is filled with the most-occupied voxels until it holds
+exactly that volume. For a structure larger than the voxels this is the
+usual half threshold; for one smaller, every piece lands in the voxel that
+holds most of it. The report lists three volumes: the source's, the mapped
+one (what the deformation made of it) and the filed one (the mask).
+
 ## Global and local
 
 **Globally**, propagation uses whatever registration is active; one
@@ -84,7 +101,14 @@ structure of the same name (`heart_total` on the cardiac CT and in each
 phase's own structure set). Per phase: the two centroids are matched, a
 rigid registration sampling only the phase's structure plus the margin finds
 the rotation and the residual shift, and (unless *Refine deformably* is off)
-a local B-spline on the same region takes up what is not rigid. The ticked
+a local B-spline on the same region takes up what is not rigid. With
+*Match the contours* (the default) the two stages compare the anchor's
+surfaces, as signed distance maps of the two contours, rather than the
+images: a contrast-enhanced cardiac CT and a plain 4DCT cannot be matched
+by intensity - mean squares has every incentive to push the bright blood
+pool out of correspondence - but their heart contours can, whatever the
+contrast, kernel or cardiac phase. Turn it off for two images that are
+alike. The ticked
 structures travel through that transform, and the anchor travels with them
 as the check: its Dice, HD95 and centroid distance against the phase's own
 contour are reported per phase with a verdict (good from 0.85, check from
@@ -97,18 +121,27 @@ reuses them. From the MCP server the same run is `propagate_to_group` with
 
 ## Using it
 
-1. Register the two datasets (any method; see
+1. Register the two images (any method; see
    [registration.md](registration.md)). Skip this when the destination is a
-   4D group: the module registers each phase itself.
+   4D group: the module registers each phase itself - or reuses the
+   transforms when the group was registered from the registration module
+   against the same moving image, on display or not.
 2. *Modules ▶ Structures propagation*, or **⇄ Propagate structures** in the
    registration module once it has a result.
-3. Choose the source dataset and the destination, tick what to carry,
-   optionally pick an enclosing region to refine on, and press
-   **▶ Propagate**.
+3. Choose where the structures come from (the registration's moving or fixed
+   image; against a group, dataset A or B) and the destination, tick what to
+   carry, pick where they land, optionally an enclosing region to refine on,
+   and press **▶ Propagate**.
 
-Results arrive named `<structure> (from A)`, in the source structure's
-colour, as the destination's active segmentation - edit with the brush,
-view in 3D, convert to RTSTRUCT, export as DICOM.
+**Land as** decides the form of the result. *Segmentation series*: editable
+masks bound to the destination image (on the displayed volume they join the
+active segmentation series; on any other image they become a new series
+bound to it, filed under it in the tree). *Structure set*: contours appended
+to the destination image's own RT structure set - the set that references
+that series, or a new one bound to it when there is none - so on a 4DCT with
+one set per phase the target goes next to that phase's heart, which is where
+a planning system expects to find it. Results are named
+`<structure> (from A)`; a name already in the set gets a counter.
 
 ## Verification
 

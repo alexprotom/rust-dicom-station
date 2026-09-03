@@ -4,3 +4,5 @@
 autoseg_models/
 models/
 Cargo.lock
+/example_data_star
+/data_clean

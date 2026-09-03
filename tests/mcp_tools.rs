@@ -423,16 +423,31 @@ fn an_anchored_group_run_reports_the_check() {
         assert!(items.iter().all(|it| it["voxels"].as_u64().unwrap() > 0));
     }
     assert!(g["worst_anchor_dice"].as_f64().unwrap() > 0.9);
-    // Rigid only stops after the rigid stage.
+    // Rigid only stops after the rigid stage; the results may go into each
+    // phase's own structure set instead of a segmentation series.
     let g = call(
         c,
         "propagate_to_group",
         json!({"dataset": "ds1", "group": "1", "source_series": 1,
-               "anchor": {"structure": "BODY"}, "rigid_only": true,
+               "anchor": {"structure": "BODY"}, "rigid_only": true, "anchor_by": "contours",
+               "structures": [{"structure": "TARGET"}], "land": "structure_set",
                "levels": 2, "iterations": 40, "samples": 1500}),
     );
     assert_eq!(g["stages"], "centroids, rigid");
+    assert_eq!(g["anchor_by"], "contours");
     assert!(g["phases"][0]["anchor_check"]["deformable"].is_null());
+    assert_eq!(g["phases"][1]["landed_as"], "structure set");
+    let ls = call(c, "list_structures", json!({"dataset": "ds1"}));
+    let rois: Vec<&Value> = ls["structures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["kind"] == "roi" && s["name"].as_str().unwrap().starts_with("TARGET"))
+        .collect();
+    assert!(
+        rois.len() >= 4,
+        "the original plus one per phase as contours: {rois:?}"
+    );
     // An anchor no phase carries is refused by name.
     let e = fail(
         c,
