@@ -47,6 +47,7 @@ mod drr_win;
 mod dvh_win;
 mod export_win;
 mod glyphs;
+mod home;
 mod jobs;
 mod models_win;
 mod motion_results;
@@ -1192,6 +1193,7 @@ pub struct ViewerApp {
     /// Non-fatal note shown in the View menu if the settings file could not
     /// be written (e.g. a read-only installation folder).
     settings_error: Option<String>,
+    home_content_height: f32,
 }
 
 /// Last few characters of a UID for compact display.
@@ -1241,6 +1243,7 @@ impl ViewerApp {
             link_studies: true,
             hovered_slot: 0,
             loading: None,
+            home_content_height: 0.0,
             // What the last run ended with, ready for the start screen's
             // *Restore the last session*; it becomes this run's session as
             // soon as anything is loaded.
@@ -1491,11 +1494,6 @@ impl ViewerApp {
         let root = crate::archive::root_from_setting(&self.archive_dir);
         self.archive_has_data = crate::archive::Archive::new(root).has_patients();
         self.archive_has_data
-    }
-
-    /// Is there a session from the last run to offer?
-    pub(super) fn has_last_session(&self) -> bool {
-        self.last_session.iter().any(|paths| !paths.is_empty())
     }
 
     /// Load again what the program was showing when it was last closed.
