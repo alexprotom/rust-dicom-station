@@ -38,3 +38,7 @@ pub mod settings;
 pub mod simulate;
 pub mod structops;
 pub mod volume;
+pub mod workflow;
+
+#[cfg(feature = "mcp")]
+pub mod mcp;

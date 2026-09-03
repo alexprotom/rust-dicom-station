@@ -435,6 +435,39 @@ impl ViewerApp {
                             running.label()
                         ));
                     });
+                    ui.menu_button("MCP server", |ui| {
+                        ui.label(
+                            "rds-mcp lets an AI assistant drive the station's tools headlessly.",
+                        );
+                        ui.add_space(4.0);
+                        let exe = crate::settings::mcp_exe_path();
+                        if exe.is_file() {
+                            ui.weak(format!("Installed: {}", exe.display()));
+                        } else {
+                            ui.weak(format!(
+                                "Not installed: {} was not found. Build it with \
+                                 cargo build --release --features mcp.",
+                                exe.display()
+                            ));
+                        }
+                        ui.weak(format!(
+                            "Configuration (roots, output folder, PHI policy): {}",
+                            crate::settings::mcp_config_path().display()
+                        ));
+                        ui.add_space(4.0);
+                        if ui
+                            .button("Copy client configuration")
+                            .on_hover_text(
+                                "Copies the JSON entry for claude_desktop_config.json (or an \
+                                 equivalent MCP client) to the clipboard.",
+                            )
+                            .clicked()
+                        {
+                            ui.ctx().copy_text(crate::settings::mcp_client_snippet());
+                            ui.close();
+                        }
+                        ui.weak("See docs/mcp.md for the tools and the safety rules.");
+                    });
                     if let Some(msg) = &self.settings_error {
                         ui.weak(msg);
                     }

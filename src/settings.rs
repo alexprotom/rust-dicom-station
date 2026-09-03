@@ -218,6 +218,30 @@ fn home_dir() -> Option<PathBuf> {
     }
 }
 
+/// Full path of the MCP server's configuration file (`docs/mcp.md`).
+pub fn mcp_config_path() -> PathBuf {
+    config_dir().join("mcp.toml")
+}
+
+/// Where the MCP server executable would be: beside this one.
+pub fn mcp_exe_path() -> PathBuf {
+    let name = if cfg!(windows) {
+        "rds-mcp.exe"
+    } else {
+        "rds-mcp"
+    };
+    app_dir().join(name)
+}
+
+/// The entry an MCP client (Claude Desktop, Claude Code) needs in its
+/// configuration to launch the server: JSON with the executable's path.
+pub fn mcp_client_snippet() -> String {
+    let exe = mcp_exe_path().to_string_lossy().replace('\\', "\\\\");
+    format!(
+        "{{\n  \"mcpServers\": {{\n    \"rust-dicom-station\": {{\n      \"command\": \"{exe}\",\n      \"args\": []\n    }}\n  }}\n}}\n"
+    )
+}
+
 /// Full path of the settings file.
 pub fn settings_path() -> PathBuf {
     config_dir().join(FILE_NAME)
@@ -417,6 +441,17 @@ fn render(s: &Settings) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_mcp_client_snippet_is_json_naming_the_executable() {
+        let text = mcp_client_snippet();
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        let cmd = v["mcpServers"]["rust-dicom-station"]["command"]
+            .as_str()
+            .expect("a command");
+        assert!(cmd.contains("rds-mcp"), "{cmd}");
+        assert!(v["mcpServers"]["rust-dicom-station"]["args"].is_array());
+    }
 
     #[test]
     fn round_trips_every_theme() {

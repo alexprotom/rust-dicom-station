@@ -161,6 +161,47 @@ fn rules() -> Vec<Rule> {
     ]
 }
 
+/// The tags whose mere presence with a value means the data still names
+/// somebody: the patient's identifiers and contact details, the physicians,
+/// the institution. Derived from [`rules`] so there is one list; the
+/// demographic tags the anonymizer clears too (sex, age, weight, size) and
+/// the device identifiers are left out, because a value there does not by
+/// itself identify a person.
+///
+/// The MCP server's PHI gate is built on this (`mcp::phi`).
+pub fn identity_tags() -> Vec<(Tag, &'static str)> {
+    const NOT_IDENTITY: &[&str] = &[
+        "PatientSex",
+        "PatientAge",
+        "PatientWeight",
+        "PatientSize",
+        "StationName",
+        "DeviceSerialNumber",
+        "StudyID",
+    ];
+    rules()
+        .into_iter()
+        .filter(|r| {
+            matches!(
+                r.suggest,
+                Suggest::Alias | Suggest::Clear | Suggest::Fixed(_)
+            )
+        })
+        .filter(|r| !NOT_IDENTITY.contains(&r.name))
+        .map(|r| (r.tag, r.name))
+        .collect()
+}
+
+/// Whether a value is what the anonymizer itself writes: nothing, or the
+/// `anon_xxxxxx` alias.
+pub fn looks_anonymized(value: &str) -> bool {
+    let v = value.trim().trim_end_matches('\0').trim();
+    if v.is_empty() {
+        return true;
+    }
+    v.len() == 11 && v.starts_with("anon_") && v[5..].chars().all(|c| c.is_ascii_hexdigit())
+}
+
 // ---------------------------------------------------------------------------
 // Scan
 // ---------------------------------------------------------------------------
@@ -203,7 +244,7 @@ pub struct ScanResult {
 
 /// Deterministic alias for the dataset's patient(s): `anon_` + 6 hex digits
 /// derived from the sorted original PatientIDs (falls back to names).
-fn patient_alias(ids: &[String]) -> String {
+pub fn patient_alias(ids: &[String]) -> String {
     let mut h = DefaultHasher::new();
     for id in ids {
         id.hash(&mut h);

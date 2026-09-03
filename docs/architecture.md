@@ -187,12 +187,14 @@ port are in the per-feature documents ([registration.md](registration.md),
 
 Where each function lives. The right-hand tag is the functional category
 (**App**, **DICOM**, **Sim**, **Reg**, **4D**, **Dose**, **Seg**, **NN**,
-**Core**).
+**Core**, **MCP**).
 
 ```
 src/
   main.rs           entry point: opens the eframe/wgpu window, retrying the
                     other graphics backends when one will not start              App
+  bin/rds-mcp.rs    the MCP server executable (cargo feature `mcp`): reads
+                    mcp.toml, serves the tools over standard input and output    MCP
   lib.rs            library root - every module is public, so the integration
                     tests and the examples drive the same code as the GUI
   progress.rs       the one progress handle + ProgressSink, Quiet, Stderr         Core
@@ -249,11 +251,11 @@ src/
     prompt_seg.rs     prompt segmentation window and worker (SegVol)
     box_seg.rs        slice propagation: the box drawn in the viewport, the
                       preview / refine / propagate loop, the resident session (MedSAM2)
-    propagate_win.rs  the Structures propagation module and its worker, onto the
-                      other dataset or onto every phase of a 4D group (one
-                      registration each, transforms kept for the next run)
-    motion_win.rs     the 4D motion / ITV window and its per-phase pipeline
-                      worker (register ▸ propagate ▸ measure ▸ ITV)
+    propagate_win.rs  the Structures propagation module: onto the other dataset,
+                      or onto every phase of a 4D group through workflow::group
+                      (transforms kept for the next run)
+    motion_win.rs     the 4D motion / ITV window; the pipeline itself is
+                      workflow::motion
     motion_results.rs the motion results window: charts, tables, correlations,
                       QA, CSV, run-vs-run comparison
     compare_win.rs    compare structures: volumes, centroid offset, Dice, HD95, MSD
@@ -320,6 +322,27 @@ src/
                     crop, fill / smooth / prune, over masks on one lattice       Seg
   bodymask.rs       the body / EXTERNAL contour, classically or guided by the
                     body network                                                 Seg
+
+  workflow/         the pipelines without a window around them, shared by the
+                    viewer's tool windows and the MCP server                     4D
+    select.rs         structures by name over RTSTRUCT ROIs and segmentation
+                      series; contour or mask onto any lattice
+    motion.rs         the per-phase 4D pipeline (register ▸ propagate ▸
+                      measure ▸ ITV), moved out of motion_win.rs
+    group.rs          one volume onto every phase of a group, one registration
+                      per phase, transforms reusable; moved out of propagate_win.rs
+
+  mcp/              the MCP server behind rds-mcp (cargo feature `mcp`)         MCP
+    config.rs         the operator's mcp.toml: roots, output folder, PHI policy
+    phi.rs            the gate (which datasets still name their patient) and
+                      the redactor every outgoing string passes
+    session.rs        open datasets, transforms, reports, and their handles
+    tools/            the tools as plain functions with schema-deriving
+                      argument structs: session, segment, register, fourd,
+                      analysis, output
+    prompts.rs        the heart_target_propagation prompt, the doc resources
+    audit.rs          the call log
+    server.rs         the rmcp glue: transport, progress, cancellation, _async jobs
   mesh3d.rs         contour / mask ▶ surface meshes (scanline fill, surface
                     nets, Laplacian smoothing)                                   Seg
 
@@ -390,7 +413,8 @@ src/
     engine.rs         backend choice, the encoded-slice cache, the one call
                       the user interface makes
 
-tests/             fifteen integration suites (see Testing)
+tests/             eighteen integration suites (see Testing); common/ holds the
+                   4D phantom fixture the workflow and MCP suites share
 examples/          autoseg_cli, autoseg_probe, body_cli, segvol_cli, segvol_probe,
                    medsam2_cli, medsam2_probe; common/ holds what they share
 tools/             gen_reference_activations.py, gen_ops_fixtures.py - the two
@@ -566,11 +590,13 @@ All pure Rust: `dicom-rs` (DICOM, with `dicom-pixeldata` for decoding),
 `anyhow`; for the engines `gemm` (SIMD matrix kernels), `serde_json`, `zip`,
 `ureq` (rustls + OS trust store), `safetensors`, and `burn` - always with
 its `ndarray` CPU backend, with the wgpu backend added by the cargo feature
-`gpu` (default on).
+`gpu` (default on). The cargo feature `mcp` (off by default) adds `rmcp`
+(the official MCP SDK), `tokio`, `serde`, `schemars` and `toml` for the
+`rds-mcp` executable only; the viewer's build pulls none of them.
 
 ## Testing
 
-Fifteen integration suites plus in-module unit tests run against the same
+Eighteen integration suites plus in-module unit tests run against the same
 code paths the GUI uses, with no external data or tooling: the analytic
 phantom round trip (**synthetic_study**), simulate → export → reload
 (**simulate_export**), rigid and B-spline recovery of known transforms
@@ -591,6 +617,15 @@ dump made by `tools/gen_reference_activations.py`, and skips when the dump
 is absent: `MEDSAM2_REF=/tmp/ref cargo test --release --test reference`.
 End-to-end runs against the real weights are `#[ignore]`d.
 
+Three suites need the `mcp` feature: **workflow** runs the 4D pipeline
+headless on a three-phase phantom whose target moves 0 / 6 / 3 mm and checks
+the recovered motion; **mcp_tools** runs the heart sequence through the
+server's core (register, propagate, propagate onto a group, motion, DVH,
+export, re-open); **mcp_phi** gives the phantom a patient's name and asserts
+that no tool, no error path and no protocol frame of the real executable ever
+carries it.
+
 ```
 cargo test --release
+cargo test --features mcp --test workflow --test mcp_tools --test mcp_phi
 ```

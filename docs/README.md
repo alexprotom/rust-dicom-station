@@ -18,6 +18,7 @@ Each page here covers one area.
 | [segvol.md](segvol.md) | Prompt-driven segmentation: box / point / text, the SegVol re-implementation, weights and licensing |
 | [medsam2.md](medsam2.md) | Slice propagation: the MedSAM2 re-implementation, validation, weights and licensing |
 | [pacs.md](pacs.md) | The local patient archive: the window, the on-disk layout, filing, loading, sending changes back |
+| [mcp.md](mcp.md) | The MCP server `rds-mcp`: driving the station's tools from an AI assistant, the heart target propagation prompt, the PHI gate and redactor, the configuration file |
 | [export-and-tools.md](export-and-tools.md) | DICOM export, the model manager, the anonymizer, the test-data generator |
 | [architecture.md](architecture.md) | Design, functional overview, module map, the tool windows, background jobs, the model folder, conventions, testing |
 | [release-versioning.md](release-versioning.md) | Versioning, the branch workflow, how CI produces a release |

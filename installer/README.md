@@ -26,6 +26,7 @@ Step 3 appends the payload to the setup binary. Useful flags:
 | `--example-data` | ship `example_data/` too (~137 MB before compression) |
 | `--no-docs` | leave `docs/` out |
 | `--app <FILE>` | use a different viewer executable |
+| `--mcp <FILE>` / `--no-mcp` | the MCP server `rds-mcp.exe` rides along when `target/release/rds-mcp.exe` exists (build it with `cargo build --release --features mcp`); these override that |
 | `--out <FILE>` | write the installer somewhere else |
 
 Without `--example-data` the result is about 35 MB.
@@ -40,7 +41,9 @@ publisher" warning on first run.
 ## What the installer does
 
 * **Copies the program** - `rust-dicom-station.exe`, `README.md`,
-  `LICENSE.txt`, `docs/`, and `example_data/` when it was packed in - into
+  `LICENSE.txt`, `docs/`, `rds-mcp.exe` (the MCP server, see
+  [docs/mcp.md](../docs/mcp.md)) when it was built, and `example_data/` when
+  it was packed in - into
   `%LOCALAPPDATA%\Programs\Rust DICOM Station` (per user, the default) or
   `%ProgramFiles%\Rust DICOM Station` (all users, asks for elevation).
 * **Dependencies** - checks for the Microsoft Visual C++ runtime that Rust's

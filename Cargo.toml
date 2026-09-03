@@ -1,6 +1,6 @@
 [package]
 name = "rust-dicom-station"
-version = "0.7.8"
+version = "0.7.9"
 edition = "2021"
 description = "Fast, robust DICOM / RT DICOM viewer in pure Rust (CT/MR volumes, RTSTRUCT, RTDOSE, RTPLAN) with a three-view MPR layout"
 license = "MIT"
@@ -33,6 +33,16 @@ safetensors = "0.8"                 # converted-weight cache format
 # encoder also uses.
 burn = { version = "0.21", default-features = false, features = ["std", "ndarray"] }
 
+# ---- the MCP server (`rds-mcp`, feature `mcp`) ----
+# Optional: the viewer's default build compiles none of this. The server is a
+# second executable that links the same library and speaks the Model Context
+# Protocol over standard input and output; see docs/mcp.md.
+rmcp = { version = "3.2", optional = true, default-features = false, features = ["server", "macros", "transport-io", "schemars"] }
+tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+serde = { version = "1", optional = true, features = ["derive"] }
+schemars = { version = "1", optional = true }
+toml = { version = "1", optional = true, default-features = false, features = ["parse", "serde", "std"] }
+
 # The Windows executable's icon resource (see `build.rs`). Host-gated: on a
 # Linux or macOS build the crate is never fetched and the script is a no-op.
 [target.'cfg(windows)'.build-dependencies]
@@ -41,6 +51,21 @@ winresource = "0.1"
 [features]
 default = ["gpu"]
 gpu = ["burn/wgpu", "burn/fusion", "burn/autotune"]
+# The MCP server executable and the `mcp` library module behind it.
+mcp = ["dep:rmcp", "dep:tokio", "dep:serde", "dep:schemars", "dep:toml"]
+
+[[bin]]
+name = "rds-mcp"
+path = "src/bin/rds-mcp.rs"
+required-features = ["mcp"]
+
+[[test]]
+name = "mcp_phi"
+required-features = ["mcp"]
+
+[[test]]
+name = "mcp_tools"
+required-features = ["mcp"]
 
 [profile.release]
 opt-level = 3

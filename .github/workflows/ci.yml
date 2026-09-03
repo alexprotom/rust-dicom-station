@@ -70,6 +70,18 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo check --no-default-features --all-targets
 
+      # The MCP server (`rds-mcp`) and its three suites live behind the `mcp`
+      # feature so the viewer's build never links the protocol stack. Same
+      # dependency graph as the default build plus a few small crates, so it
+      # fits beside it; Linux only, like the other extra feature set.
+      - name: cargo clippy (mcp)
+        if: runner.os == 'Linux'
+        run: cargo clippy --features mcp --all-targets -- -D warnings
+
+      - name: cargo test (mcp)
+        if: runner.os == 'Linux'
+        run: cargo test --features mcp --test workflow --test mcp_tools --test mcp_phi
+
   # The Windows installer is a separate workspace and is never built by
   # `cargo build` in the repository root, so it needs its own job. It is
   # Windows-only by construction (`compile_error!` on other targets).
