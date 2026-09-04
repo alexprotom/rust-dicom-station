@@ -31,6 +31,24 @@ fn centered_button_row(
     );
 }
 
+fn load_logo(ctx: &egui::Context) -> egui::TextureHandle {
+    let bytes = include_bytes!("../../assets/rust-dicom-station.png");
+
+    let image = image::load_from_memory(bytes)
+        .expect("Failed to load application logo")
+        .to_rgba8();
+
+    let size = [image.width() as usize, image.height() as usize];
+
+    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
+
+    ctx.load_texture(
+        "application-logo",
+        color_image,
+        egui::TextureOptions::LINEAR,
+    )
+}
+
 impl ViewerApp {
     pub(super) fn empty_state(&mut self, ui: &mut egui::Ui) {
         let now = ui.input(|i| i.time);
@@ -62,22 +80,54 @@ impl ViewerApp {
                 // ---------------------------------------------------------
                 // Header
                 // ---------------------------------------------------------
-                ui.label(
-                    egui::RichText::new("Rust DICOM Station")
-                        .size(32.0)
-                        .strong()
-                        .color(egui::Color32::WHITE),
-                );
 
-                ui.add_space(6.0);
-
-                ui.label(
-                    egui::RichText::new(
-                        "An open-source DICOM workstation for radiotherapy research, analysis, and QA, written entirely in Rust.",
+                let logo = ui.ctx().data_mut(|data| {
+                    data.get_persisted::<egui::TextureHandle>(
+                        egui::Id::new("application-logo"),
                     )
-                    .weak()
-                    .size(14.0),
-                );
+                });
+
+                let logo = match logo {
+                    Some(texture) => texture,
+                    None => {
+                        let texture = load_logo(ui.ctx());
+
+                        ui.ctx().data_mut(|data| {
+                            data.insert_persisted(
+                                egui::Id::new("application-logo"),
+                                texture.clone(),
+                            );
+                        });
+
+                        texture
+                    }
+                };
+
+                ui.vertical_centered(|ui| {
+                    ui.add(
+                        egui::Image::new(&logo)
+                            .fit_to_exact_size(egui::vec2(128.0, 128.0)),
+                    );
+
+                    ui.add_space(8.0);
+
+                    ui.label(
+                        egui::RichText::new("Rust DICOM Station")
+                            .size(32.0)
+                            .strong()
+                            .color(egui::Color32::WHITE),
+                    );
+
+                    ui.add_space(6.0);
+
+                    ui.label(
+                        egui::RichText::new(
+                            "An open-source DICOM workstation for radiotherapy research, analysis, and QA, written entirely in Rust.",
+                        )
+                        .weak()
+                        .size(14.0),
+                    );
+                });
 
                 ui.add_space(8.0);
 

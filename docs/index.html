@@ -1,0 +1,1106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Rust DICOM Station — an open-source DICOM and radiotherapy research viewer written entirely in Rust.">
+  <title>Rust DICOM Station</title>
+  <style>
+    :root {
+      --bg: #111111;
+      --bg-soft: #171717;
+      --panel: #1d1d1d;
+      --panel-hover: #242424;
+      --border: #303030;
+      --text: #eeeeee;
+      --muted: #a5a5a5;
+      --accent: #b3a993;
+      --accent-soft: rgba(231,185,63,.12);
+      --green: #62c554;
+      --max: 1180px;
+      --radius: 8px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; background: var(--bg); }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 50% -10%, rgba(255,255,255,.045), transparent 38%),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+                   "Segoe UI", sans-serif;
+      line-height: 1.65;
+    }
+
+    a { color: inherit; text-decoration: none; }
+    code, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: rgba(17,17,17,.92);
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(12px);
+    }
+
+    .nav {
+      max-width: var(--max);
+      margin: auto;
+      height: 62px;
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      font-weight: 650;
+      letter-spacing: -.02em;
+      white-space: nowrap;
+    }
+
+    .brand img {
+      width: 30px;
+      height: 30px;
+      object-fit: contain;
+      border-radius: 6px;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .nav-links a {
+      color: var(--muted);
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+
+    .nav-links a:hover,
+    .nav-links a.active {
+      color: var(--text);
+      background: var(--panel);
+    }
+
+    .github-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        }
+
+    .github-icon {
+        width: 18px;
+        height: 18px;
+        flex-shrink: 0;
+        display: inline-flex;
+        align-items: center;
+    }
+
+    main { overflow: hidden; }
+
+    .hero {
+      max-width: var(--max);
+      margin: auto;
+      padding: 96px 24px 72px;
+      display: grid;
+      grid-template-columns: 1fr 1.12fr;
+      gap: 64px;
+      align-items: center;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+      margin-bottom: 18px;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 22px;
+      height: 1px;
+      background: var(--accent);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(42px, 5vw, 68px);
+      line-height: .98;
+      letter-spacing: -.055em;
+      font-weight: 700;
+    }
+
+    .hero h1 span { color: var(--accent); }
+
+    .hero-lead {
+      max-width: 590px;
+      color: #c7c7c7;
+      font-size: 18px;
+      margin: 25px 0 28px;
+    }
+
+    .buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      padding: 0 17px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      font-size: 14px;
+      font-weight: 600;
+      transition: .15s ease;
+    }
+
+    .button:hover {
+      background: var(--panel-hover);
+      border-color: #444;
+      transform: translateY(-1px);
+    }
+
+    .button.primary {
+      background: var(--accent);
+      color: #111;
+      border-color: var(--accent);
+    }
+
+    .button.primary:hover { background: #f0c750; }
+
+    .hero-image { position: relative; }
+
+    .hero-image::before {
+      content: "";
+      position: absolute;
+      inset: -18px;
+      border: 1px solid rgba(231,185,63,.17);
+      border-radius: 10px;
+      pointer-events: none;
+    }
+
+    .hero-image img {
+      display: block;
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: #000;
+      box-shadow: 0 25px 70px rgba(0,0,0,.45);
+    }
+
+    .caption {
+      margin-top: 9px;
+      color: #777;
+      font-size: 11px;
+      text-align: right;
+    }
+
+    .section {
+      max-width: var(--max);
+      margin: auto;
+      padding: 82px 24px;
+    }
+
+    .section-header {
+      max-width: 720px;
+      margin-bottom: 34px;
+    }
+
+    .section-kicker {
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+
+    h2 {
+      font-size: clamp(28px, 3vw, 40px);
+      line-height: 1.12;
+      letter-spacing: -.035em;
+      margin: 0 0 12px;
+    }
+
+    .section-header p {
+      color: var(--muted);
+      margin: 0;
+    }
+
+    .divider {
+      border: 0;
+      border-top: 1px solid var(--border);
+      max-width: var(--max);
+      margin: 0 auto;
+    }
+
+    .features {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+
+    .feature {
+      border: 1px solid var(--border);
+      background: linear-gradient(145deg, var(--panel), #191919);
+      padding: 23px;
+      border-radius: var(--radius);
+      min-height: 176px;
+    }
+
+    .feature-number {
+      color: #666;
+      font-size: 11px;
+      margin-bottom: 22px;
+    }
+
+    .feature h3 { font-size: 16px; margin: 0 0 8px; }
+    .feature p { color: var(--muted); font-size: 14px; margin: 0; }
+
+    .gallery {
+      display: grid;
+      grid-template-columns: 1.35fr .65fr;
+      gap: 10px;
+    }
+
+    .gallery figure {
+      margin: 0;
+      border: 1px solid var(--border);
+      background: #090909;
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .gallery img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .gallery .large { grid-row: span 2; }
+
+    .docs-grid {
+      display: grid;
+      grid-template-columns: 1.15fr .85fr;
+      gap: 12px;
+    }
+
+    .doc-list {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: var(--panel);
+    }
+
+    .doc-item {
+      display: grid;
+      grid-template-columns: 150px 1fr;
+      gap: 18px;
+      padding: 17px 19px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .doc-item:last-child { border-bottom: 0; }
+    .doc-item:hover { background: var(--panel-hover); }
+    .doc-item strong { color: var(--accent); font-size: 13px; }
+    .doc-item span { color: var(--muted); font-size: 13px; }
+
+    .docs-side {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: var(--radius);
+      padding: 25px;
+    }
+
+    .docs-side h3 { margin-top: 0; font-size: 17px; }
+    .docs-side p { color: var(--muted); font-size: 14px; }
+
+    .terminal {
+      margin-top: 18px;
+      border: 1px solid #333;
+      border-radius: 6px;
+      overflow: hidden;
+      background: #0b0b0b;
+    }
+
+    .terminal-bar {
+      padding: 8px 11px;
+      border-bottom: 1px solid #292929;
+      color: #777;
+      font-size: 11px;
+    }
+
+    .terminal pre {
+      margin: 0;
+      padding: 16px;
+      overflow-x: auto;
+      color: #cfcfcf;
+      font-size: 12px;
+      line-height: 1.75;
+    }
+
+    .terminal .prompt { color: var(--green); }
+
+    /* Downloads */
+    .download-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+    }
+
+    .download-card {
+      border: 1px solid var(--border);
+      background: linear-gradient(145deg, var(--panel), #191919);
+      border-radius: var(--radius);
+      padding: 30px;
+      min-height: 310px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      justify-content: space-between;
+    }
+
+    .download-card h3 { margin: 0; font-size: 21px; }
+    .download-card p { margin: 3px 0 24px; color: var(--muted); font-size: 13px; }
+    .download-card .button { min-width: 205px; }
+    .download-note { color: #777; font-size: 14px; text-align: center; margin: 17px 0 0; }
+
+    /* Embedded architecture workflow */
+    .architecture-frame {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: #0b0b0b;
+      box-shadow: 0 25px 70px rgba(0,0,0,.32);
+    }
+
+    .architecture-frame iframe {
+      display: block;
+      width: 100%;
+      height: 780px;
+      border: 0;
+      background: #111;
+    }
+
+    /* About / contributors */
+    .about-grid {
+      display: grid;
+      grid-template-columns: 1.35fr .65fr;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .contributors-panel,
+    .contact-panel {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: var(--radius);
+      padding: 25px;
+    }
+
+    .contributors-panel h3,
+    .contact-panel h3 {
+      margin: 0 0 7px;
+      font-size: 17px;
+    }
+
+    .panel-intro {
+      color: var(--muted);
+      font-size: 13px;
+      margin: 0 0 23px;
+    }
+
+    .contributors {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(115px, 1fr));
+      gap: 18px 12px;
+    }
+
+    .contributor {
+      text-align: center;
+      min-width: 0;
+    }
+
+    .contributor a {
+      display: block;
+      border-radius: 8px;
+      padding: 8px 5px;
+    }
+
+    .contributor a:hover { background: var(--panel-hover); }
+
+    .contributor img {
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      display: block;
+      margin: 0 auto 9px;
+      border: 1px solid #3b3b3b;
+      background: #111;
+    }
+
+    .contributor-name {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .contribution-count {
+      display: block;
+      color: #777;
+      font-size: 11px;
+      margin-top: 1px;
+    }
+
+    .contributors-status {
+      color: #777;
+      font-size: 12px;
+      margin-top: 18px;
+    }
+
+    .contact-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .contact {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px 13px;
+      background: #191919;
+    }
+
+    .contact strong {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 2px;
+    }
+
+    .contact span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .contribute {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .contribute-card {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: var(--radius);
+      padding: 27px;
+    }
+
+    .contribute-card h3 { margin: 0 0 8px; font-size: 18px; }
+    .contribute-card p { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
+
+    .warning {
+      margin-top: 28px;
+      border-left: 2px solid var(--accent);
+      background: var(--accent-soft);
+      padding: 15px 17px;
+      color: #c8c8c8;
+      font-size: 13px;
+    }
+
+    footer {
+      border-top: 1px solid var(--border);
+      color: #777;
+      font-size: 12px;
+    }
+
+    .download-logo {
+    width: 80px;
+    height: 80px;
+    object-fit: contain;
+    margin-bottom: 20px;
+    }
+
+    .footer-inner {
+      max-width: var(--max);
+      margin: auto;
+      padding: 28px 24px 40px;
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+
+    @media (max-width: 900px) {
+      .hero {
+        grid-template-columns: 1fr;
+        padding-top: 65px;
+        gap: 48px;
+      }
+
+      .features { grid-template-columns: 1fr 1fr; }
+      .download-grid { grid-template-columns: 1fr; }
+      .docs-grid, .about-grid, .contribute { grid-template-columns: 1fr; }
+      .architecture-frame iframe { height: 680px; }
+    }
+
+    @media (max-width: 620px) {
+      .nav-links a:not(.github-link) { display: none; }
+      .hero, .section { padding-left: 18px; padding-right: 18px; }
+      .features { grid-template-columns: 1fr; }
+      .download-card { min-height: 285px; }
+      .architecture-frame iframe { height: 600px; }
+      .gallery { grid-template-columns: 1fr; }
+      .gallery .large { grid-row: auto; }
+      .doc-item { grid-template-columns: 1fr; gap: 4px; }
+      h1 { font-size: 46px; }
+    }
+  </style>
+</head>
+
+<body>
+  <header class="topbar">
+    <nav class="nav">
+      <a class="brand" href="#home" aria-label="Rust DICOM Station home">
+        <img src="https://raw.githubusercontent.com/alexprotom/rust-dicom-station/refs/heads/main/assets/rust-dicom-station.png" alt="">
+        <span>Rust DICOM Station</span>
+      </a>
+
+      <div class="nav-links">
+        <a href="#home" class="active">Home</a>
+        <a href="#overview">Overview</a>
+        <a href="#downloads">Download</a>
+        <a href="#documentation">Documentation</a>
+        <a href="#about">About</a>
+        <a href="#contributing">Contribute</a>
+        <a class="github-link" href="https://github.com/alexprotom/rust-dicom-station">
+            <svg data-component="Octicon" aria-hidden="true" focusable="false" class="octicon octicon-mark-github" viewBox="0 0 24 24" width="28" height="28" fill="currentColor" display="inline-block" overflow="visible" style="vertical-align:text-bottom"><path d="M10.226 17.284c-2.965-.36-5.054-2.493-5.054-5.256 0-1.123.404-2.336 1.078-3.144-.292-.741-.247-2.314.09-2.965.898-.112 2.111.36 2.83 1.01.853-.269 1.752-.404 2.853-.404 1.1 0 1.999.135 2.807.382.696-.629 1.932-1.1 2.83-.988.315.606.36 2.179.067 2.942.72.854 1.101 2 1.101 3.167 0 2.763-2.089 4.852-5.098 5.234.763.494 1.28 1.572 1.28 2.807v2.336c0 .674.561 1.056 1.235.786 4.066-1.55 7.255-5.615 7.255-10.646C23.5 6.188 18.334 1 11.978 1 5.62 1 .5 6.188.5 12.545c0 4.986 3.167 9.12 7.435 10.669.606.225 1.19-.18 1.19-.786V20.63a2.9 2.9 0 0 1-1.078.224c-1.483 0-2.359-.808-2.987-2.313-.247-.607-.517-.966-1.034-1.033-.27-.023-.359-.135-.359-.27 0-.27.45-.471.898-.471.652 0 1.213.404 1.797 1.235.45.651.921.943 1.483.943.561 0 .92-.202 1.437-.719.382-.381.674-.718.944-.943"></path></svg>
+            GitHub
+        </a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero" id="home">
+      <div>
+        <h1>Rust DICOM<br><span>Station</span></h1>
+        <p class="hero-lead">
+          A native DICOM and radiotherapy viewer for research, analysis and QA,
+          written entirely in Rust.
+        </p>
+
+        <div class="buttons">
+          <a class="button primary" href="#downloads">Download</a>
+          <a class="button" href="#documentation">Documentation</a>
+          <a class="button" href="https://github.com/alexprotom/rust-dicom-station">View source</a>
+        </div>
+      </div>
+
+      <div class="hero-image">
+        <img src="https://raw.githubusercontent.com/alexprotom/rust-dicom-station/refs/heads/main/docs/screenshot_overview.png" alt="Rust DICOM Station showing linked MPR views and 3D structures">
+        <div class="caption">Linked MPR views · RT structures · 3D visualization</div>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <section class="section" id="overview">
+      <div class="section-header">
+        <div class="section-kicker">What it does</div>
+        <h2>A complete workspace for DICOM and radiotherapy data.</h2>
+        <p>
+          Load studies, inspect image geometry, compare datasets, work with
+          radiotherapy objects and run analysis workflows from one native application.
+        </p>
+      </div>
+
+      <div class="features">
+        <article class="feature">
+          <div class="feature-number mono">01</div>
+          <h3>DICOM & RT-DICOM</h3>
+          <p>CT, MR and PET series, RTSTRUCT, RTDOSE, RTPLAN, SEG, registrations and treatment records.</p>
+        </article>
+        <article class="feature">
+          <div class="feature-number mono">02</div>
+          <h3>Linked MPR & comparison</h3>
+          <p>Patient-space axial, sagittal and coronal views with linked navigation and multi-dataset comparison.</p>
+        </article>
+        <article class="feature">
+          <div class="feature-number mono">03</div>
+          <h3>Registration</h3>
+          <p>Rigid, B-spline and landmark-based workflows with displacement statistics, vector fields and fusion.</p>
+        </article>
+        <article class="feature">
+          <div class="feature-number mono">04</div>
+          <h3>4D & motion analysis</h3>
+          <p>Phase grouping, registration, structure propagation, motion metrics, ITV generation and CSV export.</p>
+        </article>
+        <article class="feature">
+          <div class="feature-number mono">05</div>
+          <h3>Segmentation</h3>
+          <p>Interactive segmentation plus native implementations of TotalSegmentator, SegVol and MedSAM2 workflows.</p>
+        </article>
+        <article class="feature">
+          <div class="feature-number mono">06</div>
+          <h3>MCP support</h3>
+          <p>Through Model Context Protocol (MCP), assistants can load, segment, register, propagate, analyse and export DICOM data programmatically — including automated processing across entire cohorts.</p>
+        </article>
+        
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <section class="section" id="architecture">
+      <div class="section-header">
+        <div class="section-kicker">Inside the station</div>
+        <h2>From slices to structures, dose and motion.</h2>
+        <p>Explore the architecture and the workflows available in the viewer.</p>
+      </div>
+
+       <div class="architecture-frame">
+        <iframe src="https://alexprotom.github.io/rust-dicom-station/architecture-diagram.html" title="Rust DICOM Station architecture diagram" loading="lazy"></iframe>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <section class="section" id="downloads">
+    <div class="section-header">
+        <div class="section-kicker">Download</div>
+        <h2>Get Rust DICOM Station.</h2>
+        <p>Choose your platform and download the latest release directly.</p>
+    </div>
+
+    <div class="download-grid">
+
+        <article class="download-card">
+        <div class="download-logo" aria-hidden="true">
+            <img
+            src="https://upload.wikimedia.org/wikipedia/commons/8/87/Windows_logo_-_2021.svg?utm_source=commons.wikimedia.org&utm_campaign=index&utm_content=original"
+            alt="Windows logo"
+            >
+        </div>
+
+        <div>
+            <h3>Windows</h3>
+            <p>Windows x64 · Installer</p>
+        </div>
+
+        <a
+            class="button primary"
+            id="windows-download"
+            href="#"
+        >
+            Download for Windows
+        </a>
+        </article>
+
+
+        <article class="download-card">
+        <div class="download-logo" aria-hidden="true">
+            <img
+            src="https://upload.wikimedia.org/wikipedia/commons/3/35/Tux.svg"
+            alt="Linux Tux logo"
+            >
+        </div>
+
+        <div>
+            <h3>Linux</h3>
+            <p>Linux x64 · AppImage</p>
+        </div>
+
+        <a
+            class="button primary"
+            id="linux-download"
+            href="#"
+        >
+            Download for Linux
+        </a>
+        </article>
+
+    </div>
+
+    <p class="download-note">
+        Latest release: <strong id="latest-version">Loading...</strong>.
+        Downloads are provided through GitHub Releases.
+    </p>
+    </section>
+
+    <hr class="divider">
+
+    <section class="section" id="documentation">
+      <div class="section-header">
+        <div class="section-kicker">Documentation</div>
+        <h2>Learn the viewer. Understand the internals.</h2>
+        <p>
+          The documentation lives in the repository and is linked directly below,
+          so these links always take you to the canonical source documents.
+        </p>
+      </div>
+
+      <div class="docs-grid">
+        <aside class="docs-side">
+          <h3>Quick start</h3>
+          <p>Build the release version and launch it with the bundled example dataset.</p>
+
+          <div class="terminal">
+            <div class="terminal-bar mono">shell</div>
+            <pre><span class="prompt">$</span> cargo build --release
+<span class="prompt">$</span> cargo run --release -- \
+    example_data/lung_p1_4DCT_phase_000</pre>
+          </div>
+
+          <p>
+            No data at hand? The application can generate a complete synthetic
+            RT study!
+          </p>
+
+          <a class="button" href="https://github.com/alexprotom/rust-dicom-station/tree/main/docs">Browse all documentation ↗</a>
+        </aside>
+        <div class="doc-list">
+          <a class="doc-item" href="#architecture">
+            <strong>Architecture diagram</strong>
+            <span>Interactive architecture map with semantic search, routing, presentation and export.</span>
+          </a>
+          <a class="doc-item" href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/viewer.md">
+            <strong>Viewer</strong>
+            <span>MPR, loading, dataset tree, comparison mode, interaction and graphics backend.</span>
+          </a>
+          <a class="doc-item" href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/rt-objects.md">
+            <strong>RT objects</strong>
+            <span>RTSTRUCT, RTDOSE, RTPLAN, REG and treatment records.</span>
+          </a>
+          <a class="doc-item" href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/registration.md">
+            <strong>Registration</strong>
+            <span>Registration engines, local registration, analytics, fusion and verification.</span>
+          </a>
+          <a class="doc-item" href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/propagation.md">
+            <strong>Propagation</strong>
+            <span>Carry contours and segmentations across a registration.</span>
+          </a>
+          <a class="doc-item" href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/motion-4d.md">
+            <strong>4D motion</strong>
+            <span>Phase groups, motion metrics, ITV generation and structure comparison.</span>
+          </a>
+          <a class="doc-item" href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/drr.md">
+            <strong>DRR</strong>
+            <span>Digitally reconstructed radiographs and beam geometry.</span>
+          </a>
+          <a class="doc-item" href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/dvh.md">
+            <strong>DVH</strong>
+            <span>Dose-volume histograms, metrics, constraints and CSV export.</span>
+          </a>
+          <a class="doc-item" href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/segmentation.md">
+            <strong>Segmentation</strong>
+            <span>Brush, eraser, region growing, 3D surfaces and DICOM SEG.</span>
+          </a>
+          <a class="doc-item" href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/architecture.md">
+            <strong>Architecture</strong>
+            <span>Module map, threading model, geometry conventions and testing.</span>
+          </a>
+          <a class="doc-item" href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/example-data.md">
+            <strong>Example data</strong>
+            <span>Bundled 4D-Lung data, source, contents and licensing information.</span>
+          </a>
+        </div>
+
+        
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <section class="section" id="about">
+      <div class="section-header">
+        <div class="section-kicker">About</div>
+        <h2>The people behind the project.</h2>
+        <p>
+          Contributors are loaded directly from the public GitHub repository,
+          while project contacts can be maintained manually below.
+        </p>
+      </div>
+
+      <div class="about-grid">
+        <div class="contributors-panel">
+          <h3>Contributors</h3>
+          <p class="panel-intro">
+            Click on a contributor to visit the GitHub profile.
+          </p>
+
+          <div class="contributors" id="contributors">
+            <div class="contributors-status" id="contributors-loading">Loading contributors…</div>
+          </div>
+          <div class="contributors-status" id="contributors-status"></div>
+        </div>
+
+        <aside class="contact-panel">
+          <h3>Contact</h3>
+          <p class="panel-intro">
+            Would you like to help us improve this project?
+          </p>
+
+          <div class="contact-list">
+            <div class="contact">
+              <strong>Alexander Pryanichnikov</strong>
+              <a href="mailto:alexander.pryanichnikov@kit.edu">alexander.pryanichnikov@kit.edu</a>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <section class="section" id="contributing">
+      <div class="section-header">
+        <div class="section-kicker">Contribute</div>
+        <h2>Build the station with us.</h2>
+        <p>
+          Contributions, bug reports, feature ideas and improvements are welcome.
+          Start by exploring the repository and its development workflow.
+        </p>
+      </div>
+
+      <div class="contribute">
+        <article class="contribute-card">
+          <h3>Contribute code</h3>
+          <p>
+            Fork the repository, create a focused branch, make your changes and
+            open a pull request. Keep changes consistent with the existing Rust
+            architecture and test suite.
+          </p>
+          <a class="button" href="https://github.com/alexprotom/rust-dicom-station/fork">Fork on GitHub ↗</a>
+        </article>
+
+        <article class="contribute-card">
+          <h3>Report an issue</h3>
+          <p>
+            Found a bug or have a reproducible problem? Open an issue with the
+            operating system, application version, steps to reproduce and relevant logs.
+          </p>
+          <a class="button" href="https://github.com/alexprotom/rust-dicom-station/issues">Open an issue ↗</a>
+        </article>
+      </div>
+
+      <div class="warning">
+        <strong>Research software.</strong>
+        Rust DICOM Station is intended for research and QA convenience. It is not
+        a medical device and must not be used for clinical decision-making.
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="footer-inner">
+      <span>Rust DICOM Station · MIT License</span>
+      <span>
+        <a href="https://github.com/alexprotom/rust-dicom-station">GitHub</a>
+        ·
+        <a href="https://github.com/alexprotom/rust-dicom-station/releases">Releases</a>
+        ·
+        <a href="#downloads">Download</a>
+        <a href="#documentation">Documentation</a>
+        ·
+        <a href="#about">About</a>
+      </span>
+    </div>
+  </footer>
+
+  <script>
+    /*
+     * GitHub's public REST API exposes /repos/{owner}/{repo}/contributors.
+     * No token is required for public repository data.
+     */
+    const OWNER = "alexprotom";
+    const REPO = "rust-dicom-station";
+    const API_URL =
+      `https://api.github.com/repos/${OWNER}/${REPO}/contributors?per_page=100&anon=false`;
+
+    async function loadContributors() {
+      const container = document.getElementById("contributors");
+      const loading = document.getElementById("contributors-loading");
+      const status = document.getElementById("contributors-status");
+
+      try {
+        const response = await fetch(API_URL, {
+          headers: { "Accept": "application/vnd.github+json" }
+        });
+
+        if (!response.ok) {
+          throw new Error(`GitHub API returned ${response.status}`);
+        }
+
+        const contributors = await response.json();
+        loading?.remove();
+
+        if (!contributors.length) {
+          status.textContent = "No GitHub contributors were returned.";
+          return;
+        }
+
+        contributors.forEach((contributor) => {
+          const item = document.createElement("div");
+          item.className = "contributor";
+
+          const link = document.createElement("a");
+          link.href = contributor.html_url;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+
+          const img = document.createElement("img");
+          img.src = contributor.avatar_url;
+          img.alt = `${contributor.login}'s GitHub avatar`;
+          img.loading = "lazy";
+
+          const name = document.createElement("span");
+          name.className = "contributor-name";
+          name.textContent = contributor.login;
+
+          const count = document.createElement("span");
+         
+          link.append(img, name, count);
+          item.appendChild(link);
+          container.appendChild(item);
+        });
+
+        status.textContent =
+          "Fetched live from GitHub. Contributor data may be cached by GitHub's API.";
+      } catch (error) {
+        loading?.remove();
+        status.textContent =
+          "Contributors could not be loaded automatically. View them on GitHub.";
+        console.error("Unable to load GitHub contributors:", error);
+
+        const fallback = document.createElement("a");
+        fallback.className = "button";
+        fallback.href = `https://github.com/${OWNER}/${REPO}/graphs/contributors`;
+        fallback.target = "_blank";
+        fallback.rel = "noopener noreferrer";
+        fallback.textContent = "View contributors on GitHub ↗";
+        container.appendChild(fallback);
+      }
+    }
+
+    loadContributors();
+
+    const sections = document.querySelectorAll("main section[id]");
+    const links = document.querySelectorAll(".nav-links a[href^='#']");
+
+    const observer = new IntersectionObserver((entries) => {
+      const visible = entries
+        .filter(entry => entry.isIntersecting)
+        .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+
+      if (!visible) return;
+
+      links.forEach(link => link.classList.toggle(
+        "active",
+        link.getAttribute("href") === "#" + visible.target.id
+      ));
+    }, { rootMargin: "-25% 0px -65% 0px", threshold: [0, .2, .5] });
+
+    sections.forEach(section => observer.observe(section));
+  </script>
+  
+  <script>
+  async function loadLatestRelease() {
+    const versionElement = document.getElementById("latest-version");
+
+    try {
+      const response = await fetch(
+        "https://api.github.com/repos/alexprotom/rust-dicom-station/releases/latest"
+      );
+
+      if (!response.ok) {
+        throw new Error("GitHub API request failed");
+      }
+
+      const release = await response.json();
+
+      versionElement.textContent = release.tag_name;
+    } catch (error) {
+      console.error("Unable to fetch latest release:", error);
+      versionElement.textContent = "latest";
+    }
+  }
+
+  loadLatestRelease();
+</script>
+
+  <script>
+  async function setupDownloads() {
+    const versionElement = document.getElementById("latest-version");
+    const windowsButton = document.getElementById("windows-download");
+    const linuxButton = document.getElementById("linux-download");
+
+    try {
+      const response = await fetch(
+        "https://api.github.com/repos/alexprotom/rust-dicom-station/releases/latest"
+      );
+
+      if (!response.ok) {
+        throw new Error("Unable to fetch latest release");
+      }
+
+      const release = await response.json();
+      let version = release.tag_name;
+      
+      if (version) version = version.replace("v", "");
+
+      versionElement.textContent = version;
+      
+      const windowsUrl = `https://github.com/alexprotom/rust-dicom-station/releases/download/v${version}/rust-dicom-station-${version}-windows-x86_64.exe`
+
+      const linuxUrl =
+        `https://github.com/alexprotom/rust-dicom-station/releases/download/v${version}/rust-dicom-station-${version}-linux-x86_64.AppImage`;
+
+      windowsButton.href = windowsUrl;
+      linuxButton.href = linuxUrl;
+
+      windowsButton.download = "";
+      linuxButton.download = "";
+
+    } catch (error) {
+      console.error("Failed to load latest release:", error);
+
+      versionElement.textContent = "unavailable";
+
+      windowsButton.href =
+        "https://github.com/alexprotom/rust-dicom-station/releases/latest";
+
+      linuxButton.href =
+        "https://github.com/alexprotom/rust-dicom-station/releases/latest";
+    }
+  }
+
+  setupDownloads();
+</script>
+</body>
+</html>
