@@ -118,13 +118,18 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
     };
 
     // ---- files -----------------------------------------------------------
-    let total_bytes = payload.total_size().unwrap_or(0);
+    let skip = opts.skipped_files();
+    let total_bytes =
+        payload.total_size().unwrap_or(0) - skip.iter().map(|n| payload.entry_size(n)).sum::<u64>();
     log(format!(
         "Copying {} of program files",
         human_size(total_bytes)
     ));
+    for name in &skip {
+        log(format!("Leaving out {name}"));
+    }
     let mut last = 0.0f32;
-    manifest.files = payload.extract_to(&opts.dir, &mut |frac, name| {
+    manifest.files = payload.extract_to(&opts.dir, &skip, &mut |frac, name| {
         // The copy owns 0.05..0.55 of the bar.
         let f = 0.05 + 0.50 * frac;
         if f - last > 0.005 || frac >= 1.0 {

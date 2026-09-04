@@ -36,6 +36,12 @@ impl ViewerApp {
         let now = ui.input(|i| i.time);
         let offer_pacs = self.archive_has_data(now);
 
+        // What the last run left behind, and whether the archive holds
+        // anything: a button that cannot do its job is shown greyed rather
+        // than hidden, so the start screen keeps the same shape whether or
+        // not there is a session to come back to.
+        let has_session = self.last_session.iter().any(|paths| !paths.is_empty());
+
         let mut open_folder = false;
         let mut open_pacs = false;
         let mut restore = false;
@@ -101,11 +107,14 @@ impl ViewerApp {
                         // =================================================
                         // INPUT
                         // =================================================
+                        // Opening a folder is what this screen is for, so it
+                        // is the wide button; the two ways of picking up data
+                        // that is already known about share the row below it.
                         home_section(ui, "Input", |ui| {
                             centered_button_row(ui, two_button_row_width, |ui| {
                                 if ui
                                     .add_sized(
-                                        [BUTTON_WIDTH, BUTTON_HEIGHT],
+                                        [two_button_row_width, BUTTON_HEIGHT],
                                         egui::Button::new("📂  Add DICOM folder"),
                                     )
                                     .on_hover_text(
@@ -115,43 +124,51 @@ impl ViewerApp {
                                 {
                                     open_folder = true;
                                 }
+                            });
 
+                            ui.add_space(8.0);
+
+                            centered_button_row(ui, two_button_row_width, |ui| {
                                 if ui
-                                    .add_sized(
-                                        [BUTTON_WIDTH, BUTTON_HEIGHT],
-                                        egui::Button::new(
-                                            "⟳  Restore last session",
-                                        ),
+                                    .add_enabled(
+                                        has_session,
+                                        egui::Button::new("⟳  Restore last session")
+                                            .min_size(egui::vec2(
+                                                BUTTON_WIDTH,
+                                                BUTTON_HEIGHT,
+                                            )),
                                     )
-                                    .on_hover_text(
-                                        "Load again what was open when RDS was last closed",
-                                    )
+                                    .on_hover_text(if has_session {
+                                        "Load again what was open when RDS was last closed"
+                                    } else {
+                                        "Nothing to restore: no folder was open when RDS \
+                                         was last closed"
+                                    })
                                     .clicked()
                                 {
                                     restore = true;
                                 }
+
+                                if ui
+                                    .add_enabled(
+                                        offer_pacs,
+                                        egui::Button::new("🏥  Load data from PACS")
+                                            .min_size(egui::vec2(
+                                                BUTTON_WIDTH,
+                                                BUTTON_HEIGHT,
+                                            )),
+                                    )
+                                    .on_hover_text(if offer_pacs {
+                                        "Take a study out of the local patient archive"
+                                    } else {
+                                        "The local patient archive is empty: import a \
+                                         study into it first"
+                                    })
+                                    .clicked()
+                                {
+                                    open_pacs = true;
+                                }
                             });
-
-                            if offer_pacs {
-                                ui.add_space(8.0);
-
-                                centered_button_row(ui, two_button_row_width, |ui| {
-                                    if ui
-                                        .add_sized(
-                                            [two_button_row_width, BUTTON_HEIGHT],
-                                            egui::Button::new(
-                                                "🏥  Patient archive",
-                                            ),
-                                        )
-                                        .on_hover_text(
-                                            "Open the local patient archive",
-                                        )
-                                        .clicked()
-                                    {
-                                        open_pacs = true;
-                                    }
-                                });
-                            }
                         });
 
                         ui.add_space(14.0);

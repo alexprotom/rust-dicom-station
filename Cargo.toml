@@ -1,6 +1,6 @@
 [package]
 name = "rust-dicom-station"
-version = "0.8.1"
+version = "0.8.2"
 edition = "2021"
 description = "Fast, robust DICOM / RT DICOM viewer in pure Rust (CT/MR volumes, RTSTRUCT, RTDOSE, RTPLAN) with a three-view MPR layout"
 license = "MIT"

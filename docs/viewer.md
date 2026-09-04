@@ -8,18 +8,29 @@ reconstructed cross-sections of the same ROIs.*
 
 ## The start screen
 
-With nothing loaded the window is four buttons, and only the ones that can do
-something:
+With nothing loaded the window is two panels, **Input** and **Tools**, each a
+wide button over a pair of narrow ones. The wide button is the one that
+starts the work; the two below it are the shortcuts.
+
+**Input**
 
 * **Add DICOM folder** scans a folder into dataset A.
-* **Load data from PACS** opens the local patient archive. It appears only
-  when the archive holds a patient.
-* **Restore the last session** loads again what was open when the program was
-  last closed. It appears only when there was such a session; if the folders
-  it names have since moved or been deleted, it says so and stops offering it.
-  The sources of both datasets are remembered in `session_a` / `session_b` in
-  the settings file as they are loaded, so an unclean exit loses nothing.
+* **Restore last session** loads again what was open when the program was last
+  closed. The sources of both datasets are remembered in `session_a` /
+  `session_b` in the settings file as they are loaded, so an unclean exit
+  loses nothing. If the folders it names have since moved or been deleted, it
+  says so and forgets the session.
+* **Load data from PACS** opens the local patient archive.
+
+A button that cannot do its job is greyed rather than hidden - there is no
+last session, or the archive is empty - so the screen keeps the same shape
+and the answer to "where has it gone" is on the button itself.
+
+**Tools**
+
 * **Generate test data** writes a synthetic RT study to try the program on.
+* **Anonymize DICOM folder** opens the anonymizer.
+* **Downloaded models** opens the model manager.
 
 ## Loading and volume reconstruction
 
@@ -196,11 +207,12 @@ study. Planar images, spatial registrations and treatment records have no
 study and sit below the tree, as does **Dose display** - colorwash, isodose
 ladder, opacity, threshold - one setting shared by both datasets, shown once.
 
-Every structure set and segmentation series carries the same tick box its
-own structures carry. The views draw one set of each kind at a time, so the
-box works as a radio: ticking a series makes it the one on display, and
-unticking the ticked one clears that kind from the views while leaving the
-list, the drawing tools and any 3D scene working on it.
+A structure set or segmentation series row looks exactly like an image series
+row - a name, and nothing in front of it. The views draw one set of each kind
+at a time, so selection and visibility are one thing: clicking a row makes it
+the one on display, clicking the row that is already displayed hides that kind
+from the views (the row stays selected, drawn weak, and the list, the drawing
+tools and any 3D scene go on working on it).
 
 The displayed series is marked; clicking another loads it. Long names,
 descriptions and IDs wrap, so the panel can be dragged narrow. The reference
@@ -208,6 +220,10 @@ chain is shown as links: each structure set and segmentation series shows the
 image series it is drawn on, each dose the plan it was computed for
 (ReferencedRTPlanSequence), each plan the structure set it was created on
 (ReferencedStructureSetSequence).
+
+The dataset's own name is a heading rather than a node: the patients sit at
+the same level as it, since a tree that can only hold two datasets does not
+need a level for choosing between them.
 
 **Right-clicking** a patient, study or series opens a context menu to
 **rename**, **copy**, **move** or **remove** it. Copy/move transfer the
@@ -224,9 +240,11 @@ Below the image series, each dataset lists its **RT structures** and
 **Segmentations** as series nodes - one per RT structure set or DICOM
 Segmentation series - each showing the image series it is drawn on
 (`▶ CT chest`, or `▶ (unlinked)`). Clicking a node makes it active and lists
-its items. *➕ New series* creates an empty structure set / segmentation
-series bound to the displayed series. **Right-clicking a series node**
-offers:
+its items **under that row**, not at the end of the list - with ten phases of
+a 4D group in the node, the buttons that act on a set belong beside the set
+they act on. The **+** on the *RT structures* / *Segmentations* heading
+creates an empty structure set or segmentation series bound to the displayed
+image series. **Right-clicking a series node** offers:
 
 * *🔗 Connect to image series ▶* - re-point the series at any image series of
   the dataset (● marks the current one); contours are in patient coordinates

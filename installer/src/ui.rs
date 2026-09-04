@@ -44,6 +44,9 @@ pub struct SetupApp {
     models_dir_text: String,
     remove_models: bool,
     payload_size: u64,
+    /// Size of the MCP server in the payload, 0 when this installer carries
+    /// none. The check box is only shown when there is something to install.
+    mcp_size: u64,
     progress: Arc<Mutex<(f32, String)>>,
     log: Arc<Mutex<Vec<String>>>,
     outcome: Arc<Mutex<Option<Result<(), String>>>>,
@@ -75,6 +78,7 @@ pub fn run_install(payload: Payload, opts: Options, autostart: bool) -> Result<(
         })
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
     let payload_size = payload.total_size().unwrap_or(0);
+    let mcp_size = payload.entry_size(crate::plan::MCP_EXE);
     let mut app = SetupApp::new(
         Job::Install {
             payload: Arc::new(payload),
@@ -84,6 +88,7 @@ pub fn run_install(payload: Payload, opts: Options, autostart: bool) -> Result<(
         version,
         license,
         payload_size,
+        mcp_size,
     );
     // After an elevation re-launch the user has already made every choice in
     // the first window; go straight to work.
@@ -107,6 +112,7 @@ pub fn run_uninstall(target: Target) -> Result<()> {
         opts,
         version,
         None,
+        0,
         0,
     );
     launch(app, &format!("{APP_NAME}: Uninstall"))
@@ -269,6 +275,7 @@ impl SetupApp {
         version: String,
         license: Option<String>,
         payload_size: u64,
+        mcp_size: u64,
     ) -> SetupApp {
         SetupApp {
             dir_text: opts.dir.to_string_lossy().to_string(),
@@ -281,6 +288,7 @@ impl SetupApp {
             accepted: false,
             remove_models: false,
             payload_size,
+            mcp_size,
             progress: Arc::new(Mutex::new((0.0, String::new()))),
             log: Arc::new(Mutex::new(Vec::new())),
             outcome: Arc::new(Mutex::new(None)),
@@ -459,13 +467,42 @@ impl SetupApp {
                     }
                 }
             });
+            let skipped: u64 = self
+                .opts
+                .skipped_files()
+                .iter()
+                .map(|n| {
+                    if *n == crate::plan::MCP_EXE {
+                        self.mcp_size
+                    } else {
+                        0
+                    }
+                })
+                .sum();
             ui.label(
                 RichText::new(format!(
                     "About {} of program files",
-                    human_size(self.payload_size)
+                    human_size(self.payload_size.saturating_sub(skipped))
                 ))
                 .weak(),
             );
+
+            // Only offered when this installer actually carries the server:
+            // a box that installs nothing is worse than no box.
+            if self.mcp_size > 0 {
+                ui.add_space(10.0);
+                ui.label(RichText::new("Components").strong());
+                ui.checkbox(
+                    &mut self.opts.install_mcp,
+                    format!("Install the MCP server ({})", human_size(self.mcp_size)),
+                )
+                .on_hover_text(
+                    "rds-mcp.exe lets an MCP client - Claude Desktop, Claude Code and \
+                     others - open studies, segment, register and export through this \
+                     station. It is a separate program that does nothing until a client \
+                     starts it; leave it out if you will not use one.",
+                );
+            }
 
             ui.add_space(10.0);
             ui.label(RichText::new("Integration").strong());
@@ -653,6 +690,11 @@ impl SetupApp {
                     RichText::new("Installation complete").heading(),
                 );
                 ui.label(format!("Installed into {}", self.opts.dir.display()));
+                if self.mcp_size > 0 && self.opts.install_mcp {
+                    ui.add_space(4.0);
+                    ui.label("MCP server - point your client at:");
+                    ui.label(RichText::new(self.opts.mcp_path().display().to_string()).monospace());
+                }
             }
             None => {
                 ui.colored_label(
