@@ -239,7 +239,9 @@ studies. Right-clicking a dataset header offers *Clear dataset*.
 Below the image series, each dataset lists its **RT structures** and
 **Segmentations** as series nodes - one per RT structure set or DICOM
 Segmentation series - each showing the image series it is drawn on
-(`▶ CT chest`, or `▶ (unlinked)`). Clicking a node makes it active and lists
+(`▶ CT chest`; `▶ (any image of this frame)` for a segmentation series tied
+to no image series; `▶ (image series not loaded)` when the referenced series
+is not in the dataset). Clicking a node makes it active and lists
 its items **under that row**, not at the end of the list - with ten phases of
 a 4D group in the node, the buttons that act on a set belong beside the set
 they act on. The **+** on the *RT structures* / *Segmentations* heading
@@ -249,14 +251,18 @@ image series. **Right-clicking a series node** offers:
 * *🔗 Connect to image series ▶* - re-point the series at any image series of
   the dataset (● marks the current one); contours are in patient coordinates
   and simply follow, a segmentation series is resampled onto the new lattice
-  when next displayed.
+  when next displayed. A segmentation series can also be tied to *no image
+  series*: it then shows on every image of its frame of reference, every
+  phase of a 4D study say, resampled onto whichever is displayed.
 * *Copy / Move series to dataset A/B*.
 * *💾 Export as DICOM SEG…* (segmentation series only) - writes this one series
   as a single SEG file.
 * *🗑 Remove this RT structure set / segmentation series*.
 * *✏ Rename series…*.
 
-Each item's **check box is both its visibility and its selection**, so *All*
+The small colour square in front of every structure and segment opens a
+colour picker; the colour of an RT structure is kept when the set is
+exported. Each item's **check box is both its visibility and its selection**, so *All*
 / *None* tick everything or nothing and the actions act on whatever is
 ticked. **Shift-click** a check box to tick - or untick - the range from the
 last one you clicked: the span takes the clicked row's new value.
@@ -274,8 +280,13 @@ the ticked group:
 
 * *Copy … to ▶* / *Move … to ▶* - a submenu of every structure set and
   segmentation series in **both** datasets, plus *➕ a new RT structure set* /
-  *➕ a new segmentation series*. A ticked row acts on all ticked rows at once;
-  an unticked row acts alone.
+  *➕ a new segmentation series*, and, per 4D group, *⏱ each phase of <group>*
+  as a segmentation series per phase or into each phase's own RT structure
+  set. That copies the structure as it is, in patient coordinates, onto
+  every phase (the phases are loaded for their lattices in the background);
+  a structure that should follow the motion goes through the propagation
+  module instead. A ticked row acts on all ticked rows at once; an unticked
+  row acts alone.
 * *🗑 Remove …* - the same single-or-selected rule.
 * *💾 Export … as DICOM SEG…* (segments only) - writes the chosen segments as a
   SEG series of their own: same lattice, same referenced image series, a fresh

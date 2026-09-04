@@ -130,6 +130,9 @@ structures travel through that transform, and the anchor travels with them
 as the check: its Dice, HD95 and centroid distance against the phase's own
 contour are reported per phase with a verdict (good from 0.85, check from
 0.7, poor below). A heart that lands on the heart says the target landed too.
+The anchor's own copy is filed under the name in *Lands as* (`<anchor>_prop`
+by default; `anchor_landed_as` from the MCP server), so it never collides
+with the contour the phase already has.
 
 The anchored run always registers afresh; its transforms are kept like any
 group registration's, so a later plain propagation onto the same group
@@ -148,7 +151,8 @@ reuses them. From the MCP server the same run is `propagate_to_group` with
 3. Choose the source image (any series of either dataset; through a
    registration, one of its two images), the structure set or segmentation
    series to take the structures from (the one drawn on that image is
-   preselected), and the destination; tick what to carry, pick where they
+   preselected), and the destination (through a registration, the other of
+   its two images, named; otherwise a 4D group); tick what to carry, pick where they
    land and what is done to them afterwards, optionally an enclosing region
    to refine on, and press **▶ Propagate**.
 

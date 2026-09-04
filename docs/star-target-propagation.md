@@ -46,7 +46,11 @@ along, with no inversion. Ten phases, ten transforms, one CCT.
    surface, and *fill* to make that surface a solid. A solid target keeps
    its volume through the propagation and needs neither.
 7. **Anchor on a structure**: Anchor = `heart_total`, Margin 10 mm, *Refine
-   deformably* on, *Match the contours* on. Leave the registration module's
+   deformably* on, *Match the contours* on. The anchor's own copy lands
+   next to the target under the name in **Lands as** (`heart_total_prop`
+   by default, so it never collides with the phase's own `heart_total`);
+   change it if the planning system expects something else. Leave the
+   registration module's
    method and parameters at their defaults (3 resolutions, 300 iterations,
    3000 samples, 32 mm grid); the anchored run uses elastix rigid for the
    first stage and the module's deformable method for the refinement.
@@ -72,6 +76,35 @@ along, with no inversion. Ten phases, ten transforms, one CCT.
 Carrying another structure onto the same phases afterwards costs no
 registration: the transforms are kept, and the button reads
 *▶ Propagate to 10 phases*.
+
+### Then: the motion of the landed target
+
+With the target in every phase's structure set, *Tools ▶ 4D motion / ITV*
+on the 4DCT dataset lists it once, in the *On every phase* column of the
+Targets list. Tick it there (one tick, not one per phase), keep the
+reference structure at `heart_total`, and choose the models:
+
+* **as contoured** reads the landed target from each phase's own set: the
+  track is exactly what the anchored propagation put there, and the one to
+  quote.
+* **rigid** with a *local margin* of 15 mm fits a rigid body to the phase
+  around the target and its surroundings. A margin of 0 would fit the
+  whole image, which a breathing patient is not; that fit finds the spine
+  and the couch and reports 0 mm of motion.
+* **deformable** is the whole-image B-spline, for comparison.
+
+*Build ITV* with *Phases: All* makes one ITV per model, the union of the
+target over the phases. The results window then shows one line on the
+chart and one peak-to-peak amplitude per target and model.
+
+A structure that should sit at the same place on every phase (a fixed
+margin, a couch structure, the ITV itself) is copied there with no
+registration at all: right-click it in the tree, *Copy to ▶ each phase of
+<group>*, as a segmentation series per phase or into each phase's own
+structure set. A segmentation series can also be tied to no image series
+(*Connect to image series ▶ no image series*): it then shows on every
+image of its frame of reference, which is how an ITV drawn on the
+reference phase is seen on all of them.
 
 ## From the MCP server
 

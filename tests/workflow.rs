@@ -39,7 +39,11 @@ fn the_motion_pipeline_recovers_the_phantoms_target_motion() {
         reference: 0,
         targets: vec![target],
         ref_struct: Some(body),
+        contoured: Vec::new(),
         models: vec![MotionModel::Rigid, MotionModel::Deformable],
+        // The global rigid body, as the assertions below expect: the
+        // phantom's body does not move, so the rigid track stays put.
+        local_rigid_margin_mm: None,
         build_itv: true,
         itv_margin_mm: 0.0,
         keep_phase_segs: true,
@@ -288,6 +292,7 @@ fn anchored_case(
     let req = anchored::AnchoredRequest {
         src_vol: src.clone(),
         src_anchor,
+        anchor_landed_name: None,
         subjects,
         phases: anchored_phases,
         margin_mm: 10.0,
@@ -337,8 +342,10 @@ fn a_volume_in_another_frame_is_anchored_on_a_structure_and_lands() {
             o.dice
         );
         assert_eq!(qa.verdict(), "good");
-        // The target and the anchor both travelled; the target is item 0.
+        // The target and the anchor both travelled; the target is item 0,
+        // the anchor lands under its own name.
         assert_eq!(ph.items.len(), 2);
+        assert_eq!(ph.items[1].name, "BODY_prop");
         let t = &ph.items[0];
         assert_eq!(t.name, "TARGET");
         assert!(t.voxels > 0, "the target lands on {}", ph.label);
@@ -482,4 +489,123 @@ fn propagated_structures_can_land_in_each_phases_own_structure_set() {
         "contours round-trip: {n_back} vs {n_mask} voxels"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_target_every_phase_carries_is_read_as_contoured_and_the_local_rigid_fit_follows_it() {
+    use rust_dicom_station::gen_test_data;
+    use rust_dicom_station::workflow::motion::ContouredTarget;
+
+    let dir = common::target_dir("test_workflow_contoured");
+    let folder = common::fourd_folder(&dir, SHIFTS);
+    let study = loader::load_directory(&folder, &Progress::default()).unwrap();
+    let g = study.fourd_groups[0].clone();
+    let phases = workflow::phases_of(&g, &study.series).unwrap();
+    // Every phase carries a TARGET contoured where that phase has it: the
+    // phantom generator draws one per shift (the 4D folder itself only
+    // keeps phase 0's structure set, so each phase's is generated again).
+    let per_phase: Vec<Option<select::Structure>> = SHIFTS
+        .iter()
+        .enumerate()
+        .map(|(i, shift)| {
+            let src = dir.join(format!("phase{i}_contours"));
+            let params = gen_test_data::GenParams {
+                target_shift_y: *shift,
+                extras: false,
+                ..gen_test_data::GenParams::default()
+            };
+            gen_test_data::generate(&src, &params, &Progress::default()).unwrap();
+            let own = loader::load_directory(&src, &Progress::default()).unwrap();
+            select::find(&own, "TARGET", None)
+        })
+        .collect();
+    assert!(per_phase.iter().all(|s| s.is_some()));
+    let on_ref = select::find(&study, "TARGET", Some("SynthStructs")).unwrap();
+    let body = select::find(&study, "BODY", None).unwrap();
+    let req = motion::MotionRequest {
+        run_name: "contoured".into(),
+        slot_name: "A".into(),
+        patient: "phantom".into(),
+        group_name: g.name.clone(),
+        study_uid: g.study_uid.clone(),
+        phases,
+        reference: 0,
+        targets: vec![on_ref],
+        ref_struct: Some(body),
+        contoured: vec![ContouredTarget {
+            name: "TARGET".into(),
+            color: [255, 0, 0],
+            phases: per_phase,
+        }],
+        models: vec![MotionModel::Rigid, MotionModel::Contoured],
+        local_rigid_margin_mm: Some(15.0),
+        build_itv: true,
+        itv_margin_mm: 0.0,
+        keep_phase_segs: false,
+        params: RegParams {
+            method: RegMethod::ElastixRigid,
+            levels: 2,
+            iterations: 150,
+            samples: 2000,
+            ..RegParams::default()
+        },
+    };
+    let out = motion::run(req, &Progress::default()).expect("the run works");
+    let r = &out.report;
+    let track = |m: MotionModel| r.tracks.iter().find(|t| t.model == m).expect("a track");
+    // As contoured: the landed contours move 0 / 6 / 3 mm, as the
+    // deformable propagation put them.
+    let mags = track(MotionModel::Contoured).magnitudes();
+    eprintln!("as contoured |d|: {mags:?}");
+    for (i, expect) in SHIFTS.iter().enumerate() {
+        assert!(
+            (mags[i] - expect).abs() < 2.0,
+            "phase {i}: contoured {:.2} mm, expected {expect}",
+            mags[i]
+        );
+    }
+    // The local rigid fit follows the sphere inside the static body, which
+    // a global rigid body never could.
+    let mags = track(MotionModel::Rigid).magnitudes();
+    eprintln!("local rigid |d|: {mags:?}");
+    for (i, expect) in SHIFTS.iter().enumerate() {
+        assert!(
+            (mags[i] - expect).abs() < 2.0,
+            "phase {i}: local rigid {:.2} mm, expected {expect}",
+            mags[i]
+        );
+    }
+    // One ITV per model for the one target; the body has no contoured
+    // track (it was not given per phase) and no ITV.
+    assert_eq!(r.itvs.len(), 2, "{:?}", r.itvs);
+    assert_eq!(
+        r.reference_tracks.len(),
+        1,
+        "the body's local rigid track only"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_structure_copied_onto_every_phase_stays_where_it_is() {
+    use rust_dicom_station::motion::centroid_mm;
+
+    let dir = common::target_dir("test_workflow_copy_phases");
+    let folder = common::fourd_folder(&dir, SHIFTS);
+    let study = loader::load_directory(&folder, &Progress::default()).unwrap();
+    let phases = workflow::phases_of(&study.fourd_groups[0], &study.series).unwrap();
+    let target = select::find(&study, "TARGET", None).unwrap();
+    let copies = group::copy_to_phases(&[target], &phases, &Progress::default()).unwrap();
+    assert_eq!(copies.len(), 3);
+    let c0 = centroid_mm(&copies[0].segs[0].mask, &copies[0].grid).unwrap();
+    for c in &copies {
+        assert_eq!(c.segs.len(), 1, "{}: {:?}", c.label, c.notes);
+        assert_eq!(c.segs[0].name, "TARGET");
+        // A copy, not a propagation: the same place on every phase.
+        let ci = centroid_mm(&c.segs[0].mask, &c.grid).unwrap();
+        assert!((ci - c0).length() < 0.5, "{}: {ci:?} vs {c0:?}", c.label);
+        let series = c.seg_series("4D");
+        assert_eq!(series.referenced_series_uid, c.series_uid);
+        assert!(series.label.starts_with("4D "));
+    }
 }

@@ -30,12 +30,27 @@ pub(super) struct MotionDialog {
     pub group: usize,
     /// Member position of the reference phase within the group.
     pub reference: usize,
-    /// Ticks parallel to [`ViewerApp::combine_candidates`].
+    /// Ticks parallel to [`ViewerApp::combine_candidates`]: the structures
+    /// that exist on some phases only (or outside the group).
     pub targets: Vec<bool>,
-    /// Candidate index of the reference structure (drift / correlation).
-    pub ref_struct: Option<usize>,
+    /// Ticks parallel to [`ViewerApp::motion_groups`]: the structures every
+    /// phase of the group carries under one name.
+    pub group_targets: Vec<bool>,
+    /// The reference structure (drift / correlation): a candidate, or a
+    /// name every phase carries.
+    pub ref_struct: Option<RefPick>,
     pub rigid: bool,
+    /// The rigid model fitted on each structure's own neighbourhood, with
+    /// this margin; off is one global rigid body per phase.
+    pub local_rigid: bool,
+    pub local_rigid_margin_mm: f64,
     pub deformable: bool,
+    /// The `as contoured` model: no registration, the per-phase contours
+    /// themselves (grouped targets only).
+    pub contoured: bool,
+    /// Which phases of the group take part (parallel to the group's phase
+    /// members); the reference is always in.
+    pub phases_on: Vec<bool>,
     pub build_itv: bool,
     /// Uniform margin added to each ITV, mm.
     pub itv_margin_mm: f64,
@@ -51,6 +66,24 @@ pub(super) struct MotionDialog {
     pub status: Option<String>,
 }
 
+/// What the reference structure is picked from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum RefPick {
+    /// A candidate (one set's structure).
+    Item(usize),
+    /// A name every phase carries (index into [`ViewerApp::motion_groups`]).
+    Group(usize),
+}
+
+/// A structure every phase of the group carries under one name: the
+/// per-phase instances, in the group's phase order.
+pub(super) struct MotionGroup {
+    pub name: String,
+    pub color: [u8; 3],
+    /// One candidate per phase member, where the phase has one.
+    pub per_phase: Vec<Option<ItemRef>>,
+}
+
 /// The dialog's transferable part: what to analyse and how, with targets
 /// remembered by *name* so the same recipe applies to another dataset.
 #[derive(Clone)]
@@ -58,6 +91,9 @@ pub(super) struct MotionRecipe {
     pub targets: Vec<String>,
     pub ref_struct: Option<String>,
     pub rigid: bool,
+    pub local_rigid: bool,
+    pub local_rigid_margin_mm: f64,
+    pub contoured: bool,
     pub deformable: bool,
     pub build_itv: bool,
     pub itv_margin_mm: f64,
@@ -85,9 +121,14 @@ impl ViewerApp {
             group: group.unwrap_or(0),
             reference: 0,
             targets: vec![false; n_cand],
+            group_targets: Vec::new(),
             ref_struct: None,
             rigid: true,
+            local_rigid: true,
+            local_rigid_margin_mm: 15.0,
             deformable: true,
+            contoured: true,
+            phases_on: Vec::new(),
             build_itv: true,
             itv_margin_mm: 0.0,
             keep_phase_segs: false,
@@ -104,6 +145,73 @@ impl ViewerApp {
             }
         }
         self.motion_dialog = Some(d);
+    }
+
+    /// The structures the phases of a 4D group carry under one name, each
+    /// with its per-phase instances: a candidate whose set references a
+    /// phase's series belongs to that phase. Names present on every phase
+    /// come first, then those on some phases, both in name order.
+    pub(super) fn motion_groups(&self, slot: usize, group: usize) -> Vec<MotionGroup> {
+        let Some(study) = self.slots[slot].study.as_ref() else {
+            return Vec::new();
+        };
+        let Some(g) = study.fourd_groups.get(group) else {
+            return Vec::new();
+        };
+        let phase_uids: Vec<&str> = g
+            .phase_members()
+            .iter()
+            .map(|&mi| g.members[mi].series_uid.as_str())
+            .collect();
+        let series_of = |item: ItemRef| -> Option<&str> {
+            match item.kind {
+                SetKind::Structures => study
+                    .structure_sets
+                    .get(item.set)
+                    .map(|ss| ss.referenced_series_uid.as_str()),
+                SetKind::Segmentations => study
+                    .seg_series
+                    .get(item.set)
+                    .map(|sr| sr.referenced_series_uid.as_str()),
+            }
+        };
+        let color_of = |item: ItemRef| -> [u8; 3] {
+            match item.kind {
+                SetKind::Structures => study.structure_sets[item.set].rois[item.idx].color,
+                SetKind::Segmentations => study.seg_series[item.set].segs[item.idx].color,
+            }
+        };
+        let mut groups: Vec<MotionGroup> = Vec::new();
+        for (item, _) in self.combine_candidates(slot) {
+            let Some(name) = self.item_name(slot, item) else {
+                continue;
+            };
+            let Some(uid) = series_of(item) else {
+                continue;
+            };
+            let Some(pi) = phase_uids.iter().position(|u| *u == uid) else {
+                continue;
+            };
+            let entry = match groups.iter_mut().find(|g| g.name == name) {
+                Some(e) => e,
+                None => {
+                    groups.push(MotionGroup {
+                        name: name.clone(),
+                        color: color_of(item),
+                        per_phase: vec![None; phase_uids.len()],
+                    });
+                    groups.last_mut().expect("just pushed")
+                }
+            };
+            // The last instance on a phase wins: the most recent landing.
+            entry.per_phase[pi] = Some(item);
+        }
+        groups.sort_by(|a, b| {
+            let ca = a.per_phase.iter().all(|x| x.is_some());
+            let cb = b.per_phase.iter().all(|x| x.is_some());
+            cb.cmp(&ca).then_with(|| a.name.cmp(&b.name))
+        });
+        groups
     }
 
     /// The name of one candidate item (without its set), for recipes.
@@ -153,17 +261,33 @@ impl ViewerApp {
                 .and_then(|(r, _)| self.item_name(d.slot, *r))
                 .unwrap_or_default()
         };
-        MotionRecipe {
-            targets: d
-                .targets
+        let groups = self.motion_groups(d.slot, d.group);
+        let mut targets: Vec<String> = d
+            .group_targets
+            .iter()
+            .enumerate()
+            .filter(|(_, &on)| on)
+            .filter_map(|(i, _)| groups.get(i).map(|g| g.name.clone()))
+            .collect();
+        targets.extend(
+            d.targets
                 .iter()
                 .enumerate()
                 .filter(|(_, &on)| on)
                 .map(|(i, _)| name_of(i))
-                .filter(|n| !n.is_empty())
-                .collect(),
-            ref_struct: d.ref_struct.map(name_of).filter(|n| !n.is_empty()),
+                .filter(|n| !n.is_empty()),
+        );
+        MotionRecipe {
+            targets,
+            ref_struct: match d.ref_struct {
+                Some(RefPick::Item(i)) => Some(name_of(i)).filter(|n| !n.is_empty()),
+                Some(RefPick::Group(i)) => groups.get(i).map(|g| g.name.clone()),
+                None => None,
+            },
             rigid: d.rigid,
+            local_rigid: d.local_rigid,
+            local_rigid_margin_mm: d.local_rigid_margin_mm,
+            contoured: d.contoured,
             deformable: d.deformable,
             build_itv: d.build_itv,
             itv_margin_mm: d.itv_margin_mm,
@@ -179,20 +303,36 @@ impl ViewerApp {
     /// Tick the dialog's lists from a recipe, matching items by name.
     fn apply_motion_recipe(&self, d: &mut MotionDialog, r: &MotionRecipe) {
         let cands = self.combine_candidates(d.slot);
+        let groups = self.motion_groups(d.slot, d.group);
         d.targets = vec![false; cands.len()];
+        d.group_targets = vec![false; groups.len()];
         d.ref_struct = None;
+        // A name every phase carries is the grouped target; anything else
+        // is matched among the single candidates.
+        for (i, g) in groups.iter().enumerate() {
+            if r.targets.contains(&g.name) {
+                d.group_targets[i] = true;
+            }
+            if d.ref_struct.is_none() && r.ref_struct.as_deref() == Some(g.name.as_str()) {
+                d.ref_struct = Some(RefPick::Group(i));
+            }
+        }
         for (i, (item, _)) in cands.iter().enumerate() {
             let Some(name) = self.item_name(d.slot, *item) else {
                 continue;
             };
-            if r.targets.contains(&name) {
+            let grouped = groups.iter().any(|g| g.name == name);
+            if r.targets.contains(&name) && !grouped {
                 d.targets[i] = true;
             }
             if d.ref_struct.is_none() && r.ref_struct.as_deref() == Some(name.as_str()) {
-                d.ref_struct = Some(i);
+                d.ref_struct = Some(RefPick::Item(i));
             }
         }
         d.rigid = r.rigid;
+        d.local_rigid = r.local_rigid;
+        d.local_rigid_margin_mm = r.local_rigid_margin_mm;
+        d.contoured = r.contoured;
         d.deformable = r.deformable;
         d.build_itv = r.build_itv;
         d.itv_margin_mm = r.itv_margin_mm;
@@ -239,17 +379,54 @@ impl ViewerApp {
         let Some(group) = study.fourd_groups.get(d.group) else {
             bail!("no 4D group selected");
         };
-        let phases = workflow::phases_of(group, &study.series)?;
+        let all_phases = workflow::phases_of(group, &study.series)?;
         // `d.reference` is a member position; the phases list skips the
         // reconstructions, so find where that member landed in it.
-        let reference = group
-            .phase_members()
+        let members = group.phase_members();
+        let reference_all = members
             .iter()
             .position(|&mi| mi == d.reference)
             .context("the reference must be one of the phases")?;
+        // The phases taking part: the ticked ones, the reference always.
+        let on = |i: usize| d.phases_on.get(i).copied().unwrap_or(true) || i == reference_all;
+        let kept: Vec<usize> = (0..all_phases.len()).filter(|&i| on(i)).collect();
+        if kept.len() < 2 {
+            bail!("select at least one phase besides the reference");
+        }
+        let phases: Vec<(String, loader::SeriesInfo)> =
+            kept.iter().map(|&i| all_phases[i].clone()).collect();
+        let reference = kept
+            .iter()
+            .position(|&i| i == reference_all)
+            .expect("the reference is kept");
 
         let cands = self.combine_candidates(slot);
+        let groups = self.motion_groups(slot, d.group);
         let mut targets = Vec::new();
+        let mut contoured = Vec::new();
+        // A grouped target: its reference-phase instance is the target the
+        // registration models carry; every phase's instance feeds the
+        // `as contoured` model.
+        for (gi, &on) in d.group_targets.iter().enumerate() {
+            if !on {
+                continue;
+            }
+            let g = groups
+                .get(gi)
+                .context("the target list changed - tick again")?;
+            let on_ref = g.per_phase[reference_all]
+                .and_then(|item| self.snapshot(slot, item))
+                .with_context(|| format!("'{}' is missing on the reference phase", g.name))?;
+            targets.push(on_ref);
+            contoured.push(crate::workflow::motion::ContouredTarget {
+                name: g.name.clone(),
+                color: g.color,
+                phases: kept
+                    .iter()
+                    .map(|&i| g.per_phase[i].and_then(|item| self.snapshot(slot, item)))
+                    .collect(),
+            });
+        }
         for (i, &on) in d.targets.iter().enumerate() {
             if !on {
                 continue;
@@ -264,20 +441,39 @@ impl ViewerApp {
             bail!("tick at least one target structure");
         }
         let ref_struct = match d.ref_struct {
-            Some(i) => {
+            Some(RefPick::Item(i)) => {
                 let (item, label) = cands
                     .get(i)
                     .context("the reference-structure choice is stale - pick it again")?;
-                let s = self
-                    .snapshot(slot, *item)
-                    .with_context(|| format!("'{label}' is gone"))?;
-                if targets.iter().any(|t| t.name == s.name) {
-                    bail!("'{}' cannot be both target and reference", s.name);
-                }
-                Some(s)
+                Some(
+                    self.snapshot(slot, *item)
+                        .with_context(|| format!("'{label}' is gone"))?,
+                )
+            }
+            Some(RefPick::Group(gi)) => {
+                let g = groups
+                    .get(gi)
+                    .context("the reference-structure choice is stale - pick it again")?;
+                let on_ref = g.per_phase[reference_all]
+                    .and_then(|item| self.snapshot(slot, item))
+                    .with_context(|| format!("'{}' is missing on the reference phase", g.name))?;
+                contoured.push(crate::workflow::motion::ContouredTarget {
+                    name: g.name.clone(),
+                    color: g.color,
+                    phases: kept
+                        .iter()
+                        .map(|&i| g.per_phase[i].and_then(|item| self.snapshot(slot, item)))
+                        .collect(),
+                });
+                Some(on_ref)
             }
             None => None,
         };
+        if let Some(r) = &ref_struct {
+            if targets.iter().any(|t| t.name == r.name) {
+                bail!("'{}' cannot be both target and reference", r.name);
+            }
+        }
         let mut models = Vec::new();
         if d.rigid {
             models.push(MotionModel::Rigid);
@@ -285,8 +481,15 @@ impl ViewerApp {
         if d.deformable {
             models.push(MotionModel::Deformable);
         }
+        if d.contoured
+            && contoured
+                .iter()
+                .any(|c| c.phases.iter().all(|s| s.is_some()))
+        {
+            models.push(MotionModel::Contoured);
+        }
         if models.is_empty() {
-            bail!("choose at least one model (rigid / deformable)");
+            bail!("choose at least one model (rigid / deformable / as contoured)");
         }
         let params = RegParams {
             method: RegMethod::ElastixRigid,
@@ -315,7 +518,9 @@ impl ViewerApp {
             reference,
             targets,
             ref_struct,
+            contoured,
             models,
+            local_rigid_margin_mm: d.local_rigid.then_some(d.local_rigid_margin_mm),
             build_itv: d.build_itv,
             itv_margin_mm: d.itv_margin_mm,
             keep_phase_segs: d.keep_phase_segs,
@@ -410,6 +615,11 @@ impl ViewerApp {
             })
             .unwrap_or_default();
 
+        let groups_here = self.motion_groups(slot, d.group);
+        let cand_names: Vec<String> = cands
+            .iter()
+            .map(|(item, _)| self.item_name(slot, *item).unwrap_or_default())
+            .collect();
         let running = self
             .motion_job
             .as_ref()
@@ -486,37 +696,100 @@ impl ViewerApp {
                 });
                 ui.separator();
 
-                ui.label("Targets (defined on / resampled to the reference phase):");
                 d.targets.resize(cands.len(), false);
-                // The candidate list shrinks when sets are removed while
-                // the window is open; a stale pick must not survive it.
-                if d.ref_struct.is_some_and(|i| i >= cands.len()) {
-                    d.ref_struct = None;
+                d.group_targets.resize(groups_here.len(), false);
+                d.phases_on.resize(phases.len(), true);
+                // The lists shrink when sets are removed while the window
+                // is open; a stale pick must not survive it.
+                match d.ref_struct {
+                    Some(RefPick::Item(i)) if i >= cands.len() => d.ref_struct = None,
+                    Some(RefPick::Group(i)) if i >= groups_here.len() => d.ref_struct = None,
+                    _ => {}
                 }
-                egui::ScrollArea::vertical()
-                    .id_salt("motion_targets")
-                    .max_height(120.0)
-                    .show(ui, |ui| {
-                        for (i, (_, label)) in cands.iter().enumerate() {
-                            ui.checkbox(&mut d.targets[i], label);
-                        }
-                        if cands.is_empty() {
-                            ui.weak("no structures or segmentations in this dataset");
-                        }
-                    });
+                // Candidates that belong to a grouped name are listed once,
+                // under the group; the rest are single structures.
+                let grouped_names: Vec<&str> = groups_here
+                    .iter()
+                    .filter(|g| g.per_phase.iter().all(|x| x.is_some()))
+                    .map(|g| g.name.as_str())
+                    .collect();
+                let single: Vec<(usize, &String)> = cands
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| {
+                        !cand_names
+                            .get(*i)
+                            .is_some_and(|n| grouped_names.contains(&n.as_str()))
+                    })
+                    .map(|(i, (_, l))| (i, l))
+                    .collect();
+                ui.label("Targets:");
+                ui.columns(2, |cols| {
+                    cols[0].label(egui::RichText::new("On every phase").strong());
+                    egui::ScrollArea::vertical()
+                        .id_salt("motion_targets_all")
+                        .max_height(120.0)
+                        .show(&mut cols[0], |ui| {
+                            let mut any = false;
+                            for (i, g) in groups_here.iter().enumerate() {
+                                if !grouped_names.contains(&g.name.as_str()) {
+                                    continue;
+                                }
+                                any = true;
+                                ui.checkbox(&mut d.group_targets[i], &g.name).on_hover_text(
+                                    "Contoured on every phase of the group: the reference \
+                                     phase's instance is carried by the registration models, \
+                                     and the per-phase instances are read as contoured",
+                                );
+                            }
+                            if !any {
+                                ui.weak("none");
+                            }
+                        });
+                    cols[1].label(egui::RichText::new("On some phases").strong());
+                    egui::ScrollArea::vertical()
+                        .id_salt("motion_targets_some")
+                        .max_height(120.0)
+                        .show(&mut cols[1], |ui| {
+                            for (i, label) in &single {
+                                ui.checkbox(&mut d.targets[*i], *label).on_hover_text(
+                                    "Defined on (or resampled to) the reference phase and \
+                                     carried to the others by the registration models",
+                                );
+                            }
+                            if single.is_empty() {
+                                ui.weak("none");
+                            }
+                        });
+                });
                 ui.horizontal(|ui| {
                     ui.label("Reference structure:");
-                    let sel = d
-                        .ref_struct
-                        .and_then(|i| cands.get(i).map(|(_, l)| l.clone()))
-                        .unwrap_or_else(|| "(none)".into());
+                    let sel = match d.ref_struct {
+                        Some(RefPick::Item(i)) => cands.get(i).map(|(_, l)| l.clone()),
+                        Some(RefPick::Group(i)) => groups_here.get(i).map(|g| g.name.clone()),
+                        None => None,
+                    }
+                    .unwrap_or_else(|| "(none)".into());
                     egui::ComboBox::from_id_salt("motion_refstruct")
                         .width(260.0)
                         .selected_text(sel)
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut d.ref_struct, None, "(none)");
-                            for (i, (_, label)) in cands.iter().enumerate() {
-                                ui.selectable_value(&mut d.ref_struct, Some(i), label);
+                            for (i, g) in groups_here.iter().enumerate() {
+                                if grouped_names.contains(&g.name.as_str()) {
+                                    ui.selectable_value(
+                                        &mut d.ref_struct,
+                                        Some(RefPick::Group(i)),
+                                        format!("{} (every phase)", g.name),
+                                    );
+                                }
+                            }
+                            for (i, label) in &single {
+                                ui.selectable_value(
+                                    &mut d.ref_struct,
+                                    Some(RefPick::Item(*i)),
+                                    *label,
+                                );
                             }
                         });
                 })
@@ -530,12 +803,37 @@ impl ViewerApp {
                 ui.horizontal(|ui| {
                     ui.label("Models:");
                     ui.checkbox(&mut d.rigid, "rigid");
+                    ui.add_enabled_ui(d.rigid, |ui| {
+                        ui.checkbox(&mut d.local_rigid, "local").on_hover_text(
+                            "One rigid body per structure, fitted on the structure \
+                                 dilated by the margin. A whole breathing patient is not a \
+                                 rigid body: the global fit finds the couch and reports no \
+                                 motion.",
+                        );
+                        ui.add_enabled(
+                            d.local_rigid,
+                            egui::DragValue::new(&mut d.local_rigid_margin_mm)
+                                .speed(1.0)
+                                .range(3.0..=60.0)
+                                .suffix(" mm"),
+                        );
+                    });
                     ui.checkbox(&mut d.deformable, "deformable")
-                        .on_hover_text("B-spline refinement on top of the rigid result");
+                        .on_hover_text("B-spline refinement on top of the global rigid result");
+                    let any_group = d.group_targets.iter().any(|&on| on);
+                    ui.add_enabled(
+                        any_group,
+                        egui::Checkbox::new(&mut d.contoured, "as contoured"),
+                    )
+                    .on_hover_text(
+                        "No registration: the target as it is contoured on each phase \
+                             (targets from the left column only)",
+                    );
                 });
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut d.build_itv, "Build ITV").on_hover_text(
-                        "Union of the target over all phases, on the reference phase",
+                        "Union of the target over the selected phases, on the reference \
+                         phase; one per target and model",
                     );
                     ui.add_enabled(
                         d.build_itv,
@@ -546,7 +844,40 @@ impl ViewerApp {
                             .suffix(" mm"),
                     )
                     .on_hover_text("Uniform margin added to the union");
+                    ui.separator();
+                    ui.label("Phases:");
+                    if ui.small_button("All").clicked() {
+                        d.phases_on.iter_mut().for_each(|v| *v = true);
+                    }
+                    if ui.small_button("None").clicked() {
+                        d.phases_on.iter_mut().for_each(|v| *v = false);
+                    }
+                    let n_on = d
+                        .phases_on
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, &v)| {
+                            v || phases.get(*i).is_some_and(|(mi, _)| *mi == d.reference)
+                        })
+                        .count();
+                    ui.weak(format!("{n_on} of {}", phases.len()));
                 });
+                egui::CollapsingHeader::new("Select phases")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            for (i, (mi, label)) in phases.iter().enumerate() {
+                                let is_ref = *mi == d.reference;
+                                if is_ref {
+                                    let mut on = true;
+                                    ui.add_enabled(false, egui::Checkbox::new(&mut on, label))
+                                        .on_hover_text("The reference phase is always in");
+                                } else {
+                                    ui.checkbox(&mut d.phases_on[i], label);
+                                }
+                            }
+                        });
+                    });
                 ui.checkbox(&mut d.keep_phase_segs, "Keep per-phase segmentations")
                     .on_hover_text(
                         "Store every propagated mask as a segmentation series on its phase \

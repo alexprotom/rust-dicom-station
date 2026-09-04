@@ -24,10 +24,14 @@ pub const AXES: [&str; 3] = ["RL", "AP", "SI"];
 /// How a structure was carried across the phases.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MotionModel {
-    /// Rigid registration: translation + rotation, shape preserved.
+    /// Rigid registration: translation + rotation, shape preserved. Local
+    /// to the structure's neighbourhood when the run asks for it.
     Rigid,
     /// Rigid followed by a B-spline refinement: shape follows the anatomy.
     Deformable,
+    /// No registration: the structure as it is contoured on every phase
+    /// (a target propagated there earlier, or drawn per phase).
+    Contoured,
 }
 
 impl MotionModel {
@@ -35,7 +39,13 @@ impl MotionModel {
         match self {
             MotionModel::Rigid => "rigid",
             MotionModel::Deformable => "deformable",
+            MotionModel::Contoured => "as contoured",
         }
+    }
+
+    /// Whether the model needs a registration of the phases.
+    pub fn registers(self) -> bool {
+        !matches!(self, MotionModel::Contoured)
     }
 }
 

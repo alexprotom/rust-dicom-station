@@ -248,3 +248,79 @@ pub fn run(req: GroupRequest, p: &Progress) -> Result<GroupOutcome> {
         phases,
     })
 }
+
+/// One phase of a 4D group with structures copied onto its lattice as they
+/// are, no registration involved: what *Copy to each phase of ...* hands
+/// back for the viewer to file.
+pub struct PhaseCopy {
+    pub label: String,
+    pub series_uid: String,
+    pub study_uid: String,
+    pub grid: Grid,
+    pub segs: Vec<Segmentation>,
+    /// Structures that did not reach this phase (outside its volume).
+    pub notes: Vec<String>,
+}
+
+impl PhaseCopy {
+    /// The copies as a fresh segmentation series bound to the phase.
+    pub fn seg_series(&self, group_name: &str) -> SegSeries {
+        let mut series = SegSeries::new(
+            format!("{} {}", group_name, self.label),
+            self.grid.clone(),
+            self.series_uid.clone(),
+            self.study_uid.clone(),
+        );
+        series.segs = self.segs.clone();
+        series
+    }
+}
+
+/// Carry `structures` onto every phase of a group without registering
+/// anything: each phase is loaded for its lattice and the structures are
+/// rasterized (contours) or resampled (masks) onto it in patient
+/// coordinates. This is a copy in the sense of the tree's *Copy to*, not a
+/// propagation - the structure stays where it is while the anatomy under
+/// it moves - which is what a fixed margin, a couch or an ITV wants.
+pub fn copy_to_phases(
+    structures: &[crate::workflow::select::Structure],
+    phases: &[(String, SeriesInfo)],
+    p: &Progress,
+) -> Result<Vec<PhaseCopy>> {
+    let n = phases.len().max(1);
+    let mut out = Vec::with_capacity(phases.len());
+    for (i, (label, series)) in phases.iter().enumerate() {
+        p.set_phase(i as f32 / n as f32, 1.0 / n as f32);
+        p.set(format!("Phase {label}: loading ({}/{n})", i + 1));
+        if p.cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        let (vol, _, _) =
+            loader::load_series_volume(series, p).with_context(|| format!("loading {label}"))?;
+        let grid = vol.grid();
+        let mut segs = Vec::new();
+        let mut notes = Vec::new();
+        for s in structures {
+            match s.mask_on(&grid) {
+                Ok(mask) => {
+                    let seg = Segmentation::from_mask(s.name.clone(), s.color, grid.dims, mask);
+                    if seg.count == 0 {
+                        notes.push(format!("'{}' does not overlap {label}", s.name));
+                    } else {
+                        segs.push(seg);
+                    }
+                }
+                Err(_) => notes.push(format!("'{}' has no contour inside {label}", s.name)),
+            }
+        }
+        out.push(PhaseCopy {
+            label: label.clone(),
+            series_uid: series.uid.clone(),
+            study_uid: series.study_uid.clone(),
+            grid,
+            segs,
+            notes,
+        });
+    }
+    Ok(out)
+}

@@ -3,9 +3,11 @@
 //! targets through each transform, and measure what comes back - centroid
 //! trajectories, amplitudes, drift against a reference structure, per-phase
 //! registration quality, and motion-encompassing ITVs on the reference
-//! phase.
+//! phase. A target that every phase carries in its own right can be read
+//! as contoured instead, with no registration at all; the rigid model can be
+//! fitted locally, on each structure's own neighbourhood.
 //!
-//! Moved out of `app/motion_win.rs` unchanged in its arithmetic; the viewer's
+//! Moved out of `app/motion_win.rs`; the viewer's
 //! dialog and the MCP server both build a [`MotionRequest`] and call [`run`].
 
 use crate::dicomseg::{resample_mask, SegSeries};
@@ -37,15 +39,36 @@ pub struct MotionRequest {
     pub phases: Vec<(String, SeriesInfo)>,
     /// Index of the reference phase within `phases`.
     pub reference: usize,
+    /// The targets as defined on the reference phase (the registration
+    /// models carry these across).
     pub targets: Vec<Structure>,
     pub ref_struct: Option<Structure>,
+    /// Targets that exist on every phase in their own right: the same name
+    /// contoured (or propagated) per phase. The `as contoured` model reads
+    /// these instead of registering anything. Each is matched to `targets`
+    /// (and the reference structure) by name.
+    pub contoured: Vec<ContouredTarget>,
     pub models: Vec<MotionModel>,
+    /// The rigid model fitted on the structure's own neighbourhood - the
+    /// structure dilated by this margin - rather than on the whole image.
+    /// `None` is one global rigid body per phase, which for a breathing
+    /// patient is the couch: nothing moves rigidly as a whole.
+    pub local_rigid_margin_mm: Option<f64>,
     pub build_itv: bool,
     pub itv_margin_mm: f64,
     pub keep_phase_segs: bool,
     /// Levels, iterations, samples, grid spacing and threshold of the
     /// per-phase runs; the method is set by the pipeline.
     pub params: RegParams,
+}
+
+/// One structure as it exists on every phase, in the phases' order.
+pub struct ContouredTarget {
+    pub name: String,
+    pub color: [u8; 3],
+    /// One entry per phase of the request; `None` where the phase has no
+    /// contour of it (the model then skips the structure).
+    pub phases: Vec<Option<Structure>>,
 }
 
 /// One finished segmentation series to add to the study.
@@ -104,8 +127,17 @@ pub fn run(req: MotionRequest, p: &Progress) -> Result<MotionOutcome> {
         bail!("tick at least one target structure");
     }
     if req.models.is_empty() {
-        bail!("choose at least one model (rigid / deformable)");
+        bail!("choose at least one model (rigid / deformable / as contoured)");
     }
+    if req.models.contains(&MotionModel::Contoured)
+        && !req
+            .contoured
+            .iter()
+            .any(|c| c.phases.iter().all(|s| s.is_some()))
+    {
+        bail!("the 'as contoured' model needs a target that every phase carries");
+    }
+    let registers = req.models.iter().any(|m| m.registers());
     if let Some(r) = &req.ref_struct {
         if req.targets.iter().any(|t| t.name == r.name) {
             bail!("'{}' cannot be both target and reference", r.name);
@@ -168,25 +200,76 @@ pub fn run(req: MotionRequest, p: &Progress) -> Result<MotionOutcome> {
         let (vol, _, _) = loader::load_series_volume(series, p)?;
         let phase_grid = vol.grid();
 
-        p.set_phase(base + span * 0.15, span * 0.35);
-        p.set(format!("Phase {label}: rigid registration"));
-        let mut params = req.params.clone();
-        params.method = RegMethod::ElastixRigid;
-        let rigid = registration::register(&ref_vol, &vol, &params, p)?;
-        qa.push(RegQa {
-            phase: label.clone(),
-            model: MotionModel::Rigid,
-            metric_line: rigid.metric_line(),
-            folding_pct: 100.0 * rigid.analysis.jacobian.folded,
-            disp_p95_mm: rigid.analysis.displacement.p95,
-        });
+        // The global rigid body: the start of the deformable model, and the
+        // rigid model itself when no local margin is asked for.
+        let need_global = registers
+            && (req.models.contains(&MotionModel::Deformable)
+                || (req.models.contains(&MotionModel::Rigid)
+                    && req.local_rigid_margin_mm.is_none()));
+        let rigid = if need_global {
+            p.set_phase(base + span * 0.15, span * 0.35);
+            p.set(format!("Phase {label}: rigid registration"));
+            let mut params = req.params.clone();
+            params.method = RegMethod::ElastixRigid;
+            let rigid = registration::register(&ref_vol, &vol, &params, p)?;
+            qa.push(RegQa {
+                phase: label.clone(),
+                model: MotionModel::Rigid,
+                metric_line: if req.local_rigid_margin_mm.is_some() {
+                    format!("global: {}", rigid.metric_line())
+                } else {
+                    rigid.metric_line()
+                },
+                folding_pct: 100.0 * rigid.analysis.jacobian.folded,
+                disp_p95_mm: rigid.analysis.displacement.p95,
+            });
+            Some(rigid)
+        } else {
+            None
+        };
+
+        // The local rigid model: one rigid body per structure, fitted on
+        // the structure's neighbourhood alone.
+        let mut local_rigid: Vec<Option<std::sync::Arc<registration::Transform3>>> =
+            vec![None; n_subjects];
+        if let (true, Some(margin)) = (
+            req.models.contains(&MotionModel::Rigid),
+            req.local_rigid_margin_mm,
+        ) {
+            for (si, subject) in subjects.iter().enumerate() {
+                if p.cancelled() {
+                    return Err(cancelled());
+                }
+                p.set(format!("Phase {label}: rigid fit of {}", subject.name));
+                let Some(region) = registration::RegionMask::from_mask(
+                    &ref_vol,
+                    &subject.mask,
+                    subject.name.clone(),
+                    margin.max(0.0),
+                ) else {
+                    continue;
+                };
+                let mut params = req.params.clone();
+                params.method = RegMethod::ElastixRigid;
+                params.region = Some(std::sync::Arc::new(region));
+                let r = registration::register(&ref_vol, &vol, &params, p)?;
+                qa.push(RegQa {
+                    phase: label.clone(),
+                    model: MotionModel::Rigid,
+                    metric_line: format!("{}: {}", subject.name, r.metric_line()),
+                    folding_pct: 0.0,
+                    disp_p95_mm: r.analysis.displacement.p95,
+                });
+                local_rigid[si] = Some(r.transform.clone());
+            }
+        }
 
         let deformable = if req.models.contains(&MotionModel::Deformable) {
             p.set_phase(base + span * 0.5, span * 0.35);
             p.set(format!("Phase {label}: deformable refinement"));
             let mut params = req.params.clone();
             params.method = RegMethod::ElastixBSpline;
-            params.start = Some(rigid.transform.clone());
+            params.start = Some(rigid.as_ref().expect("built above").transform.clone());
             let def = registration::register(&ref_vol, &vol, &params, p)?;
             qa.push(RegQa {
                 phase: label.clone(),
@@ -203,15 +286,59 @@ pub fn run(req: MotionRequest, p: &Progress) -> Result<MotionOutcome> {
         p.set_phase(base + span * 0.85, span * 0.15);
         let mut phase_out: Vec<(String, [u8; 3], Vec<u8>)> = Vec::new();
         for (mi, model) in req.models.iter().enumerate() {
-            let transform = match model {
-                MotionModel::Rigid => &rigid.transform,
-                MotionModel::Deformable => &deformable.as_ref().expect("built above").transform,
+            p.set(format!("Phase {label}: {}", model.label()));
+            // What each subject looks like on this phase under this model.
+            let props: Vec<propagate::Propagated> = match model {
+                MotionModel::Contoured => {
+                    let mut out = Vec::new();
+                    for subject in &subjects {
+                        let Some(c) = req.contoured.iter().find(|c| c.name == subject.name) else {
+                            continue;
+                        };
+                        let Some(st) = c.phases.get(pi).and_then(|s| s.as_ref()) else {
+                            continue;
+                        };
+                        let mask = st.mask_on(&phase_grid)?;
+                        let voxels = mask.iter().filter(|v| **v != 0).count();
+                        let cm3 = motion::volume_cm3(&mask, &phase_grid);
+                        out.push(propagate::Propagated {
+                            name: subject.name.clone(),
+                            color: subject.color,
+                            mask,
+                            voxels,
+                            source_cm3: cm3,
+                            result_cm3: cm3,
+                            mapped_cm3: cm3,
+                        });
+                    }
+                    out
+                }
+                MotionModel::Rigid if req.local_rigid_margin_mm.is_some() => {
+                    let mut out = Vec::new();
+                    for (si, subject) in subjects.iter().enumerate() {
+                        let Some(t) = &local_rigid[si] else {
+                            continue;
+                        };
+                        let one = std::slice::from_ref(subject);
+                        out.extend(propagate::propagate(&ref_vol, &vol, t, true, one, p)?);
+                    }
+                    out
+                }
+                MotionModel::Rigid => {
+                    let t = &rigid.as_ref().expect("built above").transform;
+                    propagate::propagate(&ref_vol, &vol, t, true, &subjects, p)?
+                }
+                MotionModel::Deformable => {
+                    let t = &deformable.as_ref().expect("built above").transform;
+                    // The transform maps reference → phase; landing on the
+                    // phase lattice therefore samples through the inverse.
+                    propagate::propagate(&ref_vol, &vol, t, true, &subjects, p)?
+                }
             };
-            p.set(format!("Phase {label}: propagating ({})", model.label()));
-            // The transform maps reference → phase; landing on the phase
-            // lattice therefore samples through the inverse.
-            let props = propagate::propagate(&ref_vol, &vol, transform, true, &subjects, p)?;
-            for (si, prop) in props.iter().enumerate() {
+            for prop in props.iter() {
+                let Some(si) = subjects.iter().position(|s| s.name == prop.name) else {
+                    continue;
+                };
                 let c = motion::centroid_mm(&prop.mask, &phase_grid).ok_or_else(|| {
                     anyhow!(
                         "'{}' vanished on phase {label} ({})",
@@ -257,13 +384,19 @@ pub fn run(req: MotionRequest, p: &Progress) -> Result<MotionOutcome> {
     let mut reference_tracks = Vec::new();
     for (mi, model) in req.models.iter().enumerate() {
         for (si, subject) in subjects.iter().enumerate() {
+            // A structure the model could not follow on some phase (no
+            // contour of it there, no local fit) has no track under it.
+            let Some(filled) = samples[mi][si]
+                .iter()
+                .cloned()
+                .collect::<Option<Vec<PhaseSample>>>()
+            else {
+                continue;
+            };
             let track = Track {
                 target: subject.name.clone(),
                 model: *model,
-                samples: samples[mi][si]
-                    .iter()
-                    .map(|s| s.clone().expect("every phase was filled"))
-                    .collect(),
+                samples: filled,
                 reference: req.reference,
             };
             if si < n_targets {
@@ -306,6 +439,13 @@ pub fn run(req: MotionRequest, p: &Progress) -> Result<MotionOutcome> {
     if req.build_itv {
         for (mi, model) in req.models.iter().enumerate() {
             for (si, target) in req.targets.iter().enumerate() {
+                // No track under this model, no ITV either.
+                if !tracks
+                    .iter()
+                    .any(|t| t.model == *model && t.target == target.name)
+                {
+                    continue;
+                }
                 let mut mask = std::mem::take(&mut unions[mi][si]);
                 if req.itv_margin_mm > 0.0 {
                     mask = morphology::dilate_mm(

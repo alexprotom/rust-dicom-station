@@ -1,8 +1,19 @@
 name: CI
 
+# Pull requests only, deliberately.
+#
+# A pull request check does not build your branch: GitHub checks out
+# `refs/pull/N/merge`, your head already merged into the base. So by the time
+# the PR is green, the exact tree that will land on main has been tested, and
+# running the same jobs again on the push that lands it is the same work
+# twice. Branch protection is what makes that safe - nothing reaches main
+# except through a checked pull request - together with "require branches to
+# be up to date", which closes the one gap by forcing a re-check whenever the
+# base moves underneath an open PR.
+#
+# `workflow_dispatch` stays as the manual way to run the whole thing against
+# any branch.
 on:
-  push:
-    branches: [main, master]
   pull_request:
   workflow_dispatch:
 

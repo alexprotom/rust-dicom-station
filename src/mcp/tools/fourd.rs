@@ -113,6 +113,10 @@ pub struct GroupArgs {
     /// Dilation of the anchor that bounds the registration, mm.
     #[serde(default = "default_anchor_margin")]
     pub anchor_margin_mm: f64,
+    /// The name the propagated anchor lands under on each phase, next to
+    /// the phase's own contour; default `<anchor>_prop`.
+    #[serde(default)]
+    pub anchor_landed_as: Option<String>,
     /// Anchored run: stop after the rigid stage.
     #[serde(default)]
     pub rigid_only: bool,
@@ -381,6 +385,7 @@ fn propagate_anchored(
     let req = anchored::AnchoredRequest {
         src_vol,
         src_anchor,
+        anchor_landed_name: a.anchor_landed_as.clone(),
         subjects,
         phases: anchored,
         margin_mm: a.anchor_margin_mm,
@@ -493,8 +498,24 @@ pub struct MotionArgs {
     pub reference_structure: Option<StructureArg>,
     #[serde(default = "yes")]
     pub rigid: bool,
+    /// The rigid model fitted on each structure's own neighbourhood, the
+    /// structure dilated by this margin (mm). 0 is one global rigid body
+    /// per phase, which for a breathing patient finds the couch and reports
+    /// no motion.
+    #[serde(default = "default_local_rigid")]
+    pub local_rigid_margin_mm: f64,
     #[serde(default = "yes")]
     pub deformable: bool,
+    /// The `as contoured` model: a target that every phase carries under
+    /// its own name (propagated there earlier, or drawn per phase) is read
+    /// phase by phase, with no registration. Applies to the targets and the
+    /// reference structure that every phase has.
+    #[serde(default = "yes")]
+    pub contoured: bool,
+    /// The phases taking part (labels such as `0%`); all of them when
+    /// omitted. The reference phase is always in.
+    #[serde(default)]
+    pub phases: Option<Vec<String>>,
     #[serde(default = "yes")]
     pub build_itv: bool,
     #[serde(default)]
@@ -516,6 +537,10 @@ pub struct MotionArgs {
 
 fn yes() -> bool {
     true
+}
+
+fn default_local_rigid() -> f64 {
+    15.0
 }
 
 /// The report as JSON.
@@ -599,18 +624,94 @@ pub fn analyse_motion(core: &mut Core, a: MotionArgs, p: &Progress) -> Result<Va
         (gi, phases, g.name.clone(), g.study_uid.clone(), reference)
     };
     let _ = gi;
+    // The phase subset, the reference always in.
+    let (phases, reference) = match &a.phases {
+        Some(wanted) if !wanted.is_empty() => {
+            let kept: Vec<usize> = (0..phases.len())
+                .filter(|&i| {
+                    i == reference || wanted.iter().any(|w| w.eq_ignore_ascii_case(&phases[i].0))
+                })
+                .collect();
+            if kept.len() < 2 {
+                bail!("select at least one phase besides the reference");
+            }
+            let reference = kept.iter().position(|&i| i == reference).unwrap_or(0);
+            (
+                kept.into_iter()
+                    .map(|i| phases[i].clone())
+                    .collect::<Vec<_>>(),
+                reference,
+            )
+        }
+        _ => (phases, reference),
+    };
+    // A target the phases carry under its own name: the reference phase's
+    // instance is the target, and every phase's instance feeds the
+    // `as contoured` model.
     let mut targets = Vec::new();
-    for t in &a.targets {
-        targets.push(
-            core.session
-                .structure(&a.dataset, &t.structure, t.set.as_deref())?,
-        );
+    let mut contoured = Vec::new();
+    {
+        let ds = core.session.dataset(&a.dataset)?;
+        let per_phase = |name: &str| -> Vec<Option<select::Structure>> {
+            phases
+                .iter()
+                .map(|(_, se)| select::find_on_series(&ds.study, name, &se.uid, ""))
+                .collect()
+        };
+        let mut resolve = |arg: &StructureArg| -> Result<select::Structure> {
+            let on = per_phase(&arg.structure);
+            let everywhere = on.iter().all(|s| s.is_some()) && arg.set.is_none();
+            if everywhere {
+                let mut on = on;
+                let on_ref = on[reference].take().expect("checked");
+                contoured.push(motion::ContouredTarget {
+                    name: on_ref.name.clone(),
+                    color: on_ref.color,
+                    phases: phases
+                        .iter()
+                        .map(|(_, se)| {
+                            select::find_on_series(&ds.study, &arg.structure, &se.uid, "")
+                        })
+                        .collect(),
+                });
+                Ok(on_ref)
+            } else {
+                core.session
+                    .structure(&a.dataset, &arg.structure, arg.set.as_deref())
+            }
+        };
+        for t in &a.targets {
+            targets.push(resolve(t)?);
+        }
     }
     let ref_struct = match &a.reference_structure {
-        Some(s) => Some(
-            core.session
-                .structure(&a.dataset, &s.structure, s.set.as_deref())?,
-        ),
+        Some(sarg) => {
+            let ds = core.session.dataset(&a.dataset)?;
+            let on: Vec<Option<select::Structure>> = phases
+                .iter()
+                .map(|(_, se)| select::find_on_series(&ds.study, &sarg.structure, &se.uid, ""))
+                .collect();
+            if on.iter().all(|s| s.is_some()) && sarg.set.is_none() {
+                let mut on = on;
+                let on_ref = on[reference].take().expect("checked");
+                contoured.push(motion::ContouredTarget {
+                    name: on_ref.name.clone(),
+                    color: on_ref.color,
+                    phases: phases
+                        .iter()
+                        .map(|(_, se)| {
+                            select::find_on_series(&ds.study, &sarg.structure, &se.uid, "")
+                        })
+                        .collect(),
+                });
+                Some(on_ref)
+            } else {
+                Some(
+                    core.session
+                        .structure(&a.dataset, &sarg.structure, sarg.set.as_deref())?,
+                )
+            }
+        }
         None => None,
     };
     let mut models = Vec::new();
@@ -619,6 +720,13 @@ pub fn analyse_motion(core: &mut Core, a: MotionArgs, p: &Progress) -> Result<Va
     }
     if a.deformable {
         models.push(MotionModel::Deformable);
+    }
+    if a.contoured
+        && contoured
+            .iter()
+            .any(|c| c.phases.iter().all(|s| s.is_some()))
+    {
+        models.push(MotionModel::Contoured);
     }
     let mut params = RegParams {
         method: RegMethod::ElastixRigid,
@@ -654,7 +762,9 @@ pub fn analyse_motion(core: &mut Core, a: MotionArgs, p: &Progress) -> Result<Va
         reference,
         targets,
         ref_struct,
+        contoured,
         models,
+        local_rigid_margin_mm: (a.local_rigid_margin_mm > 0.0).then_some(a.local_rigid_margin_mm),
         build_itv: a.build_itv,
         itv_margin_mm: a.itv_margin_mm.max(0.0),
         keep_phase_segs: a.keep_phase_segs,

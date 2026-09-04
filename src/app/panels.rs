@@ -14,6 +14,7 @@
 //! F9 works the left one, F10 the right.
 
 use super::*;
+use crate::workflow::group::Landing;
 
 /// What tells one edge panel from the other.
 struct EdgePanel {
@@ -430,6 +431,17 @@ impl ViewerApp {
     /// reborrow that ends when the node's body returns, which is what lets a
     /// node three levels down still open a dialog or start a series switch.
     pub(super) fn data_tree(&mut self, ui: &mut egui::Ui, slot: usize) {
+        if let Some((what, job)) = &self.phases_job {
+            if what.slot == slot {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(format!("Copy to each phase: {}", job.progress.get()));
+                    if ui.small_button("Cancel").clicked() {
+                        job.progress.cancel();
+                    }
+                });
+            }
+        }
         let Some(study) = self.slots[slot].study.as_ref() else {
             return;
         };
@@ -1000,6 +1012,25 @@ impl ViewerApp {
                     ui.close();
                 }
             }
+            if here.kind == SetKind::Segmentations {
+                ui.separator();
+                let free = current.is_empty();
+                if ui
+                    .button(format!(
+                        "{} (no image series: any image of this frame)",
+                        if free { "●" } else { "  " }
+                    ))
+                    .on_hover_text(
+                        "Tie the segmentation to no image series. It shows on every image \
+                         of the same frame of reference - every phase of a 4D study, say - \
+                         resampled onto whichever is displayed.",
+                    )
+                    .clicked()
+                {
+                    *out = Some(SetAction::Connect(here, String::new()));
+                    ui.close();
+                }
+            }
         });
         ui.separator();
         if ui
@@ -1046,7 +1077,7 @@ impl ViewerApp {
     /// Every structure set and segmentation series of both datasets, as the
     /// destinations of a *Copy to ▶* / *Move to ▶* submenu - plus the two
     /// "make me a new one" entries, so a transfer never needs preparing.
-    fn destination_menu(&self, ui: &mut egui::Ui, from: SetRef) -> Option<SetRef> {
+    fn destination_menu(&self, ui: &mut egui::Ui, from: SetRef) -> Option<Destination> {
         let mut picked = None;
         for (slot, slot_name) in SLOT_NAMES.iter().enumerate() {
             let Some(study) = self.slots[slot].study.as_ref() else {
@@ -1071,7 +1102,7 @@ impl ViewerApp {
                     .button(format!("▣ {name} ({} ROIs)", ss.rois.len()))
                     .clicked()
                 {
-                    picked = Some(here);
+                    picked = Some(Destination::Set(here));
                     ui.close();
                 }
             }
@@ -1088,25 +1119,59 @@ impl ViewerApp {
                     .button(format!("✏ {} ({} segments)", sr.label, sr.segs.len()))
                     .clicked()
                 {
-                    picked = Some(here);
+                    picked = Some(Destination::Set(here));
                     ui.close();
                 }
             }
             if ui.button("▣ ➕ a new RT structure set").clicked() {
-                picked = Some(SetRef {
+                picked = Some(Destination::Set(SetRef {
                     slot,
                     kind: SetKind::Structures,
                     idx: SetRef::NEW,
-                });
+                }));
                 ui.close();
             }
             if ui.button("✏ ➕ a new segmentation series").clicked() {
-                picked = Some(SetRef {
+                picked = Some(Destination::Set(SetRef {
                     slot,
                     kind: SetKind::Segmentations,
                     idx: SetRef::NEW,
-                });
+                }));
                 ui.close();
+            }
+            // Every phase of a 4D group at once: the structure as it is,
+            // filed on each phase (no registration - the phases are loaded
+            // for their lattices and the structure resampled onto each).
+            for (gi, g) in study.fourd_groups.iter().enumerate() {
+                let n = g.phase_members().len();
+                if g.dissolved || n == 0 {
+                    continue;
+                }
+                for (landing, glyph, what) in [
+                    (
+                        Landing::Segmentation,
+                        "✏",
+                        "a segmentation series per phase",
+                    ),
+                    (Landing::StructureSet, "▣", "each phase's RT structure set"),
+                ] {
+                    if ui
+                        .button(format!("{glyph} ⏱ each phase of {} ({n}): {what}", g.name))
+                        .on_hover_text(
+                            "Copies the structure onto every phase of the group as it is, \
+                             in patient coordinates, with no registration. Use the \
+                             propagation module when the structure should follow the motion.",
+                        )
+                        .clicked()
+                    {
+                        picked = Some(Destination::Phases {
+                            slot,
+                            group: gi,
+                            landing,
+                        });
+                        ui.close();
+                    }
+                }
             }
             ui.separator();
         }
@@ -1146,22 +1211,12 @@ impl ViewerApp {
         ui.separator();
         ui.menu_button(format!("Copy {what} to"), |ui| {
             if let Some(to) = self.destination_menu(ui, from) {
-                *out = Some(ItemAction::Transfer {
-                    from,
-                    items: items.clone(),
-                    to,
-                    copy: true,
-                });
+                *out = Some(to.transfer(from, items.clone(), true));
             }
         });
         ui.menu_button(format!("Move {what} to"), |ui| {
             if let Some(to) = self.destination_menu(ui, from) {
-                *out = Some(ItemAction::Transfer {
-                    from,
-                    items: items.clone(),
-                    to,
-                    copy: false,
-                });
+                *out = Some(to.transfer(from, items.clone(), false));
             }
         });
         ui.separator();
@@ -1219,6 +1274,9 @@ impl ViewerApp {
 
     /// The image series a set is drawn on, as a tree suffix.
     fn series_suffix(study: &LoadedStudy, uid: &str) -> String {
+        if uid.is_empty() {
+            return " ▶ (any image of this frame)".to_string();
+        }
         study
             .series
             .iter()
@@ -1234,7 +1292,7 @@ impl ViewerApp {
                     }
                 )
             })
-            .unwrap_or_else(|| " ▶ (unlinked)".to_string())
+            .unwrap_or_else(|| " ▶ (image series not loaded)".to_string())
     }
 
     /// The *Copy to / Move to / Remove / Export* buttons that act on whatever
@@ -1253,24 +1311,14 @@ impl ViewerApp {
         ui.add_enabled_ui(n > 0, |ui| {
             ui.menu_button("Copy to", |ui| {
                 if let Some(to) = self.destination_menu(ui, here) {
-                    *item_act = Some(ItemAction::Transfer {
-                        from: here,
-                        items: selection.to_vec(),
-                        to,
-                        copy: true,
-                    });
+                    *item_act = Some(to.transfer(here, selection.to_vec(), true));
                 }
             })
             .response
             .on_hover_text(format!("Copy the {what} into another series"));
             ui.menu_button("Move to", |ui| {
                 if let Some(to) = self.destination_menu(ui, here) {
-                    *item_act = Some(ItemAction::Transfer {
-                        from: here,
-                        items: selection.to_vec(),
-                        to,
-                        copy: false,
-                    });
+                    *item_act = Some(to.transfer(here, selection.to_vec(), false));
                 }
             })
             .response
@@ -1330,6 +1378,7 @@ impl ViewerApp {
         let mut set_act: Option<SetAction> = None;
         let mut item_act: Option<ItemAction> = None;
         let mut new_anchor: Option<(SetRef, usize)> = None;
+        let mut new_color: Option<(usize, [u8; 3])> = None;
         let shift = ui.input(|i| i.modifiers.shift);
         {
             let me = &*self;
@@ -1449,13 +1498,10 @@ impl ViewerApp {
                         let anchor = me.tick_anchor.filter(|(r, _)| *r == here).map(|(_, i)| i);
                         for (i, roi) in ss.rois.iter().enumerate() {
                             ui.horizontal(|ui| {
-                                let (rect, _) =
-                                    ui.allocate_exact_size(egui::vec2(12.0, 12.0), Sense::hover());
-                                ui.painter().rect_filled(
-                                    rect,
-                                    2.0,
-                                    Color32::from_rgb(roi.color[0], roi.color[1], roi.color[2]),
-                                );
+                                let mut color = roi.color;
+                                if color_swatch(ui, &mut color) {
+                                    new_color = Some((i, color));
+                                }
                                 let resp = ui.checkbox(
                                     &mut vis[i],
                                     format!(
@@ -1503,6 +1549,17 @@ impl ViewerApp {
             }
         }
         self.slots[slot].roi_visible = vis;
+        if let Some((i, color)) = new_color {
+            let active = self.slots[slot].active_structs;
+            if let Some(roi) = self.slots[slot]
+                .study
+                .as_mut()
+                .and_then(|st| st.structure_sets.get_mut(active))
+                .and_then(|ss| ss.rois.get_mut(i))
+            {
+                roi.color = color;
+            }
+        }
         if let Some(on) = new_shown {
             self.slots[slot].structs_shown = on;
         }
@@ -1776,7 +1833,7 @@ impl ViewerApp {
                         for (i, row) in rows.iter_mut().enumerate() {
                             let name = row.0.clone();
                             ui.horizontal(|ui| {
-                                ui.color_edit_button_srgb(&mut row.1);
+                                color_swatch(ui, &mut row.1);
                                 let tick = ui.checkbox(&mut ticks[i], "").on_hover_text(
                                     "Show / select this segmentation\nShift-click: tick or \
                                  untick the whole range from the last one",
@@ -2992,6 +3049,20 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
         }
     }
     patients
+}
+
+/// A small colour square that opens the colour picker when clicked - the
+/// same one for RT structures and segmentations, so a structure's colour
+/// is edited the way a segmentation's is.  Returns true when the colour
+/// changed.
+fn color_swatch(ui: &mut egui::Ui, color: &mut [u8; 3]) -> bool {
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size = egui::vec2(12.0, 12.0);
+        ui.color_edit_button_srgb(color)
+            .on_hover_text("Click to change the colour")
+            .changed()
+    })
+    .inner
 }
 
 /// Apply a check-box click to a visibility/selection list, extending from
