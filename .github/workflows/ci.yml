@@ -13,15 +13,68 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Why this file is a handful of small jobs rather than one long one.
+#
+# Cargo shares compiled dependencies between commands only when the *feature
+# set* matches: `cargo clippy` and `cargo test` reuse each other's work, but
+# `--no-default-features` and `--features mcp` each build the dependency graph
+# again from nothing. Three graphs in one job are three graphs one after the
+# other; three graphs in three jobs are three graphs at once, and the wall
+# clock becomes the longest of them instead of their sum. Each job also gets
+# its own cache, so a cache holds one graph rather than three and is quick to
+# save and restore.
+#
+# Nothing is checked less than before: every command below was already run.
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Incremental compilation only pays off across edits of the same working
+  # copy; in CI it is written once, never read, and costs disk and time.
+  CARGO_INCREMENTAL: 0
+  # Debug info is most of the link time and most of the cache. Nothing here
+  # opens a debugger, and a backtrace still names the functions.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
 
 jobs:
-  # The viewer itself: formatting, lints, the full test suite, and a build of
-  # the CPU-only configuration so `--no-default-features` cannot silently rot.
-  viewer:
-    name: viewer (${{ matrix.os }})
+  # Formatting and lints of the default feature set. Platform-independent, so
+  # they run once, on Linux.
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # eframe/winit need X11, Wayland and xkbcommon headers to build on Linux.
+      - name: Install Linux GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev \
+            libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  # The test suite, on both platforms. Windows gets its own clippy pass here
+  # rather than a job of its own: it shares this job's dependency graph, so it
+  # costs the workspace crate and nothing else.
+  #
+  # The GPU agreement test is #[ignore]d on purpose: runners expose a
+  # *software* adapter (Mesa's lavapipe on Linux, WARP on Windows), and
+  # driving twelve transformer blocks through a rasterizer takes minutes and
+  # proves nothing about the backend.
+  test:
+    name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -32,10 +85,8 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
 
-      # eframe/winit need X11, Wayland and xkbcommon headers to build on Linux.
-      # Windows runners need nothing extra.
       - name: Install Linux GUI build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -46,40 +97,65 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # Formatting and lints are platform-independent — check them once.
-      - name: cargo fmt --check
-        if: runner.os == 'Linux'
-        run: cargo fmt --all -- --check
-
-      - name: cargo clippy
+      # The one thing the Linux lint job cannot see: code behind
+      # `cfg(windows)`.
+      - name: cargo clippy (windows-only code)
+        if: runner.os == 'Windows'
         run: cargo clippy --all-targets -- -D warnings
 
-      # The GPU agreement test is #[ignore]d on purpose: runners expose a
-      # *software* adapter (Mesa's lavapipe on Linux, WARP on Windows), and
-      # driving twelve transformer blocks through a rasterizer takes minutes
-      # and proves nothing about the backend.
       - name: cargo test
         run: cargo test
 
-      # The GPU inference backend is behind the default `gpu` feature; this is
-      # the pure-CPU build the README documents. Feature wiring does not vary
-      # by platform, and a second feature set means a second copy of the whole
-      # dependency graph on disk — which Windows runners cannot spare — so it
-      # is checked on Linux only.
+  # The pure-CPU build the README documents: the GPU inference backend is
+  # behind the default `gpu` feature. Its own dependency graph, so its own
+  # job. Feature wiring does not vary by platform.
+  cpu-only:
+    name: check (CPU only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev \
+            libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+
+      - uses: Swatinem/rust-cache@v2
+
       - name: cargo check (CPU only)
-        if: runner.os == 'Linux'
         run: cargo check --no-default-features --all-targets
 
-      # The MCP server (`rds-mcp`) and its three suites live behind the `mcp`
-      # feature so the viewer's build never links the protocol stack. Same
-      # dependency graph as the default build plus a few small crates, so it
-      # fits beside it; Linux only, like the other extra feature set.
+  # The MCP server (`rds-mcp`) and its three suites live behind the `mcp`
+  # feature so the viewer's build never links the protocol stack. Same
+  # dependency graph as the default build plus a few small crates, but Cargo
+  # builds it separately all the same - hence a job of its own.
+  mcp:
+    name: mcp
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install Linux GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev \
+            libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+
+      - uses: Swatinem/rust-cache@v2
+
       - name: cargo clippy (mcp)
-        if: runner.os == 'Linux'
         run: cargo clippy --features mcp --all-targets -- -D warnings
 
       - name: cargo test (mcp)
-        if: runner.os == 'Linux'
         run: cargo test --features mcp --test workflow --test mcp_tools --test mcp_phi
 
   # The Windows installer is a separate workspace and is never built by
@@ -110,12 +186,17 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
 
-      # One release build, not two: the default feature set pulls the whole
-      # viewer in as a path dependency, so building both feature sets in
-      # release means two copies of burn and wgpu on a runner with ~9 GB free.
-      # The standalone configuration is type-checked instead.
+      # A debug build, not a release one: what this proves is that the crate
+      # compiles and links, and it shares the dependencies clippy just built.
+      # The optimised installer is built by the release workflow, which is the
+      # only place its size and speed matter.
+      #
+      # One configuration, not two: the default feature set pulls the whole
+      # viewer in as a path dependency, so building both means two copies of
+      # burn and wgpu on a runner with ~9 GB free. The standalone
+      # configuration is type-checked instead.
       - name: cargo build (default)
-        run: cargo build --release
+        run: cargo build
 
       - name: cargo check (standalone, no model prefetch)
         run: cargo check --no-default-features

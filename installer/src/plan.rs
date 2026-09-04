@@ -6,6 +6,11 @@ use crate::win::registry::Hive;
 
 pub const APP_NAME: &str = "Rust DICOM Station";
 pub const APP_EXE: &str = "rust-dicom-station.exe";
+/// The MCP server, shipped beside the viewer by `rds-pack` when it was built.
+/// Optional at install time: it is only of use to somebody who drives the
+/// station from an MCP client, and it is a second executable to trust and to
+/// keep up to date for everybody else.
+pub const MCP_EXE: &str = "rds-mcp.exe";
 pub const PUBLISHER: &str = "Rust DICOM Station contributors";
 /// Shown in Apps & features. Empty means "do not write the value".
 pub const HOMEPAGE: &str = "";
@@ -189,6 +194,9 @@ pub struct Options {
     pub file_association: bool,
     /// Install the Microsoft Visual C++ runtime when it is missing.
     pub install_vcredist: bool,
+    /// Install [`MCP_EXE`] alongside the viewer. Ignored when the installer
+    /// carries no MCP server.
+    pub install_mcp: bool,
     pub launch_after: bool,
     /// Which graphics API the viewer should start on.
     pub graphics: Graphics,
@@ -208,6 +216,10 @@ impl Default for Options {
             add_to_path: false,
             file_association: true,
             install_vcredist: true,
+            // On: an installer that carries the server is one somebody asked
+            // to be built with it, and leaving a 20 MB executable out by
+            // default only means answering the question twice.
+            install_mcp: true,
             launch_after: true,
             // Vulkan is the right default: it is the faster backend and it
             // works on the overwhelming majority of machines. The page
@@ -224,6 +236,19 @@ impl Options {
 
     pub fn uninstaller_path(&self) -> PathBuf {
         self.dir.join(UNINSTALLER_EXE)
+    }
+
+    pub fn mcp_path(&self) -> PathBuf {
+        self.dir.join(MCP_EXE)
+    }
+
+    /// The payload entries this installation leaves out.
+    pub fn skipped_files(&self) -> Vec<&'static str> {
+        if self.install_mcp {
+            Vec::new()
+        } else {
+            vec![MCP_EXE]
+        }
     }
 
     pub fn manifest_path(&self) -> PathBuf {

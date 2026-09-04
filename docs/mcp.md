@@ -16,10 +16,28 @@ sequence.
 
 ## Setting it up
 
-1. Build or install the server. It is part of the Windows installer when the
-   release was built with it; from source: `cargo build --release --features
-   mcp` produces `target/release/rds-mcp` beside the viewer. The viewer's
-   *Settings ▶ MCP server* menu says whether it is present.
+1. Build or install the server.
+
+   * **Windows installer** - a tick box on the options page, *Install the MCP
+     server*, on by default. Untick it and `rds-mcp.exe` is not written at
+     all; the finished page prints the path when it was. `rds-setup.exe
+     --no-mcp` is the same answer on the command line.
+   * **Linux AppImage** - the server is inside the AppImage, and an MCP client
+     is pointed at the AppImage rather than at a file within it:
+
+     ```json
+     { "mcpServers": { "rust-dicom-station": {
+         "command": "/opt/rust-dicom-station.AppImage", "args": ["mcp"] } } }
+     ```
+
+     A copy or symlink of the AppImage named `rds-mcp` also starts the server
+     directly, for a client that will not pass an argument. Everything else -
+     `--config`, `--check` - works as it does on the standalone binary:
+     `./rust-dicom-station.AppImage mcp --check`.
+   * **From source** - `cargo build --release --features mcp` produces
+     `target/release/rds-mcp` beside the viewer.
+
+   The viewer's *Settings ▶ MCP server* menu says whether it is present.
 2. Write the configuration, `mcp.toml`, in the station's configuration folder
    (`%LOCALAPPDATA%\RustDICOMStation` on Windows, `~/.config/RustDICOMStation`
    on Linux; the menu shows the exact path). Without it no dataset can be

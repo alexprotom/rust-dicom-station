@@ -49,6 +49,7 @@ INSTALL OPTIONS:
     --no-file-association skip the .dcm / folder context-menu entries
     --add-to-path         add the program folder to PATH
     --no-vcredist         do not install the Visual C++ runtime when missing
+    --no-mcp              do not install the MCP server (rds-mcp.exe)
     --no-launch           do not offer to start the viewer afterwards
     --graphics <API>      which graphics API the viewer starts on:
                           vulkan (default) | dx12 | auto
@@ -110,6 +111,7 @@ fn parse_from(args: impl Iterator<Item = String>) -> Result<Args> {
             "--no-file-association" => opts.file_association = false,
             "--add-to-path" => opts.add_to_path = true,
             "--no-vcredist" => opts.install_vcredist = false,
+            "--no-mcp" => opts.install_mcp = false,
             "--no-launch" => opts.launch_after = false,
             "--graphics" => {
                 let v = next(&mut it, "--graphics")?;
@@ -159,6 +161,9 @@ pub fn args_for_relaunch(o: &Options) -> String {
     }
     if !o.install_vcredist {
         s.push_str(" --no-vcredist");
+    }
+    if !o.install_mcp {
+        s.push_str(" --no-mcp");
     }
     let models = match o.models {
         Models::None => "none",
@@ -331,35 +336,39 @@ mod tests {
     fn every_choice_survives_the_elevated_relaunch() {
         for graphics in Graphics::ALL {
             for models in Models::ALL {
-                let before = Options {
-                    dir: PathBuf::from(r"D:\Apps\Rust DICOM Station"),
-                    models_dir: PathBuf::from(r"D:\weights"),
-                    scope: Scope::AllUsers,
-                    start_menu_shortcut: false,
-                    desktop_shortcut: false,
-                    file_association: false,
-                    add_to_path: true,
-                    install_vcredist: false,
-                    launch_after: true,
-                    models,
-                    graphics,
-                };
-                let after = parse(&args_for_relaunch(&before))
-                    .opts
-                    .expect("parse_from always fills in the options");
-                assert_eq!(after.dir, before.dir);
-                assert_eq!(after.models_dir, before.models_dir);
-                assert_eq!(after.scope, before.scope);
-                assert_eq!(after.start_menu_shortcut, before.start_menu_shortcut);
-                assert_eq!(after.desktop_shortcut, before.desktop_shortcut);
-                assert_eq!(after.file_association, before.file_association);
-                assert_eq!(after.add_to_path, before.add_to_path);
-                assert_eq!(after.install_vcredist, before.install_vcredist);
-                assert_eq!(after.models, before.models);
-                assert_eq!(after.graphics, before.graphics, "the graphics page");
-                // The one deliberate difference: the elevated process must
-                // not start the viewer, or it would inherit the token.
-                assert!(!after.launch_after);
+                for install_mcp in [false, true] {
+                    let before = Options {
+                        dir: PathBuf::from(r"D:\Apps\Rust DICOM Station"),
+                        models_dir: PathBuf::from(r"D:\weights"),
+                        scope: Scope::AllUsers,
+                        start_menu_shortcut: false,
+                        desktop_shortcut: false,
+                        file_association: false,
+                        add_to_path: true,
+                        install_vcredist: false,
+                        install_mcp,
+                        launch_after: true,
+                        models,
+                        graphics,
+                    };
+                    let after = parse(&args_for_relaunch(&before))
+                        .opts
+                        .expect("parse_from always fills in the options");
+                    assert_eq!(after.install_mcp, before.install_mcp, "the MCP component");
+                    assert_eq!(after.dir, before.dir);
+                    assert_eq!(after.models_dir, before.models_dir);
+                    assert_eq!(after.scope, before.scope);
+                    assert_eq!(after.start_menu_shortcut, before.start_menu_shortcut);
+                    assert_eq!(after.desktop_shortcut, before.desktop_shortcut);
+                    assert_eq!(after.file_association, before.file_association);
+                    assert_eq!(after.add_to_path, before.add_to_path);
+                    assert_eq!(after.install_vcredist, before.install_vcredist);
+                    assert_eq!(after.models, before.models);
+                    assert_eq!(after.graphics, before.graphics, "the graphics page");
+                    // The one deliberate difference: the elevated process must
+                    // not start the viewer, or it would inherit the token.
+                    assert!(!after.launch_after);
+                }
             }
         }
     }

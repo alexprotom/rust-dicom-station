@@ -15,6 +15,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Written once and never read again on a fresh runner.
+  CARGO_INCREMENTAL: 0
 
 jobs:
   # ==========================================================================
@@ -75,8 +77,13 @@ jobs:
   # ==========================================================================
   # Windows release
   # ==========================================================================
-  windows:
-    name: Windows installer
+  # The viewer and the installer are separate Cargo workspaces with separate
+  # target directories, so nothing is shared by building them one after the
+  # other on one runner - only the wall clock is. They are built side by side
+  # instead and handed to a third job that packs them; `rds-pack` takes the
+  # paths, so it does not care where they came from.
+  windows-viewer:
+    name: Windows viewer
     needs: version
     runs-on: windows-latest
 
@@ -89,41 +96,97 @@ jobs:
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-            installer
 
-      # The viewer is a separate Cargo package/workspace from the installer.
       # `--features mcp` adds the second executable, rds-mcp.exe, which
-      # rds-pack ships beside the viewer when it finds it.
+      # rds-pack ships beside the viewer.
       - name: Build viewer
         run: cargo build --release --features mcp
 
+      - name: Upload viewer executables
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-viewer-exe
+          path: |
+            target/release/rust-dicom-station.exe
+            target/release/rds-mcp.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  windows-setup:
+    name: Windows setup binaries
+    needs: version
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: installer
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: installer
+
       # Build rds-setup.exe and rds-pack.exe.
       - name: Build installer
-        working-directory: installer
         run: cargo build --release
 
-      # rds-pack combines rds-setup.exe with the viewer and payload.
-      - name: Package Windows installer
-        working-directory: installer
-        run: cargo run --release --bin rds-pack
+      - name: Upload setup binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-setup-exe
+          path: |
+            installer/target/release/rds-setup.exe
+            installer/target/release/rds-pack.exe
+          if-no-files-found: error
+          retention-days: 1
 
-      - name: Rename installer
+  windows:
+    name: Windows installer
+    needs: [version, windows-viewer, windows-setup]
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download viewer executables
+        uses: actions/download-artifact@v5
+        with:
+          name: windows-viewer-exe
+          path: built/viewer
+
+      - name: Download setup binaries
+        uses: actions/download-artifact@v5
+        with:
+          name: windows-setup-exe
+          path: built/setup
+
+      # rds-pack combines rds-setup.exe with the viewer and the payload. It
+      # needs no toolchain: it is one of the executables just downloaded.
+      - name: Package Windows installer
         shell: pwsh
         run: |
-          $source = "installer/dist/rust-dicom-station-setup.exe"
-          $destination = "rust-dicom-station-${{ needs.version.outputs.version }}-windows-x86_64.exe"
+          $out = "rust-dicom-station-${{ needs.version.outputs.version }}-windows-x86_64.exe"
 
-          if (!(Test-Path $source)) {
-            Write-Error "Expected installer not found: $source"
+          & built/setup/rds-pack.exe `
+            --repo . `
+            --app built/viewer/rust-dicom-station.exe `
+            --mcp built/viewer/rds-mcp.exe `
+            --setup built/setup/rds-setup.exe `
+            --out $out
+
+          if (!(Test-Path $out)) {
+            Write-Error "Expected installer not found: $out"
             exit 1
           }
 
-          Move-Item $source $destination
-
-          Write-Host "Created $destination"
+          Write-Host "Created $out"
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
@@ -165,8 +228,10 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
+      # `--features mcp` adds the second executable, rds-mcp, which the
+      # AppImage carries beside the viewer.
       - name: Build viewer
-        run: cargo build --release
+        run: cargo build --release --features mcp
 
       # ----------------------------------------------------------------------
       # AppImage AppDir
@@ -189,7 +254,10 @@ jobs:
 
           cp target/release/rust-dicom-station \
              AppDir/usr/bin/rust-dicom-station
-          
+
+          cp target/release/rds-mcp \
+             AppDir/usr/bin/rds-mcp
+
           cp assets/rust-dicom-station.png \
              AppDir/usr/share/icons/hicolor/256x256/apps/rust-dicom-station.png
 
@@ -204,13 +272,34 @@ jobs:
           Categories=Graphics;
           EOF
 
-          cat > AppDir/AppRun <<'EOF'
+          # An AppImage is one file, so an MCP client cannot be pointed at a
+          # binary inside it. It is pointed at the AppImage instead:
+          #
+          #   {"command": "/path/to/RDS.AppImage", "args": ["mcp"]}
+          #
+          # A copy or symlink named rds-mcp works too - AppImage puts the name
+          # it was invoked as in $ARGV0 - for clients that will not pass an
+          # argument.
+          cat > AppRun <<'EOF'
           #!/bin/sh
           HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+
+          case "${ARGV0:-$0}" in
+            *rds-mcp) exec "$HERE/usr/bin/rds-mcp" "$@" ;;
+          esac
+
+          case "${1:-}" in
+            mcp|--mcp)
+              shift
+              exec "$HERE/usr/bin/rds-mcp" "$@"
+              ;;
+          esac
+
           exec "$HERE/usr/bin/rust-dicom-station" "$@"
           EOF
 
-          chmod +x AppDir/AppRun
+          chmod +x AppRun
+          cp AppRun AppDir/AppRun
 
       # ----------------------------------------------------------------------
       # Download linuxdeploy
@@ -236,8 +325,14 @@ jobs:
         run: |
           set -euo pipefail
 
+          # The AppRun is named explicitly rather than left to linuxdeploy's
+          # "keep whatever is in the AppDir" behaviour: what makes the MCP
+          # server reachable at all is the dispatcher in it, and that is not
+          # something to leave to a flag-free default in a tool pinned to
+          # `continuous`.
           ./linuxdeploy.AppImage \
             --appdir AppDir \
+            --custom-apprun AppRun \
             --output appimage
 
       - name: Rename AppImage
@@ -274,6 +369,14 @@ jobs:
 
           if [ ! -x "$OUTPUT" ]; then
             echo "::error::AppImage is not executable"
+            exit 1
+          fi
+
+          # The MCP server has to be reachable, which means the dispatcher in
+          # AppRun survived the packaging. `--check` reads the configuration
+          # and exits without speaking the protocol, so it is safe to run here.
+          if ! ./"$OUTPUT" mcp --check; then
+            echo "::error::the AppImage does not run the MCP server on '\''mcp'\''"
             exit 1
           fi
 

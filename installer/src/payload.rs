@@ -112,6 +112,17 @@ impl Payload {
     }
 
     /// Total uncompressed size of the payload.
+    /// Size of one payload entry, or 0 when it is not there.
+    pub fn entry_size(&self, name: &str) -> u64 {
+        self.entries()
+            .ok()
+            .into_iter()
+            .flatten()
+            .find(|e| e.name.eq_ignore_ascii_case(name))
+            .map(|e| e.size)
+            .unwrap_or(0)
+    }
+
     pub fn total_size(&self) -> Result<u64> {
         Ok(self.entries()?.iter().map(|e| e.size).sum())
     }
@@ -130,15 +141,28 @@ impl Payload {
         }
     }
 
-    /// Write every payload file into `dest`, reporting progress as
-    /// `(fraction, current file name)`. Returns the relative paths written.
+    /// Write the payload into `dest`, leaving out the entries named in
+    /// `skip`, and reporting progress as `(fraction, current file name)`.
+    /// Returns the relative paths written.
+    ///
+    /// `skip` is what makes a component optional: an installer carries every
+    /// file it could install, and an unticked box means the file is passed
+    /// over here rather than deleted afterwards - so it never lands on disk
+    /// and never enters the manifest the uninstaller reads.
     pub fn extract_to(
         &self,
         dest: &Path,
+        skip: &[&str],
         progress: &mut dyn FnMut(f32, &str),
     ) -> Result<Vec<String>> {
+        let skipped = |name: &str| skip.iter().any(|s| s.eq_ignore_ascii_case(name));
         let entries = self.entries()?;
-        let total: u64 = entries.iter().map(|e| e.size).sum::<u64>().max(1);
+        let total: u64 = entries
+            .iter()
+            .filter(|e| !skipped(&e.name))
+            .map(|e| e.size)
+            .sum::<u64>()
+            .max(1);
         let mut done: u64 = 0;
         let mut written = Vec::with_capacity(entries.len());
         match self {
@@ -150,6 +174,9 @@ impl Payload {
                         continue;
                     }
                     let name = f.name().replace('\\', "/");
+                    if skipped(&name) {
+                        continue;
+                    }
                     let out = safe_join(dest, &name)?;
                     progress(done as f32 / total as f32, &name);
                     if let Some(parent) = out.parent() {
@@ -167,6 +194,9 @@ impl Payload {
             }
             Payload::Directory(dir) => {
                 for e in entries {
+                    if skipped(&e.name) {
+                        continue;
+                    }
                     let src = dir.join(&e.name);
                     let out = safe_join(dest, &e.name)?;
                     progress(done as f32 / total as f32, &e.name);
