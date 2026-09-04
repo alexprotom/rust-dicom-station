@@ -15,6 +15,7 @@ use super::*;
 
 use crate::dicomseg::{self, SegSeries};
 use crate::rtstruct::{Roi, StructureSet};
+use crate::workflow::{self, group::Landing, select};
 
 impl ViewerApp {
     // -- Series nodes ------------------------------------------------------
@@ -136,10 +137,19 @@ impl ViewerApp {
             let Some(study) = self.slots[r.slot].study.as_mut() else {
                 return;
             };
-            let Some(se) = study.series.iter().find(|se| se.uid == uid) else {
-                return;
+            // An empty uid ties a segmentation series to no image series:
+            // it then follows any image of its frame of reference.
+            let study_uid = if uid.is_empty() {
+                if r.kind != SetKind::Segmentations {
+                    return;
+                }
+                String::new()
+            } else {
+                let Some(se) = study.series.iter().find(|se| se.uid == uid) else {
+                    return;
+                };
+                se.study_uid.clone()
             };
-            let study_uid = se.study_uid.clone();
             match r.kind {
                 SetKind::Structures => {
                     let Some(ss) = study.structure_sets.get_mut(r.idx) else {
@@ -345,7 +355,183 @@ impl ViewerApp {
                 to,
                 copy,
             } => self.transfer_items(from, &items, to, copy),
+            ItemAction::ToPhases {
+                from,
+                items,
+                slot,
+                group,
+                landing,
+                copy,
+            } => self.transfer_to_phases(from, &items, slot, group, landing, copy),
         }
+    }
+
+    /// Start copying structures / segments onto every phase of a 4D group:
+    /// the phases are loaded on a worker for their lattices and the
+    /// structures resampled onto each; [`Self::on_phases_copied`] files
+    /// the copies.
+    fn transfer_to_phases(
+        &mut self,
+        from: SetRef,
+        items: &[usize],
+        slot: usize,
+        group: usize,
+        landing: Landing,
+        copy: bool,
+    ) {
+        if self.phases_job.is_some() {
+            self.error = Some("a copy onto the phases of a 4D group is still running".into());
+            return;
+        }
+        let mut items = items.to_vec();
+        items.sort_unstable();
+        items.dedup();
+        let structures: Vec<select::Structure> = {
+            let Some(study) = self.slots[from.slot].study.as_ref() else {
+                return;
+            };
+            match from.kind {
+                SetKind::Structures => match study.structure_sets.get(from.idx) {
+                    Some(ss) => items
+                        .iter()
+                        .filter_map(|&i| ss.rois.get(i))
+                        .map(select::Structure::from_roi)
+                        .collect(),
+                    None => return,
+                },
+                SetKind::Segmentations => match study.seg_series.get(from.idx) {
+                    Some(sr) => items
+                        .iter()
+                        .filter_map(|&i| select::Structure::from_segment(sr, i))
+                        .collect(),
+                    None => return,
+                },
+            }
+        };
+        if structures.is_empty() {
+            return;
+        }
+        let (group_name, phases) = {
+            let Some(study) = self.slots[slot].study.as_ref() else {
+                return;
+            };
+            let Some(g) = study.fourd_groups.get(group) else {
+                return;
+            };
+            match workflow::phases_of(g, &study.series) {
+                Ok(p) => (g.name.clone(), p),
+                Err(e) => {
+                    self.error = Some(format!("{e:#}"));
+                    return;
+                }
+            }
+        };
+        let progress = Arc::new(Progress::default());
+        progress.set("starting");
+        let job = Job::spawn(progress, move |p| {
+            workflow::group::copy_to_phases(&structures, &phases, p)
+        });
+        self.phases_job = Some((
+            PhasesCopy {
+                from,
+                items,
+                slot,
+                group_name,
+                landing,
+                copy,
+            },
+            job,
+        ));
+    }
+
+    /// File the copies a [`Self::transfer_to_phases`] made: into the
+    /// segmentation series already bound to each phase (or a new one), or
+    /// as contours into each phase's own RT structure set.
+    pub(super) fn on_phases_copied(
+        &mut self,
+        what: PhasesCopy,
+        phases: Vec<workflow::group::PhaseCopy>,
+    ) {
+        let mut notes: Vec<String> = Vec::new();
+        let mut landed = 0usize;
+        for ph in &phases {
+            notes.extend(ph.notes.iter().cloned());
+            if ph.segs.is_empty() {
+                continue;
+            }
+            let Some(study) = self.slots[what.slot].study.as_mut() else {
+                return;
+            };
+            match what.landing {
+                Landing::Segmentation => {
+                    let existing = study
+                        .seg_series
+                        .iter()
+                        .rposition(|sr| sr.referenced_series_uid == ph.series_uid);
+                    match existing {
+                        Some(i) => {
+                            let sr = &mut study.seg_series[i];
+                            for seg in &ph.segs {
+                                let mask = if sr.grid.matches(&ph.grid) {
+                                    seg.mask.clone()
+                                } else {
+                                    dicomseg::resample_mask(&seg.mask, &ph.grid, &sr.grid)
+                                };
+                                sr.segs.push(Segmentation::from_mask(
+                                    seg.name.clone(),
+                                    seg.color,
+                                    sr.grid.dims,
+                                    mask,
+                                ));
+                            }
+                        }
+                        None => study.seg_series.push(ph.seg_series(&what.group_name)),
+                    }
+                    landed += ph.segs.len();
+                }
+                Landing::StructureSet => {
+                    let items: Vec<crate::propagate::Propagated> = ph
+                        .segs
+                        .iter()
+                        .map(|seg| crate::propagate::Propagated {
+                            name: seg.name.clone(),
+                            color: seg.color,
+                            mask: seg.mask.clone(),
+                            voxels: seg.count,
+                            source_cm3: 0.0,
+                            result_cm3: 0.0,
+                            mapped_cm3: 0.0,
+                        })
+                        .collect();
+                    if let Some((_, names)) = workflow::group::land_in_structure_set(
+                        study,
+                        &ph.series_uid,
+                        &ph.study_uid,
+                        &ph.grid,
+                        &items,
+                        &format!("{} {}", what.group_name, ph.label),
+                    ) {
+                        landed += names.len();
+                    }
+                }
+            }
+        }
+        if landed == 0 {
+            self.error = Some(if notes.is_empty() {
+                "nothing reached any phase".into()
+            } else {
+                notes.join("\n")
+            });
+            return;
+        }
+        if let Some(study) = self.slots[what.slot].study.as_mut() {
+            study.warnings.extend(notes);
+        }
+        if !what.copy {
+            self.remove_items(what.from, &what.items);
+        }
+        self.rebind_seg_series(what.slot);
+        self.settings_gen += 1;
     }
 
     /// Delete structures / segments from their series.

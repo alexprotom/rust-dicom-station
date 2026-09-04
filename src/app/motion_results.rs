@@ -287,16 +287,13 @@ impl ViewerApp {
                 dashed: false,
             });
         }
-        for t in &r.reference_tracks {
-            if t.model == MotionModel::Deformable || r.reference_tracks.len() == 1 {
-                series.push(Series {
-                    label: format!("{} (reference)", t.target),
-                    color: REF_COLOR,
-                    values: t.magnitudes(),
-                    dashed: true,
-                });
-                break;
-            }
+        if let Some(t) = preferred_reference(r) {
+            series.push(Series {
+                label: format!("{} (reference, {})", t.target, t.model.label()),
+                color: REF_COLOR,
+                values: t.magnitudes(),
+                dashed: true,
+            });
         }
         line_chart(ui, &r.phases, &series, "|d| mm");
 
@@ -311,15 +308,12 @@ impl ViewerApp {
                 track_color(i),
             ));
         }
-        for t in &r.reference_tracks {
-            if t.model == MotionModel::Deformable || r.reference_tracks.len() == 1 {
-                bars.push((
-                    format!("{} (reference)", t.target),
-                    t.peak_to_peak(),
-                    REF_COLOR,
-                ));
-                break;
-            }
+        if let Some(t) = preferred_reference(r) {
+            bars.push((
+                format!("{} (reference, {})", t.target, t.model.label()),
+                t.peak_to_peak(),
+                REF_COLOR,
+            ));
         }
         bar_rows(ui, &bars, "mm");
         if !r.reference_tracks.is_empty() {
@@ -520,4 +514,17 @@ impl MotionReport {
     fn slot_label(&self) -> String {
         format!("dataset {}", self.slot_name)
     }
+}
+
+/// The reference structure's track worth drawing beside the targets: as
+/// contoured when every phase has it (measured, not modelled), else the
+/// deformable one, else whatever there is.
+fn preferred_reference(r: &crate::motion::MotionReport) -> Option<&crate::motion::Track> {
+    [
+        MotionModel::Contoured,
+        MotionModel::Deformable,
+        MotionModel::Rigid,
+    ]
+    .iter()
+    .find_map(|m| r.reference_track(*m))
 }

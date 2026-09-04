@@ -243,7 +243,18 @@ fn the_heart_sequence_runs_on_the_phantom() {
         "peak-to-peak {p2p} mm, expected about 6"
     );
     assert!(!run["report"]["itvs"].as_array().unwrap().is_empty());
-    assert_eq!(run["report"]["qa"].as_array().unwrap().len(), 4);
+    // Two non-reference phases, each with the global rigid fit, a local
+    // rigid fit per structure (the target and the reference structure) and
+    // the deformable fit.
+    let qa = run["report"]["qa"].as_array().unwrap();
+    assert_eq!(qa.len(), 8, "{qa:?}");
+    assert!(
+        qa.iter().any(|q| q["registration"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("TARGET:")),
+        "the local rigid fit of the target is reported: {qa:?}"
+    );
     let rep = call(c, "motion_report", json!({"run": "run1"}));
     assert!(rep["csv"].as_str().unwrap().contains("table"));
     assert!(

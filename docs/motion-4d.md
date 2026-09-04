@@ -47,24 +47,47 @@ modality node so each series has one place.
 1. **Reference phase** - chosen in the dialog (default: the 0 % phase).
    Targets are defined on it: contours rasterized onto its lattice,
    segmentations from another lattice resampled onto it.
+
+   The **Targets** list groups structures by name across the phases. The
+   first column, *On every phase*, holds names that exist on each phase
+   of the group (a target propagated onto every phase's structure set,
+   say); one tick there is one target, not ten. The second column, *On
+   some phases*, lists the rest with the series they belong to; such a
+   target is read from the reference phase alone.
 2. **Per-phase registration** - the reference volume is registered to
-   every other phase with the elastix engine: a rigid stage and, for the
-   deformable model, a B-spline refinement *started from* the rigid
-   result. Settings (levels, iterations, samples, grid spacing, sampling
-   threshold) come from the Registration panel, adjustable in the dialog.
+   every other phase with the elastix engine. Settings (levels,
+   iterations, samples, grid spacing, sampling threshold) come from the
+   Registration panel, adjustable in the dialog. The models:
+   - **rigid** is, by default, a *local* rigid fit per structure: the
+     region registered is the structure dilated by the *local margin* (15
+     mm by default), so the fit follows that structure and not the whole
+     image. Set the margin to 0 for one global rigid fit of the whole
+     volume. A global fit of a breathing thorax is dominated by the
+     spine, ribs and couch, which do not move, and reports a motion of
+     zero for everything; that is what the local fit is for.
+   - **deformable** is a B-spline refinement *started from* the global
+     rigid result.
+   - **as contoured** uses no registration at all: the structure is read
+     from each phase's own contours, so the track is exactly what was
+     drawn (or propagated) on each phase. It is offered when a ticked
+     target exists on every phase and is then the reference the others
+     are judged against.
 3. **Propagation** - every target (and the reference structure, when
    chosen) is carried through each transform onto each phase's lattice,
    once per model; the transform maps reference → phase, so landing on
    the phase samples through the inverse, as in the propagation tool.
+   *As contoured* rasterizes the phase's own contour instead.
 4. **Measurement** (`src/motion.rs`) - per phase and model: centroid (mm,
    patient LPS), volume; from those: displacement from the reference
    phase, 3D magnitude, peak-to-peak amplitude (largest pairwise centroid
    distance), target-reference drift `|TV − ref|` and its peak-to-peak,
    and Pearson correlation of target vs. reference displacement along RL /
    AP / SI with two-tailed p-values (t-test, n−2 dof).
-5. **ITV** - per target and model, the union of the propagated masks over
-   all phases, resampled onto the reference lattice, plus an optional
-   uniform margin. ITVs land as a segmentation series `4D ITV - <group>`
+5. **ITV** - one per target and model, the union of the propagated masks
+   over the selected phases, resampled onto the reference lattice, plus
+   an optional uniform margin. The *Phases* row next to *Build ITV* (All /
+   None, and the *Select phases* list under it) chooses which phases take
+   part in the run; the reference phase always does. ITVs land as a segmentation series `4D ITV - <group>`
    referencing the reference phase series (display that phase to see and
    edit them; they export like any segmentation - SEG or RTSTRUCT).
 6. **Registration QA** - per phase and model: the engine's metric line,
@@ -89,11 +112,14 @@ are name-based on purpose: indices and UIDs do not travel between patients.
 ## Results (`src/app/motion_results.rs`)
 
 The results window opens when a run finishes (later: *Tools ▸ 📈 Motion
-results…*). Per run: the displacement-magnitude-vs-phase chart (targets ×
-models, reference structure dashed red), peak-to-peak amplitude and drift
-bars, the per-phase table (|d| and volume per track), correlation lines
-(r, p, significance stars, synchrony wording), registration-QA lines and
-ITV volumes.
+results*). Per run: the displacement-magnitude-vs-phase chart (one line
+per target and model, reference structure dashed red), peak-to-peak
+amplitude and drift bars (one per target and model), the per-phase table
+(|d| and volume per track), correlation lines (r, p, significance stars,
+synchrony wording), registration-QA lines and ITV volumes. A target that
+was ticked once is one line and one amplitude; ticking the same name on
+every phase separately would have made ten targets of it, which is what
+the grouped *Targets* list prevents.
 
 **Compare with** puts a second run beside the first - dataset A vs. B,
 upright vs. supine - matching ITVs and tracks *by target name and model*:

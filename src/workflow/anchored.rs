@@ -89,6 +89,10 @@ pub struct AnchoredRequest {
     pub src_vol: Arc<Volume>,
     /// The anchor on the source (the moving side).
     pub src_anchor: Structure,
+    /// The name the propagated anchor lands under on each phase, so it is
+    /// told apart from the phase's own contour of the same structure.
+    /// `None` is `<name>_prop`.
+    pub anchor_landed_name: Option<String>,
     /// What to carry across besides the anchor. Empty is fine: the anchor
     /// always travels, and the run is then a registration with its check.
     pub subjects: Vec<Subject>,
@@ -189,10 +193,16 @@ pub fn run(req: AnchoredRequest, p: &Progress) -> Result<AnchoredOutcome> {
             Arc::new(distance_volume(&req.src_vol, &src_anchor_mask))
         }
     };
-    // The anchor travels too: it is the check.
+    // The anchor travels too: it is the check. It lands under its own
+    // name, next to the phase's contour it is compared with.
+    let landed_name = req
+        .anchor_landed_name
+        .clone()
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| landed_anchor_name(&req.src_anchor.name));
     let mut subjects = req.subjects;
     subjects.push(Subject {
-        name: req.src_anchor.name.clone(),
+        name: landed_name,
         color: req.src_anchor.color,
         mask: src_anchor_mask,
     });
@@ -339,6 +349,11 @@ pub fn run(req: AnchoredRequest, p: &Progress) -> Result<AnchoredOutcome> {
         },
         qa,
     })
+}
+
+/// The default name a propagated anchor lands under: `heart_total_prop`.
+pub fn landed_anchor_name(anchor: &str) -> String {
+    format!("{anchor}_prop")
 }
 
 /// How far a distance map reaches, mm: beyond this the value is clamped,

@@ -34,6 +34,7 @@ use crate::segmentation::{self, GrowState, Segmentation};
 use crate::settings::{self, Settings};
 use crate::simulate::{self, SimParams};
 use crate::volume::{ViewPlane, Volume};
+use crate::workflow;
 
 mod body_win;
 mod box_seg;
@@ -762,6 +763,65 @@ enum ItemAction {
         from: SetRef,
         items: Vec<usize>,
     },
+    /// Copy (`copy`) or move `items` of `from` onto every phase of a 4D
+    /// group, as they are, filed per phase the way `landing` says.
+    ToPhases {
+        from: SetRef,
+        items: Vec<usize>,
+        slot: usize,
+        group: usize,
+        landing: workflow::group::Landing,
+        copy: bool,
+    },
+}
+
+/// A destination of *Copy to* / *Move to*: one series, or every phase of a
+/// 4D group at once.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Destination {
+    Set(SetRef),
+    Phases {
+        slot: usize,
+        group: usize,
+        landing: workflow::group::Landing,
+    },
+}
+
+impl Destination {
+    /// The transfer of `items` of `from` here.
+    fn transfer(self, from: SetRef, items: Vec<usize>, copy: bool) -> ItemAction {
+        match self {
+            Destination::Set(to) => ItemAction::Transfer {
+                from,
+                items,
+                to,
+                copy,
+            },
+            Destination::Phases {
+                slot,
+                group,
+                landing,
+            } => ItemAction::ToPhases {
+                from,
+                items,
+                slot,
+                group,
+                landing,
+                copy,
+            },
+        }
+    }
+}
+
+/// A *Copy to each phase* in flight: what was copied, where it goes and how
+/// it is filed, kept until the phases are loaded and the copies made.
+struct PhasesCopy {
+    from: SetRef,
+    items: Vec<usize>,
+    slot: usize,
+    group_name: String,
+    landing: workflow::group::Landing,
+    copy: bool,
 }
 
 /// Which parts of a `LoadedStudy` a tree selection covers: the selected
@@ -967,6 +1027,12 @@ pub struct ViewerApp {
     propagate_dialog: Option<PropagateDialog>,
     /// The payload carries the destination slot.
     propagate_job: Option<SegJob<PropOutcome>>,
+    /// A copy of structures onto every phase of a 4D group, with what to do
+    /// with the copies once they are made.
+    phases_job: Option<(
+        PhasesCopy,
+        Job<anyhow::Result<Vec<workflow::group::PhaseCopy>>>,
+    )>,
 
     // Study transform simulator (registration QA).
     sim_source: usize,
@@ -1287,6 +1353,7 @@ impl ViewerApp {
             drr_job: None,
             propagate_dialog: None,
             propagate_job: None,
+            phases_job: None,
             group_registration: None,
             reg_group: None,
             sim_source: 0,
@@ -1726,6 +1793,23 @@ impl eframe::App for ViewerApp {
             &mut self.error,
         ) {
             self.on_propagation_done(dst_slot, out);
+        }
+
+        // Poll a copy onto every phase of a 4D group.
+        if let Some((what, job)) = self.phases_job.take() {
+            let mut slot = Some(job);
+            match poll_job(&mut slot, &ctx, "Copy to phases", &mut self.error) {
+                Some(Ok(phases)) => self.on_phases_copied(what, phases),
+                Some(Err(e)) if !progress::is_cancellation(&e) => {
+                    self.error = Some(format!("Copy to phases failed: {e:#}"));
+                }
+                Some(Err(_)) => {}
+                None => {
+                    if let Some(job) = slot {
+                        self.phases_job = Some((what, job));
+                    }
+                }
+            }
         }
 
         // Poll a vector-field re-sampling.

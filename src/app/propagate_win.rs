@@ -51,6 +51,8 @@ pub(super) struct PropagateDialog {
     /// Against a group: the entry of `set` the run is anchored on (a
     /// structure every phase carries too), or `None` for a plain run.
     pub anchor: Option<usize>,
+    /// The name the propagated anchor lands under; empty is `<name>_prop`.
+    pub anchor_name: String,
     pub anchor_margin_mm: f64,
     /// Anchored run: refine deformably after the rigid stage.
     pub anchor_deformable: bool,
@@ -82,6 +84,7 @@ impl Default for PropagateDialog {
             local: RegRoi::Whole,
             local_margin_mm: 10.0,
             anchor: None,
+            anchor_name: String::new(),
             anchor_margin_mm: 10.0,
             anchor_deformable: true,
             anchor_contours: true,
@@ -487,6 +490,7 @@ impl ViewerApp {
         slot: usize,
         group: usize,
         src_anchor: Structure,
+        anchor_name: String,
         margin_mm: f64,
         deformable: bool,
         contours: bool,
@@ -567,6 +571,7 @@ impl ViewerApp {
             let req = anchored::AnchoredRequest {
                 src_vol,
                 src_anchor,
+                anchor_landed_name: Some(anchor_name).filter(|n| !n.trim().is_empty()),
                 subjects,
                 phases: anchored,
                 margin_mm: margin_mm.max(0.0),
@@ -608,8 +613,10 @@ impl ViewerApp {
                 // The anchor carries itself as the check, so nothing else
                 // need be ticked; what is ticked travels with it.
                 let structures = self.propagate_structures(d).unwrap_or_default();
+                let name = d.anchor_name.clone();
                 self.start_anchored_run(
-                    src, slot, group, anchor, margin, deformable, contours, finish, structures,
+                    src, slot, group, anchor, name, margin, deformable, contours, finish,
+                    structures,
                 );
             } else {
                 let structures = match self.propagate_structures(d) {
@@ -1383,17 +1390,47 @@ impl ViewerApp {
                                     .selected_text(current)
                                     .width(200.0)
                                     .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut d.anchor,
-                                            None,
-                                            "None (plain run)",
-                                        );
+                                        if ui
+                                            .selectable_label(
+                                                d.anchor.is_none(),
+                                                "None (plain run)",
+                                            )
+                                            .clicked()
+                                        {
+                                            d.anchor = None;
+                                            d.anchor_name.clear();
+                                        }
                                         for (i, (name, _, _)) in entries.iter().enumerate() {
-                                            ui.selectable_value(&mut d.anchor, Some(i), name);
+                                            if ui
+                                                .selectable_label(d.anchor == Some(i), name)
+                                                .clicked()
+                                            {
+                                                d.anchor = Some(i);
+                                                d.anchor_name.clear();
+                                            }
                                         }
                                     });
                             });
-                            if d.anchor.is_some() {
+                            if let Some(ai) = d.anchor {
+                                let default_name = entries
+                                    .get(ai)
+                                    .map(|(n, _, _)| anchored::landed_anchor_name(n))
+                                    .unwrap_or_default();
+                                if d.anchor_name.is_empty() {
+                                    d.anchor_name = default_name.clone();
+                                }
+                                ui.horizontal(|ui| {
+                                    ui.label("Lands as");
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut d.anchor_name)
+                                            .desired_width(160.0)
+                                            .hint_text(default_name),
+                                    )
+                                    .on_hover_text(
+                                        "The propagated anchor's name on each phase, next to \
+                                         the phase's own contour it is compared with",
+                                    );
+                                });
                                 ui.horizontal(|ui| {
                                     ui.label("Margin");
                                     ui.add(
