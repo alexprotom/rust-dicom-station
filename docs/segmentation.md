@@ -5,7 +5,10 @@ CPU-side, plus a Slicer-style 3D surface view. Neural-network
 auto-segmentation is [auto-segmentation.md](auto-segmentation.md), the patient
 outline [body-contour.md](body-contour.md) - both land as the editable masks
 described here - and combining structures is
-[structure-algebra.md](structure-algebra.md).
+[structure-algebra.md](structure-algebra.md). Drawing and editing an RT
+structure *as contours* - polygon, spline, freehand, nudge, interpolation and
+the tidying tools - is [contours.md](contours.md); the two representations
+meet by the rule stated there.
 
 ## Segmentation masks
 

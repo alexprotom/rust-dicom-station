@@ -167,7 +167,12 @@ right panel at all.
 | Right drag | Window/level (x = width, y = center) |
 
 With a segmentation tool active the left button paints instead of navigating -
-see [segmentation.md](segmentation.md); the full bindings are under *Help*.
+see [segmentation.md](segmentation.md) - and with a contour tool it draws into
+the RT structure being edited ([contours.md](contours.md)): click by click for
+the polygon and spline tools (right-click, double-click or Enter closes,
+Esc cancels), one drag for freehand and nudge, Ctrl-click to pick the
+structure under the pointer. The full bindings of whichever tool is in hand
+are under the status bar's *?*.
 
 ## Datasets and the patient ▶ study ▶ series tree
 

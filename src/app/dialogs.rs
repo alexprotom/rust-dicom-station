@@ -38,6 +38,7 @@ impl ViewerApp {
         self.segvol_window(ctx);
         self.body_window(ctx);
         self.combine_window(ctx);
+        self.contour_window(ctx);
         self.dvh_window(ctx);
         self.motion_window(ctx);
         self.motion_results_window(ctx);

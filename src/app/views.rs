@@ -391,12 +391,17 @@ impl ViewerApp {
         // cached geometry stays, it simply is not painted.
         if self.show_contours && slot_state.structs_shown {
             if let Some(ss) = slot_state.active_structures() {
+                let edited = self
+                    .seg_tool
+                    .draws_contours()
+                    .then(|| self.edit_target(slot).map(|(_, r)| r))
+                    .flatten();
                 for (ri, gfx) in &view.contours {
                     let Some(roi) = ss.rois.get(*ri) else {
                         continue;
                     };
                     let color = Color32::from_rgb(roi.color[0], roi.color[1], roi.color[2]);
-                    let stroke = Stroke::new(1.8, color);
+                    let stroke = Stroke::new(if edited == Some(*ri) { 3.0 } else { 1.8 }, color);
                     for pl in &gfx.polylines {
                         let pts: Vec<Pos2> = pl.iter().map(|p| px_to_screen(*p)).collect();
                         painter.add(egui::Shape::closed_line(pts, stroke));
@@ -593,11 +598,17 @@ impl ViewerApp {
                 .input(|i| i.pointer.hover_pos())
                 .filter(|p| rect.contains(*p));
             match self.seg_tool {
-                SegTool::Brush | SegTool::Erase => {
+                SegTool::Brush | SegTool::Erase | SegTool::Nudge => {
                     if let Some(mp) = hover {
                         let erase =
                             self.seg_tool == SegTool::Erase || ui.input(|i| i.modifiers.alt);
-                        let col = if erase {
+                        let col = if self.seg_tool == SegTool::Nudge {
+                            let c = self
+                                .edit_roi_name(slot)
+                                .map(|(_, c)| c)
+                                .unwrap_or([255, 235, 60]);
+                            Color32::from_rgba_unmultiplied(c[0], c[1], c[2], 220)
+                        } else if erase {
                             Color32::from_rgba_unmultiplied(255, 90, 90, 200)
                         } else {
                             let c = slot_state
@@ -638,7 +649,83 @@ impl ViewerApp {
                         );
                     }
                 }
+                SegTool::Polygon | SegTool::Spline | SegTool::Freehand => {
+                    if let Some(mp) = hover {
+                        let c = self
+                            .edit_roi_name(slot)
+                            .map(|(_, c)| c)
+                            .unwrap_or([255, 235, 60]);
+                        let s = Stroke::new(
+                            1.5,
+                            Color32::from_rgba_unmultiplied(c[0], c[1], c[2], 220),
+                        );
+                        painter
+                            .line_segment([mp + Vec2::new(-7.0, 0.0), mp + Vec2::new(7.0, 0.0)], s);
+                        painter
+                            .line_segment([mp + Vec2::new(0.0, -7.0), mp + Vec2::new(0.0, 7.0)], s);
+                    }
+                }
                 SegTool::None => {}
+            }
+        }
+
+        // The interpolated slices, dashed: a preview of contours that do not
+        // exist yet, and will not until they are accepted.
+        if let Some((rings, c)) = self.interp_preview_at(slot, plane, view.slice) {
+            let stroke = Stroke::new(1.6, Color32::from_rgba_unmultiplied(c[0], c[1], c[2], 190));
+            for ring in &rings {
+                let pts: Vec<Pos2> = ring.iter().map(|p| px_to_screen(*p)).collect();
+                let n = pts.len();
+                if n < 2 {
+                    continue;
+                }
+                // Dashes by arc length, so the pattern does not change with
+                // the density of the contour's points.
+                let mut run = 0.0f32;
+                for i in 0..n {
+                    let a = pts[i];
+                    let b = pts[(i + 1) % n];
+                    let len = (b - a).length();
+                    if (run / 7.0) as i32 % 2 == 0 {
+                        painter.line_segment([a, b], stroke);
+                    }
+                    run += len.max(0.01);
+                }
+            }
+        }
+
+        // The contour under construction: the chain drawn so far, a rubber
+        // band to the pointer and, dimmer, the edge that will close it.
+        if let Some(pts) = self.draw_preview(slot, plane, view.slice) {
+            let scr: Vec<Pos2> = pts
+                .iter()
+                .map(|v| {
+                    let pp = vol.voxel_to_plane_pixel(plane, *v);
+                    px_to_screen([pp[0] as f32, pp[1] as f32])
+                })
+                .collect();
+            let c = self
+                .edit_roi_name(slot)
+                .map(|(_, c)| c)
+                .unwrap_or([255, 235, 60]);
+            let col = Color32::from_rgb(c[0], c[1], c[2]);
+            if scr.len() >= 2 {
+                painter.add(egui::Shape::line(scr.clone(), Stroke::new(1.8, col)));
+            }
+            if self.seg_tool != SegTool::Freehand {
+                for p in &scr {
+                    painter.circle_filled(*p, 2.5, col);
+                }
+            }
+            let hover = ui
+                .input(|i| i.pointer.hover_pos())
+                .filter(|p| rect.contains(*p));
+            if let (Some(mp), Some(first), Some(last)) = (hover, scr.first(), scr.last()) {
+                painter.line_segment([*last, mp], Stroke::new(1.4, col));
+                painter.line_segment(
+                    [mp, *first],
+                    Stroke::new(1.0, Color32::from_rgba_unmultiplied(c[0], c[1], c[2], 110)),
+                );
             }
         }
 
@@ -861,6 +948,12 @@ impl ViewerApp {
         let mut grow_start: Option<([f64; 3], f32)> = None;
         let mut grow_move: Option<f32> = None;
         let mut grow_done = false;
+        let mut draw_click: Option<[f64; 3]> = None;
+        let mut draw_drag: Option<[f64; 3]> = None;
+        let mut draw_close = false;
+        let mut nudge_to: Option<[f64; 3]> = None;
+        let mut nudge_done = false;
+        let mut pick_at: Option<[f64; 3]> = None;
         if seg_active && !over_buttons {
             let to_voxel = |mp: Pos2| {
                 let px = screen_to_px(mp);
@@ -893,6 +986,56 @@ impl ViewerApp {
                     }
                     if resp.drag_stopped_by(egui::PointerButton::Primary) || resp.clicked() {
                         grow_done = true;
+                    }
+                }
+                // Click by click, closed with the right button, Enter or a
+                // double click; Ctrl-click picks the structure under the
+                // pointer instead, the way RayStation's pick tool does.
+                SegTool::Polygon | SegTool::Spline => {
+                    let ctrl = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
+                    if resp.clicked() {
+                        if let Some(mp) = resp.interact_pointer_pos() {
+                            if ctrl {
+                                pick_at = Some(to_voxel(mp));
+                            } else {
+                                draw_click = Some(to_voxel(mp));
+                            }
+                        }
+                    }
+                    if resp.clicked_by(egui::PointerButton::Secondary) || resp.double_clicked() {
+                        draw_close = true;
+                    }
+                }
+                // One drag, one contour.
+                SegTool::Freehand => {
+                    let ctrl = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
+                    if ctrl && resp.clicked() {
+                        if let Some(mp) = resp.interact_pointer_pos() {
+                            pick_at = Some(to_voxel(mp));
+                        }
+                    } else if resp.drag_started_by(egui::PointerButton::Primary) {
+                        if let Some(mp) = resp.interact_pointer_pos() {
+                            draw_click = Some(to_voxel(mp));
+                        }
+                    } else if resp.dragged_by(egui::PointerButton::Primary) {
+                        if let Some(mp) = resp.interact_pointer_pos() {
+                            draw_drag = Some(to_voxel(mp));
+                        }
+                    }
+                    if resp.drag_stopped_by(egui::PointerButton::Primary) {
+                        draw_close = true;
+                    }
+                }
+                // Push the outline around: every sample of the drag moves the
+                // vertices within the tool radius.
+                SegTool::Nudge => {
+                    if resp.dragged_by(egui::PointerButton::Primary) {
+                        if let Some(mp) = resp.interact_pointer_pos() {
+                            nudge_to = Some(to_voxel(mp));
+                        }
+                    }
+                    if resp.drag_stopped_by(egui::PointerButton::Primary) || resp.clicked() {
+                        nudge_done = true;
                     }
                 }
                 SegTool::None => {}
@@ -993,6 +1136,30 @@ impl ViewerApp {
         }
         if grow_done {
             self.commit_grow();
+        }
+        if let Some(v) = pick_at {
+            self.pick_roi_at(slot, plane, v);
+        }
+        if let Some(v) = draw_click {
+            self.draw_point(slot, plane, cur_slice, v);
+        }
+        if let Some(v) = draw_drag {
+            self.draw_point(slot, plane, cur_slice, v);
+        }
+        if draw_close {
+            self.commit_draw();
+        }
+        if let Some(to) = nudge_to {
+            let from = match self.paint_last {
+                Some((s, p)) if s == slot => p,
+                _ => to,
+            };
+            let radius = self.brush_radius_mm as f64;
+            self.nudge_contour(slot, plane, cur_slice, from, to, radius);
+            self.paint_last = Some((slot, to));
+        }
+        if nudge_done {
+            self.paint_last = None;
         }
     }
 

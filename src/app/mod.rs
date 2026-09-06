@@ -41,6 +41,8 @@ mod box_seg;
 mod chrome;
 mod combine_win;
 mod compare_win;
+mod contour_edit;
+mod contour_win;
 mod d3;
 mod detach;
 mod dialogs;
@@ -244,6 +246,81 @@ enum SegTool {
     /// Seeded region growing: press to seed, drag up/down to widen/narrow
     /// the intensity tolerance, release to commit (Esc cancels).
     Grow,
+    /// Draw a polygon into the active RT structure, click by click.
+    Polygon,
+    /// The same, through a closed spline fitted to the clicked points.
+    Spline,
+    /// Draw a contour freehand, in one drag.
+    Freehand,
+    /// Push the contour under the pointer around, like a finger in clay.
+    Nudge,
+}
+
+impl SegTool {
+    /// Does this tool edit RT structure contours rather than voxel masks?
+    fn draws_contours(self) -> bool {
+        matches!(
+            self,
+            SegTool::Polygon | SegTool::Spline | SegTool::Freehand | SegTool::Nudge
+        )
+    }
+}
+
+/// What a drawn contour does to the ones already on the slice.
+///
+/// The names and the *auto* rule are RayStation's (2024B user manual, 5.3.3
+/// "The contouring tools"), because a planner should not have to learn a
+/// second set of habits.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DrawMode {
+    /// Crosses nothing: a new contour. Crosses something, starting inside
+    /// it: extend. Crosses something, starting outside: cut.
+    Auto,
+    /// Always add.
+    Extend,
+    /// Always cut.
+    Subtract,
+}
+
+impl DrawMode {
+    const ALL: [DrawMode; 3] = [DrawMode::Auto, DrawMode::Extend, DrawMode::Subtract];
+    fn label(self) -> &'static str {
+        match self {
+            DrawMode::Auto => "Auto",
+            DrawMode::Extend => "Extend",
+            DrawMode::Subtract => "Subtract",
+        }
+    }
+    fn hint(self) -> &'static str {
+        match self {
+            DrawMode::Auto => {
+                "New contour when the drawing crosses nothing; extend when it starts \
+                 inside an existing one; cut when it starts outside"
+            }
+            DrawMode::Extend => "Always add to the structure",
+            DrawMode::Subtract => "Always cut away from the structure",
+        }
+    }
+}
+
+/// A contour being drawn: the points collected so far, in this slot's voxel
+/// coordinates, on one slice of one view plane.
+struct DrawState {
+    slot: usize,
+    plane: crate::volume::ViewPlane,
+    slice: usize,
+    /// Fractional voxel coordinates of the clicked (or dragged) points.
+    pts: Vec<[f64; 3]>,
+}
+
+/// One step of contour undo: the whole geometry of one ROI before an edit.
+/// A structure is a few hundred points a slice, so keeping the lot is both
+/// simpler and cheaper than a per-vertex journal.
+struct RoiSnapshot {
+    slot: usize,
+    set: usize,
+    roi: usize,
+    contours: Vec<crate::rtstruct::Contour>,
 }
 
 /// An in-progress region-growing drag.
@@ -371,6 +448,9 @@ struct StudySlot {
     active_seg_series: usize,
     /// Index of the segment the tools edit, within that series.
     active_seg: usize,
+    /// Index of the ROI the contour tools edit, within the active structure
+    /// set. Out of range simply means "none yet".
+    active_roi: usize,
 }
 
 impl StudySlot {
@@ -450,6 +530,7 @@ impl StudySlot {
             dose_reference: 1.0,
             active_seg_series: 0,
             active_seg: 0,
+            active_roi: usize::MAX,
         }
     }
 }
@@ -1133,6 +1214,22 @@ pub struct ViewerApp {
     grow_gen: u64,
     /// Counter for naming newly created segmentations.
     seg_counter: usize,
+    /// The contour being drawn, if any.
+    draw: Option<DrawState>,
+    /// What the next drawn contour does to the ones already there.
+    draw_mode: DrawMode,
+    /// Undo stack of the contour tools (see [`RoiSnapshot`]).
+    roi_undo: Vec<RoiSnapshot>,
+    /// Counter for naming newly created ROIs.
+    roi_counter: usize,
+    /// The working geometry of the ROI under the contour tools.
+    edit: Option<contour_edit::EditStack>,
+    /// The interpolated slices shown as a preview, until accepted.
+    interp: Option<contour_edit::InterpPreview>,
+    /// Contours copied from one slice, and the axis they were cut on.
+    contour_clip: Option<(usize, crate::contours::Region)>,
+    /// The contour tools window.
+    contour_dialog: Option<contour_win::ContourDialog>,
 
     /// Root folder of the downloaded network weights, shared by the three
     /// engines (persisted in the settings file; blank = the default).
@@ -1451,6 +1548,14 @@ impl ViewerApp {
             grow_marked: Vec::new(),
             grow_gen: 0,
             seg_counter: 0,
+            draw: None,
+            draw_mode: DrawMode::Auto,
+            roi_undo: Vec::new(),
+            roi_counter: 0,
+            edit: None,
+            interp: None,
+            contour_clip: None,
+            contour_dialog: None,
             dose_mode: DoseMode::Off,
             dose_opacity: 0.45,
             dose_threshold_pct: 15.0,
@@ -1841,10 +1946,24 @@ impl eframe::App for ViewerApp {
             }
             if undo {
                 let slot = self.hovered_slot.min(1);
-                self.undo_active_seg(slot);
+                // A contour tool undoes contours, a voxel tool voxels: the
+                // key follows the tool in hand rather than a global history.
+                if self.seg_tool.draws_contours() {
+                    self.undo_roi_edit(slot);
+                } else {
+                    self.undo_active_seg(slot);
+                }
             }
             if esc && self.grow.is_some() {
                 self.cancel_grow();
+            }
+            if esc && self.draw.is_some() {
+                self.draw = None;
+            }
+            // Enter closes the polygon under construction, for anyone who
+            // would rather not reach for the right button.
+            if self.draw.is_some() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+                self.commit_draw();
             }
             if self.seg_tool != SegTool::None {
                 if smaller {

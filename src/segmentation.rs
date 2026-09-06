@@ -12,6 +12,7 @@ use std::collections::BinaryHeap;
 use egui::Color32;
 use rayon::prelude::*;
 
+use crate::contours::{drop_collinear, stitch_loops};
 use crate::geometry::Vec3;
 use crate::render;
 use crate::rtstruct::{Contour, Roi};
@@ -866,77 +867,5 @@ pub fn mask_to_roi(seg: &Segmentation, grid: &Grid, number: i32) -> Roi {
         color: seg.color,
         roi_type: "ORGAN".into(),
         contours,
-    }
-}
-
-/// Endpoint key for loop stitching. On a binary field every marching-squares
-/// endpoint lies exactly on a half-integer, so doubling is lossless.
-#[inline]
-fn ep_key(p: [f32; 2]) -> (i64, i64) {
-    ((p[0] * 2.0).round() as i64, (p[1] * 2.0).round() as i64)
-}
-
-/// Chain unordered marching-squares segments into closed loops.
-fn stitch_loops(segs: &[render::Segment]) -> Vec<Vec<[f32; 2]>> {
-    use std::collections::HashMap;
-    let mut adj: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
-    for (si, s) in segs.iter().enumerate() {
-        adj.entry(ep_key(s.0)).or_default().push(si);
-        adj.entry(ep_key(s.1)).or_default().push(si);
-    }
-    let mut used = vec![false; segs.len()];
-    let mut out = Vec::new();
-    for start in 0..segs.len() {
-        if used[start] {
-            continue;
-        }
-        used[start] = true;
-        let start_key = ep_key(segs[start].0);
-        let mut pts = vec![segs[start].0, segs[start].1];
-        let mut cur = ep_key(segs[start].1);
-        let mut closed = cur == start_key;
-        while !closed {
-            let next = adj
-                .get(&cur)
-                .and_then(|c| c.iter().copied().find(|&si| !used[si]));
-            let Some(nxt) = next else { break };
-            used[nxt] = true;
-            let s = &segs[nxt];
-            let np = if ep_key(s.0) == cur { s.1 } else { s.0 };
-            cur = ep_key(np);
-            if cur == start_key {
-                closed = true;
-            } else {
-                pts.push(np);
-            }
-        }
-        if closed && pts.len() >= 3 {
-            out.push(pts);
-        }
-    }
-    out
-}
-
-/// Remove points that lie on the straight line between their neighbors -
-/// marching squares on a binary mask produces long collinear runs.
-fn drop_collinear(pts: Vec<[f32; 2]>) -> Vec<[f32; 2]> {
-    let n = pts.len();
-    if n < 4 {
-        return pts;
-    }
-    let mut out = Vec::with_capacity(n);
-    for i in 0..n {
-        let p = pts[(i + n - 1) % n];
-        let c = pts[i];
-        let q = pts[(i + 1) % n];
-        let cross = (c[0] - p[0]) * (q[1] - c[1]) - (c[1] - p[1]) * (q[0] - c[0]);
-        if cross.abs() > 1e-4 {
-            out.push(c);
-        }
-    }
-    if out.len() >= 3 {
-        out
-    } else {
-        pts
     }
 }

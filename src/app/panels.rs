@@ -1379,9 +1379,12 @@ impl ViewerApp {
         let mut item_act: Option<ItemAction> = None;
         let mut new_anchor: Option<(SetRef, usize)> = None;
         let mut new_color: Option<(usize, [u8; 3])> = None;
+        let mut new_edit: Option<usize> = None;
+        let mut add_roi = false;
         let shift = ui.input(|i| i.modifiers.shift);
         {
             let me = &*self;
+            let edit_roi = me.edit_target(slot).map(|(_, r)| r);
             let study = me.slots[slot].study.as_ref().unwrap();
             let sets = &study.structure_sets;
             // The active set counts as belonging here only when this study
@@ -1493,6 +1496,16 @@ impl ViewerApp {
                             if ui.small_button("None").clicked() {
                                 vis.iter_mut().for_each(|v| *v = false);
                             }
+                            if ui
+                                .add_enabled(has_volume, egui::Button::new("+ ROI").small())
+                                .on_hover_text(
+                                    "New, empty structure in this set - and the one the \
+                                     contour tools draw into",
+                                )
+                                .clicked()
+                            {
+                                add_roi = true;
+                            }
                             me.selection_buttons(ui, here, &selection, &mut item_act);
                         });
                         let anchor = me.tick_anchor.filter(|(r, _)| *r == here).map(|(_, i)| i);
@@ -1501,6 +1514,19 @@ impl ViewerApp {
                                 let mut color = roi.color;
                                 if color_swatch(ui, &mut color) {
                                     new_color = Some((i, color));
+                                }
+                                // Which structure the contour tools edit is a
+                                // different question from which are shown, so
+                                // it gets its own (small) button.
+                                if ui
+                                    .add_enabled(
+                                        has_volume,
+                                        egui::Button::selectable(edit_roi == Some(i), "✏").small(),
+                                    )
+                                    .on_hover_text("Edit this structure with the contour tools")
+                                    .clicked()
+                                {
+                                    new_edit = Some(i);
                                 }
                                 let resp = ui.checkbox(
                                     &mut vis[i],
@@ -1575,6 +1601,16 @@ impl ViewerApp {
                 .map(|st| st.structure_sets[i].rois.len())
                 .unwrap_or(0);
             s.roi_visible = vec![true; n];
+            // Another set means another list: nothing is being edited yet.
+            s.active_roi = usize::MAX;
+            self.edit = None;
+        }
+        if let Some(i) = new_edit {
+            self.slots[slot].active_roi = i;
+            self.edit = None;
+        }
+        if add_roi {
+            self.new_roi(slot, None, "ORGAN");
         }
         if set_act.is_some() {
             self.set_action = set_act;
@@ -1680,6 +1716,11 @@ impl ViewerApp {
                     // on the section's own toolbar.
                     ui.horizontal_wrapped(|ui| {
                         for (tool, hint) in [
+                            (
+                                &super::contour_win::CONTOURS,
+                                "Interpolation, tidying, moving - on the structure the \
+                             contour tools edit",
+                            ),
                             (
                                 &BODY_CONTOUR,
                                 "Outline the patient without the couch, the chair or the \
@@ -1918,6 +1959,7 @@ impl ViewerApp {
             self.create_seg(slot);
         }
         match open_tool.map(|t| t.glyph) {
+            Some(g) if g == super::contour_win::CONTOURS.glyph => self.open_contour_dialog(slot),
             Some(g) if g == COMBINE.glyph => self.open_combine_dialog(slot, Vec::new()),
             Some(g) if g == BODY_CONTOUR.glyph => self.open_body_dialog(slot),
             Some(g) if g == AUTOSEG.glyph => self.open_autoseg_dialog(slot),

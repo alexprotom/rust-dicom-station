@@ -14,6 +14,7 @@ Each page here covers one area.
 | [motion-4d.md](motion-4d.md) | 4D groups, the per-phase register ▸ propagate ▸ measure pipeline, motion metrics, ITV generation, the results window, structure comparison and transfer |
 | [drr.md](drr.md) | Digitally reconstructed radiographs: the two projectors, the geometry, the comparison |
 | [dvh.md](dvh.md) | Dose-volume histograms: sampling, axes, metrics, protocol constraints, CSV export, the analytic phantom |
+| [contours.md](contours.md) | Drawing and editing RT structures as contours: the polygon, spline, freehand and nudge tools, the drawing modes, interpolation, tidying, and the representation rule behind them |
 | [segmentation.md](segmentation.md) | Interactive segmentation: brush, eraser, geodesic region growing, the 3D view, mask → RTSTRUCT |
 | [structure-algebra.md](structure-algebra.md) | Boolean operations, margins in patient directions, cropping, cleanup |
 | [body-contour.md](body-contour.md) | The body / EXTERNAL contour: the classical and the model-assisted method, CT and MR, verification |

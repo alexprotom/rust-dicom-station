@@ -227,7 +227,13 @@ impl ViewerApp {
                 ui.menu_button("Tools", |ui| {
                     // One block per dataset: the same six tools, in the same
                     // order, for A and B.
-                    let tools: [(&ToolInfo, &str); 6] = [
+                    let tools: [(&ToolInfo, &str); 7] = [
+                        (
+                            &super::contour_win::CONTOURS,
+                            "Interpolate the slices you skipped, tidy what a rushed hand \
+                             left behind, move a structure that is right in shape and \
+                             wrong in place - on the structure the contour tools edit.",
+                        ),
                         (
                             &COMBINE,
                             "Build one structure out of others: union, intersection, \
@@ -285,6 +291,9 @@ impl ViewerApp {
                         }
                     }
                     match open_tool {
+                        Some(t) if t.glyph == super::contour_win::CONTOURS.glyph => {
+                            self.open_contour_dialog(slot)
+                        }
                         Some(t) if t.glyph == COMBINE.glyph => {
                             self.open_combine_dialog(slot, Vec::new())
                         }
@@ -743,6 +752,9 @@ impl ViewerApp {
                             if self.seg_tool != SegTool::Grow {
                                 self.cancel_grow();
                             }
+                            if !self.seg_tool.draws_contours() {
+                                self.draw = None;
+                            }
                         }
                     };
                     pick(
@@ -768,7 +780,88 @@ impl ViewerApp {
                          the organ under the seed is suggested before anything leaks. \
                          Release commits (enclosed holes are filled), Esc cancels",
                     );
-                    if matches!(self.seg_tool, SegTool::Brush | SegTool::Erase) {
+                    ui.separator();
+                    pick(
+                        ui,
+                        SegTool::Polygon,
+                        "📐 Polygon",
+                        "Draw a contour into the active RT structure, click by click \n\
+                         (right-click, double-click or Enter closes it, Esc cancels).\n\
+                         Ctrl-click picks the structure under the pointer · Ctrl+Z undo",
+                    );
+                    pick(
+                        ui,
+                        SegTool::Spline,
+                        "✒ Spline",
+                        "The same, but the clicked points are joined by a closed \
+                         spline - four clicks for a smooth organ outline",
+                    );
+                    pick(
+                        ui,
+                        SegTool::Freehand,
+                        "✏ Free",
+                        "Draw a contour freehand: press, drag round the structure, \
+                         release. The stroke is closed and thinned on release",
+                    );
+                    pick(
+                        ui,
+                        SegTool::Nudge,
+                        "⌖ Nudge",
+                        "Push the outline of the edited structure around: vertices \
+                         within the tool radius follow the drag, with a smooth \
+                         falloff. Shift+wheel or [ ] set the radius",
+                    );
+                    if self.seg_tool.draws_contours() {
+                        // Which structure the strokes land in, and what they do
+                        // to what is already there.
+                        let hovered = self.hovered_slot.min(1);
+                        let slot = if self.slots[hovered].has_volume() {
+                            hovered
+                        } else {
+                            usize::from(!self.slots[0].has_volume())
+                        };
+                        match self.edit_roi_name(slot) {
+                            Some((name, c)) => {
+                                let name = name.to_string();
+                                ui.label(
+                                    egui::RichText::new(format!("▸ {name}"))
+                                        .color(egui::Color32::from_rgb(c[0], c[1], c[2])),
+                                )
+                                .on_hover_text(
+                                    "The structure the contour tools edit. Change it in the \
+                                     RT structures list (the ✏ button), or Ctrl-click a \
+                                     contour in a view",
+                                );
+                            }
+                            None => {
+                                ui.label(egui::RichText::new("▸ new structure").weak())
+                                    .on_hover_text(
+                                        "There is no structure to edit yet - the first \
+                                         stroke creates one",
+                                    );
+                            }
+                        }
+                        if ui
+                            .button("+")
+                            .on_hover_text("New RT structure, and edit it")
+                            .clicked()
+                        {
+                            self.new_roi(slot, None, "ORGAN");
+                        }
+                        for m in DrawMode::ALL {
+                            if ui
+                                .add(egui::Button::selectable(self.draw_mode == m, m.label()))
+                                .on_hover_text(m.hint())
+                                .clicked()
+                            {
+                                self.draw_mode = m;
+                            }
+                        }
+                    }
+                    if matches!(
+                        self.seg_tool,
+                        SegTool::Brush | SegTool::Erase | SegTool::Nudge
+                    ) {
                         ui.add(
                             egui::DragValue::new(&mut self.brush_radius_mm)
                                 .speed(0.5)
@@ -776,13 +869,14 @@ impl ViewerApp {
                                 .suffix(" mm"),
                         )
                         .on_hover_text("Brush radius");
-                        if ui
-                            .selectable_label(self.brush_3d, "3D")
-                            .on_hover_text(
-                                "Spherical 3D brush: paints through neighboring slices.\n\
-                                 Off: flat 2D circle on the displayed slice only",
-                            )
-                            .clicked()
+                        if self.seg_tool != SegTool::Nudge
+                            && ui
+                                .selectable_label(self.brush_3d, "3D")
+                                .on_hover_text(
+                                    "Spherical 3D brush: paints through neighboring slices.\n\
+                                     Off: flat 2D circle on the displayed slice only",
+                                )
+                                .clicked()
                         {
                             self.brush_3d = !self.brush_3d;
                         }
@@ -892,6 +986,15 @@ impl ViewerApp {
                         }
                         SegTool::Grow => {
                             "LMB press seed · drag up/down = grow/shrink · release commit · Esc cancel · Ctrl+Z undo"
+                        }
+                        SegTool::Polygon | SegTool::Spline => {
+                            "LMB add point · RMB / double-click / Enter close · Esc cancel · Ctrl-click pick structure · Ctrl+Z undo"
+                        }
+                        SegTool::Freehand => {
+                            "LMB drag draws · release closes · Ctrl-click pick structure · Ctrl+Z undo"
+                        }
+                        SegTool::Nudge => {
+                            "LMB drag pushes the outline · Shift+wheel / [ ] radius · Ctrl+Z undo"
                         }
                     };
                     // `Sense::hover`: it looks like a button and answers the

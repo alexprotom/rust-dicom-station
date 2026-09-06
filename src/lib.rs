@@ -6,6 +6,7 @@ pub mod app;
 pub mod archive;
 pub mod autoseg;
 pub mod bodymask;
+pub mod contours;
 pub mod dicom_export;
 pub mod dicomfile;
 pub mod dicomseg;

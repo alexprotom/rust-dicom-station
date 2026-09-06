@@ -242,6 +242,11 @@ src/
                       the name and UID editors, the RTSTRUCT / SEG radios
     seg.rs            interactive segmentation state machine, mask ▶ RTSTRUCT,
                       landing an auto-segmentation result
+    contour_edit.rs   the contour tools' state machine: the ROI under the
+                      tools, the working stack, drawing and nudging, contour
+                      undo, the interpolation preview
+    contour_win.rs    the contour window: interpolation, per-slice copy /
+                      paste / clear / thin, tidying, transforms, ROI type
     seg_engines.rs    what the tool windows share: names and glyphs, the
                       dataset A / B row, device / model-folder / licence /
                       progress rows, result landing, the "still the same
@@ -318,6 +323,10 @@ src/
                     ITV unions, the motion report + CSV                          4D
   dvh.rs            dose-volume histograms: sampling, curves, metrics,
                     protocol constraints, CSV                                    Dose
+  contours.rs       planar contours as an editable representation: rings and
+                    even-odd regions, the local supersampled boolean, the
+                    slice stack, contour ⇄ mask ⇄ RTSTRUCT, tidying,
+                    transforms, slice interpolation                              Seg
   segmentation.rs   voxel masks: brush, geodesic grow, undo, overlays,
                     label map ▶ segmentations, mask ⇄ RTSTRUCT contours          Seg
   structops.rs      structure algebra: the four boolean operations, margins,
