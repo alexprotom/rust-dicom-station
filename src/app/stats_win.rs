@@ -12,8 +12,6 @@
 //! structures is a second of work, and nothing here changes unless the
 //! geometry does.
 
-use rayon::prelude::*;
-
 use crate::contours::Stack;
 use crate::derived::Status;
 use crate::volume::{Grid, Volume};
