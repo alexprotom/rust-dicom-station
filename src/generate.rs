@@ -14,9 +14,10 @@ use crate::geometry::Vec3;
 use crate::rtdose::DoseGrid;
 use crate::volume::{Grid, Volume};
 
-/// The grey-level presets of RayStation's *Create bone ROI*, in Hounsfield
-/// units (USM 5.3.6). The upper bound is open: bone has no ceiling, and a
-/// prosthesis is bone as far as a threshold is concerned.
+/// The grey-level presets for a bone structure, in Hounsfield units: the
+/// three windows a planning system offers by region. The upper bound is
+/// open - bone has no ceiling, and a prosthesis is bone as far as a
+/// threshold is concerned.
 pub const BONE_PRESETS: [(&str, f32); 3] = [
     ("High (head and neck)", 250.0),
     ("Medium (thorax)", 200.0),
@@ -25,7 +26,7 @@ pub const BONE_PRESETS: [(&str, f32); 3] = [
 
 /// Voxels whose value lies in `[lo, hi]`, optionally only inside `limit`.
 ///
-/// The limiting mask is the manual's *limiting ROI*: a threshold is a blunt
+/// The limiting mask is the *limiting structure*: a threshold is a blunt
 /// instrument, and restricting it to a structure that is already drawn is
 /// what makes it usable (bone inside the body, contrast inside the liver).
 pub fn threshold_mask(vol: &Volume, lo: f32, hi: f32, limit: Option<&[u8]>) -> Vec<u8> {
@@ -45,8 +46,7 @@ pub fn threshold_mask(vol: &Volume, lo: f32, hi: f32, limit: Option<&[u8]>) -> V
     out
 }
 
-/// The shapes RayStation offers under *Basic shapes*, aligned with the
-/// patient axes.
+/// The basic shapes, aligned with the patient axes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Shape {
     Box,
@@ -121,6 +121,70 @@ pub fn shape_mask(shape: Shape, grid: &Grid, centre: Vec3, half: [f64; 3]) -> Ve
         }
     }
     out
+}
+
+/// The reconstructed field of view: the part of each slice that carries
+/// data at all.
+///
+/// A CT reconstructed on a circle smaller than the image matrix pads the
+/// corners with one constant value, and every threshold, body contour and
+/// registration then has to know where the data stop. The padding value is
+/// read off the corners rather than assumed (-1000 and -2000 are both in
+/// use, and so is 0), the valid pixels of each slice are kept, holes are
+/// filled and only the piece the centre of the image sits in survives.
+///
+/// `None` when the corners disagree, which is what a full-field image
+/// looks like: there is no field-of-view structure to make, because the
+/// field of view is the image.
+pub fn fov_mask(vol: &Volume) -> Option<Vec<u8>> {
+    let [nx, ny, nz] = vol.dims;
+    if nx < 4 || ny < 4 || nz == 0 {
+        return None;
+    }
+    let mid = nz / 2;
+    let corners = [
+        vol.index(0, 0, mid),
+        vol.index(nx - 1, 0, mid),
+        vol.index(0, ny - 1, mid),
+        vol.index(nx - 1, ny - 1, mid),
+    ];
+    // Three of four corners agreeing is a padded reconstruction; anything
+    // else is an image whose corners hold real tissue.
+    let pad = corners
+        .iter()
+        .find(|&&c| corners.iter().filter(|&&o| o == c).count() >= 3)
+        .copied()?;
+    if vol.index(nx / 2, ny / 2, mid) == pad {
+        // The middle is padding too: this is not a field of view, it is an
+        // empty image.
+        return None;
+    }
+    let mut mask = vec![0u8; nx * ny * nz];
+    mask.par_chunks_mut(nx * ny)
+        .enumerate()
+        .for_each(|(k, sl)| {
+            for j in 0..ny {
+                for i in 0..nx {
+                    if vol.index(i, j, k) != pad {
+                        sl[j * nx + i] = 1;
+                    }
+                }
+            }
+        });
+    crate::morphology::fill_holes_2d(&mut mask, vol.dims, 2);
+    // Keep the piece the image centre is in: a couch rail sticking out of
+    // the reconstruction circle is not part of the field of view.
+    let comps = crate::morphology::components(&mask, vol.dims);
+    let centre = mid * nx * ny + (ny / 2) * nx + nx / 2;
+    let keep = comps
+        .iter()
+        .find(|c| c.voxels.contains(&(centre as u32)))
+        .or_else(|| comps.iter().max_by_key(|c| c.len()))?;
+    let mut out = vec![0u8; nx * ny * nz];
+    for &v in &keep.voxels {
+        out[v as usize] = 1;
+    }
+    Some(out)
 }
 
 /// Voxels of `grid` where the dose is at least `level` (in the dose object's
@@ -280,6 +344,46 @@ mod tests {
                 shape.label()
             );
         }
+    }
+
+    #[test]
+    fn the_field_of_view_is_the_circle_the_data_are_on() {
+        let g = grid([64, 64, 6], [1.0, 1.0, 2.0]);
+        let r = 26.0;
+        // A padded reconstruction: -2000 outside the circle, tissue inside.
+        let v = volume(&g, |i, j, _| {
+            let d = ((i as f64 - 31.5).powi(2) + (j as f64 - 31.5).powi(2)).sqrt();
+            if d <= r {
+                40
+            } else {
+                -2000
+            }
+        });
+        let m = fov_mask(&v).expect("a padded reconstruction");
+        let got = m.iter().filter(|&&x| x != 0).count() as f64;
+        let want = std::f64::consts::PI * r * r * 6.0;
+        assert!((got - want).abs() < 0.05 * want, "{got} voxels vs {want}");
+        // Air inside the circle belongs to the field of view all the same:
+        // the mask is where the data are, not where the tissue is.
+        let v2 = volume(&g, |i, j, _| {
+            let d = ((i as f64 - 31.5).powi(2) + (j as f64 - 31.5).powi(2)).sqrt();
+            if d > r {
+                -2000
+            } else if d > 10.0 {
+                40
+            } else {
+                -1000
+            }
+        });
+        let m2 = fov_mask(&v2).expect("a padded reconstruction");
+        assert_eq!(
+            m.iter().filter(|&&x| x != 0).count(),
+            m2.iter().filter(|&&x| x != 0).count()
+        );
+
+        // A full-field image has nothing to outline.
+        let full = volume(&g, |_, _, _| 40);
+        assert!(fov_mask(&full).is_none());
     }
 
     #[test]

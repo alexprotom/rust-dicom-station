@@ -1614,6 +1614,7 @@ fn write_structures(
                 study_uid: ctx.study_uid.clone(),
                 referenced_series_uid: image.series_uid.clone(),
                 file_name: String::new(),
+                locked: false,
                 rois: Vec::new(),
             };
             for (i, seg) in sg.segs.iter().enumerate() {

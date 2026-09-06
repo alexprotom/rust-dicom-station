@@ -651,7 +651,7 @@ impl ViewerApp {
                         );
                     }
                 }
-                SegTool::Polygon | SegTool::Spline | SegTool::Freehand => {
+                SegTool::Polygon | SegTool::Spline | SegTool::Freehand | SegTool::LiveWire => {
                     if let Some(mp) = hover {
                         let c = self
                             .edit_roi_name(slot)
@@ -723,7 +723,32 @@ impl ViewerApp {
                 .input(|i| i.pointer.hover_pos())
                 .filter(|p| rect.contains(*p));
             if let (Some(mp), Some(first), Some(last)) = (hover, scr.first(), scr.last()) {
-                painter.line_segment([*last, mp], Stroke::new(1.4, col));
+                // The live-wire's rubber band is the path along the edge,
+                // not the straight line the other tools stretch.
+                let wire = (self.seg_tool == SegTool::LiveWire)
+                    .then(|| {
+                        let px = screen_to_px(mp);
+                        let v =
+                            vol.plane_pixel_to_voxel(plane, view.slice, px[0] as f64, px[1] as f64);
+                        self.livewire_preview(slot, plane, view.slice, v)
+                    })
+                    .flatten();
+                match wire {
+                    Some(path) => {
+                        let band: Vec<Pos2> = path
+                            .iter()
+                            .map(|v| {
+                                let pp = vol.voxel_to_plane_pixel(plane, *v);
+                                px_to_screen([pp[0] as f32, pp[1] as f32])
+                            })
+                            .collect();
+                        painter.add(egui::Shape::line(band, Stroke::new(1.8, col)));
+                    }
+
+                    None => {
+                        painter.line_segment([*last, mp], Stroke::new(1.4, col));
+                    }
+                }
                 painter.line_segment(
                     [mp, *first],
                     Stroke::new(1.0, Color32::from_rgba_unmultiplied(c[0], c[1], c[2], 110)),
@@ -994,8 +1019,8 @@ impl ViewerApp {
                 }
                 // Click by click, closed with the right button, Enter or a
                 // double click; Ctrl-click picks the structure under the
-                // pointer instead, the way RayStation's pick tool does.
-                SegTool::Polygon | SegTool::Spline => {
+                // pointer instead, the way a pick tool does.
+                SegTool::Polygon | SegTool::Spline | SegTool::LiveWire => {
                     let ctrl = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
                     if resp.clicked() {
                         if let Some(mp) = resp.interact_pointer_pos() {
@@ -1158,7 +1183,11 @@ impl ViewerApp {
             self.pick_roi_at(slot, plane, v);
         }
         if let Some(v) = draw_click {
-            self.draw_point(slot, plane, cur_slice, v);
+            if self.seg_tool == SegTool::LiveWire {
+                self.livewire_click(slot, plane, cur_slice, v);
+            } else {
+                self.draw_point(slot, plane, cur_slice, v);
+            }
         }
         if let Some(v) = draw_drag {
             self.draw_point(slot, plane, cur_slice, v);

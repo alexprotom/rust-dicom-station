@@ -53,6 +53,7 @@ mod export_win;
 mod glyphs;
 mod home;
 mod jobs;
+mod livewire_app;
 mod models_win;
 mod motion_results;
 mod motion_win;
@@ -60,6 +61,7 @@ mod newroi_win;
 mod pacs_win;
 mod panels;
 mod planar;
+mod poi;
 mod prompt_seg;
 mod propagate_win;
 mod reg_panel;
@@ -67,6 +69,7 @@ mod rename;
 mod seg;
 mod seg_engines;
 mod sets;
+mod stats_win;
 mod theme;
 mod transfer_win;
 mod tree;
@@ -259,6 +262,9 @@ enum SegTool {
     /// Paint into the active RT structure: a round brush on the patient that
     /// pushes the contour lines, rather than the voxel brush's mask.
     ContourBrush,
+    /// Draw along the edge under the pointer: the curve between two clicks
+    /// is the cheapest path through the image gradient, not a straight line.
+    LiveWire,
 }
 
 impl SegTool {
@@ -271,15 +277,16 @@ impl SegTool {
                 | SegTool::Freehand
                 | SegTool::Nudge
                 | SegTool::ContourBrush
+                | SegTool::LiveWire
         )
     }
 }
 
 /// What a drawn contour does to the ones already on the slice.
 ///
-/// The names and the *auto* rule are RayStation's (2024B user manual, 5.3.3
-/// "The contouring tools"), because a planner should not have to learn a
-/// second set of habits.
+/// The names and the *auto* rule are the ones planning systems have
+/// settled on, because a planner should not have to learn a second set of
+/// habits to draw a contour here.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum DrawMode {
     /// Crosses nothing: a new contour. Crosses something, starting inside
@@ -663,6 +670,10 @@ struct D3Window {
     other_key: u64,
     /// Draw the deformation field as arrows in the scene.
     show_field: bool,
+    /// Paint the surfaces with the dose that falls on them instead of the
+    /// structure's own colour: what a hot spot does to an organ, on the
+    /// organ, rather than on a slice through it.
+    show_dose: bool,
     /// Cached projected geometry for the current camera.
     frame: D3Frame,
 }
@@ -821,6 +832,19 @@ enum SetAction {
 }
 
 /// Deferred right-click action on individual structures / segments.
+/// What the structure list's point-of-interest entries do.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PoiAct {
+    /// Centre the views on the item.
+    Localize,
+    /// Move the point to where the views cross.
+    MoveHere,
+    /// Make this the structure set's localization point.
+    Localization,
+    /// A new point at the centre of gravity of this structure.
+    AtCentre,
+}
+
 enum ItemAction {
     /// Copy (`copy`) or move `items` of `from` into the series `to`.
     Transfer {
@@ -845,6 +869,12 @@ enum ItemAction {
     },
     /// Plot these items' dose-volume histograms.
     Dvh {
+        from: SetRef,
+        items: Vec<usize>,
+    },
+    /// Carry these items into the other dataset through the active
+    /// registration: open the propagation module aimed at them.
+    Map {
         from: SetRef,
         items: Vec<usize>,
     },
@@ -1208,6 +1238,20 @@ pub struct ViewerApp {
     seg_tool: SegTool,
     /// Brush radius in mm (shared by paint and erase).
     brush_radius_mm: f32,
+    /// Which tissue the contour brush is allowed to paint into: the smart
+    /// brush's edge setting.
+    brush_band: contour_edit::EdgeBand,
+    /// Pull the interpolated contours onto the edges the image shows:
+    /// smart interpolation.
+    interp_snap: bool,
+    /// Whether the contour brush's current stroke is cutting: decided once,
+    /// when an Auto stroke starts, from whether it started inside.
+    brush_auto_cut: bool,
+    /// The structure the ✨ Grow tool is not allowed to leave, if any.
+    grow_limit: Option<combine_win::ItemRef>,
+    /// How far past the band's own threshold the brush may still reach,
+    /// as a fraction of the display window. 0 is the bare threshold.
+    brush_sensitivity: f32,
     /// Spherical 3D brush (paints across slices) vs. in-plane 2D circle.
     brush_3d: bool,
     /// Last brush sample of the stroke in progress: (slot, voxel coords).
@@ -1231,6 +1275,9 @@ pub struct ViewerApp {
     roi_undo: Vec<RoiSnapshot>,
     /// Counter for naming newly created ROIs.
     roi_counter: usize,
+    /// The same for points of interest, so their default names do not
+    /// collide with the structures'.
+    poi_counter: usize,
     /// The working geometry of the ROI under the contour tools.
     edit: Option<contour_edit::EditStack>,
     /// The interpolated slices shown as a preview, until accepted.
@@ -1241,6 +1288,10 @@ pub struct ViewerApp {
     contour_dialog: Option<contour_win::ContourDialog>,
     /// The generators window.
     newroi_dialog: Option<newroi_win::NewRoiDialog>,
+    /// The live-wire's cost image and current anchor, kept between frames.
+    wire: Option<livewire_app::WireState>,
+    /// The structure-details table.
+    stats_dialog: Option<stats_win::StatsDialog>,
 
     /// Root folder of the downloaded network weights, shared by the three
     /// engines (persisted in the settings file; blank = the default).
@@ -1562,6 +1613,11 @@ impl ViewerApp {
             medsam2: Default::default(),
             seg_tool: SegTool::None,
             brush_radius_mm: 5.0,
+            brush_band: contour_edit::EdgeBand::None,
+            interp_snap: false,
+            brush_auto_cut: false,
+            grow_limit: None,
+            brush_sensitivity: 0.15,
             brush_3d: true,
             paint_last: None,
             grow: None,
@@ -1574,11 +1630,14 @@ impl ViewerApp {
             draw_mode: DrawMode::Auto,
             roi_undo: Vec::new(),
             roi_counter: 0,
+            poi_counter: 0,
             edit: None,
             interp: None,
             contour_clip: None,
             contour_dialog: None,
             newroi_dialog: None,
+            wire: None,
+            stats_dialog: None,
             dose_mode: DoseMode::Off,
             dose_opacity: 0.45,
             dose_threshold_pct: 15.0,
@@ -1995,6 +2054,7 @@ impl eframe::App for ViewerApp {
             }
             if esc && self.draw.is_some() {
                 self.draw = None;
+                self.livewire_reset();
             }
             // Enter closes the polygon under construction, for anyone who
             // would rather not reach for the right button.

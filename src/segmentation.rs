@@ -495,6 +495,14 @@ pub struct GrowState {
     /// Seed statistics: mean and 1 / (2.5 σ) of the local neighborhood.
     mu: f32,
     inv_sigma: f32,
+    /// Voxels the front may enter at all: the limiting structure, as a
+    /// volume-sized mask. `None` means the whole image.
+    ///
+    /// A limit is not a cheaper barrier than the geodesic cost, it is a
+    /// different kind of statement: *never here, whatever the picture
+    /// says*. Bone inside the body, contrast inside the liver, a target
+    /// inside a box drawn for the purpose.
+    limit: Option<std::sync::Arc<Vec<u8>>>,
     /// Current selection: the prefix of `accepted` below the drag threshold.
     pub voxels: Vec<u32>,
     /// The voxel cap was hit - the region would grow further.
@@ -502,6 +510,21 @@ pub struct GrowState {
 }
 
 impl GrowState {
+    /// Confine every following grow to `limit` (a volume-sized mask), or
+    /// to nothing when it is `None`. Set before [`GrowState::seed`].
+    pub fn set_limit(&mut self, limit: Option<std::sync::Arc<Vec<u8>>>) {
+        self.limit = limit;
+    }
+
+    /// Whether a voxel index is inside the limit (always true without one).
+    #[inline]
+    fn allowed(&self, idx: usize) -> bool {
+        match &self.limit {
+            Some(m) => m.get(idx).copied().unwrap_or(0) != 0,
+            None => true,
+        }
+    }
+
     /// Start a grow at `seed`: estimate local statistics, reset the front
     /// and expand to the base reach ([`GROW_BASE_REACH`], drag level 1).
     pub fn seed(&mut self, vol: &Volume, seed: [usize; 3]) {
@@ -625,6 +648,9 @@ impl GrowState {
                     continue;
                 }
                 let nv = [nb[0] as usize, nb[1] as usize, nb[2] as usize];
+                if !self.allowed(nv[2] * sl + nv[1] * nx + nv[0]) {
+                    continue;
+                }
                 let nbx = self.box_index(nv);
                 if self.times[nbx] <= time {
                     continue; // already settled cheaper

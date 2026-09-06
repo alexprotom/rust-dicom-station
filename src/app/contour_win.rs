@@ -117,6 +117,7 @@ impl ViewerApp {
         let mode = self.draw_mode;
 
         let mut open = true;
+        let mut snap = self.interp_snap;
         let mut act: Option<Act> = None;
         let mut new_slot: Option<usize> = None;
         let d = self.contour_dialog.as_mut().expect("checked above");
@@ -210,6 +211,18 @@ impl ViewerApp {
                 );
                 ui.horizontal_wrapped(|ui| {
                     ui.checkbox(&mut d.show_interp, "Show");
+                    if ui
+                        .checkbox(&mut snap, "Snap to edges")
+                        .on_hover_text(
+                            "Pull every interpolated contour onto the boundary the image \
+                             shows there, instead of leaving it where the blend put it. \
+                             The preview is what gets stored, so what is dashed is what \
+                             you accept.",
+                        )
+                        .changed()
+                    {
+                        act = Some(Act::SnapInterp(snap));
+                    }
                     ui.label(format!("{n_interp} slice(s)"));
                     if ui
                         .add_enabled(n_interp > 0, egui::Button::new("Accept this slice"))
@@ -515,6 +528,13 @@ impl ViewerApp {
             Act::AcceptInterp(all) => {
                 self.accept_interp(slot, all);
             }
+            Act::SnapInterp(on) => {
+                self.interp_snap = on;
+                // The preview is what gets accepted, so it is rebuilt now
+                // rather than at the next edit.
+                self.interp = None;
+                self.refresh_interp(slot);
+            }
             Act::Copy => {
                 if !self.copy_slice_contours(slot) {
                     self.notice = Some("This slice has no contours to copy.".into());
@@ -605,6 +625,8 @@ impl ViewerApp {
 /// What the window asked for, applied after its borrow is released.
 enum Act {
     AcceptInterp(bool),
+    /// Turn the edge snapping of the interpolation on or off.
+    SnapInterp(bool),
     Copy,
     Paste,
     Clear,

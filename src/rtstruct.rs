@@ -31,6 +31,50 @@ pub struct Roi {
     pub contours: Vec<Contour>,
 }
 
+impl Roi {
+    /// Whether this is a *point of interest* rather than a volume: an ROI
+    /// whose geometry is one `POINT` contour.
+    ///
+    /// RTSTRUCT has no separate object for a marker, an isocentre or a
+    /// reference point - they are ROIs with a point where the contours
+    /// would be, which is why this is a question about the geometry rather
+    /// than a flag.
+    pub fn is_poi(&self) -> bool {
+        !self.contours.is_empty()
+            && self
+                .contours
+                .iter()
+                .all(|c| c.geometric_type == "POINT" || c.points.len() == 1)
+    }
+
+    /// Where the point is, in patient coordinates.
+    pub fn point(&self) -> Option<Vec3> {
+        self.is_poi()
+            .then(|| self.contours.first()?.points.first().copied())
+            .flatten()
+    }
+
+    /// Put the point there, making this ROI a point of interest if it was
+    /// empty. An ROI that already carries contours is left alone: a
+    /// structure is not turned into a marker by accident.
+    pub fn set_point(&mut self, p: Vec3) -> bool {
+        if !self.contours.is_empty() && !self.is_poi() {
+            return false;
+        }
+        self.contours = vec![Contour {
+            points: vec![p],
+            geometric_type: "POINT".into(),
+        }];
+        true
+    }
+
+    /// The localization point of its structure set: the one POI a planning
+    /// system uses to line the patient up.
+    pub fn is_localization(&self) -> bool {
+        self.is_poi() && self.roi_type == "ISOCENTER"
+    }
+}
+
 #[derive(Clone)]
 pub struct StructureSet {
     pub label: String,
@@ -49,6 +93,14 @@ pub struct StructureSet {
     pub referenced_series_uid: String,
     /// Source file name (disambiguates multiple sets with equal labels).
     pub file_name: String,
+    /// Read-only: the geometry of this set may not be edited.
+    ///
+    /// This is Approval Status (300E,0002) by another name - a set that
+    /// arrives `APPROVED` opens locked, and a set locked here is written
+    /// back as approved. It is a guard against a slip of the hand, not an
+    /// electronic signature: there is no user, no password and no audit
+    /// trail behind it, and the interface says so.
+    pub locked: bool,
     pub rois: Vec<Roi>,
 }
 
@@ -207,6 +259,9 @@ pub fn load(path: &Path) -> Result<StructureSet> {
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default(),
+        // A structure set someone has approved opens read-only, which is
+        // what approval is for.
+        locked: str_of(&obj, tags::APPROVAL_STATUS).as_deref() == Some("APPROVED"),
         rois,
     })
 }

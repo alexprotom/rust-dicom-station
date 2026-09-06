@@ -14,6 +14,8 @@
 //! trajectory is the largest pairwise distance between its points - the
 //! amplitude of the motion, independent of which phase is the reference.
 
+use rayon::prelude::*;
+
 use crate::geometry::Vec3;
 use crate::morphology;
 use crate::volume::Grid;
@@ -47,6 +49,27 @@ impl MotionModel {
     pub fn registers(self) -> bool {
         !matches!(self, MotionModel::Contoured)
     }
+}
+
+/// Minimum, mean and maximum image value under a mask; `None` when the mask
+/// is empty or does not fit the volume.
+pub fn grey_stats(mask: &[u8], vol: &crate::volume::Volume) -> Option<[f64; 3]> {
+    let n = vol.dims[0] * vol.dims[1] * vol.dims[2];
+    if mask.len() != n {
+        return None;
+    }
+    let (mut lo, mut hi, mut sum, mut count) = (f64::MAX, f64::MIN, 0.0f64, 0usize);
+    for (&m, &v) in mask.iter().zip(vol.data.iter()) {
+        if m == 0 {
+            continue;
+        }
+        let v = v as f64;
+        lo = lo.min(v);
+        hi = hi.max(v);
+        sum += v;
+        count += 1;
+    }
+    (count > 0).then(|| [lo, sum / count as f64, hi])
 }
 
 /// Centroid of a mask in patient coordinates (mm); `None` for an empty mask.
@@ -265,6 +288,10 @@ pub struct Overlap {
     pub hd95_mm: f64,
     /// Mean symmetric surface distance, mm.
     pub msd_mm: f64,
+    /// Standard deviation of the same surface distances, mm.
+    pub sd_mm: f64,
+    /// Largest of them, mm - the plain Hausdorff distance.
+    pub max_mm: f64,
     pub centroid_a: Option<Vec3>,
     pub centroid_b: Option<Vec3>,
 }
@@ -306,6 +333,12 @@ pub fn overlap(a: &[u8], b: &[u8], grid: &Grid) -> Option<Overlap> {
         return None;
     }
     let msd = dists.iter().map(|&d| d as f64).sum::<f64>() / dists.len() as f64;
+    let var = dists
+        .iter()
+        .map(|&d| (d as f64 - msd) * (d as f64 - msd))
+        .sum::<f64>()
+        / dists.len() as f64;
+    let max = dists.iter().fold(0.0f32, |a, &b| a.max(b)) as f64;
     let k = (((dists.len() - 1) as f64 * 0.95).round() as usize).min(dists.len() - 1);
     let (_, p95, _) = dists.select_nth_unstable_by(k, |x, y| x.total_cmp(y));
     let hd95 = *p95 as f64;
@@ -317,8 +350,160 @@ pub fn overlap(a: &[u8], b: &[u8], grid: &Grid) -> Option<Overlap> {
         dice,
         hd95_mm: hd95,
         msd_mm: msd,
+        sd_mm: var.sqrt(),
+        max_mm: max,
         centroid_a: centroid_mm(a, grid),
         centroid_b: centroid_mm(b, grid),
+    })
+}
+
+// ---- the rigid offset between two structures ------------------------------
+
+/// The surface voxels of a mask as patient points (mm), thinned to at most
+/// `max_points` by taking every n-th so the sample stays spread over the
+/// whole surface rather than over its first slices.
+pub fn surface_points(mask: &[u8], grid: &Grid, max_points: usize) -> Vec<Vec3> {
+    let [nx, ny, nz] = grid.dims;
+    if mask.len() != nx * ny * nz {
+        return Vec::new();
+    }
+    let idx = |i: usize, j: usize, k: usize| k * nx * ny + j * nx + i;
+    let mut all: Vec<[usize; 3]> = Vec::new();
+    for k in 0..nz {
+        for j in 0..ny {
+            for i in 0..nx {
+                if mask[idx(i, j, k)] == 0 {
+                    continue;
+                }
+                let surface = i == 0
+                    || j == 0
+                    || k == 0
+                    || i == nx - 1
+                    || j == ny - 1
+                    || k == nz - 1
+                    || mask[idx(i - 1, j, k)] == 0
+                    || mask[idx(i + 1, j, k)] == 0
+                    || mask[idx(i, j - 1, k)] == 0
+                    || mask[idx(i, j + 1, k)] == 0
+                    || mask[idx(i, j, k - 1)] == 0
+                    || mask[idx(i, j, k + 1)] == 0;
+                if surface {
+                    all.push([i, j, k]);
+                }
+            }
+        }
+    }
+    let step = if max_points == 0 || all.len() <= max_points {
+        1
+    } else {
+        all.len().div_ceil(max_points)
+    };
+    all.iter()
+        .step_by(step)
+        .map(|&[i, j, k]| grid.voxel_to_patient(i as f64, j as f64, k as f64))
+        .collect()
+}
+
+/// The rigid body that best carries structure A onto structure B, and how
+/// much of the difference it fails to explain.
+#[derive(Clone, Debug)]
+pub struct SurfaceFit {
+    /// Translation and rotation of the fit, about A's own centroid.
+    pub dof: crate::registration::analysis::Dof6,
+    /// Surface points used from each structure.
+    pub points: [usize; 2],
+    /// Distance from each of A's surface points to the nearest of B's,
+    /// after the fit: mean, standard deviation, largest (mm).
+    pub residual_mm: [f64; 3],
+    /// The same three before the fit, so the fit can be seen to have done
+    /// something.
+    pub before_mm: [f64; 3],
+}
+
+/// Least-squares rigid offset between two structures, by closest-point
+/// iteration over their surfaces.
+///
+/// The two surfaces carry no point correspondence, so one is invented and
+/// then improved: pair every point of A with the nearest point of B, fit
+/// the rigid body that best explains those pairs (orthogonal Procrustes,
+/// [`crate::registration::analysis::fit_rigid`]), move A, pair again. The
+/// fit is always taken from A's *original* points, so the iteration
+/// refines one global transform instead of accumulating a chain of small
+/// ones.
+///
+/// Both masks must live on `grid`. `None` when either surface is empty.
+pub fn surface_fit(a: &[u8], b: &[u8], grid: &Grid) -> Option<SurfaceFit> {
+    // A few thousand points per surface put the fit well inside a tenth of
+    // a degree and keep the closest-point search under a second.
+    const MAX_POINTS: usize = 3000;
+    const ITERATIONS: usize = 25;
+    let pa = surface_points(a, grid, MAX_POINTS);
+    let pb = surface_points(b, grid, MAX_POINTS);
+    if pa.is_empty() || pb.is_empty() {
+        return None;
+    }
+    let nearest = |pts: &[Vec3]| -> Vec<Vec3> {
+        pts.par_iter()
+            .map(|p| {
+                let mut best = pb[0];
+                let mut bd = f64::MAX;
+                for q in &pb {
+                    let d = *q - *p;
+                    let d2 = d.dot(d);
+                    if d2 < bd {
+                        bd = d2;
+                        best = *q;
+                    }
+                }
+                best
+            })
+            .collect()
+    };
+    let spread = |pts: &[Vec3], to: &[Vec3]| -> [f64; 3] {
+        let d: Vec<f64> = pts
+            .iter()
+            .zip(to)
+            .map(|(p, q)| (*q - *p).length())
+            .collect();
+        let n = d.len().max(1) as f64;
+        let mean = d.iter().sum::<f64>() / n;
+        let sd = (d.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / n).sqrt();
+        let max = d.iter().fold(0.0f64, |x, &y| x.max(y));
+        [mean, sd, max]
+    };
+
+    let before = spread(&pa, &nearest(&pa));
+    let centre = pa.iter().fold(Vec3::ZERO, |x, y| x + *y) * (1.0 / pa.len() as f64);
+    let mut cur = pa.clone();
+    let mut dof = crate::registration::analysis::Dof6::default();
+    let mut last = f64::MAX;
+    for _ in 0..ITERATIONS {
+        let matched = nearest(&cur);
+        dof = crate::registration::analysis::fit_rigid(&pa, &matched);
+        let t = crate::registration::RigidTransform::new(
+            [
+                dof.rotation_deg[0].to_radians(),
+                dof.rotation_deg[1].to_radians(),
+                dof.rotation_deg[2].to_radians(),
+                dof.translation.x,
+                dof.translation.y,
+                dof.translation.z,
+            ],
+            centre,
+        );
+        cur = pa.iter().map(|p| t.map(*p)).collect();
+        let rms = spread(&cur, &nearest(&cur))[0];
+        if (last - rms).abs() < 1e-4 {
+            break;
+        }
+        last = rms;
+    }
+    let residual = spread(&cur, &nearest(&cur));
+    Some(SurfaceFit {
+        dof,
+        points: [pa.len(), pb.len()],
+        residual_mm: residual,
+        before_mm: before,
     })
 }
 
@@ -369,6 +554,11 @@ pub struct PhaseSample {
     pub phase: String,
     pub centroid: Vec3,
     pub volume_cm3: f64,
+    /// Minimum, mean and maximum image value inside the structure on this
+    /// phase; `None` when the phase's own images were not at hand. A target
+    /// whose mean grey level walks across the phases is a target the
+    /// propagation put somewhere it does not belong.
+    pub grey: Option<[f64; 3]>,
 }
 
 /// One structure carried across all phases with one model.
@@ -525,6 +715,17 @@ impl MotionReport {
                     s_i.centroid.z,
                     s_i.volume_cm3
                 ));
+                if let Some(g) = s_i.grey {
+                    s.push_str(&format!(
+                        "{kind},{run},{},{},{},grey,{:.2},{:.2},{:.2},\n",
+                        esc(&t.target),
+                        t.model.label(),
+                        esc(&s_i.phase),
+                        g[0],
+                        g[1],
+                        g[2]
+                    ));
+                }
                 s.push_str(&format!(
                     "{kind},{run},{},{},{},displacement,{:.3},{:.3},{:.3},{:.3}\n",
                     esc(&t.target),
@@ -621,6 +822,71 @@ mod tests {
         m
     }
 
+    /// An ellipsoid rotated by `deg` about the patient z axis and shifted.
+    fn tilted_ellipsoid(g: &Grid, c: [f64; 3], half: [f64; 3], deg: f64) -> Vec<u8> {
+        let [nx, ny, nz] = g.dims;
+        let mut m = vec![0u8; nx * ny * nz];
+        let (s, co) = deg.to_radians().sin_cos();
+        for k in 0..nz {
+            for j in 0..ny {
+                for i in 0..nx {
+                    let d = [
+                        (i as f64 - c[0]) * g.spacing[0],
+                        (j as f64 - c[1]) * g.spacing[1],
+                        (k as f64 - c[2]) * g.spacing[2],
+                    ];
+                    // Rotate the sample back into the ellipsoid's frame.
+                    let x = co * d[0] + s * d[1];
+                    let y = -s * d[0] + co * d[1];
+                    let v =
+                        (x / half[0]).powi(2) + (y / half[1]).powi(2) + (d[2] / half[2]).powi(2);
+                    if v <= 1.0 {
+                        m[k * nx * ny + j * nx + i] = 1;
+                    }
+                }
+            }
+        }
+        m
+    }
+
+    #[test]
+    fn the_surface_fit_recovers_a_shift_and_a_rotation() {
+        let g = grid([64, 64, 32], [1.0, 1.0, 1.0]);
+        let half = [18.0, 9.0, 12.0];
+        let a = tilted_ellipsoid(&g, [32.0, 32.0, 16.0], half, 0.0);
+        // The same body, turned 12° about z and moved 3 mm to the left.
+        let b = tilted_ellipsoid(&g, [35.0, 32.0, 16.0], half, 12.0);
+        let f = surface_fit(&a, &b, &g).expect("both surfaces exist");
+        assert!(
+            (f.dof.translation.x - 3.0).abs() < 0.6,
+            "translation {:?}",
+            f.dof.translation
+        );
+        assert!(f.dof.translation.y.abs() < 0.6 && f.dof.translation.z.abs() < 0.6);
+        assert!(
+            (f.dof.rotation_deg[2] - 12.0).abs() < 1.5,
+            "rotation {:?}",
+            f.dof.rotation_deg
+        );
+        // And the fit has to leave the surfaces closer than it found them.
+        assert!(
+            f.residual_mm[0] < 0.5 * f.before_mm[0],
+            "residual {:?} vs {:?}",
+            f.residual_mm,
+            f.before_mm
+        );
+    }
+
+    #[test]
+    fn a_structure_fitted_to_itself_does_not_move() {
+        let g = grid([48, 48, 24], [1.0, 1.0, 2.0]);
+        let m = ball(&g, [24.0, 24.0, 12.0], 9.0);
+        let f = surface_fit(&m, &m, &g).expect("non-empty");
+        assert!(f.dof.translation.length() < 0.2);
+        assert!(f.residual_mm[2] < 0.2);
+        assert_eq!(f.points[0], f.points[1]);
+    }
+
     #[test]
     fn centroid_is_the_sphere_center_in_patient_coordinates() {
         let g = grid([32, 32, 16], [1.0, 1.0, 2.0]);
@@ -708,6 +974,7 @@ mod tests {
                     phase: format!("{}%", i * 10),
                     centroid: Vec3::new(0.0, 0.0, z),
                     volume_cm3: 1.0,
+                    grey: None,
                 })
                 .collect(),
             reference: 0,
@@ -731,11 +998,13 @@ mod tests {
                     phase: "0%".into(),
                     centroid: Vec3::ZERO,
                     volume_cm3: 2.0,
+                    grey: Some([-980.0, -120.5, 340.0]),
                 },
                 PhaseSample {
                     phase: "50%".into(),
                     centroid: Vec3::new(1.0, 0.0, 0.0),
                     volume_cm3: 2.1,
+                    grey: None,
                 },
             ],
             reference: 0,
@@ -768,7 +1037,11 @@ mod tests {
             }],
         };
         let csv = rep.csv();
-        assert_eq!(csv.lines().count(), 1 + 2 * 2 + 1 + 1 + 1);
+        // Header, two rows per sample, the grey-level row of the one
+        // sample that carries them, peak-to-peak, the correlation and the
+        // ITV.
+        assert_eq!(csv.lines().count(), 1 + 2 * 2 + 1 + 1 + 1 + 1);
+        assert!(csv.contains(",grey,-980.00,-120.50,340.00"));
         assert!(csv.contains("\"TV,1\""), "comma-escaped target name");
         assert!(csv
             .lines()

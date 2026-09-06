@@ -251,7 +251,14 @@ src/
     derived_app.rs    derived structures in the app: resolving operands by
                       name, the status cache, re-evaluation as a job, the
                       override rule
-    newroi_win.rs     the generators window (grey level, shape, dose)
+    newroi_win.rs     the generators window (grey level in HU or SUV, shape,
+                      dose, field of view)
+    livewire_app.rs   the live-wire tool: the slice's cost image and the
+                      current anchor's tree, cached between frames
+    poi.rs            points of interest: create at the crosshair or at a
+                      structure's centre, localize, move, the localization
+                      point
+    stats_win.rs      the structure-details table and its CSV
     seg_engines.rs    what the tool windows share: names and glyphs, the
                       dataset A / B row, device / model-folder / licence /
                       progress rows, result landing, the "still the same
@@ -325,14 +332,20 @@ src/
                     (phases + AVG / MIP), custom-group rules                     4D
   motion.rs         motion arithmetic over phases: centroids, peak-to-peak,
                     drift, Pearson r with p-values, Dice / HD95 / MSD overlap,
+                    the closest-point rigid offset between two surfaces,
                     ITV unions, the motion report + CSV                          4D
   dvh.rs            dose-volume histograms: sampling, curves, metrics,
                     protocol constraints, CSV                                    Dose
   derived.rs        the recipe a derived structure carries: the expression,
                     its storage in ROI Description, the three statuses and
                     the fingerprint they are computed from                    Seg
-  generate.rs       structures out of a grey-level window, a shape or a dose
-                    level                                                     Seg
+  generate.rs       structures out of a grey-level window, a shape, a dose
+                    level or the reconstructed field of view                  Seg
+  livewire.rs       the edge-following cost of one slice: the Mortensen-
+                    Barrett terms, the shortest-path tree of an anchor, the
+                    trained histogram, and the ring snapped onto a ridge      Seg
+  templates.rs      structure templates: the names, types, colours and
+                    recipes of a set, as JSON in the data folder              Seg
   contours.rs       planar contours as an editable representation: rings and
                     even-odd regions, the local supersampled boolean, the
                     slice stack, contour ⇄ mask ⇄ RTSTRUCT, tidying,

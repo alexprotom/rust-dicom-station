@@ -13,6 +13,7 @@
 //! the panel itself, which can also be dragged shut and pulled back open.
 //! F9 works the left one, F10 the right.
 
+use super::sets::TemplateAct;
 use super::*;
 use crate::workflow::group::Landing;
 
@@ -586,8 +587,16 @@ impl ViewerApp {
         for &gi in &node.fourd {
             self.fourd_node(ui, slot, pi, si, gi);
         }
-        self.structures_section(ui, slot, pi, si, &node.structs);
-        self.segmentation_section(ui, slot, pi, si, &node.segs);
+        // Whether the images on screen are this study's. Everything that
+        // writes - the tools, "+ ROI", a new segmentation - works on the
+        // displayed series, so under another study of the same folder those
+        // buttons are held back instead of silently editing this one.
+        let displayed = node
+            .modalities
+            .iter()
+            .any(|(_, idxs)| idxs.contains(&active));
+        self.structures_section(ui, slot, pi, si, &node.structs, displayed);
+        self.segmentation_section(ui, slot, pi, si, &node.segs, displayed);
         self.dose_section(ui, slot, pi, si, &node.doses);
         self.plan_section(ui, slot, pi, si, &node.plans);
     }
@@ -1248,6 +1257,21 @@ impl ViewerApp {
             });
             ui.close();
         }
+        if ui
+            .button(format!("⇄ Map {what} to the other dataset"))
+            .on_hover_text(
+                "Open the propagation module with these structures picked, to carry them \
+                 through the active registration - rigid or deformable, landing as \
+                 contours or as masks",
+            )
+            .clicked()
+        {
+            *out = Some(ItemAction::Map {
+                from,
+                items: items.clone(),
+            });
+            ui.close();
+        }
         if from.kind == SetKind::Segmentations {
             ui.separator();
             if ui
@@ -1361,13 +1385,16 @@ impl ViewerApp {
         pat: usize,
         stu: usize,
         which: &[usize],
+        displayed: bool,
     ) {
         if self.slots[slot].study.is_none() {
             return;
         }
         // Sets can be listed, renamed, moved and deleted without an image
-        // volume; only what would draw into one is held back.
-        let has_volume = self.slots[slot].has_volume();
+        // volume; only what would draw into one is held back - and only
+        // under the study whose images are on screen, because everything
+        // that draws draws on the displayed series and nothing else.
+        let has_volume = self.slots[slot].has_volume() && displayed;
         // Rendering runs behind a shared borrow of `self` (the context menus
         // need to list the other dataset's series), so the one piece of
         // mutable state in the list is edited on a copy and written back.
@@ -1380,6 +1407,10 @@ impl ViewerApp {
         let mut new_anchor: Option<(SetRef, usize)> = None;
         let mut new_color: Option<(usize, [u8; 3])> = None;
         let mut new_edit: Option<usize> = None;
+        let mut add_poi = false;
+        let mut toggle_lock: Option<usize> = None;
+        let mut template_act: Option<TemplateAct> = None;
+        let mut poi_act: Option<(PoiAct, usize)> = None;
         let mut add_roi = false;
         let mut update_derived = false;
         // Derived statuses are recomputed only when something changed; the
@@ -1421,8 +1452,11 @@ impl ViewerApp {
                         .on_hover_text(if has_volume {
                             "New: an empty RT structure set, drawn on the displayed image \
                              series"
-                        } else {
+                        } else if displayed {
                             "This dataset has no image volume to draw on"
+                        } else {
+                            "Display this study's images first - a new set is drawn on \
+                             the series on screen"
                         })
                         .clicked()
                     {
@@ -1448,7 +1482,8 @@ impl ViewerApp {
                             selected,
                             structs_shown,
                             format!(
-                                "{name} ({} ROIs){}",
+                                "{}{name} ({} ROIs){}",
+                                if set.locked { "🔒 " } else { "" },
                                 set.rois.len(),
                                 Self::series_suffix(study, &set.referenced_series_uid)
                             ),
@@ -1463,7 +1498,60 @@ impl ViewerApp {
                                 new_shown = Some(true);
                             }
                         }
-                        resp.context_menu(|ui| me.set_context_menu(ui, here, &mut set_act));
+                        let locked = set.locked;
+                        resp.context_menu(|ui| {
+                            ui.menu_button("🏷 Template", |ui| {
+                                if ui
+                                    .button("Save this set as a template")
+                                    .on_hover_text(
+                                        "The names, types, colours and recipes - not the \
+                                         geometry. Saved under the set's own label, in \
+                                         the templates folder",
+                                    )
+                                    .clicked()
+                                {
+                                    template_act = Some(TemplateAct::Save(i));
+                                    ui.close();
+                                }
+                                let names = crate::templates::list();
+                                if names.is_empty() {
+                                    ui.weak("no templates saved yet");
+                                }
+                                for name in names {
+                                    if ui
+                                        .button(format!("Apply '{name}'"))
+                                        .on_hover_text(
+                                            "Create the structures of this template that \
+                                             are not here yet, with their types, colours \
+                                             and recipes. Nothing already in the set is \
+                                             touched",
+                                        )
+                                        .clicked()
+                                    {
+                                        template_act = Some(TemplateAct::Apply(i, name.clone()));
+                                        ui.close();
+                                    }
+                                }
+                            });
+                            if ui
+                                .button(if locked { "🔓 Unlock" } else { "🔒 Lock" })
+                                .on_hover_text(if locked {
+                                    "Allow this set to be edited again"
+                                } else {
+                                    "Make this set read-only: no drawing, no new \
+                                     structures, nothing removed. It is written out as \
+                                     an approved structure set, and it is a guard \
+                                     against a slip of the hand, not a signature - \
+                                     anyone here can unlock it again"
+                                })
+                                .clicked()
+                            {
+                                toggle_lock = Some(i);
+                                ui.close();
+                            }
+                            ui.separator();
+                            me.set_context_menu(ui, here, &mut set_act)
+                        });
                         resp.on_hover_text(format!(
                             "{}\nreferences series …{}\nclick: show or hide\nright-click: \
                              connect to another image series, copy / move to the other \
@@ -1527,6 +1615,18 @@ impl ViewerApp {
                             {
                                 add_roi = true;
                             }
+                            if ui
+                                .add_enabled(has_volume, egui::Button::new("✱").small())
+                                .on_hover_text(
+                                    "✱ New point of interest, at the crosshair - a \
+                                     marker, a reference point or the point the patient \
+                                     is lined up on. It exports as a POINT contour like \
+                                     any other",
+                                )
+                                .clicked()
+                            {
+                                add_poi = true;
+                            }
                             me.selection_buttons(ui, here, &selection, &mut item_act);
                         });
                         let anchor = me.tick_anchor.filter(|(r, _)| *r == here).map(|(_, i)| i);
@@ -1583,6 +1683,53 @@ impl ViewerApp {
                                         Some((here, apply_tick(&mut vis, i, shift, anchor)));
                                 }
                                 resp.context_menu(|ui| {
+                                    if ui
+                                        .button("⌖ Localize")
+                                        .on_hover_text(
+                                            "Put the crosshair on it: on the point, or on \
+                                             the centre of gravity of the structure",
+                                        )
+                                        .clicked()
+                                    {
+                                        poi_act = Some((PoiAct::Localize, i));
+                                        ui.close();
+                                    }
+                                    if roi.is_poi() {
+                                        if ui
+                                            .button("Move to the crosshair")
+                                            .on_hover_text(
+                                                "Put the point where the three views cross",
+                                            )
+                                            .clicked()
+                                        {
+                                            poi_act = Some((PoiAct::MoveHere, i));
+                                            ui.close();
+                                        }
+                                        if !roi.is_localization()
+                                            && ui
+                                                .button("Make the localization point")
+                                                .on_hover_text(
+                                                    "The one point per structure set the \
+                                                     patient is lined up on; any other \
+                                                     falls back to a plain marker",
+                                                )
+                                                .clicked()
+                                        {
+                                            poi_act = Some((PoiAct::Localization, i));
+                                            ui.close();
+                                        }
+                                    } else if ui
+                                        .button("+ POI at its centre")
+                                        .on_hover_text(
+                                            "A new point of interest at this structure's \
+                                             centre of gravity",
+                                        )
+                                        .clicked()
+                                    {
+                                        poi_act = Some((PoiAct::AtCentre, i));
+                                        ui.close();
+                                    }
+                                    ui.separator();
                                     me.item_context_menu(
                                         ui,
                                         here,
@@ -1592,6 +1739,27 @@ impl ViewerApp {
                                         &mut item_act,
                                     )
                                 });
+                                if let Some(p) = roi.point() {
+                                    ui.label(
+                                        egui::RichText::new(if roi.is_localization() {
+                                            "🎯"
+                                        } else {
+                                            "✱"
+                                        })
+                                        .weak(),
+                                    )
+                                    .on_hover_text(format!(
+                                        "{}\n{:.1}, {:.1}, {:.1} mm",
+                                        if roi.is_localization() {
+                                            "The localization point"
+                                        } else {
+                                            "Point of interest"
+                                        },
+                                        p.x,
+                                        p.y,
+                                        p.z
+                                    ));
+                                }
                                 resp.on_hover_text(format!(
                                     "ROI {} · {} contour(s)\nShift-click: tick or untick the \
                                      whole range from the last one\nright-click: copy / move \
@@ -1650,6 +1818,39 @@ impl ViewerApp {
         if add_roi {
             self.new_roi(slot, None, "ORGAN");
         }
+        if let Some(act) = template_act {
+            self.apply_template_act(slot, act);
+        }
+        if let Some(i) = toggle_lock {
+            if let Some(ss) = self.slots[slot]
+                .study
+                .as_mut()
+                .and_then(|st| st.structure_sets.get_mut(i))
+            {
+                ss.locked = !ss.locked;
+            }
+            self.settings_gen += 1;
+        }
+        if add_poi && self.new_poi(slot, None).is_none() {
+            self.notice = Some("There is no image volume to place a point on.".into());
+        }
+        if let Some((act, i)) = poi_act {
+            match act {
+                PoiAct::Localize => {
+                    self.localize_roi(slot, i);
+                }
+                PoiAct::MoveHere => {
+                    self.move_poi_to_crosshair(slot, i);
+                }
+                PoiAct::Localization => self.set_localization(slot, i),
+                PoiAct::AtCentre => {
+                    if self.poi_at_structure(slot, i).is_none() {
+                        self.notice =
+                            Some("That structure has no geometry to take a centre of.".into());
+                    }
+                }
+            }
+        }
         if update_derived {
             self.update_all_derived(slot);
         }
@@ -1670,13 +1871,15 @@ impl ViewerApp {
         pat: usize,
         stu: usize,
         which: &[usize],
+        displayed: bool,
     ) {
         if self.slots[slot].study.is_none() {
             return;
         }
-        // Sets can be listed, renamed, moved and deleted without an image
-        // volume; only what would draw into one is held back.
-        let has_volume = self.slots[slot].has_volume();
+        // As in `structures_section`: a tool acts on the series being
+        // displayed, so under any other study node it stays disabled rather
+        // than running on images nobody pointed at.
+        let has_volume = self.slots[slot].has_volume() && displayed;
         // Whichever engine is running on this slot: its glyph, message and
         // fraction, read before the section borrows anything.
         let running = self
@@ -1743,8 +1946,11 @@ impl ViewerApp {
                         .on_hover_text(if has_volume {
                             "New: an empty segmentation series, drawn on the displayed image \
                              series - exports as one DICOM SEG file"
-                        } else {
+                        } else if displayed {
                             "This dataset has no image volume to draw on"
+                        } else {
+                            "Display this study's images first - a new series is drawn on \
+                             the series on screen"
                         })
                         .clicked()
                     {
@@ -1765,6 +1971,11 @@ impl ViewerApp {
                                 &super::contour_win::CONTOURS,
                                 "Interpolation, tidying, moving - on the structure the \
                              contour tools edit",
+                            ),
+                            (
+                                &super::stats_win::DETAILS,
+                                "One row per structure: volume, grey levels, what the \
+                             geometry costs, whether a recipe still holds",
                             ),
                             (
                                 &BODY_CONTOUR,
@@ -1799,8 +2010,11 @@ impl ViewerApp {
                                 )
                                 .on_hover_text(if has_volume {
                                     hint
-                                } else {
+                                } else if displayed {
                                     "This dataset has no image volume to segment"
+                                } else {
+                                    "The tools work on the images on screen - display \
+                                     this study first"
                                 })
                                 .clicked()
                             {
@@ -2006,6 +2220,7 @@ impl ViewerApp {
         match open_tool.map(|t| t.glyph) {
             Some(g) if g == super::newroi_win::NEW_ROI.glyph => self.open_newroi_dialog(slot),
             Some(g) if g == super::contour_win::CONTOURS.glyph => self.open_contour_dialog(slot),
+            Some(g) if g == super::stats_win::DETAILS.glyph => self.open_stats_dialog(slot),
             Some(g) if g == COMBINE.glyph => self.open_combine_dialog(slot, Vec::new()),
             Some(g) if g == BODY_CONTOUR.glyph => self.open_body_dialog(slot),
             Some(g) if g == AUTOSEG.glyph => self.open_autoseg_dialog(slot),
@@ -3234,6 +3449,7 @@ mod layout_tests {
             study_description: String::new(),
             series_number: None,
             temporal_id: None,
+            suv_bw: None,
             files: vec![std::path::PathBuf::from(format!("{uid}.dcm"))],
         }
     }
@@ -3247,6 +3463,7 @@ mod layout_tests {
             study_uid: study.into(),
             referenced_series_uid: series_uid.into(),
             file_name: String::new(),
+            locked: false,
             rois: Vec::new(),
         }
     }

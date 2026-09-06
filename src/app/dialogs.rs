@@ -40,6 +40,7 @@ impl ViewerApp {
         self.combine_window(ctx);
         self.contour_window(ctx);
         self.newroi_window(ctx);
+        self.stats_window(ctx);
         self.dvh_window(ctx);
         self.motion_window(ctx);
         self.motion_results_window(ctx);

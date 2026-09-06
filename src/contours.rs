@@ -18,7 +18,7 @@
 //!   axis. Axis 2 is the axial stack every planning system expects; drawing
 //!   in a sagittal or coronal view produces axis 0 or 1, and
 //!   [`Stack::to_axis`] converts - the same "switching patient direction
-//!   converts the contours" rule RayStation documents.
+//!   converts the contours" rule every planning system follows.
 //!
 //! ## Booleans
 //!
@@ -700,7 +700,7 @@ impl Region {
     }
 
     /// Does any edge of `ring` cross any edge of the region? This is the
-    /// question RayStation's *auto* drawing mode asks: a stroke that crosses
+    /// question the *auto* drawing mode asks: a stroke that crosses
     /// the outline modifies it, one that does not starts a new contour.
     pub fn crosses(&self, ring: &Poly) -> bool {
         self.touches(ring)
@@ -1232,6 +1232,40 @@ impl Stack {
     }
 
     /// Fill the stack into a voxel mask in the volume's index order.
+    /// The lattice box the geometry lives in, clamped to `dims`; `None`
+    /// when the stack is empty. Any per-voxel pass over one structure wants
+    /// this instead of the whole volume.
+    pub fn bbox(&self, dims: [usize; 3]) -> Option<([usize; 3], [usize; 3])> {
+        let [ua, va] = plane_axes(self.axis);
+        let mut lo = [usize::MAX; 3];
+        let mut hi = [0usize; 3];
+        let mut any = false;
+        for s in &self.slices {
+            if s.level >= dims[self.axis] || s.region.is_empty() {
+                continue;
+            }
+            for ring in &s.region.rings {
+                for p in &ring.pts {
+                    let u = p[0].floor().max(0.0) as usize;
+                    let v = p[1].floor().max(0.0) as usize;
+                    let uh = (p[0].ceil().max(0.0) as usize).min(dims[ua].saturating_sub(1));
+                    let vh = (p[1].ceil().max(0.0) as usize).min(dims[va].saturating_sub(1));
+                    lo[ua] = lo[ua].min(u.min(dims[ua].saturating_sub(1)));
+                    lo[va] = lo[va].min(v.min(dims[va].saturating_sub(1)));
+                    hi[ua] = hi[ua].max(uh);
+                    hi[va] = hi[va].max(vh);
+                    any = true;
+                }
+            }
+            lo[self.axis] = lo[self.axis].min(s.level);
+            hi[self.axis] = hi[self.axis].max(s.level);
+        }
+        if !any {
+            return None;
+        }
+        Some((lo, hi))
+    }
+
     pub fn rasterize(&self, dims: [usize; 3]) -> Vec<u8> {
         let [nx, ny, nz] = dims;
         let [ua, va] = plane_axes(self.axis);
@@ -1490,7 +1524,7 @@ impl Stack {
     /// re-extracted - which handles the cases point matching gets wrong: a
     /// structure that splits in two, or one whose contours barely overlap.
     /// Returns only the *new* slices, so the caller can show them as a
-    /// preview and accept them one at a time, the way RayStation does.
+    /// preview and accept them one at a time.
     pub fn interpolated(&self, dims: [usize; 3]) -> Stack {
         let mut out = Stack::empty(self.axis);
         let occ: Vec<usize> = self

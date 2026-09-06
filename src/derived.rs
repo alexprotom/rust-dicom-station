@@ -61,8 +61,9 @@ pub enum Status {
 }
 
 impl Status {
-    /// The marker the structure list draws. RayStation uses a green circle,
-    /// a red square and a yellow triangle; so does this.
+    /// The marker the structure list draws: a green circle, a red square
+    /// and a yellow triangle, which is the convention a planner already
+    /// reads without a legend.
     pub fn glyph(self) -> &'static str {
         match self {
             Status::UpToDate => "◉",

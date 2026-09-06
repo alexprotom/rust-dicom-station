@@ -28,15 +28,18 @@ pub(super) enum Source {
     GreyLevel,
     Shape,
     Dose,
+    /// The reconstructed field of view of the displayed images.
+    Fov,
 }
 
 impl Source {
-    const ALL: [Source; 3] = [Source::GreyLevel, Source::Shape, Source::Dose];
+    const ALL: [Source; 4] = [Source::GreyLevel, Source::Shape, Source::Dose, Source::Fov];
     fn label(self) -> &'static str {
         match self {
             Source::GreyLevel => "Grey level",
             Source::Shape => "Shape",
             Source::Dose => "Dose",
+            Source::Fov => "Field of view",
         }
     }
 }
@@ -49,6 +52,10 @@ pub(super) struct NewRoiDialog {
     // Grey level.
     pub lo: f32,
     pub hi: f32,
+    /// PET: read and write the two bounds as SUV rather than as stored
+    /// values. Only offered when the displayed series carries what an SUV
+    /// takes ([`crate::loader::suv_bw_factor`]).
+    pub suv: bool,
     /// Restrict the threshold to a structure that is already drawn.
     pub limit: Option<ItemRef>,
     pub keep_largest: bool,
@@ -79,6 +86,7 @@ impl ViewerApp {
             roi_type: "ORGAN".to_string(),
             lo: 200.0,
             hi: 4000.0,
+            suv: false,
             limit: None,
             keep_largest: false,
             fill_holes: false,
@@ -93,7 +101,7 @@ impl ViewerApp {
     }
 
     /// Patient coordinates of the slot's crosshair.
-    fn crosshair_patient(&self, slot: usize) -> Option<Vec3> {
+    pub(super) fn crosshair_patient(&self, slot: usize) -> Option<Vec3> {
         let s = &self.slots[slot];
         let v = s.study.as_ref()?;
         let c = s.cursor;
@@ -116,13 +124,25 @@ impl ViewerApp {
                     })?),
                     None => None,
                 };
+                // The threshold is always applied in the stored values the
+                // volume holds; an SUV window is converted back into them,
+                // which is exact because the SUV is a plain scale factor.
+                let (lo, hi) = match self.suv_factor(slot).filter(|_| d.suv) {
+                    Some(f) => ((d.lo as f64 / f) as f32, (d.hi as f64 / f) as f32),
+                    None => (d.lo, d.hi),
+                };
                 Ok(generate::threshold_mask(
                     &study.volume,
-                    d.lo,
-                    d.hi,
+                    lo,
+                    hi,
                     limit.as_deref(),
                 ))
             }
+            Source::Fov => generate::fov_mask(&study.volume).ok_or_else(|| {
+                "These images are not reconstructed on a smaller field of view - their \
+                 corners hold data like the rest, so there is nothing to outline."
+                    .to_string()
+            }),
             Source::Shape => Ok(generate::shape_mask(
                 d.shape,
                 &grid,
@@ -210,6 +230,14 @@ impl ViewerApp {
         self.newroi_dialog = Some(d);
     }
 
+    /// What a stored value of the displayed series has to be multiplied by
+    /// to become a body-weight SUV; `None` for anything that is not a PET
+    /// series carrying the header fields it takes.
+    pub(super) fn suv_factor(&self, slot: usize) -> Option<f64> {
+        let study = self.slots[slot].study.as_ref()?;
+        study.series.get(study.active_series)?.suv_bw
+    }
+
     pub(super) fn newroi_window(&mut self, ctx: &egui::Context) {
         let Some(slot) = self.newroi_dialog.as_ref().map(|d| d.slot) else {
             return;
@@ -220,6 +248,7 @@ impl ViewerApp {
             .as_ref()
             .is_some_and(|s| !s.doses.is_empty());
         let reference = self.slots[slot].dose_reference;
+        let suv_factor = self.suv_factor(slot);
         let comparison = self.comparison;
         let mut open = true;
         let mut create = false;
@@ -270,35 +299,70 @@ impl ViewerApp {
 
                 match d.source {
                     Source::GreyLevel => {
+                        if suv_factor.is_some() {
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .checkbox(&mut d.suv, "SUV (body weight)")
+                                    .on_hover_text(
+                                        "Read the two bounds as standardized uptake \
+                                         values instead of stored counts. The factor \
+                                         comes from this series' own header: patient \
+                                         weight, injected activity and the decay to the \
+                                         acquisition time.",
+                                    )
+                                    .changed()
+                                {
+                                    // Carry the window across the change of
+                                    // units instead of leaving numbers that
+                                    // mean something entirely different.
+                                    let f = suv_factor.unwrap_or(1.0);
+                                    let (lo, hi) = if d.suv {
+                                        (d.lo as f64 * f, d.hi as f64 * f)
+                                    } else {
+                                        (d.lo as f64 / f, d.hi as f64 / f)
+                                    };
+                                    d.lo = lo as f32;
+                                    d.hi = hi as f32;
+                                }
+                                if d.suv {
+                                    ui.weak("2.5 is the usual starting point for a lesion");
+                                }
+                            });
+                        }
+                        let unit = if d.suv { "" } else { " HU" };
+                        let range = if d.suv { 0.0..=100.0 } else { -2000.0..=6000.0 };
+                        let step = if d.suv { 0.1 } else { 5.0 };
                         ui.horizontal_wrapped(|ui| {
                             ui.label("Between");
                             ui.add(
                                 egui::DragValue::new(&mut d.lo)
-                                    .speed(5.0)
-                                    .range(-2000.0..=6000.0)
-                                    .suffix(" HU"),
+                                    .speed(step)
+                                    .range(range.clone())
+                                    .suffix(unit),
                             );
                             ui.label("and");
                             ui.add(
                                 egui::DragValue::new(&mut d.hi)
-                                    .speed(5.0)
-                                    .range(-2000.0..=6000.0)
-                                    .suffix(" HU"),
+                                    .speed(step)
+                                    .range(range)
+                                    .suffix(unit),
                             );
                         });
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label("Bone:");
-                            for (label, lo) in generate::BONE_PRESETS {
-                                if ui
-                                    .small_button(label)
-                                    .on_hover_text(format!("Everything above {lo:.0} HU"))
-                                    .clicked()
-                                {
-                                    d.lo = lo;
-                                    d.hi = 6000.0;
+                        if !d.suv {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("Bone:");
+                                for (label, lo) in generate::BONE_PRESETS {
+                                    if ui
+                                        .small_button(label)
+                                        .on_hover_text(format!("Everything above {lo:.0} HU"))
+                                        .clicked()
+                                    {
+                                        d.lo = lo;
+                                        d.hi = 6000.0;
+                                    }
                                 }
-                            }
-                        });
+                            });
+                        }
                         ui.horizontal_wrapped(|ui| {
                             ui.label("Only inside:");
                             let sel = d
@@ -403,6 +467,23 @@ impl ViewerApp {
                             egui::RichText::new(
                                 "The displayed dose, sampled the way the isodose lines \
                                  are, so the structure agrees with what is on screen.",
+                            )
+                            .weak(),
+                        );
+                    }
+                    Source::Fov => {
+                        ui.label(
+                            "The part of the images that carries data: the circle a CT \
+                             was reconstructed on, found from the value its corners are \
+                             padded with.",
+                        );
+                        ui.label(
+                            egui::RichText::new(
+                                "Useful as a limiting structure - a threshold or a body \
+                                 contour restricted to it stops at the edge of the data \
+                                 instead of at the edge of the matrix. Where the patient \
+                                 is cut off by it, intersect this with the EXTERNAL to \
+                                 see exactly where.",
                             )
                             .weak(),
                         );

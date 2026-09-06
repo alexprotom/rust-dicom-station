@@ -581,6 +581,7 @@ mod tree_tests {
             study_description: String::new(),
             series_number: None,
             temporal_id: None,
+            suv_bw: None,
             files: vec![std::path::PathBuf::from(format!("{uid}.dcm"))],
         }
     }
@@ -594,6 +595,7 @@ mod tree_tests {
             study_uid: study.into(),
             referenced_series_uid: series_uid.into(),
             file_name: format!("{sop}.dcm"),
+            locked: false,
             rois: Vec::new(),
         }
     }

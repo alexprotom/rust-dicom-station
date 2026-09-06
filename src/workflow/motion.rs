@@ -179,6 +179,7 @@ pub fn run(req: MotionRequest, p: &Progress) -> Result<MotionOutcome> {
                 phase: req.phases[req.reference].0.clone(),
                 centroid: c,
                 volume_cm3: motion::volume_cm3(&subject.mask, &ref_grid),
+                grey: motion::grey_stats(&subject.mask, &ref_vol),
             });
             if req.build_itv && si < n_targets {
                 motion::union_into(&mut unions[mi][si], &subject.mask);
@@ -350,6 +351,7 @@ pub fn run(req: MotionRequest, p: &Progress) -> Result<MotionOutcome> {
                     phase: label.clone(),
                     centroid: c,
                     volume_cm3: prop.result_cm3,
+                    grey: motion::grey_stats(&prop.mask, &vol),
                 });
                 if req.build_itv && si < n_targets {
                     let on_ref = resample_mask(&prop.mask, &phase_grid, &ref_grid);

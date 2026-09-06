@@ -19,6 +19,124 @@ use crate::volume::ViewPlane;
 /// stroke journal: enough to rescue a mistake, not enough to notice.
 const ROI_UNDO_DEPTH: usize = 32;
 
+/// What the smart brush is allowed to paint into.
+///
+/// The brush stamps a capsule; with one of these set, the stamp is cut back
+/// to the pixels whose value falls in the band, so the stroke stops where
+/// the tissue does. *Bone* and *Air* are the CT numbers themselves, which
+/// mean the same thing on every scanner; *Bright* and *Dark* are relative
+/// to the display window, so they mean something on MR and PET too.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(super) enum EdgeBand {
+    /// Paint the whole capsule: the plain contour brush.
+    #[default]
+    None,
+    Bone,
+    Air,
+    Bright,
+    Dark,
+}
+
+impl EdgeBand {
+    pub(super) const ALL: [EdgeBand; 5] = [
+        EdgeBand::None,
+        EdgeBand::Bone,
+        EdgeBand::Air,
+        EdgeBand::Bright,
+        EdgeBand::Dark,
+    ];
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            EdgeBand::None => "any",
+            EdgeBand::Bone => "bone",
+            EdgeBand::Air => "air",
+            EdgeBand::Bright => "bright",
+            EdgeBand::Dark => "dark",
+        }
+    }
+
+    pub(super) fn hint(self) -> &'static str {
+        match self {
+            EdgeBand::None => "The brush paints everything it covers",
+            EdgeBand::Bone => "Stop at soft tissue: only values above about 200 HU",
+            EdgeBand::Air => "Stay in air: only values below about -400 HU",
+            EdgeBand::Bright => "Stay in what looks bright in the current window",
+            EdgeBand::Dark => "Stay in what looks dark in the current window",
+        }
+    }
+
+    /// The values the brush may paint, given the display window and the
+    /// sensitivity (0 = the bare threshold, 1 = a whole window past it).
+    pub(super) fn limits(self, level: f32, width: f32, sensitivity: f32) -> (f32, f32) {
+        let slack = width.abs().max(1.0) * sensitivity.clamp(0.0, 1.0);
+        match self {
+            EdgeBand::None => (f32::MIN, f32::MAX),
+            EdgeBand::Bone => (200.0 - slack, f32::MAX),
+            EdgeBand::Air => (f32::MIN, -400.0 + slack),
+            EdgeBand::Bright => (level - slack, f32::MAX),
+            EdgeBand::Dark => (f32::MIN, level + slack),
+        }
+    }
+}
+
+/// Keep one connected piece of a small binary image: the one `seed` sits
+/// in, or the largest when there is no seed. 4-connected, which is what
+/// matches the even-odd filling the contours use.
+fn keep_one_piece(mask: &mut [u8], w: usize, h: usize, seed: Option<(usize, usize)>) {
+    if w == 0 || h == 0 || mask.iter().all(|&m| m == 0) {
+        return;
+    }
+    let mut label = vec![0u32; w * h];
+    let mut sizes: Vec<usize> = vec![0];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut next = 1u32;
+    for start in 0..w * h {
+        if mask[start] == 0 || label[start] != 0 {
+            continue;
+        }
+        let mut size = 0usize;
+        label[start] = next;
+        stack.push(start);
+        while let Some(i) = stack.pop() {
+            size += 1;
+            let (x, y) = (i % w, i / w);
+            let push = |j: usize, stack: &mut Vec<usize>, label: &mut Vec<u32>| {
+                if mask[j] != 0 && label[j] == 0 {
+                    label[j] = next;
+                    stack.push(j);
+                }
+            };
+            if x > 0 {
+                push(i - 1, &mut stack, &mut label);
+            }
+            if x + 1 < w {
+                push(i + 1, &mut stack, &mut label);
+            }
+            if y > 0 {
+                push(i - w, &mut stack, &mut label);
+            }
+            if y + 1 < h {
+                push(i + w, &mut stack, &mut label);
+            }
+        }
+        sizes.push(size);
+        next += 1;
+    }
+    let keep = match seed {
+        Some((x, y)) if label[y * w + x] != 0 => label[y * w + x],
+        _ => (1..sizes.len())
+            .max_by_key(|&l| sizes[l])
+            .map(|l| l as u32)
+            .unwrap_or(0),
+    };
+    for (m, &l) in mask.iter_mut().zip(label.iter()) {
+        if l != keep {
+            *m = 0;
+        }
+    }
+}
+
 /// The working geometry of the ROI under the contour tools.
 ///
 /// It exists for one reason: a structure is *stored* as axial contours, so
@@ -110,6 +228,10 @@ impl ViewerApp {
     /// after: a stroke must never land in a structure the user did not
     /// point at, and there is no undo for surprise.
     pub(super) fn ensure_edit_roi(&mut self, slot: usize) -> Option<(usize, usize)> {
+        if self.set_locked(slot, self.slots[slot].active_structs) {
+            self.locked_notice(slot);
+            return None;
+        }
         if let Some(t) = self.edit_target(slot) {
             return Some(t);
         }
@@ -120,12 +242,38 @@ impl ViewerApp {
     /// Append an ROI to the slot's active structure set, creating an
     /// in-memory set when the study has none, and make it the one the tools
     /// edit. Returns its index.
+    /// Whether a structure set is read-only.
+    pub(super) fn set_locked(&self, slot: usize, set: usize) -> bool {
+        self.slots[slot]
+            .study
+            .as_ref()
+            .and_then(|st| st.structure_sets.get(set))
+            .map(|ss| ss.locked)
+            .unwrap_or(false)
+    }
+
+    /// Say why nothing happened, once, in the words of the thing that
+    /// stopped it.
+    pub(super) fn locked_notice(&mut self, slot: usize) {
+        let name = self.slots[slot]
+            .active_structures()
+            .map(|ss| ss.label.clone())
+            .unwrap_or_default();
+        self.notice = Some(format!(
+            "'{name}' is locked. Unlock it in the RT structures list to change it."
+        ));
+    }
+
     pub(super) fn new_roi(
         &mut self,
         slot: usize,
         name: Option<String>,
         roi_type: &str,
     ) -> Option<usize> {
+        if self.set_locked(slot, self.slots[slot].active_structs) {
+            self.locked_notice(slot);
+            return None;
+        }
         let vol = self.slots[slot].study.as_ref().map(|s| s.volume.clone())?;
         self.roi_counter += 1;
         let name = name.unwrap_or_else(|| format!("ROI {}", self.roi_counter));
@@ -171,6 +319,7 @@ impl ViewerApp {
                     .unwrap_or_default(),
                 referenced_series_uid: active_series.map(|s| s.uid.clone()).unwrap_or_default(),
                 file_name: "drawn-contours".into(),
+                locked: false,
                 rois: vec![roi],
             });
             *active_structs = study.structure_sets.len() - 1;
@@ -377,6 +526,9 @@ impl ViewerApp {
 
     /// Close the contour under construction and apply it.
     pub(super) fn commit_draw(&mut self) {
+        // Whatever happens to the points, the next curve starts from a
+        // fresh anchor.
+        self.livewire_reset();
         let Some(d) = self.draw.take() else { return };
         if d.pts.len() < 3 {
             return;
@@ -388,6 +540,9 @@ impl ViewerApp {
             // A freehand drag arrives with a point per mouse event; thinning
             // it costs nothing visible and keeps the stored contour sane.
             SegTool::Freehand => Poly::new(uvs).simplify(0.08),
+            // The live-wire lands a point per pixel of the path; thinning it
+            // to a tenth of a voxel keeps the curve and drops the staircase.
+            SegTool::LiveWire => Poly::new(uvs).simplify(0.1),
             _ => Poly::new(uvs),
         };
         self.apply_ring(d.slot, d.plane, d.slice, ring);
@@ -412,8 +567,8 @@ impl ViewerApp {
         let cut = match mode {
             DrawMode::Extend => false,
             DrawMode::Subtract => true,
-            // RayStation's auto rule, verbatim: a drawing that crosses an
-            // existing contour and starts outside it cuts; anything else adds.
+            // The auto rule: a drawing that crosses an existing contour and
+            // starts outside it cuts; anything else adds.
             DrawMode::Auto => region.crosses(&ring) && !region.contains(ring.pts[0]),
         };
         if cut {
@@ -423,6 +578,115 @@ impl ViewerApp {
         }
         e.stack.prune();
         self.flush_edit();
+    }
+
+    /// The stamp the smart brush really applies: the capsule, cut back to
+    /// the tissue the edge setting allows.
+    ///
+    /// A brush that stops at the boundary is the difference between
+    /// painting a rib and painting the rib plus the lung behind it. The
+    /// rule is deliberately simple and visible: of the pixels the capsule
+    /// covers, keep those whose value falls in the band, then keep only the
+    /// piece of that which the stroke is actually standing on - so a brush
+    /// that overlaps a second organ across a gap does not fill it.
+    ///
+    /// `None` when the setting is off or there is nothing to test against,
+    /// in which case the plain capsule is applied. An *empty* list is a
+    /// different answer: the band allowed nothing under the stroke, so
+    /// nothing is painted - "bone" is an instruction, and a brush that
+    /// quietly paints lung instead would be worse than one that waits.
+    fn smart_stamp(
+        &self,
+        slot: usize,
+        axis: usize,
+        level: usize,
+        ring: &Poly,
+        at: [f64; 2],
+    ) -> Option<Vec<Poly>> {
+        let band = self.brush_band;
+        if band == EdgeBand::None {
+            return None;
+        }
+        let vol = &self.slots[slot].study.as_ref()?.volume;
+        if vol.is_empty() || level >= vol.dims[axis] {
+            return None;
+        }
+        let [ua, va] = contours::plane_axes(axis);
+        let (nu, nv) = (vol.dims[ua], vol.dims[va]);
+        // The capsule's box on the lattice, with a pixel of slack.
+        let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+        for p in &ring.pts {
+            for a in 0..2 {
+                lo[a] = lo[a].min(p[a]);
+                hi[a] = hi[a].max(p[a]);
+            }
+        }
+        let u0 = (lo[0].floor() as isize - 1).max(0) as usize;
+        let v0 = (lo[1].floor() as isize - 1).max(0) as usize;
+        let u1 = ((hi[0].ceil() as isize + 1).max(0) as usize).min(nu.saturating_sub(1));
+        let v1 = ((hi[1].ceil() as isize + 1).max(0) as usize).min(nv.saturating_sub(1));
+        if u0 >= u1 || v0 >= v1 {
+            return None;
+        }
+        let (bw, bh) = (u1 - u0 + 1, v1 - v0 + 1);
+        let (lo_v, hi_v) = band.limits(
+            self.window_center,
+            self.window_width,
+            self.brush_sensitivity,
+        );
+        let value = |u: usize, v: usize| -> f32 {
+            let mut idx = [0usize; 3];
+            idx[ua] = u;
+            idx[va] = v;
+            idx[axis] = level;
+            vol.index(idx[0], idx[1], idx[2]) as f32
+        };
+        let mut mask = vec![0u8; bw * bh];
+        for v in v0..=v1 {
+            for u in u0..=u1 {
+                let c = [u as f64, v as f64];
+                if !ring.contains(c) {
+                    continue;
+                }
+                let g = value(u, v);
+                if g >= lo_v && g <= hi_v {
+                    mask[(v - v0) * bw + (u - u0)] = 1;
+                }
+            }
+        }
+        // Keep the piece the stroke is standing on. When the pointer itself
+        // is on tissue the band excludes, the largest piece is the honest
+        // fallback - the user is painting *towards* something.
+        let seed = {
+            let (su, sv) = (
+                at[0].round() as isize - u0 as isize,
+                at[1].round() as isize - v0 as isize,
+            );
+            (su >= 0 && sv >= 0 && (su as usize) < bw && (sv as usize) < bh)
+                .then_some((su as usize, sv as usize))
+                .filter(|&(u, v)| mask[v * bw + u] != 0)
+        };
+        keep_one_piece(&mut mask, bw, bh, seed);
+        if mask.iter().all(|&m| m == 0) {
+            return Some(Vec::new());
+        }
+        // Trace the little mask and put it back where it came from.
+        let st = contours::Stack::from_mask(&mask, [bw, bh, 1], 2);
+        let rings: Vec<Poly> = st
+            .slices
+            .into_iter()
+            .flat_map(|s| s.region.rings)
+            .map(|r| {
+                Poly::new(
+                    r.pts
+                        .into_iter()
+                        .map(|p| [p[0] + u0 as f64, p[1] + v0 as f64])
+                        .collect(),
+                )
+            })
+            .filter(|r| !r.is_empty())
+            .collect();
+        Some(rings)
     }
 
     /// One sample of a contour brush stroke: the capsule swept from `from`
@@ -459,17 +723,41 @@ impl ViewerApp {
         if first {
             self.push_roi_undo(slot, set, roi);
         }
-        let cut = erase || self.draw_mode == DrawMode::Subtract;
         let [ua, va] = contours::plane_axes(axis);
         let mm = [spacing[ua], spacing[va]];
         let (a, b) = (uv(axis, from), uv(axis, to));
+        // Auto: a stroke that starts *inside* the structure adds to it, one
+        // that starts outside cuts into it - the same rule the drawn
+        // contour follows, decided once at the start of the stroke so the
+        // brush does not change its mind halfway through.
+        if first && self.draw_mode == DrawMode::Auto {
+            self.brush_auto_cut = !self
+                .edit
+                .as_ref()
+                .and_then(|e| e.stack.region_at(level))
+                .is_some_and(|r| r.contains(a));
+        }
+        let cut = erase
+            || match self.draw_mode {
+                DrawMode::Subtract => true,
+                DrawMode::Extend => false,
+                DrawMode::Auto => self.brush_auto_cut,
+            };
         let ring = Poly::capsule_mm(a, b, radius_mm, mm, 32);
+        // The smart brush cuts the stamp back to the tissue it is allowed to
+        // paint; with the setting off, or nothing left after the cut, the
+        // stamp is the capsule itself.
+        let stamps = self
+            .smart_stamp(slot, axis, level, &ring, b)
+            .unwrap_or_else(|| vec![ring]);
         let Some(e) = self.edit.as_mut() else { return };
         let region = e.stack.region_mut(level);
-        if cut {
-            region.subtract_ring(&ring);
-        } else {
-            region.add_ring(&ring);
+        for ring in &stamps {
+            if cut {
+                region.subtract_ring(ring);
+            } else {
+                region.add_ring(ring);
+            }
         }
         e.stack.prune();
         if axis == 2 || last {
@@ -478,8 +766,8 @@ impl ViewerApp {
     }
 
     /// Delete the one contour the crosshair sits inside, on the current
-    /// slice - RayStation's delete-contour tool, with the crosshair for the
-    /// pointer this window does not have.
+    /// slice - the delete-contour tool, with the crosshair standing in for
+    /// the pointer this window does not have.
     pub(super) fn delete_contour_at_cursor(&mut self, slot: usize) -> bool {
         let axis = self.edit_axis(slot);
         let [ua, va] = contours::plane_axes(axis);
@@ -595,8 +883,8 @@ pub(super) type InterpRings = (Vec<Vec<[f32; 2]>>, [u8; 3]);
 
 /// The interpolated slices of the edited structure, kept while the contour
 /// window shows them: they are a *preview*, and are only written into the
-/// structure when accepted - the rule RayStation states and the reason the
-/// preview is not simply added to the stack.
+/// structure when accepted - which is why the preview is not simply added
+/// to the stack.
 pub(super) struct InterpPreview {
     pub slot: usize,
     pub set: usize,
@@ -650,6 +938,10 @@ impl ViewerApp {
         let Some((set, roi)) = self.edit_target(slot) else {
             return false;
         };
+        if self.set_locked(slot, set) {
+            self.locked_notice(slot);
+            return false;
+        }
         let axis = self.edit_axis(slot);
         if self.working_stack(slot, set, roi, axis).is_none() {
             return false;
@@ -761,7 +1053,7 @@ impl ViewerApp {
     }
 
     /// Thin the structure out: keep one slice in `keep`, drop the rest,
-    /// between `from` and `to` inclusive. RayStation's "delete multiple
+    /// between `from` and `to` inclusive. The "delete multiple
     /// contours", which exists because interpolation can put them back.
     pub(super) fn thin_slices(&mut self, slot: usize, keep: usize, from: usize, to: usize) -> bool {
         let keep = keep.max(2);
@@ -848,7 +1140,10 @@ impl ViewerApp {
             return;
         };
         let Some(e) = self.edit.as_ref() else { return };
-        let stack = e.stack.interpolated(dims);
+        let mut stack = e.stack.interpolated(dims);
+        if self.interp_snap {
+            self.snap_stack_to_edges(slot, axis, &mut stack);
+        }
         self.interp = Some(InterpPreview {
             slot,
             set,
@@ -857,6 +1152,71 @@ impl ViewerApp {
             stack,
             gen: self.settings_gen,
         });
+    }
+
+    /// Pull every interpolated ring onto the edge the image shows there:
+    /// smart interpolation.
+    ///
+    /// Interpolation says where the boundary *should* run between two drawn
+    /// slices; the picture says where it does. The correction is per slice
+    /// and local - a crop around the slice's own contours, its gradient,
+    /// and every vertex moved along the curve's normal to the ridge nearest
+    /// it ([`crate::livewire::Edges`]) - so a hundred interpolated slices
+    /// cost a hundred small Sobels rather than a hundred whole ones.
+    fn snap_stack_to_edges(&self, slot: usize, axis: usize, stack: &mut Stack) {
+        const REACH_PX: f64 = 3.0;
+        let Some(study) = self.slots[slot].study.as_ref() else {
+            return;
+        };
+        let vol = &study.volume;
+        if vol.is_empty() {
+            return;
+        }
+        let [ua, va] = contours::plane_axes(axis);
+        let (nu, nv) = (vol.dims[ua], vol.dims[va]);
+        let window = (self.window_center, self.window_width);
+        let margin = REACH_PX.ceil() as usize + 2;
+        for s in stack.slices.iter_mut() {
+            if s.region.is_empty() || s.level >= vol.dims[axis] {
+                continue;
+            }
+            let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+            for ring in &s.region.rings {
+                for p in &ring.pts {
+                    for a in 0..2 {
+                        lo[a] = lo[a].min(p[a]);
+                        hi[a] = hi[a].max(p[a]);
+                    }
+                }
+            }
+            if lo[0] > hi[0] {
+                continue;
+            }
+            let u0 = (lo[0].floor() as isize - margin as isize).max(0) as usize;
+            let v0 = (lo[1].floor() as isize - margin as isize).max(0) as usize;
+            let u1 = (((hi[0].ceil() as isize) + margin as isize).max(0) as usize)
+                .min(nu.saturating_sub(1));
+            let v1 = (((hi[1].ceil() as isize) + margin as isize).max(0) as usize)
+                .min(nv.saturating_sub(1));
+            if u0 + 2 >= u1 || v0 + 2 >= v1 {
+                continue;
+            }
+            let (bw, bh) = (u1 - u0 + 1, v1 - v0 + 1);
+            let mut crop = vec![0.0f32; bw * bh];
+            for v in v0..=v1 {
+                for u in u0..=u1 {
+                    let mut idx = [0usize; 3];
+                    idx[ua] = u;
+                    idx[va] = v;
+                    idx[axis] = s.level;
+                    crop[(v - v0) * bw + (u - u0)] = vol.index(idx[0], idx[1], idx[2]) as f32;
+                }
+            }
+            let edges = crate::livewire::Edges::new(&crop, bw, bh, [u0 as f64, v0 as f64], window);
+            for ring in s.region.rings.iter_mut() {
+                *ring = Poly::new(edges.snap(&ring.pts, REACH_PX));
+            }
+        }
     }
 
     /// How many slices the preview holds.
@@ -927,5 +1287,69 @@ impl ViewerApp {
             })
             .collect();
         Some((rings, color))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_edge_bands_say_what_they_mean() {
+        // Window: level 40, width 400 - an ordinary soft-tissue window.
+        let (l, w) = (40.0, 400.0);
+        let (lo, hi) = EdgeBand::None.limits(l, w, 0.5);
+        assert!(lo < -3000.0 && hi > 3000.0, "anything goes");
+
+        // Bone starts at 200 HU, and the reach lowers that threshold by a
+        // fraction of the window rather than by a fixed number, so it means
+        // the same on a lung window as on a bone one.
+        let (lo, hi) = EdgeBand::Bone.limits(l, w, 0.0);
+        assert_eq!((lo, hi), (200.0, f32::MAX));
+        let (lo, _) = EdgeBand::Bone.limits(l, w, 0.25);
+        assert_eq!(lo, 100.0);
+
+        // Air is the other end, and its reach goes the other way.
+        let (lo, hi) = EdgeBand::Air.limits(l, w, 0.0);
+        assert_eq!((lo, hi), (f32::MIN, -400.0));
+        assert_eq!(EdgeBand::Air.limits(l, w, 0.25).1, -300.0);
+
+        // Bright and dark are the window's own halves.
+        assert_eq!(EdgeBand::Bright.limits(l, w, 0.0).0, 40.0);
+        assert_eq!(EdgeBand::Dark.limits(l, w, 0.0).1, 40.0);
+    }
+
+    #[test]
+    fn one_piece_is_kept_and_it_is_the_one_the_stroke_stands_on() {
+        // Two blobs, four columns apart, in a 9 x 3 image.
+        let (w, h) = (9usize, 3usize);
+        let mut m = vec![0u8; w * h];
+        for y in 0..h {
+            for x in [0usize, 1, 7, 8] {
+                m[y * w + x] = 1;
+            }
+        }
+        let mut a = m.clone();
+        keep_one_piece(&mut a, w, h, Some((0, 1)));
+        assert_eq!(a.iter().filter(|&&v| v != 0).count(), 6);
+        assert_eq!(a[w + 8], 0, "the far blob is gone");
+
+        // A seed on the other blob keeps that one instead.
+        let mut b = m.clone();
+        keep_one_piece(&mut b, w, h, Some((8, 1)));
+        assert_eq!(b[w + 8], 1);
+        assert_eq!(b[w], 0);
+
+        // With no seed the larger piece wins; with equal pieces, one of
+        // them, and never both.
+        let mut c = m.clone();
+        c[0] = 0;
+        keep_one_piece(&mut c, w, h, None);
+        assert_eq!(c.iter().filter(|&&v| v != 0).count(), 6);
+
+        // Nothing in, nothing out - and no panic.
+        let mut empty = vec![0u8; w * h];
+        keep_one_piece(&mut empty, w, h, Some((3, 1)));
+        assert!(empty.iter().all(|&v| v == 0));
     }
 }

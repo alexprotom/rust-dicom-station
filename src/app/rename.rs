@@ -348,6 +348,7 @@ mod rename_tests {
             study_description: "before".into(),
             series_number: None,
             temporal_id: None,
+            suv_bw: None,
             files: Vec::new(),
         }
     }
@@ -390,6 +391,7 @@ mod rename_tests {
                 study_uid: "st1".into(),
                 referenced_series_uid: "se1".into(),
                 file_name: "RS.dcm".into(),
+                locked: false,
                 rois: vec![Roi {
                     number: 1,
                     name: "Liver".into(),

@@ -332,13 +332,30 @@ impl ViewerApp {
                     if ui
                         .add_enabled(any, egui::Button::new("◑ Compare structures"))
                         .on_hover_text(
-                            "Volumes, centroid offset, Dice, HD95 and mean surface \
-                             distance of any two structures - within a dataset or across \
-                             the two",
+                            "Volumes, centroid offset, Dice, HD95, surface distances and \
+                             the least-squares rigid offset of any two structures - \
+                             within a dataset or across the two",
                         )
                         .clicked()
                     {
                         self.open_compare_dialog(0);
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            any,
+                            egui::Button::new(super::stats_win::DETAILS.menu_entry()),
+                        )
+                        .on_hover_text(
+                            "One row per structure: volume by planimetry and by voxel \
+                             count, the grey levels inside it, what the geometry costs \
+                             in slices and points, and whether a derived structure still \
+                             matches its recipe. With CSV export.",
+                        )
+                        .clicked()
+                    {
+                        let slot = usize::from(!self.slots[0].has_volume());
+                        self.open_stats_dialog(slot);
                         ui.close();
                     }
                     let has_dose = self
@@ -815,6 +832,16 @@ impl ViewerApp {
                     );
                     pick(
                         ui,
+                        SegTool::LiveWire,
+                        "🔗 Live wire",
+                        "Draw along the edge under the pointer: click once on the \
+                         boundary, move along it, and the curve between the two follows \
+                         the image gradient instead of the straight line. Click to \
+                         anchor what is on screen; right-click, double-click or Enter \
+                         closes, Esc cancels",
+                    );
+                    pick(
+                        ui,
                         SegTool::ContourBrush,
                         "🖊 Brush",
                         "Paint into the active RT structure: a round brush on the \
@@ -829,6 +856,108 @@ impl ViewerApp {
                          within the tool radius follow the drag, with a smooth \
                          falloff. Shift+wheel or [ ] set the radius",
                     );
+                    if self.seg_tool == SegTool::Grow {
+                        // The limiting structure: where the front may not
+                        // go, whatever the picture says. Any structure will
+                        // do, including a box made with ✚ New structure,
+                        // which is the "limiting box" by another name.
+                        let hovered = self.hovered_slot.min(1);
+                        let slot = if self.slots[hovered].has_volume() {
+                            hovered
+                        } else {
+                            usize::from(!self.slots[0].has_volume())
+                        };
+                        let cands = self.combine_candidates(slot);
+                        let current = self
+                            .grow_limit
+                            .and_then(|it| {
+                                cands.iter().find(|(c, _)| *c == it).map(|(_, l)| l.clone())
+                            })
+                            .unwrap_or_else(|| "no limit".to_string());
+                        ui.label("inside:");
+                        egui::ComboBox::from_id_salt("grow_limit")
+                            .width(180.0)
+                            .selected_text(current)
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_label(self.grow_limit.is_none(), "no limit")
+                                    .clicked()
+                                {
+                                    self.grow_limit = None;
+                                }
+                                for (it, label) in &cands {
+                                    if ui
+                                        .selectable_label(self.grow_limit == Some(*it), label)
+                                        .clicked()
+                                    {
+                                        self.grow_limit = Some(*it);
+                                    }
+                                }
+                            })
+                            .response
+                            .on_hover_text(
+                                "Keep the region inside this structure, whatever the \
+                                 grey levels do. A box drawn with ✚ New structure is \
+                                 the limiting box.",
+                            );
+                    }
+                    if self.seg_tool == SegTool::ContourBrush {
+                        // The smart brush: which tissue the stamp is allowed
+                        // to cover, and how far past that threshold it may
+                        // still reach.
+                        ui.label("edge:");
+                        for b in super::contour_edit::EdgeBand::ALL {
+                            if ui
+                                .add(egui::Button::selectable(self.brush_band == b, b.label()))
+                                .on_hover_text(b.hint())
+                                .clicked()
+                            {
+                                self.brush_band = b;
+                            }
+                        }
+                        if self.brush_band != super::contour_edit::EdgeBand::None {
+                            ui.add(
+                                egui::Slider::new(&mut self.brush_sensitivity, 0.0..=1.0)
+                                    .text("reach")
+                                    .fixed_decimals(2),
+                            )
+                            .on_hover_text(
+                                "How far past the threshold the brush may still paint, \
+                                 as a fraction of the display window. Turn it up when \
+                                 the brush stops short of the boundary.",
+                            );
+                        }
+                    }
+                    if self.seg_tool == SegTool::LiveWire {
+                        // Training: the tool learns what the accepted edges
+                        // look like, so it prefers that kind of edge over an
+                        // equally strong one beside it.
+                        let mut on = self.wire.as_ref().is_none_or(|w| w.training);
+                        if ui
+                            .checkbox(&mut on, "learn")
+                            .on_hover_text(
+                                "Learn from every accepted segment: an edge that looks \
+                                 like the ones already taken becomes cheaper than an \
+                                 equally strong edge that does not",
+                            )
+                            .changed()
+                        {
+                            if let Some(w) = &mut self.wire {
+                                w.training = on;
+                            }
+                        }
+                        if self.livewire_trained()
+                            && ui
+                                .small_button("forget")
+                                .on_hover_text(
+                                    "Start again from the plain gradient cost - what to \
+                                     press when moving from one organ to a different one",
+                                )
+                                .clicked()
+                        {
+                            self.livewire_untrain();
+                        }
+                    }
                     if self.seg_tool.draws_contours() {
                         // Which structure the strokes land in, and what they do
                         // to what is already there.
@@ -1016,6 +1145,9 @@ impl ViewerApp {
                         }
                         SegTool::ContourBrush => {
                             "LMB paints the structure · Alt erases · Shift+wheel / [ ] radius · Ctrl+Z undo"
+                        }
+                        SegTool::LiveWire => {
+                            "LMB anchors the path along the edge · RMB / double-click / Enter close · Esc cancel · Ctrl-click pick structure · Ctrl+Z undo"
                         }
                     };
                     // `Sense::hover`: it looks like a button and answers the

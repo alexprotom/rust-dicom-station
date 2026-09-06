@@ -44,6 +44,12 @@ irradiated by *this* dose object" - and, since a DVH silently computed over 60
 % of a structure looks cold rather than truncated, a warning line names every
 structure that extends outside the grid and by how much.
 
+**Curves older than the geometry.** A structure edited after the curves were
+computed makes every number in the window describe something that is no
+longer on the screen. The window says so, in a line above the table, and
+leaves the numbers alone: recomputing behind the user's back would replace a
+comparison they were in the middle of making.
+
 **Statistics from the samples, not the bins.** Minimum, mean and maximum are
 accumulated during the walk; reading them off a binned histogram costs half a
 bin width of accuracy for nothing.

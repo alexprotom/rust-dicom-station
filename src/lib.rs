@@ -21,6 +21,7 @@ pub mod generate;
 pub mod geometry;
 pub mod gfx;
 pub mod icon;
+pub mod livewire;
 pub mod loader;
 pub mod medsam2;
 pub mod mesh3d;
@@ -40,6 +41,7 @@ pub mod segvol;
 pub mod settings;
 pub mod simulate;
 pub mod structops;
+pub mod templates;
 pub mod volume;
 pub mod workflow;
 

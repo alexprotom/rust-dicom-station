@@ -159,6 +159,7 @@ pub fn land_in_structure_set(
                 study_uid: study_uid.to_string(),
                 referenced_series_uid: series_uid.to_string(),
                 file_name: "propagated".into(),
+                locked: false,
                 rois: Vec::new(),
             });
             study.structure_sets.len() - 1

@@ -84,6 +84,77 @@ pub fn items_of(obj: &InMemDicomObject, tag: dicom_core::Tag) -> Option<&[InMemD
 }
 
 // ---------------------------------------------------------------------------
+// PET: standardized uptake value
+// ---------------------------------------------------------------------------
+
+/// Seconds since midnight of a DICOM `TM` value (`HHMMSS.FFFFFF`).
+fn tm_seconds(tm: &str) -> Option<f64> {
+    let t: String = tm
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    if t.len() < 6 {
+        return None;
+    }
+    let h: f64 = t.get(0..2)?.parse().ok()?;
+    let m: f64 = t.get(2..4)?.parse().ok()?;
+    let s: f64 = t.get(4..)?.parse().ok()?;
+    Some(h * 3600.0 + m * 60.0 + s)
+}
+
+/// The factor that turns a PET voxel in Bq/mL into a body-weight SUV.
+///
+/// `SUV = C · weight / A(t)` with `A(t) = A₀ · 2^(−Δt / T½)`: the injected
+/// activity decayed to the moment the images were acquired, and the weight
+/// in grams because an SUV is g/mL. A delay that comes out negative means
+/// the acquisition is filed after midnight, so a day is added rather than
+/// the number being thrown away.
+///
+/// `None` when any of it is missing or nonsensical - an SUV computed from
+/// a guessed weight is worse than no SUV at all.
+pub fn suv_bw_factor(weight_kg: f64, dose_bq: f64, half_life_s: f64, delay_s: f64) -> Option<f64> {
+    if weight_kg <= 0.0 || dose_bq <= 0.0 || half_life_s <= 0.0 {
+        return None;
+    }
+    let delay = if delay_s < 0.0 {
+        delay_s + 24.0 * 3600.0
+    } else {
+        delay_s
+    };
+    // A day of decay of an 18F tracer is 2^-13: nothing measurable is left,
+    // and the number is far more likely to be a broken header.
+    if !(0.0..=6.0 * 3600.0).contains(&delay) {
+        return None;
+    }
+    let decayed = dose_bq * 2f64.powf(-delay / half_life_s);
+    (decayed > 0.0).then_some(weight_kg * 1000.0 / decayed)
+}
+
+/// Read that factor out of one PET image's header, or `None` when the
+/// series does not carry what it takes: the pixels must be in Bq/mL
+/// (Units, 0054,1001), and the patient weight, the injected activity, the
+/// half-life and both times must all be there.
+fn suv_factor_of(obj: &InMemDicomObject) -> Option<f64> {
+    if str_of(obj, tags::UNITS).unwrap_or_default() != "BQML" {
+        return None;
+    }
+    let weight = f64_of(obj, tags::PATIENT_WEIGHT)?;
+    let item = items_of(obj, tags::RADIOPHARMACEUTICAL_INFORMATION_SEQUENCE)?.first()?;
+    let dose = f64_of(item, tags::RADIONUCLIDE_TOTAL_DOSE)?;
+    let half_life = f64_of(item, tags::RADIONUCLIDE_HALF_LIFE)?;
+    let injected = str_of(item, tags::RADIOPHARMACEUTICAL_START_TIME)
+        .as_deref()
+        .and_then(tm_seconds)?;
+    // The series time is what the decay correction is referred to on the
+    // scanners that write `DECY START`, which is nearly all of them.
+    let scanned = str_of(obj, tags::SERIES_TIME)
+        .or_else(|| str_of(obj, tags::ACQUISITION_TIME))
+        .as_deref()
+        .and_then(tm_seconds)?;
+    suv_bw_factor(weight, dose, half_life, scanned - injected)
+}
+
+// ---------------------------------------------------------------------------
 // Scan results
 // ---------------------------------------------------------------------------
 
@@ -104,6 +175,10 @@ pub struct SeriesInfo {
     /// TemporalPositionIdentifier (0020,0100) of the first slice - enhanced
     /// 4D exports carry the phase here rather than in the description.
     pub temporal_id: Option<i64>,
+    /// PET only: what a stored value has to be multiplied by to become a
+    /// body-weight SUV. `None` unless the header carries everything it
+    /// takes ([`suv_bw_factor`]).
+    pub suv_bw: Option<f64>,
     pub files: Vec<PathBuf>,
 }
 
@@ -233,6 +308,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
         study_uid: String,
         series_number: Option<i64>,
         temporal_id: Option<i64>,
+        suv_bw: Option<f64>,
         has_geometry: bool,
         meta: PatientMeta,
     }
@@ -248,6 +324,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
             let study_uid = str_of(&obj, tags::STUDY_INSTANCE_UID).unwrap_or_default();
             let series_number = i32_of(&obj, tags::SERIES_NUMBER).map(i64::from);
             let temporal_id = i32_of(&obj, tags::TEMPORAL_POSITION_IDENTIFIER).map(i64::from);
+            let suv_bw = (modality == "PT").then(|| suv_factor_of(&obj)).flatten();
             let has_geometry = obj.element(tags::IMAGE_POSITION_PATIENT).is_ok()
                 && obj.element(tags::ROWS).is_ok();
             let meta = PatientMeta {
@@ -265,6 +342,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
                 study_uid,
                 series_number,
                 temporal_id,
+                suv_bw,
                 has_geometry,
                 meta,
             })
@@ -366,6 +444,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
                         study_description: s.meta.study_description.clone(),
                         series_number: s.series_number,
                         temporal_id: s.temporal_id,
+                        suv_bw: s.suv_bw,
                         files: vec![s.path.clone()],
                     });
                 }
@@ -837,5 +916,48 @@ fn default_window_for(modality: &str, min_v: i16, max_v: i16) -> (f32, f32) {
             let w = (max_v as f32 - min_v as f32).max(1.0);
             (c, w)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_dicom_time_is_seconds_since_midnight() {
+        assert_eq!(tm_seconds("000000"), Some(0.0));
+        assert_eq!(tm_seconds("120000.000000"), Some(12.0 * 3600.0));
+        assert_eq!(
+            tm_seconds("13:45:30"),
+            Some(13.0 * 3600.0 + 45.0 * 60.0 + 30.0)
+        );
+        assert_eq!(tm_seconds("1345"), None);
+    }
+
+    #[test]
+    fn the_suv_factor_is_weight_over_the_decayed_activity() {
+        // 70 kg, 370 MBq of an 18F tracer (half-life 6586 s), imaged one
+        // half-life later: half the activity is left, so the factor is
+        // twice what it would be at the moment of injection.
+        let hl = 6586.0;
+        let at_once = suv_bw_factor(70.0, 370e6, hl, 0.0).expect("all present");
+        let later = suv_bw_factor(70.0, 370e6, hl, hl).expect("all present");
+        assert!((at_once - 70_000.0 / 370e6).abs() < 1e-12);
+        assert!((later / at_once - 2.0).abs() < 1e-9);
+        // A voxel of 5000 Bq/mL an hour after 370 MBq into 70 kg is an SUV
+        // of about 1.4: the arithmetic every PET reader knows.
+        let f = suv_bw_factor(70.0, 370e6, hl, 3600.0).expect("all present");
+        let suv = 5000.0 * f;
+        assert!((1.3..1.5).contains(&suv), "SUV {suv}");
+
+        // Nonsense in, nothing out - never a guessed number.
+        assert!(suv_bw_factor(0.0, 370e6, hl, 0.0).is_none());
+        assert!(suv_bw_factor(70.0, 0.0, hl, 0.0).is_none());
+        assert!(suv_bw_factor(70.0, 370e6, 0.0, 0.0).is_none());
+        // A scan filed after midnight: the delay wraps instead of going
+        // negative.
+        assert!(suv_bw_factor(70.0, 370e6, hl, -3600.0).is_none());
+        // ... but only within the day: 23 h of delay is a broken header.
+        assert!(suv_bw_factor(70.0, 370e6, hl, 23.0 * 3600.0).is_none());
     }
 }

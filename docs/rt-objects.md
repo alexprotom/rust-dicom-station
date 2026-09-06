@@ -10,6 +10,21 @@ ORGAN, EXTERNAL, …) and all planar contours in patient coordinates. ROIs are
 ordered EXTERNAL → PTV → CTV → GTV → alphabetical, and a fallback 12-color
 palette fills in for structure sets without stored colors.
 
+**Points of interest** arrive the same way: an ROI whose geometry is one
+`POINT` contour is a marker, and one typed `ISOCENTER` is the structure
+set's localization point. Both are drawn as markers, listed with their
+coordinates and editable - see [contours.md](contours.md#points-of-interest).
+
+**Approval Status (300E,0002)** is read as a lock: a set that arrives
+`APPROVED` opens read-only and one locked here is written back approved. It
+is a guard against a slip of the hand, not an electronic signature.
+
+**ROI Description (3006,0028)** carries the recipe of a derived structure,
+behind a prefix of this program's own, so that it survives export and
+re-import - see
+[structure-algebra.md](structure-algebra.md#derived-structures-the-recipe-stays).
+Anybody else's description is left untouched.
+
 Axial views draw the **native closed contours**; sagittal and coronal views
 show the **reconstructed cross-section silhouette** of each ROI (even-odd
 crossing pairing of the contour stack). Per-ROI visibility toggles live in the

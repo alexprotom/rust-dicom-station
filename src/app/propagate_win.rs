@@ -176,6 +176,46 @@ impl ViewerApp {
         self.propagate_dialog = Some(d);
     }
 
+    /// Aim the propagation module at exactly these structures: the
+    /// *Map to the other dataset* entry of the structure list.
+    ///
+    /// The module is the one place that knows how to carry geometry through
+    /// a registration, so the list does not repeat any of it - it opens the
+    /// module, picks the set the structures live in, ticks them and nothing
+    /// else, and lets contours land as contours.
+    pub(super) fn map_items_across(&mut self, from: SetRef, items: &[usize]) {
+        if self.propagate_job.is_some() {
+            self.error = Some(
+                "A propagation is already running; wait for it to finish before aiming \
+                 the module at another set."
+                    .into(),
+            );
+            return;
+        }
+        self.open_propagate_module(from.slot);
+        let pick = match from.kind {
+            SetKind::Structures => SetPick::Structures(from.idx),
+            SetKind::Segmentations => SetPick::Segmentations(from.idx),
+        };
+        let n = self.set_entries(from.slot, pick).len();
+        if let Some(d) = &mut self.propagate_dialog {
+            d.set = Some(pick);
+            d.ticked = vec![false; n];
+            for &i in items {
+                if let Some(t) = d.ticked.get_mut(i) {
+                    *t = true;
+                }
+            }
+            d.anchor = None;
+            // Contours came in as contours and should leave as contours;
+            // a painted mask has no outline to preserve, so it lands as one.
+            d.landing = match from.kind {
+                SetKind::Structures => Landing::StructureSet,
+                SetKind::Segmentations => Landing::Segmentation,
+            };
+        }
+    }
+
     /// The displayed series of a slot as a pick.
     fn displayed_pick(&self, slot: usize) -> Option<RegPick> {
         let st = self.slots[slot].study.as_ref()?;

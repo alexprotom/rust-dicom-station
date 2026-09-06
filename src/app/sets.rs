@@ -46,6 +46,7 @@ impl ViewerApp {
                     study_uid,
                     referenced_series_uid: uid,
                     file_name: String::new(),
+                    locked: false,
                     rois: Vec::new(),
                 });
                 s.active_structs = study.structure_sets.len() - 1;
@@ -349,6 +350,7 @@ impl ViewerApp {
                     .collect();
                 self.open_dvh_dialog(from.slot, seed);
             }
+            ItemAction::Map { from, items } => self.map_items_across(from, &items),
             ItemAction::Transfer {
                 from,
                 items,
@@ -536,6 +538,10 @@ impl ViewerApp {
 
     /// Delete structures / segments from their series.
     fn remove_items(&mut self, from: SetRef, items: &[usize]) {
+        if from.kind == SetKind::Structures && self.set_locked(from.slot, from.idx) {
+            self.locked_notice(from.slot);
+            return;
+        }
         let mut items = items.to_vec();
         items.sort_unstable();
         items.dedup();
@@ -759,5 +765,77 @@ impl ViewerApp {
             self.comparison = true;
         }
         self.settings_gen += 1;
+    }
+}
+
+/// What the structure list's *Template* menu asks for.
+#[derive(Clone, PartialEq)]
+pub(super) enum TemplateAct {
+    /// Save the structure set at this index as a template of its own name.
+    Save(usize),
+    /// Create the structures of this template that the set at this index
+    /// does not have yet.
+    Apply(usize, String),
+}
+
+impl ViewerApp {
+    pub(super) fn apply_template_act(&mut self, slot: usize, act: TemplateAct) {
+        match act {
+            TemplateAct::Save(set) => {
+                let Some(ss) = self.slots[slot]
+                    .study
+                    .as_ref()
+                    .and_then(|st| st.structure_sets.get(set))
+                else {
+                    return;
+                };
+                let t = crate::templates::of_set(&ss.label, ss);
+                let n = t.rois.len();
+                match crate::templates::save(&t) {
+                    Ok(()) => {
+                        self.notice = Some(format!(
+                            "Saved '{}' as a template of {n} structure(s), in {}.",
+                            t.name,
+                            crate::templates::dir().display()
+                        ))
+                    }
+                    Err(e) => self.error = Some(format!("Could not save the template: {e:#}")),
+                }
+            }
+            TemplateAct::Apply(set, name) => {
+                if self.set_locked(slot, set) {
+                    self.locked_notice(slot);
+                    return;
+                }
+                let t = match crate::templates::load(&name) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        self.error = Some(format!("Could not read the template: {e:#}"));
+                        return;
+                    }
+                };
+                let Some(ss) = self.slots[slot]
+                    .study
+                    .as_mut()
+                    .and_then(|st| st.structure_sets.get_mut(set))
+                else {
+                    return;
+                };
+                let missing = crate::templates::missing_rois(&t, ss);
+                let n = missing.len();
+                let skipped = t.rois.len() - n;
+                ss.rois.extend(missing);
+                let total = ss.rois.len();
+                self.slots[slot].roi_visible.resize(total, true);
+                self.settings_gen += 1;
+                self.notice = Some(match skipped {
+                    0 => format!("'{}' added {n} structure(s).", t.name),
+                    _ => format!(
+                        "'{}' added {n} structure(s); {skipped} were already here.",
+                        t.name
+                    ),
+                });
+            }
+        }
     }
 }
