@@ -67,6 +67,11 @@ pub(super) struct DvhDialog {
     pub show_constraints: bool,
     /// The last computed curves, in the order the structures were picked.
     pub curves: Vec<Dvh>,
+    /// The `settings_gen` the curves were computed at. A structure edited
+    /// afterwards makes every number in this window older than the geometry
+    /// it claims to describe, which is worth saying out loud rather than
+    /// recomputing behind the user's back.
+    pub gen: u64,
     pub status: Option<String>,
 }
 
@@ -85,6 +90,7 @@ impl DvhDialog {
             protocol_name: String::new(),
             show_constraints: false,
             curves: Vec::new(),
+            gen: 0,
             status: None,
         }
     }
@@ -289,6 +295,7 @@ impl ViewerApp {
     }
 
     pub(super) fn on_dvh_done(&mut self, done: DvhDone) {
+        let gen = self.settings_gen;
         let Some(d) = &mut self.dvh_dialog else {
             return;
         };
@@ -307,6 +314,7 @@ impl ViewerApp {
             }
         ));
         d.curves = done.curves;
+        d.gen = gen;
     }
 
     /// The window.
@@ -321,6 +329,7 @@ impl ViewerApp {
         let progress = self.dvh_job.as_ref().map(|j| j.progress.clone());
         let prescription = self.prescription();
 
+        let current_gen = self.settings_gen;
         let mut open = self.dvh_open;
         let mut recompute = false;
         let mut cancel = false;
@@ -565,6 +574,15 @@ impl ViewerApp {
                         ui.weak(s);
                     }
                 });
+                if !d.curves.is_empty() && d.gen != current_gen {
+                    ui.label(
+                        egui::RichText::new(
+                            "⚠ A structure has changed since these curves were computed - \
+                             the numbers below describe the geometry as it was. Recompute.",
+                        )
+                        .color(egui::Color32::from_rgb(220, 170, 60)),
+                    );
+                }
                 let truncated: Vec<&Dvh> = d
                     .curves
                     .iter()

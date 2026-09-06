@@ -141,12 +141,43 @@ Reference structures whose name contains "heart" are pre-picked.
 
 ## Compare structures (`src/app/compare_win.rs`)
 
-*Tools ▸ ◑ Compare structures…* computes, for any two structures (either
+*Tools ▸ ◑ Compare structures* computes, for any two structures (either
 dataset, contours or segmentations, different lattices): volumes, centroid
 offset (vector and magnitude), Dice, 95th-percentile symmetric Hausdorff
-distance and mean symmetric surface distance. The second mask is resampled
-onto the first's lattice through patient coordinates; across two frames of
-reference the window notes the comparison assumes corresponding coordinates.
+distance and the surface distance as mean, SD and maximum. The second mask
+is resampled onto the first's lattice through patient coordinates; across
+two frames of reference the window notes the comparison assumes
+corresponding coordinates. *Save CSV* writes the lot as a two-column table.
+
+**The rigid offset** is the one genuinely new computation and has its own
+tick, because it costs a second on a large structure. The two surfaces carry
+no point correspondence, so one is invented and then improved: every point
+of A is paired with the nearest point of B, the rigid body that best
+explains those pairs is fitted (orthogonal Procrustes, the same
+`registration::analysis::fit_rigid` the registration analytics use), A is
+moved, and the pairing is done again. The fit is always taken from A's
+*original* points, so the iteration refines one global transform instead of
+accumulating a chain of small ones. What comes out is a translation, three
+Euler angles, and the surface distance left over afterwards next to what it
+was before - which is how one sees whether a rigid body explains the
+difference at all.
+
+**Two points of interest** are compared as points: the window reports their
+separation instead of a Dice score, which is the target registration error
+when the two are meant to be the same landmark.
+
+## Structure details (`src/app/stats_win.rs`)
+
+*Tools ▸ 📋 Structure details* is the other half: one row per structure of
+one dataset rather than two structures against each other. Volume twice over
+- by planimetry on the contours and by counting the voxels they fill, which
+disagree by a few per cent on a coarse series and neither of which is wrong
+- the grey levels inside the structure (which is how a mis-drawn organ gives
+itself away), what the geometry costs in slices and points, and whether a
+derived structure still matches its recipe. Points of interest show their
+coordinates instead of a volume. The table is computed on demand rather than
+every frame, and says so when the geometry has changed under it. *Save CSV*
+writes it out.
 
 ## Numerics worth knowing
 

@@ -66,6 +66,9 @@ pub(super) struct CombineDialog {
     pub output: Output,
     /// Interpreted type given to an RT structure result - PTV, ORGAN, …
     pub roi_type: String,
+    /// Keep the recipe on the result, so it can be re-run when an operand
+    /// changes (see [`crate::derived`]). Only an RT structure can carry one.
+    pub derived: bool,
     pub status: Option<String>,
 }
 
@@ -75,6 +78,8 @@ pub struct CombineResult {
     pub name: String,
     pub output: Output,
     pub roi_type: String,
+    /// The recipe to attach to the result, when it was asked for.
+    pub derived: Option<crate::derived::Expr>,
     pub volume_dims: [usize; 3],
     pub frame_of_reference_uid: String,
     pub elapsed_secs: f64,
@@ -87,6 +92,7 @@ struct CombineRequest {
     name: String,
     output: Output,
     roi_type: String,
+    derived: Option<crate::derived::Expr>,
 }
 
 /// The interpreted types offered for an RT structure result - the ones a
@@ -136,6 +142,26 @@ impl ViewerApp {
         out
     }
 
+    /// The operand's own name, without the set it lives in: what a derived
+    /// recipe stores, because that is what resolves again later.
+    pub(super) fn combine_item_name(&self, slot: usize, item: ItemRef) -> Option<String> {
+        let study = self.slots[slot].study.as_ref()?;
+        match item.kind {
+            SetKind::Structures => study
+                .structure_sets
+                .get(item.set)?
+                .rois
+                .get(item.idx)
+                .map(|r| r.name.clone()),
+            SetKind::Segmentations => study
+                .seg_series
+                .get(item.set)?
+                .segs
+                .get(item.idx)
+                .map(|s| s.name.clone()),
+        }
+    }
+
     fn combine_label(&self, slot: usize, item: ItemRef) -> String {
         self.combine_candidates(slot)
             .into_iter()
@@ -150,7 +176,7 @@ impl ViewerApp {
     /// it is; a segment on another lattice is resampled onto this one. The
     /// third case is what makes it legal to combine a segmentation drawn on
     /// one image series with a structure drawn on another.
-    fn operand_mask(&self, slot: usize, item: ItemRef, grid: &Grid) -> Option<Vec<u8>> {
+    pub(super) fn operand_mask(&self, slot: usize, item: ItemRef, grid: &Grid) -> Option<Vec<u8>> {
         let study = self.slots[slot].study.as_ref()?;
         match item.kind {
             SetKind::Structures => {
@@ -203,6 +229,7 @@ impl ViewerApp {
                     name: "Combined".to_string(),
                     output: Output::Segment,
                     roi_type: "ORGAN".to_string(),
+                    derived: false,
                     status: None,
                 });
             }
@@ -246,6 +273,31 @@ impl ViewerApp {
             "" => "Combined".to_string(),
             n => n.to_string(),
         };
+        // The recipe without the masks: what the result carries if it is to
+        // stay derived. An operand whose name is gone cannot be stored, so
+        // the tick is quietly dropped rather than storing something that
+        // will not resolve.
+        let derived = (d.derived && d.output == Output::Structure)
+            .then(|| {
+                let deps: Option<Vec<crate::derived::Dep>> = d
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        self.combine_item_name(slot, row.item)
+                            .map(|name| crate::derived::Dep {
+                                name,
+                                margin: row.margin,
+                            })
+                    })
+                    .collect();
+                deps.map(|deps| crate::derived::Expr {
+                    op: d.op,
+                    deps,
+                    margin: d.margin,
+                    cleanup: d.cleanup,
+                })
+            })
+            .flatten();
         let req = CombineRequest {
             recipe: Recipe {
                 op: d.op,
@@ -257,6 +309,7 @@ impl ViewerApp {
             name,
             output: d.output,
             roi_type: d.roi_type.clone(),
+            derived,
         };
         let progress = Arc::new(Progress::default());
         progress.set("Preparing");
@@ -268,6 +321,7 @@ impl ViewerApp {
                 name: req.name.clone(),
                 output: req.output,
                 roi_type: req.roi_type.clone(),
+                derived: req.derived.clone(),
                 volume_dims: req.grid.dims,
                 frame_of_reference_uid: req.grid.frame_of_reference_uid.clone(),
                 elapsed_secs: t0.elapsed().as_secs_f64(),
@@ -298,6 +352,14 @@ impl ViewerApp {
         );
         if result.output == Output::Structure {
             self.seg_to_rtstruct(slot, idx, &result.roi_type);
+            if let Some(expr) = result.derived.clone() {
+                let set = self.slots[slot].active_structs;
+                let roi = self.slots[slot]
+                    .active_structures()
+                    .map(|ss| ss.rois.len().saturating_sub(1))
+                    .unwrap_or(0);
+                self.set_derived(slot, set, roi, expr);
+            }
             // The mask was only the vehicle; the user asked for contours.
             if let Some(segs) = self.slots[slot].segs_mut() {
                 if idx < segs.len() {
@@ -545,6 +607,11 @@ impl ViewerApp {
                             }
                         });
                     if d.output == Output::Structure {
+                        ui.checkbox(&mut d.derived, "Derived").on_hover_text(
+                            "Keep this recipe on the result: it can be re-run when \
+                                 an operand changes, and the structure list says when it \
+                                 is out of date",
+                        );
                         egui::ComboBox::from_id_salt("combine_roi_type")
                             .selected_text(&d.roi_type)
                             .width(110.0)
@@ -717,6 +784,7 @@ mod tests {
             name: "PTV_eval".into(),
             output: Output::Segment,
             roi_type: "ORGAN".into(),
+            derived: false,
             status: None,
         };
         let labels = vec!["Set 1 / PTV".to_string(), "Set 1 / Cord".to_string()];

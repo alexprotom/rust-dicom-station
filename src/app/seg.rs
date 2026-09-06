@@ -195,9 +195,39 @@ impl ViewerApp {
             y0: y,
             capped: false,
         });
+        // The limiting structure, when one is chosen and it really covers
+        // the seed: a limit the seed is outside of would grow a single
+        // voxel, which reads as a broken tool rather than as a limit.
+        let limit = self.grow_limit_mask(slot);
+        let idx = seed[2] * dims[0] * dims[1] + seed[1] * dims[0] + seed[0];
+        let limit = match limit {
+            Some((m, _)) if m.get(idx).copied().unwrap_or(0) != 0 => Some(std::sync::Arc::new(m)),
+            Some((_, name)) => {
+                self.notice = Some(format!(
+                    "The seed is outside '{name}' - growing without the limit."
+                ));
+                None
+            }
+            None => None,
+        };
         let vol = &self.slots[slot].study.as_ref().unwrap().volume;
+        self.grow_state.set_limit(limit);
         self.grow_state.seed(vol, seed);
         self.sync_grow_preview();
+    }
+
+    /// The limiting structure's mask on the displayed lattice, with its
+    /// name; `None` when none is chosen or it no longer resolves.
+    fn grow_limit_mask(&self, slot: usize) -> Option<(Vec<u8>, String)> {
+        let item = self.grow_limit?;
+        let (mask, grid, name, _) = self.item_mask_grid(slot, item)?;
+        let target = self.slots[slot].study.as_ref()?.volume.grid();
+        let mask = if grid.matches(&target) {
+            mask
+        } else {
+            crate::dicomseg::resample_mask(&mask, &grid, &target)
+        };
+        Some((mask, name))
     }
 
     pub(super) fn update_grow(&mut self, y: f32) {
@@ -353,6 +383,7 @@ impl ViewerApp {
                     .unwrap_or_default(),
                 referenced_series_uid: active_series.map(|s| s.uid.clone()).unwrap_or_default(),
                 file_name: "painted-segmentation".into(),
+                locked: false,
                 rois: vec![roi],
             });
             *active_structs = study.structure_sets.len() - 1;

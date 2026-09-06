@@ -77,6 +77,7 @@ impl ViewerApp {
             other_job: None,
             other_key: 0,
             show_field: false,
+            show_dose: false,
             frame: D3Frame::default(),
             center,
             radius,
@@ -271,6 +272,13 @@ impl ViewerApp {
                 .filter(|r| r.shows_fixed(w.slot, &self.slots))
                 .map(|r| (r.field.clone(), r.result.method.short()));
             let registered = self.registration.is_some();
+            // The dose the surfaces can be painted with: the one selected in
+            // this dataset, with its own reference for the colour scale.
+            let dose_here: Option<(crate::rtdose::DoseGrid, f32)> = self.slots[w.slot]
+                .study
+                .as_ref()
+                .and_then(|st| st.doses.get(self.slots[w.slot].active_dose).cloned())
+                .map(|d| (d, self.slots[w.slot].dose_reference.max(1e-6)));
             let title = format!("3D structures - dataset {}", SLOT_NAMES[w.slot]);
             let mut open = w.open;
             detach::tool_window(
@@ -325,6 +333,14 @@ impl ViewerApp {
                                 );
                             }
                         });
+                        if dose_here.is_some() {
+                            ui.checkbox(&mut w.show_dose, "Dose on the surface")
+                                .on_hover_text(
+                                    "Colour every surface by the dose that lands on it, \
+                                     on the same scale as the isodose lines. The \
+                                     structure's own colour comes back when this is off.",
+                                );
+                        }
                         if reg_here.is_some() {
                             ui.checkbox(&mut w.show_field, "Deformation field")
                                 .on_hover_text(
@@ -422,7 +438,13 @@ impl ViewerApp {
                             order_key = mix(order_key, on as u64);
                         }
                     }
+                    let paint_dose = w.show_dose && dose_here.is_some();
                     let mut vertex_key = mix(order_key, scale.to_bits() as u64);
+                    vertex_key = mix(vertex_key, paint_dose as u64);
+                    if paint_dose {
+                        let (_, reference) = dose_here.as_ref().expect("checked");
+                        vertex_key = mix(vertex_key, reference.to_bits() as u64);
+                    }
                     vertex_key = mix(vertex_key, cx.to_bits() as u64);
                     vertex_key = mix(vertex_key, cyc.to_bits() as u64);
                     vertex_key = mix(vertex_key, alpha as u64);
@@ -506,6 +528,24 @@ impl ViewerApp {
                             for (v, n) in m.verts.iter().zip(m.normals.iter()) {
                                 let t = rot(*v, true);
                                 let nn = rot(*n, false);
+                                // The vertex's own colour: the structure's,
+                                // or the dose that lands on it, sampled the
+                                // same way the isodose lines are.
+                                let color = match &dose_here {
+                                    Some((dose, reference)) if paint_dose => {
+                                        let p = Vec3::new(v[0] as f64, v[1] as f64, v[2] as f64);
+                                        match dose.sample(p) {
+                                            Some(d) => render::dose_colormap(
+                                                (d / reference).clamp(0.0, 1.0),
+                                            ),
+                                            // Outside the dose grid: grey, so
+                                            // "no dose here" cannot be read as
+                                            // "zero dose here".
+                                            None => [90, 90, 90],
+                                        }
+                                    }
+                                    _ => color,
+                                };
                                 // Headlight along the view axis, two-sided.
                                 let inten = 0.30 + 0.70 * nn[1].abs();
                                 let col = Color32::from_rgba_unmultiplied(

@@ -41,7 +41,10 @@ mod box_seg;
 mod chrome;
 mod combine_win;
 mod compare_win;
+mod contour_edit;
+mod contour_win;
 mod d3;
+mod derived_app;
 mod detach;
 mod dialogs;
 mod drr_win;
@@ -50,12 +53,15 @@ mod export_win;
 mod glyphs;
 mod home;
 mod jobs;
+mod livewire_app;
 mod models_win;
 mod motion_results;
 mod motion_win;
+mod newroi_win;
 mod pacs_win;
 mod panels;
 mod planar;
+mod poi;
 mod prompt_seg;
 mod propagate_win;
 mod reg_panel;
@@ -63,6 +69,7 @@ mod rename;
 mod seg;
 mod seg_engines;
 mod sets;
+mod stats_win;
 mod theme;
 mod transfer_win;
 mod tree;
@@ -244,6 +251,92 @@ enum SegTool {
     /// Seeded region growing: press to seed, drag up/down to widen/narrow
     /// the intensity tolerance, release to commit (Esc cancels).
     Grow,
+    /// Draw a polygon into the active RT structure, click by click.
+    Polygon,
+    /// The same, through a closed spline fitted to the clicked points.
+    Spline,
+    /// Draw a contour freehand, in one drag.
+    Freehand,
+    /// Push the contour under the pointer around, like a finger in clay.
+    Nudge,
+    /// Paint into the active RT structure: a round brush on the patient that
+    /// pushes the contour lines, rather than the voxel brush's mask.
+    ContourBrush,
+    /// Draw along the edge under the pointer: the curve between two clicks
+    /// is the cheapest path through the image gradient, not a straight line.
+    LiveWire,
+}
+
+impl SegTool {
+    /// Does this tool edit RT structure contours rather than voxel masks?
+    fn draws_contours(self) -> bool {
+        matches!(
+            self,
+            SegTool::Polygon
+                | SegTool::Spline
+                | SegTool::Freehand
+                | SegTool::Nudge
+                | SegTool::ContourBrush
+                | SegTool::LiveWire
+        )
+    }
+}
+
+/// What a drawn contour does to the ones already on the slice.
+///
+/// The names and the *auto* rule are the ones planning systems have
+/// settled on, because a planner should not have to learn a second set of
+/// habits to draw a contour here.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DrawMode {
+    /// Crosses nothing: a new contour. Crosses something, starting inside
+    /// it: extend. Crosses something, starting outside: cut.
+    Auto,
+    /// Always add.
+    Extend,
+    /// Always cut.
+    Subtract,
+}
+
+impl DrawMode {
+    const ALL: [DrawMode; 3] = [DrawMode::Auto, DrawMode::Extend, DrawMode::Subtract];
+    fn label(self) -> &'static str {
+        match self {
+            DrawMode::Auto => "Auto",
+            DrawMode::Extend => "Extend",
+            DrawMode::Subtract => "Subtract",
+        }
+    }
+    fn hint(self) -> &'static str {
+        match self {
+            DrawMode::Auto => {
+                "New contour when the drawing crosses nothing; extend when it starts \
+                 inside an existing one; cut when it starts outside"
+            }
+            DrawMode::Extend => "Always add to the structure",
+            DrawMode::Subtract => "Always cut away from the structure",
+        }
+    }
+}
+
+/// A contour being drawn: the points collected so far, in this slot's voxel
+/// coordinates, on one slice of one view plane.
+struct DrawState {
+    slot: usize,
+    plane: crate::volume::ViewPlane,
+    slice: usize,
+    /// Fractional voxel coordinates of the clicked (or dragged) points.
+    pts: Vec<[f64; 3]>,
+}
+
+/// One step of contour undo: the whole geometry of one ROI before an edit.
+/// A structure is a few hundred points a slice, so keeping the lot is both
+/// simpler and cheaper than a per-vertex journal.
+struct RoiSnapshot {
+    slot: usize,
+    set: usize,
+    roi: usize,
+    contours: Vec<crate::rtstruct::Contour>,
 }
 
 /// An in-progress region-growing drag.
@@ -371,6 +464,9 @@ struct StudySlot {
     active_seg_series: usize,
     /// Index of the segment the tools edit, within that series.
     active_seg: usize,
+    /// Index of the ROI the contour tools edit, within the active structure
+    /// set. Out of range simply means "none yet".
+    active_roi: usize,
 }
 
 impl StudySlot {
@@ -450,6 +546,7 @@ impl StudySlot {
             dose_reference: 1.0,
             active_seg_series: 0,
             active_seg: 0,
+            active_roi: usize::MAX,
         }
     }
 }
@@ -573,6 +670,10 @@ struct D3Window {
     other_key: u64,
     /// Draw the deformation field as arrows in the scene.
     show_field: bool,
+    /// Paint the surfaces with the dose that falls on them instead of the
+    /// structure's own colour: what a hot spot does to an organ, on the
+    /// organ, rather than on a slice through it.
+    show_dose: bool,
     /// Cached projected geometry for the current camera.
     frame: D3Frame,
 }
@@ -731,6 +832,19 @@ enum SetAction {
 }
 
 /// Deferred right-click action on individual structures / segments.
+/// What the structure list's point-of-interest entries do.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PoiAct {
+    /// Centre the views on the item.
+    Localize,
+    /// Move the point to where the views cross.
+    MoveHere,
+    /// Make this the structure set's localization point.
+    Localization,
+    /// A new point at the centre of gravity of this structure.
+    AtCentre,
+}
+
 enum ItemAction {
     /// Copy (`copy`) or move `items` of `from` into the series `to`.
     Transfer {
@@ -755,6 +869,12 @@ enum ItemAction {
     },
     /// Plot these items' dose-volume histograms.
     Dvh {
+        from: SetRef,
+        items: Vec<usize>,
+    },
+    /// Carry these items into the other dataset through the active
+    /// registration: open the propagation module aimed at them.
+    Map {
         from: SetRef,
         items: Vec<usize>,
     },
@@ -1118,6 +1238,20 @@ pub struct ViewerApp {
     seg_tool: SegTool,
     /// Brush radius in mm (shared by paint and erase).
     brush_radius_mm: f32,
+    /// Which tissue the contour brush is allowed to paint into: the smart
+    /// brush's edge setting.
+    brush_band: contour_edit::EdgeBand,
+    /// Pull the interpolated contours onto the edges the image shows:
+    /// smart interpolation.
+    interp_snap: bool,
+    /// Whether the contour brush's current stroke is cutting: decided once,
+    /// when an Auto stroke starts, from whether it started inside.
+    brush_auto_cut: bool,
+    /// The structure the ✨ Grow tool is not allowed to leave, if any.
+    grow_limit: Option<combine_win::ItemRef>,
+    /// How far past the band's own threshold the brush may still reach,
+    /// as a fraction of the display window. 0 is the bare threshold.
+    brush_sensitivity: f32,
     /// Spherical 3D brush (paints across slices) vs. in-plane 2D circle.
     brush_3d: bool,
     /// Last brush sample of the stroke in progress: (slot, voxel coords).
@@ -1133,6 +1267,31 @@ pub struct ViewerApp {
     grow_gen: u64,
     /// Counter for naming newly created segmentations.
     seg_counter: usize,
+    /// The contour being drawn, if any.
+    draw: Option<DrawState>,
+    /// What the next drawn contour does to the ones already there.
+    draw_mode: DrawMode,
+    /// Undo stack of the contour tools (see [`RoiSnapshot`]).
+    roi_undo: Vec<RoiSnapshot>,
+    /// Counter for naming newly created ROIs.
+    roi_counter: usize,
+    /// The same for points of interest, so their default names do not
+    /// collide with the structures'.
+    poi_counter: usize,
+    /// The working geometry of the ROI under the contour tools.
+    edit: Option<contour_edit::EditStack>,
+    /// The interpolated slices shown as a preview, until accepted.
+    interp: Option<contour_edit::InterpPreview>,
+    /// Contours copied from one slice, and the axis they were cut on.
+    contour_clip: Option<(usize, crate::contours::Region)>,
+    /// The contour tools window.
+    contour_dialog: Option<contour_win::ContourDialog>,
+    /// The generators window.
+    newroi_dialog: Option<newroi_win::NewRoiDialog>,
+    /// The live-wire's cost image and current anchor, kept between frames.
+    wire: Option<livewire_app::WireState>,
+    /// The structure-details table.
+    stats_dialog: Option<stats_win::StatsDialog>,
 
     /// Root folder of the downloaded network weights, shared by the three
     /// engines (persisted in the settings file; blank = the default).
@@ -1181,6 +1340,13 @@ pub struct ViewerApp {
 
     // Structure algebra (see `structops`): combining contours and segments.
     combine_job: Option<SegJob<combine_win::CombineResult>>,
+    /// Re-evaluating one derived structure, and the slot it belongs to.
+    derived_job: Option<SegJob<derived_app::DerivedResult>>,
+    derived_slot: usize,
+    /// Derived structures still waiting for their turn (set, ROI).
+    derived_queue: Vec<(usize, usize)>,
+    /// Per slot: the derived statuses of the active structure set.
+    derived: [derived_app::DerivedCache; 2],
     combine_slot: usize,
     combine_dialog: Option<combine_win::CombineDialog>,
 
@@ -1422,6 +1588,10 @@ impl ViewerApp {
             dvh_job: None,
 
             combine_job: None,
+            derived_job: None,
+            derived_slot: 0,
+            derived_queue: Vec::new(),
+            derived: Default::default(),
             combine_slot: 0,
             combine_dialog: None,
             motion_job: None,
@@ -1443,6 +1613,11 @@ impl ViewerApp {
             medsam2: Default::default(),
             seg_tool: SegTool::None,
             brush_radius_mm: 5.0,
+            brush_band: contour_edit::EdgeBand::None,
+            interp_snap: false,
+            brush_auto_cut: false,
+            grow_limit: None,
+            brush_sensitivity: 0.15,
             brush_3d: true,
             paint_last: None,
             grow: None,
@@ -1451,6 +1626,18 @@ impl ViewerApp {
             grow_marked: Vec::new(),
             grow_gen: 0,
             seg_counter: 0,
+            draw: None,
+            draw_mode: DrawMode::Auto,
+            roi_undo: Vec::new(),
+            roi_counter: 0,
+            poi_counter: 0,
+            edit: None,
+            interp: None,
+            contour_clip: None,
+            contour_dialog: None,
+            newroi_dialog: None,
+            wire: None,
+            stats_dialog: None,
             dose_mode: DoseMode::Off,
             dose_opacity: 0.45,
             dose_threshold_pct: 15.0,
@@ -1744,6 +1931,19 @@ impl eframe::App for ViewerApp {
         {
             self.on_combine_done(slot, result);
         }
+        if let Some((slot, result)) = poll_tool_job(
+            &mut self.derived_job,
+            &ctx,
+            "Derived structure",
+            &mut self.error,
+        ) {
+            self.on_derived_done(slot, result);
+        }
+        // One at a time: the queue is what "update all" leaves behind.
+        if self.derived_job.is_none() && !self.derived_queue.is_empty() {
+            let slot = self.derived_slot;
+            self.next_derived_in_queue(slot);
+        }
         match poll_job(&mut self.dvh_job, &ctx, "DVH", &mut self.error) {
             Some(Ok(done)) => self.on_dvh_done(done),
             Some(Err(e)) if !progress::is_cancellation(&e) => {
@@ -1841,10 +2041,25 @@ impl eframe::App for ViewerApp {
             }
             if undo {
                 let slot = self.hovered_slot.min(1);
-                self.undo_active_seg(slot);
+                // A contour tool undoes contours, a voxel tool voxels: the
+                // key follows the tool in hand rather than a global history.
+                if self.seg_tool.draws_contours() {
+                    self.undo_roi_edit(slot);
+                } else {
+                    self.undo_active_seg(slot);
+                }
             }
             if esc && self.grow.is_some() {
                 self.cancel_grow();
+            }
+            if esc && self.draw.is_some() {
+                self.draw = None;
+                self.livewire_reset();
+            }
+            // Enter closes the polygon under construction, for anyone who
+            // would rather not reach for the right button.
+            if self.draw.is_some() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+                self.commit_draw();
             }
             if self.seg_tool != SegTool::None {
                 if smaller {

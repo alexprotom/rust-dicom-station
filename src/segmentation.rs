@@ -12,6 +12,7 @@ use std::collections::BinaryHeap;
 use egui::Color32;
 use rayon::prelude::*;
 
+use crate::contours::{drop_collinear, stitch_loops};
 use crate::geometry::Vec3;
 use crate::render;
 use crate::rtstruct::{Contour, Roi};
@@ -494,6 +495,14 @@ pub struct GrowState {
     /// Seed statistics: mean and 1 / (2.5 σ) of the local neighborhood.
     mu: f32,
     inv_sigma: f32,
+    /// Voxels the front may enter at all: the limiting structure, as a
+    /// volume-sized mask. `None` means the whole image.
+    ///
+    /// A limit is not a cheaper barrier than the geodesic cost, it is a
+    /// different kind of statement: *never here, whatever the picture
+    /// says*. Bone inside the body, contrast inside the liver, a target
+    /// inside a box drawn for the purpose.
+    limit: Option<std::sync::Arc<Vec<u8>>>,
     /// Current selection: the prefix of `accepted` below the drag threshold.
     pub voxels: Vec<u32>,
     /// The voxel cap was hit - the region would grow further.
@@ -501,6 +510,21 @@ pub struct GrowState {
 }
 
 impl GrowState {
+    /// Confine every following grow to `limit` (a volume-sized mask), or
+    /// to nothing when it is `None`. Set before [`GrowState::seed`].
+    pub fn set_limit(&mut self, limit: Option<std::sync::Arc<Vec<u8>>>) {
+        self.limit = limit;
+    }
+
+    /// Whether a voxel index is inside the limit (always true without one).
+    #[inline]
+    fn allowed(&self, idx: usize) -> bool {
+        match &self.limit {
+            Some(m) => m.get(idx).copied().unwrap_or(0) != 0,
+            None => true,
+        }
+    }
+
     /// Start a grow at `seed`: estimate local statistics, reset the front
     /// and expand to the base reach ([`GROW_BASE_REACH`], drag level 1).
     pub fn seed(&mut self, vol: &Volume, seed: [usize; 3]) {
@@ -624,6 +648,9 @@ impl GrowState {
                     continue;
                 }
                 let nv = [nb[0] as usize, nb[1] as usize, nb[2] as usize];
+                if !self.allowed(nv[2] * sl + nv[1] * nx + nv[0]) {
+                    continue;
+                }
                 let nbx = self.box_index(nv);
                 if self.times[nbx] <= time {
                     continue; // already settled cheaper
@@ -865,78 +892,7 @@ pub fn mask_to_roi(seg: &Segmentation, grid: &Grid, number: i32) -> Roi {
         name: seg.name.clone(),
         color: seg.color,
         roi_type: "ORGAN".into(),
+        description: String::new(),
         contours,
-    }
-}
-
-/// Endpoint key for loop stitching. On a binary field every marching-squares
-/// endpoint lies exactly on a half-integer, so doubling is lossless.
-#[inline]
-fn ep_key(p: [f32; 2]) -> (i64, i64) {
-    ((p[0] * 2.0).round() as i64, (p[1] * 2.0).round() as i64)
-}
-
-/// Chain unordered marching-squares segments into closed loops.
-fn stitch_loops(segs: &[render::Segment]) -> Vec<Vec<[f32; 2]>> {
-    use std::collections::HashMap;
-    let mut adj: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
-    for (si, s) in segs.iter().enumerate() {
-        adj.entry(ep_key(s.0)).or_default().push(si);
-        adj.entry(ep_key(s.1)).or_default().push(si);
-    }
-    let mut used = vec![false; segs.len()];
-    let mut out = Vec::new();
-    for start in 0..segs.len() {
-        if used[start] {
-            continue;
-        }
-        used[start] = true;
-        let start_key = ep_key(segs[start].0);
-        let mut pts = vec![segs[start].0, segs[start].1];
-        let mut cur = ep_key(segs[start].1);
-        let mut closed = cur == start_key;
-        while !closed {
-            let next = adj
-                .get(&cur)
-                .and_then(|c| c.iter().copied().find(|&si| !used[si]));
-            let Some(nxt) = next else { break };
-            used[nxt] = true;
-            let s = &segs[nxt];
-            let np = if ep_key(s.0) == cur { s.1 } else { s.0 };
-            cur = ep_key(np);
-            if cur == start_key {
-                closed = true;
-            } else {
-                pts.push(np);
-            }
-        }
-        if closed && pts.len() >= 3 {
-            out.push(pts);
-        }
-    }
-    out
-}
-
-/// Remove points that lie on the straight line between their neighbors -
-/// marching squares on a binary mask produces long collinear runs.
-fn drop_collinear(pts: Vec<[f32; 2]>) -> Vec<[f32; 2]> {
-    let n = pts.len();
-    if n < 4 {
-        return pts;
-    }
-    let mut out = Vec::with_capacity(n);
-    for i in 0..n {
-        let p = pts[(i + n - 1) % n];
-        let c = pts[i];
-        let q = pts[(i + 1) % n];
-        let cross = (c[0] - p[0]) * (q[1] - c[1]) - (c[1] - p[1]) * (q[0] - c[0]);
-        if cross.abs() > 1e-4 {
-            out.push(c);
-        }
-    }
-    if out.len() >= 3 {
-        out
-    } else {
-        pts
     }
 }

@@ -59,6 +59,7 @@ fn boxed_roi(name: &str, lo: [f64; 2], hi: [f64; 2], g: &Grid) -> Roi {
         name: name.into(),
         color: [255, 0, 0],
         roi_type: "ORGAN".into(),
+        description: String::new(),
         contours,
     }
 }

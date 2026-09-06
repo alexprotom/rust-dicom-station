@@ -476,6 +476,14 @@ pub(crate) fn build_rtstruct(
     );
     put_str(&mut o, tags::STRUCTURE_SET_DATE, VR::DA, ctx.date.clone());
     put_str(&mut o, tags::STRUCTURE_SET_TIME, VR::TM, ctx.time.clone());
+    // A locked set is an approved one: the flag is the standard's own, so a
+    // set locked here opens read-only in the next system too.
+    put_str(
+        &mut o,
+        tags::APPROVAL_STATUS,
+        VR::CS,
+        if ss.locked { "APPROVED" } else { "UNAPPROVED" }.to_string(),
+    );
 
     // Referenced frame of reference, and through it the study and the image
     // series the contours were drawn on. Without the two inner sequences a
@@ -509,6 +517,16 @@ pub(crate) fn build_rtstruct(
             ctx.for_uid.clone(),
         );
         put_str(&mut s, tags::ROI_NAME, VR::LO, roi.name.clone());
+        // A derived structure keeps its recipe here, which is what lets it
+        // still be derived after a round trip through another system.
+        if !roi.description.is_empty() {
+            put_str(
+                &mut s,
+                tags::ROI_DESCRIPTION,
+                VR::ST,
+                roi.description.clone(),
+            );
+        }
         put_str(&mut s, tags::ROI_GENERATION_ALGORITHM, VR::CS, "AUTOMATIC");
         ssr.push(s);
 

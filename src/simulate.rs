@@ -218,6 +218,7 @@ pub fn generate_transformed_study(
             study_uid: ss.study_uid.clone(),
             referenced_series_uid: ss.referenced_series_uid.clone(),
             file_name: ss.file_name.clone(),
+            locked: false,
             rois: ss
                 .rois
                 .iter()
@@ -226,6 +227,7 @@ pub fn generate_transformed_study(
                     name: roi.name.clone(),
                     color: roi.color,
                     roi_type: roi.roi_type.clone(),
+                    description: String::new(),
                     contours: roi
                         .contours
                         .iter()
@@ -341,6 +343,7 @@ pub fn generate_transformed_study(
             study_description: "Simulated".into(),
             series_number: None,
             temporal_id: None,
+            suv_bw: None,
             files: Vec::new(),
         }],
         active_series: 0,

@@ -477,6 +477,7 @@ mod tests {
             study_description: String::new(),
             series_number: None,
             temporal_id: None,
+            suv_bw: None,
             files: Vec::new(),
         }
     }

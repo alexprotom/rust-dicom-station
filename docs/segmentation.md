@@ -5,7 +5,10 @@ CPU-side, plus a Slicer-style 3D surface view. Neural-network
 auto-segmentation is [auto-segmentation.md](auto-segmentation.md), the patient
 outline [body-contour.md](body-contour.md) - both land as the editable masks
 described here - and combining structures is
-[structure-algebra.md](structure-algebra.md).
+[structure-algebra.md](structure-algebra.md). Drawing and editing an RT
+structure *as contours* - polygon, spline, freehand, nudge, interpolation and
+the tidying tools - is [contours.md](contours.md); the two representations
+meet by the rule stated there.
 
 ## Segmentation masks
 
@@ -51,6 +54,14 @@ The toolbar tools take over the left mouse button in the MPR views:
   down truncates the accepted prefix), never recomputing from scratch. Release
   commits - enclosed holes (vessels, calcifications) are filled slice-wise so
   the organ comes out solid - and `Esc` cancels.
+  An *inside* box on the toolbar names a **limiting structure**: the front
+  may not leave it, whatever the grey levels do. That is a different kind of
+  statement from the geodesic cost, which is why it is a hard stop rather
+  than an expensive step - bone inside the body, contrast inside the liver,
+  a target inside a box drawn for the purpose with ✚ New structure, which is
+  the limiting box by another name. A seed placed outside the limit says so
+  and grows without it, because a limit that yields a single voxel reads as
+  a broken tool.
 
 | Input (tool active) | Action |
 |---|---|

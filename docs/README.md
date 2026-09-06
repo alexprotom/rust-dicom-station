@@ -11,10 +11,12 @@ Each page here covers one area.
 | [registration.md](registration.md) | The four registration engines, local registration, analytics, vector fields, fusion, the transform simulator, verification |
 | [propagation.md](propagation.md) | Carrying contours and segmentations across a registration |
 | [star-target-propagation.md](star-target-propagation.md) | Step by step: a cardiac target from the CCT onto every 4DCT phase, anchored on the heart, in the viewer and from the MCP server |
-| [motion-4d.md](motion-4d.md) | 4D groups, the per-phase register ▸ propagate ▸ measure pipeline, motion metrics, ITV generation, the results window, structure comparison and transfer |
+| [motion-4d.md](motion-4d.md) | 4D groups, the per-phase register ▸ propagate ▸ measure pipeline, motion metrics, ITV generation, the results window, structure comparison (Dice, HD95, the rigid offset), the details table and transfer |
 | [drr.md](drr.md) | Digitally reconstructed radiographs: the two projectors, the geometry, the comparison |
 | [dvh.md](dvh.md) | Dose-volume histograms: sampling, axes, metrics, protocol constraints, CSV export, the analytic phantom |
+| [contours.md](contours.md) | Drawing and editing RT structures as contours: the polygon, spline, freehand, brush, nudge and live-wire tools, the drawing modes, interpolation, tidying, points of interest, templates and the set lock |
 | [segmentation.md](segmentation.md) | Interactive segmentation: brush, eraser, geodesic region growing, the 3D view, mask → RTSTRUCT |
+| [generators.md](generators.md) | Making a structure without drawing it: a grey-level window (in HU or SUV) with a limiting structure, the basic shapes, an isodose level, the reconstructed field of view |
 | [structure-algebra.md](structure-algebra.md) | Boolean operations, margins in patient directions, cropping, cleanup |
 | [body-contour.md](body-contour.md) | The body / EXTERNAL contour: the classical and the model-assisted method, CT and MR, verification |
 | [auto-segmentation.md](auto-segmentation.md) | The pure-Rust TotalSegmentator: models, pipeline, CPU/GPU engines, validation, the 117 classes, licensing |
