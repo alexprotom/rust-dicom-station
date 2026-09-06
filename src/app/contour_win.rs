@@ -92,6 +92,17 @@ impl ViewerApp {
             self.interp = None;
         }
 
+        self.refresh_derived(slot);
+        let target = self.edit_target(slot);
+        let derived = target.and_then(|(set, roi)| self.derived_of(slot, set, roi));
+        let derived_line = derived
+            .as_ref()
+            .zip(self.edit_roi_name(slot))
+            .map(|(d, (n, _))| d.line(n));
+        let derived_status = target
+            .and_then(|(_, roi)| self.derived_status(slot, roi))
+            .map(|s| (s.glyph(), s.label(), s.color()));
+        let derived_busy = self.derived_job.is_some();
         let summary = self.edit_summary(slot);
         let axis = self.edit_axis(slot);
         let level = self.edit_level(slot);
@@ -147,6 +158,44 @@ impl ViewerApp {
                         return;
                     }
                 }
+                // -- derived -------------------------------------------
+                if let (Some(line), Some((glyph, label, c))) = (&derived_line, &derived_status) {
+                    ui.separator();
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new("Derived").strong());
+                        ui.label(
+                            egui::RichText::new(format!("{glyph} {label}"))
+                                .color(egui::Color32::from_rgb(c[0], c[1], c[2])),
+                        );
+                    });
+                    ui.label(egui::RichText::new(line.clone()).italics());
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .add_enabled(!derived_busy, egui::Button::new("Update"))
+                            .on_hover_text("Run the recipe again on the current operands")
+                            .clicked()
+                        {
+                            act = Some(Act::DerivedUpdate);
+                        }
+                        if ui
+                            .button("Edit recipe")
+                            .on_hover_text("Open it in the Combine window")
+                            .clicked()
+                        {
+                            act = Some(Act::DerivedEdit);
+                        }
+                        if ui
+                            .button("Underive")
+                            .on_hover_text(
+                                "Forget the recipe and keep the geometry: an ordinary \
+                                 structure from here on",
+                            )
+                            .clicked()
+                        {
+                            act = Some(Act::Underive);
+                        }
+                    });
+                }
                 ui.separator();
 
                 // -- interpolation -------------------------------------
@@ -200,6 +249,16 @@ impl ViewerApp {
                         .clicked()
                     {
                         act = Some(Act::Paste);
+                    }
+                    if ui
+                        .button("Delete one")
+                        .on_hover_text(
+                            "Delete the single contour the crosshair is inside, on this \
+                             slice - the rest of the slice is left alone",
+                        )
+                        .clicked()
+                    {
+                        act = Some(Act::DeleteOne);
                     }
                     if ui
                         .button("Clear")
@@ -467,6 +526,9 @@ impl ViewerApp {
             Act::Clear => {
                 self.clear_slice_contours(slot);
             }
+            Act::DeleteOne => {
+                self.delete_contour_at_cursor(slot);
+            }
             Act::Thin => {
                 let range = self
                     .edit
@@ -520,6 +582,21 @@ impl ViewerApp {
             Act::ToCrosshair => {
                 self.move_to_crosshair(slot);
             }
+            Act::DerivedUpdate => {
+                if let Some((set, roi)) = self.edit_target(slot) {
+                    self.start_derived_update(slot, set, roi);
+                }
+            }
+            Act::DerivedEdit => {
+                if let Some((set, roi)) = self.edit_target(slot) {
+                    self.edit_derived(slot, set, roi);
+                }
+            }
+            Act::Underive => {
+                if let Some((set, roi)) = self.edit_target(slot) {
+                    self.underive(slot, set, roi);
+                }
+            }
             Act::Retype(t) => self.set_edit_roi_type(slot, t),
         }
     }
@@ -531,6 +608,7 @@ enum Act {
     Copy,
     Paste,
     Clear,
+    DeleteOne,
     Thin,
     ResolveOverlaps,
     RemoveHoles,
@@ -543,5 +621,8 @@ enum Act {
     Rotate,
     Component(bool),
     ToCrosshair,
+    DerivedUpdate,
+    DerivedEdit,
+    Underive,
     Retype(&'static str),
 }

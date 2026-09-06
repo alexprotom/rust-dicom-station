@@ -406,3 +406,64 @@ fn the_folder_layout_separates_patients_studies_and_series() {
     assert_eq!(re.volume.dims, study.volume.dims);
     assert_eq!(re.structure_sets.len(), 1);
 }
+
+/// A derived structure's recipe rides in ROI Description, and the whole
+/// point is that it is still there after a round trip through DICOM - that
+/// is what makes a derived structure survive being sent to another system
+/// and back.
+#[test]
+fn a_derived_recipe_survives_the_export() {
+    use rust_dicom_station::derived::{Dep, Derived, Expr};
+    use rust_dicom_station::structops::{BoolOp, Cleanup, Margin};
+
+    let (mut study, _) = phantom("test_exp_derived");
+    let names: Vec<String> = study.structure_sets[0]
+        .rois
+        .iter()
+        .map(|r| r.name.clone())
+        .collect();
+    assert!(names.len() >= 2, "the phantom has structures to combine");
+
+    let d = Derived {
+        expr: Expr {
+            op: BoolOp::Subtract,
+            deps: vec![
+                Dep {
+                    name: names[0].clone(),
+                    margin: Margin::uniform(5.0),
+                },
+                Dep {
+                    name: names[1].clone(),
+                    margin: Margin::NONE,
+                },
+            ],
+            margin: Margin::NONE,
+            cleanup: Cleanup {
+                fill_holes: true,
+                ..Cleanup::default()
+            },
+        },
+        hash: 0x0123_4567_89ab_cdef,
+        overridden: false,
+    };
+    study.structure_sets[0].rois[0].description = d.encode();
+    // A structure with somebody else's description must keep that too.
+    study.structure_sets[0].rois[1].description = "drawn by AP on the T2".into();
+
+    let out = target("test_exp_derived_out");
+    let plan = plan_for(&study);
+    export::run(&plan, [Some(&study), None], &out, &Progress::default()).expect("runs");
+    let re = loader::load_directory(&out, &Progress::default()).expect("the export reloads");
+
+    let back = rust_dicom_station::derived::of_roi(&re.structure_sets[0].rois[0])
+        .expect("the recipe is still a recipe");
+    assert_eq!(back, d, "every field of it");
+    assert!(
+        rust_dicom_station::derived::of_roi(&re.structure_sets[0].rois[1]).is_none(),
+        "free text is not mistaken for one"
+    );
+    assert_eq!(
+        re.structure_sets[0].rois[1].description, "drawn by AP on the T2",
+        "and it is not eaten either"
+    );
+}

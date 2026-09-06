@@ -598,11 +598,13 @@ impl ViewerApp {
                 .input(|i| i.pointer.hover_pos())
                 .filter(|p| rect.contains(*p));
             match self.seg_tool {
-                SegTool::Brush | SegTool::Erase | SegTool::Nudge => {
+                SegTool::Brush | SegTool::Erase | SegTool::Nudge | SegTool::ContourBrush => {
                     if let Some(mp) = hover {
                         let erase =
                             self.seg_tool == SegTool::Erase || ui.input(|i| i.modifiers.alt);
-                        let col = if self.seg_tool == SegTool::Nudge {
+                        let col = if erase && self.seg_tool == SegTool::ContourBrush {
+                            Color32::from_rgba_unmultiplied(255, 90, 90, 200)
+                        } else if matches!(self.seg_tool, SegTool::Nudge | SegTool::ContourBrush) {
                             let c = self
                                 .edit_roi_name(slot)
                                 .map(|(_, c)| c)
@@ -953,6 +955,8 @@ impl ViewerApp {
         let mut draw_close = false;
         let mut nudge_to: Option<[f64; 3]> = None;
         let mut nudge_done = false;
+        let mut cbrush_to: Option<([f64; 3], bool)> = None;
+        let mut cbrush_done = false;
         let mut pick_at: Option<[f64; 3]> = None;
         if seg_active && !over_buttons {
             let to_voxel = |mp: Pos2| {
@@ -1024,6 +1028,19 @@ impl ViewerApp {
                     }
                     if resp.drag_stopped_by(egui::PointerButton::Primary) {
                         draw_close = true;
+                    }
+                }
+                // The contour brush: the same gesture as the voxel brush,
+                // landing in the structure instead of in a mask.
+                SegTool::ContourBrush => {
+                    if resp.dragged_by(egui::PointerButton::Primary) || resp.clicked() {
+                        if let Some(mp) = resp.interact_pointer_pos() {
+                            let erase = ui.input(|i| i.modifiers.alt);
+                            cbrush_to = Some((to_voxel(mp), erase));
+                        }
+                    }
+                    if resp.drag_stopped_by(egui::PointerButton::Primary) || resp.clicked() {
+                        cbrush_done = true;
                     }
                 }
                 // Push the outline around: every sample of the drag moves the
@@ -1159,6 +1176,29 @@ impl ViewerApp {
             self.paint_last = Some((slot, to));
         }
         if nudge_done {
+            self.paint_last = None;
+        }
+        if let Some((v, erase)) = cbrush_to {
+            let first = !matches!(self.paint_last, Some((s, _)) if s == slot);
+            let from = match self.paint_last {
+                Some((s, p)) if s == slot => p,
+                _ => v,
+            };
+            let radius = self.brush_radius_mm as f64;
+            self.contour_brush(
+                slot,
+                plane,
+                cur_slice,
+                from,
+                v,
+                radius,
+                erase,
+                first,
+                cbrush_done,
+            );
+            self.paint_last = Some((slot, v));
+        }
+        if cbrush_done {
             self.paint_last = None;
         }
     }

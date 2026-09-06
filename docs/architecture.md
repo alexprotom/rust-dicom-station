@@ -246,7 +246,12 @@ src/
                       tools, the working stack, drawing and nudging, contour
                       undo, the interpolation preview
     contour_win.rs    the contour window: interpolation, per-slice copy /
-                      paste / clear / thin, tidying, transforms, ROI type
+                      paste / delete / clear / thin, tidying, transforms,
+                      ROI type, the derived section
+    derived_app.rs    derived structures in the app: resolving operands by
+                      name, the status cache, re-evaluation as a job, the
+                      override rule
+    newroi_win.rs     the generators window (grey level, shape, dose)
     seg_engines.rs    what the tool windows share: names and glyphs, the
                       dataset A / B row, device / model-folder / licence /
                       progress rows, result landing, the "still the same
@@ -323,6 +328,11 @@ src/
                     ITV unions, the motion report + CSV                          4D
   dvh.rs            dose-volume histograms: sampling, curves, metrics,
                     protocol constraints, CSV                                    Dose
+  derived.rs        the recipe a derived structure carries: the expression,
+                    its storage in ROI Description, the three statuses and
+                    the fingerprint they are computed from                    Seg
+  generate.rs       structures out of a grey-level window, a shape or a dose
+                    level                                                     Seg
   contours.rs       planar contours as an editable representation: rings and
                     even-odd regions, the local supersampled boolean, the
                     slice stack, contour ⇄ mask ⇄ RTSTRUCT, tidying,

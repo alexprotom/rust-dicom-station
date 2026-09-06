@@ -16,6 +16,7 @@ Each page here covers one area.
 | [dvh.md](dvh.md) | Dose-volume histograms: sampling, axes, metrics, protocol constraints, CSV export, the analytic phantom |
 | [contours.md](contours.md) | Drawing and editing RT structures as contours: the polygon, spline, freehand and nudge tools, the drawing modes, interpolation, tidying, and the representation rule behind them |
 | [segmentation.md](segmentation.md) | Interactive segmentation: brush, eraser, geodesic region growing, the 3D view, mask → RTSTRUCT |
+| [generators.md](generators.md) | Making a structure without drawing it: a grey-level window with a limiting structure, the basic shapes, an isodose level |
 | [structure-algebra.md](structure-algebra.md) | Boolean operations, margins in patient directions, cropping, cleanup |
 | [body-contour.md](body-contour.md) | The body / EXTERNAL contour: the classical and the model-assisted method, CT and MR, verification |
 | [auto-segmentation.md](auto-segmentation.md) | The pure-Rust TotalSegmentator: models, pipeline, CPU/GPU engines, validation, the 117 classes, licensing |

@@ -101,6 +101,46 @@ convention that voxels outside the volume are not background: a structure
 truncated by the field of view is not eroded at the cut, because nothing is
 inferred about what was never imaged.
 
+## Derived structures: the recipe stays
+
+`PTV = CTV + 5 mm` is one command, and after it there is nothing to say that
+the PTV came from the CTV. Correct the CTV a week later and the PTV is
+quietly wrong: no way to re-run it, no way to see that it is stale. Tick
+**Derived** when the result is an RT structure and the recipe stays attached
+to it.
+
+What that buys:
+
+* the structure list marks it - **◉** green when the geometry matches the
+  recipe and its inputs, **■** red when an input has changed, **▲** yellow
+  when somebody has edited the result by hand;
+* *Update derived* in the RT structures header re-runs every red one;
+* the contour tools window shows the recipe as a line, with **Update**,
+  **Edit recipe** (which reopens this window on it) and **Underive** (keep
+  the geometry, forget the recipe);
+* a hand edit with any contour tool sets the yellow flag rather than letting
+  the recipe claim something that is no longer true.
+
+Operands are stored **by name**, because that is what survives an export, a
+reload, a reordering or a copy to the other dataset. A recipe naming a
+structure that has been renamed or deleted is not evaluated on whatever is
+left: it says so and stops.
+
+### Where it is kept
+
+In the structure, as RTSTRUCT **ROI Description (3006,0028)**: a short
+`RDS-DERIVED:` prefix and the recipe as JSON, together with a fingerprint of
+the operands at the last evaluation and the overridden flag. It is inside the
+DICOM object, so the structure can go out to another system and come back
+still derived; other systems ignore the field, and the geometry stands on its
+own without it. A description that is somebody's free text is left alone.
+
+The fingerprint is what the status is computed from: the contours of every
+operand quantised to a micrometre, in order, with the margins. A margin
+changed in the recipe therefore reads as *needs update* just as an edited
+operand does, and `A - B` never reads as up to date because `B - A` was
+evaluated.
+
 ## What it will not do
 
 * **Cross datasets.** Operands come from the displayed dataset; carrying one

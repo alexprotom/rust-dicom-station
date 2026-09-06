@@ -382,6 +382,27 @@ impl Poly {
         Poly::new(pts)
     }
 
+    /// The same capsule, built in millimetres on a lattice whose two
+    /// in-plane axes are `mm[0]` and `mm[1]` millimetres per unit.
+    ///
+    /// A brush is a disc *on the patient*, so on a sagittal slice of a 1 mm x
+    /// 3 mm lattice it has to come out as an ellipse on the lattice. Building
+    /// the shape in millimetres and dividing back is the whole trick.
+    pub fn capsule_mm(a: Pt, b: Pt, r_mm: f64, mm: Pt, n: usize) -> Poly {
+        let (su, sv) = (mm[0].max(1e-6), mm[1].max(1e-6));
+        let mut p = Poly::capsule(
+            [a[0] * su, a[1] * sv],
+            [b[0] * su, b[1] * sv],
+            r_mm.max(1e-3),
+            n,
+        );
+        for q in &mut p.pts {
+            q[0] /= su;
+            q[1] /= sv;
+        }
+        p
+    }
+
     /// Does the ring cross itself? A freehand stroke often does, and the
     /// answer decides whether a boolean has to run at all.
     pub fn self_intersects(&self) -> bool {
@@ -1793,6 +1814,7 @@ mod tests {
             name: "ball".into(),
             color: [255, 0, 0],
             roi_type: "ORGAN".into(),
+            description: String::new(),
             contours: Vec::new(),
         };
         st.apply_to_roi(&mut roi, &g);
@@ -1825,6 +1847,7 @@ mod tests {
             name: "s".into(),
             color: [0, 255, 0],
             roi_type: "ORGAN".into(),
+            description: String::new(),
             contours: sag.to_contours(&g),
         };
         assert_eq!(Stack::from_roi(&roi, &g).axis, 0);
@@ -1907,6 +1930,31 @@ mod tests {
         assert!(
             (after - before).abs() < 0.05 * before,
             "{after} vs {before}"
+        );
+    }
+
+    #[test]
+    fn a_brush_stamp_is_round_on_the_patient_not_on_the_lattice() {
+        // 1 mm across, 3 mm through: the ring has to be three times wider in
+        // v units than in u units to be a disc of 6 mm on the patient.
+        let mm = [1.0, 3.0];
+        let r = 6.0;
+        let p = Poly::capsule_mm([10.0, 4.0], [10.0, 4.0], r, mm, 64);
+        let b = p.bbox();
+        assert!(((b[2] - b[0]) - 2.0 * r / mm[0]).abs() < 0.05, "{b:?}");
+        assert!(((b[3] - b[1]) - 2.0 * r / mm[1]).abs() < 0.05, "{b:?}");
+        // Every vertex is on the circle, measured in millimetres.
+        for q in &p.pts {
+            let d = (((q[0] - 10.0) * mm[0]).powi(2) + ((q[1] - 4.0) * mm[1]).powi(2)).sqrt();
+            assert!((d - r).abs() < 1e-6, "{d}");
+        }
+        // A swept stroke is the disc plus the rectangle between the ends.
+        let sweep = Poly::capsule_mm([10.0, 4.0], [20.0, 4.0], r, mm, 64);
+        let area_mm2 = sweep.area() * mm[0] * mm[1];
+        let want = std::f64::consts::PI * r * r + 2.0 * r * 10.0 * mm[0];
+        assert!(
+            (area_mm2 - want).abs() < 0.02 * want,
+            "{area_mm2} vs {want}"
         );
     }
 

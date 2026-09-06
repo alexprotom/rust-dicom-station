@@ -28,6 +28,7 @@ fn roi(contours: Vec<rust_dicom_station::rtstruct::Contour>) -> Roi {
         name: "test".into(),
         color: [255, 128, 0],
         roi_type: "ORGAN".into(),
+        description: String::new(),
         contours,
     }
 }

@@ -24,6 +24,10 @@ pub struct Roi {
     pub color: [u8; 3],
     /// RT ROI Interpreted Type: PTV, CTV, GTV, ORGAN, EXTERNAL, AVOIDANCE, …
     pub roi_type: String,
+    /// ROI Description (3006,0028). Free text in the standard, and the one
+    /// place a *derived* structure can keep its recipe so that it survives
+    /// export and re-import (see [`crate::derived`]).
+    pub description: String,
     pub contours: Vec<Contour>,
 }
 
@@ -87,13 +91,17 @@ pub fn load(path: &Path) -> Result<StructureSet> {
         .and_then(|it| str_of(it, tags::SERIES_INSTANCE_UID))
         .unwrap_or_default();
 
-    // ROI number -> (name)
+    // ROI number -> (name, description)
     let mut names: Vec<(i32, String)> = Vec::new();
+    let mut descriptions: Vec<(i32, String)> = Vec::new();
     if let Some(items) = items_of(&obj, tags::STRUCTURE_SET_ROI_SEQUENCE) {
         for it in items {
             let number = i32_of(it, tags::ROI_NUMBER).unwrap_or(-1);
             let name = str_of(it, tags::ROI_NAME).unwrap_or_else(|| format!("ROI {number}"));
             names.push((number, name));
+            if let Some(d) = str_of(it, tags::ROI_DESCRIPTION) {
+                descriptions.push((number, d));
+            }
         }
     }
 
@@ -156,11 +164,17 @@ pub fn load(path: &Path) -> Result<StructureSet> {
                 }
             }
 
+            let description = descriptions
+                .iter()
+                .find(|(n, _)| *n == number)
+                .map(|(_, s)| s.clone())
+                .unwrap_or_default();
             rois.push(Roi {
                 number,
                 name,
                 color,
                 roi_type,
+                description,
                 contours,
             });
         }

@@ -866,6 +866,7 @@ pub fn mask_to_roi(seg: &Segmentation, grid: &Grid, number: i32) -> Roi {
         name: seg.name.clone(),
         color: seg.color,
         roi_type: "ORGAN".into(),
+        description: String::new(),
         contours,
     }
 }

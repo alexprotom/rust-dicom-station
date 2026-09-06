@@ -227,7 +227,14 @@ impl ViewerApp {
                 ui.menu_button("Tools", |ui| {
                     // One block per dataset: the same six tools, in the same
                     // order, for A and B.
-                    let tools: [(&ToolInfo, &str); 7] = [
+                    let tools: [(&ToolInfo, &str); 8] = [
+                        (
+                            &super::newroi_win::NEW_ROI,
+                            "A structure out of the image, a shape or the dose: a \
+                             grey-level window with an optional limiting structure, a \
+                             box / cylinder / sphere / ellipsoid, or an isodose level. \
+                             It lands as an ordinary editable structure.",
+                        ),
                         (
                             &super::contour_win::CONTOURS,
                             "Interpolate the slices you skipped, tidy what a rushed hand \
@@ -291,6 +298,9 @@ impl ViewerApp {
                         }
                     }
                     match open_tool {
+                        Some(t) if t.glyph == super::newroi_win::NEW_ROI.glyph => {
+                            self.open_newroi_dialog(slot)
+                        }
                         Some(t) if t.glyph == super::contour_win::CONTOURS.glyph => {
                             self.open_contour_dialog(slot)
                         }
@@ -805,6 +815,14 @@ impl ViewerApp {
                     );
                     pick(
                         ui,
+                        SegTool::ContourBrush,
+                        "🖊 Brush",
+                        "Paint into the active RT structure: a round brush on the \
+                         patient that pushes the contour lines (LMB drag).\n\
+                         Hold Alt to erase · Shift+wheel or [ ] resize · Ctrl+Z undo",
+                    );
+                    pick(
+                        ui,
                         SegTool::Nudge,
                         "⌖ Nudge",
                         "Push the outline of the edited structure around: vertices \
@@ -860,7 +878,7 @@ impl ViewerApp {
                     }
                     if matches!(
                         self.seg_tool,
-                        SegTool::Brush | SegTool::Erase | SegTool::Nudge
+                        SegTool::Brush | SegTool::Erase | SegTool::Nudge | SegTool::ContourBrush
                     ) {
                         ui.add(
                             egui::DragValue::new(&mut self.brush_radius_mm)
@@ -869,7 +887,7 @@ impl ViewerApp {
                                 .suffix(" mm"),
                         )
                         .on_hover_text("Brush radius");
-                        if self.seg_tool != SegTool::Nudge
+                        if matches!(self.seg_tool, SegTool::Brush | SegTool::Erase)
                             && ui
                                 .selectable_label(self.brush_3d, "3D")
                                 .on_hover_text(
@@ -995,6 +1013,9 @@ impl ViewerApp {
                         }
                         SegTool::Nudge => {
                             "LMB drag pushes the outline · Shift+wheel / [ ] radius · Ctrl+Z undo"
+                        }
+                        SegTool::ContourBrush => {
+                            "LMB paints the structure · Alt erases · Shift+wheel / [ ] radius · Ctrl+Z undo"
                         }
                     };
                     // `Sense::hover`: it looks like a button and answers the

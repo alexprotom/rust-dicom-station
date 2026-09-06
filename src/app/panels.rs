@@ -1381,6 +1381,10 @@ impl ViewerApp {
         let mut new_color: Option<(usize, [u8; 3])> = None;
         let mut new_edit: Option<usize> = None;
         let mut add_roi = false;
+        let mut update_derived = false;
+        // Derived statuses are recomputed only when something changed; the
+        // list reads them behind the shared borrow below.
+        self.refresh_derived(slot);
         let shift = ui.input(|i| i.modifiers.shift);
         {
             let me = &*self;
@@ -1496,6 +1500,23 @@ impl ViewerApp {
                             if ui.small_button("None").clicked() {
                                 vis.iter_mut().for_each(|v| *v = false);
                             }
+                            if me.derived[slot]
+                                .items
+                                .iter()
+                                .any(|s| matches!(s, Some(crate::derived::Status::NeedsUpdate)))
+                                && ui
+                                    .add_enabled(
+                                        has_volume,
+                                        egui::Button::new("Update derived").small(),
+                                    )
+                                    .on_hover_text(
+                                        "Re-run the recipe of every derived structure here \
+                                     whose operands have changed",
+                                    )
+                                    .clicked()
+                            {
+                                update_derived = true;
+                            }
                             if ui
                                 .add_enabled(has_volume, egui::Button::new("+ ROI").small())
                                 .on_hover_text(
@@ -1527,6 +1548,23 @@ impl ViewerApp {
                                     .clicked()
                                 {
                                     new_edit = Some(i);
+                                }
+                                // Derived: green circle up to date, red square
+                                // out of date, yellow triangle overridden. It
+                                // goes *before* the name, because a name is as
+                                // long as it likes and a narrow panel would
+                                // push a marker at the end off the edge.
+                                if let Some(st) = me.derived_status(slot, i) {
+                                    let c = st.color();
+                                    ui.label(
+                                        egui::RichText::new(st.glyph())
+                                            .color(egui::Color32::from_rgb(c[0], c[1], c[2])),
+                                    )
+                                    .on_hover_text(format!(
+                                        "Derived structure: {}\nThe recipe is in the \
+                                         contour tools window",
+                                        st.label()
+                                    ));
                                 }
                                 let resp = ui.checkbox(
                                     &mut vis[i],
@@ -1611,6 +1649,9 @@ impl ViewerApp {
         }
         if add_roi {
             self.new_roi(slot, None, "ORGAN");
+        }
+        if update_derived {
+            self.update_all_derived(slot);
         }
         if set_act.is_some() {
             self.set_action = set_act;
@@ -1716,6 +1757,10 @@ impl ViewerApp {
                     // on the section's own toolbar.
                     ui.horizontal_wrapped(|ui| {
                         for (tool, hint) in [
+                            (
+                                &super::newroi_win::NEW_ROI,
+                                "A structure from a grey-level window, a shape or the dose",
+                            ),
                             (
                                 &super::contour_win::CONTOURS,
                                 "Interpolation, tidying, moving - on the structure the \
@@ -1959,6 +2004,7 @@ impl ViewerApp {
             self.create_seg(slot);
         }
         match open_tool.map(|t| t.glyph) {
+            Some(g) if g == super::newroi_win::NEW_ROI.glyph => self.open_newroi_dialog(slot),
             Some(g) if g == super::contour_win::CONTOURS.glyph => self.open_contour_dialog(slot),
             Some(g) if g == COMBINE.glyph => self.open_combine_dialog(slot, Vec::new()),
             Some(g) if g == BODY_CONTOUR.glyph => self.open_body_dialog(slot),

@@ -44,6 +44,7 @@ mod compare_win;
 mod contour_edit;
 mod contour_win;
 mod d3;
+mod derived_app;
 mod detach;
 mod dialogs;
 mod drr_win;
@@ -55,6 +56,7 @@ mod jobs;
 mod models_win;
 mod motion_results;
 mod motion_win;
+mod newroi_win;
 mod pacs_win;
 mod panels;
 mod planar;
@@ -254,6 +256,9 @@ enum SegTool {
     Freehand,
     /// Push the contour under the pointer around, like a finger in clay.
     Nudge,
+    /// Paint into the active RT structure: a round brush on the patient that
+    /// pushes the contour lines, rather than the voxel brush's mask.
+    ContourBrush,
 }
 
 impl SegTool {
@@ -261,7 +266,11 @@ impl SegTool {
     fn draws_contours(self) -> bool {
         matches!(
             self,
-            SegTool::Polygon | SegTool::Spline | SegTool::Freehand | SegTool::Nudge
+            SegTool::Polygon
+                | SegTool::Spline
+                | SegTool::Freehand
+                | SegTool::Nudge
+                | SegTool::ContourBrush
         )
     }
 }
@@ -1230,6 +1239,8 @@ pub struct ViewerApp {
     contour_clip: Option<(usize, crate::contours::Region)>,
     /// The contour tools window.
     contour_dialog: Option<contour_win::ContourDialog>,
+    /// The generators window.
+    newroi_dialog: Option<newroi_win::NewRoiDialog>,
 
     /// Root folder of the downloaded network weights, shared by the three
     /// engines (persisted in the settings file; blank = the default).
@@ -1278,6 +1289,13 @@ pub struct ViewerApp {
 
     // Structure algebra (see `structops`): combining contours and segments.
     combine_job: Option<SegJob<combine_win::CombineResult>>,
+    /// Re-evaluating one derived structure, and the slot it belongs to.
+    derived_job: Option<SegJob<derived_app::DerivedResult>>,
+    derived_slot: usize,
+    /// Derived structures still waiting for their turn (set, ROI).
+    derived_queue: Vec<(usize, usize)>,
+    /// Per slot: the derived statuses of the active structure set.
+    derived: [derived_app::DerivedCache; 2],
     combine_slot: usize,
     combine_dialog: Option<combine_win::CombineDialog>,
 
@@ -1519,6 +1537,10 @@ impl ViewerApp {
             dvh_job: None,
 
             combine_job: None,
+            derived_job: None,
+            derived_slot: 0,
+            derived_queue: Vec::new(),
+            derived: Default::default(),
             combine_slot: 0,
             combine_dialog: None,
             motion_job: None,
@@ -1556,6 +1578,7 @@ impl ViewerApp {
             interp: None,
             contour_clip: None,
             contour_dialog: None,
+            newroi_dialog: None,
             dose_mode: DoseMode::Off,
             dose_opacity: 0.45,
             dose_threshold_pct: 15.0,
@@ -1848,6 +1871,19 @@ impl eframe::App for ViewerApp {
             poll_tool_job(&mut self.combine_job, &ctx, COMBINE.name, &mut self.error)
         {
             self.on_combine_done(slot, result);
+        }
+        if let Some((slot, result)) = poll_tool_job(
+            &mut self.derived_job,
+            &ctx,
+            "Derived structure",
+            &mut self.error,
+        ) {
+            self.on_derived_done(slot, result);
+        }
+        // One at a time: the queue is what "update all" leaves behind.
+        if self.derived_job.is_none() && !self.derived_queue.is_empty() {
+            let slot = self.derived_slot;
+            self.next_derived_in_queue(slot);
         }
         match poll_job(&mut self.dvh_job, &ctx, "DVH", &mut self.error) {
             Some(Ok(done)) => self.on_dvh_done(done),

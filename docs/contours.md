@@ -4,7 +4,10 @@ Contours drawn as contours: a polygon, a spline or a freehand stroke goes
 into the RT structure as the curve it was drawn as, not as the outline of the
 voxels it happened to cover. The brush and the geodesic grower still edit
 voxel masks - [segmentation.md](segmentation.md) - and the two representations
-meet where each is better, by the rule below.
+meet where each is better, by the rule below. A structure that was generated
+rather than drawn - a threshold, a shape, a dose level - is
+[generators.md](generators.md), and it lands here, editable, like everything
+else.
 
 ## Why a second representation
 
@@ -48,12 +51,17 @@ The toolbar's second group takes over the left mouse button, like the brush:
 * **✏ Free** - press, drag round the structure, release. The stroke closes
   itself and is thinned on release, so a dense drag does not store two
   thousand points.
+* **🖊 Brush** - a round brush *on the patient*: the swept stroke is added to
+  the structure, or cut out of it with `Alt`. On a sagittal slice of a 1 x 3
+  mm lattice the stamp is an ellipse on the lattice and a disc on the
+  patient, which is the only way a brush radius in millimetres means
+  anything. This is the tool a department uses most.
 * **⌖ Nudge** - push the outline around. Every vertex within the tool radius
   follows the drag with a cosine falloff, so the curve deforms instead of
   developing a corner. The radius is the brush radius: `Shift`+wheel, `[`
   and `]`.
 
-All four work in **any** of the three views. `Ctrl`-click picks the structure
+All five work in **any** of the three views. `Ctrl`-click picks the structure
 under the pointer (RayStation's pick tool); `Ctrl+Z` undoes the last contour
 edit of the dataset under the pointer.
 
@@ -90,7 +98,8 @@ rather than on the stroke under the pointer. Every button is one undo step.
   **dashed** and stored only when accepted - one slice or all of them - the
   rule RayStation is explicit about, and the reason *Thin* exists next to it:
   keep every n-th slice, correct two, interpolate again.
-* **This slice** - copy, paste (in the current draw mode), clear. "This
+* **This slice** - copy, paste (in the current draw mode), delete the one
+  contour the crosshair is inside, or clear the lot. "This
   slice" is the one the view along the drawing plane is *showing*, which is
   also the slice a stroke would land on; the wheel moves it.
 * **Tidy** - resolve contours of the structure that cross each other into one
@@ -108,6 +117,11 @@ rather than on the stroke under the pointer. Every button is one undo step.
   slice intersection*). In the plane it is drawn on.
 * **Type** - the RT ROI Interpreted Type (`PTV`, `ORGAN`, `EXTERNAL`, …),
   which is what a planning system branches on.
+* **Derived**, when the structure carries a recipe: the recipe as a line, its
+  status, and Update / Edit recipe / Underive. See
+  [structure-algebra.md](structure-algebra.md#derived-structures-the-recipe-stays);
+  editing a derived structure by hand here marks it *overridden*, because the
+  recipe no longer describes what is on the screen.
 
 ## The drawing plane
 

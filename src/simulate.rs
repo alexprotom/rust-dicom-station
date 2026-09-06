@@ -226,6 +226,7 @@ pub fn generate_transformed_study(
                     name: roi.name.clone(),
                     color: roi.color,
                     roi_type: roi.roi_type.clone(),
+                    description: String::new(),
                     contours: roi
                         .contours
                         .iter()

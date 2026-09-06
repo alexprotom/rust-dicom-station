@@ -509,6 +509,16 @@ pub(crate) fn build_rtstruct(
             ctx.for_uid.clone(),
         );
         put_str(&mut s, tags::ROI_NAME, VR::LO, roi.name.clone());
+        // A derived structure keeps its recipe here, which is what lets it
+        // still be derived after a round trip through another system.
+        if !roi.description.is_empty() {
+            put_str(
+                &mut s,
+                tags::ROI_DESCRIPTION,
+                VR::ST,
+                roi.description.clone(),
+            );
+        }
         put_str(&mut s, tags::ROI_GENERATION_ALGORITHM, VR::CS, "AUTOMATIC");
         ssr.push(s);
 

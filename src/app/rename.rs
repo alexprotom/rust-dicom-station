@@ -395,6 +395,7 @@ mod rename_tests {
                     name: "Liver".into(),
                     color: [1, 2, 3],
                     roi_type: "ORGAN".into(),
+                    description: String::new(),
                     contours: Vec::new(),
                 }],
             }],

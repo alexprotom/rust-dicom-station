@@ -140,6 +140,7 @@ impl ViewerApp {
             name,
             color,
             roi_type: roi_type.to_string(),
+            description: String::new(),
             contours: Vec::new(),
         };
         let StudySlot {
@@ -338,6 +339,9 @@ impl ViewerApp {
             e.stack.apply_to_roi(roi, &grid);
         }
         self.settings_gen += 1;
+        // A derived structure edited by hand is no longer what its recipe
+        // produced, and has to say so.
+        self.mark_overridden(e.slot, e.set, e.roi);
         self.edit = Some(EditStack {
             gen: self.settings_gen,
             ..e
@@ -419,6 +423,90 @@ impl ViewerApp {
         }
         e.stack.prune();
         self.flush_edit();
+    }
+
+    /// One sample of a contour brush stroke: the capsule swept from `from`
+    /// to `to` is added to (or cut out of) the edited structure.
+    ///
+    /// `first` opens one undo step for the whole stroke rather than one per
+    /// sample. `last` matters only on a stack that is not axial: writing the
+    /// structure back then re-cuts the whole geometry, which is too much to
+    /// do per mouse sample, so an off-axis stroke lands when the button is
+    /// released.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn contour_brush(
+        &mut self,
+        slot: usize,
+        plane: ViewPlane,
+        level: usize,
+        from: [f64; 3],
+        to: [f64; 3],
+        radius_mm: f64,
+        erase: bool,
+        first: bool,
+        last: bool,
+    ) {
+        let Some((set, roi)) = self.ensure_edit_roi(slot) else {
+            return;
+        };
+        let axis = contours::axis_of_plane(plane);
+        let Some(spacing) = self.slots[slot].study.as_ref().map(|s| s.volume.spacing) else {
+            return;
+        };
+        if self.working_stack(slot, set, roi, axis).is_none() {
+            return;
+        }
+        if first {
+            self.push_roi_undo(slot, set, roi);
+        }
+        let cut = erase || self.draw_mode == DrawMode::Subtract;
+        let [ua, va] = contours::plane_axes(axis);
+        let mm = [spacing[ua], spacing[va]];
+        let (a, b) = (uv(axis, from), uv(axis, to));
+        let ring = Poly::capsule_mm(a, b, radius_mm, mm, 32);
+        let Some(e) = self.edit.as_mut() else { return };
+        let region = e.stack.region_mut(level);
+        if cut {
+            region.subtract_ring(&ring);
+        } else {
+            region.add_ring(&ring);
+        }
+        e.stack.prune();
+        if axis == 2 || last {
+            self.flush_edit();
+        }
+    }
+
+    /// Delete the one contour the crosshair sits inside, on the current
+    /// slice - RayStation's delete-contour tool, with the crosshair for the
+    /// pointer this window does not have.
+    pub(super) fn delete_contour_at_cursor(&mut self, slot: usize) -> bool {
+        let axis = self.edit_axis(slot);
+        let [ua, va] = contours::plane_axes(axis);
+        let c = self.slots[slot].cursor;
+        let p = [c[ua], c[va]];
+        let level = self.edit_level(slot);
+        let mut hit = false;
+        let ok = self.with_edit_stack(slot, |st, _| {
+            if let Some(region) = st
+                .slices
+                .iter_mut()
+                .find(|s| s.level == level)
+                .map(|s| &mut s.region)
+            {
+                if let Some(i) = region.ring_at(p) {
+                    region.rings.remove(i);
+                    region.normalize();
+                    hit = true;
+                }
+            }
+        });
+        if ok && !hit {
+            self.notice = Some(
+                "The crosshair is not inside a contour of this structure on this slice.".into(),
+            );
+        }
+        ok
     }
 
     /// Push the contour under the pointer: every vertex within `radius_mm`
