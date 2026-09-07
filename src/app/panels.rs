@@ -154,11 +154,11 @@ impl ViewerApp {
             },
             self.right_open,
             |ui| {
-                if self.module_structures {
-                    self.struct_tools_section(ui);
-                }
                 if self.module_registration {
                     self.registration_section(ui);
+                }
+                if self.module_structures {
+                    self.structures_editor_section(ui);
                 }
                 if self.module_simulation {
                     self.simulation_section(ui);
@@ -1404,11 +1404,10 @@ impl ViewerApp {
         let mut new_anchor: Option<(SetRef, usize)> = None;
         let mut new_color: Option<(usize, [u8; 3])> = None;
         let mut new_edit: Option<usize> = None;
-        let mut add_poi = false;
+        let mut open_editor: Option<usize> = None;
         let mut toggle_lock: Option<usize> = None;
         let mut template_act: Option<TemplateAct> = None;
         let mut poi_act: Option<(PoiAct, usize)> = None;
-        let mut add_roi = false;
         let mut update_derived = false;
         // Derived statuses are recomputed only when something changed; the
         // list reads them behind the shared borrow below.
@@ -1595,26 +1594,6 @@ impl ViewerApp {
                             {
                                 update_derived = true;
                             }
-                            if tip_widget(
-                                ui,
-                                has_volume,
-                                egui::Button::new("+ ROI").small(),
-                                "New, empty structure in this set - and the one the \
-                                 contour tools draw into",
-                            ) {
-                                add_roi = true;
-                            }
-                            if tip_widget(
-                                ui,
-                                has_volume,
-                                egui::Button::new("✱").small(),
-                                "✱ New point of interest, at the crosshair - a \
-                                 marker, a reference point or the point the patient \
-                                 is lined up on. It exports as a POINT contour like \
-                                 any other",
-                            ) {
-                                add_poi = true;
-                            }
                             me.selection_buttons(ui, here, &selection, &mut item_act);
                         });
                         let anchor = me.tick_anchor.filter(|(r, _)| *r == here).map(|(_, i)| i);
@@ -1624,18 +1603,16 @@ impl ViewerApp {
                                 if color_swatch(ui, &mut color) {
                                     new_color = Some((i, color));
                                 }
-                                // Which structure the contour tools edit is a
-                                // different question from which are shown, so
-                                // it gets its own (small) button.
-                                if ui
-                                    .add_enabled(
-                                        has_volume,
-                                        egui::Button::selectable(edit_roi == Some(i), "✏").small(),
-                                    )
-                                    .on_hover_text("Edit this structure with the contour tools")
-                                    .clicked()
-                                {
-                                    new_edit = Some(i);
+                                // Shown or not is the tick box; selected - the
+                                // one the editor and the contour tools work
+                                // on - is the name, as in the segmentation list.
+                                let tick = ui.checkbox(&mut vis[i], "").on_hover_text(
+                                    "Show / select this structure\nShift-click: tick or \
+                                     untick the whole range from the last one",
+                                );
+                                if tick.clicked() {
+                                    new_anchor =
+                                        Some((here, apply_tick(&mut vis, i, shift, anchor)));
                                 }
                                 // Derived: green circle up to date, red square
                                 // out of date, yellow triangle overridden. It
@@ -1647,27 +1624,45 @@ impl ViewerApp {
                                     ui.label(egui::RichText::new(st.glyph()).color(theme::rgb(c)))
                                         .on_hover_text(format!(
                                             "Derived structure: {}\nThe recipe is in the \
-                                             contour tools window",
+                                             Structures editor",
                                             st.label()
                                         ));
                                 }
-                                let resp = ui.checkbox(
-                                    &mut vis[i],
-                                    format!(
-                                        "{}{}",
-                                        roi.name,
-                                        if roi.roi_type.is_empty() {
-                                            String::new()
-                                        } else {
-                                            format!("  [{}]", roi.roi_type)
-                                        }
-                                    ),
-                                );
+                                let resp = ui
+                                    .add_enabled(
+                                        has_volume,
+                                        egui::Button::selectable(
+                                            edit_roi == Some(i),
+                                            format!(
+                                                "{}{}",
+                                                roi.name,
+                                                if roi.roi_type.is_empty() {
+                                                    String::new()
+                                                } else {
+                                                    format!("  [{}]", roi.roi_type)
+                                                }
+                                            ),
+                                        )
+                                        .wrap(),
+                                    )
+                                    .on_hover_text(format!(
+                                        "ROI {} · {} contour(s)\nClick to make this the \
+                                         structure the editor and the contour tools work on",
+                                        roi.number,
+                                        roi.contours.len()
+                                    ));
                                 if resp.clicked() {
-                                    new_anchor =
-                                        Some((here, apply_tick(&mut vis, i, shift, anchor)));
+                                    new_edit = Some(i);
                                 }
                                 resp.context_menu(|ui| {
+                                    if tip_button(
+                                        ui,
+                                        "📝 Edit in the Structures editor",
+                                        "Select it and open the editor on it",
+                                    ) {
+                                        open_editor = Some(i);
+                                        ui.close();
+                                    }
                                     if tip_button(
                                         ui,
                                         "⌖ Localize",
@@ -1739,13 +1734,6 @@ impl ViewerApp {
                                         p.z
                                     ));
                                 }
-                                resp.on_hover_text(format!(
-                                    "ROI {} · {} contour(s)\nShift-click: tick or untick the \
-                                     whole range from the last one\nright-click: copy / move \
-                                     / remove - every ticked structure at once",
-                                    roi.number,
-                                    roi.contours.len()
-                                ));
                             });
                         }
                     }
@@ -1789,8 +1777,8 @@ impl ViewerApp {
             self.slots[slot].active_roi = i;
             self.edit = None;
         }
-        if add_roi {
-            self.new_roi(slot, None, "ORGAN");
+        if let Some(i) = open_editor {
+            self.edit_roi_in_editor(slot, i);
         }
         if let Some(act) = template_act {
             self.apply_template_act(slot, act);
@@ -1804,9 +1792,6 @@ impl ViewerApp {
                 ss.locked = !ss.locked;
             }
             self.settings_gen += 1;
-        }
-        if add_poi && self.new_poi(slot, None).is_none() {
-            self.notice = Some("There is no image volume to place a point on.".into());
         }
         if let Some((act, i)) = poi_act {
             match act {
@@ -1877,9 +1862,7 @@ impl ViewerApp {
             }
         };
         let before: Vec<([u8; 3], bool)> = rows.iter().map(|r| (r.1, r.2)).collect();
-        let mut make_new = false;
         let mut new_series = false;
-        let mut open_tool: Option<ToolId> = None;
         let mut cancel_tool = false;
         let mut set_all: Option<bool> = None;
         let mut new_active_series: Option<usize> = None;
@@ -1929,30 +1912,6 @@ impl ViewerApp {
                     }
                 },
                 |ui| {
-                    // The engines belong to the dataset, not to one series -
-                    // each of them can make the series it fills - so they stay
-                    // on the section's own toolbar: one glyph each, the name
-                    // and what it does in the tooltip.
-                    ui.horizontal_wrapped(|ui| {
-                        for (tool, hint) in TOOL_HINTS {
-                            if tip_widget(
-                                ui,
-                                has_volume,
-                                egui::Button::new(tool.glyph).small(),
-                                if has_volume {
-                                    format!("{}: {hint}", tool.name)
-                                } else if displayed {
-                                    "This dataset has no image volume to segment".to_string()
-                                } else {
-                                    "The tools work on the images on screen - display this \
-                                     study first"
-                                        .to_string()
-                                },
-                            ) {
-                                open_tool = Some(tool.id);
-                            }
-                        }
-                    });
                     for &i in which {
                         let Some(sr) = series.get(i) else { continue };
                         let here = SetRef {
@@ -2036,13 +1995,6 @@ impl ViewerApp {
                             .map(|(i, _)| i)
                             .collect();
                         ui.horizontal_wrapped(|ui| {
-                            if small_tip_button(
-                                ui,
-                                "New",
-                                "An empty segmentation to paint with 🎨 / ✨ in the views",
-                            ) {
-                                make_new = true;
-                            }
                             if small_tip_button(ui, "All", "Show and select every segmentation") {
                                 set_all = Some(true);
                             }
@@ -2138,12 +2090,6 @@ impl ViewerApp {
         }
         if let Some(i) = activate {
             self.slots[slot].active_seg = i;
-        }
-        if make_new {
-            self.create_seg(slot);
-        }
-        if let Some(id) = open_tool {
-            self.open_tool(id, slot);
         }
         if cancel_tool {
             if let Some((_, p)) = self.running_tool(slot) {

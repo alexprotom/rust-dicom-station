@@ -29,7 +29,7 @@ impl ViewerApp {
     pub(super) fn poi_at_structure(&mut self, slot: usize, roi: usize) -> Option<usize> {
         let (mask, grid, name, _) = self.item_mask_grid(
             slot,
-            combine_win::ItemRef {
+            combine::ItemRef {
                 kind: SetKind::Structures,
                 set: self.slots[slot].active_structs,
                 idx: roi,
@@ -65,7 +65,7 @@ impl ViewerApp {
 
     /// The same for a structure: centre the views on its centre of gravity.
     pub(super) fn localize_roi(&mut self, slot: usize, roi: usize) -> bool {
-        let item = combine_win::ItemRef {
+        let item = combine::ItemRef {
             kind: SetKind::Structures,
             set: self.slots[slot].active_structs,
             idx: roi,
@@ -139,7 +139,7 @@ impl ViewerApp {
     pub(super) fn poi_of_item(
         &self,
         slot: usize,
-        item: combine_win::ItemRef,
+        item: combine::ItemRef,
     ) -> Option<(String, Vec3)> {
         if item.kind != SetKind::Structures {
             return None;

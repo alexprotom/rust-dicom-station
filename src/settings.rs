@@ -29,7 +29,7 @@ pub const GRAPHICS_BACKEND_KEY: &str = "graphics_backend";
 const MODULE_REG_KEY: &str = "module_image_registration";
 const MODULE_SIM_KEY: &str = "module_image_simulation";
 const MODULE_PROP_KEY: &str = "module_structures_propagation";
-const MODULE_TOOLS_KEY: &str = "module_structure_tools";
+const MODULE_TOOLS_KEY: &str = "module_structures_editor";
 
 /// Settings keys of the last session's sources, one per dataset. The paths
 /// are separated by `|`, which no path on any supported system contains.
@@ -66,8 +66,8 @@ pub struct Settings {
     /// in the modules panel.
     pub module_propagation: bool,
 
-    /// *Modules ▶ Structure tools*: the drawing tools, the contour tools and
-    /// the generators are shown in the modules panel. On by default.
+    /// *Modules ▶ Structures editor*: inserting, editing and combining
+    /// structures is shown in the modules panel. On by default.
     pub module_structures: bool,
 
     /// Which graphics backend to draw and compute with. Read once at
@@ -611,7 +611,7 @@ mod tests {
         assert!(
             parse("").module_structures
                 && !parse(&format!("{MODULE_TOOLS_KEY} = off")).module_structures,
-            "the structure tools start switched on and can be switched off"
+            "the structures editor starts switched on and can be switched off"
         );
     }
 }

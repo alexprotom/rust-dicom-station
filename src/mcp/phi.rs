@@ -48,11 +48,6 @@ impl PhiVerdict {
         &self.values
     }
 
-    /// Hand the values to the redactor and forget them.
-    pub fn into_redactor(self, r: &mut Redactor) {
-        r.add_values(self.values);
-    }
-
     /// The sentence a refusal carries: which tags, never their values.
     pub fn describe(&self) -> String {
         if self.is_anonymized() {

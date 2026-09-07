@@ -20,7 +20,7 @@ pub(super) use crate::workflow::motion::{run as run_motion, MotionOutcome, Motio
 use crate::workflow::select::Structure;
 use crate::workflow::{self};
 
-use super::combine_win::ItemRef;
+use super::combine::ItemRef;
 use super::*;
 
 /// The tool window's state; it stays open across runs.

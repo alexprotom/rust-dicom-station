@@ -39,7 +39,7 @@ use crate::workflow;
 mod body_win;
 mod box_seg;
 mod chrome;
-mod combine_win;
+mod combine;
 mod compare_win;
 mod contour_edit;
 mod d3;
@@ -1290,7 +1290,7 @@ pub struct ViewerApp {
     /// when an Auto stroke starts, from whether it started inside.
     brush_auto_cut: bool,
     /// The structure the ✨ Grow tool is not allowed to leave, if any.
-    grow_limit: Option<combine_win::ItemRef>,
+    grow_limit: Option<combine::ItemRef>,
     /// How far past the band's own threshold the brush may still reach,
     /// as a fraction of the display window. 0 is the bare threshold.
     brush_sensitivity: f32,
@@ -1326,8 +1326,8 @@ pub struct ViewerApp {
     interp: Option<contour_edit::InterpPreview>,
     /// Contours copied from one slice, and the axis they were cut on.
     contour_clip: Option<(usize, crate::contours::Region)>,
-    /// *Modules ▶ Structure tools*: the drawing tools, the contour tools and
-    /// the generators, and the numbers they apply.
+    /// *Modules ▶ Structures editor*: which dataset it works on and the
+    /// numbers its buttons apply.
     tools: struct_tools::StructTools,
     /// The live-wire's cost image and current anchor, kept between frames.
     wire: Option<livewire_app::WireState>,
@@ -1384,7 +1384,7 @@ pub struct ViewerApp {
     dvh_job: Option<Job<anyhow::Result<dvh_win::DvhDone>>>,
 
     // Structure algebra (see `structops`): combining contours and segments.
-    combine_job: Option<SegJob<combine_win::CombineResult>>,
+    combine_job: Option<SegJob<combine::CombineResult>>,
     /// Re-evaluating one derived structure, and the slot it belongs to.
     derived_job: Option<SegJob<derived_app::DerivedResult>>,
     derived_slot: usize,
@@ -1393,7 +1393,7 @@ pub struct ViewerApp {
     /// Per slot: the derived statuses of the active structure set.
     derived: [derived_app::DerivedCache; 2],
     combine_slot: usize,
-    combine_dialog: Option<combine_win::CombineDialog>,
+    combine_dialog: Option<combine::CombineDialog>,
 
     // 4D motion / ITV analysis (see `motion` and `fourd`).
     motion_job: Option<SegJob<motion_win::MotionOutcome>>,
@@ -1450,10 +1450,13 @@ pub struct ViewerApp {
     /// *Modules ▶ Structures propagation*: the propagation section is part
     /// of the modules panel. Persisted between runs.
     module_propagation: bool,
-    /// *Modules ▶ Structure tools*: the drawing tools, the contour tools
-    /// and the generators are a section of the modules panel. Persisted
-    /// between runs; on by default, because it is where drawing starts.
+    /// *Modules ▶ Structures editor*: inserting, editing and combining
+    /// structures is a section of the modules panel. Persisted between
+    /// runs; on by default.
     module_structures: bool,
+    /// The toolbar's *✏ Draw structure* is unfolded: the drawing tools and
+    /// the options of the one in hand are on the toolbar.
+    draw_open: bool,
     /// The left panel is expanded (View ▶ Data tree, F9, or the arrow on the
     /// panel edge). It holds the data tree and nothing else.
     side_open: bool,
@@ -1741,6 +1744,7 @@ impl ViewerApp {
             module_simulation: prefs.module_simulation,
             module_propagation: prefs.module_propagation,
             module_structures: prefs.module_structures,
+            draw_open: false,
             side_open: true,
             right_open: true,
             theme: prefs.theme,

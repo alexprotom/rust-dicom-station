@@ -37,7 +37,6 @@ impl ViewerApp {
         self.autoseg_run_window(ctx);
         self.segvol_window(ctx);
         self.body_window(ctx);
-        self.combine_window(ctx);
         self.stats_window(ctx);
         self.dvh_window(ctx);
         self.motion_window(ctx);

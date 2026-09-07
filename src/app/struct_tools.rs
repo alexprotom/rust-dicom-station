@@ -1,45 +1,31 @@
-//! *Modules ▶ Structure tools*: the drawing tools, the contour tools and the
-//! generators, as one section of the modules panel.
+//! *Modules ▶ Structures editor*: everything that makes or changes a whole
+//! structure, as one section of the modules panel - and the drawing strip
+//! the toolbar's *✏ Draw structure* button unfolds.
 //!
-//! Three things that used to be spread over the toolbar and two windows
-//! now sit together, where a planner's hand rests while contouring:
+//! The editor has three sections:
 //!
-//! * **Draw** - the nine tools that take over the left mouse button, as one
-//!   row of glyphs, and under them only the options of the tool in hand.
-//! * **Edit** - everything that acts on the whole structure rather than on
-//!   the stroke under the pointer: interpolation, the slice clipboard,
-//!   tidying, moving, the type and the derived recipe. Every button is one
-//!   undo step (Ctrl+Z with a contour tool in hand).
-//! * **New structure** - a grey-level window, a shape, a dose level or the
-//!   field of view, landing as an ordinary editable RT structure.
+//! * **Insert structure** - an empty structure, a point of interest, or a
+//!   generated one: a grey-level window, a shape, a dose level or the field
+//!   of view, landing as an ordinary editable RT structure.
+//! * **Edit structure** - everything that acts on the structure selected in
+//!   the list rather than on the stroke under the pointer: interpolation,
+//!   the slice clipboard, tidying, moving, the type and the derived recipe.
+//!   Every button is one undo step (Ctrl+Z with a contour tool in hand).
+//! * **Combine structures** - the structure algebra (`combine.rs`).
 //!
-//! The tools that keep a window of their own are the ones that need the
-//! room: the engines, Combine, Body contour, the details table.
+//! The nine tools that take over the left mouse button are not in the
+//! panel: they are the [`ViewerApp::draw_strip`] the toolbar shows while
+//! *Draw structure* is on, so a hand that is drawing never leaves the top
+//! of the window. The tools that keep a window of their own are the ones
+//! that need the room: the engines, Body contour, the details table.
 
 use crate::contours::{axis_name, plane_axes, Stack};
 use crate::generate::{self, Shape};
 use crate::geometry::Vec3;
 
-use super::combine_win::ItemRef;
+use super::combine::ItemRef;
 use super::contour_edit::EdgeBand;
-use super::seg_engines::{ToolId, ToolInfo};
 use super::*;
-
-/// The menu entry that reveals the *Edit* section. A memo, because this is
-/// what edits what is already written.
-pub(super) const CONTOURS: ToolInfo = ToolInfo {
-    id: ToolId::Contours,
-    glyph: "📝",
-    name: "Contour tools",
-};
-
-/// The menu entry that reveals the *New structure* section. A heavy cross,
-/// because everything there makes something new.
-pub(super) const NEW_ROI: ToolInfo = ToolInfo {
-    id: ToolId::NewRoi,
-    glyph: "✚",
-    name: "New structure",
-};
 
 /// The RT ROI Interpreted Types offered when typing a structure. The list
 /// is the one a planning system branches on; anything else can still arrive
@@ -58,15 +44,15 @@ const ROI_TYPES: &[&str] = &[
     "CONTROL",
 ];
 
-/// The three sections of the module.
+/// The three sections of the editor.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Section {
-    Draw,
+    Insert,
     Edit,
-    New,
+    Combine,
 }
 
-/// Which generator the *New structure* section is showing.
+/// Which generator the *Insert structure* section is showing.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Source {
     GreyLevel,
@@ -142,13 +128,14 @@ impl Default for NewRoi {
     }
 }
 
-/// The module's state: which dataset it works on, and the numbers its
+/// The editor's state: which dataset it works on, and the numbers its
 /// buttons apply.
 pub(super) struct StructTools {
-    /// The dataset the *Edit* and *New structure* sections act on.
+    /// The dataset the editor acts on.
     pub slot: usize,
-    /// A section the Tools menu asked to open; applied on the next frame
-    /// the panel is drawn, then forgotten.
+    /// A section something asked to open (a context menu, a derived
+    /// structure's *Edit recipe*); applied on the next frame the panel is
+    /// drawn, then forgotten.
     pub reveal: Option<Section>,
     /// Drawn this frame - when it is not, the interpolation preview is
     /// dropped, because nothing shows what it belongs to.
@@ -234,9 +221,9 @@ fn act_row(ui: &mut egui::Ui, out: &mut Option<Act>, buttons: &[(&str, &str, boo
 }
 
 impl ViewerApp {
-    /// Switch the module on, expand the panel and open one section - what
-    /// the Tools menu and the sidebar buttons do.
-    fn reveal_tools(&mut self, slot: usize, section: Section) {
+    /// Switch the editor on, expand the panel and open one section - what
+    /// the context menus and a derived structure's *Edit recipe* do.
+    pub(super) fn reveal_editor(&mut self, slot: usize, section: Section) {
         self.module_structures = true;
         self.right_open = true;
         self.tools.slot = slot;
@@ -244,16 +231,11 @@ impl ViewerApp {
         self.persist_settings();
     }
 
-    pub(super) fn open_contour_dialog(&mut self, slot: usize) {
-        self.reveal_tools(slot, Section::Edit);
-    }
-
-    pub(super) fn open_newroi_dialog(&mut self, slot: usize) {
-        if !self.slots[slot].has_volume() {
-            return;
-        }
-        self.seed_shape_centre(slot);
-        self.reveal_tools(slot, Section::New);
+    /// Open the editor on the structure `roi` of `slot`'s active set.
+    pub(super) fn edit_roi_in_editor(&mut self, slot: usize, roi: usize) {
+        self.slots[slot].active_roi = roi;
+        self.edit = None;
+        self.reveal_editor(slot, Section::Edit);
     }
 
     /// Patient coordinates of the slot's crosshair.
@@ -279,10 +261,11 @@ impl ViewerApp {
 
     // -- the panel section --------------------------------------------------
 
-    /// The whole module: the dataset row, then the three sections.
-    pub(super) fn struct_tools_section(&mut self, ui: &mut egui::Ui) {
+    /// The whole editor: the dataset row, then the three sections.
+    pub(super) fn structures_editor_section(&mut self, ui: &mut egui::Ui) {
+        let title = egui::RichText::new("Structures editor").strong();
         if !self.any_volume() {
-            egui::CollapsingHeader::new(egui::RichText::new("Structure tools").strong())
+            egui::CollapsingHeader::new(title)
                 .default_open(true)
                 .show(ui, |ui| {
                     ui.weak("Load a dataset with an image volume to draw on");
@@ -291,31 +274,31 @@ impl ViewerApp {
             return;
         }
         self.tools.visible = true;
-        // The section works on one dataset; a dataset that lost its volume
+        // The editor works on one dataset; a dataset that lost its volume
         // hands over to the one that has one.
         if !self.slots[self.tools.slot].has_volume() {
             self.tools.slot = self.first_volume_slot();
         }
         let reveal = self.tools.reveal.take();
         let mut new_slot = None;
-        egui::CollapsingHeader::new(egui::RichText::new("Structure tools").strong())
+        egui::CollapsingHeader::new(title)
             .default_open(true)
             .open(reveal.map(|_| true))
             .show(ui, |ui| {
                 new_slot = seg_engines::dataset_row(ui, self.tools.slot, self.volume_slots(), true);
                 let open = |s: Section| (reveal == Some(s)).then_some(true);
-                egui::CollapsingHeader::new("Draw")
-                    .default_open(true)
-                    .open(open(Section::Draw))
-                    .show(ui, |ui| self.draw_section(ui));
-                egui::CollapsingHeader::new("Edit the structure")
+                egui::CollapsingHeader::new("Insert structure")
                     .default_open(false)
+                    .open(open(Section::Insert))
+                    .show(ui, |ui| self.insert_section(ui));
+                egui::CollapsingHeader::new("Edit structure")
+                    .default_open(true)
                     .open(open(Section::Edit))
                     .show(ui, |ui| self.edit_section(ui));
-                egui::CollapsingHeader::new("New structure")
+                egui::CollapsingHeader::new("Combine structures")
                     .default_open(false)
-                    .open(open(Section::New))
-                    .show(ui, |ui| self.newroi_section(ui));
+                    .open(open(Section::Combine))
+                    .show(ui, |ui| self.combine_section(ui));
             });
         ui.separator();
         if let Some(s) = new_slot {
@@ -323,68 +306,60 @@ impl ViewerApp {
             self.interp = None;
             self.tools.new.status = None;
             self.seed_shape_centre(s);
+            self.combine_switch_slot(s);
         }
     }
 
-    // -- Draw ---------------------------------------------------------------
+    // -- the toolbar strip --------------------------------------------------
 
-    /// One row of glyphs, then the options of the tool in hand.
-    fn draw_section(&mut self, ui: &mut egui::Ui) {
-        let slot = self.tools.slot;
+    /// The nine tools as one row of glyphs, then the options of the tool in
+    /// hand, all on the toolbar: what *✏ Draw structure* unfolds.
+    pub(super) fn draw_strip(&mut self, ui: &mut egui::Ui) {
+        let slot = self.preferred_volume_slot();
         let mut pick: Option<SegTool> = None;
-        ui.horizontal_wrapped(|ui| {
-            for (tool, glyph, name, tip, _) in TOOLS {
-                if *tool == SegTool::Polygon {
-                    ui.separator();
-                }
-                if glyph_button(ui, self.seg_tool == *tool, glyph, &format!("{name}\n{tip}")) {
-                    pick = Some(*tool);
-                }
+        for (tool, glyph, name, tip, _) in TOOLS {
+            if *tool == SegTool::Polygon {
+                ui.separator();
             }
-        });
+            if glyph_button(ui, self.seg_tool == *tool, glyph, &format!("{name}\n{tip}")) {
+                pick = Some(*tool);
+            }
+        }
         if let Some(tool) = pick {
-            self.seg_tool = if self.seg_tool == tool {
+            self.set_seg_tool(if self.seg_tool == tool {
                 SegTool::None
             } else {
                 tool
-            };
-            if self.seg_tool != SegTool::Grow {
-                self.cancel_grow();
-            }
-            if !self.seg_tool.draws_contours() {
-                self.draw = None;
-            }
+            });
         }
         let Some((_, _, name, ..)) = TOOLS.iter().find(|t| t.0 == self.seg_tool) else {
-            ui.weak("No tool in hand: the left button moves the crosshair");
             return;
         };
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new(*name).strong());
-            if matches!(
-                self.seg_tool,
-                SegTool::Brush | SegTool::Erase | SegTool::Nudge | SegTool::ContourBrush
-            ) {
-                ui.add(
-                    egui::DragValue::new(&mut self.brush_radius_mm)
-                        .speed(0.5)
-                        .range(0.5..=80.0)
-                        .suffix(" mm"),
+        ui.separator();
+        ui.label(egui::RichText::new(*name).strong());
+        if matches!(
+            self.seg_tool,
+            SegTool::Brush | SegTool::Erase | SegTool::Nudge | SegTool::ContourBrush
+        ) {
+            ui.add(
+                egui::DragValue::new(&mut self.brush_radius_mm)
+                    .speed(0.5)
+                    .range(0.5..=80.0)
+                    .suffix(" mm"),
+            )
+            .on_hover_text("Brush radius: Shift+wheel, or [ and ]");
+        }
+        if matches!(self.seg_tool, SegTool::Brush | SegTool::Erase)
+            && ui
+                .selectable_label(self.brush_3d, "3D")
+                .on_hover_text(
+                    "Spherical 3D brush: paints through neighbouring slices.\n\
+                     Off: flat 2D circle on the displayed slice only",
                 )
-                .on_hover_text("Brush radius: Shift+wheel, or [ and ]");
-            }
-            if matches!(self.seg_tool, SegTool::Brush | SegTool::Erase)
-                && ui
-                    .selectable_label(self.brush_3d, "3D")
-                    .on_hover_text(
-                        "Spherical 3D brush: paints through neighbouring slices.\n\
-                         Off: flat 2D circle on the displayed slice only",
-                    )
-                    .clicked()
-            {
-                self.brush_3d = !self.brush_3d;
-            }
-        });
+                .clicked()
+        {
+            self.brush_3d = !self.brush_3d;
+        }
         match self.seg_tool {
             SegTool::Grow => self.grow_options(ui, slot),
             SegTool::ContourBrush => self.smart_brush_options(ui),
@@ -392,47 +367,56 @@ impl ViewerApp {
             _ => {}
         }
         if self.seg_tool.draws_contours() {
-            self.contour_target_row(ui, slot);
+            self.contour_target(ui, slot);
+        } else {
+            self.segment_target(ui, slot);
+        }
+    }
+
+    /// Put a tool in hand, or none; whatever the last one left behind goes.
+    pub(super) fn set_seg_tool(&mut self, tool: SegTool) {
+        self.seg_tool = tool;
+        if tool != SegTool::Grow {
+            self.cancel_grow();
+        }
+        if !tool.draws_contours() {
+            self.draw = None;
         }
     }
 
     /// The limiting structure of ✨ Grow: where the front may not go,
-    /// whatever the picture says. A box made with *New structure* is the
+    /// whatever the picture says. A box made with *Insert structure* is the
     /// "limiting box" by another name.
     fn grow_options(&mut self, ui: &mut egui::Ui, slot: usize) {
         let cands = self.combine_candidates(slot);
-        ui.horizontal_wrapped(|ui| {
-            ui.label("inside:");
-            item_picker(
-                ui,
-                "grow_limit",
-                &mut self.grow_limit,
-                &cands,
-                "no limit",
-                180.0,
-            )
-            .on_hover_text(
-                "Keep the region inside this structure, whatever the grey levels do. A \
-                 box drawn with ✚ New structure is the limiting box.",
-            );
-        });
+        ui.label("inside:");
+        item_picker(
+            ui,
+            "grow_limit",
+            &mut self.grow_limit,
+            &cands,
+            "no limit",
+            160.0,
+        )
+        .on_hover_text(
+            "Keep the region inside this structure, whatever the grey levels do. A box \
+             made with Insert structure is the limiting box.",
+        );
     }
 
     /// The smart brush: which tissue the stamp may cover, and how far past
     /// that threshold it may still reach.
     fn smart_brush_options(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            ui.label("edge:");
-            for b in EdgeBand::ALL {
-                if ui
-                    .add(egui::Button::selectable(self.brush_band == b, b.label()).small())
-                    .on_hover_text(b.hint())
-                    .clicked()
-                {
-                    self.brush_band = b;
-                }
+        ui.label("edge:");
+        for b in EdgeBand::ALL {
+            if ui
+                .add(egui::Button::selectable(self.brush_band == b, b.label()).small())
+                .on_hover_text(b.hint())
+                .clicked()
+            {
+                self.brush_band = b;
             }
-        });
+        }
         if self.brush_band != EdgeBand::None {
             ui.add(
                 egui::Slider::new(&mut self.brush_sensitivity, 0.0..=1.0)
@@ -449,69 +433,82 @@ impl ViewerApp {
     /// Training: the live wire learns what the accepted edges look like, so
     /// it prefers that kind of edge over an equally strong one beside it.
     fn livewire_options(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .checkbox(&mut self.wire_learn, "learn")
-                .on_hover_text(
-                    "Learn from every accepted segment: an edge that looks like the ones \
-                     already taken becomes cheaper than an equally strong edge that does not",
-                )
-                .changed()
-            {
-                if let Some(w) = &mut self.wire {
-                    w.training = self.wire_learn;
-                }
+        if ui
+            .checkbox(&mut self.wire_learn, "learn")
+            .on_hover_text(
+                "Learn from every accepted segment: an edge that looks like the ones \
+                 already taken becomes cheaper than an equally strong edge that does not",
+            )
+            .changed()
+        {
+            if let Some(w) = &mut self.wire {
+                w.training = self.wire_learn;
             }
-            if self.livewire_trained()
-                && ui
-                    .small_button("forget")
-                    .on_hover_text(
-                        "Start again from the plain gradient cost - what to press when \
-                         moving from one organ to a different one",
-                    )
-                    .clicked()
-            {
-                self.livewire_untrain();
-            }
-        });
+        }
+        if self.livewire_trained()
+            && small_tip_button(
+                ui,
+                "forget",
+                "Start again from the plain gradient cost - what to press when moving \
+                 from one organ to a different one",
+            )
+        {
+            self.livewire_untrain();
+        }
     }
 
-    /// Which structure the strokes land in, and what they do to what is
-    /// already there.
-    fn contour_target_row(&mut self, ui: &mut egui::Ui, slot: usize) {
-        let mut make = false;
-        ui.horizontal_wrapped(|ui| {
-            match self.edit_roi_name(slot) {
-                Some((name, c)) => {
-                    ui.label(egui::RichText::new(format!("▸ {name}")).color(theme::rgb(c)))
-                        .on_hover_text(
-                            "The structure the contour tools edit. Change it in the RT \
-                             structures list (the ✏ button), or Ctrl-click a contour in a \
-                             view",
-                        );
-                }
-                None => {
-                    ui.label(egui::RichText::new("▸ new structure").weak())
-                        .on_hover_text(
-                            "There is no structure to edit yet - the first stroke creates one",
-                        );
-                }
+    /// Which structure the contour strokes land in, and what they do to
+    /// what is already there.
+    fn contour_target(&mut self, ui: &mut egui::Ui, slot: usize) {
+        match self.edit_roi_name(slot) {
+            Some((name, c)) => {
+                ui.label(egui::RichText::new(format!("▸ {name}")).color(theme::rgb(c)))
+                    .on_hover_text(
+                        "The structure being edited. Select another in the RT structures \
+                         list, or Ctrl-click a contour in a view",
+                    );
             }
-            if small_tip_button(ui, "+", "New RT structure, and edit it") {
-                make = true;
+            None => {
+                ui.label(egui::RichText::new("▸ new structure").weak())
+                    .on_hover_text(
+                        "There is no structure to edit yet - the first stroke creates one",
+                    );
             }
-            for m in DrawMode::ALL {
-                if ui
-                    .add(egui::Button::selectable(self.draw_mode == m, m.label()).small())
-                    .on_hover_text(m.hint())
-                    .clicked()
-                {
-                    self.draw_mode = m;
-                }
-            }
-        });
-        if make {
+        }
+        if small_tip_button(ui, "+", "New RT structure, and edit it") {
             self.new_roi(slot, None, "ORGAN");
+        }
+        for m in DrawMode::ALL {
+            if ui
+                .add(egui::Button::selectable(self.draw_mode == m, m.label()).small())
+                .on_hover_text(m.hint())
+                .clicked()
+            {
+                self.draw_mode = m;
+            }
+        }
+    }
+
+    /// Which segmentation the voxel tools paint into.
+    fn segment_target(&mut self, ui: &mut egui::Ui, slot: usize) {
+        let s = &self.slots[slot];
+        match s.segs().get(s.active_seg) {
+            Some(seg) => {
+                ui.label(
+                    egui::RichText::new(format!("▸ {}", seg.name)).color(theme::rgb(seg.color)),
+                )
+                .on_hover_text(
+                    "The segmentation being painted. Select another in the \
+                         Segmentations list",
+                );
+            }
+            None => {
+                ui.label(egui::RichText::new("▸ new segmentation").weak())
+                    .on_hover_text("There is no segmentation yet - the first stroke creates one");
+            }
+        }
+        if small_tip_button(ui, "+", "New, empty segmentation, and paint into it") {
+            self.create_seg(slot);
         }
     }
 
@@ -530,8 +527,8 @@ impl ViewerApp {
         self.refresh_derived(slot);
         let Some((name, roi_type, vol, occupied, points)) = self.edit_summary(slot) else {
             ui.weak(
-                "No structure is being edited. Pick one with the ✏ button in the RT \
-                 structures list, Ctrl-click a contour in a view, or just start drawing.",
+                "No structure is selected. Click one in the RT structures list, \
+                 Ctrl-click a contour in a view, or just start drawing.",
             );
             return;
         };
@@ -971,11 +968,38 @@ impl ViewerApp {
         }
     }
 
-    // -- New structure --------------------------------------------------------
+    // -- Insert structure ---------------------------------------------------
 
-    /// The generators: source, its settings, name and type, Create.
-    fn newroi_section(&mut self, ui: &mut egui::Ui) {
+    /// An empty structure, a point, or a generated structure: source, its
+    /// settings, name and type, Create.
+    fn insert_section(&mut self, ui: &mut egui::Ui) {
         let slot = self.tools.slot;
+        // A shape that was never placed starts at the crosshair.
+        if self.tools.new.centre == [0.0; 3] {
+            self.seed_shape_centre(slot);
+        }
+        let (mut add_roi, mut add_poi) = (false, false);
+        ui.horizontal_wrapped(|ui| {
+            add_roi = small_tip_button(
+                ui,
+                "+ Empty structure",
+                "New, empty structure in the active set - and the one the contour tools \
+                 draw into",
+            );
+            add_poi = small_tip_button(
+                ui,
+                "✱ Point of interest",
+                "A marker, a reference point or the point the patient is lined up on, at \
+                 the crosshair. It exports as a POINT contour like any other",
+            );
+        });
+        if add_roi {
+            self.new_roi(slot, None, "ORGAN");
+        }
+        if add_poi && self.new_poi(slot, None).is_none() {
+            self.notice = Some("There is no image volume to place a point on.".into());
+        }
+        ui.label(egui::RichText::new("Generate").strong());
         let candidates = self.combine_candidates(slot);
         let has_dose = self.slots[slot]
             .study
@@ -1303,7 +1327,7 @@ impl ViewerApp {
         self.edit = None;
         self.tools.new.status = Some(format!(
             "✔ {name} created: {cm3:.1} cm³ on {} slice(s). It is now the structure the \
-             contour tools edit.",
+             editor works on.",
             stack.occupied()
         ));
     }
@@ -1392,14 +1416,6 @@ const TOOLS: &[(SegTool, &str, &str, &str, &str)] = &[
     ),
 ];
 
-/// The glyph and name of the tool in hand, for the toolbar's one button.
-pub(super) fn tool_label(tool: SegTool) -> Option<String> {
-    TOOLS
-        .iter()
-        .find(|t| t.0 == tool)
-        .map(|(_, glyph, name, ..)| format!("{glyph} {name}"))
-}
-
 /// What the mouse does with `tool` in hand - the status bar's one line.
 pub(super) fn mouse_hint(tool: SegTool) -> &'static str {
     TOOLS
@@ -1421,11 +1437,8 @@ mod tests {
         assert_eq!(glyphs.len(), TOOLS.len());
         assert_eq!(TOOLS.len(), 9);
         assert!(TOOLS.iter().all(|t| t.0 != SegTool::None));
-        assert_eq!(
-            tool_label(SegTool::ContourBrush).as_deref(),
-            Some("🖊 Brush")
-        );
-        assert_eq!(tool_label(SegTool::None), None);
+        assert!(mouse_hint(SegTool::ContourBrush).starts_with("LMB paints"));
+        assert!(mouse_hint(SegTool::None).starts_with("LMB crosshair"));
     }
 
     #[test]

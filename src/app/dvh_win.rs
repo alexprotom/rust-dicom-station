@@ -30,7 +30,7 @@
 use crate::dvh::{self, Constraint, Dvh, DvhParams, Metric};
 use crate::progress::ProgressSink;
 
-use super::combine_win::ItemRef;
+use super::combine::ItemRef;
 use super::*;
 
 /// Which dose object, in which dataset.

@@ -12,7 +12,7 @@
 use crate::motion;
 use crate::volume::Grid;
 
-use super::combine_win::ItemRef;
+use super::combine::ItemRef;
 use super::*;
 
 /// The window's state.

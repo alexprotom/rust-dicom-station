@@ -154,13 +154,13 @@ shortcut (**F9**, **F10**) and from the arrow on its edge of the window;
 dragging a panel's inner edge past the minimum does the same, and the arrow
 brings it back.
 
-The *Modules* menu chooses the right panel's sections. **Structure tools**
-holds the drawing tools, the contour tools and the generators
-([contours.md](contours.md)) and starts switched on, because that is where
-drawing starts; **Image registration**, **Image simulation** and **Structures
-propagation** are off until switched on. Every choice is remembered between
-runs, and with all four off there is no right panel at all. The toolbar's
-**✏** button names the drawing tool in hand and brings the panel up.
+The *Modules* menu chooses the right panel's sections, in the order they
+appear: **Image registration**, the **Structures editor** (insert, edit and
+combine structures - [contours.md](contours.md)), **Image simulation** and
+**Structures propagation**. The editor starts switched on, the other three
+off; every choice is remembered between runs, and with all four off there
+is no right panel at all. The drawing tools are not in the panel: the
+toolbar's **✏ Draw structure** button unfolds them on the toolbar.
 
 ## Interaction reference
 
@@ -278,13 +278,17 @@ exported. Each item's **check box is both its visibility and its selection**, so
 ticked. **Shift-click** a check box to tick - or untick - the range from the
 last one you clicked: the span takes the clicked row's new value.
 
-One row carries the lot: for structures **All · None · Copy to · Move to · 🗑 ·
-*n* selected**, for segmentations **New · All · None · Copy to · Move to · 🗑 ·
-💾 · *n* selected**. *Copy to* and *Move to* open the destination submenu
-described below; **💾** exports the ticked segments as their own SEG file. The
-buttons grey out when nothing is ticked. The per-row undo, →RS and delete
-buttons are gone: Ctrl+Z undoes the last stroke, *Copy to ▶ an RT structure
-set* is what →RS did, and **🗑** deletes the ticked rows.
+One row carries the lot, the same for both kinds: **All · None · Copy to ·
+Move to · 🗑 · *n* selected**, plus **💾** for segmentations, which exports
+the ticked segments as their own SEG file. *Copy to* and *Move to* open the
+destination submenu described below. The buttons grey out when nothing is
+ticked. Ctrl+Z undoes the last stroke, *Copy to ▶ an RT structure set* is
+what →RS did, and **🗑** deletes the ticked rows. Clicking an item's **name**
+selects it - the segmentation the voxel tools paint, the structure the
+contour tools and the Structures editor work on - independently of whether
+it is shown; new items come from the **+** after the selected name on the
+toolbar's draw row and, for structures, from the editor's *Insert structure*
+section.
 
 **Right-clicking a structure or segment** offers the same set for one row or
 the ticked group:

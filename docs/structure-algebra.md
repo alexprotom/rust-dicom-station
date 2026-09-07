@@ -40,11 +40,11 @@ smoothing option is for.
 
 ## Using it
 
-*Tools ▶ ∪ Combine structures* (the dataset is chosen on the window's
-**Dataset A / B** row), the **∪ Combine** button in the
-sidebar, or - usually quickest - tick the structures in the data tree,
-right-click and choose **∪ Combine …**: the window opens with them listed in
-the order ticked.
+The *Combine structures* section of the Structures editor (*Modules ▶
+Structures editor*, right panel; the dataset is the editor's **Dataset A /
+B** row), or - usually quickest - tick the structures in the data tree,
+right-click and choose **∪ Combine …**: the section unfolds with them listed
+in the order ticked.
 
 * **Operation** - union, intersection, subtraction or symmetric difference,
   folded left to right over the list. Three operands under subtraction mean `A
@@ -115,9 +115,9 @@ What that buys:
   recipe and its inputs, **■** red when an input has changed, **▲** yellow
   when somebody has edited the result by hand;
 * *Update derived* in the RT structures header re-runs every red one;
-* the *Edit the structure* section of the Structure tools module shows the
-  recipe as a line, with **Update**,
-  **Edit recipe** (which reopens this window on it) and **Underive** (keep
+* the *Edit structure* section of the Structures editor shows the recipe as
+  a line, with **Update**,
+  **Edit recipe** (which unfolds *Combine structures* on it) and **Underive** (keep
   the geometry, forget the recipe);
 * a hand edit with any contour tool sets the yellow flag rather than letting
   the recipe claim something that is no longer true.

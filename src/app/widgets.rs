@@ -1,7 +1,7 @@
 //! Small widgets every window and panel reaches for: a button with a
 //! tooltip, a glyph button, a picker over a list.
 
-use super::combine_win::ItemRef;
+use super::combine::ItemRef;
 
 /// `ui.button(text)` with a tooltip; true when clicked.
 pub(super) fn tip_button(

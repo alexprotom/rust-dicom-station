@@ -18,7 +18,7 @@
 use crate::derived::{self, Derived, Expr, Status};
 use crate::structops::{self, Operand, Recipe};
 
-use super::combine_win::ItemRef;
+use super::combine::ItemRef;
 use super::*;
 
 /// The statuses of one structure set, computed once per change rather than
@@ -364,7 +364,7 @@ impl ViewerApp {
                 ));
                 return;
             };
-            rows.push(super::combine_win::Row {
+            rows.push(super::combine::Row {
                 item,
                 margin: dep.margin,
                 per_direction: !dep.margin.is_uniform(),
@@ -379,7 +379,7 @@ impl ViewerApp {
             dlg.margin_per_direction = !d.expr.margin.is_uniform();
             dlg.cleanup = d.expr.cleanup;
             dlg.name = name;
-            dlg.output = super::combine_win::Output::Structure;
+            dlg.output = super::combine::Output::Structure;
             dlg.roi_type = roi_type;
             dlg.derived = true;
             dlg.status = Some(

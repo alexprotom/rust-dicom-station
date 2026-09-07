@@ -35,13 +35,13 @@ file. See [viewer.md](viewer.md#structures-and-segmentations-in-the-tree).
 
 ## Tools
 
-The drawing tools sit in the **Structure tools** module (right panel, F10;
-the toolbar's **✏** button brings it up) as one row of glyphs, with the
-options of the tool in hand under it. A tool takes over the left mouse
-button in the MPR views:
+The toolbar's **✏ Draw structure** button unfolds the drawing tools as one
+row of glyphs, followed by the options of the tool in hand and the
+segmentation or structure being drawn into (with a **+** to start another).
+A tool takes over the left mouse button in the MPR views:
 
 * **🎨 Paint / ⊖ Erase** - a spherical, spacing-aware **3D brush** (radius in
-  mm, set in the module, `Shift+wheel` or `[` `]`) paints in any of the
+  mm, set on the toolbar, `Shift+wheel` or `[` `]`) paints in any of the
   three views; a **3D** toggle switches to a flat 2D circle confined to the
   displayed slice. Strokes are swept as capsules between pointer samples, so
   fast drags stay gap-free; `Alt` temporarily erases while painting.
@@ -61,7 +61,7 @@ button in the MPR views:
   may not leave it, whatever the grey levels do. That is a different kind of
   statement from the geodesic cost, which is why it is a hard stop rather
   than an expensive step - bone inside the body, contrast inside the liver,
-  a target inside a box drawn for the purpose with ✚ New structure, which is
+  a target inside a box made for the purpose with *Insert structure*, which is
   the limiting box by another name. A seed placed outside the limit says so
   and grows without it, because a limit that yields a single voxel reads as
   a broken tool.

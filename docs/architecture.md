@@ -41,9 +41,9 @@ where each leaf lives.
 rust-dicom-station
 │
 ├── Application (GUI, egui over wgpu)
-│   ├── Window chrome: menu bar, toolbar (W/L, presets, 3D, crosshair, reset, the tool in hand), status bar
-│   ├── Modules panel: the Structure tools (draw, edit, generate), and the
-│   │   optional registration, simulation and propagation sections
+│   ├── Window chrome: menu bar, toolbar (W/L, presets, 3D, crosshair, reset, the draw row), status bar
+│   ├── Modules panel: the registration, Structures editor (insert, edit,
+│   │   combine), simulation and propagation sections
 │   ├── Side panel: per dataset a DICOM tree - patient ▶ study ▶ modality ▶ series, with RT
 │   │   structures, segmentations, 4D groups, dose and plans inside their study -
 │   │   plus dose display, planar images, spatial registrations, records, warnings
@@ -250,12 +250,13 @@ src/
     contour_edit.rs   the contour tools' state machine: the ROI under the
                       tools, the working stack, drawing and nudging, contour
                       undo, the interpolation preview
-    struct_tools.rs   the Structure tools module: the Draw row (the nine
-                      tools and the options of the one in hand), the Edit
-                      section (interpolation, per-slice copy / paste /
-                      delete / clear / thin, tidying, transforms, ROI type,
-                      the derived recipe) and the New structure section
-                      (grey level in HU or SUV, shape, dose, field of view)
+    struct_tools.rs   the Structures editor module (the Insert structure
+                      section - empty structure, point, the generators in HU
+                      or SUV, shape, dose, field of view - and the Edit
+                      structure section: interpolation, per-slice copy /
+                      paste / delete / clear / thin, tidying, transforms, ROI
+                      type, the derived recipe) and the toolbar's draw row
+                      (the nine tools and the options of the one in hand)
     derived_app.rs    derived structures in the app: resolving operands by
                       name, the status cache, re-evaluation as a job, the
                       override rule
@@ -272,7 +273,8 @@ src/
                       licence / progress rows, result landing, the "still
                       the same dataset" check
     body_win.rs       the body-contour window
-    combine_win.rs    the structure-algebra window: operands, margins, the recipe
+    combine.rs        the structure algebra as the editor's Combine structures
+                      section: operands, margins, the recipe
     prompt_seg.rs     prompt segmentation window and worker (SegVol)
     box_seg.rs        slice propagation: the box drawn in the viewport, the
                       preview / refine / propagate loop, the resident session (MedSAM2)
@@ -541,14 +543,16 @@ tool has no use for are not shown; and results land the same way
 (`add_segmentation`), a run that finishes after its dataset was replaced
 being discarded with the same message.
 
-Two of the tools are not windows at all. The contour tools and the
-generators are sections of the **Structure tools** module
-(`app/struct_tools.rs`) in the right panel, together with the drawing tools
-themselves: what a planner keeps at hand while contouring should not need a
-window to be found, and a folded section costs no screen. *Tools ▶ 📝* and
-*Tools ▶ ✚* switch the module on and unfold the section. The module works on
-one dataset (the A / B row at its top), the drawing tools on whichever view
-the pointer is in.
+Not everything is a window. Inserting, editing and combining structures
+are sections of the **Structures editor** module (`app/struct_tools.rs`,
+`app/combine.rs`) in the right panel, drawn below the registration section:
+what a planner keeps at hand while contouring should not need a window to
+be found, and a folded section costs no screen. A context menu's *Edit in
+the Structures editor* or *∪ Combine* and a derived structure's *Edit
+recipe* switch the module on and unfold the section (`reveal_editor`). The
+editor works on one dataset (the A / B row at its top). The drawing tools
+themselves are the toolbar's draw row, unfolded by *✏ Draw structure*
+(`draw_strip`), acting on whichever view the pointer is in.
 
 ## Background jobs
 

@@ -180,20 +180,20 @@ impl ViewerApp {
                         // there.
                         ui.weak("Sections of the right panel (F10):");
                         modules_changed |= ui
-                            .checkbox(&mut self.module_structures, "Structure tools")
-                            .on_hover_text(
-                                "Draw, edit and generate structures: the nine drawing \
-                                 tools with their options, everything that acts on a whole \
-                             structure (interpolation, tidying, moving, the type, the \
-                             derived recipe), and the generators.",
-                            )
-                            .changed();
-                        modules_changed |= ui
                             .checkbox(&mut self.module_registration, "Image registration")
                             .on_hover_text(
                                 "Align two datasets: direction, method, region, parameters, \
                              landmarks, analysis, fusion and the deformation vector field. \
                              Needs two loaded datasets to run.",
+                            )
+                            .changed();
+                        modules_changed |= ui
+                            .checkbox(&mut self.module_structures, "Structures editor")
+                            .on_hover_text(
+                                "Insert, edit and combine structures: empty structures and \
+                                 points, the generators, everything that acts on the \
+                                 selected structure (interpolation, tidying, moving, the \
+                                 type, the derived recipe), and the structure algebra.",
                             )
                             .changed();
                         modules_changed |= ui
@@ -420,8 +420,8 @@ impl ViewerApp {
                     ui.weak("Right drag - window / level (x = width, y = center)");
                     ui.separator();
                     ui.label(
-                        "Drawing tools (Modules > Structure tools; they take over the left \
-                         button):",
+                        "Drawing tools (✏ Draw structure on the toolbar; they take over the \
+                         left button):",
                     );
                     ui.weak("Left drag - paint / erase");
                     ui.weak("Left press + drag ↑↓ - grow / shrink the region (✨)");
@@ -443,7 +443,7 @@ impl ViewerApp {
                     ui.weak("⟲ (view corner) - reset that view's zoom, pan and slice");
                     ui.weak("⛶ / ⊞ - maximize that view / restore the layout");
                     ui.weak("⟲ (toolbar) - reset every view of both datasets");
-                    ui.weak("✏ (toolbar) - the tool in hand; opens the Structure tools module");
+                    ui.weak("✏ Draw structure (toolbar) - unfold or fold the drawing tools");
                     ui.weak(
                         "⌖ - show / hide the crosshair; hidden, left click no \
                          longer navigates",
@@ -660,33 +660,34 @@ impl ViewerApp {
                         self.reset_all_views();
                     }
 
-                    // The drawing tools live in the Structure tools module;
-                    // the toolbar keeps one button that shows the tool in
-                    // hand and brings the module up.
+                    // The drawing tools: one toggle that unfolds the row of
+                    // tools and the options of the one in hand, right here,
+                    // so a hand that is drawing never leaves the toolbar.
                     ui.separator();
                     let paintable = self.any_volume();
                     if !paintable {
                         self.seg_tool = SegTool::None;
+                        self.draw_open = false;
                     }
-                    let shown = self.module_structures && self.right_open;
-                    let label = super::struct_tools::tool_label(self.seg_tool)
-                        .unwrap_or_else(|| "✏ Structure tools".to_string());
                     if ui
-                        .add_enabled(paintable, egui::Button::selectable(shown, label))
+                        .add_enabled(
+                            paintable,
+                            egui::Button::selectable(self.draw_open, "✏ Draw structure"),
+                        )
                         .on_hover_text(
-                            "The drawing tools, the contour tools and the generators, in \
-                             the modules panel (F10). Shows the tool in hand; click to \
-                             bring the panel up or put it away",
+                            "Unfold the drawing tools: paint, erase and grow a segmentation; \
+                             polygon, spline, freehand, live wire, brush and nudge for an RT \
+                             structure. Fold them away to put the tool down",
                         )
                         .clicked()
                     {
-                        if shown {
-                            self.right_open = false;
-                        } else {
-                            self.module_structures = true;
-                            self.right_open = true;
-                            self.persist_settings();
+                        self.draw_open = !self.draw_open;
+                        if !self.draw_open {
+                            self.set_seg_tool(SegTool::None);
                         }
+                    }
+                    if self.draw_open {
+                        self.draw_strip(ui);
                     }
                 }
 

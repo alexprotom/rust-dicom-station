@@ -24,8 +24,6 @@ pub(super) type SegJob<T> = Job<(usize, anyhow::Result<T>)>;
 /// tool cannot fall through to the wrong window.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum ToolId {
-    NewRoi,
-    Contours,
     Details,
     Combine,
     Body,
@@ -86,18 +84,12 @@ pub(super) const MOTION: ToolInfo = ToolInfo {
     name: "4D motion / ITV",
 };
 
-/// The structure tools in the order the Tools menu and the segmentation
-/// section's row list them, each with the one line its tooltip says. The 4D
-/// motion tool is not among them: it works on a group, not on a structure.
+/// The tools with a window of their own, in the order the Tools menu lists
+/// them, each with the one line its tooltip says. The 4D motion tool is not
+/// among them: it works on a group, not on a structure; the contour tools,
+/// the generators and the structure algebra are sections of the Structures
+/// editor.
 pub(super) const TOOL_HINTS: &[(&ToolInfo, &str)] = &[
-    (
-        &super::struct_tools::NEW_ROI,
-        "a structure from a grey-level window, a shape, the dose or the field of view",
-    ),
-    (
-        &super::struct_tools::CONTOURS,
-        "interpolation, tidying, moving - on the structure the contour tools edit",
-    ),
     (
         &super::stats_win::DETAILS,
         "one row per structure: volume, grey levels, what the geometry costs, whether a \
@@ -106,10 +98,6 @@ pub(super) const TOOL_HINTS: &[(&ToolInfo, &str)] = &[
     (
         &BODY_CONTOUR,
         "outline the patient without the couch, the chair or the immobilisation (EXTERNAL)",
-    ),
-    (
-        &COMBINE,
-        "build one structure out of others: union, intersection, subtraction, margins",
     ),
     (
         &AUTOSEG,
@@ -152,12 +140,10 @@ impl ToolInfo {
 }
 
 impl ViewerApp {
-    /// Open the tool's window - or, for the two that live in the Structure
-    /// tools module, reveal its section - on `slot`.
+    /// Open the tool's window on `slot`; the structure algebra is a section
+    /// of the Structures editor and is revealed there.
     pub(super) fn open_tool(&mut self, id: ToolId, slot: usize) {
         match id {
-            ToolId::NewRoi => self.open_newroi_dialog(slot),
-            ToolId::Contours => self.open_contour_dialog(slot),
             ToolId::Details => self.open_stats_dialog(slot),
             ToolId::Combine => self.open_combine_dialog(slot, Vec::new()),
             ToolId::Body => self.open_body_dialog(slot),
