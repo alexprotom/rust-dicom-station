@@ -199,12 +199,7 @@ impl ViewerApp {
             return;
         }
         self.add_segmentation(slot, result.name.clone(), result.volume_dims, &result.mask);
-        let spacing = self.slots[slot]
-            .study
-            .as_ref()
-            .map(|s| s.volume.spacing)
-            .unwrap_or([1.0; 3]);
-        let cm3 = result.voxels as f64 * spacing[0] * spacing[1] * spacing[2] / 1000.0;
+        let cm3 = self.slots[slot].voxels_cm3(result.voxels);
         if let Some(d) = &mut self.segvol_dialog {
             d.status = Some(format!(
                 "✔ {}: {} voxels ({cm3:.1} cm³) in {:.1} s on {} - {} refinement window(s), \
@@ -222,7 +217,7 @@ impl ViewerApp {
     /// The tool window; while a run is in flight its buttons become the
     /// progress row.
     pub(super) fn segvol_window(&mut self, ctx: &egui::Context) {
-        let has = [self.slots[0].has_volume(), self.slots[1].has_volume()];
+        let has = self.volume_slots();
         let mut switch: Option<usize> = None;
         let Some(d) = &mut self.segvol_dialog else {
             return;
@@ -352,11 +347,12 @@ impl ViewerApp {
                     None => {
                         ui.horizontal(|ui| {
                             let ready = d.kind != PromptKind::Text || !d.text.trim().is_empty();
-                            if ui
-                                .add_enabled(ready, egui::Button::new("▶ Segment"))
-                                .on_hover_text("Run the network on the prompt")
-                                .clicked()
-                            {
+                            if enabled_tip_button(
+                                ui,
+                                ready,
+                                "▶ Segment",
+                                "Run the network on the prompt",
+                            ) {
                                 run = true;
                             }
                             if ui.button("Close").clicked() {
@@ -380,11 +376,7 @@ impl ViewerApp {
             self.open_segvol_dialog(s);
             return;
         }
-        if cancel {
-            if let Some(job) = &self.segvol_job {
-                job.progress.cancel();
-            }
-        }
+        cancel_if(cancel, &self.segvol_job);
         if run {
             self.start_segvol();
         }

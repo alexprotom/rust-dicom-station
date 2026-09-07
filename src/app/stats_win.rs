@@ -16,15 +16,15 @@ use crate::contours::Stack;
 use crate::derived::Status;
 use crate::volume::{Grid, Volume};
 
-use super::seg_engines::ToolInfo;
+use super::seg_engines::{ToolId, ToolInfo};
 use super::*;
 
 /// The ninth tool. A clipboard, because this one only reads; the glyph is
 /// one egui's bundled fonts carry (see the `glyphs` guard).
 pub(super) const DETAILS: ToolInfo = ToolInfo {
+    id: ToolId::Details,
     glyph: "📋",
     name: "Structure details",
-    verb: "List the structures of",
 };
 
 /// One line of the table.
@@ -96,7 +96,7 @@ fn measure(mask: &[u8], dims: [usize; 3], vol: Option<&Volume>) -> (usize, Optio
 }
 
 fn voxel_cm3(spacing: [f64; 3], voxels: usize) -> f64 {
-    voxels as f64 * spacing[0] * spacing[1] * spacing[2] / 1000.0
+    voxels as f64 * crate::volume::voxel_cm3(spacing)
 }
 
 impl ViewerApp {
@@ -252,7 +252,7 @@ impl ViewerApp {
                 d.stale = false;
             }
         }
-        let comparison = self.comparison;
+        let has = [self.slots[0].study.is_some(), self.slots[1].study.is_some()];
         let current_gen = self.settings_gen;
         let mut open = true;
         let mut close = false;
@@ -267,16 +267,7 @@ impl ViewerApp {
             &mut open,
             detach::WinOpts::width(700.0),
             |ui| {
-                if comparison {
-                    ui.horizontal(|ui| {
-                        ui.label("Dataset:");
-                        for (s, name) in SLOT_NAMES.iter().enumerate() {
-                            if ui.selectable_label(d.slot == s, *name).clicked() {
-                                switch = Some(s);
-                            }
-                        }
-                    });
-                }
+                switch = seg_engines::dataset_row(ui, d.slot, has, true);
                 ui.label(
                     egui::RichText::new(
                         "Volume twice over - the area of the contours times the slice \
@@ -290,7 +281,7 @@ impl ViewerApp {
                         egui::RichText::new(
                             "⚠ A structure has changed since this table was computed.",
                         )
-                        .color(egui::Color32::from_rgb(220, 170, 60)),
+                        .color(theme::warn_color(ui.visuals())),
                     );
                 }
                 ui.separator();
@@ -315,8 +306,7 @@ impl ViewerApp {
                             ui.end_row();
                             for r in &d.rows {
                                 ui.horizontal(|ui| {
-                                    let c =
-                                        egui::Color32::from_rgb(r.color[0], r.color[1], r.color[2]);
+                                    let c = theme::rgb(r.color);
                                     ui.label(egui::RichText::new("■").color(c));
                                     ui.label(r.name.clone());
                                 });
@@ -363,7 +353,7 @@ impl ViewerApp {
                                                 s.glyph(),
                                                 s.label()
                                             ))
-                                            .color(egui::Color32::from_rgb(c[0], c[1], c[2])),
+                                            .color(theme::rgb(c)),
                                         );
                                     }
                                     None => {

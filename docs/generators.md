@@ -1,6 +1,8 @@
 # Making a structure without drawing it
 
-*Tools ▶ ✚ New structure* - a grey-level window, a shape or a dose level.
+*Tools ▶ ✚ New structure* opens the *New structure* section of the Structure
+tools module (right panel) - a grey-level window, a shape, a dose level or
+the field of view.
 These are the cheap generators every planning system has, and the arithmetic
 behind them is a few lines each ([`src/generate.rs`](architecture.md#module-map)).
 What matters is where the result lands: an ordinary RT structure, editable

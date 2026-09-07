@@ -171,18 +171,18 @@ fn run_options(ui: &mut egui::Ui, plan: &mut ExportPlan) {
         }
         ui.separator();
         ui.label(egui::RichText::new("Structures").strong());
-        if ui
-            .small_button("all RTSTRUCT")
-            .on_hover_text("Write every set of structures as contours")
-            .clicked()
-        {
+        if small_tip_button(
+            ui,
+            "all RTSTRUCT",
+            "Write every set of structures as contours",
+        ) {
             plan.set_all_formats(StructFormat::RtStruct);
         }
-        if ui
-            .small_button("all SEG")
-            .on_hover_text("Write every set of structures as binary masks")
-            .clicked()
-        {
+        if small_tip_button(
+            ui,
+            "all SEG",
+            "Write every set of structures as binary masks",
+        ) {
             plan.set_all_formats(StructFormat::Seg);
         }
     });
@@ -474,11 +474,7 @@ fn common_tags(ui: &mut egui::Ui, plan: &mut ExportPlan) {
         .show_header(ui, |ui| {
             ui.label(egui::RichText::new("Common tags").strong());
             ui.weak("written into every exported object");
-            if ui
-                .small_button("↺ all")
-                .on_hover_text("Restore every value to the study's own")
-                .clicked()
-            {
+            if small_tip_button(ui, "↺ all", "Restore every value to the study's own") {
                 reset = true;
             }
         })
@@ -566,11 +562,12 @@ fn uid_row(ui: &mut egui::Ui, name: &str, f: &mut Field) {
         );
         revert_button(ui, f);
         if let Some(fresh) = f.fresh.clone() {
-            if ui
-                .add_enabled(f.value != fresh, egui::Button::new("⟳").small())
-                .on_hover_text("Replace with a newly generated UID")
-                .clicked()
-            {
+            if tip_widget(
+                ui,
+                f.value != fresh,
+                egui::Button::new("⟳").small(),
+                "Replace with a newly generated UID",
+            ) {
                 f.value = fresh;
             }
         }

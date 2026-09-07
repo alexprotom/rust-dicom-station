@@ -4,7 +4,8 @@
 //! [`layout::expected`] - which means these tests fail if a loader asks for a
 //! key or a shape the derived inventory does not contain, and they run in CI
 //! with no download and no network. What they do *not* check is arithmetic;
-//! that is `tests/reference.rs`, which needs a reference dump.
+//! that is the op fixture the unit tests in `src/medsam2` read
+//! (`tests/data/medsam2-ops.safetensors`, see `tests/ops_fixtures.rs`).
 
 use std::collections::HashMap;
 

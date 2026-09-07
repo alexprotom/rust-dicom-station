@@ -1343,10 +1343,7 @@ impl ViewerApp {
                                 if let Some(on) = d.ticked.get_mut(i) {
                                     ui.checkbox(on, "");
                                 }
-                                ui.colored_label(
-                                    Color32::from_rgb(color[0], color[1], color[2]),
-                                    "◼",
-                                );
+                                ui.colored_label(theme::rgb(*color), "◼");
                                 ui.label(name);
                                 if let Some(v) = cm3 {
                                     ui.weak(format!("{v:.1} cm³"));
@@ -1585,11 +1582,7 @@ impl ViewerApp {
                                     registered.is_some(),
                                 )
                             };
-                            if ui
-                                .add_enabled(ready, egui::Button::new(label))
-                                .on_hover_text(hint)
-                                .clicked()
-                            {
+                            if enabled_tip_button(ui, ready, label, hint) {
                                 run = true;
                             }
                         });
@@ -1615,11 +1608,7 @@ impl ViewerApp {
         }
         let _ = dst_slot;
         self.propagate_dialog = Some(d);
-        if cancel {
-            if let Some(job) = &self.propagate_job {
-                job.progress.cancel();
-            }
-        }
+        cancel_if(cancel, &self.propagate_job);
         if run {
             self.start_propagation();
         }

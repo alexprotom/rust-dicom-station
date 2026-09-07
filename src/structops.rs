@@ -212,16 +212,18 @@ impl Margin {
             return mask.to_vec();
         }
         let (grow, shrink) = self.to_radii(grid);
-        let mut out = mask.to_vec();
+        // Borrow the input until the first pass makes a copy of its own: a
+        // margin never costs a whole-volume copy that nothing reads.
+        let mut out: std::borrow::Cow<[u8]> = std::borrow::Cow::Borrowed(mask);
         if morph_any(&grow) {
             sink.report(0.0, "Expanding");
-            out = morph::dilate_radii(&out, grid.dims, grid.spacing, &grow);
+            out = morph::dilate_radii(&out, grid.dims, grid.spacing, &grow).into();
         }
         if morph_any(&shrink) {
             sink.report(0.5, "Contracting");
-            out = morph::erode_radii(&out, grid.dims, grid.spacing, &shrink);
+            out = morph::erode_radii(&out, grid.dims, grid.spacing, &shrink).into();
         }
-        out
+        out.into_owned()
     }
 }
 
@@ -272,7 +274,7 @@ impl Cleanup {
         }
         if self.keep_largest || self.min_volume_cm3 > 0.0 {
             sink.report(0.7, "Dropping small pieces");
-            let voxel_cm3 = grid.spacing[0] * grid.spacing[1] * grid.spacing[2] / 1000.0;
+            let voxel_cm3 = grid.voxel_cm3();
             let comps = morph::components(mask, grid.dims);
             let keep: Vec<&morph::Component> = if self.keep_largest {
                 comps.iter().take(1).collect()
@@ -388,7 +390,7 @@ pub fn combine(recipe: &Recipe, grid: &Grid, sink: &dyn ProgressSink) -> Result<
     } else {
         morph::components(&acc, grid.dims).len()
     };
-    let voxel_cm3 = grid.spacing[0] * grid.spacing[1] * grid.spacing[2] / 1000.0;
+    let voxel_cm3 = grid.voxel_cm3();
     sink.report(1.0, "Done");
     Ok(Combined {
         mask: acc,

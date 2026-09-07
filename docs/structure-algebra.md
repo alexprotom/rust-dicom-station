@@ -115,7 +115,8 @@ What that buys:
   recipe and its inputs, **■** red when an input has changed, **▲** yellow
   when somebody has edited the result by hand;
 * *Update derived* in the RT structures header re-runs every red one;
-* the contour tools window shows the recipe as a line, with **Update**,
+* the *Edit the structure* section of the Structure tools module shows the
+  recipe as a line, with **Update**,
   **Edit recipe** (which reopens this window on it) and **Underive** (keep
   the geometry, forget the recipe);
 * a hand edit with any contour tool sets the yellow flag rather than letting

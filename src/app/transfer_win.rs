@@ -168,17 +168,7 @@ impl ViewerApp {
                              salt: &str| {
                     ui.horizontal(|ui| {
                         ui.label(label);
-                        let sel = item
-                            .and_then(|i| list.get(i).cloned())
-                            .unwrap_or_else(|| "(pick)".into());
-                        egui::ComboBox::from_id_salt(salt.to_string())
-                            .width(260.0)
-                            .selected_text(sel)
-                            .show_ui(ui, |ui| {
-                                for (i, l) in list.iter().enumerate() {
-                                    ui.selectable_value(item, Some(i), l);
-                                }
-                            });
+                        index_picker(ui, salt, item, list);
                     });
                 };
                 combo(

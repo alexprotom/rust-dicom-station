@@ -580,7 +580,7 @@ impl ViewerApp {
                             "⚠ A structure has changed since these curves were computed - \
                              the numbers below describe the geometry as it was. Recompute.",
                         )
-                        .color(egui::Color32::from_rgb(220, 170, 60)),
+                        .color(theme::warn_color(ui.visuals())),
                     );
                 }
                 let truncated: Vec<&Dvh> = d
@@ -606,11 +606,7 @@ impl ViewerApp {
         );
 
         self.dvh_open = open;
-        if cancel {
-            if let Some(j) = &self.dvh_job {
-                j.progress.cancel();
-            }
-        }
+        cancel_if(cancel, &self.dvh_job);
         if load_protocol {
             if let Some(path) = rfd::FileDialog::new()
                 .set_title("Open a constraint protocol")
@@ -721,7 +717,7 @@ fn metrics_table(ui: &mut egui::Ui, d: &DvhDialog) {
                     }
                     ui.end_row();
                     for c in &d.curves {
-                        let col = egui::Color32::from_rgb(c.color[0], c.color[1], c.color[2]);
+                        let col = theme::rgb(c.color);
                         ui.horizontal(|ui| {
                             let (rect, _) = ui
                                 .allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
@@ -979,7 +975,7 @@ fn plot(ui: &mut egui::Ui, d: &DvhDialog, height: f32) {
         v
     };
     for c in &d.curves {
-        let col = egui::Color32::from_rgb(c.color[0], c.color[1], c.color[2]);
+        let col = theme::rgb(c.color);
         let stroke = egui::Stroke::new(1.6, col);
         let pts: Vec<egui::Pos2> = if d.cumulative {
             c.cumulative()
@@ -1028,7 +1024,7 @@ fn plot(ui: &mut egui::Ui, d: &DvhDialog, height: f32) {
     // ---- legend ----
     let mut y = rect.top() + 4.0;
     for c in &d.curves {
-        let col = egui::Color32::from_rgb(c.color[0], c.color[1], c.color[2]);
+        let col = theme::rgb(c.color);
         let sw = egui::Rect::from_min_size(
             egui::pos2(rect.right() - 150.0, y + 3.0),
             egui::vec2(14.0, 3.0),

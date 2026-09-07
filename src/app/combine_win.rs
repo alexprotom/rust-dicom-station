@@ -405,7 +405,7 @@ impl ViewerApp {
                     .collect()
             })
             .unwrap_or_default();
-        let has = [self.slots[0].has_volume(), self.slots[1].has_volume()];
+        let has = self.volume_slots();
         let mut switch: Option<usize> = None;
         let Some(d) = &mut self.combine_dialog else {
             return;
@@ -633,11 +633,12 @@ impl ViewerApp {
                     None => {
                         ui.horizontal(|ui| {
                             let ready = d.rows.len() > usize::from(d.op != BoolOp::Union);
-                            if ui
-                                .add_enabled(ready, egui::Button::new("▶ Combine"))
-                                .on_hover_text("Evaluate the recipe on the displayed series")
-                                .clicked()
-                            {
+                            if enabled_tip_button(
+                                ui,
+                                ready,
+                                "▶ Combine",
+                                "Evaluate the recipe on the displayed series",
+                            ) {
                                 run = true;
                             }
                             if ui.button("Close").clicked() {
@@ -671,11 +672,7 @@ impl ViewerApp {
                 }
             }
         }
-        if cancel {
-            if let Some(job) = &self.combine_job {
-                job.progress.cancel();
-            }
-        }
+        cancel_if(cancel, &self.combine_job);
         if run {
             self.start_combine();
         }
@@ -750,7 +747,6 @@ mod tests {
     fn the_tool_names_itself_like_the_others() {
         assert_eq!(COMBINE.title(0), "∪ Combine structures - dataset A");
         assert_eq!(COMBINE.menu_entry(), "∪ Combine structures");
-        assert_eq!(COMBINE.short_button(), "∪ Combine");
     }
 
     #[test]

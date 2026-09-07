@@ -328,7 +328,7 @@ pub fn contour_body(
     if dims.contains(&0) {
         bail!("this series has no voxels");
     }
-    let voxel_cm3 = spacing[0] * spacing[1] * spacing[2] / 1000.0;
+    let voxel_cm3 = crate::volume::voxel_cm3(spacing);
 
     // ---- 1. foreground ---------------------------------------------------
     // Six equal steps follow, over whatever is left of the bar: all of it

@@ -55,9 +55,12 @@ The scan:
    pure-Rust decoders - sorted by projection onto the true slice normal (cross
    product of the ImageOrientationPatient row/column vectors), checked for
    uniform spacing and consistent dimensions, and rescaled to HU with the
-   per-file rescale slope/intercept. The result is one `i16` volume with full
-   patient-space geometry (origin at the center of voxel (0,0,0), unit
-   direction vectors for the three axes, spacing in mm).
+   per-file rescale slope/intercept. When that rescale lands on integers
+   (slope 1, an integer intercept - every CT) the pixels are converted
+   straight into the volume's `i16`; only a fractional rescale (PET counts,
+   say) goes through a floating-point pass and a rounding. The result is one
+   `i16` volume with full patient-space geometry (origin at the center of
+   voxel (0,0,0), unit direction vectors for the three axes, spacing in mm).
 
 Non-uniform slice spacing is reported as a warning (the median spacing is used
 for display) and duplicate slice positions are collapsed. Enhanced multi-frame
@@ -151,10 +154,13 @@ shortcut (**F9**, **F10**) and from the arrow on its edge of the window;
 dragging a panel's inner edge past the minimum does the same, and the arrow
 brings it back.
 
-The *Modules* menu chooses the right panel's sections: **Image registration**,
-**Image simulation** and **Structures propagation** are off until switched on,
-and the choice is remembered between runs. With all three off there is no
-right panel at all.
+The *Modules* menu chooses the right panel's sections. **Structure tools**
+holds the drawing tools, the contour tools and the generators
+([contours.md](contours.md)) and starts switched on, because that is where
+drawing starts; **Image registration**, **Image simulation** and **Structures
+propagation** are off until switched on. Every choice is remembered between
+runs, and with all four off there is no right panel at all. The toolbar's
+**✏** button names the drawing tool in hand and brings the panel up.
 
 ## Interaction reference
 

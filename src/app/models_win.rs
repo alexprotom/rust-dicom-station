@@ -184,14 +184,13 @@ impl ViewerApp {
                     {
                         action = Some(ModelAction::FetchMissing);
                     }
-                    if ui
-                        .add_enabled(!running && ready_n > 0, egui::Button::new("⟳ Update all"))
-                        .on_hover_text(
-                            "Remove and re-fetch every model that is on disk - the published \
-                             files carry no version, so an update is a fresh download",
-                        )
-                        .clicked()
-                    {
+                    if enabled_tip_button(
+                        ui,
+                        !running && ready_n > 0,
+                        "⟳ Update all",
+                        "Remove and re-fetch every model that is on disk - the published \
+                         files carry no version, so an update is a fresh download",
+                    ) {
                         action = Some(ModelAction::UpdateInstalled);
                     }
                     if ui
@@ -267,11 +266,7 @@ impl ViewerApp {
                 self.models_scan.clear();
             }
         }
-        if cancel {
-            if let Some(job) = &self.models_job {
-                job.progress.cancel();
-            }
-        }
+        cancel_if(cancel, &self.models_job);
         if let Some(act) = action {
             self.apply_model_action(act, &root);
         }

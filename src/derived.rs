@@ -304,7 +304,7 @@ pub fn hash_mask(mask: &[u8]) -> u64 {
         h = h.wrapping_mul(0x1000_0000_01b3);
         i += step;
     }
-    let set = mask.iter().filter(|&&v| v != 0).count() as u64;
+    let set = crate::morphology::count_set(mask) as u64;
     h ^= set;
     h.wrapping_mul(0x1000_0000_01b3)
 }

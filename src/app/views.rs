@@ -400,7 +400,7 @@ impl ViewerApp {
                     let Some(roi) = ss.rois.get(*ri) else {
                         continue;
                     };
-                    let color = Color32::from_rgb(roi.color[0], roi.color[1], roi.color[2]);
+                    let color = theme::rgb(roi.color);
                     let stroke = Stroke::new(if edited == Some(*ri) { 3.0 } else { 1.8 }, color);
                     for pl in &gfx.polylines {
                         let pts: Vec<Pos2> = pl.iter().map(|p| px_to_screen(*p)).collect();
@@ -710,7 +710,7 @@ impl ViewerApp {
                 .edit_roi_name(slot)
                 .map(|(_, c)| c)
                 .unwrap_or([255, 235, 60]);
-            let col = Color32::from_rgb(c[0], c[1], c[2]);
+            let col = theme::rgb(c);
             if scr.len() >= 2 {
                 painter.add(egui::Shape::line(scr.clone(), Stroke::new(1.8, col)));
             }

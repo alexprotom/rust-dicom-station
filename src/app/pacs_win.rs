@@ -257,11 +257,12 @@ impl ViewerApp {
                     }
                 });
                 ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(!busy, egui::Button::new("📥 Import folder"))
-                        .on_hover_text("Copy every DICOM file of a folder into the archive")
-                        .clicked()
-                    {
+                    if enabled_tip_button(
+                        ui,
+                        !busy,
+                        "📥 Import folder",
+                        "Copy every DICOM file of a folder into the archive",
+                    ) {
                         import = true;
                     }
                     for (slot, name) in SLOT_NAMES.iter().enumerate() {

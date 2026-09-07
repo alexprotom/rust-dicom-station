@@ -57,6 +57,12 @@ pub struct Grid {
     pub frame_of_reference_uid: String,
 }
 
+/// Volume of one voxel of `spacing` (mm), in cm³.
+#[inline]
+pub fn voxel_cm3(spacing: [f64; 3]) -> f64 {
+    spacing[0] * spacing[1] * spacing[2] / 1000.0
+}
+
 impl Grid {
     /// Find the permutation and flips that carry a lattice's own axes onto the
     /// canonical `[S, A, R]` order - superior, anterior and right, each
@@ -130,6 +136,13 @@ impl Grid {
             d.dot(self.col_dir) / self.spacing[1],
             d.dot(self.normal) / self.spacing[2],
         ]
+    }
+
+    /// Volume of one voxel, cm³ - what every count of voxels is multiplied
+    /// by to become a volume.
+    #[inline]
+    pub fn voxel_cm3(&self) -> f64 {
+        voxel_cm3(self.spacing)
     }
 
     /// Same lattice to within a fraction of a voxel - the test that decides
@@ -251,6 +264,12 @@ impl Volume {
             d.dot(self.col_dir) / self.spacing[1],
             d.dot(self.normal) / self.spacing[2],
         ]
+    }
+
+    /// Volume of one voxel, cm³.
+    #[inline]
+    pub fn voxel_cm3(&self) -> f64 {
+        voxel_cm3(self.spacing)
     }
 
     /// This volume's lattice, for objects that must be resampled onto it.

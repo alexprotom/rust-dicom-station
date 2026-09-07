@@ -602,6 +602,28 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
 }
 
 /// Fully load one image series into a `Volume` (parallel decode).
+/// Does the modality LUT of this image map every stored value onto an
+/// integer that fits an `i16`? Then the pixels can be converted straight
+/// into the volume's type; otherwise they go through `f32` and a rounding.
+fn integral_rescale(decoded: &dicom_pixeldata::DecodedPixelData<'_>) -> bool {
+    let Ok(rescales) = decoded.rescale() else {
+        return false;
+    };
+    let bits = u32::from(decoded.bits_stored().clamp(1, 16));
+    let signed = decoded.pixel_representation() == dicom_pixeldata::PixelRepresentation::Signed;
+    let (lo, hi) = if signed {
+        (-(1i64 << (bits - 1)), (1i64 << (bits - 1)) - 1)
+    } else {
+        (0i64, (1i64 << bits) - 1)
+    };
+    rescales.iter().all(|r| {
+        r.slope == 1.0
+            && r.intercept.fract() == 0.0
+            && (lo as f64 + r.intercept) >= f64::from(i16::MIN)
+            && (hi as f64 + r.intercept) <= f64::from(i16::MAX)
+    })
+}
+
 pub fn load_series_volume(
     series: &SeriesInfo,
     progress: &Progress,
@@ -676,19 +698,30 @@ pub fn load_series_volume(
                     path.display()
                 );
             }
-            let f: Vec<f32> = decoded
-                .to_vec_with_options(&opts)
-                .with_context(|| format!("convert pixels of {}", path.display()))?;
-            if f.len() < rows * cols {
+            let mut data: Vec<i16> = if integral_rescale(&decoded) {
+                // The common case - a CT with slope 1 and an integer
+                // intercept, or no rescale at all: the modality LUT lands
+                // exactly on integers, so the pixels go straight into the
+                // volume's own type instead of through a slice-sized f32
+                // buffer and a rounding pass.
+                decoded
+                    .to_vec_with_options(&opts)
+                    .with_context(|| format!("convert pixels of {}", path.display()))?
+            } else {
+                let f: Vec<f32> = decoded
+                    .to_vec_with_options(&opts)
+                    .with_context(|| format!("convert pixels of {}", path.display()))?;
+                f.iter()
+                    .map(|&v| v.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16)
+                    .collect()
+            };
+            if data.len() < rows * cols {
                 bail!(
                     "pixel buffer smaller than Rows×Columns in {}",
                     path.display()
                 );
             }
-            let data: Vec<i16> = f[..rows * cols]
-                .iter()
-                .map(|&v| v.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16)
-                .collect();
+            data.truncate(rows * cols);
 
             let (mut min, mut max) = (i16::MAX, i16::MIN);
             for &v in &data {

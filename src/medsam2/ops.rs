@@ -264,7 +264,7 @@ mod tests {
 
     fn fixtures() -> HashMap<String, WTensor> {
         load_safetensors(Path::new("tests/data/medsam2-ops.safetensors"))
-            .expect("op fixtures; regenerate with tools/gen_ops_fixtures.py")
+            .expect("op fixtures; regenerate with examples/gen_ops_fixtures.rs")
     }
 
     fn dev() -> burn::tensor::Device<B> {

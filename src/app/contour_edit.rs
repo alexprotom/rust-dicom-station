@@ -384,13 +384,7 @@ impl ViewerApp {
     // -- undo -------------------------------------------------------------
 
     pub(super) fn push_roi_undo(&mut self, slot: usize, set: usize, roi: usize) {
-        let Some(contours) = self.slots[slot]
-            .study
-            .as_ref()
-            .and_then(|st| st.structure_sets.get(set))
-            .and_then(|ss| ss.rois.get(roi))
-            .map(|r| r.contours.clone())
-        else {
+        let Some(contours) = self.slots[slot].roi(set, roi).map(|r| r.contours.clone()) else {
             return;
         };
         self.roi_undo.push(RoiSnapshot {
@@ -410,12 +404,7 @@ impl ViewerApp {
             return;
         };
         let snap = self.roi_undo.remove(pos);
-        if let Some(roi) = self.slots[snap.slot]
-            .study
-            .as_mut()
-            .and_then(|st| st.structure_sets.get_mut(snap.set))
-            .and_then(|ss| ss.rois.get_mut(snap.roi))
-        {
+        if let Some(roi) = self.slots[snap.slot].roi_mut(snap.set, snap.roi) {
             roi.contours = snap.contours;
         }
         self.edit = None;
@@ -479,12 +468,7 @@ impl ViewerApp {
         let Some(grid) = self.slots[e.slot].study.as_ref().map(|st| st.volume.grid()) else {
             return;
         };
-        if let Some(roi) = self.slots[e.slot]
-            .study
-            .as_mut()
-            .and_then(|st| st.structure_sets.get_mut(e.set))
-            .and_then(|ss| ss.rois.get_mut(e.roi))
-        {
+        if let Some(roi) = self.slots[e.slot].roi_mut(e.set, e.roi) {
             e.stack.apply_to_roi(roi, &grid);
         }
         self.settings_gen += 1;
@@ -982,12 +966,7 @@ impl ViewerApp {
         let Some((set, roi)) = self.edit_target(slot) else {
             return;
         };
-        if let Some(r) = self.slots[slot]
-            .study
-            .as_mut()
-            .and_then(|st| st.structure_sets.get_mut(set))
-            .and_then(|ss| ss.rois.get_mut(roi))
-        {
+        if let Some(r) = self.slots[slot].roi_mut(set, roi) {
             r.roi_type = roi_type.to_string();
         }
         self.settings_gen += 1;

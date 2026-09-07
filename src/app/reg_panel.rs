@@ -577,7 +577,7 @@ impl ViewerApp {
     // -- the panel section -------------------------------------------------
 
     pub(super) fn registration_section(&mut self, ui: &mut egui::Ui) {
-        let both = self.slots[0].has_volume() && self.slots[1].has_volume();
+        let both = self.both_volumes();
         // The section is worth showing while two datasets are loaded, while a
         // result is on display, while a run is in flight (that is where its
         // progress and its Cancel button live), and while one dataset holds a
@@ -861,15 +861,13 @@ impl ViewerApp {
                     .default_open(true)
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            if ui
-                                .button("➕ Add pair")
-                                .on_hover_text(
-                                    "Take the crosshair of each dataset as one pair. Put \
-                                     both crosshairs on the same anatomy first - and turn \
-                                     off View ▶ Sync crosshairs, or they move together.",
-                                )
-                                .clicked()
-                            {
+                            if tip_button(
+                                ui,
+                                "➕ Add pair",
+                                "Take the crosshair of each dataset as one pair. Put \
+                                 both crosshairs on the same anatomy first - and turn \
+                                 off View ▶ Sync crosshairs, or they move together.",
+                            ) {
                                 add_landmark = true;
                             }
                             if ui
@@ -941,22 +939,22 @@ impl ViewerApp {
                         .is_some_and(|r| r.fixed_slot == fixed_slot)
                         && self.reg_method.is_deformable();
                     ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(both, egui::Button::new("▶ Register"))
-                            .on_hover_text("Recover the transform from scratch")
-                            .clicked()
-                        {
+                        if enabled_tip_button(
+                            ui,
+                            both,
+                            "▶ Register",
+                            "Recover the transform from scratch",
+                        ) {
                             run = Some(false);
                         }
-                        if ui
-                            .add_enabled(both && can_refine, egui::Button::new("▶ Refine"))
-                            .on_hover_text(
-                                "Recover a correction on top of the active registration and \
-                                 add the two together - how a local registration is meant to \
-                                 be used after a global one",
-                            )
-                            .clicked()
-                        {
+                        if enabled_tip_button(
+                            ui,
+                            both && can_refine,
+                            "▶ Refine",
+                            "Recover a correction on top of the active registration and \
+                             add the two together - how a local registration is meant to \
+                             be used after a global one",
+                        ) {
                             run = Some(true);
                         }
                     });
@@ -978,11 +976,11 @@ impl ViewerApp {
                     for ph in &gr.phases {
                         ui.monospace(format!("{}: {}", ph.label, ph.metric_line));
                     }
-                    if ui
-                        .button("Clear group registration")
-                        .on_hover_text("The next run against this group registers again")
-                        .clicked()
-                    {
+                    if tip_button(
+                        ui,
+                        "Clear group registration",
+                        "The next run against this group registers again",
+                    ) {
                         clear_group = true;
                     }
                 }
@@ -1102,29 +1100,25 @@ impl ViewerApp {
                             } else {
                                 ui.weak(reg.field.describe());
                             }
-                            if ui
-                                .button("💾 Save as DICOM")
-                                .on_hover_text(
-                                    "Write the field as a Deformable Spatial Registration \
-                                     object: the whole mapping in one grid, with identity \
-                                     pre- and post-matrices, so another system has no \
-                                     composition rule to get wrong",
-                                )
-                                .clicked()
-                            {
+                            if tip_button(
+                                ui,
+                                "💾 Save as DICOM",
+                                "Write the field as a Deformable Spatial Registration \
+                                 object: the whole mapping in one grid, with identity \
+                                 pre- and post-matrices, so another system has no \
+                                 composition rule to get wrong",
+                            ) {
                                 save_field = true;
                             }
                         });
 
                     ui.horizontal(|ui| {
-                        if ui
-                            .button("⇄ Propagate structures")
-                            .on_hover_text(
-                                "Open the structures propagation module, aimed at this \
-                                 registration",
-                            )
-                            .clicked()
-                        {
+                        if tip_button(
+                            ui,
+                            "⇄ Propagate structures",
+                            "Open the structures propagation module, aimed at this \
+                             registration",
+                        ) {
                             propagate_from = Some(reg.moving_slot);
                         }
                         if ui.button("Clear registration").clicked() {
@@ -1154,11 +1148,7 @@ impl ViewerApp {
         if let Some(refine) = run {
             self.start_registration(refine);
         }
-        if cancel {
-            if let Some(job) = &self.reg_job {
-                job.progress.cancel();
-            }
-        }
+        cancel_if(cancel, &self.reg_job);
         if clear {
             self.clear_registration();
         }
@@ -1412,10 +1402,7 @@ fn analysis_rows(
                     any = true;
                     let (stats, mean) = analysis::stats_over_points(transform, &pts);
                     ui.horizontal(|ui| {
-                        ui.colored_label(
-                            Color32::from_rgb(roi.color[0], roi.color[1], roi.color[2]),
-                            "◼",
-                        );
+                        ui.colored_label(theme::rgb(roi.color), "◼");
                         ui.label(&roi.name);
                         ui.weak(format!("{:.2} mm", stats.mean));
                     })

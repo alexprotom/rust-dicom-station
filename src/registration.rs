@@ -374,7 +374,7 @@ impl RegionMask {
 
     /// Volume of the region in cm³.
     pub fn cm3(&self) -> f64 {
-        self.count as f64 * self.spacing[0] * self.spacing[1] * self.spacing[2] / 1000.0
+        self.count as f64 * crate::volume::voxel_cm3(self.spacing)
     }
 
     /// Is this patient-space point inside (nearest-neighbour lookup)?

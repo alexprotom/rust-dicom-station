@@ -958,6 +958,81 @@ fn raster_boolean(a: &Region, b: &Region, op: BoolOp, ss: usize) -> Region {
 // Marching-squares plumbing, shared with segmentation.rs
 // ---------------------------------------------------------------------------
 
+/// A binary slice padded by one cell on every side, ready to be traced: cell
+/// `(i, j)` of the raster is field cell `(i + 1, j + 1)`, so a run touching
+/// the border still closes. One buffer serves every slice of a stack.
+pub struct PaddedField {
+    w: usize,
+    h: usize,
+    buf: Vec<f32>,
+    any: bool,
+}
+
+impl PaddedField {
+    pub fn new(w: usize, h: usize) -> PaddedField {
+        PaddedField {
+            w,
+            h,
+            buf: vec![0.0; (w + 2) * (h + 2)],
+            any: false,
+        }
+    }
+
+    /// Empty the field for the next slice.
+    pub fn clear(&mut self) {
+        if self.any {
+            self.buf.fill(0.0);
+            self.any = false;
+        }
+    }
+
+    /// Mark raster cell `(i, j)` as filled.
+    #[inline]
+    pub fn set(&mut self, i: usize, j: usize) {
+        self.buf[(j + 1) * (self.w + 2) + i + 1] = 1.0;
+        self.any = true;
+    }
+
+    /// Was anything marked since the last [`Self::clear`]?
+    pub fn is_empty(&self) -> bool {
+        !self.any
+    }
+
+    /// The closed loops around the filled cells, as marching squares
+    /// finds them, stitched and stripped of collinear runs, in raster
+    /// coordinates (the padding already taken off). Loops of fewer than
+    /// three points are dropped.
+    pub fn trace(&self) -> Vec<Vec<[f32; 2]>> {
+        let (pw, ph) = (self.w + 2, self.h + 2);
+        stitch_loops(&render::marching_squares(&self.buf, pw, ph, 0.5))
+            .into_iter()
+            .map(drop_collinear)
+            .filter(|pts| pts.len() >= 3)
+            .map(|mut pts| {
+                for p in &mut pts {
+                    p[0] -= 1.0;
+                    p[1] -= 1.0;
+                }
+                pts
+            })
+            .collect()
+    }
+
+    /// [`Self::trace`] as a normalized [`Region`], shifted by `(x0, y0)`.
+    pub fn trace_region(&self, x0: f64, y0: f64) -> Region {
+        let mut region = Region::new();
+        for pts in self.trace() {
+            region.rings.push(Poly::new(
+                pts.iter()
+                    .map(|p| [x0 + p[0] as f64, y0 + p[1] as f64])
+                    .collect(),
+            ));
+        }
+        region.normalize();
+        region
+    }
+}
+
 /// Endpoint key for loop stitching. On a binary field every marching-squares
 /// endpoint lies exactly on a half-integer, so doubling is lossless.
 #[inline]
@@ -1299,12 +1374,10 @@ impl Stack {
         let [nx, ny, _nz] = dims;
         let [ua, va] = plane_axes(axis);
         let (nu, nv) = (dims[ua], dims[va]);
-        let (pw, ph) = (nu + 2, nv + 2);
         let mut st = Stack::empty(axis);
-        let mut field = vec![0.0f32; pw * ph];
+        let mut field = PaddedField::new(nu, nv);
         for level in 0..dims[axis] {
-            field.iter_mut().for_each(|v| *v = 0.0);
-            let mut any = false;
+            field.clear();
             for v in 0..nv {
                 for u in 0..nu {
                     let mut idx = [0usize; 3];
@@ -1312,27 +1385,14 @@ impl Stack {
                     idx[va] = v;
                     idx[axis] = level;
                     if mask[idx[2] * nx * ny + idx[1] * nx + idx[0]] != 0 {
-                        field[(v + 1) * pw + u + 1] = 1.0;
-                        any = true;
+                        field.set(u, v);
                     }
                 }
             }
-            if !any {
+            if field.is_empty() {
                 continue;
             }
-            let mut region = Region::new();
-            for pts in stitch_loops(&render::marching_squares(&field, pw, ph, 0.5)) {
-                let pts = drop_collinear(pts);
-                if pts.len() < 3 {
-                    continue;
-                }
-                region.rings.push(Poly::new(
-                    pts.iter()
-                        .map(|p| [p[0] as f64 - 1.0, p[1] as f64 - 1.0])
-                        .collect(),
-                ));
-            }
-            region.normalize();
+            let region = field.trace_region(0.0, 0.0);
             if !region.is_empty() {
                 st.slices.push(SlicePolys { level, region });
             }
@@ -1558,36 +1618,21 @@ impl Stack {
             let (w, h) = ((x1 - x0) as usize + 1, (y1 - y0) as usize + 1);
             let d0 = sdf_of(r0, x0, y0, w, h);
             let d1 = sdf_of(r1, x0, y0, w, h);
+            let mut field = PaddedField::new(w, h);
             for k in (k0 + 1)..k1 {
                 let t = (k - k0) as f32 / (k1 - k0) as f32;
-                let (pw, ph) = (w + 2, h + 2);
-                let mut field = vec![0.0f32; pw * ph];
-                let mut any = false;
+                field.clear();
                 for j in 0..h {
                     for i in 0..w {
-                        let d = (1.0 - t) * d0[j * w + i] + t * d1[j * w + i];
-                        if d <= 0.0 {
-                            field[(j + 1) * pw + i + 1] = 1.0;
-                            any = true;
+                        if (1.0 - t) * d0[j * w + i] + t * d1[j * w + i] <= 0.0 {
+                            field.set(i, j);
                         }
                     }
                 }
-                if !any {
+                if field.is_empty() {
                     continue;
                 }
-                let mut region = Region::new();
-                for pts in stitch_loops(&render::marching_squares(&field, pw, ph, 0.5)) {
-                    let pts = drop_collinear(pts);
-                    if pts.len() < 3 {
-                        continue;
-                    }
-                    region.rings.push(Poly::new(
-                        pts.iter()
-                            .map(|p| [x0 + p[0] as f64 - 1.0, y0 + p[1] as f64 - 1.0])
-                            .collect(),
-                    ));
-                }
-                region.normalize();
+                let region = field.trace_region(x0, y0);
                 if !region.is_empty() {
                     out.slices.push(SlicePolys { level: k, region });
                 }
@@ -1622,6 +1667,39 @@ fn sdf_of(region: &Region, x0: f64, y0: f64, w: usize, h: usize) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A padded field traces a filled rectangle as one ring of four
+    /// corners, shifted by the origin it is asked for, and an empty one as
+    /// nothing; clearing it makes it reusable.
+    #[test]
+    fn a_padded_field_traces_a_rectangle_and_forgets_it() {
+        let mut f = PaddedField::new(6, 5);
+        assert!(f.is_empty());
+        for j in 1..4 {
+            for i in 2..5 {
+                f.set(i, j);
+            }
+        }
+        assert!(!f.is_empty());
+        let rings = f.trace();
+        assert_eq!(rings.len(), 1);
+        // Marching squares chamfers the four corners: eight vertices, the
+        // straight runs between them collapsed.
+        assert_eq!(rings[0].len(), 8, "collinear runs are dropped");
+        let region = f.trace_region(10.0, 20.0);
+        assert!(
+            (region.area() - 8.5).abs() < 1e-6,
+            "3 x 3 cells less four corners"
+        );
+        let b = region.bbox();
+        assert!(
+            (b[0] - 11.5).abs() < 1e-6 && (b[1] - 20.5).abs() < 1e-6,
+            "{b:?}"
+        );
+        f.clear();
+        assert!(f.is_empty());
+        assert!(f.trace().is_empty());
+    }
 
     fn grid(dims: [usize; 3], spacing: [f64; 3]) -> Grid {
         Grid {

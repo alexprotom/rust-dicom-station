@@ -42,7 +42,12 @@ automatic.
 
 ## The tools
 
-The toolbar's second group takes over the left mouse button, like the brush:
+The *Draw* row of the **Structure tools** module (*Modules ▶ Structure
+tools*, right panel, F10; the toolbar's **✏** button brings it up) is one
+row of glyphs: the voxel tools first, then these, which take over the left
+mouse button like the brush. Under the row sit only the options of the tool
+in hand - the radius, the edge band, the draw mode, the structure being
+edited.
 
 * **📐 Polygon** - click by click. Right-click, double-click or `Enter`
   closes it; `Esc` throws it away.
@@ -127,17 +132,20 @@ it is the plain brush, stamp and all.
 ### Which structure is being edited
 
 One at a time, marked **✏** in the sidebar's *RT structures* list and named
-in the toolbar. Set it there, `Ctrl`-click a contour in a view, or simply
+under the *Draw* row. Set it there, `Ctrl`-click a contour in a view, or simply
 start drawing: with no structure chosen the first stroke **creates** one (and
 a structure set to hold it, if the study has none). It creates rather than
 adopting the list's first structure on purpose - a stroke must never land in
-a structure nobody pointed at. *+ ROI* in the list, and *+* in the toolbar,
-make another.
+a structure nobody pointed at. *+ ROI* in the list, and *+* next to the
+edited structure's name, make another.
 
-## The contour window
+## Editing the whole structure
 
-*Tools ▶ 📝 Contour tools* - everything that acts on the whole structure
-rather than on the stroke under the pointer. Every button is one undo step.
+The module's *Edit the structure* section (*Tools ▶ 📝 Contour tools* opens
+it) - everything that acts on the whole structure rather than on the stroke
+under the pointer. It used to be a window of its own; as a section of the
+panel it sits beside the tools and costs no screen while it is folded. Every
+button is one undo step.
 
 * **Interpolation** - contours for the slices between the drawn ones. The two
   neighbouring regions are turned into signed distance fields, blended, and
@@ -168,7 +176,8 @@ rather than on the stroke under the pointer. Every button is one undo step.
   own centroid, rotate, or put its centroid under the crosshair (*move to
   slice intersection*). In the plane it is drawn on.
 * **Type** - the RT ROI Interpreted Type (`PTV`, `ORGAN`, `EXTERNAL`, …),
-  which is what a planning system branches on.
+  which is what a planning system branches on. It is the first line of the
+  section, under the structure's name and its volume.
 * **Derived**, when the structure carries a recipe: the recipe as a line, its
   status, and Update / Edit recipe / Underive. See
   [structure-algebra.md](structure-algebra.md#derived-structures-the-recipe-stays);

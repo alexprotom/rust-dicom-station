@@ -38,8 +38,6 @@ impl ViewerApp {
         self.segvol_window(ctx);
         self.body_window(ctx);
         self.combine_window(ctx);
-        self.contour_window(ctx);
-        self.newroi_window(ctx);
         self.stats_window(ctx);
         self.dvh_window(ctx);
         self.motion_window(ctx);
@@ -79,7 +77,7 @@ impl ViewerApp {
     /// The auto-segmentation tool window: model variant, compute device and
     /// model folder, then the run - whose progress replaces the buttons.
     pub(super) fn autoseg_run_window(&mut self, ctx: &egui::Context) {
-        let has = [self.slots[0].has_volume(), self.slots[1].has_volume()];
+        let has = self.volume_slots();
         let mut switch: Option<usize> = None;
         let Some(d) = &mut self.autoseg_dialog else {
             return;
@@ -182,11 +180,12 @@ impl ViewerApp {
                         ui.horizontal(|ui| {
                             let can_run = d.variant != autoseg::Variant::HighRes15mm
                                 || d.parts.iter().any(|p| *p);
-                            if ui
-                                .add_enabled(can_run, egui::Button::new("▶ Segment"))
-                                .on_hover_text("Run the network on the whole volume")
-                                .clicked()
-                            {
+                            if enabled_tip_button(
+                                ui,
+                                can_run,
+                                "▶ Segment",
+                                "Run the network on the whole volume",
+                            ) {
                                 run = true;
                             }
                             if ui.button("Close").clicked() {
@@ -206,11 +205,7 @@ impl ViewerApp {
                 self.models_dir = dir.display().to_string();
             }
         }
-        if cancel {
-            if let Some(job) = &self.autoseg_job {
-                job.progress.cancel();
-            }
-        }
+        cancel_if(cancel, &self.autoseg_job);
         if run {
             self.start_autoseg();
         }
@@ -350,11 +345,7 @@ impl ViewerApp {
                     if ui.button("📂 Browse").clicked() {
                         browse = true;
                     }
-                    if ui
-                        .button("↺")
-                        .on_hover_text("Reset to the application folder")
-                        .clicked()
-                    {
+                    if tip_button(ui, "↺", "Reset to the application folder") {
                         reset_dir = true;
                     }
                 });
@@ -693,11 +684,12 @@ impl ViewerApp {
                         if let Some(job) = &self.anon_apply_job {
                             ui.spinner();
                             ui.label(job.progress.get());
-                        } else if ui
-                            .add_enabled(!busy, egui::Button::new("🔏 Anonymize"))
-                            .on_hover_text("Applies the checked replacements to every file")
-                            .clicked()
-                        {
+                        } else if enabled_tip_button(
+                            ui,
+                            !busy,
+                            "🔏 Anonymize",
+                            "Applies the checked replacements to every file",
+                        ) {
                             do_apply = true;
                         }
                         if let Some(msg) = &self.anon_result {

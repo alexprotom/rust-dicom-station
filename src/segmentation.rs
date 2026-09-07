@@ -12,9 +12,7 @@ use std::collections::BinaryHeap;
 use egui::Color32;
 use rayon::prelude::*;
 
-use crate::contours::{drop_collinear, stitch_loops};
 use crate::geometry::Vec3;
-use crate::render;
 use crate::rtstruct::{Contour, Roi};
 use crate::volume::{Grid, ViewPlane, Volume};
 
@@ -82,25 +80,7 @@ impl Segmentation {
     /// voxels it would refer to were never edited here.
     pub fn from_mask(name: String, color: [u8; 3], dims: [usize; 3], mask: Vec<u8>) -> Self {
         let mut seg = Segmentation::new(name, color, dims);
-        let [nx, ny, _] = dims;
-        let mut bbox: Option<([usize; 3], [usize; 3])> = None;
-        let mut count = 0usize;
-        for (row, chunk) in mask.chunks(nx.max(1)).enumerate() {
-            let (j, k) = (row % ny.max(1), row / ny.max(1));
-            for (i, v) in chunk.iter().enumerate() {
-                if *v == 0 {
-                    continue;
-                }
-                count += 1;
-                bbox = Some(match bbox {
-                    None => ([i, j, k], [i, j, k]),
-                    Some((lo, hi)) => (
-                        [lo[0].min(i), lo[1].min(j), lo[2].min(k)],
-                        [hi[0].max(i), hi[1].max(j), hi[2].max(k)],
-                    ),
-                });
-            }
-        }
+        let (bbox, count) = crate::morphology::mask_extent(&mask, dims);
         seg.mask = mask;
         seg.mask.resize(dims[0] * dims[1] * dims[2], 0);
         seg.count = count;
@@ -116,7 +96,7 @@ impl Segmentation {
 
     /// Segmented volume in cm³ for the given voxel spacing (mm).
     pub fn volume_cm3(&self, spacing: [f64; 3]) -> f64 {
-        self.count as f64 * spacing[0] * spacing[1] * spacing[2] / 1000.0
+        self.count as f64 * crate::volume::voxel_cm3(spacing)
     }
 
     /// Build a segmentation from one class of a multi-label voxel map
@@ -854,31 +834,21 @@ pub fn mask_to_roi(seg: &Segmentation, grid: &Grid, number: i32) -> Roi {
     let [nx, ny, _] = seg.dims;
     let mut contours = Vec::new();
     if let Some((lo, hi)) = seg.bbox {
-        let (pw, ph) = (nx + 2, ny + 2);
-        let mut field = vec![0.0f32; pw * ph];
+        let mut field = crate::contours::PaddedField::new(nx, ny);
         for k in lo[2]..=hi[2] {
-            field.fill(0.0);
+            field.clear();
             let base = k * nx * ny;
-            let mut any = false;
             for j in lo[1]..=hi[1] {
                 for i in lo[0]..=hi[0] {
                     if seg.mask[base + j * nx + i] != 0 {
-                        field[(j + 1) * pw + i + 1] = 1.0;
-                        any = true;
+                        field.set(i, j);
                     }
                 }
             }
-            if !any {
-                continue;
-            }
-            for pts in stitch_loops(&render::marching_squares(&field, pw, ph, 0.5)) {
-                let pts = drop_collinear(pts);
-                if pts.len() < 3 {
-                    continue;
-                }
+            for pts in field.trace() {
                 let points: Vec<Vec3> = pts
                     .iter()
-                    .map(|p| grid.voxel_to_patient(p[0] as f64 - 1.0, p[1] as f64 - 1.0, k as f64))
+                    .map(|p| grid.voxel_to_patient(p[0] as f64, p[1] as f64, k as f64))
                     .collect();
                 contours.push(Contour {
                     points,

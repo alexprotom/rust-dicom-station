@@ -231,11 +231,11 @@ impl ViewerApp {
                         });
                     ui.separator();
                     ui.horizontal(|ui| {
-                        if ui
-                            .button("💾 Export CSV")
-                            .on_hover_text("The selected run as one long-format CSV file")
-                            .clicked()
-                        {
+                        if tip_button(
+                            ui,
+                            "💾 Export CSV",
+                            "The selected run as one long-format CSV file",
+                        ) {
                             export = Some(sel);
                         }
                         if let Some(ci) = cmp {

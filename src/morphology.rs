@@ -50,6 +50,108 @@ pub fn dist2_to_foreground(mask: &[u8], dims: [usize; 3], spacing: [f64; 3]) -> 
     f
 }
 
+/// How many voxels of a mask are set.
+pub fn count_set(mask: &[u8]) -> usize {
+    mask.par_iter().filter(|&&v| v != 0).count()
+}
+
+/// An inclusive voxel bounding box: the lowest and highest `[i, j, k]`.
+pub type Bbox = ([usize; 3], [usize; 3]);
+
+/// Inclusive voxel bounding box of a mask and its set-voxel count, in one
+/// pass (one slice per thread).
+pub fn mask_extent(mask: &[u8], dims: [usize; 3]) -> (Option<Bbox>, usize) {
+    let [nx, ny, _] = dims;
+    let per_slice = (nx * ny).max(1);
+    let (boxes, count): (Vec<_>, usize) = mask
+        .par_chunks(per_slice)
+        .enumerate()
+        .map(|(k, slice)| {
+            let (mut lo, mut hi) = ([usize::MAX; 2], [0usize; 2]);
+            let mut n = 0usize;
+            for (row, chunk) in slice.chunks(nx.max(1)).enumerate() {
+                let mut first = usize::MAX;
+                let mut last = 0usize;
+                for (i, &v) in chunk.iter().enumerate() {
+                    if v != 0 {
+                        n += 1;
+                        first = first.min(i);
+                        last = i;
+                    }
+                }
+                if first != usize::MAX {
+                    lo = [lo[0].min(first), lo[1].min(row)];
+                    hi = [hi[0].max(last), hi[1].max(row)];
+                }
+            }
+            ((n > 0).then_some(([lo[0], lo[1], k], [hi[0], hi[1], k])), n)
+        })
+        .fold(
+            || (Vec::new(), 0usize),
+            |(mut v, n), (b, m)| {
+                if let Some(b) = b {
+                    v.push(b);
+                }
+                (v, n + m)
+            },
+        )
+        .reduce(
+            || (Vec::new(), 0usize),
+            |(mut a, n), (b, m)| {
+                a.extend(b);
+                (a, n + m)
+            },
+        );
+    let bbox = boxes.into_iter().reduce(|(lo, hi), (l, h)| {
+        (
+            [lo[0].min(l[0]), lo[1].min(l[1]), lo[2].min(l[2])],
+            [hi[0].max(h[0]), hi[1].max(h[1]), hi[2].max(h[2])],
+        )
+    });
+    (bbox, count)
+}
+
+/// Call `f(flat index, [i, j, k])` on every set voxel that has an unset
+/// 6-neighbour or lies on the volume's face: the surface of the mask, in
+/// index order.
+pub fn for_each_surface_voxel(mask: &[u8], dims: [usize; 3], mut f: impl FnMut(usize, [usize; 3])) {
+    let [nx, ny, nz] = dims;
+    if mask.len() != nx * ny * nz {
+        return;
+    }
+    let idx = |i: usize, j: usize, k: usize| k * nx * ny + j * nx + i;
+    for k in 0..nz {
+        for j in 0..ny {
+            for i in 0..nx {
+                let c = idx(i, j, k);
+                if mask[c] == 0 {
+                    continue;
+                }
+                let surface = i == 0
+                    || j == 0
+                    || k == 0
+                    || i == nx - 1
+                    || j == ny - 1
+                    || k == nz - 1
+                    || mask[idx(i - 1, j, k)] == 0
+                    || mask[idx(i + 1, j, k)] == 0
+                    || mask[idx(i, j - 1, k)] == 0
+                    || mask[idx(i, j + 1, k)] == 0
+                    || mask[idx(i, j, k - 1)] == 0
+                    || mask[idx(i, j, k + 1)] == 0;
+                if surface {
+                    f(c, [i, j, k]);
+                }
+            }
+        }
+    }
+}
+
+/// Inclusive voxel bounding box of a mask; `None` when nothing is set.
+pub fn mask_bbox(mask: &[u8], dims: [usize; 3]) -> Option<Bbox> {
+    mask_extent(mask, dims).0
+}
+
 /// Three separable passes of the 1-D squared-distance transform.
 fn edt_in_place(f: &mut [f32], dims: [usize; 3], spacing: [f64; 3]) {
     for (axis, step) in spacing.iter().enumerate() {
@@ -399,7 +501,7 @@ impl Component {
     }
     /// Volume in cm³ for the given voxel spacing.
     pub fn cm3(&self, spacing: [f64; 3]) -> f64 {
-        self.voxels.len() as f64 * spacing[0] * spacing[1] * spacing[2] / 1000.0
+        self.voxels.len() as f64 * crate::volume::voxel_cm3(spacing)
     }
     /// Longest side of the bounding box, in millimetres. Zero for an empty
     /// component, whose bounding box is the uninitialised one.
@@ -780,6 +882,56 @@ fn box_pass(buf: &mut [f32], dims: [usize; 3], axis: usize, w: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The one-pass extent agrees with the obvious triple loop, on a mask
+    /// with a gap in the middle so the box is not the whole volume, and
+    /// says nothing about an empty mask.
+    #[test]
+    fn mask_extent_matches_a_naive_scan() {
+        let dims = [7, 5, 4];
+        let mut mask = vec![0u8; 7 * 5 * 4];
+        let idx = |i: usize, j: usize, k: usize| k * 35 + j * 7 + i;
+        for (i, j, k) in [(1, 1, 1), (5, 3, 2), (2, 4, 1), (1, 2, 3)] {
+            mask[idx(i, j, k)] = 1;
+        }
+        let (bbox, n) = mask_extent(&mask, dims);
+        assert_eq!(n, 4);
+        assert_eq!(bbox, Some(([1, 1, 1], [5, 4, 3])));
+        assert_eq!(count_set(&mask), 4);
+        assert_eq!(mask_bbox(&mask, dims), bbox);
+        assert_eq!(mask_extent(&[0u8; 7 * 5 * 4], dims), (None, 0));
+        // Every voxel set: the box is the volume.
+        assert_eq!(
+            mask_bbox(&[1u8; 7 * 5 * 4], dims),
+            Some(([0, 0, 0], [6, 4, 3]))
+        );
+    }
+
+    /// A solid 3 x 3 x 3 cube in the middle of a 5 x 5 x 5 volume has 26
+    /// surface voxels - every one but the centre - and a cube touching the
+    /// volume's faces counts those faces as surface.
+    #[test]
+    fn surface_voxels_are_the_shell() {
+        let dims = [5, 5, 5];
+        let mut mask = vec![0u8; 125];
+        for k in 1..4 {
+            for j in 1..4 {
+                for i in 1..4 {
+                    mask[k * 25 + j * 5 + i] = 1;
+                }
+            }
+        }
+        let mut shell = Vec::new();
+        for_each_surface_voxel(&mask, dims, |c, ijk| {
+            assert_eq!(c, ijk[2] * 25 + ijk[1] * 5 + ijk[0]);
+            shell.push(ijk);
+        });
+        assert_eq!(shell.len(), 26);
+        assert!(!shell.contains(&[2, 2, 2]));
+        let mut n = 0;
+        for_each_surface_voxel(&[1u8; 125], dims, |_, _| n += 1);
+        assert_eq!(n, 125 - 27, "the inner 3 x 3 x 3 is not surface");
+    }
 
     /// Brute-force squared distance to the nearest background voxel, with
     /// the same "outside is not background" convention.

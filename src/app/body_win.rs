@@ -130,8 +130,8 @@ impl ViewerApp {
         }
         // The cm³ conversions read `self`, so they happen before the
         // dialog is borrowed mutably.
-        let removed_cm3 = self.voxels_to_cm3(slot, result.removed_voxels);
-        let recovered_cm3 = self.voxels_to_cm3(slot, result.recovered_voxels);
+        let removed_cm3 = self.slots[slot].voxels_cm3(result.removed_voxels);
+        let recovered_cm3 = self.slots[slot].voxels_cm3(result.recovered_voxels);
         // `1250 + 980 cm³`: the size of each body when there is more than one.
         let pieces = match result.pieces.len() {
             0 | 1 => String::new(),
@@ -168,15 +168,6 @@ impl ViewerApp {
         }
     }
 
-    fn voxels_to_cm3(&self, slot: usize, voxels: u64) -> f64 {
-        let sp = self.slots[slot]
-            .study
-            .as_ref()
-            .map(|s| s.volume.spacing)
-            .unwrap_or([1.0; 3]);
-        voxels as f64 * sp[0] * sp[1] * sp[2] / 1000.0
-    }
-
     /// The tool window; while a run is in flight its buttons become the
     /// progress row.
     pub(super) fn body_window(&mut self, ctx: &egui::Context) {
@@ -189,7 +180,7 @@ impl ViewerApp {
         }
         // Everything that reads the whole of `self` is settled before the
         // dialog is borrowed mutably for the frame.
-        let has = [self.slots[0].has_volume(), self.slots[1].has_volume()];
+        let has = self.volume_slots();
         let mut switch: Option<usize> = None;
         let modality = self.slot_modality(slot);
         let idle = self.body_job.is_none();
@@ -437,11 +428,11 @@ impl ViewerApp {
                     Some(job) => cancel = progress_row(ui, &job.progress),
                     None => {
                         ui.horizontal(|ui| {
-                            if ui
-                                .button("▶ Contour")
-                                .on_hover_text("Find the patient surface in the displayed series")
-                                .clicked()
-                            {
+                            if tip_button(
+                                ui,
+                                "▶ Contour",
+                                "Find the patient surface in the displayed series",
+                            ) {
                                 run = true;
                             }
                             if ui.button("Close").clicked() {
@@ -465,11 +456,7 @@ impl ViewerApp {
             self.open_body_dialog(s);
             return;
         }
-        if cancel {
-            if let Some(job) = &self.body_job {
-                job.progress.cancel();
-            }
-        }
+        cancel_if(cancel, &self.body_job);
         if run {
             self.start_body();
         }
@@ -566,7 +553,6 @@ mod tests {
     fn the_tool_names_itself_like_the_others() {
         assert_eq!(BODY_CONTOUR.title(0), "👤 Body contour - dataset A");
         assert_eq!(BODY_CONTOUR.menu_entry(), "👤 Body contour");
-        assert_eq!(BODY_CONTOUR.short_button(), "👤 Body");
     }
 
     #[test]

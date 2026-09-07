@@ -202,7 +202,7 @@ pub fn compute(
     if mask.len() != nx * ny * nz {
         bail!("the mask does not match its lattice");
     }
-    let voxel_cm3 = grid.spacing[0] * grid.spacing[1] * grid.spacing[2] / 1000.0;
+    let voxel_cm3 = grid.voxel_cm3();
     let top = (dose.max_dose as f64).max(1e-6);
     let bin_width = params.bin_width.unwrap_or(top / DEFAULT_BINS as f64);
     if !bin_width.is_finite() || bin_width <= 0.0 {

@@ -198,27 +198,6 @@ fn sample_mask(mask: &[u8], dims: [usize; 3], v: [f64; 3]) -> f32 {
     c0 + (c1 - c0) * fw
 }
 
-/// Inclusive voxel bounding box of a mask.
-fn mask_bbox(mask: &[u8], dims: [usize; 3]) -> Option<([usize; 3], [usize; 3])> {
-    let [nx, ny, _] = dims;
-    let mut lo = [usize::MAX; 3];
-    let mut hi = [0usize; 3];
-    let mut any = false;
-    for (o, &v) in mask.iter().enumerate() {
-        if v == 0 {
-            continue;
-        }
-        any = true;
-        let k = o / (nx * ny);
-        let rem = o - k * nx * ny;
-        for (a, c) in [rem % nx, rem / nx, k].into_iter().enumerate() {
-            lo[a] = lo[a].min(c);
-            hi[a] = hi[a].max(c);
-        }
-    }
-    any.then_some((lo, hi))
-}
-
 /// Carry `subjects` from `src` onto `dst` through `t`.
 ///
 /// `use_inverse` says which way the transform runs relative to the two
@@ -236,8 +215,8 @@ pub fn propagate(
     if subjects.is_empty() {
         bail!("nothing selected to propagate");
     }
-    let src_vox_cm3 = src.spacing[0] * src.spacing[1] * src.spacing[2] / 1000.0;
-    let dst_vox_cm3 = dst.spacing[0] * dst.spacing[1] * dst.spacing[2] / 1000.0;
+    let src_vox_cm3 = src.voxel_cm3();
+    let dst_vox_cm3 = dst.voxel_cm3();
     // Destination → source, and its opposite (used only to find the box).
     let to_src = |p: Vec3| if use_inverse { t.unmap(p) } else { t.map(p) };
     let to_dst = |p: Vec3| if use_inverse { t.map(p) } else { t.unmap(p) };
@@ -255,10 +234,10 @@ pub fn propagate(
         if s.mask.len() != src.dims[0] * src.dims[1] * src.dims[2] {
             continue;
         }
-        let Some((slo, shi)) = mask_bbox(&s.mask, src.dims) else {
+        let Some((slo, shi)) = crate::morphology::mask_bbox(&s.mask, src.dims) else {
             continue;
         };
-        let source_voxels = s.mask.iter().filter(|v| **v != 0).count();
+        let source_voxels = crate::morphology::count_set(&s.mask);
 
         // Where does this structure land in the destination? Map the eight
         // corners of its box across, then keep a generous margin: for a
@@ -431,9 +410,8 @@ impl Finish {
             sink.report(0.0, "Filling");
             morph::fill_holes_2d(&mut item.mask, dims, axis);
         }
-        item.voxels = item.mask.iter().filter(|v| **v != 0).count();
-        item.result_cm3 =
-            item.voxels as f64 * grid.spacing[0] * grid.spacing[1] * grid.spacing[2] / 1000.0;
+        item.voxels = crate::morphology::count_set(&item.mask);
+        item.result_cm3 = item.voxels as f64 * grid.voxel_cm3();
     }
 
     /// Apply to every landed structure.

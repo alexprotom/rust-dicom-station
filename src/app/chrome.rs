@@ -23,25 +23,21 @@ impl ViewerApp {
         egui::Panel::top(egui::Id::new("menu_bar")).show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
-                    if ui
-                        .button("📂 Add DICOM folder to A")
-                        .on_hover_text(
-                            "Scan a folder and add its patients / studies / series to \
-                             dataset A (existing content stays loaded)",
-                        )
-                        .clicked()
-                    {
+                    if tip_button(
+                        ui,
+                        "📂 Add DICOM folder to A",
+                        "Scan a folder and add its patients / studies / series to \
+                         dataset A (existing content stays loaded)",
+                    ) {
                         open_a = true;
                         ui.close();
                     }
-                    if ui
-                        .button("📂 Add DICOM folder to B")
-                        .on_hover_text(
-                            "Scan a folder and add its patients / studies / series to \
-                             dataset B (existing content stays loaded)",
-                        )
-                        .clicked()
-                    {
+                    if tip_button(
+                        ui,
+                        "📂 Add DICOM folder to B",
+                        "Scan a folder and add its patients / studies / series to \
+                         dataset B (existing content stays loaded)",
+                    ) {
                         open_b = true;
                         ui.close();
                     }
@@ -49,27 +45,23 @@ impl ViewerApp {
                     // Individual files, for the objects that do not come as a
                     // folder of slices: an RT image, a structure set, a plan,
                     // a single slice. They merge exactly as a folder does.
-                    if ui
-                        .button("📄 Add DICOM file(s) to A")
-                        .on_hover_text(
-                            "Open one or more DICOM files directly - RT images, a \
-                             structure set, a plan, single slices. They do not have to \
-                             form an image volume",
-                        )
-                        .clicked()
-                    {
+                    if tip_button(
+                        ui,
+                        "📄 Add DICOM file(s) to A",
+                        "Open one or more DICOM files directly - RT images, a \
+                         structure set, a plan, single slices. They do not have to \
+                         form an image volume",
+                    ) {
                         files_a = true;
                         ui.close();
                     }
-                    if ui
-                        .button("📄 Add DICOM file(s) to B")
-                        .on_hover_text(
-                            "Open one or more DICOM files directly - RT images, a \
-                             structure set, a plan, single slices. They do not have to \
-                             form an image volume",
-                        )
-                        .clicked()
-                    {
+                    if tip_button(
+                        ui,
+                        "📄 Add DICOM file(s) to B",
+                        "Open one or more DICOM files directly - RT images, a \
+                         structure set, a plan, single slices. They do not have to \
+                         form an image volume",
+                    ) {
                         files_b = true;
                         ui.close();
                     }
@@ -95,28 +87,25 @@ impl ViewerApp {
                     // patients, studies and series go out is chosen in the
                     // window, not by which menu entry was clicked.
                     let anything = self.slots[0].study.is_some() || self.slots[1].study.is_some();
-                    if ui
-                        .add_enabled(anything, egui::Button::new("💾 Export DICOM"))
-                        .on_hover_text(
-                            "Write any patients, studies, series and RT objects of either \
-                             dataset as DICOM - with every name and UID shown and editable, \
-                             structures as RTSTRUCT or SEG, and the references between the \
-                             objects kept intact",
-                        )
-                        .clicked()
-                    {
+                    if enabled_tip_button(
+                        ui,
+                        anything,
+                        "💾 Export DICOM",
+                        "Write any patients, studies, series and RT objects of either \
+                         dataset as DICOM - with every name and UID shown and editable, \
+                         structures as RTSTRUCT or SEG, and the references between the \
+                         objects kept intact",
+                    ) {
                         open_export = true;
                         ui.close();
                     }
                     ui.separator();
-                    if ui
-                        .button("📐 Generate test data")
-                        .on_hover_text(
-                            "Write a complete synthetic RT study (CT, RTSTRUCT, RTPLAN, \
-                             RTDOSE, DX, RTIMAGE, REG, RTRECORD) into the application folder",
-                        )
-                        .clicked()
-                    {
+                    if tip_button(
+                        ui,
+                        "📐 Generate test data",
+                        "Write a complete synthetic RT study (CT, RTSTRUCT, RTPLAN, \
+                         RTDOSE, DX, RTIMAGE, REG, RTRECORD) into the application folder",
+                    ) {
                         open_gen = true;
                         ui.close();
                     }
@@ -137,7 +126,7 @@ impl ViewerApp {
                     ui.checkbox(&mut self.show_crosshair, "Crosshair");
                     // Syncing is a property of the crosshair and of having a
                     // second dataset, so it goes away with either.
-                    let both = self.slots[0].has_volume() && self.slots[1].has_volume();
+                    let both = self.both_volumes();
                     if self.show_crosshair && both {
                         ui.checkbox(&mut self.link_studies, "Sync crosshairs between datasets")
                             .on_hover_text(
@@ -154,9 +143,7 @@ impl ViewerApp {
                             "The left panel. Hidden, its arrow stays on the window's left \
                              edge to bring it back, and so does F9.",
                         );
-                    let any_module = self.module_registration
-                        || self.module_simulation
-                        || self.module_propagation;
+                    let any_module = self.any_module();
                     ui.add_enabled_ui(any_module, |ui| {
                         ui.checkbox(&mut self.right_open, "Modules (F10)")
                             .on_hover_text(if any_module {
@@ -193,6 +180,15 @@ impl ViewerApp {
                         // there.
                         ui.weak("Sections of the right panel (F10):");
                         modules_changed |= ui
+                            .checkbox(&mut self.module_structures, "Structure tools")
+                            .on_hover_text(
+                                "Draw, edit and generate structures: the nine drawing \
+                                 tools with their options, everything that acts on a whole \
+                             structure (interpolation, tidying, moving, the type, the \
+                             derived recipe), and the generators.",
+                            )
+                            .changed();
+                        modules_changed |= ui
                             .checkbox(&mut self.module_registration, "Image registration")
                             .on_hover_text(
                                 "Align two datasets: direction, method, region, parameters, \
@@ -217,161 +213,76 @@ impl ViewerApp {
                              registration that drives it.",
                             )
                             .changed();
-                        if self.module_registration
-                            || self.module_simulation
-                            || self.module_propagation
-                        {
+                        if self.any_module() {
                             self.right_open = true;
                         }
                     });
                 ui.menu_button("Tools", |ui| {
-                    // One block per dataset: the same six tools, in the same
-                    // order, for A and B.
-                    let tools: [(&ToolInfo, &str); 8] = [
-                        (
-                            &super::newroi_win::NEW_ROI,
-                            "A structure out of the image, a shape or the dose: a \
-                             grey-level window with an optional limiting structure, a \
-                             box / cylinder / sphere / ellipsoid, or an isodose level. \
-                             It lands as an ordinary editable structure.",
-                        ),
-                        (
-                            &super::contour_win::CONTOURS,
-                            "Interpolate the slices you skipped, tidy what a rushed hand \
-                             left behind, move a structure that is right in shape and \
-                             wrong in place - on the structure the contour tools edit.",
-                        ),
-                        (
-                            &COMBINE,
-                            "Build one structure out of others: union, intersection, \
-                             subtraction or symmetric difference, with a margin on any of \
-                             them. Contours and segmentations mix freely.",
-                        ),
-                        (
-                            &BODY_CONTOUR,
-                            "Outline the patient and leave the couch, the chair and the \
-                             immobilisation outside - the EXTERNAL structure. Works on CT \
-                             and MR, with or without a network.",
-                        ),
-                        (
-                            &AUTOSEG,
-                            "Automatic multi-organ segmentation of the displayed CT \
-                             (TotalSegmentator's nnU-Net models, re-implemented natively \
-                             in Rust; runs locally on CPU or GPU)",
-                        ),
-                        (
-                            &PROMPT_SEG,
-                            "Segment whatever you point at - a box, a click or a \
-                             structure name (SegVol, re-implemented natively in Rust). \
-                             Covers the lesions and targets a fixed-class model cannot.",
-                        ),
-                        (
-                            &SLICE_PROP,
-                            "Box a structure on one slice and follow it through the \
-                             stack at full in-plane resolution (MedSAM2, re-implemented \
-                             natively in Rust).",
-                        ),
-                        (
-                            &MOTION,
-                            "Register the reference phase of a 4D group to every other \
-                             phase, carry the targets across, and measure their motion - \
-                             trajectories, drift, correlations and the ITV.",
-                        ),
-                    ];
+                    // One entry per tool, in the same order as the sidebar, then
+                    // the 4D motion tool, which works on a group rather than
+                    // on a structure.
+                    let tools = TOOL_HINTS.iter().copied().chain([(
+                        &MOTION,
+                        "Register the reference phase of a 4D group to every other phase, \
+                         carry the targets across, and measure their motion - trajectories, \
+                         drift, correlations and the ITV.",
+                    )]);
                     // One entry per tool, not one per tool per dataset:
                     // which dataset it works on is a setting of the tool,
                     // shown as a row at the top of its window, and it opens
                     // on whichever dataset can actually feed it.
-                    let mut open_tool: Option<&ToolInfo> = None;
+                    let mut open_tool: Option<ToolId> = None;
                     // Every engine reads voxels: a dataset that holds only RT
                     // images or RT objects has nothing to give them.
-                    let loaded = self.slots[0].has_volume() || self.slots[1].has_volume();
-                    let slot = usize::from(!self.slots[0].has_volume());
+                    let loaded = self.any_volume();
+                    let slot = self.first_volume_slot();
                     for (tool, hint) in tools {
-                        if ui
-                            .add_enabled(loaded, egui::Button::new(tool.menu_entry()))
-                            .on_hover_text(hint)
-                            .clicked()
-                        {
-                            open_tool = Some(tool);
+                        if enabled_tip_button(ui, loaded, tool.menu_entry(), hint) {
+                            open_tool = Some(tool.id);
                             ui.close();
                         }
                     }
-                    match open_tool {
-                        Some(t) if t.glyph == super::newroi_win::NEW_ROI.glyph => {
-                            self.open_newroi_dialog(slot)
-                        }
-                        Some(t) if t.glyph == super::contour_win::CONTOURS.glyph => {
-                            self.open_contour_dialog(slot)
-                        }
-                        Some(t) if t.glyph == COMBINE.glyph => {
-                            self.open_combine_dialog(slot, Vec::new())
-                        }
-                        Some(t) if t.glyph == MOTION.glyph => self.open_motion_dialog(slot, None),
-                        Some(t) if t.glyph == BODY_CONTOUR.glyph => self.open_body_dialog(slot),
-                        Some(t) if t.glyph == AUTOSEG.glyph => self.open_autoseg_dialog(slot),
-                        Some(t) if t.glyph == PROMPT_SEG.glyph => self.open_segvol_dialog(slot),
-                        Some(_) => self.open_medsam2_panel(slot),
-                        None => {}
+                    if let Some(id) = open_tool {
+                        self.open_tool(id, slot);
                     }
                     ui.separator();
-                    let both = self.slots[0].has_volume() && self.slots[1].has_volume();
-                    if ui
-                        .add_enabled(both, egui::Button::new("◎ Transfer by relationship"))
-                        .on_hover_text(
-                            "Place a structure into the other dataset at the same offset \
-                             from a reference structure (e.g. the heart) - the \
-                             target-reference relationship travels, not a registration",
-                        )
-                        .clicked()
-                    {
+                    let both = self.both_volumes();
+                    if enabled_tip_button(
+                        ui,
+                        both,
+                        "◎ Transfer by relationship",
+                        "Place a structure into the other dataset at the same offset \
+                         from a reference structure (e.g. the heart) - the \
+                         target-reference relationship travels, not a registration",
+                    ) {
                         self.open_transfer_dialog(0);
                         ui.close();
                     }
-                    let any = self.slots[0].has_volume() || self.slots[1].has_volume();
-                    if ui
-                        .add_enabled(any, egui::Button::new("◑ Compare structures"))
-                        .on_hover_text(
-                            "Volumes, centroid offset, Dice, HD95, surface distances and \
-                             the least-squares rigid offset of any two structures - \
-                             within a dataset or across the two",
-                        )
-                        .clicked()
-                    {
+                    let any = self.any_volume();
+                    if enabled_tip_button(
+                        ui,
+                        any,
+                        "◑ Compare structures",
+                        "Volumes, centroid offset, Dice, HD95, surface distances and \
+                         the least-squares rigid offset of any two structures - \
+                         within a dataset or across the two",
+                    ) {
                         self.open_compare_dialog(0);
-                        ui.close();
-                    }
-                    if ui
-                        .add_enabled(
-                            any,
-                            egui::Button::new(super::stats_win::DETAILS.menu_entry()),
-                        )
-                        .on_hover_text(
-                            "One row per structure: volume by planimetry and by voxel \
-                             count, the grey levels inside it, what the geometry costs \
-                             in slices and points, and whether a derived structure still \
-                             matches its recipe. With CSV export.",
-                        )
-                        .clicked()
-                    {
-                        let slot = usize::from(!self.slots[0].has_volume());
-                        self.open_stats_dialog(slot);
                         ui.close();
                     }
                     let has_dose = self
                         .slots
                         .iter()
                         .any(|s| s.study.as_ref().is_some_and(|st| !st.doses.is_empty()));
-                    if ui
-                        .add_enabled(has_dose, egui::Button::new("📊 Dose-volume histograms"))
-                        .on_hover_text(
-                            "Cumulative and differential DVHs of any structures against \
-                             any loaded dose objects, with the metrics table, protocol \
-                             constraint checking and CSV export - in a window that can \
-                             go on its own monitor",
-                        )
-                        .clicked()
-                    {
+                    if enabled_tip_button(
+                        ui,
+                        has_dose,
+                        "📊 Dose-volume histograms",
+                        "Cumulative and differential DVHs of any structures against \
+                         any loaded dose objects, with the metrics table, protocol \
+                         constraint checking and CSV export - in a window that can \
+                         go on its own monitor",
+                    ) {
                         let slot = usize::from(
                             self.slots[0].study.is_none()
                                 || self.slots[0]
@@ -395,7 +306,7 @@ impl ViewerApp {
                     }
                     if ui
                         .add_enabled(
-                            self.slots[0].has_volume() || self.slots[1].has_volume(),
+                            self.any_volume(),
                             egui::Button::new("☢ Digitally reconstructed radiograph"),
                         )
                         .on_hover_text(
@@ -408,39 +319,33 @@ impl ViewerApp {
                         open_drr = true;
                         ui.close();
                     }
-                    if ui
-                        .button("🏥 PACS - patient archive")
-                        .on_hover_text(
-                            "The local archive: every study filed here, ready to be taken \
-                             into a dataset and given back the structures and \
-                             segmentations drawn on it",
-                        )
-                        .clicked()
-                    {
+                    if tip_button(
+                        ui,
+                        "🏥 PACS - patient archive",
+                        "The local archive: every study filed here, ready to be taken \
+                         into a dataset and given back the structures and \
+                         segmentations drawn on it",
+                    ) {
                         open_pacs = true;
                         ui.close();
                     }
-                    if ui
-                        .button("📦 Downloaded models")
-                        .on_hover_text(
-                            "What every segmentation engine has downloaded, how much disk \
-                             it costs, and the buttons to download, update or remove it - \
-                             one model at a time or all of them",
-                        )
-                        .clicked()
-                    {
+                    if tip_button(
+                        ui,
+                        "📦 Downloaded models",
+                        "What every segmentation engine has downloaded, how much disk \
+                         it costs, and the buttons to download, update or remove it - \
+                         one model at a time or all of them",
+                    ) {
                         open_models = true;
                         ui.close();
                     }
-                    if ui
-                        .button("🔏 Anonymize DICOM folder")
-                        .on_hover_text(
-                            "Scan a folder, review every identifying tag with its current \
-                             and proposed values, then rewrite the files (in place or into \
-                             a new folder) with consistently regenerated UIDs",
-                        )
-                        .clicked()
-                    {
+                    if tip_button(
+                        ui,
+                        "🔏 Anonymize DICOM folder",
+                        "Scan a folder, review every identifying tag with its current \
+                         and proposed values, then rewrite the files (in place or into \
+                         a new folder) with consistently regenerated UIDs",
+                    ) {
                         self.anon_open = true;
                         ui.close();
                     }
@@ -491,14 +396,12 @@ impl ViewerApp {
                             crate::settings::mcp_config_path().display()
                         ));
                         ui.add_space(4.0);
-                        if ui
-                            .button("Copy client configuration")
-                            .on_hover_text(
-                                "Copies the JSON entry for claude_desktop_config.json (or an \
-                                 equivalent MCP client) to the clipboard.",
-                            )
-                            .clicked()
-                        {
+                        if tip_button(
+                            ui,
+                            "Copy client configuration",
+                            "Copies the JSON entry for claude_desktop_config.json (or an \
+                             equivalent MCP client) to the clipboard.",
+                        ) {
                             ui.ctx().copy_text(crate::settings::mcp_client_snippet());
                             ui.close();
                         }
@@ -516,7 +419,10 @@ impl ViewerApp {
                     ui.weak("Middle drag - pan");
                     ui.weak("Right drag - window / level (x = width, y = center)");
                     ui.separator();
-                    ui.label("Segmentation (🎨 ⊖ ✨ take over the left button):");
+                    ui.label(
+                        "Drawing tools (Modules > Structure tools; they take over the left \
+                         button):",
+                    );
                     ui.weak("Left drag - paint / erase");
                     ui.weak("Left press + drag ↑↓ - grow / shrink the region (✨)");
                     ui.weak("Alt - erase while painting");
@@ -537,6 +443,7 @@ impl ViewerApp {
                     ui.weak("⟲ (view corner) - reset that view's zoom, pan and slice");
                     ui.weak("⛶ / ⊞ - maximize that view / restore the layout");
                     ui.weak("⟲ (toolbar) - reset every view of both datasets");
+                    ui.weak("✏ (toolbar) - the tool in hand; opens the Structure tools module");
                     ui.weak(
                         "⌖ - show / hide the crosshair; hidden, left click no \
                          longer navigates",
@@ -586,7 +493,7 @@ impl ViewerApp {
             self.open_models_window();
         }
         if open_drr {
-            let slot = usize::from(!self.slots[0].has_volume());
+            let slot = self.first_volume_slot();
             self.open_drr_window(slot);
         }
         if open_export {
@@ -697,14 +604,15 @@ impl ViewerApp {
                         if slot == 1 && self.slots[1].study.is_none() {
                             continue;
                         }
-                        if ui
-                            .add_enabled(has_3d, egui::Button::new(format!("3D {slot_name}")))
-                            .on_hover_text(format!(
+                        if enabled_tip_button(
+                            ui,
+                            has_3d,
+                            format!("3D {slot_name}"),
+                            format!(
                                 "Open a 3D surface rendering of dataset {slot_name}'s structures \
                                  and segmentations"
-                            ))
-                            .clicked()
-                        {
+                            ),
+                        ) {
                             self.open_d3_window(slot);
                         }
                     }
@@ -726,7 +634,7 @@ impl ViewerApp {
                     // Crosshair syncing: only meaningful while there is a
                     // crosshair to sync and a second dataset to sync it with,
                     // so it appears and disappears with them.
-                    let both = self.slots[0].has_volume() && self.slots[1].has_volume();
+                    let both = self.both_volumes();
                     if self.show_crosshair
                         && both
                         && ui
@@ -743,289 +651,41 @@ impl ViewerApp {
                     }
 
                     // Reset every view of both datasets.
-                    if ui
-                        .button("⟲")
-                        .on_hover_text(
-                            "Reset every view of both datasets: fit zoom, clear pan \
-                             and put the crosshairs back at the volume centers",
-                        )
-                        .clicked()
-                    {
+                    if tip_button(
+                        ui,
+                        "⟲",
+                        "Reset every view of both datasets: fit zoom, clear pan \
+                         and put the crosshairs back at the volume centers",
+                    ) {
                         self.reset_all_views();
                     }
 
-                    // Segmentation tools. Selecting a tool takes over the
-                    // left mouse button in the MPR views.
+                    // The drawing tools live in the Structure tools module;
+                    // the toolbar keeps one button that shows the tool in
+                    // hand and brings the module up.
                     ui.separator();
-                    // Nothing to paint on in a dataset with no image volume.
-                    let paintable = self.slots.iter().any(|s| s.has_volume());
+                    let paintable = self.any_volume();
                     if !paintable {
                         self.seg_tool = SegTool::None;
                     }
-                    let mut pick = |ui: &mut egui::Ui, tool: SegTool, label: &str, tip: &str| {
-                        if ui
-                            .add_enabled(
-                                paintable,
-                                egui::Button::selectable(self.seg_tool == tool, label),
-                            )
-                            .on_hover_text(tip)
-                            .clicked()
-                        {
-                            self.seg_tool = if self.seg_tool == tool {
-                                SegTool::None
-                            } else {
-                                tool
-                            };
-                            if self.seg_tool != SegTool::Grow {
-                                self.cancel_grow();
-                            }
-                            if !self.seg_tool.draws_contours() {
-                                self.draw = None;
-                            }
-                        }
-                    };
-                    pick(
-                        ui,
-                        SegTool::Brush,
-                        "🎨 Paint",
-                        "Paint the active segmentation (LMB drag).\n\
-                         Hold Alt to erase · Shift+wheel or [ ] resize the brush · Ctrl+Z undo",
-                    );
-                    pick(
-                        ui,
-                        SegTool::Erase,
-                        "⊖ Erase",
-                        "Erase from the active segmentation (LMB drag)",
-                    );
-                    pick(
-                        ui,
-                        SegTool::Grow,
-                        "✨ Grow",
-                        "Interactive organ segmentation (geodesic fast marching): press \
-                         to place a seed, drag up/down to grow/shrink the region with a \
-                         live preview. Intensity changes and edges act as barriers, so \
-                         the organ under the seed is suggested before anything leaks. \
-                         Release commits (enclosed holes are filled), Esc cancels",
-                    );
-                    ui.separator();
-                    pick(
-                        ui,
-                        SegTool::Polygon,
-                        "📐 Polygon",
-                        "Draw a contour into the active RT structure, click by click \n\
-                         (right-click, double-click or Enter closes it, Esc cancels).\n\
-                         Ctrl-click picks the structure under the pointer · Ctrl+Z undo",
-                    );
-                    pick(
-                        ui,
-                        SegTool::Spline,
-                        "✒ Spline",
-                        "The same, but the clicked points are joined by a closed \
-                         spline - four clicks for a smooth organ outline",
-                    );
-                    pick(
-                        ui,
-                        SegTool::Freehand,
-                        "✏ Free",
-                        "Draw a contour freehand: press, drag round the structure, \
-                         release. The stroke is closed and thinned on release",
-                    );
-                    pick(
-                        ui,
-                        SegTool::LiveWire,
-                        "🔗 Live wire",
-                        "Draw along the edge under the pointer: click once on the \
-                         boundary, move along it, and the curve between the two follows \
-                         the image gradient instead of the straight line. Click to \
-                         anchor what is on screen; right-click, double-click or Enter \
-                         closes, Esc cancels",
-                    );
-                    pick(
-                        ui,
-                        SegTool::ContourBrush,
-                        "🖊 Brush",
-                        "Paint into the active RT structure: a round brush on the \
-                         patient that pushes the contour lines (LMB drag).\n\
-                         Hold Alt to erase · Shift+wheel or [ ] resize · Ctrl+Z undo",
-                    );
-                    pick(
-                        ui,
-                        SegTool::Nudge,
-                        "⌖ Nudge",
-                        "Push the outline of the edited structure around: vertices \
-                         within the tool radius follow the drag, with a smooth \
-                         falloff. Shift+wheel or [ ] set the radius",
-                    );
-                    if self.seg_tool == SegTool::Grow {
-                        // The limiting structure: where the front may not
-                        // go, whatever the picture says. Any structure will
-                        // do, including a box made with ✚ New structure,
-                        // which is the "limiting box" by another name.
-                        let hovered = self.hovered_slot.min(1);
-                        let slot = if self.slots[hovered].has_volume() {
-                            hovered
-                        } else {
-                            usize::from(!self.slots[0].has_volume())
-                        };
-                        let cands = self.combine_candidates(slot);
-                        let current = self
-                            .grow_limit
-                            .and_then(|it| {
-                                cands.iter().find(|(c, _)| *c == it).map(|(_, l)| l.clone())
-                            })
-                            .unwrap_or_else(|| "no limit".to_string());
-                        ui.label("inside:");
-                        egui::ComboBox::from_id_salt("grow_limit")
-                            .width(180.0)
-                            .selected_text(current)
-                            .show_ui(ui, |ui| {
-                                if ui
-                                    .selectable_label(self.grow_limit.is_none(), "no limit")
-                                    .clicked()
-                                {
-                                    self.grow_limit = None;
-                                }
-                                for (it, label) in &cands {
-                                    if ui
-                                        .selectable_label(self.grow_limit == Some(*it), label)
-                                        .clicked()
-                                    {
-                                        self.grow_limit = Some(*it);
-                                    }
-                                }
-                            })
-                            .response
-                            .on_hover_text(
-                                "Keep the region inside this structure, whatever the \
-                                 grey levels do. A box drawn with ✚ New structure is \
-                                 the limiting box.",
-                            );
-                    }
-                    if self.seg_tool == SegTool::ContourBrush {
-                        // The smart brush: which tissue the stamp is allowed
-                        // to cover, and how far past that threshold it may
-                        // still reach.
-                        ui.label("edge:");
-                        for b in super::contour_edit::EdgeBand::ALL {
-                            if ui
-                                .add(egui::Button::selectable(self.brush_band == b, b.label()))
-                                .on_hover_text(b.hint())
-                                .clicked()
-                            {
-                                self.brush_band = b;
-                            }
-                        }
-                        if self.brush_band != super::contour_edit::EdgeBand::None {
-                            ui.add(
-                                egui::Slider::new(&mut self.brush_sensitivity, 0.0..=1.0)
-                                    .text("reach")
-                                    .fixed_decimals(2),
-                            )
-                            .on_hover_text(
-                                "How far past the threshold the brush may still paint, \
-                                 as a fraction of the display window. Turn it up when \
-                                 the brush stops short of the boundary.",
-                            );
-                        }
-                    }
-                    if self.seg_tool == SegTool::LiveWire {
-                        // Training: the tool learns what the accepted edges
-                        // look like, so it prefers that kind of edge over an
-                        // equally strong one beside it.
-                        let mut on = self.wire.as_ref().is_none_or(|w| w.training);
-                        if ui
-                            .checkbox(&mut on, "learn")
-                            .on_hover_text(
-                                "Learn from every accepted segment: an edge that looks \
-                                 like the ones already taken becomes cheaper than an \
-                                 equally strong edge that does not",
-                            )
-                            .changed()
-                        {
-                            if let Some(w) = &mut self.wire {
-                                w.training = on;
-                            }
-                        }
-                        if self.livewire_trained()
-                            && ui
-                                .small_button("forget")
-                                .on_hover_text(
-                                    "Start again from the plain gradient cost - what to \
-                                     press when moving from one organ to a different one",
-                                )
-                                .clicked()
-                        {
-                            self.livewire_untrain();
-                        }
-                    }
-                    if self.seg_tool.draws_contours() {
-                        // Which structure the strokes land in, and what they do
-                        // to what is already there.
-                        let hovered = self.hovered_slot.min(1);
-                        let slot = if self.slots[hovered].has_volume() {
-                            hovered
-                        } else {
-                            usize::from(!self.slots[0].has_volume())
-                        };
-                        match self.edit_roi_name(slot) {
-                            Some((name, c)) => {
-                                let name = name.to_string();
-                                ui.label(
-                                    egui::RichText::new(format!("▸ {name}"))
-                                        .color(egui::Color32::from_rgb(c[0], c[1], c[2])),
-                                )
-                                .on_hover_text(
-                                    "The structure the contour tools edit. Change it in the \
-                                     RT structures list (the ✏ button), or Ctrl-click a \
-                                     contour in a view",
-                                );
-                            }
-                            None => {
-                                ui.label(egui::RichText::new("▸ new structure").weak())
-                                    .on_hover_text(
-                                        "There is no structure to edit yet - the first \
-                                         stroke creates one",
-                                    );
-                            }
-                        }
-                        if ui
-                            .button("+")
-                            .on_hover_text("New RT structure, and edit it")
-                            .clicked()
-                        {
-                            self.new_roi(slot, None, "ORGAN");
-                        }
-                        for m in DrawMode::ALL {
-                            if ui
-                                .add(egui::Button::selectable(self.draw_mode == m, m.label()))
-                                .on_hover_text(m.hint())
-                                .clicked()
-                            {
-                                self.draw_mode = m;
-                            }
-                        }
-                    }
-                    if matches!(
-                        self.seg_tool,
-                        SegTool::Brush | SegTool::Erase | SegTool::Nudge | SegTool::ContourBrush
-                    ) {
-                        ui.add(
-                            egui::DragValue::new(&mut self.brush_radius_mm)
-                                .speed(0.5)
-                                .range(0.5..=80.0)
-                                .suffix(" mm"),
+                    let shown = self.module_structures && self.right_open;
+                    let label = super::struct_tools::tool_label(self.seg_tool)
+                        .unwrap_or_else(|| "✏ Structure tools".to_string());
+                    if ui
+                        .add_enabled(paintable, egui::Button::selectable(shown, label))
+                        .on_hover_text(
+                            "The drawing tools, the contour tools and the generators, in \
+                             the modules panel (F10). Shows the tool in hand; click to \
+                             bring the panel up or put it away",
                         )
-                        .on_hover_text("Brush radius");
-                        if matches!(self.seg_tool, SegTool::Brush | SegTool::Erase)
-                            && ui
-                                .selectable_label(self.brush_3d, "3D")
-                                .on_hover_text(
-                                    "Spherical 3D brush: paints through neighboring slices.\n\
-                                     Off: flat 2D circle on the displayed slice only",
-                                )
-                                .clicked()
-                        {
-                            self.brush_3d = !self.brush_3d;
+                        .clicked()
+                    {
+                        if shown {
+                            self.right_open = false;
+                        } else {
+                            self.module_structures = true;
+                            self.right_open = true;
+                            self.persist_settings();
                         }
                     }
                 }
@@ -1097,16 +757,14 @@ impl ViewerApp {
                         c[1].round() as i64,
                         c[2].round() as i64
                     ));
-                    if let Some(hu) =
-                        v.get(c[0].round() as i64, c[1].round() as i64, c[2].round() as i64)
-                    {
+                    if let Some(hu) = v.get(
+                        c[0].round() as i64,
+                        c[1].round() as i64,
+                        c[2].round() as i64,
+                    ) {
                         ui.monospace(format!("{hu:5} HU"));
                     }
-                    if let Some(d) = study
-                        .doses
-                        .get(s.active_dose)
-                        .and_then(|d| d.sample(p))
-                    {
+                    if let Some(d) = study.doses.get(s.active_dose).and_then(|d| d.sample(p)) {
                         ui.monospace(format!(
                             "{:.2} Gy ({:.0}%)",
                             d,
@@ -1121,35 +779,7 @@ impl ViewerApp {
                     // The readouts are what the bar is for, so the mouse
                     // bindings fold into a single "?" that the pointer opens -
                     // always the bindings of the tool in force.
-                    let hint = match self.seg_tool {
-                        SegTool::None => {
-                            "LMB crosshair · RMB W/L · MMB pan · wheel slice · Ctrl+wheel zoom"
-                        }
-                        SegTool::Brush => {
-                            "LMB paint · Alt erase · Shift+wheel / [ ] brush size · Ctrl+Z undo · wheel slice"
-                        }
-                        SegTool::Erase => {
-                            "LMB erase · Shift+wheel / [ ] brush size · Ctrl+Z undo · wheel slice"
-                        }
-                        SegTool::Grow => {
-                            "LMB press seed · drag up/down = grow/shrink · release commit · Esc cancel · Ctrl+Z undo"
-                        }
-                        SegTool::Polygon | SegTool::Spline => {
-                            "LMB add point · RMB / double-click / Enter close · Esc cancel · Ctrl-click pick structure · Ctrl+Z undo"
-                        }
-                        SegTool::Freehand => {
-                            "LMB drag draws · release closes · Ctrl-click pick structure · Ctrl+Z undo"
-                        }
-                        SegTool::Nudge => {
-                            "LMB drag pushes the outline · Shift+wheel / [ ] radius · Ctrl+Z undo"
-                        }
-                        SegTool::ContourBrush => {
-                            "LMB paints the structure · Alt erases · Shift+wheel / [ ] radius · Ctrl+Z undo"
-                        }
-                        SegTool::LiveWire => {
-                            "LMB anchors the path along the edge · RMB / double-click / Enter close · Esc cancel · Ctrl-click pick structure · Ctrl+Z undo"
-                        }
-                    };
+                    let hint = super::struct_tools::mouse_hint(self.seg_tool);
                     // `Sense::hover`: it looks like a button and answers the
                     // pointer, but there is nothing to click.
                     ui.add(egui::Button::new("?").small().sense(egui::Sense::hover()))

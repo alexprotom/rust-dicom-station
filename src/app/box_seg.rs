@@ -276,7 +276,7 @@ fn run_job(req: Medsam2Request, progress: &Progress) -> anyhow::Result<Medsam2Do
         Request::Preview => {
             progress.set("Segmenting this slice");
             let slice_mask = engine.preview(&prepared, req.slice, &req.prompt, &req.cfg)?;
-            let voxels = slice_mask.iter().filter(|v| **v != 0).count() as u64;
+            let voxels = crate::morphology::count_set(&slice_mask) as u64;
             // One slice, on the volume's grid, so the viewer can draw it with
             // everything else.
             let mut masks: Vec<Vec<u8>> = (0..prepared.dims[0]).map(|_| Vec::new()).collect();
@@ -665,7 +665,7 @@ impl ViewerApp {
                     for (m, b) in r.mask.iter_mut().zip(base) {
                         *m |= *b;
                     }
-                    r.voxels = r.mask.iter().filter(|v| **v != 0).count() as u64;
+                    r.voxels = crate::morphology::count_set(&r.mask) as u64;
                 }
             }
         }
@@ -703,12 +703,7 @@ impl ViewerApp {
             // What the next preview will be shown on top of.
             self.medsam2.base_mask = Some(r.mask.clone());
         }
-        let spacing = self.slots[slot]
-            .study
-            .as_ref()
-            .map(|s| s.volume.spacing)
-            .unwrap_or([1.0; 3]);
-        let cm3 = r.voxels as f64 * spacing[0] * spacing[1] * spacing[2] / 1000.0;
+        let cm3 = self.slots[slot].voxels_cm3(r.voxels);
         self.medsam2.status = Some(if preview {
             format!(
                 "This slice: {} pixels in {:.1} s on {}",
@@ -745,7 +740,7 @@ impl ViewerApp {
         let n_slices = study.volume.plane_slice_count(plane);
         let current = self.slots[slot].views[super::plane_index(plane)].slice;
         let running = self.medsam2_job.is_some();
-        let has = [self.slots[0].has_volume(), self.slots[1].has_volume()];
+        let has = self.volume_slots();
         let mut switch: Option<usize> = None;
         let models_dir = self.engine_models_dir(ModelsEngine::MedSam2);
 
@@ -982,11 +977,7 @@ impl ViewerApp {
             self.medsam2.target_seg = None;
             self.medsam2.base_mask = None;
         }
-        if cancel {
-            if let Some(job) = &self.medsam2_job {
-                job.progress.cancel();
-            }
-        }
+        cancel_if(cancel, &self.medsam2_job);
         if !open || close {
             self.medsam2.open = false;
             // The weights stay; the study-sized buffers do not. A run in

@@ -224,11 +224,16 @@ The paper reports median Dice of 86.7 % on CT lesions (n = 409), 88.8 % on
 CT organs, 88.4 % on MRI lesions and 87.2 % on PET lesions, and an 86-87 %
 reduction in annotation time in its user study.
 
-This port has been checked against the reference implementation module by
-module and end to end - trunk, neck, prompt encoder, mask decoder, memory
-pair and a full ten-slice propagation all agree to within about 5e-6
-relative, f32 accumulation noise. That is *fidelity to MedSAM2*, not
-MedSAM2 being right on your data; the authors' own limitations are worth
+This port was checked against the reference implementation module by
+module and end to end while it was written - trunk, neck, prompt encoder,
+mask decoder, memory pair and a full ten-slice propagation agreed to within
+about 5e-6 relative, f32 accumulation noise. What the repository keeps of
+that is the per-operation contract: `tests/data/medsam2-ops.safetensors`
+records what PyTorch, PIL and SAM 2 return for every primitive the engine
+implements, and the engine is asserted against it in CI (the harness that
+ran Meta's own package is not kept, so the repository stays pure Rust; see
+[architecture.md](architecture.md#testing)). That is *fidelity to MedSAM2*,
+not MedSAM2 being right on your data; the authors' own limitations are worth
 knowing.
 
 * Box prompts do not suit thin, branching structures - vessels, airways.
