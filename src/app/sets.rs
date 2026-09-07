@@ -331,7 +331,7 @@ impl ViewerApp {
                 // only has to be told, in the order they were listed.
                 let seed = items
                     .iter()
-                    .map(|&idx| combine_win::ItemRef {
+                    .map(|&idx| combine::ItemRef {
                         kind: from.kind,
                         set: from.idx,
                         idx,
@@ -342,7 +342,7 @@ impl ViewerApp {
             ItemAction::Dvh { from, items } => {
                 let seed = items
                     .iter()
-                    .map(|&idx| combine_win::ItemRef {
+                    .map(|&idx| combine::ItemRef {
                         kind: from.kind,
                         set: from.idx,
                         idx,

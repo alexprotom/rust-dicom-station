@@ -29,6 +29,8 @@ pub const GRAPHICS_BACKEND_KEY: &str = "graphics_backend";
 const MODULE_REG_KEY: &str = "module_image_registration";
 const MODULE_SIM_KEY: &str = "module_image_simulation";
 const MODULE_PROP_KEY: &str = "module_structures_propagation";
+const MODULE_TOOLS_KEY: &str = "module_structure_editor";
+const MODULE_AUTO_KEY: &str = "module_structure_auto_tools";
 
 /// Settings keys of the last session's sources, one per dataset. The paths
 /// are separated by `|`, which no path on any supported system contains.
@@ -61,9 +63,17 @@ pub struct Settings {
     /// modules panel.
     pub module_simulation: bool,
 
-    /// *Modules ▶ Structures propagation*: the propagation section is shown
+    /// *Modules ▶ Structure propagation*: the propagation section is shown
     /// in the modules panel.
     pub module_propagation: bool,
+
+    /// *Modules ▶ Structure editor*: inserting, editing and combining
+    /// structures is shown in the modules panel. On by default.
+    pub module_structures: bool,
+
+    /// *Modules ▶ Structure auto tools*: body contour and the three
+    /// segmentation engines are shown in the modules panel. On by default.
+    pub module_auto: bool,
 
     /// Which graphics backend to draw and compute with. Read once at
     /// startup, before the window exists, so a change only takes effect on
@@ -89,6 +99,8 @@ impl Default for Settings {
             module_registration: false,
             module_simulation: false,
             module_propagation: false,
+            module_structures: true,
+            module_auto: true,
             session: [Vec::new(), Vec::new()],
             // Let wgpu choose. The installer writes an explicit value when
             // the person installing picks one.
@@ -387,6 +399,14 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
             if let Some(b) = bool_from_str(value) {
                 s.module_propagation = b;
             }
+        } else if key.eq_ignore_ascii_case(MODULE_TOOLS_KEY) {
+            if let Some(b) = bool_from_str(value) {
+                s.module_structures = b;
+            }
+        } else if key.eq_ignore_ascii_case(MODULE_AUTO_KEY) {
+            if let Some(b) = bool_from_str(value) {
+                s.module_auto = b;
+            }
         } else if key.eq_ignore_ascii_case(GRAPHICS_BACKEND_KEY) {
             // An unreadable value leaves the default rather than failing to
             // start: this file is edited by hand and by an installer, and a
@@ -417,12 +437,16 @@ fn render(s: &Settings) -> String {
          {MODULE_REG_KEY} = {}\n\
          {MODULE_SIM_KEY} = {}\n\
          {MODULE_PROP_KEY} = {}\n\
+         {MODULE_TOOLS_KEY} = {}\n\
+         {MODULE_AUTO_KEY} = {}\n\
          # graphics backend = auto | vulkan | dx12 | metal | opengl\n\
          # (the WGPU_BACKEND environment variable overrides this)\n\
          {GRAPHICS_BACKEND_KEY} = {}\n",
         bool_to_str(s.module_registration),
         bool_to_str(s.module_simulation),
         bool_to_str(s.module_propagation),
+        bool_to_str(s.module_structures),
+        bool_to_str(s.module_auto),
         s.graphics_backend.key()
     ));
     for (key, paths) in SESSION_KEYS.iter().zip(&s.session) {
@@ -578,14 +602,16 @@ mod tests {
 
     #[test]
     fn round_trips_the_module_flags() {
-        for bits in 0..8u8 {
+        for bits in 0..32u8 {
             let s = Settings {
                 module_registration: bits & 1 != 0,
                 module_simulation: bits & 2 != 0,
                 module_propagation: bits & 4 != 0,
+                module_structures: bits & 8 != 0,
+                module_auto: bits & 16 != 0,
                 ..Settings::default()
             };
-            assert_eq!(parse(&render(&s)), s, "round trip of {bits:03b}");
+            assert_eq!(parse(&render(&s)), s, "round trip of {bits:05b}");
         }
         assert!(
             parse(&format!("{MODULE_REG_KEY} = TRUE")).module_registration,
@@ -594,6 +620,13 @@ mod tests {
         assert!(
             parse(&format!("{MODULE_PROP_KEY} = on")).module_propagation,
             "the propagation module is remembered too"
+        );
+        assert!(
+            parse("").module_structures
+                && parse("").module_auto
+                && !parse(&format!("{MODULE_TOOLS_KEY} = off")).module_structures
+                && !parse(&format!("{MODULE_AUTO_KEY} = off")).module_auto,
+            "the structures editor starts switched on and can be switched off"
         );
     }
 }

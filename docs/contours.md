@@ -42,7 +42,12 @@ automatic.
 
 ## The tools
 
-The toolbar's second group takes over the left mouse button, like the brush:
+The toolbar's **✏ Draw structure** button unfolds one row of glyphs on the
+toolbar itself: the voxel tools first, then these, which take over the left
+mouse button like the brush. After the row come only the options of the
+tool in hand - the radius, the edge band, the draw mode, the structure or
+segmentation being drawn into with a **+** to start another. Folding the
+row puts the tool down.
 
 * **📐 Polygon** - click by click. Right-click, double-click or `Enter`
   closes it; `Esc` throws it away.
@@ -126,18 +131,31 @@ it is the plain brush, stamp and all.
 
 ### Which structure is being edited
 
-One at a time, marked **✏** in the sidebar's *RT structures* list and named
-in the toolbar. Set it there, `Ctrl`-click a contour in a view, or simply
-start drawing: with no structure chosen the first stroke **creates** one (and
-a structure set to hold it, if the study has none). It creates rather than
-adopting the list's first structure on purpose - a stroke must never land in
-a structure nobody pointed at. *+ ROI* in the list, and *+* in the toolbar,
-make another.
+One at a time: the one **selected** in the sidebar's *RT structures* list
+(click its name, exactly as a segment is selected in the *Segmentations*
+list; the tick box beside it is only whether it is shown) and named after
+the draw row. Select it there, `Ctrl`-click a contour in a view, or simply
+start drawing: with no structure chosen the first stroke **creates** one
+(and a structure set to hold it, if the study has none). It creates rather
+than adopting the list's first structure on purpose - a stroke must never
+land in a structure nobody pointed at. *+ Empty structure* in the editor's
+*Insert structure* section, and *+* after the selected structure's name on
+the toolbar, make another.
 
-## The contour window
+## The Structure editor
 
-*Tools ▶ 📝 Contour tools* - everything that acts on the whole structure
-rather than on the stroke under the pointer. Every button is one undo step.
+*Modules ▶ Structure editor* (right panel, F10; on by default) is where a
+whole structure is made or changed, in three foldable sections: **Insert
+structure** (an empty structure, a point of interest, or a generated one -
+[generators.md](generators.md)), **Edit structure** (below) and **Combine
+structures** ([structure-algebra.md](structure-algebra.md)). Right-clicking
+a structure in the list and choosing *📝 Edit in the Structure editor*
+selects it and unfolds the section on it.
+
+### Edit structure
+
+Everything that acts on the selected structure as a whole rather than on
+the stroke under the pointer. Every button is one undo step.
 
 * **Interpolation** - contours for the slices between the drawn ones. The two
   neighbouring regions are turned into signed distance fields, blended, and
@@ -168,7 +186,8 @@ rather than on the stroke under the pointer. Every button is one undo step.
   own centroid, rotate, or put its centroid under the crosshair (*move to
   slice intersection*). In the plane it is drawn on.
 * **Type** - the RT ROI Interpreted Type (`PTV`, `ORGAN`, `EXTERNAL`, …),
-  which is what a planning system branches on.
+  which is what a planning system branches on. It is the first line of the
+  section, under the structure's name and its volume.
 * **Derived**, when the structure carries a recipe: the recipe as a line, its
   status, and Update / Edit recipe / Underive. See
   [structure-algebra.md](structure-algebra.md#derived-structures-the-recipe-stays);
@@ -192,7 +211,8 @@ RTSTRUCT these are not a separate object but an ROI whose geometry is one
 `POINT` contour, which is why they load, draw and export through the same
 code as everything else and only what a planner *does* with one is new.
 
-*+ POI* in the structure list makes one at the crosshair. In the list a
+*✱ Point of interest* in the editor's *Insert structure* section makes one
+at the crosshair. In the list a
 point carries **✱** and its coordinates in the tooltip, and its right-click
 menu offers *Localize* (put the crosshair on it), *Move to the crosshair*
 and *Make the localization point*. The localization point is **🎯**, one per
@@ -203,7 +223,7 @@ one point nobody wants to place by hand.
 *Localize* works on ordinary structures too: it centres the three views on
 the structure's centre of gravity.
 
-Two points can be compared like anything else in *◑ Compare structures*,
+Two points can be compared like anything else in *◑ Structure comparison*,
 which then reports their separation instead of a Dice score. When the two
 are meant to be the same landmark in two datasets, that separation is the
 target registration error.

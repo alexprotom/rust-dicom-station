@@ -29,7 +29,7 @@ impl ViewerApp {
     pub(super) fn poi_at_structure(&mut self, slot: usize, roi: usize) -> Option<usize> {
         let (mask, grid, name, _) = self.item_mask_grid(
             slot,
-            combine_win::ItemRef {
+            combine::ItemRef {
                 kind: SetKind::Structures,
                 set: self.slots[slot].active_structs,
                 idx: roi,
@@ -46,10 +46,7 @@ impl ViewerApp {
     pub(super) fn set_poi_at(&mut self, slot: usize, roi: usize, p: Vec3) -> bool {
         let set = self.slots[slot].active_structs;
         let ok = self.slots[slot]
-            .study
-            .as_mut()
-            .and_then(|st| st.structure_sets.get_mut(set))
-            .and_then(|ss| ss.rois.get_mut(roi))
+            .roi_mut(set, roi)
             .map(|r| r.set_point(p))
             .unwrap_or(false);
         if ok {
@@ -68,19 +65,13 @@ impl ViewerApp {
 
     /// The same for a structure: centre the views on its centre of gravity.
     pub(super) fn localize_roi(&mut self, slot: usize, roi: usize) -> bool {
-        let item = combine_win::ItemRef {
+        let item = combine::ItemRef {
             kind: SetKind::Structures,
             set: self.slots[slot].active_structs,
             idx: roi,
         };
         // A POI is its own centre, and rasterizing one would find nothing.
-        if let Some(p) = self.slots[slot]
-            .study
-            .as_ref()
-            .and_then(|st| st.structure_sets.get(item.set))
-            .and_then(|ss| ss.rois.get(roi))
-            .and_then(|r| r.point())
-        {
+        if let Some(p) = self.slots[slot].roi(item.set, roi).and_then(|r| r.point()) {
             return self.set_cursor_patient(slot, p);
         }
         let Some((mask, grid, _, _)) = self.item_mask_grid(slot, item) else {
@@ -148,7 +139,7 @@ impl ViewerApp {
     pub(super) fn poi_of_item(
         &self,
         slot: usize,
-        item: combine_win::ItemRef,
+        item: combine::ItemRef,
     ) -> Option<(String, Vec3)> {
         if item.kind != SetKind::Structures {
             return None;

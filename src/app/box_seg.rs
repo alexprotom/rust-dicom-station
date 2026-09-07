@@ -276,7 +276,7 @@ fn run_job(req: Medsam2Request, progress: &Progress) -> anyhow::Result<Medsam2Do
         Request::Preview => {
             progress.set("Segmenting this slice");
             let slice_mask = engine.preview(&prepared, req.slice, &req.prompt, &req.cfg)?;
-            let voxels = slice_mask.iter().filter(|v| **v != 0).count() as u64;
+            let voxels = crate::morphology::count_set(&slice_mask) as u64;
             // One slice, on the volume's grid, so the viewer can draw it with
             // everything else.
             let mut masks: Vec<Vec<u8>> = (0..prepared.dims[0]).map(|_| Vec::new()).collect();
@@ -665,7 +665,7 @@ impl ViewerApp {
                     for (m, b) in r.mask.iter_mut().zip(base) {
                         *m |= *b;
                     }
-                    r.voxels = r.mask.iter().filter(|v| **v != 0).count() as u64;
+                    r.voxels = crate::morphology::count_set(&r.mask) as u64;
                 }
             }
         }
@@ -703,12 +703,7 @@ impl ViewerApp {
             // What the next preview will be shown on top of.
             self.medsam2.base_mask = Some(r.mask.clone());
         }
-        let spacing = self.slots[slot]
-            .study
-            .as_ref()
-            .map(|s| s.volume.spacing)
-            .unwrap_or([1.0; 3]);
-        let cm3 = r.voxels as f64 * spacing[0] * spacing[1] * spacing[2] / 1000.0;
+        let cm3 = self.slots[slot].voxels_cm3(r.voxels);
         self.medsam2.status = Some(if preview {
             format!(
                 "This slice: {} pixels in {:.1} s on {}",
@@ -732,248 +727,212 @@ impl ViewerApp {
 
     /// The tool window; while a run is in flight its buttons become the
     /// progress row.
-    pub(super) fn medsam2_window(&mut self, ctx: &egui::Context) {
-        if !self.medsam2.open {
-            return;
-        }
+    pub(super) fn medsam2_section(&mut self, ui: &mut egui::Ui) {
+        self.open_medsam2_panel(self.auto.slot);
         let slot = self.medsam2.slot;
         let Some(study) = self.slots[slot].study.as_ref() else {
-            self.medsam2.open = false;
             return;
         };
         let plane = drawing_plane(&study.volume);
         let n_slices = study.volume.plane_slice_count(plane);
         let current = self.slots[slot].views[super::plane_index(plane)].slice;
         let running = self.medsam2_job.is_some();
-        let has = [self.slots[0].has_volume(), self.slots[1].has_volume()];
-        let mut switch: Option<usize> = None;
         let models_dir = self.engine_models_dir(ModelsEngine::MedSam2);
 
         let mut request: Option<Request> = None;
-        let mut open = true;
-        let mut close = false;
         let mut cancel = false;
         let mut clear = false;
         let mut browse = false;
 
-        detach::tool_window(
-            ctx,
-            "medsam2",
-            SLICE_PROP.title(slot),
-            &mut open,
-            detach::WinOpts::width(380.0),
-            |ui| {
-                switch = dataset_row(ui, slot, has, !running);
-                ui.label(format!(
-                    "Follows a structure boxed on one slice through the stack with MedSAM2, \
-                     re-implemented natively in Rust. Drag a box around it in the {} view, on a \
-                     slice where it is clear; the box stays - drag its corners to resize, its \
-                     middle to move it.",
-                    plane_name(plane)
+        ui.label(format!(
+            "Follows a structure boxed on one slice through the stack with MedSAM2, \
+             re-implemented natively in Rust. Drag a box around it in the {} view, on a \
+             slice where it is clear; the box stays - drag its corners to resize, its \
+             middle to move it.",
+            plane_name(plane)
+        ));
+        ui.separator();
+
+        // ---- the prompt ------------------------------------------
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Draw:");
+            ui.selectable_value(&mut self.medsam2.tool, BoxTool::Draw, "⬚ Box")
+                .on_hover_text("Drag a new box, or move and resize the one that is there");
+            ui.selectable_value(&mut self.medsam2.tool, BoxTool::Include, "➕ Include")
+                .on_hover_text("Click a spot the box got wrong - this is the structure");
+            ui.selectable_value(&mut self.medsam2.tool, BoxTool::Exclude, "➖ Exclude")
+                .on_hover_text("Click a spot that must stay out");
+            if ui.button("Clear").clicked() {
+                clear = true;
+            }
+        });
+        match &self.medsam2.prompt {
+            Some(b) => {
+                let (lo, hi) = b.rect();
+                ui.weak(format!(
+                    "Box on slice {} - {:.0} x {:.0} px, {} click(s)",
+                    b.slice + 1,
+                    hi[0] - lo[0],
+                    hi[1] - lo[1],
+                    b.points.len()
                 ));
-                ui.separator();
+            }
+            None => {
+                ui.weak("No box yet.");
+            }
+        }
 
-                // ---- the prompt ------------------------------------------
-                ui.horizontal(|ui| {
-                    ui.label("Draw:");
-                    ui.selectable_value(&mut self.medsam2.tool, BoxTool::Draw, "⬚ Box")
-                        .on_hover_text("Drag a new box, or move and resize the one that is there");
-                    ui.selectable_value(&mut self.medsam2.tool, BoxTool::Include, "➕ Include")
-                        .on_hover_text("Click a spot the box got wrong - this is the structure");
-                    ui.selectable_value(&mut self.medsam2.tool, BoxTool::Exclude, "➖ Exclude")
-                        .on_hover_text("Click a spot that must stay out");
-                    if ui.button("Clear").clicked() {
-                        clear = true;
-                    }
-                });
-                match &self.medsam2.prompt {
-                    Some(b) => {
-                        let (lo, hi) = b.rect();
-                        ui.weak(format!(
-                            "Box on slice {} - {:.0} x {:.0} px, {} click(s)",
-                            b.slice + 1,
-                            hi[0] - lo[0],
-                            hi[1] - lo[1],
-                            b.points.len()
-                        ));
-                    }
-                    None => {
-                        ui.weak("No box yet.");
-                    }
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(
+                    !running && self.medsam2.prompt.is_some(),
+                    egui::Button::new("👁 Preview this slice"),
+                )
+                .on_hover_text(
+                    "Segment only the slice the box is on. The slice is encoded \
+                     once and kept, so adjusting the box after that is quick.",
+                )
+                .clicked()
+            {
+                request = Some(Request::Preview);
+            }
+            ui.checkbox(&mut self.medsam2.auto_preview, "automatically")
+                .on_hover_text("Preview again whenever the box or the clicks change");
+        });
+
+        // ---- the range -------------------------------------------
+        ui.separator();
+        ui.label("Propagate through:");
+        let last = n_slices.saturating_sub(1);
+        let mut range = self.medsam2.range.unwrap_or((0, last));
+        let before = range;
+        // Slice numbers are shown 1-based; the values stay 0-based.
+        fn one_based<'a>(v: &'a mut usize, last: usize, prefix: &str) -> egui::DragValue<'a> {
+            egui::DragValue::new(v)
+                .range(0..=last)
+                .custom_formatter(|v, _| format!("{}", v as usize + 1))
+                .custom_parser(|s| s.parse::<f64>().ok().map(|v| v - 1.0))
+                .prefix(prefix)
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.add(one_based(&mut range.0, last, "from "));
+            if ui.button("⇤ this slice").clicked() {
+                range.0 = current;
+            }
+            ui.add(one_based(&mut range.1, last, "to "));
+            if ui.button("⇥ this slice").clicked() {
+                range.1 = current;
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Whole study").clicked() {
+                range = (0, last);
+            }
+            if let Some(b) = &self.medsam2.prompt {
+                if ui.button("± 32 slices").clicked() {
+                    range = (b.slice.saturating_sub(32), (b.slice + 32).min(last));
                 }
+            }
+            ui.weak(format!("{} of {} slices", range.1 - range.0 + 1, n_slices));
+        });
+        if range != before {
+            // Touched by hand: stop following the box.
+            self.medsam2.range_pinned = true;
+        }
+        self.medsam2.range = Some((
+            range.0.min(range.1).min(last),
+            range.0.max(range.1).min(last),
+        ));
 
-                ui.horizontal(|ui| {
+        if self.medsam2.base_mask.is_some() {
+            ui.checkbox(&mut self.medsam2.merge, "Add to what is already there")
+                .on_hover_text(
+                    "Correcting a slice that drifted: scroll to it, draw a fresh \
+                     box, and propagate again - the new run is added to the \
+                     segmentation instead of replacing it.",
+                );
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Name:");
+            ui.add(egui::TextEdit::singleline(&mut self.medsam2.name).desired_width(160.0));
+        });
+
+        // ---- options ---------------------------------------------
+        ui.separator();
+        ui.collapsing("Options", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Window:");
+                ui.selectable_value(&mut self.medsam2.window, WindowSource::Viewport, "Viewport");
+                for (i, (name, _, _)) in Window::PRESETS.iter().enumerate() {
+                    ui.selectable_value(&mut self.medsam2.window, WindowSource::Preset(i), *name);
+                }
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Model:");
+                egui::ComboBox::from_id_salt("medsam2_variant")
+                    .selected_text(self.medsam2.variant.label())
+                    .show_ui(ui, |ui| {
+                        for v in Variant::ALL {
+                            ui.selectable_value(&mut self.medsam2.variant, v, v.label());
+                        }
+                    });
+            });
+            ui.checkbox(&mut self.medsam2.cfg.reverse_pass, "Both directions");
+            ui.checkbox(
+                &mut self.medsam2.cfg.largest_component,
+                "Keep only the largest connected component",
+            );
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Threshold:");
+                ui.add(egui::Slider::new(
+                    &mut self.medsam2.cfg.threshold,
+                    -4.0..=4.0,
+                ));
+            });
+            device_row(ui, &mut self.medsam2.device);
+            browse = models_dir_row(ui, &mut self.models_dir, ModelsEngine::MedSam2);
+        });
+        ui.separator();
+        let need = weights::download_needed(self.medsam2.variant, &models_dir);
+        let weights_note = if need == 0 {
+            "Weights: MedSAM2 (research and education only) - cached ✔.".to_string()
+        } else {
+            format!(
+                "Weights: MedSAM2 (research and education only) - {} MB downloaded \
+                 once from Hugging Face, at your request, never redistributed.",
+                need / 1_000_000
+            )
+        };
+        licence_line(ui, &weights_note, true);
+
+        // ---- run -------------------------------------------------
+        ui.separator();
+        match &self.medsam2_job {
+            Some(job) => cancel = progress_row(ui, &job.progress),
+            None => {
+                ui.horizontal_wrapped(|ui| {
                     if ui
                         .add_enabled(
-                            !running && self.medsam2.prompt.is_some(),
-                            egui::Button::new("👁 Preview this slice"),
+                            self.medsam2.prompt.is_some(),
+                            egui::Button::new("▶ Propagate"),
                         )
-                        .on_hover_text(
-                            "Segment only the slice the box is on. The slice is encoded \
-                             once and kept, so adjusting the box after that is quick.",
-                        )
+                        .on_hover_text("Follow the structure through the slice range")
                         .clicked()
                     {
-                        request = Some(Request::Preview);
-                    }
-                    ui.checkbox(&mut self.medsam2.auto_preview, "automatically")
-                        .on_hover_text("Preview again whenever the box or the clicks change");
-                });
-
-                // ---- the range -------------------------------------------
-                ui.separator();
-                ui.label("Propagate through:");
-                let last = n_slices.saturating_sub(1);
-                let mut range = self.medsam2.range.unwrap_or((0, last));
-                let before = range;
-                // Slice numbers are shown 1-based; the values stay 0-based.
-                fn one_based<'a>(
-                    v: &'a mut usize,
-                    last: usize,
-                    prefix: &str,
-                ) -> egui::DragValue<'a> {
-                    egui::DragValue::new(v)
-                        .range(0..=last)
-                        .custom_formatter(|v, _| format!("{}", v as usize + 1))
-                        .custom_parser(|s| s.parse::<f64>().ok().map(|v| v - 1.0))
-                        .prefix(prefix)
-                }
-                ui.horizontal(|ui| {
-                    ui.add(one_based(&mut range.0, last, "from "));
-                    if ui.button("⇤ this slice").clicked() {
-                        range.0 = current;
-                    }
-                    ui.add(one_based(&mut range.1, last, "to "));
-                    if ui.button("⇥ this slice").clicked() {
-                        range.1 = current;
+                        request = Some(Request::Propagate);
                     }
                 });
-                ui.horizontal(|ui| {
-                    if ui.button("Whole study").clicked() {
-                        range = (0, last);
-                    }
-                    if let Some(b) = &self.medsam2.prompt {
-                        if ui.button("± 32 slices").clicked() {
-                            range = (b.slice.saturating_sub(32), (b.slice + 32).min(last));
-                        }
-                    }
-                    ui.weak(format!("{} of {} slices", range.1 - range.0 + 1, n_slices));
-                });
-                if range != before {
-                    // Touched by hand: stop following the box.
-                    self.medsam2.range_pinned = true;
-                }
-                self.medsam2.range = Some((
-                    range.0.min(range.1).min(last),
-                    range.0.max(range.1).min(last),
-                ));
-
-                if self.medsam2.base_mask.is_some() {
-                    ui.checkbox(&mut self.medsam2.merge, "Add to what is already there")
-                        .on_hover_text(
-                            "Correcting a slice that drifted: scroll to it, draw a fresh \
-                             box, and propagate again - the new run is added to the \
-                             segmentation instead of replacing it.",
-                        );
-                }
-                ui.horizontal(|ui| {
-                    ui.label("Name:");
-                    ui.add(egui::TextEdit::singleline(&mut self.medsam2.name).desired_width(160.0));
-                });
-
-                // ---- options ---------------------------------------------
-                ui.separator();
-                ui.collapsing("Options", |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Window:");
-                        ui.selectable_value(
-                            &mut self.medsam2.window,
-                            WindowSource::Viewport,
-                            "Viewport",
-                        );
-                        for (i, (name, _, _)) in Window::PRESETS.iter().enumerate() {
-                            ui.selectable_value(
-                                &mut self.medsam2.window,
-                                WindowSource::Preset(i),
-                                *name,
-                            );
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Model:");
-                        egui::ComboBox::from_id_salt("medsam2_variant")
-                            .selected_text(self.medsam2.variant.label())
-                            .show_ui(ui, |ui| {
-                                for v in Variant::ALL {
-                                    ui.selectable_value(&mut self.medsam2.variant, v, v.label());
-                                }
-                            });
-                    });
-                    ui.checkbox(&mut self.medsam2.cfg.reverse_pass, "Both directions");
-                    ui.checkbox(
-                        &mut self.medsam2.cfg.largest_component,
-                        "Keep only the largest connected component",
-                    );
-                    ui.horizontal(|ui| {
-                        ui.label("Threshold:");
-                        ui.add(egui::Slider::new(
-                            &mut self.medsam2.cfg.threshold,
-                            -4.0..=4.0,
-                        ));
-                    });
-                    device_row(ui, &mut self.medsam2.device);
-                    browse = models_dir_row(ui, &mut self.models_dir, ModelsEngine::MedSam2);
-                });
-                ui.separator();
-                let need = weights::download_needed(self.medsam2.variant, &models_dir);
-                let weights_note = if need == 0 {
-                    "Weights: MedSAM2 (research and education only) - cached ✔.".to_string()
-                } else {
-                    format!(
-                        "Weights: MedSAM2 (research and education only) - {} MB downloaded \
-                         once from Hugging Face, at your request, never redistributed.",
-                        need / 1_000_000
-                    )
-                };
-                licence_line(ui, &weights_note, true);
-
-                // ---- run -------------------------------------------------
-                ui.separator();
-                match &self.medsam2_job {
-                    Some(job) => cancel = progress_row(ui, &job.progress),
-                    None => {
-                        ui.horizontal(|ui| {
-                            if ui
-                                .add_enabled(
-                                    self.medsam2.prompt.is_some(),
-                                    egui::Button::new("▶ Propagate"),
-                                )
-                                .on_hover_text("Follow the structure through the slice range")
-                                .clicked()
-                            {
-                                request = Some(Request::Propagate);
-                            }
-                            if ui.button("Close").clicked() {
-                                close = true;
-                            }
-                        });
-                    }
-                }
-                if let Some(status) = &self.medsam2.status {
-                    ui.separator();
-                    ui.weak(status);
-                }
-            },
-        );
+            }
+        }
+        if let Some(status) = &self.medsam2.status {
+            ui.separator();
+            ui.weak(status);
+        }
 
         if browse {
             if let Some(dir) = Self::pick_folder("Model folder") {
                 self.models_dir = dir.display().to_string();
             }
-        }
-        if let Some(s) = switch {
-            self.open_medsam2_panel(s);
-            return;
         }
         if clear {
             self.medsam2.prompt = None;
@@ -982,28 +941,14 @@ impl ViewerApp {
             self.medsam2.target_seg = None;
             self.medsam2.base_mask = None;
         }
-        if cancel {
-            if let Some(job) = &self.medsam2_job {
-                job.progress.cancel();
-            }
-        }
-        if !open || close {
-            self.medsam2.open = false;
-            // The weights stay; the study-sized buffers do not. A run in
-            // flight carries on and lands as usual.
-            self.medsam2.prep = None;
-            if let Some(e) = &self.medsam2.engine {
-                e.clear_cache();
-            }
-            self.persist_settings();
-        }
+        cancel_if(cancel, &self.medsam2_job);
         // An automatic preview waits for the pointer to be released, and for
         // whatever is running to finish.
         if request.is_none()
             && self.medsam2.auto_preview
             && self.medsam2.dirty
             && !running
-            && !ctx.input(|i| i.pointer.any_down())
+            && !ui.input(|i| i.pointer.any_down())
         {
             request = Some(Request::Preview);
         }

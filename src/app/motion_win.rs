@@ -1,4 +1,5 @@
-//! *Tools ▶ 4D motion / ITV analysis*: the automated per-phase pipeline.
+//! *Tools ▶ Structure motion* (the 4D motion / ITV analysis): the automated
+//! per-phase pipeline.
 //!
 //! One run reproduces the whole 4DCT motion workflow on a recognised 4D
 //! group: the reference phase is registered to every other phase (rigidly,
@@ -20,7 +21,7 @@ pub(super) use crate::workflow::motion::{run as run_motion, MotionOutcome, Motio
 use crate::workflow::select::Structure;
 use crate::workflow::{self};
 
-use super::combine_win::ItemRef;
+use super::combine::ItemRef;
 use super::*;
 
 /// The tool window's state; it stays open across runs.
@@ -631,7 +632,7 @@ impl ViewerApp {
         let mut cancel = false;
         let mut close = false;
         let mut apply_recipe = false;
-        let has = [self.slots[0].has_volume(), self.slots[1].has_volume()];
+        let has = self.volume_slots();
         let mut switch: Option<usize> = None;
         let mut open = true;
 
@@ -927,15 +928,14 @@ impl ViewerApp {
                             if ui.button("▶ Analyse").clicked() {
                                 run = true;
                             }
-                            if ui
-                                .add_enabled(has_recipe, egui::Button::new("Apply last recipe"))
-                                .on_hover_text(
-                                    "Tick the same targets (matched by name) and re-use the \
-                                     options of the previous run - for the other dataset or \
-                                     the next study",
-                                )
-                                .clicked()
-                            {
+                            if enabled_tip_button(
+                                ui,
+                                has_recipe,
+                                "Apply last recipe",
+                                "Tick the same targets (matched by name) and re-use the \
+                                 options of the previous run - for the other dataset or \
+                                 the next study",
+                            ) {
                                 apply_recipe = true;
                             }
                             if ui.button("Close").clicked() {
@@ -946,11 +946,7 @@ impl ViewerApp {
                 }
             },
         );
-        if cancel {
-            if let Some(job) = &self.motion_job {
-                job.progress.cancel();
-            }
-        }
+        cancel_if(cancel, &self.motion_job);
         if let Some(s) = switch {
             self.open_motion_dialog(s, None);
             return;

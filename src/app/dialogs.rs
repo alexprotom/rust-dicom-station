@@ -34,19 +34,12 @@ impl ViewerApp {
         self.drr_window(ctx);
         self.export_window(ctx);
         self.rename_window(ctx);
-        self.autoseg_run_window(ctx);
-        self.segvol_window(ctx);
-        self.body_window(ctx);
-        self.combine_window(ctx);
-        self.contour_window(ctx);
-        self.newroi_window(ctx);
         self.stats_window(ctx);
         self.dvh_window(ctx);
         self.motion_window(ctx);
         self.motion_results_window(ctx);
         self.transfer_window(ctx);
         self.compare_window(ctx);
-        self.medsam2_window(ctx);
         self.autoseg_result_window(ctx);
         if let Some(msg) = self.notice.clone() {
             egui::Window::new("Done")
@@ -76,24 +69,18 @@ impl ViewerApp {
         }
     }
 
-    /// The auto-segmentation tool window: model variant, compute device and
-    /// model folder, then the run - whose progress replaces the buttons.
-    pub(super) fn autoseg_run_window(&mut self, ctx: &egui::Context) {
-        let has = [self.slots[0].has_volume(), self.slots[1].has_volume()];
-        let mut switch: Option<usize> = None;
+    /// The *Auto-segmentation* section of the Structure auto tools module:
+    /// model variant, compute device and model folder, then the run - whose
+    /// progress replaces the button.
+    pub(super) fn autoseg_section(&mut self, ui: &mut egui::Ui) {
+        self.open_autoseg_dialog(self.auto.slot);
         let Some(d) = &mut self.autoseg_dialog else {
             return;
         };
-        if self.slots[d.slot].study.is_none() {
-            self.autoseg_dialog = None;
-            return;
-        }
         let running = self
             .autoseg_job
             .as_ref()
             .filter(|_| self.autoseg_slot == d.slot);
-        let mut open = true;
-        let mut close = false;
         let mut run = false;
         let mut browse = false;
         let mut cancel = false;
@@ -101,123 +88,94 @@ impl ViewerApp {
             &models::root_from_setting(&self.models_dir),
             models::Engine::TotalSegmentator,
         );
-        detach::tool_window(
-            ctx,
-            "autoseg",
-            AUTOSEG.title(d.slot),
-            &mut open,
-            detach::WinOpts::width(380.0),
-            |ui| {
-                switch = dataset_row(ui, d.slot, has, running.is_none());
-                ui.label(
-                    "Segments the CT into up to 117 anatomical structures with \
-                     TotalSegmentator's nnU-Net models, re-implemented natively in Rust.",
-                );
-                ui.separator();
-                ui.label("Model:");
-                for (variant, name, hint) in [
-                    (
-                        autoseg::Variant::Fast3mm,
-                        "3 mm - fast",
-                        "Single model, all 117 structures. Good quality, \
-                         practical on any CPU.",
-                    ),
-                    (
-                        autoseg::Variant::HighRes15mm,
-                        "1.5 mm - high quality",
-                        "Five sub-models at full resolution - the reference \
-                         quality. Slow without a GPU.",
-                    ),
-                    (
-                        autoseg::Variant::Preview6mm,
-                        "6 mm - preview",
-                        "Coarse but very fast - a quick look.",
-                    ),
-                ] {
-                    let need = autoseg::download_needed(variant, d.parts, &models_dir);
-                    let note = if need == 0 {
-                        "weights cached ✔".to_string()
-                    } else {
-                        format!("downloads {} MB once", need / 1_000_000)
-                    };
-                    if ui
-                        .add_enabled(
-                            running.is_none(),
-                            egui::RadioButton::new(
-                                d.variant == variant,
-                                format!("{name}  ({note})"),
-                            ),
-                        )
-                        .on_hover_text(hint)
-                        .clicked()
-                    {
-                        d.variant = variant;
-                    }
-                }
-                if d.variant == autoseg::Variant::HighRes15mm {
-                    ui.horizontal(|ui| {
-                        ui.label("Sub-models:");
-                        for (i, name) in autoseg::classes::PART_NAMES.iter().enumerate() {
-                            ui.checkbox(&mut d.parts[i], *name);
-                        }
-                    });
-                }
-                ui.separator();
-                ui.collapsing("Options", |ui| {
-                    device_row(ui, &mut d.device);
-                    browse =
-                        models_dir_row(ui, &mut self.models_dir, models::Engine::TotalSegmentator);
-                });
-                ui.separator();
-                licence_line(
-                    ui,
-                    "Weights: TotalSegmentator 'total' task (Apache-2.0), downloaded once \
-                     from the official GitHub release.",
-                    false,
-                );
-                ui.separator();
-                match running {
-                    Some(job) => cancel = progress_row(ui, &job.progress),
-                    None => {
-                        ui.horizontal(|ui| {
-                            let can_run = d.variant != autoseg::Variant::HighRes15mm
-                                || d.parts.iter().any(|p| *p);
-                            if ui
-                                .add_enabled(can_run, egui::Button::new("▶ Segment"))
-                                .on_hover_text("Run the network on the whole volume")
-                                .clicked()
-                            {
-                                run = true;
-                            }
-                            if ui.button("Close").clicked() {
-                                close = true;
-                            }
-                        });
-                    }
-                }
-            },
+        ui.label(
+            "Segments the CT into up to 117 anatomical structures with \
+             TotalSegmentator's nnU-Net models, re-implemented natively in Rust.",
         );
-        if let Some(s) = switch {
-            self.open_autoseg_dialog(s);
-            return;
+        ui.separator();
+        ui.label("Model:");
+        for (variant, name, hint) in [
+            (
+                autoseg::Variant::Fast3mm,
+                "3 mm - fast",
+                "Single model, all 117 structures. Good quality, \
+                 practical on any CPU.",
+            ),
+            (
+                autoseg::Variant::HighRes15mm,
+                "1.5 mm - high quality",
+                "Five sub-models at full resolution - the reference \
+                 quality. Slow without a GPU.",
+            ),
+            (
+                autoseg::Variant::Preview6mm,
+                "6 mm - preview",
+                "Coarse but very fast - a quick look.",
+            ),
+        ] {
+            let need = autoseg::download_needed(variant, d.parts, &models_dir);
+            let note = if need == 0 {
+                "weights cached ✔".to_string()
+            } else {
+                format!("downloads {} MB once", need / 1_000_000)
+            };
+            if ui
+                .add_enabled(
+                    running.is_none(),
+                    egui::RadioButton::new(d.variant == variant, format!("{name}  ({note})")),
+                )
+                .on_hover_text(hint)
+                .clicked()
+            {
+                d.variant = variant;
+            }
+        }
+        if d.variant == autoseg::Variant::HighRes15mm {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Sub-models:");
+                for (i, name) in autoseg::classes::PART_NAMES.iter().enumerate() {
+                    ui.checkbox(&mut d.parts[i], *name);
+                }
+            });
+        }
+        ui.separator();
+        ui.collapsing("Options", |ui| {
+            device_row(ui, &mut d.device);
+            browse = models_dir_row(ui, &mut self.models_dir, models::Engine::TotalSegmentator);
+        });
+        ui.separator();
+        licence_line(
+            ui,
+            "Weights: TotalSegmentator 'total' task (Apache-2.0), downloaded once \
+             from the official GitHub release.",
+            false,
+        );
+        ui.separator();
+        match running {
+            Some(job) => cancel = progress_row(ui, &job.progress),
+            None => {
+                ui.horizontal_wrapped(|ui| {
+                    let can_run =
+                        d.variant != autoseg::Variant::HighRes15mm || d.parts.iter().any(|p| *p);
+                    if enabled_tip_button(
+                        ui,
+                        can_run,
+                        "▶ Segment",
+                        "Run the network on the whole volume",
+                    ) {
+                        run = true;
+                    }
+                });
+            }
         }
         if browse {
             if let Some(dir) = Self::pick_folder("Model folder") {
                 self.models_dir = dir.display().to_string();
             }
         }
-        if cancel {
-            if let Some(job) = &self.autoseg_job {
-                job.progress.cancel();
-            }
-        }
+        cancel_if(cancel, &self.autoseg_job);
         if run {
             self.start_autoseg();
-        }
-        if !open || close {
-            // The run, if any, carries on; the sidebar still shows it.
-            self.autoseg_dialog = None;
-            self.persist_settings();
         }
     }
 
@@ -350,11 +308,7 @@ impl ViewerApp {
                     if ui.button("📂 Browse").clicked() {
                         browse = true;
                     }
-                    if ui
-                        .button("↺")
-                        .on_hover_text("Reset to the application folder")
-                        .clicked()
-                    {
+                    if tip_button(ui, "↺", "Reset to the application folder") {
                         reset_dir = true;
                     }
                 });
@@ -693,11 +647,12 @@ impl ViewerApp {
                         if let Some(job) = &self.anon_apply_job {
                             ui.spinner();
                             ui.label(job.progress.get());
-                        } else if ui
-                            .add_enabled(!busy, egui::Button::new("🔏 Anonymize"))
-                            .on_hover_text("Applies the checked replacements to every file")
-                            .clicked()
-                        {
+                        } else if enabled_tip_button(
+                            ui,
+                            !busy,
+                            "🔏 Anonymize",
+                            "Applies the checked replacements to every file",
+                        ) {
                             do_apply = true;
                         }
                         if let Some(msg) = &self.anon_result {

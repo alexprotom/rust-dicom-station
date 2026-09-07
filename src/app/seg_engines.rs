@@ -19,12 +19,10 @@ use super::*;
 /// A background run of one engine: the slot it works on, and its outcome.
 pub(super) type SegJob<T> = Job<(usize, anyhow::Result<T>)>;
 
-/// The glyph, name and menu wording of each tool, in one place.
+/// The glyph and name of each tool, in one place.
 pub(super) struct ToolInfo {
     pub glyph: &'static str,
     pub name: &'static str,
-    /// What the menu and the sidebar say the tool does to a dataset.
-    pub verb: &'static str,
 }
 
 /// Every glyph in this file - and in the rest of the interface - has to be
@@ -35,18 +33,15 @@ pub(super) struct ToolInfo {
 pub(super) const AUTOSEG: ToolInfo = ToolInfo {
     glyph: "🔬",
     name: "Auto-segmentation",
-    verb: "Auto-segment",
 };
 /// The speech balloon is the prompt: this is the tool you tell what to find.
 pub(super) const PROMPT_SEG: ToolInfo = ToolInfo {
     glyph: "💬",
     name: "Prompt segmentation",
-    verb: "Prompt-segment",
 };
 pub(super) const SLICE_PROP: ToolInfo = ToolInfo {
     glyph: "⏩",
     name: "Slice propagation",
-    verb: "Propagate through",
 };
 /// The fourth tool. Its glyph is a person because that is what it outlines,
 /// and because it is one of the few figures egui's bundled emoji font
@@ -54,21 +49,18 @@ pub(super) const SLICE_PROP: ToolInfo = ToolInfo {
 pub(super) const BODY_CONTOUR: ToolInfo = ToolInfo {
     glyph: "👤",
     name: "Body contour",
-    verb: "Body-contour",
 };
 /// The fifth tool, and the only one with no network behind it at all.
 pub(super) const COMBINE: ToolInfo = ToolInfo {
     glyph: "∪",
     name: "Combine structures",
-    verb: "Combine structures in",
 };
-/// The sixth tool: the 4D motion / ITV pipeline. A chart, because what it
+/// The 4D motion / ITV pipeline. A chart, because what it
 /// produces is the motion curves and volumes (and the glyph is covered by
 /// egui's bundled emoji fonts, which the quarter-clocks are not).
 pub(super) const MOTION: ToolInfo = ToolInfo {
     glyph: "📈",
-    name: "4D motion / ITV",
-    verb: "Motion-analyse",
+    name: "Structure motion",
 };
 
 impl ToolInfo {
@@ -93,11 +85,6 @@ impl ToolInfo {
     /// that lists every tool twice is twice as long and no clearer.
     pub fn menu_entry(&self) -> String {
         format!("{} {}", self.glyph, self.name)
-    }
-    /// `🔬 Auto…`, the small sidebar button.
-    pub fn short_button(&self) -> String {
-        let short = self.verb.split(['-', ' ']).next().unwrap_or(self.verb);
-        format!("{} {short}", self.glyph)
     }
 }
 
@@ -258,7 +245,7 @@ impl ViewerApp {
 
 /// `Compute:  Auto  GPU  CPU`
 pub(super) fn device_row(ui: &mut egui::Ui, pref: &mut DevicePref) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("Compute:");
         for p in DevicePref::ALL {
             let hint = match p {
@@ -275,18 +262,14 @@ pub(super) fn device_row(ui: &mut egui::Ui, pref: &mut DevicePref) {
 /// Returns true when the browse button was clicked.
 pub(super) fn models_root_row(ui: &mut egui::Ui, models_dir: &mut String) -> bool {
     let mut browse = false;
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("Model folder:");
-        ui.add(egui::TextEdit::singleline(models_dir).desired_width(220.0))
+        ui.add(egui::TextEdit::singleline(models_dir).desired_width(160.0))
             .on_hover_text(format!(
                 "Root folder of all downloaded weights; blank means the default, {}",
                 models::default_root().display()
             ));
-        if ui
-            .button("📁")
-            .on_hover_text("Choose the model folder")
-            .clicked()
-        {
+        if tip_button(ui, "📁", "Choose the model folder") {
             browse = true;
         }
     });
@@ -375,11 +358,7 @@ mod tests {
         );
         assert_eq!(PROMPT_SEG.menu_entry(), "💬 Prompt segmentation");
         assert_eq!(SLICE_PROP.menu_entry(), "⏩ Slice propagation");
-        assert_eq!(AUTOSEG.short_button(), "🔬 Auto");
-        assert_eq!(PROMPT_SEG.short_button(), "💬 Prompt");
-        assert_eq!(SLICE_PROP.short_button(), "⏩ Propagate");
         assert_eq!(BODY_CONTOUR.menu_entry(), "👤 Body contour");
-        assert_eq!(MOTION.short_button(), "📈 Motion");
         let mut glyphs = vec![
             AUTOSEG.glyph,
             PROMPT_SEG.glyph,

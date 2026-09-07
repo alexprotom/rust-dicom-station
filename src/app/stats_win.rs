@@ -16,6 +16,7 @@ use crate::contours::Stack;
 use crate::derived::Status;
 use crate::volume::{Grid, Volume};
 
+use super::combine::ItemRef;
 use super::seg_engines::ToolInfo;
 use super::*;
 
@@ -24,7 +25,6 @@ use super::*;
 pub(super) const DETAILS: ToolInfo = ToolInfo {
     glyph: "📋",
     name: "Structure details",
-    verb: "List the structures of",
 };
 
 /// One line of the table.
@@ -50,11 +50,29 @@ pub(super) struct StatRow {
     /// volume to report, and its position is the only number about it.
     pub point: Option<crate::geometry::Vec3>,
     pub status: Option<Status>,
+    /// Dice against the reference the table was asked for, and that
+    /// reference's name; `None` when there is no reference for this row.
+    pub dice: Option<(f64, String)>,
+}
+
+/// What the Dice column measures every row against.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum DiceRef {
+    None,
+    /// The structure or segment of the same name in the other dataset -
+    /// what a propagation, a phase or a second observer is checked with.
+    SameNameOther,
+    /// One structure or segment of either dataset, for every row.
+    Item {
+        slot: usize,
+        item: ItemRef,
+    },
 }
 
 pub(super) struct StatsDialog {
     pub slot: usize,
     pub rows: Vec<StatRow>,
+    pub dice_ref: DiceRef,
     /// The `settings_gen` the rows were computed at, so the window can say
     /// when it is showing something older than the geometry.
     pub gen: u64,
@@ -95,15 +113,93 @@ fn measure(mask: &[u8], dims: [usize; 3], vol: Option<&Volume>) -> (usize, Optio
     (count, grey)
 }
 
+/// The structure or segment called `name` in a study, structure sets first.
+fn item_named(study: &LoadedStudy, name: &str) -> Option<ItemRef> {
+    study
+        .structure_sets
+        .iter()
+        .enumerate()
+        .find_map(|(si, set)| {
+            set.rois
+                .iter()
+                .position(|r| r.name == name)
+                .map(|ii| ItemRef {
+                    kind: SetKind::Structures,
+                    set: si,
+                    idx: ii,
+                })
+        })
+        .or_else(|| {
+            study.seg_series.iter().enumerate().find_map(|(si, ser)| {
+                ser.segs
+                    .iter()
+                    .position(|g| g.name == name)
+                    .map(|ii| ItemRef {
+                        kind: SetKind::Segmentations,
+                        set: si,
+                        idx: ii,
+                    })
+            })
+        })
+}
+
+/// One item of a study as a mask on its own lattice, with the name the
+/// Dice column shows for it (suffixed with the dataset when it is the other
+/// one).
+fn reference_mask(
+    study: &LoadedStudy,
+    item: ItemRef,
+    from_slot: Option<usize>,
+) -> Option<(Vec<u8>, Grid, String)> {
+    let (mask, grid, name) = match item.kind {
+        SetKind::Structures => {
+            let roi = study.structure_sets.get(item.set)?.rois.get(item.idx)?;
+            let grid = study.volume.grid();
+            (
+                segmentation::rasterize_roi(&grid, roi)?,
+                grid,
+                roi.name.clone(),
+            )
+        }
+        SetKind::Segmentations => {
+            let ser = study.seg_series.get(item.set)?;
+            let seg = ser.segs.get(item.idx)?;
+            (seg.mask.clone(), ser.grid.clone(), seg.name.clone())
+        }
+    };
+    let label = match from_slot {
+        Some(s) => format!("{name} ({})", SLOT_NAMES[s]),
+        None => name,
+    };
+    Some((mask, grid, label))
+}
+
+/// `mask` on `grid`, resampled from `from` when the lattices differ.
+fn resampled(mask: &[u8], from: &Grid, grid: &Grid) -> Vec<u8> {
+    if from.matches(grid) {
+        mask.to_vec()
+    } else {
+        crate::dicomseg::resample_mask(mask, from, grid)
+    }
+}
+
 fn voxel_cm3(spacing: [f64; 3], voxels: usize) -> f64 {
-    voxels as f64 * spacing[0] * spacing[1] * spacing[2] / 1000.0
+    voxels as f64 * crate::volume::voxel_cm3(spacing)
 }
 
 impl ViewerApp {
     pub(super) fn open_stats_dialog(&mut self, slot: usize) {
+        // With a second dataset loaded the natural reference is the
+        // same-named structure over there; alone, there is none.
+        let dice_ref = if self.slots[1 - slot.min(1)].study.is_some() {
+            DiceRef::SameNameOther
+        } else {
+            DiceRef::None
+        };
         self.stats_dialog = Some(StatsDialog {
             slot,
             rows: Vec::new(),
+            dice_ref,
             gen: self.settings_gen,
             stale: true,
         });
@@ -113,12 +209,42 @@ impl ViewerApp {
     /// drawn on: an RT structure on the displayed image, a segmentation on
     /// the series it was painted on, which is why the grey levels are only
     /// filled in for the ones that share the displayed volume's lattice.
-    fn stats_rows(&self, slot: usize) -> Vec<StatRow> {
+    fn stats_rows(&self, slot: usize, dice_ref: DiceRef) -> Vec<StatRow> {
         let Some(study) = self.slots[slot].study.as_ref() else {
             return Vec::new();
         };
         let grid: Grid = study.volume.grid();
         let vol: &Volume = &study.volume;
+        // The reference of the Dice column: a fixed item is rasterized once
+        // per lattice, the same-name reference once per row. Only the
+        // studies are reached from the parallel loops, never `self`.
+        let other = 1 - slot.min(1);
+        let other_study = self.slots[other].study.as_ref();
+        let fixed = match dice_ref {
+            DiceRef::Item { slot: rs, item } => self.slots[rs]
+                .study
+                .as_ref()
+                .and_then(|st| reference_mask(st, item, if rs == slot { None } else { Some(rs) })),
+            _ => None,
+        };
+        let fixed_on = |g: &Grid| -> Option<(Vec<u8>, String)> {
+            let (mask, mgrid, name) = fixed.as_ref()?;
+            Some((resampled(mask, mgrid, g), name.clone()))
+        };
+        let fixed_display = fixed_on(&grid);
+        let dice_of = |mask: &[u8], name: &str, g: &Grid, fixed: &Option<(Vec<u8>, String)>| {
+            let reference = match dice_ref {
+                DiceRef::SameNameOther => {
+                    let st = other_study?;
+                    let item = item_named(st, name)?;
+                    let (m, mg, n) = reference_mask(st, item, Some(other))?;
+                    (resampled(&m, &mg, g), n)
+                }
+                DiceRef::Item { .. } => fixed.clone()?,
+                DiceRef::None => return None,
+            };
+            Some((crate::motion::dice(mask, &reference.0)?, reference.1))
+        };
         let mut rows: Vec<StatRow> = Vec::new();
         for (si, set) in study.structure_sets.iter().enumerate() {
             let active = si == self.slots[slot].active_structs;
@@ -142,11 +268,13 @@ impl ViewerApp {
                             grey: None,
                             point: Some(p),
                             status: None,
+                            dice: None,
                         };
                     }
                     let st = Stack::from_roi(roi, &grid);
                     let mask = st.rasterize(grid.dims);
                     let (voxels, grey) = measure(&mask, grid.dims, Some(vol));
+                    let dice = dice_of(&mask, &roi.name, &grid, &fixed_display);
                     StatRow {
                         name: roi.name.clone(),
                         color: roi.color,
@@ -160,6 +288,7 @@ impl ViewerApp {
                         grey,
                         point: None,
                         status: None,
+                        dice,
                     }
                 })
                 .collect();
@@ -175,12 +304,18 @@ impl ViewerApp {
         for ser in &study.seg_series {
             let dims = ser.grid.dims;
             let on_display = ser.grid.matches(&grid);
+            let fixed_here = if on_display {
+                fixed_display.clone()
+            } else {
+                fixed_on(&ser.grid)
+            };
             let measured: Vec<StatRow> = ser
                 .segs
                 .par_iter()
                 .map(|seg| {
                     let (voxels, grey) =
                         measure(&seg.mask, dims, if on_display { Some(vol) } else { None });
+                    let dice = dice_of(&seg.mask, &seg.name, &ser.grid, &fixed_here);
                     StatRow {
                         name: seg.name.clone(),
                         color: seg.color,
@@ -194,6 +329,7 @@ impl ViewerApp {
                         grey,
                         point: None,
                         status: None,
+                        dice,
                     }
                 })
                 .collect();
@@ -205,7 +341,7 @@ impl ViewerApp {
     fn stats_csv(rows: &[StatRow]) -> String {
         let mut s = String::from(
             "name,type,representation,planimetry_cm3,voxel_cm3,voxels,slices,points,\
-             grey_min,grey_mean,grey_max,derived,point_mm\n",
+             grey_min,grey_mean,grey_max,dice,dice_reference,derived,point_mm\n",
         );
         for r in rows {
             let g = |i: usize| match r.grey {
@@ -216,8 +352,12 @@ impl ViewerApp {
                 Some(p) => format!("{:.3} {:.3} {:.3}", p.x, p.y, p.z),
                 None => String::new(),
             };
+            let (dice, dice_ref) = match &r.dice {
+                Some((d, name)) => (format!("{d:.4}"), format!("\"{}\"", name.replace('"', "'"))),
+                None => (String::new(), String::new()),
+            };
             s.push_str(&format!(
-                "\"{}\",{},{},{},{:.3},{},{},{},{},{},{},{},{}\n",
+                "\"{}\",{},{},{},{:.3},{},{},{},{},{},{},{},{},{},{}\n",
                 r.name.replace('"', "'"),
                 r.roi_type,
                 r.repr,
@@ -232,6 +372,8 @@ impl ViewerApp {
                 g(0),
                 g(1),
                 g(2),
+                dice,
+                dice_ref,
                 r.status.map(|s| s.label()).unwrap_or(""),
                 place
             ));
@@ -244,7 +386,11 @@ impl ViewerApp {
             return;
         };
         if self.stats_dialog.as_ref().is_some_and(|d| d.stale) {
-            let rows = self.stats_rows(slot);
+            let dice_ref = self
+                .stats_dialog
+                .as_ref()
+                .map_or(DiceRef::None, |d| d.dice_ref);
+            let rows = self.stats_rows(slot, dice_ref);
             let gen = self.settings_gen;
             if let Some(d) = &mut self.stats_dialog {
                 d.rows = rows;
@@ -252,7 +398,23 @@ impl ViewerApp {
                 d.stale = false;
             }
         }
-        let comparison = self.comparison;
+        let has = [self.slots[0].study.is_some(), self.slots[1].study.is_some()];
+        let other_loaded = has[1 - slot.min(1)];
+        // Every structure and segment of both datasets, as the Dice
+        // reference picker lists them.
+        let references: Vec<(DiceRef, String)> = (0..2)
+            .filter(|s| has[*s])
+            .flat_map(|s| {
+                self.combine_candidates(s)
+                    .into_iter()
+                    .map(move |(item, label)| {
+                        (
+                            DiceRef::Item { slot: s, item },
+                            format!("{}: {label}", SLOT_NAMES[s]),
+                        )
+                    })
+            })
+            .collect();
         let current_gen = self.settings_gen;
         let mut open = true;
         let mut close = false;
@@ -267,16 +429,7 @@ impl ViewerApp {
             &mut open,
             detach::WinOpts::width(700.0),
             |ui| {
-                if comparison {
-                    ui.horizontal(|ui| {
-                        ui.label("Dataset:");
-                        for (s, name) in SLOT_NAMES.iter().enumerate() {
-                            if ui.selectable_label(d.slot == s, *name).clicked() {
-                                switch = Some(s);
-                            }
-                        }
-                    });
-                }
+                switch = seg_engines::dataset_row(ui, d.slot, has, true);
                 ui.label(
                     egui::RichText::new(
                         "Volume twice over - the area of the contours times the slice \
@@ -285,19 +438,64 @@ impl ViewerApp {
                     )
                     .weak(),
                 );
+                ui.horizontal(|ui| {
+                    ui.label("Dice against:");
+                    let text = match d.dice_ref {
+                        DiceRef::None => "(nothing)".to_string(),
+                        DiceRef::SameNameOther => {
+                            format!("the same name in dataset {}", SLOT_NAMES[1 - d.slot.min(1)])
+                        }
+                        DiceRef::Item { .. } => references
+                            .iter()
+                            .find(|(r, _)| *r == d.dice_ref)
+                            .map(|(_, l)| l.clone())
+                            .unwrap_or_else(|| "(gone)".into()),
+                    };
+                    let before = d.dice_ref;
+                    egui::ComboBox::from_id_salt("dice_ref")
+                        .selected_text(text)
+                        .width(260.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut d.dice_ref, DiceRef::None, "(nothing)");
+                            if other_loaded {
+                                ui.selectable_value(
+                                    &mut d.dice_ref,
+                                    DiceRef::SameNameOther,
+                                    format!(
+                                        "the same name in dataset {}",
+                                        SLOT_NAMES[1 - d.slot.min(1)]
+                                    ),
+                                );
+                            }
+                            for (r, label) in &references {
+                                ui.selectable_value(&mut d.dice_ref, *r, label);
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "What every row's Dice is measured against: the structure of \
+                             the same name in the other dataset (a propagation or a second \
+                             observer), or one structure for all rows (an auto-segmentation \
+                             against the manual one). Contours are rasterized onto this \
+                             dataset's lattice first.",
+                        );
+                    if d.dice_ref != before {
+                        refresh = true;
+                    }
+                });
                 if d.gen != current_gen {
                     ui.label(
                         egui::RichText::new(
                             "⚠ A structure has changed since this table was computed.",
                         )
-                        .color(egui::Color32::from_rgb(220, 170, 60)),
+                        .color(theme::warn_color(ui.visuals())),
                     );
                 }
                 ui.separator();
                 egui::ScrollArea::both().max_height(420.0).show(ui, |ui| {
                     egui::Grid::new("stats_grid")
                         .striped(true)
-                        .num_columns(9)
+                        .num_columns(10)
                         .show(ui, |ui| {
                             for h in [
                                 "Structure",
@@ -308,6 +506,7 @@ impl ViewerApp {
                                 "Slices",
                                 "Points",
                                 "Grey (min / mean / max)",
+                                "Dice",
                                 "Derived",
                             ] {
                                 ui.label(egui::RichText::new(h).strong());
@@ -315,8 +514,7 @@ impl ViewerApp {
                             ui.end_row();
                             for r in &d.rows {
                                 ui.horizontal(|ui| {
-                                    let c =
-                                        egui::Color32::from_rgb(r.color[0], r.color[1], r.color[2]);
+                                    let c = theme::rgb(r.color);
                                     ui.label(egui::RichText::new("■").color(c));
                                     ui.label(r.name.clone());
                                 });
@@ -354,6 +552,15 @@ impl ViewerApp {
                                     }
                                     None => "-".into(),
                                 });
+                                match &r.dice {
+                                    Some((dice, with)) => {
+                                        ui.label(format!("{dice:.3}"))
+                                            .on_hover_text(format!("against {with}"));
+                                    }
+                                    None => {
+                                        ui.label("-");
+                                    }
+                                }
                                 match r.status {
                                     Some(s) => {
                                         let c = s.color();
@@ -363,7 +570,7 @@ impl ViewerApp {
                                                 s.glyph(),
                                                 s.label()
                                             ))
-                                            .color(egui::Color32::from_rgb(c[0], c[1], c[2])),
+                                            .color(theme::rgb(c)),
                                         );
                                     }
                                     None => {

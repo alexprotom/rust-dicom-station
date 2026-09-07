@@ -1,4 +1,4 @@
-//! *Tools ▶ Compare structures*: geometric comparison of any two
+//! *Tools ▶ Structure comparison*: geometric comparison of any two
 //! structures - volumes, centroids and their offset, Dice, HD95 and mean
 //! surface distance.
 //!
@@ -12,7 +12,7 @@
 use crate::motion;
 use crate::volume::Grid;
 
-use super::combine_win::ItemRef;
+use super::combine::ItemRef;
 use super::*;
 
 /// The window's state.
@@ -283,7 +283,7 @@ impl ViewerApp {
         detach::tool_window(
             ctx,
             "compare",
-            "◑ Compare structures",
+            "◑ Structure comparison",
             &mut open,
             detach::WinOpts::default(),
             |ui| {
@@ -309,17 +309,7 @@ impl ViewerApp {
                                 }
                             }
                         }
-                        let sel = item
-                            .and_then(|i| list.get(i).cloned())
-                            .unwrap_or_else(|| "(pick)".into());
-                        egui::ComboBox::from_id_salt(salt.to_string())
-                            .width(260.0)
-                            .selected_text(sel)
-                            .show_ui(ui, |ui| {
-                                for (i, l) in list.iter().enumerate() {
-                                    ui.selectable_value(item, Some(i), l);
-                                }
-                            });
+                        index_picker(ui, salt, item, list);
                     });
                 };
                 // The candidate lists were computed for the slots as they

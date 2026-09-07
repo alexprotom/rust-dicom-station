@@ -41,9 +41,11 @@ where each leaf lives.
 rust-dicom-station
 │
 ├── Application (GUI, egui over wgpu)
-│   ├── Window chrome: menu bar, toolbar (W/L, presets, 3D, crosshair, reset), status bar
-│   ├── Side panel: the optional registration and simulation sections, and per
-│   │   dataset a DICOM tree - patient ▶ study ▶ modality ▶ series, with RT
+│   ├── Window chrome: menu bar, toolbar (W/L, presets, 3D, crosshair, reset, the draw row), status bar
+│   ├── Modules panel: the registration, simulation, Structure editor (insert,
+│   │   edit, combine), Structure auto tools (body contour and the three
+│   │   engines) and propagation sections
+│   ├── Side panel: per dataset a DICOM tree - patient ▶ study ▶ modality ▶ series, with RT
 │   │   structures, segmentations, 4D groups, dose and plans inside their study -
 │   │   plus dose display, planar images, spatial registrations, records, warnings
 │   ├── Views: 1 × 3 or 2 × 3 (comparison) linked MPR viewports, crosshair,
@@ -52,10 +54,10 @@ rust-dicom-station
 │   │   zoom / pan / W-L interaction, maximize, per-view caches
 │   ├── Tool windows (one shared skeleton; each can be docked over the views or
 │   │   detached into its own window of the operating system):
-│   │   3D structures, planar viewers, auto-segmentation, prompt segmentation,
-│   │   slice propagation, body contour, structure algebra, structure propagation,
-│   │   4D motion / ITV and its results, structure comparison, transfer by
-│   │   relationship, DVH, DRR, PACS, model manager, export, anonymizer, generator
+│   │   3D structures, planar viewers, structure motion and its results,
+│   │   structure comparison, structure details, transfer by relationship,
+│   │   DVH, DRR, PACS, model manager, export, anonymizer, generator,
+│   │   the auto-segmentation results
 │   ├── Data tree operations: rename every level; Shift-click ranges; copy / move /
 │   │   remove / export the ticked items; create / connect / copy / move / remove
 │   │   structure sets and segmentation series; move single structures / segments
@@ -218,6 +220,9 @@ src/
     glyphs.rs         the font stack (Hack as the last proportional fallback)
                       and the test that fails on a glyph egui cannot draw
     chrome.rs         menu bar, toolbar, status bar, help
+    widgets.rs        the small widgets every window reaches for: buttons
+                      with a tooltip, the glyph button, the index and
+                      structure pickers
     detach.rs         every tool window as a window of the operating system
                       (immediate viewport), titled and placed alike
     panels.rs         both edge panels: the shared show / hide machinery, the
@@ -245,33 +250,39 @@ src/
     contour_edit.rs   the contour tools' state machine: the ROI under the
                       tools, the working stack, drawing and nudging, contour
                       undo, the interpolation preview
-    contour_win.rs    the contour window: interpolation, per-slice copy /
-                      paste / delete / clear / thin, tidying, transforms,
-                      ROI type, the derived section
+    struct_tools.rs   the Structure editor module (the Insert structure
+                      section - empty structure, point, the generators in HU
+                      or SUV, shape, dose, field of view - and the Edit
+                      structure section: interpolation, per-slice copy /
+                      paste / delete / clear / thin, tidying, transforms, ROI
+                      type, the derived recipe) and the toolbar's draw row
+                      (the nine tools and the options of the one in hand)
     derived_app.rs    derived structures in the app: resolving operands by
                       name, the status cache, re-evaluation as a job, the
                       override rule
-    newroi_win.rs     the generators window (grey level in HU or SUV, shape,
-                      dose, field of view)
     livewire_app.rs   the live-wire tool: the slice's cost image and the
                       current anchor's tree, cached between frames
     poi.rs            points of interest: create at the crosshair or at a
                       structure's centre, localize, move, the localization
                       point
     stats_win.rs      the structure-details table and its CSV
-    seg_engines.rs    what the tool windows share: names and glyphs, the
+    seg_engines.rs    what the engine sections share: names and glyphs, the
                       dataset A / B row, device / model-folder / licence /
                       progress rows, result landing, the "still the same
                       dataset" check
-    body_win.rs       the body-contour window
-    combine_win.rs    the structure-algebra window: operands, margins, the recipe
-    prompt_seg.rs     prompt segmentation window and worker (SegVol)
+    auto_tools.rs     the Structure auto tools module: one dataset row and
+                      the body contour, auto-segmentation, prompt
+                      segmentation and slice propagation sections
+    body_win.rs       the body-contour section
+    combine.rs        the structure algebra as the editor's Combine structures
+                      section: operands, margins, the recipe
+    prompt_seg.rs     the prompt segmentation section and worker (SegVol)
     box_seg.rs        slice propagation: the box drawn in the viewport, the
                       preview / refine / propagate loop, the resident session (MedSAM2)
-    propagate_win.rs  the Structures propagation module: onto the other dataset,
+    propagate_win.rs  the Structure propagation module: onto the other dataset,
                       or onto every phase of a 4D group through workflow::group
                       or workflow::anchored (transforms kept for the next run)
-    motion_win.rs     the 4D motion / ITV window; the pipeline itself is
+    motion_win.rs     the Structure motion (4D / ITV) window; the pipeline itself is
                       workflow::motion
     motion_results.rs the motion results window: charts, tables, correlations,
                       QA, CSV, run-vs-run comparison
@@ -297,7 +308,8 @@ src/
   morphology.rs     binary-mask geometry in millimetres: exact anisotropic
                     distance transform, erode / dilate / open / close,
                     ellipsoidal margins, components, hole filling, the
-                    extruded-equipment test, box-blur smoothing                  Core
+                    extruded-equipment test, box-blur smoothing; the mask
+                    helpers everything shares (count, extent, surface walk)     Core
   rtstruct.rs       RT Structure Set parsing                                     DICOM
   dicomseg.rs       DICOM Segmentation: the segmentation-series model, SEG
                     reading, resampling between lattices, the SEG writer         DICOM
@@ -348,8 +360,9 @@ src/
                     recipes of a set, as JSON in the data folder              Seg
   contours.rs       planar contours as an editable representation: rings and
                     even-odd regions, the local supersampled boolean, the
-                    slice stack, contour ⇄ mask ⇄ RTSTRUCT, tidying,
-                    transforms, slice interpolation                              Seg
+                    slice stack, contour ⇄ mask ⇄ RTSTRUCT (one padded
+                    field traces every mask), tidying, transforms, slice
+                    interpolation                                               Seg
   segmentation.rs   voxel masks: brush, geodesic grow, undo, overlays,
                     label map ▶ segmentations, mask ⇄ RTSTRUCT contours          Seg
   structops.rs      structure algebra: the four boolean operations, margins,
@@ -450,13 +463,13 @@ src/
     engine.rs         backend choice, the encoded-slice cache, the one call
                       the user interface makes
 
-tests/             eighteen integration suites (see Testing); common/ holds the
-                   4D phantom fixture the workflow and MCP suites share
+tests/             the integration suites (see Testing); common/ holds the
+                   4D phantom fixture the workflow and MCP suites share, and
+                   ops_ref.rs, the naive reference kernels behind the MedSAM2
+                   op fixture
 examples/          autoseg_cli, autoseg_probe, body_cli, segvol_cli, segvol_probe,
-                   medsam2_cli, medsam2_probe; common/ holds what they share
-tools/             gen_reference_activations.py, gen_ops_fixtures.py - the two
-                   PyTorch scripts that produce the fixtures and reference dumps
-                   the MedSAM2 tests compare against (never run at build time)
+                   medsam2_cli, medsam2_probe, gen_ops_fixtures (writes the op
+                   fixture); common/ holds what the CLIs share
 installer/         the Windows installer, its own workspace (see its README);
                    built by the release workflow
 ```
@@ -501,7 +514,7 @@ into both executables as a resource - which is what Explorer, the task bar,
 the start-menu shortcut and *Add or remove programs* read - and the release
 workflow copies the PNG into the AppImage as the Linux desktop icon.
 
-### The tool windows
+### The tool windows and the modules
 
 Every secondary window is drawn through `app/detach.rs::tool_window`, which
 puts its contents in an *immediate viewport* - a real top-level window of the
@@ -515,19 +528,32 @@ whole program reads as `Rust DICOM Station: <what this window is>`. The
 transient confirmations - *Error*, *Done*, *Rename* - stay inside the main
 window, being answers to the last click rather than tools.
 
-The segmentation-type tools - body contour, structure algebra,
-auto-segmentation, prompt segmentation, slice propagation, 4D motion - are
-different conversations but the same kind of tool, and `app/seg_engines.rs`
-makes them alike: one `ToolInfo` per tool gives the glyph, the window title
-(`🔬 Auto-segmentation - dataset A`), the menu entry and the small sidebar
-button; every window stays open while its run is in flight, the button row
-becoming the progress row (device, bar, message, Cancel); the sections come
-in the same order (description, the tool's inputs, `Name`, a collapsed
-**Options** with the shared `Compute` and `Model folder` rows, the licence
-line, `▶ Segment` / `▶ Propagate` / `▶ Contour`, `Close`, status); rows a
-tool has no use for are not shown; and results land the same way
-(`add_segmentation`), a run that finishes after its dataset was replaced
-being discarded with the same message.
+The engine-type tools - body contour, auto-segmentation, prompt
+segmentation, slice propagation - are different conversations but the
+same kind of tool, and `app/seg_engines.rs` makes them alike: one
+`ToolInfo` per tool gives the glyph and the name; every section stays as it
+is while its run is in flight, the button row becoming the progress row
+(device, bar, message, Cancel); the parts come in the same order
+(description, the tool's inputs, `Name`, a collapsed **Options** with the
+shared `Compute` and `Model folder` rows, the licence line, `▶ Segment` /
+`▶ Propagate` / `▶ Contour`, status); rows a tool has no use for are not
+shown; and results land the same way (`add_segmentation`), a run that
+finishes after its dataset was replaced being discarded with the same
+message. Since 2026-09-07 they are not windows but the four sections of
+the **Structure auto tools** module (`app/auto_tools.rs`), under one
+dataset row; the auto-segmentation *results* list, which appears once
+per run, is still a window.
+
+Not everything is a window. Inserting, editing and combining structures
+are sections of the **Structure editor** module (`app/struct_tools.rs`,
+`app/combine.rs`) in the right panel, drawn below the simulation section:
+what a planner keeps at hand while contouring should not need a window to
+be found, and a folded section costs no screen. A context menu's *Edit in
+the Structure editor* or *∪ Combine* and a derived structure's *Edit
+recipe* switch the module on and unfold the section (`reveal_editor`). The
+editor works on one dataset (the A / B row at its top). The drawing tools
+themselves are the toolbar's draw row, unfolded by *✏ Draw structure*
+(`draw_strip`), acting on whichever view the pointer is in.
 
 ## Background jobs
 
@@ -633,7 +659,7 @@ its `ndarray` CPU backend, with the wgpu backend added by the cargo feature
 
 ## Testing
 
-Eighteen integration suites plus in-module unit tests run against the same
+Twenty-two integration suites plus in-module unit tests run against the same
 code paths the GUI uses, with no external data or tooling: the analytic
 phantom round trip (**synthetic_study**), simulate → export → reload
 (**simulate_export**), rigid and B-spline recovery of known transforms
@@ -648,11 +674,20 @@ Gaussian phantom (**dvh**), structure algebra (**structops**), and the three
 engines assembled and run without a download - a miniature nnU-Net with the
 exact checkpoint naming (**autoseg**), and synthesized checkpoints with the
 real key names and shapes for **segvol** and **medsam2**, so genuine forward
-passes run in CI. **reference** asserts bit-level parity of the
-MedSAM2 port with the Python implementation (worst 5.4e-6 relative) from a
-dump made by `tools/gen_reference_activations.py`, and skips when the dump
-is absent: `MEDSAM2_REF=/tmp/ref cargo test --release --test reference`.
-End-to-end runs against the real weights are `#[ignore]`d.
+passes run in CI. The MedSAM2 kernels' arithmetic is held to PyTorch's by
+`tests/data/medsam2-ops.safetensors`, a file PyTorch, PIL and SAM 2 wrote
+themselves: 74 small tensors recording what each primitive returns on a
+random input. **ops_fixtures** re-derives every output in that file from
+its inputs with the naive reference kernels of `tests/common/ops_ref.rs` -
+textbook loops in `f64`, sharing nothing with the engine - and matches them
+to a few 1e-6 (the 8-bit PIL resize exactly), which is what lets
+`cargo run --example gen_ops_fixtures -- <path>` regenerate the fixture
+without Python while it still stands for the frameworks' semantics. The
+committed file stays the one PyTorch wrote. The repository holds no Python
+at all; the end-to-end activation dump of the 0.8 releases, which ran Meta's
+own sam2 package, is gone with it, and the port's fidelity claim rests on
+the per-operation fixtures, the synthesized-checkpoint forward passes and
+the runs against the real weights, which are `#[ignore]`d.
 
 Three suites need the `mcp` feature: **workflow** runs the 4D pipeline
 headless on a three-phase phantom whose target moves 0 / 6 / 3 mm and checks

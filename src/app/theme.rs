@@ -7,6 +7,11 @@
 
 use super::*;
 
+/// A structure's or segment's stored `[r, g, b]` as an egui colour.
+pub(super) fn rgb(c: [u8; 3]) -> Color32 {
+    Color32::from_rgb(c[0], c[1], c[2])
+}
+
 /// Fill of the area around and between the viewports.
 pub(super) fn backdrop_color(visuals: &egui::Visuals) -> Color32 {
     if visuals.dark_mode {

@@ -60,7 +60,7 @@ impl ViewerApp {
         let costs = Costs::new(&img, w, h, window);
         // A new slice is a new curve: the old anchor pointed at pixels of a
         // picture that is no longer on screen.
-        let training = self.wire.as_ref().is_some_and(|s| s.training);
+        let training = self.wire_learn;
         self.wire = Some(WireState {
             slot,
             plane,

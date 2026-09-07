@@ -37,7 +37,7 @@ impl ViewerApp {
             status: None,
         };
         // Pre-pick reference structures by the obvious name.
-        let guess = |cands: &[(super::combine_win::ItemRef, String)]| {
+        let guess = |cands: &[(super::combine::ItemRef, String)]| {
             cands.iter().position(|(_, l)| {
                 let l = l.to_lowercase();
                 l.contains("heart") || l.contains("herz")
@@ -168,17 +168,7 @@ impl ViewerApp {
                              salt: &str| {
                     ui.horizontal(|ui| {
                         ui.label(label);
-                        let sel = item
-                            .and_then(|i| list.get(i).cloned())
-                            .unwrap_or_else(|| "(pick)".into());
-                        egui::ComboBox::from_id_salt(salt.to_string())
-                            .width(260.0)
-                            .selected_text(sel)
-                            .show_ui(ui, |ui| {
-                                for (i, l) in list.iter().enumerate() {
-                                    ui.selectable_value(item, Some(i), l);
-                                }
-                            });
+                        index_picker(ui, salt, item, list);
                     });
                 };
                 combo(
@@ -231,7 +221,7 @@ impl ViewerApp {
                 d.status = None;
             }
             if let Some(slot) = self.transfer_dialog.as_ref().map(|d| d.src_slot) {
-                let guess = |cands: Vec<(super::combine_win::ItemRef, String)>| {
+                let guess = |cands: Vec<(super::combine::ItemRef, String)>| {
                     cands.iter().position(|(_, l)| {
                         let l = l.to_lowercase();
                         l.contains("heart") || l.contains("herz")

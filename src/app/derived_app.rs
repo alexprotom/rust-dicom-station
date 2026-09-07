@@ -18,7 +18,7 @@
 use crate::derived::{self, Derived, Expr, Status};
 use crate::structops::{self, Operand, Recipe};
 
-use super::combine_win::ItemRef;
+use super::combine::ItemRef;
 use super::*;
 
 /// The statuses of one structure set, computed once per change rather than
@@ -160,12 +160,7 @@ impl ViewerApp {
     // -- writing -----------------------------------------------------------
 
     fn write_derived(&mut self, slot: usize, set: usize, roi: usize, d: Option<&Derived>) {
-        if let Some(r) = self.slots[slot]
-            .study
-            .as_mut()
-            .and_then(|st| st.structure_sets.get_mut(set))
-            .and_then(|ss| ss.rois.get_mut(roi))
-        {
+        if let Some(r) = self.slots[slot].roi_mut(set, roi) {
             r.description = d.map(|d| d.encode()).unwrap_or_default();
         }
         self.settings_gen += 1;
@@ -314,12 +309,7 @@ impl ViewerApp {
         };
         d.hash = result.hash;
         d.overridden = false;
-        if let Some(r) = self.slots[slot]
-            .study
-            .as_mut()
-            .and_then(|st| st.structure_sets.get_mut(result.set))
-            .and_then(|ss| ss.rois.get_mut(result.roi))
-        {
+        if let Some(r) = self.slots[slot].roi_mut(result.set, result.roi) {
             r.contours = fresh.contours;
         }
         self.write_derived(slot, result.set, result.roi, Some(&d));
@@ -357,17 +347,11 @@ impl ViewerApp {
             return;
         };
         let name = self.slots[slot]
-            .study
-            .as_ref()
-            .and_then(|st| st.structure_sets.get(set))
-            .and_then(|ss| ss.rois.get(roi))
+            .roi(set, roi)
             .map(|r| r.name.clone())
             .unwrap_or_default();
         let roi_type = self.slots[slot]
-            .study
-            .as_ref()
-            .and_then(|st| st.structure_sets.get(set))
-            .and_then(|ss| ss.rois.get(roi))
+            .roi(set, roi)
             .map(|r| r.roi_type.clone())
             .unwrap_or_else(|| "ORGAN".into());
         let mut rows = Vec::new();
@@ -380,7 +364,7 @@ impl ViewerApp {
                 ));
                 return;
             };
-            rows.push(super::combine_win::Row {
+            rows.push(super::combine::Row {
                 item,
                 margin: dep.margin,
                 per_direction: !dep.margin.is_uniform(),
@@ -395,7 +379,7 @@ impl ViewerApp {
             dlg.margin_per_direction = !d.expr.margin.is_uniform();
             dlg.cleanup = d.expr.cleanup;
             dlg.name = name;
-            dlg.output = super::combine_win::Output::Structure;
+            dlg.output = super::combine::Output::Structure;
             dlg.roi_type = roi_type;
             dlg.derived = true;
             dlg.status = Some(

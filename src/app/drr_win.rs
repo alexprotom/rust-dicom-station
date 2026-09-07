@@ -126,7 +126,7 @@ impl ViewerApp {
         let mut beam_pick: Option<(usize, usize)> = None;
 
         // Read-only facts about the datasets, gathered before the closure.
-        let loaded: [bool; 2] = [self.slots[0].has_volume(), self.slots[1].has_volume()];
+        let loaded: [bool; 2] = self.volume_slots();
         let mut d = self.drr_dialog.take().unwrap();
         let beams: Vec<(usize, usize, String)> = self.slots[d.slot]
             .study
@@ -243,11 +243,11 @@ impl ViewerApp {
                             for v in [&mut g.isocenter.x, &mut g.isocenter.y, &mut g.isocenter.z] {
                                 ui.add(egui::DragValue::new(v).speed(1.0).suffix(" mm"));
                             }
-                            if ui
-                                .small_button("⌖")
-                                .on_hover_text("Take the isocentre from this dataset's crosshair")
-                                .clicked()
-                            {
+                            if small_tip_button(
+                                ui,
+                                "⌖",
+                                "Take the isocentre from this dataset's crosshair",
+                            ) {
                                 set_iso = true;
                             }
                         });
@@ -435,11 +435,7 @@ impl ViewerApp {
         if running || (!close && open) {
             self.drr_dialog = Some(d);
         }
-        if cancel {
-            if let Some(job) = &self.drr_job {
-                job.progress.cancel();
-            }
-        }
+        cancel_if(cancel, &self.drr_job);
         if run {
             self.start_drr();
         }

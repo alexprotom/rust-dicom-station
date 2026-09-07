@@ -1,6 +1,9 @@
 # Making a structure without drawing it
 
-*Tools ▶ ✚ New structure* - a grey-level window, a shape or a dose level.
+The *Insert structure* section of the Structure editor (*Modules ▶
+Structure editor*, right panel) - after *+ Empty structure* and *✱ Point of
+interest*, the generators: a grey-level window, a shape, a dose level or
+the field of view.
 These are the cheap generators every planning system has, and the arithmetic
 behind them is a few lines each ([`src/generate.rs`](architecture.md#module-map)).
 What matters is where the result lands: an ordinary RT structure, editable
@@ -16,7 +19,7 @@ contrast inside the liver rather than every vessel in the abdomen.
 
 Three bone presets sit next to the fields: **high** for head and neck (above
 250 HU), **medium** for thorax (200 HU), **low** for pelvis (150 HU). They
-set the window; the rest of the dialog is unchanged, so a preset is a
+set the window; the rest of the section is unchanged, so a preset is a
 starting point and not a different tool.
 
 On a PET series that carries what an SUV takes - the pixels in Bq/mL, the

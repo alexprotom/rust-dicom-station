@@ -101,8 +101,8 @@ pub fn centroid_mm(mask: &[u8], grid: &Grid) -> Option<Vec3> {
 
 /// Volume of a mask on `grid`, cm³.
 pub fn volume_cm3(mask: &[u8], grid: &Grid) -> f64 {
-    let vox = grid.spacing[0] * grid.spacing[1] * grid.spacing[2] / 1000.0;
-    mask.iter().filter(|&&v| v != 0).count() as f64 * vox
+    let vox = grid.voxel_cm3();
+    crate::morphology::count_set(mask) as f64 * vox
 }
 
 /// Largest pairwise distance between the points - the peak-to-peak
@@ -303,6 +303,23 @@ impl Overlap {
     }
 }
 
+/// The Dice coefficient of two masks on one lattice, `2|A ∩ B| / (|A| + |B|)`;
+/// `None` when they differ in size or either is empty.
+pub fn dice(a: &[u8], b: &[u8]) -> Option<f64> {
+    if a.len() != b.len() {
+        return None;
+    }
+    let (na, nb, nab) = a
+        .par_iter()
+        .zip(b.par_iter())
+        .map(|(&x, &y)| {
+            let (x, y) = (x != 0, y != 0);
+            (x as u64, y as u64, (x && y) as u64)
+        })
+        .reduce(|| (0, 0, 0), |p, q| (p.0 + q.0, p.1 + q.1, p.2 + q.2));
+    (na > 0 && nb > 0).then(|| 2.0 * nab as f64 / (na + nb) as f64)
+}
+
 /// Compare two masks on the same grid. `None` when either mask is empty.
 pub fn overlap(a: &[u8], b: &[u8], grid: &Grid) -> Option<Overlap> {
     let n = grid.dims[0] * grid.dims[1] * grid.dims[2];
@@ -343,7 +360,7 @@ pub fn overlap(a: &[u8], b: &[u8], grid: &Grid) -> Option<Overlap> {
     let (_, p95, _) = dists.select_nth_unstable_by(k, |x, y| x.total_cmp(y));
     let hd95 = *p95 as f64;
 
-    let vox = grid.spacing[0] * grid.spacing[1] * grid.spacing[2] / 1000.0;
+    let vox = grid.voxel_cm3();
     Some(Overlap {
         vol_a_cm3: na as f64 * vox,
         vol_b_cm3: nb as f64 * vox,
@@ -367,32 +384,8 @@ pub fn surface_points(mask: &[u8], grid: &Grid, max_points: usize) -> Vec<Vec3> 
     if mask.len() != nx * ny * nz {
         return Vec::new();
     }
-    let idx = |i: usize, j: usize, k: usize| k * nx * ny + j * nx + i;
     let mut all: Vec<[usize; 3]> = Vec::new();
-    for k in 0..nz {
-        for j in 0..ny {
-            for i in 0..nx {
-                if mask[idx(i, j, k)] == 0 {
-                    continue;
-                }
-                let surface = i == 0
-                    || j == 0
-                    || k == 0
-                    || i == nx - 1
-                    || j == ny - 1
-                    || k == nz - 1
-                    || mask[idx(i - 1, j, k)] == 0
-                    || mask[idx(i + 1, j, k)] == 0
-                    || mask[idx(i, j - 1, k)] == 0
-                    || mask[idx(i, j + 1, k)] == 0
-                    || mask[idx(i, j, k - 1)] == 0
-                    || mask[idx(i, j, k + 1)] == 0;
-                if surface {
-                    all.push([i, j, k]);
-                }
-            }
-        }
-    }
+    crate::morphology::for_each_surface_voxel(mask, grid.dims, |_, ijk| all.push(ijk));
     let step = if max_points == 0 || all.len() <= max_points {
         1
     } else {
@@ -516,33 +509,9 @@ fn collect_surface_distances(
     dims: [usize; 3],
     out: &mut Vec<f32>,
 ) {
-    let [nx, ny, nz] = dims;
-    let idx = |i: usize, j: usize, k: usize| k * nx * ny + j * nx + i;
-    for k in 0..nz {
-        for j in 0..ny {
-            for i in 0..nx {
-                let c = idx(i, j, k);
-                if mask[c] == 0 {
-                    continue;
-                }
-                let surface = i == 0
-                    || j == 0
-                    || k == 0
-                    || i == nx - 1
-                    || j == ny - 1
-                    || k == nz - 1
-                    || mask[idx(i - 1, j, k)] == 0
-                    || mask[idx(i + 1, j, k)] == 0
-                    || mask[idx(i, j - 1, k)] == 0
-                    || mask[idx(i, j + 1, k)] == 0
-                    || mask[idx(i, j, k - 1)] == 0
-                    || mask[idx(i, j, k + 1)] == 0;
-                if surface {
-                    out.push(dist2_other[c].max(0.0).sqrt());
-                }
-            }
-        }
-    }
+    crate::morphology::for_each_surface_voxel(mask, dims, |c, _| {
+        out.push(dist2_other[c].max(0.0).sqrt());
+    });
 }
 
 // ---- the report ------------------------------------------------------------
@@ -935,6 +904,16 @@ mod tests {
         assert_eq!(synchrony_level(0.951), "very high");
         assert_eq!(synchrony_level(-0.839), "high");
         assert_eq!(synchrony_level(0.503), "moderate");
+    }
+
+    #[test]
+    fn dice_counts_the_overlap_and_refuses_empty_or_mismatched_masks() {
+        let a = [1u8, 1, 1, 0, 0, 0];
+        let b = [0u8, 1, 1, 1, 0, 0];
+        assert!((dice(&a, &b).unwrap() - 4.0 / 6.0).abs() < 1e-12);
+        assert!((dice(&a, &a).unwrap() - 1.0).abs() < 1e-12);
+        assert_eq!(dice(&a, &[0u8; 6]), None, "an empty mask has no Dice");
+        assert_eq!(dice(&a, &b[..5]), None, "different lattices");
     }
 
     #[test]

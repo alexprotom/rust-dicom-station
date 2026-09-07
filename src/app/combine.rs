@@ -1,4 +1,5 @@
-//! The structure-algebra window: combining contours and segmentations.
+//! The structure algebra - *Combine structures* in the Structure editor:
+//! combining contours and segmentations.
 //!
 //! Its one job that the core module ([`crate::structops`]) cannot do is
 //! deciding *what the operands are*. Everything else - the four operations,
@@ -54,7 +55,7 @@ impl Output {
     }
 }
 
-/// The window's state; it stays open across runs.
+/// The section's state; it survives runs and a folded section.
 pub(super) struct CombineDialog {
     pub slot: usize,
     pub op: BoolOp,
@@ -195,7 +196,24 @@ impl ViewerApp {
         }
     }
 
-    /// Tools ▶ combine structures: open the window for `slot`, optionally
+    /// The section's state for `slot`, made on first use.
+    fn combine_state(&mut self, slot: usize) -> &mut CombineDialog {
+        self.combine_dialog.get_or_insert_with(|| CombineDialog {
+            slot,
+            op: BoolOp::Union,
+            rows: Vec::new(),
+            margin: Margin::NONE,
+            margin_per_direction: false,
+            cleanup: Cleanup::default(),
+            name: "Combined".to_string(),
+            output: Output::Segment,
+            roi_type: "ORGAN".to_string(),
+            derived: false,
+            status: None,
+        })
+    }
+
+    /// Open the editor's *Combine structures* section on `slot`, optionally
     /// seeded with the items the tree had ticked.
     pub(super) fn open_combine_dialog(&mut self, slot: usize, seed: Vec<ItemRef>) {
         // Every operand is rasterised onto the displayed volume's lattice.
@@ -210,28 +228,28 @@ impl ViewerApp {
                 per_direction: false,
             })
             .collect();
-        match &mut self.combine_dialog {
-            Some(d) if self.combine_job.is_none() => {
-                d.slot = slot;
-                if !rows.is_empty() {
-                    d.rows = rows;
-                }
+        let idle = self.combine_job.is_none();
+        let d = self.combine_state(slot);
+        if idle {
+            d.slot = slot;
+            if !rows.is_empty() {
+                d.rows = rows;
             }
-            Some(_) => {}
-            None => {
-                self.combine_dialog = Some(CombineDialog {
-                    slot,
-                    op: BoolOp::Union,
-                    rows,
-                    margin: Margin::NONE,
-                    margin_per_direction: false,
-                    cleanup: Cleanup::default(),
-                    name: "Combined".to_string(),
-                    output: Output::Segment,
-                    roi_type: "ORGAN".to_string(),
-                    derived: false,
-                    status: None,
-                });
+        }
+        self.reveal_editor(slot, super::struct_tools::Section::Combine);
+    }
+
+    /// The editor moved to another dataset: the operands belonged to the
+    /// old one and are dropped, unless a run is still using them.
+    pub(super) fn combine_switch_slot(&mut self, slot: usize) {
+        if self.combine_job.is_some() {
+            return;
+        }
+        if let Some(d) = &mut self.combine_dialog {
+            if d.slot != slot {
+                d.slot = slot;
+                d.rows.clear();
+                d.status = None;
             }
         }
     }
@@ -384,16 +402,17 @@ impl ViewerApp {
         self.settings_gen += 1;
     }
 
-    /// The tool window.
-    pub(super) fn combine_window(&mut self, ctx: &egui::Context) {
-        let Some(slot) = self.combine_dialog.as_ref().map(|d| d.slot) else {
-            return;
-        };
-        if !self.slots[slot].has_volume() {
-            self.combine_dialog = None;
-            return;
+    /// The *Combine structures* section of the editor.
+    pub(super) fn combine_section(&mut self, ui: &mut egui::Ui) {
+        let slot = self.tools.slot;
+        // A run keeps the operands it started on; the section follows the
+        // editor's dataset only between runs.
+        if self.combine_job.is_none() {
+            self.combine_switch_slot(slot);
         }
-        // Settled before the dialog is borrowed mutably for the frame.
+        self.combine_state(slot);
+        let slot = self.combine_dialog.as_ref().map_or(slot, |d| d.slot);
+        // Settled before the state is borrowed mutably for the frame.
         let candidates = self.combine_candidates(slot);
         let labels: Vec<String> = self
             .combine_dialog
@@ -405,8 +424,6 @@ impl ViewerApp {
                     .collect()
             })
             .unwrap_or_default();
-        let has = [self.slots[0].has_volume(), self.slots[1].has_volume()];
-        let mut switch: Option<usize> = None;
         let Some(d) = &mut self.combine_dialog else {
             return;
         };
@@ -414,248 +431,219 @@ impl ViewerApp {
             .combine_job
             .as_ref()
             .filter(|_| self.combine_slot == slot);
-        let mut open = true;
-        let (mut run, mut close, mut cancel) = (false, false, false);
+        let (mut run, mut cancel) = (false, false);
         let mut move_row: Option<(usize, isize)> = None;
         let mut drop_row: Option<usize> = None;
-        detach::tool_window(
-            ctx,
-            "combine",
-            COMBINE.title(slot),
-            &mut open,
-            detach::WinOpts::width(470.0),
-            |ui| {
-                switch = dataset_row(ui, slot, has, running.is_none());
-                ui.label(
-                    "Builds one structure out of others: union, intersection, subtraction \
-                     or symmetric difference, with a margin on any of them. Contours and \
-                     segmentations mix freely - each is rasterized onto the displayed \
-                     series first.",
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Operation:");
+            egui::ComboBox::from_id_salt("combine_op")
+                .selected_text(d.op.label())
+                .show_ui(ui, |ui| {
+                    for o in BoolOp::ALL {
+                        ui.selectable_value(&mut d.op, o, o.label());
+                    }
+                })
+                .response
+                .on_hover_text(
+                    "Union, intersection, subtraction or symmetric difference, with a \
+                     margin on any operand. Contours and segmentations mix freely - each \
+                     is rasterized onto the displayed series first.",
                 );
-                ui.separator();
-
-                ui.horizontal(|ui| {
-                    ui.label("Operation:");
-                    egui::ComboBox::from_id_salt("combine_op")
-                        .selected_text(d.op.label())
+            if d.op == BoolOp::Subtract {
+                ui.weak("the first row is what the rest are taken out of");
+            }
+        });
+        if candidates.is_empty() {
+            ui.label(
+                egui::RichText::new("This dataset has no structures or segments to combine yet.")
+                    .color(warn_color(ui.visuals())),
+            );
+        }
+        // ---- the operand list ------------------------------------------
+        let n_rows = d.rows.len();
+        for (i, row) in d.rows.iter_mut().enumerate() {
+            ui.push_id(i, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!("{}.", i + 1));
+                    let current = labels.get(i).cloned().unwrap_or_default();
+                    egui::ComboBox::from_id_salt("pick")
+                        .selected_text(shorten(&current))
+                        .width(160.0)
                         .show_ui(ui, |ui| {
-                            for o in BoolOp::ALL {
-                                ui.selectable_value(&mut d.op, o, o.label());
+                            for (r, label) in &candidates {
+                                ui.selectable_value(&mut row.item, *r, label);
                             }
                         });
-                });
-                if d.op == BoolOp::Subtract {
-                    ui.weak("The first row is what the rest are taken out of.");
-                }
-
-                ui.add_space(4.0);
-                if candidates.is_empty() {
-                    ui.label(
-                        egui::RichText::new(
-                            "This dataset has no structures or segments to combine yet.",
-                        )
-                        .color(warn_color(ui.visuals())),
-                    );
-                }
-                // ---- the operand list --------------------------------
-                let n_rows = d.rows.len();
-                for (i, row) in d.rows.iter_mut().enumerate() {
-                    ui.push_id(i, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("{}.", i + 1));
-                            let current = labels.get(i).cloned().unwrap_or_default();
-                            egui::ComboBox::from_id_salt("pick")
-                                .selected_text(shorten(&current))
-                                .width(210.0)
-                                .show_ui(ui, |ui| {
-                                    for (r, label) in &candidates {
-                                        ui.selectable_value(&mut row.item, *r, label);
-                                    }
-                                });
-                            if !row.per_direction {
-                                let mut mm = row.margin.right;
-                                if ui
-                                    .add(
-                                        egui::DragValue::new(&mut mm)
-                                            .range(-200.0..=200.0)
-                                            .speed(0.5)
-                                            .prefix("margin ")
-                                            .suffix(" mm"),
-                                    )
-                                    .on_hover_text(
-                                        "Grow (+) or shrink (−) this operand before it is \
-                                         combined. A crop is an intersection whose second \
-                                         operand was shrunk.",
-                                    )
-                                    .changed()
-                                {
-                                    row.margin = Margin::uniform(mm);
-                                }
-                            } else {
-                                ui.weak(row.margin.describe());
-                            }
-                            if ui
-                                .selectable_label(row.per_direction, "R/L/A/P/S/I")
-                                .on_hover_text("Give the margin a value per patient direction")
-                                .clicked()
-                            {
-                                row.per_direction = !row.per_direction;
-                            }
-                            if ui.button("↑").clicked() && i > 0 {
-                                move_row = Some((i, -1));
-                            }
-                            if ui.button("↓").clicked() && i + 1 < n_rows {
-                                move_row = Some((i, 1));
-                            }
-                            if ui.button("✖").clicked() {
-                                drop_row = Some(i);
-                            }
-                        });
-                        if row.per_direction {
-                            directional_margin(ui, &mut row.margin);
+                    if !row.per_direction {
+                        let mut mm = row.margin.right;
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut mm)
+                                    .range(-200.0..=200.0)
+                                    .speed(0.5)
+                                    .prefix("margin ")
+                                    .suffix(" mm"),
+                            )
+                            .on_hover_text(
+                                "Grow (+) or shrink (−) this operand before it is combined. A \
+                                 crop is an intersection whose second operand was shrunk.",
+                            )
+                            .changed()
+                        {
+                            row.margin = Margin::uniform(mm);
                         }
-                    });
-                }
-                ui.horizontal(|ui| {
+                    } else {
+                        ui.weak(row.margin.describe());
+                    }
                     if ui
-                        .add_enabled(!candidates.is_empty(), egui::Button::new("➕ Add"))
+                        .add(egui::Button::selectable(row.per_direction, "R/L/A/P/S/I").small())
+                        .on_hover_text("Give the margin a value per patient direction")
                         .clicked()
                     {
-                        d.rows.push(Row {
-                            item: candidates[0].0,
-                            margin: Margin::NONE,
-                            per_direction: false,
-                        });
+                        row.per_direction = !row.per_direction;
                     }
-                    if ui.button("Clear").clicked() {
-                        d.rows.clear();
+                    if ui.small_button("↑").clicked() && i > 0 {
+                        move_row = Some((i, -1));
                     }
-                });
-
-                ui.separator();
-                ui.collapsing("Result", |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Margin on the result:");
-                        if !d.margin_per_direction {
-                            let mut mm = d.margin.right;
-                            if ui
-                                .add(
-                                    egui::DragValue::new(&mut mm)
-                                        .range(-200.0..=200.0)
-                                        .speed(0.5)
-                                        .suffix(" mm"),
-                                )
-                                .changed()
-                            {
-                                d.margin = Margin::uniform(mm);
-                            }
-                        } else {
-                            ui.weak(d.margin.describe());
-                        }
-                        if ui
-                            .selectable_label(d.margin_per_direction, "R/L/A/P/S/I")
-                            .clicked()
-                        {
-                            d.margin_per_direction = !d.margin_per_direction;
-                        }
-                    });
-                    if d.margin_per_direction {
-                        directional_margin(ui, &mut d.margin);
+                    if ui.small_button("↓").clicked() && i + 1 < n_rows {
+                        move_row = Some((i, 1));
                     }
-                    ui.checkbox(&mut d.cleanup.fill_holes, "Fill interior cavities")
-                        .on_hover_text(
-                            "Slice by slice, so a lung that drains through the trachea \
-                             still closes.",
-                        );
-                    ui.horizontal(|ui| {
-                        ui.label("Smooth:");
-                        ui.add(
-                            egui::Slider::new(&mut d.cleanup.close_mm, 0.0..=10.0)
-                                .suffix(" mm")
-                                .fixed_decimals(1),
-                        )
-                        .on_hover_text("A closing, to take the staircase off the surface.");
-                    });
-                    ui.checkbox(&mut d.cleanup.keep_largest, "Keep only the largest piece")
-                        .on_hover_text(
-                            "Useful after a subtraction that leaves slivers; destructive \
-                             on anything genuinely paired, like two lungs.",
-                        );
-                    ui.add_enabled_ui(!d.cleanup.keep_largest, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label("or drop pieces under:");
-                            ui.add(
-                                egui::DragValue::new(&mut d.cleanup.min_volume_cm3)
-                                    .range(0.0..=1000.0)
-                                    .speed(0.1)
-                                    .suffix(" cm³"),
-                            );
-                        });
-                    });
-                });
-
-                ui.horizontal(|ui| {
-                    ui.label("Name:");
-                    ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(140.0));
-                    ui.label("as");
-                    egui::ComboBox::from_id_salt("combine_out")
-                        .selected_text(d.output.label())
-                        .width(130.0)
-                        .show_ui(ui, |ui| {
-                            for o in [Output::Segment, Output::Structure] {
-                                ui.selectable_value(&mut d.output, o, o.label());
-                            }
-                        });
-                    if d.output == Output::Structure {
-                        ui.checkbox(&mut d.derived, "Derived").on_hover_text(
-                            "Keep this recipe on the result: it can be re-run when \
-                                 an operand changes, and the structure list says when it \
-                                 is out of date",
-                        );
-                        egui::ComboBox::from_id_salt("combine_roi_type")
-                            .selected_text(&d.roi_type)
-                            .width(110.0)
-                            .show_ui(ui, |ui| {
-                                for t in ROI_TYPES {
-                                    ui.selectable_value(&mut d.roi_type, t.to_string(), t);
-                                }
-                            });
+                    if ui.small_button("✖").clicked() {
+                        drop_row = Some(i);
                     }
                 });
-
-                ui.separator();
-                // The recipe, spelled out - the cheapest possible guard
-                // against an operand list in the wrong order.
-                ui.label(egui::RichText::new(recipe_line(d, &labels)).italics());
-                ui.separator();
-                match running {
-                    Some(job) => cancel = progress_row(ui, &job.progress),
-                    None => {
-                        ui.horizontal(|ui| {
-                            let ready = d.rows.len() > usize::from(d.op != BoolOp::Union);
-                            if ui
-                                .add_enabled(ready, egui::Button::new("▶ Combine"))
-                                .on_hover_text("Evaluate the recipe on the displayed series")
-                                .clicked()
-                            {
-                                run = true;
-                            }
-                            if ui.button("Close").clicked() {
-                                close = true;
-                            }
-                        });
-                    }
+                if row.per_direction {
+                    directional_margin(ui, &mut row.margin);
                 }
-                if let Some(status) = &d.status {
-                    ui.separator();
-                    ui.weak(status);
-                }
-            },
-        );
-        if let Some(s) = switch {
-            self.open_combine_dialog(s, Vec::new());
-            return;
+            });
         }
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(!candidates.is_empty(), egui::Button::new("➕ Add").small())
+                .clicked()
+            {
+                d.rows.push(Row {
+                    item: candidates[0].0,
+                    margin: Margin::NONE,
+                    per_direction: false,
+                });
+            }
+            if ui.small_button("Clear").clicked() {
+                d.rows.clear();
+            }
+        });
+
+        ui.collapsing("Result", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Margin on the result:");
+                if !d.margin_per_direction {
+                    let mut mm = d.margin.right;
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut mm)
+                                .range(-200.0..=200.0)
+                                .speed(0.5)
+                                .suffix(" mm"),
+                        )
+                        .changed()
+                    {
+                        d.margin = Margin::uniform(mm);
+                    }
+                } else {
+                    ui.weak(d.margin.describe());
+                }
+                if ui
+                    .add(egui::Button::selectable(d.margin_per_direction, "R/L/A/P/S/I").small())
+                    .clicked()
+                {
+                    d.margin_per_direction = !d.margin_per_direction;
+                }
+            });
+            if d.margin_per_direction {
+                directional_margin(ui, &mut d.margin);
+            }
+            ui.checkbox(&mut d.cleanup.fill_holes, "Fill interior cavities")
+                .on_hover_text(
+                    "Slice by slice, so a lung that drains through the trachea still closes.",
+                );
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Smooth:");
+                ui.add(
+                    egui::Slider::new(&mut d.cleanup.close_mm, 0.0..=10.0)
+                        .suffix(" mm")
+                        .fixed_decimals(1),
+                )
+                .on_hover_text("A closing, to take the staircase off the surface.");
+            });
+            ui.checkbox(&mut d.cleanup.keep_largest, "Keep only the largest piece")
+                .on_hover_text(
+                    "Useful after a subtraction that leaves slivers; destructive on anything \
+                     genuinely paired, like two lungs.",
+                );
+            ui.add_enabled_ui(!d.cleanup.keep_largest, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("or drop pieces under:");
+                    ui.add(
+                        egui::DragValue::new(&mut d.cleanup.min_volume_cm3)
+                            .range(0.0..=1000.0)
+                            .speed(0.1)
+                            .suffix(" cm³"),
+                    );
+                });
+            });
+        });
+
+        ui.horizontal_wrapped(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(110.0))
+                .on_hover_text("Name of the result");
+            ui.label("as");
+            egui::ComboBox::from_id_salt("combine_out")
+                .selected_text(d.output.label())
+                .width(120.0)
+                .show_ui(ui, |ui| {
+                    for o in [Output::Segment, Output::Structure] {
+                        ui.selectable_value(&mut d.output, o, o.label());
+                    }
+                });
+            if d.output == Output::Structure {
+                ui.checkbox(&mut d.derived, "Derived").on_hover_text(
+                    "Keep this recipe on the result: it can be re-run when an operand \
+                     changes, and the structure list says when it is out of date",
+                );
+                egui::ComboBox::from_id_salt("combine_roi_type")
+                    .selected_text(&d.roi_type)
+                    .width(100.0)
+                    .show_ui(ui, |ui| {
+                        for t in ROI_TYPES {
+                            ui.selectable_value(&mut d.roi_type, t.to_string(), t);
+                        }
+                    });
+            }
+        });
+        // The recipe, spelled out - the cheapest possible guard against an
+        // operand list in the wrong order.
+        ui.label(
+            egui::RichText::new(recipe_line(d, &labels))
+                .italics()
+                .small(),
+        );
+        match running {
+            Some(job) => cancel = progress_row(ui, &job.progress),
+            None => {
+                let ready = d.rows.len() > usize::from(d.op != BoolOp::Union);
+                run = enabled_tip_button(
+                    ui,
+                    ready,
+                    "▶ Combine",
+                    "Evaluate the recipe on the displayed series",
+                );
+            }
+        }
+        if let Some(status) = &d.status {
+            ui.weak(status);
+        }
+
         if let Some((i, delta)) = move_row {
             let j = (i as isize + delta) as usize;
             if let Some(d) = &mut self.combine_dialog {
@@ -671,16 +659,9 @@ impl ViewerApp {
                 }
             }
         }
-        if cancel {
-            if let Some(job) = &self.combine_job {
-                job.progress.cancel();
-            }
-        }
+        cancel_if(cancel, &self.combine_job);
         if run {
             self.start_combine();
-        }
-        if !open || close {
-            self.combine_dialog = None;
         }
     }
 }
@@ -750,7 +731,6 @@ mod tests {
     fn the_tool_names_itself_like_the_others() {
         assert_eq!(COMBINE.title(0), "∪ Combine structures - dataset A");
         assert_eq!(COMBINE.menu_entry(), "∪ Combine structures");
-        assert_eq!(COMBINE.short_button(), "∪ Combine");
     }
 
     #[test]

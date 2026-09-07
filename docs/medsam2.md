@@ -19,11 +19,11 @@ as the image.
 
 ## Using it
 
-**Tools ▶ ⏩ Slice propagation** (the dataset is chosen on the window's
-**Dataset A / B** row), or the **⏩ Propagate…** button
-in the sidebar *Segmentations* section, opens the tool window (**⏩ Slice
-propagation - dataset A**; the three segmentation engines share one window
-layout, see [architecture.md](architecture.md#the-three-engine-windows)).
+The **⏩ Slice propagation** section of the *Structure auto tools* module
+(*Modules ▶ Structure auto tools*, right panel, F10; the dataset is the
+module's **Dataset A / B** row; the four sections share one layout, see
+[architecture.md](architecture.md#the-tool-windows-and-the-modules)). The
+box is drawn in the views while the section is unfolded.
 The workflow is the one the [MedSAM2 extension for 3D
 Slicer](https://github.com/bowang-lab/MedSAMSlicer/tree/MedSAM2)
 established - box the structure on one slice, check it, propagate - minus
@@ -202,7 +202,7 @@ port never does.
 The checkpoint (156 MB) is downloaded from
 [huggingface.co/wanglab/MedSAM2](https://huggingface.co/wanglab/MedSAM2) on
 first use into `models/medsam2/` under the model folder and converted once
-into a `safetensors` cache beside it. The tool window says whether the
+into a `safetensors` cache beside it. The section says whether the
 chosen variant is cached or how much a run will download.
 
 **The MedSAM2 code is Apache-2.0, but the weights are tagged CC-BY-SA-4.0 and
@@ -224,11 +224,16 @@ The paper reports median Dice of 86.7 % on CT lesions (n = 409), 88.8 % on
 CT organs, 88.4 % on MRI lesions and 87.2 % on PET lesions, and an 86-87 %
 reduction in annotation time in its user study.
 
-This port has been checked against the reference implementation module by
-module and end to end - trunk, neck, prompt encoder, mask decoder, memory
-pair and a full ten-slice propagation all agree to within about 5e-6
-relative, f32 accumulation noise. That is *fidelity to MedSAM2*, not
-MedSAM2 being right on your data; the authors' own limitations are worth
+This port was checked against the reference implementation module by
+module and end to end while it was written - trunk, neck, prompt encoder,
+mask decoder, memory pair and a full ten-slice propagation agreed to within
+about 5e-6 relative, f32 accumulation noise. What the repository keeps of
+that is the per-operation contract: `tests/data/medsam2-ops.safetensors`
+records what PyTorch, PIL and SAM 2 return for every primitive the engine
+implements, and the engine is asserted against it in CI (the harness that
+ran Meta's own package is not kept, so the repository stays pure Rust; see
+[architecture.md](architecture.md#testing)). That is *fidelity to MedSAM2*,
+not MedSAM2 being right on your data; the authors' own limitations are worth
 knowing.
 
 * Box prompts do not suit thin, branching structures - vessels, airways.

@@ -14,12 +14,11 @@ re-implementation of [SegVol](https://github.com/BAAI-DCAI/SegVol)
 
 ## Using it
 
-**Tools ▶ 💬 Prompt segmentation** (the dataset is chosen on the window's
-**Dataset A / B** row), or the **💬 Prompt…** button in
-the sidebar *Segmentations* section, opens the tool window (**💬 Prompt
-segmentation - dataset A**; the three engines share one window layout, see
-[architecture.md](architecture.md#the-three-engine-windows)). It stays open
-across runs and reports each result on its last line.
+The **💬 Prompt segmentation** section of the *Structure auto tools* module
+(*Modules ▶ Structure auto tools*, right panel, F10; the dataset is the
+module's **Dataset A / B** row; the four sections share one layout, see
+[architecture.md](architecture.md#the-tool-windows-and-the-modules)). It
+reports each result on its last line.
 
 Move the crosshair onto the structure first; the prompt is anchored to it.
 
@@ -117,7 +116,7 @@ The checkpoint (~724 MB) is downloaded from
 [huggingface.co/BAAI/SegVol](https://huggingface.co/BAAI/SegVol) on first
 use, with the CLIP tokenizer's two small data files, into `models/segvol/`
 under the model folder, and converted once into a `safetensors` cache
-beside it. The tool window says whether the weights are cached or how much
+beside it. The section says whether the weights are cached or how much
 a run will download.
 
 **The SegVol code is MIT, but the weights carry no licence declaration at

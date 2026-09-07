@@ -24,11 +24,10 @@ and a 1×1×1 segmentation head - rebuilt at load time from each model's
 
 ## Using it in the viewer
 
-*Tools ▶ 🔬 Auto-segmentation* (the dataset is chosen in the window, on its
-**Dataset A / B** row) or the **🔬 Auto…** button in the
-sidebar *Segmentations* section opens the tool window (**🔬
-Auto-segmentation - dataset A**; the three segmentation engines share one
-window layout, see [architecture.md](architecture.md#the-three-engine-windows)):
+The **🔬 Auto-segmentation** section of the *Structure auto tools* module
+(*Modules ▶ Structure auto tools*, right panel, F10; the dataset is the
+module's **Dataset A / B** row; the four sections share one layout, see
+[architecture.md](architecture.md#the-tool-windows-and-the-modules)):
 
 * **Model** - one of the three variants; the dialog shows whether weights
   are cached or how much will be downloaded once. For 1.5 mm the five

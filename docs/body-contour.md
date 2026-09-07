@@ -31,10 +31,10 @@ everything else in the field of view:
 
 ## Using it
 
-*Tools ▶ 👤 Body contour* (the dataset is chosen on the window's **Dataset
-A / B** row), or the **👤 Body…** button in the
-sidebar *Segmentations* section. The window shares the segmentation tools'
-layout (see [architecture.md](architecture.md#the-segmentation-tool-windows)).
+The **👤 Body contour** section of the *Structure auto tools* module
+(*Modules ▶ Structure auto tools*, right panel, F10; the dataset is the
+module's **Dataset A / B** row). The section shares the engines' layout (see
+[architecture.md](architecture.md#the-tool-windows-and-the-modules)).
 
 * **Method** - *Classical* or *Model-assisted*; everything below adapts.
 * **Tissue above** - on CT a Hounsfield threshold (default −300 HU); on MR a

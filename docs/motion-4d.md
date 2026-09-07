@@ -40,7 +40,7 @@ modality node so each series has one place.
 
 ## The pipeline (`src/app/motion_win.rs`)
 
-*Tools ▸ 📈 4D motion / ITV* (the dataset is chosen on the window's
+*Tools ▸ 📈 Structure motion* (the dataset is chosen on the window's
 **Dataset A / B** row), or right-click a 4D group ▸
 *Motion / ITV analysis…*. One run:
 
@@ -139,9 +139,9 @@ another posture) via anatomy both datasets can segment. The target keeps
 its shape; the tool reports the offset (RL / AP / SI) it applied.
 Reference structures whose name contains "heart" are pre-picked.
 
-## Compare structures (`src/app/compare_win.rs`)
+## Structure comparison (`src/app/compare_win.rs`)
 
-*Tools ▸ ◑ Compare structures* computes, for any two structures (either
+*Tools ▸ ◑ Structure comparison* computes, for any two structures (either
 dataset, contours or segmentations, different lattices): volumes, centroid
 offset (vector and magnitude), Dice, 95th-percentile symmetric Hausdorff
 distance and the surface distance as mean, SD and maximum. The second mask
@@ -175,9 +175,18 @@ disagree by a few per cent on a coarse series and neither of which is wrong
 - the grey levels inside the structure (which is how a mis-drawn organ gives
 itself away), what the geometry costs in slices and points, and whether a
 derived structure still matches its recipe. Points of interest show their
-coordinates instead of a volume. The table is computed on demand rather than
-every frame, and says so when the geometry has changed under it. *Save CSV*
-writes it out.
+coordinates instead of a volume.
+
+The **Dice** column measures every row against a reference chosen above the
+table: the structure or segment of *the same name in the other dataset* (the
+default with two datasets loaded - what a propagation, a phase or a second
+observer is checked with), or one structure or segment of either dataset for
+all rows (an auto-segmentation against the manual one). Contours are
+rasterized onto the row's own lattice, a reference on another lattice is
+resampled onto it, and a row with no counterpart shows `-`; the tooltip
+names what it was measured against, and the CSV carries both. The table is
+computed on demand rather than every frame, and says so when the geometry
+has changed under it. *Save CSV* writes it out.
 
 ## Numerics worth knowing
 

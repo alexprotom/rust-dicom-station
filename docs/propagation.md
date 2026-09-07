@@ -1,6 +1,6 @@
 # Contour and segmentation propagation
 
-*Modules ▶ Structures propagation* carries any RTSTRUCT ROI or painted
+*Modules ▶ Structure propagation* carries any RTSTRUCT ROI or painted
 segmentation across a registration and lands it as an ordinary, editable
 segmentation, convertible back to RTSTRUCT and exportable as DICOM. It is a
 section of the right panel, next to the image registration that drives it.
@@ -26,7 +26,7 @@ which the module registers as it goes.
   the destination bounding box and interpolated in between: exact for a
   rigid transform, far below the contour's accuracy for a deformable one.
 
-Each propagated structure is reported as `name: 164.2 cm³ ▶ 170.1 cm³
+Each propagated structure is reported as `name: 164.213 cm³ ▶ 170.087 cm³
 (+3.6 %)` - the volume change the registration panel's Jacobian statistics
 also describe; if the two disagree, look harder at the registration.
 
@@ -146,7 +146,7 @@ reuses them. From the MCP server the same run is `propagate_to_group` with
    4D group: the module registers each phase itself - or reuses the
    transforms when the group was registered from the registration module
    against the same moving image, on display or not.
-2. *Modules ▶ Structures propagation*, or **⇄ Propagate structures** in the
+2. *Modules ▶ Structure propagation*, or **⇄ Propagate structures** in the
    registration module once it has a result.
 3. Choose the source image (any series of either dataset; through a
    registration, one of its two images), the structure set or segmentation

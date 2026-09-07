@@ -36,13 +36,13 @@ use crate::simulate::{self, SimParams};
 use crate::volume::{ViewPlane, Volume};
 use crate::workflow;
 
+mod auto_tools;
 mod body_win;
 mod box_seg;
 mod chrome;
-mod combine_win;
+mod combine;
 mod compare_win;
 mod contour_edit;
-mod contour_win;
 mod d3;
 mod derived_app;
 mod detach;
@@ -57,7 +57,6 @@ mod livewire_app;
 mod models_win;
 mod motion_results;
 mod motion_win;
-mod newroi_win;
 mod pacs_win;
 mod panels;
 mod planar;
@@ -70,10 +69,12 @@ mod seg;
 mod seg_engines;
 mod sets;
 mod stats_win;
+mod struct_tools;
 mod theme;
 mod transfer_win;
 mod tree;
 mod views;
+mod widgets;
 
 use drr_win::DrrDialog;
 use pacs_win::{PacsOutcome, PacsWindow};
@@ -82,6 +83,7 @@ use reg_panel::{RegImage, RegInit, RegOutcome, RegRoi};
 use rename::{RenameDialog, RenameTarget};
 use seg_engines::*;
 use theme::*;
+use widgets::*;
 
 const SLOT_NAMES: [&str; 2] = ["A", "B"];
 
@@ -241,7 +243,7 @@ const WL_PRESETS: &[(&str, f32, f32)] = &[
 
 /// Active viewport tool. `None` keeps the classic behavior (LMB navigates
 /// the crosshair); the segmentation tools take over the left mouse button.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SegTool {
     None,
     /// Paint into the active segmentation (Alt temporarily erases).
@@ -487,6 +489,37 @@ impl StudySlot {
         self.study.as_ref().is_some_and(|st| st.has_volume())
     }
 
+    /// Voxel spacing of the displayed volume, or unit spacing without one -
+    /// what every conversion from voxels to millimetres falls back on.
+    fn spacing_or_unit(&self) -> [f64; 3] {
+        self.study
+            .as_ref()
+            .map(|st| st.volume.spacing)
+            .unwrap_or([1.0; 3])
+    }
+
+    /// `voxels` of the displayed volume, in cm³.
+    fn voxels_cm3(&self, voxels: u64) -> f64 {
+        let sp = self.spacing_or_unit();
+        voxels as f64 * crate::volume::voxel_cm3(sp)
+    }
+
+    /// One ROI of one structure set, by index.
+    fn roi(&self, set: usize, roi: usize) -> Option<&crate::rtstruct::Roi> {
+        self.study
+            .as_ref()
+            .and_then(|st| st.structure_sets.get(set))
+            .and_then(|ss| ss.rois.get(roi))
+    }
+
+    /// [`Self::roi`] for editing.
+    fn roi_mut(&mut self, set: usize, roi: usize) -> Option<&mut crate::rtstruct::Roi> {
+        self.study
+            .as_mut()
+            .and_then(|st| st.structure_sets.get_mut(set))
+            .and_then(|ss| ss.rois.get_mut(roi))
+    }
+
     /// Series UID of the displayed volume, when there is one.
     fn displayed_uid(&self) -> Option<&str> {
         let st = self.study.as_ref()?;
@@ -585,6 +618,16 @@ impl<T> Job<T> {
             let _ = tx.send(work(&p));
         });
         Job { progress, rx }
+    }
+}
+
+/// Ask a running job to stop when its window's Cancel button was pressed;
+/// nothing happens without a job.
+fn cancel_if<T>(cancel: bool, job: &Option<Job<T>>) {
+    if cancel {
+        if let Some(job) = job {
+            job.progress.cancel();
+        }
     }
 }
 
@@ -1248,7 +1291,7 @@ pub struct ViewerApp {
     /// when an Auto stroke starts, from whether it started inside.
     brush_auto_cut: bool,
     /// The structure the ✨ Grow tool is not allowed to leave, if any.
-    grow_limit: Option<combine_win::ItemRef>,
+    grow_limit: Option<combine::ItemRef>,
     /// How far past the band's own threshold the brush may still reach,
     /// as a fraction of the display window. 0 is the bare threshold.
     brush_sensitivity: f32,
@@ -1284,12 +1327,15 @@ pub struct ViewerApp {
     interp: Option<contour_edit::InterpPreview>,
     /// Contours copied from one slice, and the axis they were cut on.
     contour_clip: Option<(usize, crate::contours::Region)>,
-    /// The contour tools window.
-    contour_dialog: Option<contour_win::ContourDialog>,
-    /// The generators window.
-    newroi_dialog: Option<newroi_win::NewRoiDialog>,
+    /// *Modules ▶ Structure editor*: which dataset it works on and the
+    /// numbers its buttons apply.
+    tools: struct_tools::StructTools,
     /// The live-wire's cost image and current anchor, kept between frames.
     wire: Option<livewire_app::WireState>,
+    /// Whether the live wire learns from every accepted segment. Kept here,
+    /// outside the per-slice wire state, so the choice survives a change of
+    /// slice and can be made before the first click.
+    wire_learn: bool,
     /// The structure-details table.
     stats_dialog: Option<stats_win::StatsDialog>,
 
@@ -1339,7 +1385,7 @@ pub struct ViewerApp {
     dvh_job: Option<Job<anyhow::Result<dvh_win::DvhDone>>>,
 
     // Structure algebra (see `structops`): combining contours and segments.
-    combine_job: Option<SegJob<combine_win::CombineResult>>,
+    combine_job: Option<SegJob<combine::CombineResult>>,
     /// Re-evaluating one derived structure, and the slot it belongs to.
     derived_job: Option<SegJob<derived_app::DerivedResult>>,
     derived_slot: usize,
@@ -1348,7 +1394,7 @@ pub struct ViewerApp {
     /// Per slot: the derived statuses of the active structure set.
     derived: [derived_app::DerivedCache; 2],
     combine_slot: usize,
-    combine_dialog: Option<combine_win::CombineDialog>,
+    combine_dialog: Option<combine::CombineDialog>,
 
     // 4D motion / ITV analysis (see `motion` and `fourd`).
     motion_job: Option<SegJob<motion_win::MotionOutcome>>,
@@ -1366,7 +1412,7 @@ pub struct ViewerApp {
     // Tools ▶ Transfer by relationship.
     transfer_dialog: Option<transfer_win::TransferDialog>,
 
-    // Tools ▶ Compare structures.
+    // Tools ▶ Structure comparison.
     compare_dialog: Option<compare_win::CompareDialog>,
 
     /// Deferred 4D-group edit from the data tree's context menus.
@@ -1402,9 +1448,21 @@ pub struct ViewerApp {
     /// *Modules ▶ Image simulation*: the simulation section is part of the
     /// modules panel. Persisted between runs.
     module_simulation: bool,
-    /// *Modules ▶ Structures propagation*: the propagation section is part
+    /// *Modules ▶ Structure propagation*: the propagation section is part
     /// of the modules panel. Persisted between runs.
     module_propagation: bool,
+    /// *Modules ▶ Structure editor*: inserting, editing and combining
+    /// structures is a section of the modules panel. Persisted between
+    /// runs; on by default.
+    module_structures: bool,
+    /// *Modules ▶ Structure auto tools*: body contour and the three engines
+    /// are a section of the modules panel. Persisted; on by default.
+    module_auto: bool,
+    /// The auto tools module's state: its dataset and the section to unfold.
+    auto: auto_tools::AutoTools,
+    /// The toolbar's *✏ Draw structure* is unfolded: the drawing tools and
+    /// the options of the one in hand are on the toolbar.
+    draw_open: bool,
     /// The left panel is expanded (View ▶ Data tree, F9, or the arrow on the
     /// panel edge). It holds the data tree and nothing else.
     side_open: bool,
@@ -1435,6 +1493,51 @@ fn tail(uid: &str) -> String {
         uid.to_string()
     } else {
         uid.chars().skip(n - 10).collect()
+    }
+}
+
+impl ViewerApp {
+    /// The first dataset that shows an image volume: A, or B when A shows
+    /// none. Where a tool has to start somewhere and nobody pointed at a
+    /// dataset.
+    pub(super) fn first_volume_slot(&self) -> usize {
+        usize::from(!self.slots[0].has_volume())
+    }
+
+    /// The dataset under the pointer when it shows a volume, else
+    /// [`Self::first_volume_slot`] - what the toolbar and the keyboard act on.
+    pub(super) fn preferred_volume_slot(&self) -> usize {
+        let hovered = self.hovered_slot.min(1);
+        if self.slots[hovered].has_volume() {
+            hovered
+        } else {
+            self.first_volume_slot()
+        }
+    }
+
+    /// Is any section of the modules panel switched on?
+    pub(super) fn any_module(&self) -> bool {
+        self.module_registration
+            || self.module_simulation
+            || self.module_propagation
+            || self.module_structures
+            || self.module_auto
+    }
+
+    /// Both datasets show an image volume.
+    pub(super) fn both_volumes(&self) -> bool {
+        self.slots[0].has_volume() && self.slots[1].has_volume()
+    }
+
+    /// At least one dataset shows an image volume.
+    pub(super) fn any_volume(&self) -> bool {
+        self.slots[0].has_volume() || self.slots[1].has_volume()
+    }
+
+    /// Which datasets show an image volume, in the form the tool windows'
+    /// dataset row takes.
+    pub(super) fn volume_slots(&self) -> [bool; 2] {
+        [self.slots[0].has_volume(), self.slots[1].has_volume()]
     }
 }
 
@@ -1634,9 +1737,9 @@ impl ViewerApp {
             edit: None,
             interp: None,
             contour_clip: None,
-            contour_dialog: None,
-            newroi_dialog: None,
+            tools: struct_tools::StructTools::default(),
             wire: None,
+            wire_learn: true,
             stats_dialog: None,
             dose_mode: DoseMode::Off,
             dose_opacity: 0.45,
@@ -1647,6 +1750,10 @@ impl ViewerApp {
             module_registration: prefs.module_registration,
             module_simulation: prefs.module_simulation,
             module_propagation: prefs.module_propagation,
+            module_structures: prefs.module_structures,
+            module_auto: prefs.module_auto,
+            auto: auto_tools::AutoTools::default(),
+            draw_open: false,
             side_open: true,
             right_open: true,
             theme: prefs.theme,
@@ -1696,6 +1803,8 @@ impl ViewerApp {
             module_registration: self.module_registration,
             module_simulation: self.module_simulation,
             module_propagation: self.module_propagation,
+            module_structures: self.module_structures,
+            module_auto: self.module_auto,
             session: self.session.clone(),
             graphics_backend: self.graphics_backend,
         }) {
@@ -2040,7 +2149,7 @@ impl eframe::App for ViewerApp {
                 self.right_open = !self.right_open;
             }
             if undo {
-                let slot = self.hovered_slot.min(1);
+                let slot = self.preferred_volume_slot();
                 // A contour tool undoes contours, a voxel tool voxels: the
                 // key follows the tool in hand rather than a global history.
                 if self.seg_tool.draws_contours() {

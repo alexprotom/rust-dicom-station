@@ -80,11 +80,6 @@ impl<B: Backend> SamHead<B> {
         (config::MULTIMASK_MIN_PT..=config::MULTIMASK_MAX_PT).contains(&prompt_points)
     }
 
-    /// `obj_ptr_proj` on its own, for the reference tests.
-    pub fn project_obj_ptr(&self, token: Tensor<B, 2>) -> Tensor<B, 2> {
-        self.obj_ptr_proj.apply(token)
-    }
-
     /// The learned pointer used when the object is absent.
     pub fn no_obj_ptr(&self) -> Tensor<B, 2> {
         self.no_obj_ptr.clone()
