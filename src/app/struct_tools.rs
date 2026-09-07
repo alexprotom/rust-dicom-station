@@ -1,4 +1,4 @@
-//! *Modules ▶ Structures editor*: everything that makes or changes a whole
+//! *Modules ▶ Structure editor*: everything that makes or changes a whole
 //! structure, as one section of the modules panel - and the drawing strip
 //! the toolbar's *✏ Draw structure* button unfolds.
 //!
@@ -263,7 +263,7 @@ impl ViewerApp {
 
     /// The whole editor: the dataset row, then the three sections.
     pub(super) fn structures_editor_section(&mut self, ui: &mut egui::Ui) {
-        let title = egui::RichText::new("Structures editor").strong();
+        let title = egui::RichText::new("Structure editor").strong();
         if !self.any_volume() {
             egui::CollapsingHeader::new(title)
                 .default_open(true)

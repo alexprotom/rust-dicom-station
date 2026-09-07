@@ -40,8 +40,8 @@ smoothing option is for.
 
 ## Using it
 
-The *Combine structures* section of the Structures editor (*Modules ▶
-Structures editor*, right panel; the dataset is the editor's **Dataset A /
+The *Combine structures* section of the Structure editor (*Modules ▶
+Structure editor*, right panel; the dataset is the editor's **Dataset A /
 B** row), or - usually quickest - tick the structures in the data tree,
 right-click and choose **∪ Combine …**: the section unfolds with them listed
 in the order ticked.
@@ -115,7 +115,7 @@ What that buys:
   recipe and its inputs, **■** red when an input has changed, **▲** yellow
   when somebody has edited the result by hand;
 * *Update derived* in the RT structures header re-runs every red one;
-* the *Edit structure* section of the Structures editor shows the recipe as
+* the *Edit structure* section of the Structure editor shows the recipe as
   a line, with **Update**,
   **Edit recipe** (which unfolds *Combine structures* on it) and **Underive** (keep
   the geometry, forget the recipe);

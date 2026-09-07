@@ -80,7 +80,7 @@ pub struct Propagated {
 }
 
 impl Propagated {
-    /// `liver: 1642 cm³ ▶ 1701 cm³ (+3.6 %)`.
+    /// `liver: 1642.318 cm³ ▶ 1701.052 cm³ (+3.576 %)`.
     pub fn summary(&self) -> String {
         let change = if self.source_cm3 > 1e-9 {
             100.0 * (self.result_cm3 - self.source_cm3) / self.source_cm3
@@ -88,7 +88,7 @@ impl Propagated {
             0.0
         };
         format!(
-            "{}: {:.1} cm³ ▶ {:.1} cm³ ({:+.1} %)",
+            "{}: {:.3} cm³ ▶ {:.3} cm³ ({:+.3} %)",
             self.name, self.source_cm3, self.result_cm3, change
         )
     }

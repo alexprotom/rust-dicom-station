@@ -188,15 +188,6 @@ impl ViewerApp {
                             )
                             .changed();
                         modules_changed |= ui
-                            .checkbox(&mut self.module_structures, "Structures editor")
-                            .on_hover_text(
-                                "Insert, edit and combine structures: empty structures and \
-                                 points, the generators, everything that acts on the \
-                                 selected structure (interpolation, tidying, moving, the \
-                                 type, the derived recipe), and the structure algebra.",
-                            )
-                            .changed();
-                        modules_changed |= ui
                             .checkbox(&mut self.module_simulation, "Image simulation")
                             .on_hover_text(
                                 "Registration QA: apply a known rigid motion and Gaussian \
@@ -205,7 +196,25 @@ impl ViewerApp {
                             )
                             .changed();
                         modules_changed |= ui
-                            .checkbox(&mut self.module_propagation, "Structures propagation")
+                            .checkbox(&mut self.module_structures, "Structure editor")
+                            .on_hover_text(
+                                "Insert, edit and combine structures: empty structures and \
+                                 points, the generators, everything that acts on the \
+                                 selected structure (interpolation, tidying, moving, the \
+                                 type, the derived recipe), and the structure algebra.",
+                            )
+                            .changed();
+                        modules_changed |= ui
+                            .checkbox(&mut self.module_auto, "Structure auto tools")
+                            .on_hover_text(
+                                "The tools that find a structure by themselves: the body \
+                                 contour, automatic multi-organ segmentation \
+                                 (TotalSegmentator), prompt segmentation (SegVol) and slice \
+                                 propagation (MedSAM2). Every network runs locally, in Rust.",
+                            )
+                            .changed();
+                        modules_changed |= ui
+                            .checkbox(&mut self.module_propagation, "Structure propagation")
                             .on_hover_text(
                                 "Carry contours and segmentations from one dataset to the \
                              other through the active registration - globally, or refined \
@@ -218,32 +227,45 @@ impl ViewerApp {
                         }
                     });
                 ui.menu_button("Tools", |ui| {
-                    // One entry per tool, in the same order as the sidebar, then
-                    // the 4D motion tool, which works on a group rather than
-                    // on a structure.
-                    let tools = TOOL_HINTS.iter().copied().chain([(
-                        &MOTION,
+                    // The three structure tools that keep a window of their
+                    // own, then the rest. The engines are sections of the
+                    // Structure auto tools module.
+                    let any = self.any_volume();
+                    if enabled_tip_button(
+                        ui,
+                        any,
+                        "◑ Structure comparison",
+                        "Volumes, centroid offset, Dice, HD95, surface distances and \
+                         the least-squares rigid offset of any two structures - \
+                         within a dataset or across the two",
+                    ) {
+                        self.open_compare_dialog(0);
+                        ui.close();
+                    }
+                    if enabled_tip_button(
+                        ui,
+                        any,
+                        super::stats_win::DETAILS.menu_entry(),
+                        "One row per structure: volume by planimetry and by voxel count, \
+                         the Dice against a reference, the grey levels inside it, what \
+                         the geometry costs in slices and points, and whether a derived \
+                         structure still matches its recipe. With CSV export.",
+                    ) {
+                        let slot = self.first_volume_slot();
+                        self.open_stats_dialog(slot);
+                        ui.close();
+                    }
+                    if enabled_tip_button(
+                        ui,
+                        any,
+                        MOTION.menu_entry(),
                         "Register the reference phase of a 4D group to every other phase, \
                          carry the targets across, and measure their motion - trajectories, \
                          drift, correlations and the ITV.",
-                    )]);
-                    // One entry per tool, not one per tool per dataset:
-                    // which dataset it works on is a setting of the tool,
-                    // shown as a row at the top of its window, and it opens
-                    // on whichever dataset can actually feed it.
-                    let mut open_tool: Option<ToolId> = None;
-                    // Every engine reads voxels: a dataset that holds only RT
-                    // images or RT objects has nothing to give them.
-                    let loaded = self.any_volume();
-                    let slot = self.first_volume_slot();
-                    for (tool, hint) in tools {
-                        if enabled_tip_button(ui, loaded, tool.menu_entry(), hint) {
-                            open_tool = Some(tool.id);
-                            ui.close();
-                        }
-                    }
-                    if let Some(id) = open_tool {
-                        self.open_tool(id, slot);
+                    ) {
+                        let slot = self.first_volume_slot();
+                        self.open_motion_dialog(slot, None);
+                        ui.close();
                     }
                     ui.separator();
                     let both = self.both_volumes();
@@ -256,18 +278,6 @@ impl ViewerApp {
                          target-reference relationship travels, not a registration",
                     ) {
                         self.open_transfer_dialog(0);
-                        ui.close();
-                    }
-                    let any = self.any_volume();
-                    if enabled_tip_button(
-                        ui,
-                        any,
-                        "◑ Compare structures",
-                        "Volumes, centroid offset, Dice, HD95, surface distances and \
-                         the least-squares rigid offset of any two structures - \
-                         within a dataset or across the two",
-                    ) {
-                        self.open_compare_dialog(0);
                         ui.close();
                     }
                     let has_dose = self

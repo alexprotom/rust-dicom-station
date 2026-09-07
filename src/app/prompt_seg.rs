@@ -216,16 +216,11 @@ impl ViewerApp {
 
     /// The tool window; while a run is in flight its buttons become the
     /// progress row.
-    pub(super) fn segvol_window(&mut self, ctx: &egui::Context) {
-        let has = self.volume_slots();
-        let mut switch: Option<usize> = None;
+    pub(super) fn segvol_section(&mut self, ui: &mut egui::Ui) {
+        self.open_segvol_dialog(self.auto.slot);
         let Some(d) = &mut self.segvol_dialog else {
             return;
         };
-        if self.slots[d.slot].study.is_none() {
-            self.segvol_dialog = None;
-            return;
-        }
         let running = self
             .segvol_job
             .as_ref()
@@ -234,156 +229,128 @@ impl ViewerApp {
             &models::root_from_setting(&self.models_dir),
             ModelsEngine::SegVol,
         );
-        let mut open = true;
         let mut run = false;
-        let mut close = false;
         let mut browse = false;
         let mut cancel = false;
-        detach::tool_window(
-            ctx,
-            "segvol",
-            PROMPT_SEG.title(d.slot),
-            &mut open,
-            detach::WinOpts::width(380.0),
-            |ui| {
-                switch = dataset_row(ui, d.slot, has, running.is_none());
-                ui.label(
-                    "Segments whatever the prompt points at - a box, a click or a structure \
-                     name - with SegVol, re-implemented natively in Rust. For the lesions and \
-                     targets a fixed-class model cannot cover.",
-                );
-                ui.separator();
-                ui.label("Prompt:");
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut d.kind, PromptKind::Box, "Box")
-                        .on_hover_text("A box centred on the crosshair - the most reliable prompt, and the only one that works well for lesions");
-                    ui.radio_value(&mut d.kind, PromptKind::Point, "Point")
-                        .on_hover_text("A single click at the crosshair");
-                    ui.radio_value(&mut d.kind, PromptKind::Text, "Text")
-                        .on_hover_text("A structure name, run through the model's trained prompt template");
-                });
-                match d.kind {
-                    PromptKind::Box => {
-                        ui.horizontal(|ui| {
-                            ui.label("Half-extent:");
-                            ui.add(
-                                egui::DragValue::new(&mut d.extent_mm)
-                                    .range(2.0..=300.0)
-                                    .suffix(" mm"),
-                            );
-                        });
-                        ui.weak("Centred on the crosshair. Move it first, then run.");
-                    }
-                    PromptKind::Point => {
-                        ui.weak("Uses the crosshair position. Move it first, then run.");
-                    }
-                    PromptKind::Text => {
-                        ui.horizontal(|ui| {
-                            ui.label("Structure:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut d.text)
-                                    .hint_text("liver, pancreas, aorta")
-                                    .desired_width(180.0),
-                            );
-                        });
-                        egui::ComboBox::from_id_salt("segvol_known_structure")
-                            .selected_text("pick a known structure")
-                            .show_ui(ui, |ui| {
-                                for l in 1u8..=117 {
-                                    let n = crate::autoseg::classes::class_name(l);
-                                    if ui.selectable_label(false, n.replace('_', " ")).clicked() {
-                                        d.text = n.replace('_', " ");
-                                    }
-                                }
-                            });
-                    }
-                }
-                ui.horizontal(|ui| {
-                    ui.label("Name:");
-                    ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(160.0));
-                });
-                ui.separator();
-                ui.collapsing("Options", |ui| {
-                    ui.checkbox(&mut d.cfg.use_zoom_in, "Refinement pass")
-                        .on_hover_text(
-                            "The second, sliding-window pass. Without it the result is a \
-                             single coarse pass - much faster, much blockier.",
-                        );
-                    ui.add_enabled(
-                        d.kind == PromptKind::Box,
-                        egui::Checkbox::new(
-                            &mut d.cfg.skip_coarse_with_box,
-                            "Skip the search pass (box only)",
-                        ),
-                    )
-                    .on_hover_text(
-                        "The first pass only exists to locate the structure. With a box \
-                         drawn by hand it is redundant: skipping it roughly halves the \
-                         work and avoids losing small lesions to the downsample. This \
-                         departs from the reference implementation.",
-                    );
-                    ui.horizontal(|ui| {
-                        ui.label("Threshold:");
-                        ui.add(egui::Slider::new(&mut d.cfg.threshold, 0.05..=0.95));
-                    });
-                    device_row(ui, &mut d.device);
-                    browse = models_dir_row(ui, &mut self.models_dir, ModelsEngine::SegVol);
-                });
-                ui.separator();
-                let need = weights::download_needed(&models_dir, d.kind == PromptKind::Text);
-                let weights_note = if need == 0 {
-                    "Weights: SegVol (BAAI, no licence declared) - cached ✔.".to_string()
-                } else {
-                    format!(
-                        "Weights: SegVol (BAAI, no licence declared) - {} MB downloaded once \
-                         from Hugging Face, at your request, never redistributed.",
-                        need / 1_000_000
-                    )
-                };
-                licence_line(ui, &weights_note, true);
-                ui.separator();
-                match running {
-                    Some(job) => cancel = progress_row(ui, &job.progress),
-                    None => {
-                        ui.horizontal(|ui| {
-                            let ready = d.kind != PromptKind::Text || !d.text.trim().is_empty();
-                            if enabled_tip_button(
-                                ui,
-                                ready,
-                                "▶ Segment",
-                                "Run the network on the prompt",
-                            ) {
-                                run = true;
-                            }
-                            if ui.button("Close").clicked() {
-                                close = true;
-                            }
-                        });
-                    }
-                }
-                if let Some(status) = &d.status {
-                    ui.separator();
-                    ui.weak(status);
-                }
-            },
+        ui.label(
+            "Segments whatever the prompt points at - a box, a click or a structure \
+             name - with SegVol, re-implemented natively in Rust. For the lesions and \
+             targets a fixed-class model cannot cover.",
         );
+        ui.separator();
+        ui.label("Prompt:");
+        ui.horizontal_wrapped(|ui| {
+            ui.radio_value(&mut d.kind, PromptKind::Box, "Box")
+                .on_hover_text("A box centred on the crosshair - the most reliable prompt, and the only one that works well for lesions");
+            ui.radio_value(&mut d.kind, PromptKind::Point, "Point")
+                .on_hover_text("A single click at the crosshair");
+            ui.radio_value(&mut d.kind, PromptKind::Text, "Text")
+                .on_hover_text("A structure name, run through the model's trained prompt template");
+        });
+        match d.kind {
+            PromptKind::Box => {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Half-extent:");
+                    ui.add(
+                        egui::DragValue::new(&mut d.extent_mm)
+                            .range(2.0..=300.0)
+                            .suffix(" mm"),
+                    );
+                });
+                ui.weak("Centred on the crosshair. Move it first, then run.");
+            }
+            PromptKind::Point => {
+                ui.weak("Uses the crosshair position. Move it first, then run.");
+            }
+            PromptKind::Text => {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Structure:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut d.text)
+                            .hint_text("liver, pancreas, aorta")
+                            .desired_width(180.0),
+                    );
+                });
+                egui::ComboBox::from_id_salt("segvol_known_structure")
+                    .selected_text("pick a known structure")
+                    .show_ui(ui, |ui| {
+                        for l in 1u8..=117 {
+                            let n = crate::autoseg::classes::class_name(l);
+                            if ui.selectable_label(false, n.replace('_', " ")).clicked() {
+                                d.text = n.replace('_', " ");
+                            }
+                        }
+                    });
+            }
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Name:");
+            ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(160.0));
+        });
+        ui.separator();
+        ui.collapsing("Options", |ui| {
+            ui.checkbox(&mut d.cfg.use_zoom_in, "Refinement pass")
+                .on_hover_text(
+                    "The second, sliding-window pass. Without it the result is a \
+                     single coarse pass - much faster, much blockier.",
+                );
+            ui.add_enabled(
+                d.kind == PromptKind::Box,
+                egui::Checkbox::new(
+                    &mut d.cfg.skip_coarse_with_box,
+                    "Skip the search pass (box only)",
+                ),
+            )
+            .on_hover_text(
+                "The first pass only exists to locate the structure. With a box \
+                 drawn by hand it is redundant: skipping it roughly halves the \
+                 work and avoids losing small lesions to the downsample. This \
+                 departs from the reference implementation.",
+            );
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Threshold:");
+                ui.add(egui::Slider::new(&mut d.cfg.threshold, 0.05..=0.95));
+            });
+            device_row(ui, &mut d.device);
+            browse = models_dir_row(ui, &mut self.models_dir, ModelsEngine::SegVol);
+        });
+        ui.separator();
+        let need = weights::download_needed(&models_dir, d.kind == PromptKind::Text);
+        let weights_note = if need == 0 {
+            "Weights: SegVol (BAAI, no licence declared) - cached ✔.".to_string()
+        } else {
+            format!(
+                "Weights: SegVol (BAAI, no licence declared) - {} MB downloaded once \
+                 from Hugging Face, at your request, never redistributed.",
+                need / 1_000_000
+            )
+        };
+        licence_line(ui, &weights_note, true);
+        ui.separator();
+        match running {
+            Some(job) => cancel = progress_row(ui, &job.progress),
+            None => {
+                ui.horizontal_wrapped(|ui| {
+                    let ready = d.kind != PromptKind::Text || !d.text.trim().is_empty();
+                    if enabled_tip_button(ui, ready, "▶ Segment", "Run the network on the prompt")
+                    {
+                        run = true;
+                    }
+                });
+            }
+        }
+        if let Some(status) = &d.status {
+            ui.separator();
+            ui.weak(status);
+        }
         if browse {
             if let Some(dir) = Self::pick_folder("Model folder") {
                 self.models_dir = dir.display().to_string();
             }
         }
-        if let Some(s) = switch {
-            self.open_segvol_dialog(s);
-            return;
-        }
         cancel_if(cancel, &self.segvol_job);
         if run {
             self.start_segvol();
-        }
-        if !open || close {
-            // The run, if any, carries on; the sidebar still shows it.
-            self.segvol_dialog = None;
-            self.persist_settings();
         }
     }
 }

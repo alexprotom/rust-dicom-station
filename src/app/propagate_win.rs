@@ -1,4 +1,4 @@
-//! *Modules ▶ Structures propagation*: carrying contours and segmentations
+//! *Modules ▶ Structure propagation*: carrying contours and segmentations
 //! across the active registration.
 //!
 //! The module is deliberately thin: the hard part is the transform, and that
@@ -1198,7 +1198,7 @@ impl ViewerApp {
             PropTarget::Other => 0,
         };
 
-        egui::CollapsingHeader::new(egui::RichText::new("⇄ Structures propagation").strong())
+        egui::CollapsingHeader::new(egui::RichText::new("⇄ Structure propagation").strong())
             .id_salt("module_propagate")
             .default_open(true)
             .show(ui, |ui| {

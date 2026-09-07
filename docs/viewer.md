@@ -155,12 +155,18 @@ dragging a panel's inner edge past the minimum does the same, and the arrow
 brings it back.
 
 The *Modules* menu chooses the right panel's sections, in the order they
-appear: **Image registration**, the **Structures editor** (insert, edit and
-combine structures - [contours.md](contours.md)), **Image simulation** and
-**Structures propagation**. The editor starts switched on, the other three
-off; every choice is remembered between runs, and with all four off there
-is no right panel at all. The drawing tools are not in the panel: the
-toolbar's **✏ Draw structure** button unfolds them on the toolbar.
+appear: **Image registration**, **Image simulation**, the **Structure
+editor** (insert, edit and combine structures - [contours.md](contours.md)),
+the **Structure auto tools** (the body contour and the three segmentation
+engines - [segmentation.md](segmentation.md)) and **Structure propagation**.
+The editor and the auto tools start switched on, the other three off; every
+choice is remembered between runs, and with all five off there is no right
+panel at all. The drawing tools are not in the panel: the toolbar's **✏
+Draw structure** button unfolds them on the toolbar. The *Tools* menu keeps
+the windows: **◑ Structure comparison**, **📋 Structure details** (one row
+per structure, with a Dice column against a reference of your choice) and
+**📈 Structure motion**, then transfer, DVH, DRR, the archive, the models
+and the anonymizer.
 
 ## Interaction reference
 
@@ -285,7 +291,7 @@ destination submenu described below. The buttons grey out when nothing is
 ticked. Ctrl+Z undoes the last stroke, *Copy to ▶ an RT structure set* is
 what →RS did, and **🗑** deletes the ticked rows. Clicking an item's **name**
 selects it - the segmentation the voxel tools paint, the structure the
-contour tools and the Structures editor work on - independently of whether
+contour tools and the Structure editor work on - independently of whether
 it is shown; new items come from the **+** after the selected name on the
 toolbar's draw row and, for structures, from the editor's *Insert structure*
 section.

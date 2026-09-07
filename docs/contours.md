@@ -142,14 +142,14 @@ land in a structure nobody pointed at. *+ Empty structure* in the editor's
 *Insert structure* section, and *+* after the selected structure's name on
 the toolbar, make another.
 
-## The Structures editor
+## The Structure editor
 
-*Modules ▶ Structures editor* (right panel, F10; on by default) is where a
+*Modules ▶ Structure editor* (right panel, F10; on by default) is where a
 whole structure is made or changed, in three foldable sections: **Insert
 structure** (an empty structure, a point of interest, or a generated one -
 [generators.md](generators.md)), **Edit structure** (below) and **Combine
 structures** ([structure-algebra.md](structure-algebra.md)). Right-clicking
-a structure in the list and choosing *📝 Edit in the Structures editor*
+a structure in the list and choosing *📝 Edit in the Structure editor*
 selects it and unfolds the section on it.
 
 ### Edit structure
@@ -223,7 +223,7 @@ one point nobody wants to place by hand.
 *Localize* works on ordinary structures too: it centres the three views on
 the structure's centre of gravity.
 
-Two points can be compared like anything else in *◑ Compare structures*,
+Two points can be compared like anything else in *◑ Structure comparison*,
 which then reports their separation instead of a Dice score. When the two
 are meant to be the same landmark in two datasets, that separation is the
 target registration error.

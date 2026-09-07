@@ -1,4 +1,4 @@
-//! The structure algebra - *Combine structures* in the Structures editor:
+//! The structure algebra - *Combine structures* in the Structure editor:
 //! combining contours and segmentations.
 //!
 //! Its one job that the core module ([`crate::structops`]) cannot do is

@@ -42,8 +42,9 @@ rust-dicom-station
 │
 ├── Application (GUI, egui over wgpu)
 │   ├── Window chrome: menu bar, toolbar (W/L, presets, 3D, crosshair, reset, the draw row), status bar
-│   ├── Modules panel: the registration, Structures editor (insert, edit,
-│   │   combine), simulation and propagation sections
+│   ├── Modules panel: the registration, simulation, Structure editor (insert,
+│   │   edit, combine), Structure auto tools (body contour and the three
+│   │   engines) and propagation sections
 │   ├── Side panel: per dataset a DICOM tree - patient ▶ study ▶ modality ▶ series, with RT
 │   │   structures, segmentations, 4D groups, dose and plans inside their study -
 │   │   plus dose display, planar images, spatial registrations, records, warnings
@@ -53,11 +54,10 @@ rust-dicom-station
 │   │   zoom / pan / W-L interaction, maximize, per-view caches
 │   ├── Tool windows (one shared skeleton; each can be docked over the views or
 │   │   detached into its own window of the operating system):
-│   │   3D structures, planar viewers, auto-segmentation, prompt segmentation,
-│   │   slice propagation, body contour, structure algebra, structure propagation,
-│   │   4D motion / ITV and its results, structure comparison, transfer by
-│   │   relationship, DVH, DRR, PACS, model manager, export, anonymizer, generator,
-│   │   the structure-details table
+│   │   3D structures, planar viewers, structure motion and its results,
+│   │   structure comparison, structure details, transfer by relationship,
+│   │   DVH, DRR, PACS, model manager, export, anonymizer, generator,
+│   │   the auto-segmentation results
 │   ├── Data tree operations: rename every level; Shift-click ranges; copy / move /
 │   │   remove / export the ticked items; create / connect / copy / move / remove
 │   │   structure sets and segmentation series; move single structures / segments
@@ -250,7 +250,7 @@ src/
     contour_edit.rs   the contour tools' state machine: the ROI under the
                       tools, the working stack, drawing and nudging, contour
                       undo, the interpolation preview
-    struct_tools.rs   the Structures editor module (the Insert structure
+    struct_tools.rs   the Structure editor module (the Insert structure
                       section - empty structure, point, the generators in HU
                       or SUV, shape, dose, field of view - and the Edit
                       structure section: interpolation, per-slice copy /
@@ -266,22 +266,23 @@ src/
                       structure's centre, localize, move, the localization
                       point
     stats_win.rs      the structure-details table and its CSV
-    seg_engines.rs    what the tool windows share: names, glyphs and ids
-                      (ToolId, dispatched exhaustively by open_tool), the
-                      one table of tool hints the Tools menu and the sidebar
-                      read, the dataset A / B row, device / model-folder /
-                      licence / progress rows, result landing, the "still
-                      the same dataset" check
-    body_win.rs       the body-contour window
+    seg_engines.rs    what the engine sections share: names and glyphs, the
+                      dataset A / B row, device / model-folder / licence /
+                      progress rows, result landing, the "still the same
+                      dataset" check
+    auto_tools.rs     the Structure auto tools module: one dataset row and
+                      the body contour, auto-segmentation, prompt
+                      segmentation and slice propagation sections
+    body_win.rs       the body-contour section
     combine.rs        the structure algebra as the editor's Combine structures
                       section: operands, margins, the recipe
-    prompt_seg.rs     prompt segmentation window and worker (SegVol)
+    prompt_seg.rs     the prompt segmentation section and worker (SegVol)
     box_seg.rs        slice propagation: the box drawn in the viewport, the
                       preview / refine / propagate loop, the resident session (MedSAM2)
-    propagate_win.rs  the Structures propagation module: onto the other dataset,
+    propagate_win.rs  the Structure propagation module: onto the other dataset,
                       or onto every phase of a 4D group through workflow::group
                       or workflow::anchored (transforms kept for the next run)
-    motion_win.rs     the 4D motion / ITV window; the pipeline itself is
+    motion_win.rs     the Structure motion (4D / ITV) window; the pipeline itself is
                       workflow::motion
     motion_results.rs the motion results window: charts, tables, correlations,
                       QA, CSV, run-vs-run comparison
@@ -513,7 +514,7 @@ into both executables as a resource - which is what Explorer, the task bar,
 the start-menu shortcut and *Add or remove programs* read - and the release
 workflow copies the PNG into the AppImage as the Linux desktop icon.
 
-### The tool windows
+### The tool windows and the modules
 
 Every secondary window is drawn through `app/detach.rs::tool_window`, which
 puts its contents in an *immediate viewport* - a real top-level window of the
@@ -527,28 +528,28 @@ whole program reads as `Rust DICOM Station: <what this window is>`. The
 transient confirmations - *Error*, *Done*, *Rename* - stay inside the main
 window, being answers to the last click rather than tools.
 
-The segmentation-type tools - body contour, structure algebra,
-auto-segmentation, prompt segmentation, slice propagation, 4D motion - are
-different conversations but the same kind of tool, and `app/seg_engines.rs`
-makes them alike: one `ToolInfo` per tool gives the glyph, the window title
-(`🔬 Auto-segmentation - dataset A`) and the menu entry, and a `ToolId`
-that `open_tool` dispatches exhaustively; the Tools menu and the sidebar's
-one-glyph row read the same `TOOL_HINTS` table; every window stays open
-while its run is in flight, the button row
-becoming the progress row (device, bar, message, Cancel); the sections come
-in the same order (description, the tool's inputs, `Name`, a collapsed
-**Options** with the shared `Compute` and `Model folder` rows, the licence
-line, `▶ Segment` / `▶ Propagate` / `▶ Contour`, `Close`, status); rows a
-tool has no use for are not shown; and results land the same way
-(`add_segmentation`), a run that finishes after its dataset was replaced
-being discarded with the same message.
+The engine-type tools - body contour, auto-segmentation, prompt
+segmentation, slice propagation - are different conversations but the
+same kind of tool, and `app/seg_engines.rs` makes them alike: one
+`ToolInfo` per tool gives the glyph and the name; every section stays as it
+is while its run is in flight, the button row becoming the progress row
+(device, bar, message, Cancel); the parts come in the same order
+(description, the tool's inputs, `Name`, a collapsed **Options** with the
+shared `Compute` and `Model folder` rows, the licence line, `▶ Segment` /
+`▶ Propagate` / `▶ Contour`, status); rows a tool has no use for are not
+shown; and results land the same way (`add_segmentation`), a run that
+finishes after its dataset was replaced being discarded with the same
+message. Since 2026-09-07 they are not windows but the four sections of
+the **Structure auto tools** module (`app/auto_tools.rs`), under one
+dataset row; the auto-segmentation *results* list, which appears once
+per run, is still a window.
 
 Not everything is a window. Inserting, editing and combining structures
-are sections of the **Structures editor** module (`app/struct_tools.rs`,
-`app/combine.rs`) in the right panel, drawn below the registration section:
+are sections of the **Structure editor** module (`app/struct_tools.rs`,
+`app/combine.rs`) in the right panel, drawn below the simulation section:
 what a planner keeps at hand while contouring should not need a window to
 be found, and a folded section costs no screen. A context menu's *Edit in
-the Structures editor* or *∪ Combine* and a derived structure's *Edit
+the Structure editor* or *∪ Combine* and a derived structure's *Edit
 recipe* switch the module on and unfold the section (`reveal_editor`). The
 editor works on one dataset (the A / B row at its top). The drawing tools
 themselves are the toolbar's draw row, unfolded by *✏ Draw structure*

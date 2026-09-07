@@ -1,4 +1,4 @@
-//! *Tools ▶ Compare structures*: geometric comparison of any two
+//! *Tools ▶ Structure comparison*: geometric comparison of any two
 //! structures - volumes, centroids and their offset, Dice, HD95 and mean
 //! surface distance.
 //!
@@ -283,7 +283,7 @@ impl ViewerApp {
         detach::tool_window(
             ctx,
             "compare",
-            "◑ Compare structures",
+            "◑ Structure comparison",
             &mut open,
             detach::WinOpts::default(),
             |ui| {

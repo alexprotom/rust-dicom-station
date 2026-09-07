@@ -36,6 +36,7 @@ use crate::simulate::{self, SimParams};
 use crate::volume::{ViewPlane, Volume};
 use crate::workflow;
 
+mod auto_tools;
 mod body_win;
 mod box_seg;
 mod chrome;
@@ -1326,7 +1327,7 @@ pub struct ViewerApp {
     interp: Option<contour_edit::InterpPreview>,
     /// Contours copied from one slice, and the axis they were cut on.
     contour_clip: Option<(usize, crate::contours::Region)>,
-    /// *Modules ▶ Structures editor*: which dataset it works on and the
+    /// *Modules ▶ Structure editor*: which dataset it works on and the
     /// numbers its buttons apply.
     tools: struct_tools::StructTools,
     /// The live-wire's cost image and current anchor, kept between frames.
@@ -1411,7 +1412,7 @@ pub struct ViewerApp {
     // Tools ▶ Transfer by relationship.
     transfer_dialog: Option<transfer_win::TransferDialog>,
 
-    // Tools ▶ Compare structures.
+    // Tools ▶ Structure comparison.
     compare_dialog: Option<compare_win::CompareDialog>,
 
     /// Deferred 4D-group edit from the data tree's context menus.
@@ -1447,13 +1448,18 @@ pub struct ViewerApp {
     /// *Modules ▶ Image simulation*: the simulation section is part of the
     /// modules panel. Persisted between runs.
     module_simulation: bool,
-    /// *Modules ▶ Structures propagation*: the propagation section is part
+    /// *Modules ▶ Structure propagation*: the propagation section is part
     /// of the modules panel. Persisted between runs.
     module_propagation: bool,
-    /// *Modules ▶ Structures editor*: inserting, editing and combining
+    /// *Modules ▶ Structure editor*: inserting, editing and combining
     /// structures is a section of the modules panel. Persisted between
     /// runs; on by default.
     module_structures: bool,
+    /// *Modules ▶ Structure auto tools*: body contour and the three engines
+    /// are a section of the modules panel. Persisted; on by default.
+    module_auto: bool,
+    /// The auto tools module's state: its dataset and the section to unfold.
+    auto: auto_tools::AutoTools,
     /// The toolbar's *✏ Draw structure* is unfolded: the drawing tools and
     /// the options of the one in hand are on the toolbar.
     draw_open: bool,
@@ -1515,6 +1521,7 @@ impl ViewerApp {
             || self.module_simulation
             || self.module_propagation
             || self.module_structures
+            || self.module_auto
     }
 
     /// Both datasets show an image volume.
@@ -1744,6 +1751,8 @@ impl ViewerApp {
             module_simulation: prefs.module_simulation,
             module_propagation: prefs.module_propagation,
             module_structures: prefs.module_structures,
+            module_auto: prefs.module_auto,
+            auto: auto_tools::AutoTools::default(),
             draw_open: false,
             side_open: true,
             right_open: true,
@@ -1795,6 +1804,7 @@ impl ViewerApp {
             module_simulation: self.module_simulation,
             module_propagation: self.module_propagation,
             module_structures: self.module_structures,
+            module_auto: self.module_auto,
             session: self.session.clone(),
             graphics_backend: self.graphics_backend,
         }) {

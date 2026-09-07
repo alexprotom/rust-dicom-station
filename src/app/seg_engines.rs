@@ -19,23 +19,8 @@ use super::*;
 /// A background run of one engine: the slot it works on, and its outcome.
 pub(super) type SegJob<T> = Job<(usize, anyhow::Result<T>)>;
 
-/// Which tool a [`ToolInfo`] stands for - what a menu entry or a sidebar
-/// button opens, matched exhaustively in [`ViewerApp::open_tool`] so a new
-/// tool cannot fall through to the wrong window.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum ToolId {
-    Details,
-    Combine,
-    Body,
-    Autoseg,
-    PromptSeg,
-    SliceProp,
-    Motion,
-}
-
 /// The glyph and name of each tool, in one place.
 pub(super) struct ToolInfo {
-    pub id: ToolId,
     pub glyph: &'static str,
     pub name: &'static str,
 }
@@ -46,18 +31,15 @@ pub(super) struct ToolInfo {
 /// the whole scan by itself; a robot would have read better and does not
 /// render (see the `glyphs` test module).
 pub(super) const AUTOSEG: ToolInfo = ToolInfo {
-    id: ToolId::Autoseg,
     glyph: "🔬",
     name: "Auto-segmentation",
 };
 /// The speech balloon is the prompt: this is the tool you tell what to find.
 pub(super) const PROMPT_SEG: ToolInfo = ToolInfo {
-    id: ToolId::PromptSeg,
     glyph: "💬",
     name: "Prompt segmentation",
 };
 pub(super) const SLICE_PROP: ToolInfo = ToolInfo {
-    id: ToolId::SliceProp,
     glyph: "⏩",
     name: "Slice propagation",
 };
@@ -65,54 +47,21 @@ pub(super) const SLICE_PROP: ToolInfo = ToolInfo {
 /// and because it is one of the few figures egui's bundled emoji font
 /// actually carries.
 pub(super) const BODY_CONTOUR: ToolInfo = ToolInfo {
-    id: ToolId::Body,
     glyph: "👤",
     name: "Body contour",
 };
 /// The fifth tool, and the only one with no network behind it at all.
 pub(super) const COMBINE: ToolInfo = ToolInfo {
-    id: ToolId::Combine,
     glyph: "∪",
     name: "Combine structures",
 };
-/// The sixth tool: the 4D motion / ITV pipeline. A chart, because what it
+/// The 4D motion / ITV pipeline. A chart, because what it
 /// produces is the motion curves and volumes (and the glyph is covered by
 /// egui's bundled emoji fonts, which the quarter-clocks are not).
 pub(super) const MOTION: ToolInfo = ToolInfo {
-    id: ToolId::Motion,
     glyph: "📈",
-    name: "4D motion / ITV",
+    name: "Structure motion",
 };
-
-/// The tools with a window of their own, in the order the Tools menu lists
-/// them, each with the one line its tooltip says. The 4D motion tool is not
-/// among them: it works on a group, not on a structure; the contour tools,
-/// the generators and the structure algebra are sections of the Structures
-/// editor.
-pub(super) const TOOL_HINTS: &[(&ToolInfo, &str)] = &[
-    (
-        &super::stats_win::DETAILS,
-        "one row per structure: volume, grey levels, what the geometry costs, whether a \
-         recipe still holds",
-    ),
-    (
-        &BODY_CONTOUR,
-        "outline the patient without the couch, the chair or the immobilisation (EXTERNAL)",
-    ),
-    (
-        &AUTOSEG,
-        "automatic multi-organ segmentation (TotalSegmentator, 117 structures)",
-    ),
-    (
-        &PROMPT_SEG,
-        "segment whatever the crosshair points at - a box, a click or a structure name \
-         (SegVol)",
-    ),
-    (
-        &SLICE_PROP,
-        "box a structure on one slice and follow it through the stack (MedSAM2)",
-    ),
-];
 
 impl ToolInfo {
     /// `🔬 Auto-segmentation - dataset A`, the window title.
@@ -136,22 +85,6 @@ impl ToolInfo {
     /// that lists every tool twice is twice as long and no clearer.
     pub fn menu_entry(&self) -> String {
         format!("{} {}", self.glyph, self.name)
-    }
-}
-
-impl ViewerApp {
-    /// Open the tool's window on `slot`; the structure algebra is a section
-    /// of the Structures editor and is revealed there.
-    pub(super) fn open_tool(&mut self, id: ToolId, slot: usize) {
-        match id {
-            ToolId::Details => self.open_stats_dialog(slot),
-            ToolId::Combine => self.open_combine_dialog(slot, Vec::new()),
-            ToolId::Body => self.open_body_dialog(slot),
-            ToolId::Autoseg => self.open_autoseg_dialog(slot),
-            ToolId::PromptSeg => self.open_segvol_dialog(slot),
-            ToolId::SliceProp => self.open_medsam2_panel(slot),
-            ToolId::Motion => self.open_motion_dialog(slot, None),
-        }
     }
 }
 
@@ -312,7 +245,7 @@ impl ViewerApp {
 
 /// `Compute:  Auto  GPU  CPU`
 pub(super) fn device_row(ui: &mut egui::Ui, pref: &mut DevicePref) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("Compute:");
         for p in DevicePref::ALL {
             let hint = match p {
@@ -329,9 +262,9 @@ pub(super) fn device_row(ui: &mut egui::Ui, pref: &mut DevicePref) {
 /// Returns true when the browse button was clicked.
 pub(super) fn models_root_row(ui: &mut egui::Ui, models_dir: &mut String) -> bool {
     let mut browse = false;
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("Model folder:");
-        ui.add(egui::TextEdit::singleline(models_dir).desired_width(220.0))
+        ui.add(egui::TextEdit::singleline(models_dir).desired_width(160.0))
             .on_hover_text(format!(
                 "Root folder of all downloaded weights; blank means the default, {}",
                 models::default_root().display()

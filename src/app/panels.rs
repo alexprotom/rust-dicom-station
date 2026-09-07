@@ -143,6 +143,9 @@ impl ViewerApp {
             return;
         }
         self.tools.visible = false;
+        // The MedSAM2 box is drawn in the views only while its section is
+        // on screen; the section sets this again every frame it is drawn.
+        self.medsam2.open = false;
         self.right_open = Self::edge_panel(
             ui,
             EdgePanel {
@@ -157,11 +160,14 @@ impl ViewerApp {
                 if self.module_registration {
                     self.registration_section(ui);
                 }
+                if self.module_simulation {
+                    self.simulation_section(ui);
+                }
                 if self.module_structures {
                     self.structures_editor_section(ui);
                 }
-                if self.module_simulation {
-                    self.simulation_section(ui);
+                if self.module_auto {
+                    self.auto_tools_section(ui);
                 }
                 if self.module_propagation {
                     self.propagate_section(ui);
@@ -1624,7 +1630,7 @@ impl ViewerApp {
                                     ui.label(egui::RichText::new(st.glyph()).color(theme::rgb(c)))
                                         .on_hover_text(format!(
                                             "Derived structure: {}\nThe recipe is in the \
-                                             Structures editor",
+                                             Structure editor",
                                             st.label()
                                         ));
                                 }
@@ -1657,7 +1663,7 @@ impl ViewerApp {
                                 resp.context_menu(|ui| {
                                     if tip_button(
                                         ui,
-                                        "📝 Edit in the Structures editor",
+                                        "📝 Edit in the Structure editor",
                                         "Select it and open the editor on it",
                                     ) {
                                         open_editor = Some(i);

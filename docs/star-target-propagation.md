@@ -31,7 +31,7 @@ along, with no inversion. Ten phases, ten transforms, one CCT.
    dataset B (*File ▶ Add DICOM folder to B*). Check in the data tree that
    the 4DCT shows as one 4D group with its ten phases and that every phase
    has its `RTSTRUCT` with `heart_total`.
-2. **Open the module.** *Modules ▶ Structures propagation* (right panel, F10).
+2. **Open the module.** *Modules ▶ Structure propagation* (right panel, F10).
 3. **From image** = the CCT series (any series of either dataset is listed;
    one that is not on display is loaded for the run). **Structures of** =
    `CCT RTSTRUCT`; the set drawn on the chosen image is preselected. **To**
@@ -79,7 +79,7 @@ registration: the transforms are kept, and the button reads
 
 ### Then: the motion of the landed target
 
-With the target in every phase's structure set, *Tools ▶ 4D motion / ITV*
+With the target in every phase's structure set, *Tools ▶ 📈 Structure motion*
 on the 4DCT dataset lists it once, in the *On every phase* column of the
 Targets list. Tick it there (one tick, not one per phase), keep the
 reference structure at `heart_total`, and choose the models:

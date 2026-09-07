@@ -1,4 +1,5 @@
-//! *Tools ▶ 4D motion / ITV analysis*: the automated per-phase pipeline.
+//! *Tools ▶ Structure motion* (the 4D motion / ITV analysis): the automated
+//! per-phase pipeline.
 //!
 //! One run reproduces the whole 4DCT motion workflow on a recognised 4D
 //! group: the reference phase is registered to every other phase (rigidly,

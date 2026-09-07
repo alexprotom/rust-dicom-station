@@ -78,7 +78,8 @@ engine.*
 * **Tools** - DICOM export with an editable tag table, a model manager for
   every downloadable weight, a folder anonymizer with consistent UID
   regeneration, a synthetic RT-study generator; every tool window can be
-  moved to its own monitor.
+  moved to its own monitor, and the structure tools live in the modules
+  panel.
 
 ## Architecture
 
@@ -101,7 +102,8 @@ cargo test --release
 ```
 
 To try prompt segmentation on the bundled patient: put the crosshair on the
-tumor, *Tools ▶ 💬 Prompt segmentation*, prompt **Box**, **▶ Segment**.
+tumor, unfold *💬 Prompt segmentation* in the Structure auto tools module
+(right panel), prompt **Box**, **▶ Segment**.
 The engines fetch their weights on first use into one model folder
 (`%LOCALAPPDATA%\RustDICOMStation\models` on Windows,
 `~/.local/share/RustDICOMStation/models` on Linux), movable from any tool
@@ -137,7 +139,7 @@ https://alexprotom.github.io/rust-dicom-station/
 | [docs/drr.md](docs/drr.md) | Digitally reconstructed radiographs: the two projectors and the geometry |
 | [docs/dvh.md](docs/dvh.md) | Dose-volume histograms: curves, metrics, constraint checking, export |
 | [docs/segmentation.md](docs/segmentation.md) | Brush / eraser / region growing, 3D view, mask → RTSTRUCT |
-| [docs/contours.md](docs/contours.md) | Drawing and editing structures as contours: the draw row and the Structures editor, live wire, smart brush, interpolation, POIs, templates, locking |
+| [docs/contours.md](docs/contours.md) | Drawing and editing structures as contours: the draw row and the Structure editor, live wire, smart brush, interpolation, POIs, templates, locking |
 | [docs/generators.md](docs/generators.md) | Structures without drawing: grey level (HU or SUV), shapes, isodose, field of view |
 | [docs/structure-algebra.md](docs/structure-algebra.md) | Boolean operations, margins, cropping, cleanup |
 | [docs/body-contour.md](docs/body-contour.md) | The body / EXTERNAL contour on CT and MR, verification |

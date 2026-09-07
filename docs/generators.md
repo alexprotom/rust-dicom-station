@@ -1,7 +1,7 @@
 # Making a structure without drawing it
 
-The *Insert structure* section of the Structures editor (*Modules ▶
-Structures editor*, right panel) - after *+ Empty structure* and *✱ Point of
+The *Insert structure* section of the Structure editor (*Modules ▶
+Structure editor*, right panel) - after *+ Empty structure* and *✱ Point of
 interest*, the generators: a grey-level window, a shape, a dose level or
 the field of view.
 These are the cheap generators every planning system has, and the arithmetic

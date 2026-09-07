@@ -19,11 +19,11 @@ as the image.
 
 ## Using it
 
-**Tools ▶ ⏩ Slice propagation** (the dataset is chosen on the window's
-**Dataset A / B** row), or the **⏩ Propagate…** button
-in the sidebar *Segmentations* section, opens the tool window (**⏩ Slice
-propagation - dataset A**; the three segmentation engines share one window
-layout, see [architecture.md](architecture.md#the-three-engine-windows)).
+The **⏩ Slice propagation** section of the *Structure auto tools* module
+(*Modules ▶ Structure auto tools*, right panel, F10; the dataset is the
+module's **Dataset A / B** row; the four sections share one layout, see
+[architecture.md](architecture.md#the-tool-windows-and-the-modules)). The
+box is drawn in the views while the section is unfolded.
 The workflow is the one the [MedSAM2 extension for 3D
 Slicer](https://github.com/bowang-lab/MedSAMSlicer/tree/MedSAM2)
 established - box the structure on one slice, check it, propagate - minus
@@ -202,7 +202,7 @@ port never does.
 The checkpoint (156 MB) is downloaded from
 [huggingface.co/wanglab/MedSAM2](https://huggingface.co/wanglab/MedSAM2) on
 first use into `models/medsam2/` under the model folder and converted once
-into a `safetensors` cache beside it. The tool window says whether the
+into a `safetensors` cache beside it. The section says whether the
 chosen variant is cached or how much a run will download.
 
 **The MedSAM2 code is Apache-2.0, but the weights are tagged CC-BY-SA-4.0 and

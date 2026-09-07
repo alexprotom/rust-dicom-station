@@ -303,6 +303,23 @@ impl Overlap {
     }
 }
 
+/// The Dice coefficient of two masks on one lattice, `2|A ∩ B| / (|A| + |B|)`;
+/// `None` when they differ in size or either is empty.
+pub fn dice(a: &[u8], b: &[u8]) -> Option<f64> {
+    if a.len() != b.len() {
+        return None;
+    }
+    let (na, nb, nab) = a
+        .par_iter()
+        .zip(b.par_iter())
+        .map(|(&x, &y)| {
+            let (x, y) = (x != 0, y != 0);
+            (x as u64, y as u64, (x && y) as u64)
+        })
+        .reduce(|| (0, 0, 0), |p, q| (p.0 + q.0, p.1 + q.1, p.2 + q.2));
+    (na > 0 && nb > 0).then(|| 2.0 * nab as f64 / (na + nb) as f64)
+}
+
 /// Compare two masks on the same grid. `None` when either mask is empty.
 pub fn overlap(a: &[u8], b: &[u8], grid: &Grid) -> Option<Overlap> {
     let n = grid.dims[0] * grid.dims[1] * grid.dims[2];
@@ -887,6 +904,16 @@ mod tests {
         assert_eq!(synchrony_level(0.951), "very high");
         assert_eq!(synchrony_level(-0.839), "high");
         assert_eq!(synchrony_level(0.503), "moderate");
+    }
+
+    #[test]
+    fn dice_counts_the_overlap_and_refuses_empty_or_mismatched_masks() {
+        let a = [1u8, 1, 1, 0, 0, 0];
+        let b = [0u8, 1, 1, 1, 0, 0];
+        assert!((dice(&a, &b).unwrap() - 4.0 / 6.0).abs() < 1e-12);
+        assert!((dice(&a, &a).unwrap() - 1.0).abs() < 1e-12);
+        assert_eq!(dice(&a, &[0u8; 6]), None, "an empty mask has no Dice");
+        assert_eq!(dice(&a, &b[..5]), None, "different lattices");
     }
 
     #[test]

@@ -406,9 +406,8 @@ impl ViewerApp {
     }
 
     /// A run finished: verify the slot still shows the same volume, then
-    /// open the organ-selection dialog in place of the tool window.
+    /// open the organ-selection dialog.
     pub(super) fn on_autoseg_done(&mut self, slot: usize, result: autoseg::AutosegResult) {
-        self.autoseg_dialog = None;
         if !self.slot_still_shows(slot, result.volume_dims, &result.frame_of_reference_uid) {
             self.error = Some(stale_result(&AUTOSEG));
             return;
