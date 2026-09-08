@@ -43,7 +43,7 @@ pub(super) fn install(ctx: &egui::Context) {
 /// Every non-ASCII character the interface may use: verified present in
 /// egui's bundled fonts. Add to this list only after checking the fonts.
 #[cfg(test)]
-pub(super) const ALLOWED: &str = "«°±²³·»Ö×ĊĠΔβμσφ–—“”…⁴↑→↓↺⇄⇤⇥⇧⇩⇮⇯⇱⇲−∩∪≈⊎⊕⊖⊗⊘⊞⋂⋃⌖⌚⌨⏩⏭⏮⏱⏳⏸⏹⏺■▣▲▶▸▼◀◉◌◍◎●◐◑◼☑☢♻⚒⚖⚙⚛⚠⚡⛶✂✏✒✔✖✚✨✱➕➖⟲⟳⤴⤵⬆⬇⬚🅰🎞🎨🎯🎲🏥🏷👁👤💡💬💾📁📂📄📈📊📋📌📎📐📝📤📥📦📩🔀🔁🔍🔏🔒🔓🔔🔗🔤🔧🔩🔬🔮🕐🕹🖊🖥🗑";
+pub(super) const ALLOWED: &str = "✋«°±²³·»Ö×ĊĠΔβμσφ–—“”…⁴↑→↓↺⇄⇤⇥⇧⇩⇮⇯⇱⇲−∩∪≈⊎⊕⊖⊗⊘⊞⋂⋃⌖⌚⌨⏩⏭⏮⏱⏳⏸⏹⏺■▣▲▶▸▼◀◉◌◍◎●◐◑◼☑☢♻⚒⚖⚙⚛⚠⚡⛶✂✏✒✔✖✚✨✱➕➖⟲⟳⤴⤵⬆⬇⬚🅰🎞🎨🎯🎲🏥🏷👁👤💡💬💾📁📂📄📈📊📋📌📎📐📝📤📥📦📩🔀🔁🔍🔏🔒🔓🔔🔗🔤🔧🔩🔬🔮🕐🕹🖊🖥🗑";
 
 #[cfg(test)]
 mod tests {

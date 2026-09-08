@@ -943,6 +943,40 @@ impl ViewerApp {
         true
     }
 
+    /// [`Self::with_edit_stack`] on the stacking axis in use, with the undo
+    /// step optional: a drag pushes one at its first sample only.
+    pub(super) fn edit_stack_step(
+        &mut self,
+        slot: usize,
+        push_undo: bool,
+        f: impl FnOnce(&mut Stack, [usize; 3]),
+    ) -> bool {
+        let Some((set, roi)) = self.edit_target(slot) else {
+            return false;
+        };
+        if self.set_locked(slot, set) {
+            self.locked_notice(slot);
+            return false;
+        }
+        let axis = self.edit_axis(slot);
+        if self.working_stack(slot, set, roi, axis).is_none() {
+            return false;
+        }
+        let Some(dims) = self.slots[slot].study.as_ref().map(|s| s.volume.dims) else {
+            return false;
+        };
+        if push_undo {
+            self.push_roi_undo(slot, set, roi);
+        }
+        if let Some(e) = self.edit.as_mut() {
+            f(&mut e.stack, dims);
+            e.stack.prune();
+        }
+        self.flush_edit();
+        self.interp = None;
+        true
+    }
+
     /// What the contour window reports about the structure being edited.
     pub(super) fn edit_summary(&self, slot: usize) -> Option<(String, String, f64, usize, usize)> {
         let (set, roi) = self.edit_target(slot)?;
@@ -1093,18 +1127,7 @@ impl ViewerApp {
             // Along the stacking axis the slices are relabelled by a whole
             // number of levels, so nothing is resampled.
             let d = (level - st.centroid3()[axis]).round() as i64;
-            if d != 0 {
-                let n = dims[axis] as i64;
-                st.slices.retain_mut(|s| {
-                    let l = s.level as i64 + d;
-                    if (0..n).contains(&l) {
-                        s.level = l as usize;
-                        true
-                    } else {
-                        false
-                    }
-                });
-            }
+            st.shift_levels(d, dims);
         })
     }
 

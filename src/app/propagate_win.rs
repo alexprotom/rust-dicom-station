@@ -1200,7 +1200,7 @@ impl ViewerApp {
 
         egui::CollapsingHeader::new(egui::RichText::new("⇄ Structure propagation").strong())
             .id_salt("module_propagate")
-            .default_open(true)
+            .default_open(false)
             .show(ui, |ui| {
                 ui.label(
                     "Carries structures onto another image through a registration. Every \

@@ -15,8 +15,16 @@ use crate::segmentation;
 use super::widgets::small_tip_button;
 use super::*;
 
-/// The columns every table has, in this order.
-const FIXED: [Metric; 4] = [Metric::Volume, Metric::Mean, Metric::Min, Metric::Max];
+/// The columns a fresh table has, in this order; *Reset columns* brings
+/// them back.
+const DEFAULT_COLUMNS: [Metric; 6] = [
+    Metric::Volume,
+    Metric::Mean,
+    Metric::Min,
+    Metric::Max,
+    Metric::DoseAtPct(95.0),
+    Metric::DoseAtPct(2.0),
+];
 
 /// Physical or RBE-weighted dose, the Dose Type of an RTDOSE.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -42,8 +50,8 @@ pub(super) struct DoseEst {
     /// dataset's active dose until a dose is picked here.
     pub dose: Option<usize>,
     pub kind: DoseKind,
-    /// Columns after the fixed four: `D95%`, `V20`, `D2cc`, …
-    pub extra: Vec<Metric>,
+    /// The columns, every one of them removable: `Dmean`, `D95%`, `V20`, …
+    pub columns: Vec<Metric>,
     pub new_metric: String,
     pub bad_metric: Option<String>,
     pub rows: Vec<DoseRow>,
@@ -61,7 +69,7 @@ impl Default for DoseEst {
             slot: 0,
             dose: None,
             kind: DoseKind::Physical,
-            extra: vec![Metric::DoseAtPct(95.0), Metric::DoseAtPct(2.0)],
+            columns: DEFAULT_COLUMNS.to_vec(),
             new_metric: String::new(),
             bad_metric: None,
             rows: Vec::new(),
@@ -75,11 +83,7 @@ impl Default for DoseEst {
 
 impl DoseEst {
     pub(super) fn metrics(&self) -> Vec<Metric> {
-        FIXED
-            .iter()
-            .copied()
-            .chain(self.extra.iter().copied())
-            .collect()
+        self.columns.clone()
     }
 
     /// Add the column typed into the box. Anything that does not read as a
@@ -112,11 +116,40 @@ impl DoseEst {
             ));
             return;
         }
-        if !FIXED.contains(&m) && !self.extra.contains(&m) {
-            self.extra.push(m);
+        if !self.columns.contains(&m) {
+            self.columns.push(m);
         }
         self.new_metric.clear();
         self.bad_metric = None;
+    }
+}
+
+/// The table as CSV: one header, one line per structure, the dose grid
+/// coverage as a last column.
+pub(super) fn rows_csv(metrics: &[Metric], units: &str, rows: &[DoseRow]) -> String {
+    let mut out = String::from("structure");
+    for m in metrics {
+        out.push_str(&format!(",{} [{}]", m.label(), m.unit(units)));
+    }
+    out.push_str(",outside_dose_grid_pct\n");
+    for r in rows {
+        out.push_str(&csv_field(&r.name));
+        for v in &r.values {
+            match v {
+                Some(v) => out.push_str(&format!(",{v:.4}")),
+                None => out.push(','),
+            }
+        }
+        out.push_str(&format!(",{:.2}\n", r.outside * 100.0));
+    }
+    out
+}
+
+fn csv_field(s: &str) -> String {
+    if s.contains([',', '"', '\n']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
     }
 }
 
@@ -306,7 +339,7 @@ impl ViewerApp {
     pub(super) fn dose_est_section(&mut self, ui: &mut egui::Ui) {
         let title = egui::RichText::new("Dose estimation").strong();
         egui::CollapsingHeader::new(title)
-            .default_open(true)
+            .default_open(false)
             .show(ui, |ui| self.dose_est_body(ui));
         ui.separator();
     }
@@ -373,12 +406,11 @@ impl ViewerApp {
                     }
                 });
         });
-        // Columns: the fixed four, the extra ones each with a remover, and
-        // the box that adds one.
+        // Columns: each with a remover, the box that adds one, the reset.
         ui.horizontal_wrapped(|ui| {
             ui.label("Columns:");
             let mut drop = None;
-            for (i, m) in self.dose_est.extra.iter().enumerate() {
+            for (i, m) in self.dose_est.columns.iter().enumerate() {
                 if ui
                     .small_button(format!("{} ✖", m.label()))
                     .on_hover_text("Remove this column")
@@ -388,7 +420,7 @@ impl ViewerApp {
                 }
             }
             if let Some(i) = drop {
-                self.dose_est.extra.remove(i);
+                self.dose_est.columns.remove(i);
             }
             let r = ui.add(
                 egui::TextEdit::singleline(&mut self.dose_est.new_metric)
@@ -399,11 +431,16 @@ impl ViewerApp {
             if small_tip_button(
                 ui,
                 "+",
-                "Add a column: D<X>% (dose to X % of the volume), D<X>cc, V<X> (per cent \
-                 of the volume at X dose units or more), V<X>cc",
+                "Add a column: Dmean, Dmin, Dmax, Volume, D<X>% (dose to X % of the volume), \
+                 D<X>cc, V<X> (per cent of the volume at X dose units or more), V<X>cc",
             ) || enter
             {
                 self.dose_est.add_metric();
+            }
+            if self.dose_est.columns != DEFAULT_COLUMNS
+                && small_tip_button(ui, "Reset columns", "Volume, Dmean, Dmin, Dmax, D95%, D2%")
+            {
+                self.dose_est.columns = DEFAULT_COLUMNS.to_vec();
             }
         });
         if let Some(bad) = &self.dose_est.bad_metric {
@@ -502,6 +539,23 @@ impl ViewerApp {
             .weak()
             .small(),
         );
+        if small_tip_button(
+            ui,
+            "💾 Export CSV",
+            "Save the table as it stands, one line per structure",
+        ) {
+            let text = rows_csv(&metrics, &d.units, &d.rows);
+            if let Some(path) = rfd::FileDialog::new()
+                .set_title("Save the dose estimation table")
+                .set_file_name("dose_estimation.csv")
+                .save_file()
+            {
+                match std::fs::write(&path, text) {
+                    Ok(()) => self.notice = Some(format!("Written to {}", path.display())),
+                    Err(e) => self.error = Some(format!("Could not write the file: {e}")),
+                }
+            }
+        }
         if self.dose_est_job.is_some() {
             ui.ctx().request_repaint();
         }
@@ -515,13 +569,13 @@ mod tests {
     #[test]
     fn the_column_box_refuses_nonsense_and_never_panics() {
         let mut d = DoseEst::default();
-        let n = d.extra.len();
+        let n = d.columns.len();
         for bad in [
             "", "   ", "D", "x", "Dnan%", "Dinf%", "D150%", "V-5", "D-1cc", "%",
         ] {
             d.new_metric = bad.into();
             d.add_metric();
-            assert_eq!(d.extra.len(), n, "{bad:?} must not add a column");
+            assert_eq!(d.columns.len(), n, "{bad:?} must not add a column");
         }
         assert!(d.bad_metric.is_some());
         for (good, m) in [
@@ -532,15 +586,31 @@ mod tests {
         ] {
             d.new_metric = good.into();
             d.add_metric();
-            assert_eq!(d.extra.last(), Some(&m), "{good}");
+            assert_eq!(d.columns.last(), Some(&m), "{good}");
             assert!(d.new_metric.is_empty() && d.bad_metric.is_none());
         }
-        // Not twice, and not one of the fixed columns.
+        // Not twice.
         for again in ["D50%", "Dmean", "Volume"] {
             d.new_metric = again.into();
             d.add_metric();
         }
-        assert_eq!(d.extra.len(), n + 4);
-        assert_eq!(d.metrics().len(), FIXED.len() + n + 4);
+        assert_eq!(d.columns.len(), n + 4);
+        // Every column can go, and the CSV still has a header.
+        d.columns.clear();
+        assert_eq!(d.metrics().len(), 0);
+        let csv = rows_csv(
+            &[Metric::Mean, Metric::DoseAtPct(95.0)],
+            "GY",
+            &[DoseRow {
+                name: "a,b".into(),
+                color: [0; 3],
+                values: vec![Some(1.5), None],
+                outside: 0.25,
+            }],
+        );
+        assert_eq!(
+            csv,
+            "structure,Dmean [Gy],D95% [Gy],outside_dose_grid_pct\n\"a,b\",1.5000,,25.00\n"
+        );
     }
 }

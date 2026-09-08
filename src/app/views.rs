@@ -307,6 +307,7 @@ impl ViewerApp {
         let medsam2_box = self.medsam2_drawing_in(slot, plane);
         let [w_px, h_px] = vol.plane_dims(plane);
         let [sx, sy] = vol.plane_spacing(plane);
+        let vol_spacing = vol.spacing;
         let w_mm = (w_px as f64 * sx) as f32;
         let h_mm = (h_px as f64 * sy) as f32;
 
@@ -572,8 +573,8 @@ impl ViewerApp {
             }
         }
 
-        // The Structure editor's drawn axis: a white line three slices
-        // thick, in every view of its dataset. It is the same 3-D line
+        // The Structure editor's drawn axis: a white line one slice thick,
+        // in every view of its dataset. It is the same 3-D line
         // everywhere, so the other views show where it runs.
         if self.tools.visible && self.tools.axis_draw {
             if let Some(ax) = self.tools.axis.filter(|a| a.slot == slot) {
@@ -581,8 +582,13 @@ impl ViewerApp {
                 let pb = vol.voxel_to_plane_pixel(plane, ax.b);
                 let a = px_to_screen([pa[0] as f32, pa[1] as f32]);
                 let b = px_to_screen([pb[0] as f32, pb[1] as f32]);
-                let thick = vol.spacing[crate::contours::axis_of_plane(plane)] as f32 * 3.0 * zoom;
+                let thick = vol.spacing[crate::contours::axis_of_plane(plane)] as f32 * zoom;
                 painter.line_segment([a, b], Stroke::new(thick.max(1.5), Color32::WHITE));
+                if self.tools.hand_axis {
+                    for p in [a, b] {
+                        painter.circle_stroke(p, 6.0, Stroke::new(1.0, Color32::WHITE));
+                    }
+                }
             }
         }
 
@@ -972,11 +978,36 @@ impl ViewerApp {
         // change only by scrolling the hovered view.
         // While the editor's *Draw axis* is on, a left drag in this dataset
         // draws the axis instead.
-        let axis_draw = self.tools.visible
+        let editor_here =
+            self.tools.visible && self.tools.slot == slot && !seg_active && !medsam2_box;
+        let hand_struct = editor_here && self.tools.hand_struct;
+        let hand_axis = editor_here
             && self.tools.axis_draw
-            && self.tools.slot == slot
-            && !seg_active
-            && !medsam2_box;
+            && self.tools.hand_axis
+            && self.tools.axis.is_some_and(|a| a.slot == slot);
+        let axis_draw = editor_here && self.tools.axis_draw && !hand_axis && !hand_struct;
+        // The two hands: the drag's motion as a difference of voxel
+        // positions, so a flipped view axis comes out right.
+        let mut hand_move: Option<([f64; 3], bool)> = None;
+        if (hand_struct || hand_axis) && !over_buttons {
+            let start = resp.drag_started_by(egui::PointerButton::Primary);
+            if start || resp.dragged_by(egui::PointerButton::Primary) {
+                if let Some(mp) = resp.interact_pointer_pos() {
+                    let d = resp.drag_delta();
+                    let now = screen_to_px(mp);
+                    let before = screen_to_px(mp - d);
+                    let a =
+                        vol.plane_pixel_to_voxel(plane, view.slice, now[0] as f64, now[1] as f64);
+                    let b = vol.plane_pixel_to_voxel(
+                        plane,
+                        view.slice,
+                        before[0] as f64,
+                        before[1] as f64,
+                    );
+                    hand_move = Some(([a[0] - b[0], a[1] - b[1], a[2] - b[2]], start));
+                }
+            }
+        }
         let mut axis_to: Option<([f64; 3], bool)> = None;
         if axis_draw && !over_buttons {
             let start = resp.drag_started_by(egui::PointerButton::Primary);
@@ -993,6 +1024,8 @@ impl ViewerApp {
             && !seg_active
             && !medsam2_box
             && !axis_draw
+            && !hand_struct
+            && !hand_axis
             && (resp.dragged_by(egui::PointerButton::Primary) || resp.clicked())
             && !over_buttons
         {
@@ -1188,6 +1221,16 @@ impl ViewerApp {
         }
         if let Some(r) = new_brush {
             self.brush_radius_mm = r;
+        }
+        if let Some((d_vox, start)) = hand_move {
+            if hand_axis {
+                let grab_at = resp.interact_pointer_pos().map(screen_to_px);
+                self.drag_axis(slot, plane, d_vox, start, grab_at, sx as f32 * zoom);
+            } else {
+                let sp = vol_spacing;
+                let shift = [d_vox[0] * sp[0], d_vox[1] * sp[1], d_vox[2] * sp[2]];
+                self.drag_structure(slot, shift, start);
+            }
         }
         if let Some((vxl, start)) = axis_to {
             let t = &mut self.tools;

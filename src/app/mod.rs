@@ -695,6 +695,9 @@ struct D3Window {
     radius: f32,
     /// Identity of the structure set the meshes were built from.
     key: u64,
+    /// Fit the camera to the meshes when they land: the first time only,
+    /// a rebuild after an edit keeps the view where it was.
+    refit: bool,
     job: Option<Job<Vec<RoiMesh>>>,
     /// Live meshes of the painted segmentations (`roi_index` = seg index).
     seg_meshes: Option<Arc<Vec<RoiMesh>>>,
@@ -1461,6 +1464,15 @@ pub struct ViewerApp {
     module_auto: bool,
     /// *Modules ▶ Dose estimation*: the dose metrics table.
     module_dose: bool,
+    /// Which module sections are unfolded (settings key `modules_open`),
+    /// and whether the next panel draw has to apply that list - set by
+    /// *Restore the last session*.
+    modules_open: Vec<String>,
+    apply_modules_open: bool,
+    /// The list follows the headers only once one was unfolded in this
+    /// run or the last run's list was applied; before that the settings
+    /// keep the last run's list.
+    modules_tracked: bool,
     dose_est: dose_est::DoseEst,
     dose_est_job: Option<Job<Vec<dose_est::DoseRow>>>,
     /// The auto tools module's state: its dataset and the section to unfold.
@@ -1759,6 +1771,9 @@ impl ViewerApp {
             module_structures: prefs.module_structures,
             module_auto: prefs.module_auto,
             module_dose: prefs.module_dose,
+            modules_open: prefs.modules_open.clone(),
+            apply_modules_open: false,
+            modules_tracked: false,
             dose_est: dose_est::DoseEst::default(),
             dose_est_job: None,
             auto: auto_tools::AutoTools::default(),
@@ -1815,6 +1830,7 @@ impl ViewerApp {
             module_structures: self.module_structures,
             module_auto: self.module_auto,
             module_dose: self.module_dose,
+            modules_open: self.modules_open.clone(),
             session: self.session.clone(),
             graphics_backend: self.graphics_backend,
         }) {
@@ -1896,6 +1912,7 @@ impl ViewerApp {
         if !self.last_session[1].is_empty() {
             self.comparison = true;
         }
+        self.apply_modules_open = true;
         for (slot, paths) in self.last_session.clone().iter().enumerate() {
             for path in paths {
                 self.restore_queue.push((slot, path.clone()));

@@ -94,11 +94,13 @@ One row per curve. It starts with volume, minimum, mean, maximum, D95 % and D2
 
 The same numbers without the plot: *Modules ▶ Dose estimation* (right
 panel, F10) is one table, one row per **ticked** structure of the active set
-of its dataset, against one dose. Volume, Dmean, Dmin and Dmax are always
-there; the columns after them (D95 % and D2 % to start with) take the same
-names as the table above through the box and its `+`, and each one has a
-`✖` to go. A name that does not read as a metric, or asks for more than
+of its dataset, against one dose. Volume, Dmean, Dmin and Dmax are there
+to start with, then D95 % and D2 %; the box and its `+` add any column of
+the table above, every column has a `✖` to go, and *Reset columns* brings
+the six back. A name that does not read as a metric, or asks for more than
 100 % of the volume, is refused under the box rather than computed.
+*Export CSV* writes the table as it stands, with the dose-grid coverage of
+every structure as a last column.
 
 The table follows what it depends on by itself: tick or untick a structure,
 move or redraw one in the Structure editor, pick another dose or another

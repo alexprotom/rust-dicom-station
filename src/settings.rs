@@ -32,6 +32,9 @@ const MODULE_PROP_KEY: &str = "module_structures_propagation";
 const MODULE_TOOLS_KEY: &str = "module_structure_editor";
 const MODULE_AUTO_KEY: &str = "module_structure_auto_tools";
 const MODULE_DOSE_KEY: &str = "module_dose_estimation";
+/// Which module sections were unfolded, remembered for *Restore the last
+/// session*.
+const MODULES_OPEN_KEY: &str = "modules_open";
 
 /// Settings keys of the last session's sources, one per dataset. The paths
 /// are separated by `|`, which no path on any supported system contains.
@@ -80,6 +83,12 @@ pub struct Settings {
     /// structures is shown in the modules panel. On by default.
     pub module_dose: bool,
 
+    /// The module sections that were unfolded when the settings were last
+    /// written (`registration`, `simulation`, `editor`, `auto`,
+    /// `propagation`, `dose`). Every section starts folded; *Restore the
+    /// last session* unfolds these again.
+    pub modules_open: Vec<String>,
+
     /// Which graphics backend to draw and compute with. Read once at
     /// startup, before the window exists, so a change only takes effect on
     /// the next run - which the menu says.
@@ -107,6 +116,7 @@ impl Default for Settings {
             module_structures: true,
             module_auto: true,
             module_dose: true,
+            modules_open: Vec::new(),
             session: [Vec::new(), Vec::new()],
             // Let wgpu choose. The installer writes an explicit value when
             // the person installing picks one.
@@ -417,6 +427,12 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
             if let Some(b) = bool_from_str(value) {
                 s.module_dose = b;
             }
+        } else if key.eq_ignore_ascii_case(MODULES_OPEN_KEY) {
+            s.modules_open = value
+                .split(',')
+                .map(|v| v.trim().to_lowercase())
+                .filter(|v| !v.is_empty())
+                .collect();
         } else if key.eq_ignore_ascii_case(GRAPHICS_BACKEND_KEY) {
             // An unreadable value leaves the default rather than failing to
             // start: this file is edited by hand and by an installer, and a
@@ -450,6 +466,8 @@ fn render(s: &Settings) -> String {
          {MODULE_TOOLS_KEY} = {}\n\
          {MODULE_AUTO_KEY} = {}\n\
          {MODULE_DOSE_KEY} = {}\n\
+         # module sections unfolded at the last run, for Restore the last session\n\
+         {MODULES_OPEN_KEY} = {}\n\
          # graphics backend = auto | vulkan | dx12 | metal | opengl\n\
          # (the WGPU_BACKEND environment variable overrides this)\n\
          {GRAPHICS_BACKEND_KEY} = {}\n",
@@ -459,6 +477,7 @@ fn render(s: &Settings) -> String {
         bool_to_str(s.module_structures),
         bool_to_str(s.module_auto),
         bool_to_str(s.module_dose),
+        s.modules_open.join(","),
         s.graphics_backend.key()
     ));
     for (key, paths) in SESSION_KEYS.iter().zip(&s.session) {
@@ -622,6 +641,11 @@ mod tests {
                 module_structures: bits & 8 != 0,
                 module_auto: bits & 16 != 0,
                 module_dose: bits & 32 != 0,
+                modules_open: if bits & 1 != 0 {
+                    vec!["editor".into(), "dose".into()]
+                } else {
+                    Vec::new()
+                },
                 ..Settings::default()
             };
             assert_eq!(parse(&render(&s)), s, "round trip of {bits:06b}");

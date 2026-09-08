@@ -158,10 +158,13 @@ The *Modules* menu chooses the right panel's sections, in the order they
 appear: **Image registration**, **Image simulation**, the **Structure
 editor** (insert, edit and combine structures - [contours.md](contours.md)),
 the **Structure auto tools** (the body contour and the three segmentation
-engines - [segmentation.md](segmentation.md)) and **Structure propagation**.
-The editor and the auto tools start switched on, the other three off; every
-choice is remembered between runs, and with all five off there is no right
-panel at all. The drawing tools are not in the panel: the toolbar's **✏
+engines - [segmentation.md](segmentation.md)), **Structure propagation** and
+**Dose estimation** (the dose metrics table - [dvh.md](dvh.md)). The editor,
+the auto tools and the dose estimation start switched on, the other three
+off; every choice is remembered between runs, and with all six off there is
+no right panel at all. Every section starts folded; which ones were
+unfolded is remembered too, and *Restore the last session* unfolds them
+again. The drawing tools are not in the panel: the toolbar's **✏
 Draw structure** button unfolds them on the toolbar. The *Tools* menu keeps
 the windows: **◑ Structure comparison**, **📋 Structure details** (one row
 per structure, with a Dice column against a reference of your choice) and

@@ -1654,21 +1654,57 @@ impl Stack {
         }
     }
 
+    /// The stack shifted by a whole number of levels along its axis;
+    /// slices pushed off the lattice are dropped.
+    pub fn shift_levels(&mut self, d: i64, dims: [usize; 3]) {
+        if d == 0 {
+            return;
+        }
+        let n = dims[self.axis] as i64;
+        self.slices.retain_mut(|s| {
+            let l = s.level as i64 + d;
+            if (0..n).contains(&l) {
+                s.level = l as usize;
+                true
+            } else {
+                false
+            }
+        });
+    }
+
+    /// Translate by millimetres along the lattice axes: exactly in the
+    /// plane, and by the nearest whole number of slices along the stacking
+    /// axis - the contours keep their shape, the way a planning system
+    /// moves a structure.
+    pub fn translate_mm(&mut self, shift: [f64; 3], spacing: [f64; 3], dims: [usize; 3]) {
+        let [ua, va] = plane_axes(self.axis);
+        let sp = spacing.map(|v| v.max(1e-9));
+        self.translate([shift[ua] / sp[ua], shift[va] / sp[va]]);
+        let d = (shift[self.axis] / sp[self.axis]).round();
+        if d.is_finite() {
+            self.shift_levels(d as i64, dims);
+        }
+    }
+
     /// The stack moved by a rigid motion in the lattice's millimetre frame.
     ///
-    /// Goes through a voxel mask: the geometry is rasterized on `dims`,
-    /// resampled (trilinear, cut at one half) onto the moved position and
-    /// traced again, so an out-of-plane shift or a tilt lands on the
-    /// slices it now crosses. Anything moved off the lattice is lost, and
-    /// the result is empty when nothing is left.
+    /// Goes through a voxel mask: the geometry is rasterized, resampled
+    /// (trilinear, cut at one half) at the moved position and traced
+    /// again, so a tilt lands on the slices it now crosses. The mask is
+    /// finer than the lattice in the plane (up to four times, less for a
+    /// structure too large for that) and only as large as the structure's
+    /// box, so a small volume keeps its shape to a fraction of a pixel.
+    /// Anything moved off the lattice is lost, and the result is empty
+    /// when nothing is left.
     pub fn rigid_moved(&self, dims: [usize; 3], spacing: [f64; 3], m: &Rigid) -> Stack {
         use rayon::prelude::*;
+        let axis = self.axis;
+        let [ua, va] = plane_axes(axis);
         let Some((lo, hi)) = self.bbox(dims) else {
-            return Stack::empty(self.axis);
+            return Stack::empty(axis);
         };
-        let mask = self.rasterize(dims);
         let sp = spacing.map(|v| v.max(1e-9));
-        // Output box: the moved corners of the input box, a voxel to spare.
+        // Output box in lattice indices: the moved corners of the input box.
         let mut olo = [f64::INFINITY; 3];
         let mut ohi = [f64::NEG_INFINITY; 3];
         for corner in 0..8 {
@@ -1687,17 +1723,41 @@ impl Stack {
         let mut b1 = [0usize; 3];
         for a in 0..3 {
             if !olo[a].is_finite() || !ohi[a].is_finite() || dims[a] == 0 {
-                return Stack::empty(self.axis);
+                return Stack::empty(axis);
             }
             let lo_i = (olo[a].floor() - 1.0).max(0.0);
             let hi_i = (ohi[a].ceil() + 1.0).min(dims[a] as f64 - 1.0);
             if lo_i > hi_i {
-                return Stack::empty(self.axis);
+                return Stack::empty(axis);
             }
             b0[a] = lo_i as usize;
             b1[a] = hi_i as usize;
         }
-        let [nx, ny, nz] = dims;
+        // The in-plane refinement, capped so the two work masks stay small.
+        let voxels = |a: [usize; 3], b: [usize; 3]| -> f64 {
+            (0..3).map(|k| (b[k] - a[k] + 3) as f64).product()
+        };
+        let biggest = voxels(lo, hi).max(voxels(b0, b1));
+        let f = ((6.0e7 / biggest).sqrt().floor() as usize).clamp(1, 4);
+        let ff = f as f64;
+        // Input work lattice: the structure's box, a voxel of margin, the
+        // plane refined `f` times. Local fine index u' = (u - lo + 1 + 0.5) f - 0.5.
+        let mut in_dims = [0usize; 3];
+        for a in 0..3 {
+            in_dims[a] = hi[a] - lo[a] + 3;
+        }
+        in_dims[ua] *= f;
+        in_dims[va] *= f;
+        let mut local = self.clone();
+        for s in &mut local.slices {
+            s.level = s.level + 1 - lo[axis];
+            for r in &mut s.region.rings {
+                r.translate([-(lo[ua] as f64) + 1.0, -(lo[va] as f64) + 1.0]);
+                r.scale_about([-0.5, -0.5], ff);
+            }
+        }
+        let mask = local.rasterize(in_dims);
+        let [nx, ny, nz] = in_dims;
         let at = |i: isize, j: isize, k: isize| -> f64 {
             if i < 0 || j < 0 || k < 0 || i >= nx as isize || j >= ny as isize || k >= nz as isize {
                 0.0
@@ -1705,11 +1765,23 @@ impl Stack {
                 mask[k as usize * nx * ny + j as usize * nx + i as usize] as f64
             }
         };
-        let inside = |p: [f64; 3]| -> bool {
-            let src = m.inverse_apply(p);
-            let f = [src[0] / sp[0], src[1] / sp[1], src[2] / sp[2]];
-            let base = f.map(|v| v.floor());
-            let t = [f[0] - base[0], f[1] - base[1], f[2] - base[2]];
+        // Global millimetres → local fine input index.
+        let to_local = |src: [f64; 3]| -> [f64; 3] {
+            let mut r = [0.0; 3];
+            for a in 0..3 {
+                let idx = src[a] / sp[a] - lo[a] as f64 + 1.0;
+                r[a] = if a == axis {
+                    idx
+                } else {
+                    (idx + 0.5) * ff - 0.5
+                };
+            }
+            r
+        };
+        let inside = |p_mm: [f64; 3]| -> bool {
+            let f3 = to_local(m.inverse_apply(p_mm));
+            let base = f3.map(|v| v.floor());
+            let t = [f3[0] - base[0], f3[1] - base[1], f3[2] - base[2]];
             let (i, j, k) = (base[0] as isize, base[1] as isize, base[2] as isize);
             let mut v = 0.0;
             for c in 0..8 {
@@ -1727,27 +1799,45 @@ impl Stack {
             }
             v >= 0.5
         };
-        let mut out = vec![0u8; nx * ny * nz];
-        let row = nx;
-        let plane = nx * ny;
-        // One output row per task: `out` is split into disjoint rows.
-        out.par_chunks_mut(row)
-            .enumerate()
-            .filter(|(r, _)| {
-                let (k, j) = (r / ny, r % ny);
-                k >= b0[2] && k <= b1[2] && j >= b0[1] && j <= b1[1]
-            })
-            .for_each(|(r, line)| {
-                let (k, j) = (r / ny, r % ny);
-                for (i, cell) in line.iter_mut().enumerate().take(b1[0] + 1).skip(b0[0]) {
-                    let p = [i as f64 * sp[0], j as f64 * sp[1], k as f64 * sp[2]];
-                    if inside(p) {
-                        *cell = 1;
-                    }
+        // Output work lattice: the output box, refined the same way.
+        let mut out_dims = [0usize; 3];
+        for a in 0..3 {
+            out_dims[a] = b1[a] - b0[a] + 1;
+        }
+        out_dims[ua] *= f;
+        out_dims[va] *= f;
+        let [ox, oy, _] = out_dims;
+        let mut out = vec![0u8; out_dims[0] * out_dims[1] * out_dims[2]];
+        // Local fine output index → global millimetres.
+        let to_mm = |idx: [usize; 3]| -> [f64; 3] {
+            let mut r = [0.0; 3];
+            for a in 0..3 {
+                let g = if a == axis {
+                    idx[a] as f64
+                } else {
+                    (idx[a] as f64 + 0.5) / ff - 0.5
+                };
+                r[a] = (g + b0[a] as f64) * sp[a];
+            }
+            r
+        };
+        out.par_chunks_mut(ox).enumerate().for_each(|(r, line)| {
+            let (k, j) = (r / oy, r % oy);
+            for (i, cell) in line.iter_mut().enumerate() {
+                if inside(to_mm([i, j, k])) {
+                    *cell = 1;
                 }
-            });
-        let _ = plane;
-        Stack::from_mask(&out, dims, self.axis)
+            }
+        });
+        let mut st = Stack::from_mask(&out, out_dims, axis);
+        for s in &mut st.slices {
+            s.level += b0[axis];
+            for r in &mut s.region.rings {
+                r.scale_about([-0.5, -0.5], 1.0 / ff);
+                r.translate([b0[ua] as f64, b0[va] as f64]);
+            }
+        }
+        st
     }
 
     /// Area-weighted centroid over every slice, in in-plane coordinates.
