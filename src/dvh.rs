@@ -694,6 +694,7 @@ mod tests {
             offsets: (0..nz).map(|f| f as f64).collect(),
             units: "GY".into(),
             summation_type: "PLAN".into(),
+            dose_type: String::new(),
             max_dose: top,
             frame_of_reference_uid: "1.2.3".into(),
             study_uid: String::new(),

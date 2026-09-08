@@ -757,7 +757,16 @@ pub(crate) fn build_dose(
         "MONOCHROME2",
     );
     put_str(&mut o, tags::DOSE_UNITS, VR::CS, d.units.clone());
-    put_str(&mut o, tags::DOSE_TYPE, VR::CS, "PHYSICAL");
+    put_str(
+        &mut o,
+        tags::DOSE_TYPE,
+        VR::CS,
+        if d.dose_type.is_empty() {
+            "PHYSICAL"
+        } else {
+            &d.dose_type
+        },
+    );
     put_str(
         &mut o,
         tags::DOSE_SUMMATION_TYPE,

@@ -90,6 +90,25 @@ One row per curve. It starts with volume, minimum, mean, maximum, D95 % and D2
 | `V20`, `V20Gy` | percentage of the structure at or above that dose |
 | `V20cc` | the same as an absolute volume |
 
+## The Dose estimation module
+
+The same numbers without the plot: *Modules ▶ Dose estimation* (right
+panel, F10) is one table, one row per **ticked** structure of the active set
+of its dataset, against one dose. Volume, Dmean, Dmin and Dmax are always
+there; the columns after them (D95 % and D2 % to start with) take the same
+names as the table above through the box and its `+`, and each one has a
+`✖` to go. A name that does not read as a metric, or asks for more than
+100 % of the volume, is refused under the box rather than computed.
+
+The table follows what it depends on by itself: tick or untick a structure,
+move or redraw one in the Structure editor, pick another dose or another
+column, and it is recomputed in the background and replaced when ready. When
+the dataset carries both physical and effective (RBE-weighted, Dose Type
+`EFFECTIVE`) doses, a *Physical / Effective* switch above the dose picker
+chooses which kind the picker lists; with only one kind there is nothing to
+switch and it is not shown. Points of interest have no volume and are left
+out.
+
 ## Constraint checking
 
 A protocol is a plain text file, one constraint per line - human-editable on

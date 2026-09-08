@@ -47,6 +47,7 @@ mod d3;
 mod derived_app;
 mod detach;
 mod dialogs;
+mod dose_est;
 mod drr_win;
 mod dvh_win;
 mod export_win;
@@ -1458,6 +1459,10 @@ pub struct ViewerApp {
     /// *Modules ▶ Structure auto tools*: body contour and the three engines
     /// are a section of the modules panel. Persisted; on by default.
     module_auto: bool,
+    /// *Modules ▶ Dose estimation*: the dose metrics table.
+    module_dose: bool,
+    dose_est: dose_est::DoseEst,
+    dose_est_job: Option<Job<Vec<dose_est::DoseRow>>>,
     /// The auto tools module's state: its dataset and the section to unfold.
     auto: auto_tools::AutoTools,
     /// The toolbar's *✏ Draw structure* is unfolded: the drawing tools and
@@ -1522,6 +1527,7 @@ impl ViewerApp {
             || self.module_propagation
             || self.module_structures
             || self.module_auto
+            || self.module_dose
     }
 
     /// Both datasets show an image volume.
@@ -1752,6 +1758,9 @@ impl ViewerApp {
             module_propagation: prefs.module_propagation,
             module_structures: prefs.module_structures,
             module_auto: prefs.module_auto,
+            module_dose: prefs.module_dose,
+            dose_est: dose_est::DoseEst::default(),
+            dose_est_job: None,
             auto: auto_tools::AutoTools::default(),
             draw_open: false,
             side_open: true,
@@ -1805,6 +1814,7 @@ impl ViewerApp {
             module_propagation: self.module_propagation,
             module_structures: self.module_structures,
             module_auto: self.module_auto,
+            module_dose: self.module_dose,
             session: self.session.clone(),
             graphics_backend: self.graphics_backend,
         }) {
@@ -2052,6 +2062,14 @@ impl eframe::App for ViewerApp {
         if self.derived_job.is_none() && !self.derived_queue.is_empty() {
             let slot = self.derived_slot;
             self.next_derived_in_queue(slot);
+        }
+        if let Some(rows) = poll_job(
+            &mut self.dose_est_job,
+            &ctx,
+            "Dose estimation",
+            &mut self.error,
+        ) {
+            self.on_dose_est_done(rows);
         }
         match poll_job(&mut self.dvh_job, &ctx, "DVH", &mut self.error) {
             Some(Ok(done)) => self.on_dvh_done(done),

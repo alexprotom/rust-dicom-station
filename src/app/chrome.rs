@@ -222,6 +222,14 @@ impl ViewerApp {
                              registration that drives it.",
                             )
                             .changed();
+                        modules_changed |= ui
+                            .checkbox(&mut self.module_dose, "Dose estimation")
+                            .on_hover_text(
+                                "Dmean, Dmin, Dmax, D_X% and V_X of every ticked structure \
+                                 against one dose, in a table that follows every edit of \
+                                 the structures.",
+                            )
+                            .changed();
                         if self.any_module() {
                             self.right_open = true;
                         }

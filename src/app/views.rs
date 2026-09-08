@@ -572,6 +572,20 @@ impl ViewerApp {
             }
         }
 
+        // The Structure editor's drawn axis: a white line three slices
+        // thick, in every view of its dataset. It is the same 3-D line
+        // everywhere, so the other views show where it runs.
+        if self.tools.visible && self.tools.axis_draw {
+            if let Some(ax) = self.tools.axis.filter(|a| a.slot == slot) {
+                let pa = vol.voxel_to_plane_pixel(plane, ax.a);
+                let pb = vol.voxel_to_plane_pixel(plane, ax.b);
+                let a = px_to_screen([pa[0] as f32, pa[1] as f32]);
+                let b = px_to_screen([pb[0] as f32, pb[1] as f32]);
+                let thick = vol.spacing[crate::contours::axis_of_plane(plane)] as f32 * 3.0 * zoom;
+                painter.line_segment([a, b], Stroke::new(thick.max(1.5), Color32::WHITE));
+            }
+        }
+
         // Crosshair.
         if self.show_crosshair {
             let cp = vol.voxel_to_plane_pixel(plane, slot_state.cursor);
@@ -956,9 +970,29 @@ impl ViewerApp {
         // Left-click crosshair navigation only while the crosshair is shown
         // and no segmentation tool holds the left button; with ⌖ off, slices
         // change only by scrolling the hovered view.
+        // While the editor's *Draw axis* is on, a left drag in this dataset
+        // draws the axis instead.
+        let axis_draw = self.tools.visible
+            && self.tools.axis_draw
+            && self.tools.slot == slot
+            && !seg_active
+            && !medsam2_box;
+        let mut axis_to: Option<([f64; 3], bool)> = None;
+        if axis_draw && !over_buttons {
+            let start = resp.drag_started_by(egui::PointerButton::Primary);
+            if start || resp.dragged_by(egui::PointerButton::Primary) {
+                if let Some(mp) = resp.interact_pointer_pos() {
+                    let px = screen_to_px(mp);
+                    let vxl =
+                        vol.plane_pixel_to_voxel(plane, view.slice, px[0] as f64, px[1] as f64);
+                    axis_to = Some((vxl, start));
+                }
+            }
+        }
         if self.show_crosshair
             && !seg_active
             && !medsam2_box
+            && !axis_draw
             && (resp.dragged_by(egui::PointerButton::Primary) || resp.clicked())
             && !over_buttons
         {
@@ -1154,6 +1188,19 @@ impl ViewerApp {
         }
         if let Some(r) = new_brush {
             self.brush_radius_mm = r;
+        }
+        if let Some((vxl, start)) = axis_to {
+            let t = &mut self.tools;
+            match (&mut t.axis, start) {
+                (Some(ax), false) if ax.slot == slot => ax.b = vxl,
+                _ => {
+                    t.axis = Some(struct_tools::DrawnAxis {
+                        slot,
+                        a: vxl,
+                        b: vxl,
+                    })
+                }
+            }
         }
         if let Some((p, tol)) = box_press {
             self.medsam2_press(plane, cur_slice, p, tol);

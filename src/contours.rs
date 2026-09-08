@@ -58,6 +58,113 @@ const BOOL_MAX_CELLS: usize = 64 << 20;
 /// Rings below this area (in voxel units) are dropped as numerical debris.
 const MIN_RING_AREA: f64 = 1e-6;
 
+/// A rigid motion in a lattice's own millimetre frame (index × spacing
+/// along i / j / k): `p' = R (p - c) + c + t`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rigid {
+    pub rot: [[f64; 3]; 3],
+    pub centre: [f64; 3],
+    pub shift: [f64; 3],
+}
+
+impl Rigid {
+    pub const IDENTITY_ROT: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+    pub fn translation(shift: [f64; 3]) -> Rigid {
+        Rigid {
+            rot: Self::IDENTITY_ROT,
+            centre: [0.0; 3],
+            shift,
+        }
+    }
+
+    /// Rotation by `angle` (radians, right-handed) about the line through
+    /// `centre` along `dir`. A zero direction gives the identity.
+    pub fn rotation_about(dir: [f64; 3], centre: [f64; 3], angle: f64) -> Rigid {
+        let n = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+        if n.is_nan() || n <= 1e-12 || !angle.is_finite() {
+            return Rigid::translation([0.0; 3]);
+        }
+        let [x, y, z] = dir.map(|v| v / n);
+        let (s, c) = angle.sin_cos();
+        let t = 1.0 - c;
+        Rigid {
+            rot: [
+                [t * x * x + c, t * x * y - s * z, t * x * z + s * y],
+                [t * x * y + s * z, t * y * y + c, t * y * z - s * x],
+                [t * x * z - s * y, t * y * z + s * x, t * z * z + c],
+            ],
+            centre,
+            shift: [0.0; 3],
+        }
+    }
+
+    /// Rotations about the three lattice axes in turn (x first, then y,
+    /// then z), all about `centre`.
+    pub fn euler_about(centre: [f64; 3], angles: [f64; 3]) -> Rigid {
+        let axes = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let mut r = Rigid::translation([0.0; 3]);
+        r.centre = centre;
+        for (dir, a) in axes.into_iter().zip(angles) {
+            let q = Rigid::rotation_about(dir, centre, a);
+            r.rot = mat_mul(q.rot, r.rot);
+        }
+        r
+    }
+
+    pub fn is_identity(&self) -> bool {
+        self.rot == Self::IDENTITY_ROT && self.shift == [0.0; 3]
+    }
+
+    pub fn apply(&self, p: [f64; 3]) -> [f64; 3] {
+        let d = [
+            p[0] - self.centre[0],
+            p[1] - self.centre[1],
+            p[2] - self.centre[2],
+        ];
+        let r = mat_vec(self.rot, d);
+        [
+            r[0] + self.centre[0] + self.shift[0],
+            r[1] + self.centre[1] + self.shift[1],
+            r[2] + self.centre[2] + self.shift[2],
+        ]
+    }
+
+    /// Where the point that lands on `q` came from.
+    pub fn inverse_apply(&self, q: [f64; 3]) -> [f64; 3] {
+        let d = [
+            q[0] - self.centre[0] - self.shift[0],
+            q[1] - self.centre[1] - self.shift[1],
+            q[2] - self.centre[2] - self.shift[2],
+        ];
+        // The inverse of a rotation is its transpose.
+        let r = self.rot;
+        [
+            r[0][0] * d[0] + r[1][0] * d[1] + r[2][0] * d[2] + self.centre[0],
+            r[0][1] * d[0] + r[1][1] * d[1] + r[2][1] * d[2] + self.centre[1],
+            r[0][2] * d[0] + r[1][2] * d[1] + r[2][2] * d[2] + self.centre[2],
+        ]
+    }
+}
+
+fn mat_vec(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
+    [
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+    ]
+}
+
+fn mat_mul(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let mut m = [[0.0; 3]; 3];
+    for (i, row) in m.iter_mut().enumerate() {
+        for (j, cell) in row.iter_mut().enumerate() {
+            *cell = (0..3).map(|k| a[i][k] * b[k][j]).sum();
+        }
+    }
+    m
+}
+
 /// The two in-plane lattice axes of a stack sliced along `axis`, in
 /// ascending order: `[0, 1]` for the axial stack, `[1, 2]` for sagittal,
 /// `[0, 2]` for coronal.
@@ -1525,6 +1632,124 @@ impl Stack {
         }
     }
 
+    /// Area-weighted centroid in lattice indices, all three axes.
+    pub fn centroid3(&self) -> [f64; 3] {
+        let [ua, va] = plane_axes(self.axis);
+        let mut acc = [0.0f64; 3];
+        let mut w = 0.0;
+        for s in &self.slices {
+            for r in &s.region.rings {
+                let a = r.area();
+                let c = r.centroid();
+                acc[ua] += c[0] * a;
+                acc[va] += c[1] * a;
+                acc[self.axis] += s.level as f64 * a;
+                w += a;
+            }
+        }
+        if w > 0.0 {
+            acc.map(|v| v / w)
+        } else {
+            [0.0; 3]
+        }
+    }
+
+    /// The stack moved by a rigid motion in the lattice's millimetre frame.
+    ///
+    /// Goes through a voxel mask: the geometry is rasterized on `dims`,
+    /// resampled (trilinear, cut at one half) onto the moved position and
+    /// traced again, so an out-of-plane shift or a tilt lands on the
+    /// slices it now crosses. Anything moved off the lattice is lost, and
+    /// the result is empty when nothing is left.
+    pub fn rigid_moved(&self, dims: [usize; 3], spacing: [f64; 3], m: &Rigid) -> Stack {
+        use rayon::prelude::*;
+        let Some((lo, hi)) = self.bbox(dims) else {
+            return Stack::empty(self.axis);
+        };
+        let mask = self.rasterize(dims);
+        let sp = spacing.map(|v| v.max(1e-9));
+        // Output box: the moved corners of the input box, a voxel to spare.
+        let mut olo = [f64::INFINITY; 3];
+        let mut ohi = [f64::NEG_INFINITY; 3];
+        for corner in 0..8 {
+            let p = [
+                if corner & 1 == 0 { lo[0] } else { hi[0] } as f64 * sp[0],
+                if corner & 2 == 0 { lo[1] } else { hi[1] } as f64 * sp[1],
+                if corner & 4 == 0 { lo[2] } else { hi[2] } as f64 * sp[2],
+            ];
+            let q = m.apply(p);
+            for a in 0..3 {
+                olo[a] = olo[a].min(q[a] / sp[a]);
+                ohi[a] = ohi[a].max(q[a] / sp[a]);
+            }
+        }
+        let mut b0 = [0usize; 3];
+        let mut b1 = [0usize; 3];
+        for a in 0..3 {
+            if !olo[a].is_finite() || !ohi[a].is_finite() || dims[a] == 0 {
+                return Stack::empty(self.axis);
+            }
+            let lo_i = (olo[a].floor() - 1.0).max(0.0);
+            let hi_i = (ohi[a].ceil() + 1.0).min(dims[a] as f64 - 1.0);
+            if lo_i > hi_i {
+                return Stack::empty(self.axis);
+            }
+            b0[a] = lo_i as usize;
+            b1[a] = hi_i as usize;
+        }
+        let [nx, ny, nz] = dims;
+        let at = |i: isize, j: isize, k: isize| -> f64 {
+            if i < 0 || j < 0 || k < 0 || i >= nx as isize || j >= ny as isize || k >= nz as isize {
+                0.0
+            } else {
+                mask[k as usize * nx * ny + j as usize * nx + i as usize] as f64
+            }
+        };
+        let inside = |p: [f64; 3]| -> bool {
+            let src = m.inverse_apply(p);
+            let f = [src[0] / sp[0], src[1] / sp[1], src[2] / sp[2]];
+            let base = f.map(|v| v.floor());
+            let t = [f[0] - base[0], f[1] - base[1], f[2] - base[2]];
+            let (i, j, k) = (base[0] as isize, base[1] as isize, base[2] as isize);
+            let mut v = 0.0;
+            for c in 0..8 {
+                let (di, dj, dk) = (
+                    (c & 1) as isize,
+                    ((c >> 1) & 1) as isize,
+                    ((c >> 2) & 1) as isize,
+                );
+                let w = (if di == 1 { t[0] } else { 1.0 - t[0] })
+                    * (if dj == 1 { t[1] } else { 1.0 - t[1] })
+                    * (if dk == 1 { t[2] } else { 1.0 - t[2] });
+                if w > 0.0 {
+                    v += w * at(i + di, j + dj, k + dk);
+                }
+            }
+            v >= 0.5
+        };
+        let mut out = vec![0u8; nx * ny * nz];
+        let row = nx;
+        let plane = nx * ny;
+        // One output row per task: `out` is split into disjoint rows.
+        out.par_chunks_mut(row)
+            .enumerate()
+            .filter(|(r, _)| {
+                let (k, j) = (r / ny, r % ny);
+                k >= b0[2] && k <= b1[2] && j >= b0[1] && j <= b1[1]
+            })
+            .for_each(|(r, line)| {
+                let (k, j) = (r / ny, r % ny);
+                for (i, cell) in line.iter_mut().enumerate().take(b1[0] + 1).skip(b0[0]) {
+                    let p = [i as f64 * sp[0], j as f64 * sp[1], k as f64 * sp[2]];
+                    if inside(p) {
+                        *cell = 1;
+                    }
+                }
+            });
+        let _ = plane;
+        Stack::from_mask(&out, dims, self.axis)
+    }
+
     /// Area-weighted centroid over every slice, in in-plane coordinates.
     pub fn centroid(&self) -> Pt {
         let mut acc = [0.0f64, 0.0];
@@ -1666,6 +1891,51 @@ fn sdf_of(region: &Region, x0: f64, y0: f64, w: usize, h: usize) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rigid_moved_matches_the_exact_in_plane_shift_and_turns_a_box() {
+        let dims = [40, 40, 20];
+        let sp = [1.0, 1.0, 2.0];
+        let mut st = Stack::empty(2);
+        for level in 5..10 {
+            let region = Region {
+                rings: vec![Poly::new(vec![
+                    [10.0, 10.0],
+                    [20.0, 10.0],
+                    [20.0, 14.0],
+                    [10.0, 14.0],
+                ])],
+            };
+            st.slices.push(SlicePolys { level, region });
+        }
+        let base = st.rasterize(dims);
+        let n0 = base.iter().filter(|&&v| v != 0).count();
+        // Two voxels along z: every slice moves up by one level.
+        let moved = st.rigid_moved(dims, sp, &Rigid::translation([0.0, 0.0, 4.0]));
+        let levels: Vec<usize> = moved.slices.iter().map(|s| s.level).collect();
+        assert_eq!(levels, vec![7, 8, 9, 10, 11]);
+        let n1 = moved.rasterize(dims).iter().filter(|&&v| v != 0).count();
+        assert!(
+            (n1 as f64 - n0 as f64).abs() <= n0 as f64 * 0.1,
+            "{n0} vs {n1}"
+        );
+        // A quarter turn about z swaps the box's extent.
+        let c = st.centroid3();
+        let turned = st.rigid_moved(
+            dims,
+            sp,
+            &Rigid::rotation_about(
+                [0.0, 0.0, 1.0],
+                [c[0], c[1], c[2] * sp[2]],
+                std::f64::consts::FRAC_PI_2,
+            ),
+        );
+        let (lo, hi) = turned.bbox(dims).unwrap();
+        assert!(hi[1] - lo[1] > hi[0] - lo[0], "{lo:?} {hi:?}");
+        // Off the lattice: nothing is left, and nothing panics.
+        let gone = st.rigid_moved(dims, sp, &Rigid::translation([1000.0, 0.0, 0.0]));
+        assert!(gone.slices.is_empty());
+    }
+
     use super::*;
 
     /// A padded field traces a filled rectangle as one ring of four

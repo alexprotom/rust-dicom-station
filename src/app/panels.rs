@@ -172,6 +172,9 @@ impl ViewerApp {
                 if self.module_propagation {
                     self.propagate_section(ui);
                 }
+                if self.module_dose {
+                    self.dose_est_section(ui);
+                }
             },
         );
         // The dashed interpolation preview belongs to the Edit section;

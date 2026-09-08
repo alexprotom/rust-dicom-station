@@ -1086,9 +1086,25 @@ impl ViewerApp {
         let [ua, va] = contours::plane_axes(axis);
         let c = self.slots[slot].cursor;
         let target = [c[ua], c[va]];
-        self.with_edit_stack(slot, |st, _| {
+        let level = c[axis];
+        self.with_edit_stack(slot, |st, dims| {
             let cur = st.centroid();
             st.translate([target[0] - cur[0], target[1] - cur[1]]);
+            // Along the stacking axis the slices are relabelled by a whole
+            // number of levels, so nothing is resampled.
+            let d = (level - st.centroid3()[axis]).round() as i64;
+            if d != 0 {
+                let n = dims[axis] as i64;
+                st.slices.retain_mut(|s| {
+                    let l = s.level as i64 + d;
+                    if (0..n).contains(&l) {
+                        s.level = l as usize;
+                        true
+                    } else {
+                        false
+                    }
+                });
+            }
         })
     }
 

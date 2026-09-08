@@ -277,6 +277,7 @@ pub fn generate_transformed_study(
             offsets: d.offsets.clone(),
             units: d.units.clone(),
             summation_type: d.summation_type.clone(),
+            dose_type: d.dose_type.clone(),
             max_dose,
             frame_of_reference_uid: d.frame_of_reference_uid.clone(),
             sop_instance_uid: d.sop_instance_uid.clone(),

@@ -182,9 +182,19 @@ the stroke under the pointer. Every button is one undo step.
   so this one goes through the mask and re-traces the contours; it is the one
   operation here that does not leave untouched slices untouched, and it says
   so.
-* **Move the whole structure** - translate in millimetres, scale about its
-  own centroid, rotate, or put its centroid under the crosshair (*move to
-  slice intersection*). In the plane it is drawn on.
+* **Move the structure** - translate by x / y / z millimetres along the
+  image's own axes, rotate by three angles about its centroid, put its
+  centroid under the crosshair (*move to slice intersection*), or scale
+  about its centroid. A move in the plane of the drawing axis, a turn about
+  it and the scaling act on the contours as they are; anything out of plane
+  (a z shift, a tilt) goes through the voxel mask - rasterized, resampled at
+  the moved position and traced again - so the result lands on the slices
+  it now crosses. **Draw axis** switches the left button in the views of
+  the editor's dataset to drawing an axis (a white line, three slices
+  thick, shown in every view); *Move* then shifts the structure by so many
+  millimetres along it, from its first point towards its second, and
+  *Rotate* turns the structure about it. Both go through the mask. The axis
+  is dropped when the toggle is switched off.
 * **Type** - the RT ROI Interpreted Type (`PTV`, `ORGAN`, `EXTERNAL`, …),
   which is what a planning system branches on. It is the first line of the
   section, under the structure's name and its volume.
