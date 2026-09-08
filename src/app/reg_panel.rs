@@ -597,7 +597,7 @@ impl ViewerApp {
             // The module is switched on, so the section says what it is
             // waiting for rather than leaving an empty panel.
             egui::CollapsingHeader::new(egui::RichText::new("Image registration").strong())
-                .default_open(true)
+                .default_open(false)
                 .show(ui, |ui| {
                     ui.weak(
                         "Load a second dataset (File > Add DICOM folder to B), or a dataset \
@@ -639,7 +639,7 @@ impl ViewerApp {
         }
 
         egui::CollapsingHeader::new(egui::RichText::new("Image registration").strong())
-            .default_open(true)
+            .default_open(false)
             .show(ui, |ui| {
                 if let Some(job) = &self.reg_job {
                     ui.horizontal(|ui| {

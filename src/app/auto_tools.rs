@@ -37,7 +37,7 @@ impl ViewerApp {
         let title = egui::RichText::new("Structure auto tools").strong();
         if !self.any_volume() {
             egui::CollapsingHeader::new(title)
-                .default_open(true)
+                .default_open(false)
                 .show(ui, |ui| {
                     ui.weak("Load a dataset with an image volume to segment");
                 });
@@ -53,7 +53,7 @@ impl ViewerApp {
             || self.running_tool(1 - self.auto.slot).is_some();
         let mut new_slot = None;
         egui::CollapsingHeader::new(title)
-            .default_open(true)
+            .default_open(false)
             .show(ui, |ui| {
                 new_slot = seg_engines::dataset_row(ui, self.auto.slot, self.volume_slots(), !busy);
                 for (section, info) in [

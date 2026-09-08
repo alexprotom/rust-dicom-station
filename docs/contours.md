@@ -182,9 +182,28 @@ the stroke under the pointer. Every button is one undo step.
   so this one goes through the mask and re-traces the contours; it is the one
   operation here that does not leave untouched slices untouched, and it says
   so.
-* **Move the whole structure** - translate in millimetres, scale about its
-  own centroid, rotate, or put its centroid under the crosshair (*move to
-  slice intersection*). In the plane it is drawn on.
+* **Move the structure** (a foldable block) - translate by x / y / z
+  millimetres along the image's own axes, rotate by three angles about its
+  centroid, put its centroid under the crosshair (*move to slice
+  intersection*), or scale about its centroid. A translation is exact: the
+  contours keep their shape in the plane and move by whole slices along the
+  stacking axis, as a planning system moves a structure. A rotation about
+  the stacking axis and the scaling act on the contours as they are; a tilt
+  goes through a voxel mask - rasterized on a lattice up to four times finer
+  than the image in the plane and only as large as the structure, resampled
+  at the moved position and traced again - so the structure lands on the
+  slices it now crosses without visibly losing its shape. **Draw axis**
+  switches the left button in the views of the editor's dataset to drawing
+  an axis (a white line, one slice thick, shown in every view and in the 3D
+  window); *Move* then shifts the structure by so many millimetres along it,
+  from its first point towards its second, and *Rotate* turns the structure
+  about it. The ✋ next to *Draw axis* moves the axis by hand instead: drag
+  near an end to move that end, anywhere else to move the whole line. The
+  axis is dropped when the toggle is switched off. The ✋ in the block's own
+  title line drags the selected structure with the left button in any view,
+  in the plane of that view, one undo step per drag. **Back** undoes the
+  last edit of the dataset; **Reset** puts the structure back where it was
+  before the first move.
 * **Type** - the RT ROI Interpreted Type (`PTV`, `ORGAN`, `EXTERNAL`, …),
   which is what a planning system branches on. It is the first line of the
   section, under the structure's name and its volume.

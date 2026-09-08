@@ -44,7 +44,7 @@ rust-dicom-station
 │   ├── Window chrome: menu bar, toolbar (W/L, presets, 3D, crosshair, reset, the draw row), status bar
 │   ├── Modules panel: the registration, simulation, Structure editor (insert,
 │   │   edit, combine), Structure auto tools (body contour and the three
-│   │   engines) and propagation sections
+│   │   engines), propagation and Dose estimation sections
 │   ├── Side panel: per dataset a DICOM tree - patient ▶ study ▶ modality ▶ series, with RT
 │   │   structures, segmentations, 4D groups, dose and plans inside their study -
 │   │   plus dose display, planar images, spatial registrations, records, warnings
@@ -290,6 +290,9 @@ src/
     transfer_win.rs   transfer by relationship
     dvh_win.rs        the DVH window: pickers, the plot, the metrics table,
                       constraints, export
+    dose_est.rs       the Dose estimation module: the dose metrics table of
+                      the ticked structures against one dose (physical /
+                      effective), recomputed whenever they change
     drr_win.rs        the DRR window: geometry, projectors, comparison
     pacs_win.rs       the PACS window: archive root, patient / study list,
                       import, load, send back

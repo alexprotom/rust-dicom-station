@@ -31,6 +31,9 @@ pub struct DoseGrid {
     pub offsets: Vec<f64>,
     pub units: String,
     pub summation_type: String,
+    /// Dose Type (3004,0004): `PHYSICAL`, `EFFECTIVE` (RBE-weighted) or
+    /// `ERROR`; empty when the file did not say.
+    pub dose_type: String,
     pub max_dose: f32,
     pub frame_of_reference_uid: String,
     /// SOP Instance UID of this dose object.
@@ -178,6 +181,10 @@ pub fn load(path: &Path) -> Result<DoseGrid> {
     let scaling = f64_of(&obj, tags::DOSE_GRID_SCALING).unwrap_or(1.0);
     let units = str_of(&obj, tags::DOSE_UNITS).unwrap_or_else(|| "GY".into());
     let summation_type = str_of(&obj, tags::DOSE_SUMMATION_TYPE).unwrap_or_default();
+    let dose_type = str_of(&obj, tags::DOSE_TYPE)
+        .unwrap_or_default()
+        .trim()
+        .to_uppercase();
 
     let bits = i32_of(&obj, tags::BITS_ALLOCATED).unwrap_or(32);
     let signed = i32_of(&obj, tags::PIXEL_REPRESENTATION).unwrap_or(0) == 1;
@@ -307,6 +314,7 @@ pub fn load(path: &Path) -> Result<DoseGrid> {
         offsets,
         units,
         summation_type,
+        dose_type,
         max_dose,
         frame_of_reference_uid: str_of(&obj, tags::FRAME_OF_REFERENCE_UID).unwrap_or_default(),
         sop_instance_uid: str_of(&obj, tags::SOP_INSTANCE_UID).unwrap_or_default(),

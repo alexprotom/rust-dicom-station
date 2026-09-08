@@ -19,9 +19,10 @@
 //! of the window. The tools that keep a window of their own are the ones
 //! that need the room: the engines, Body contour, the details table.
 
-use crate::contours::{axis_name, plane_axes, Stack};
+use crate::contours::{axis_name, plane_axes, Rigid, Stack};
 use crate::generate::{self, Shape};
 use crate::geometry::Vec3;
+use crate::volume::ViewPlane;
 
 use super::combine::ItemRef;
 use super::contour_edit::EdgeBand;
@@ -150,11 +151,70 @@ pub(super) struct StructTools {
     pub smooth: usize,
     /// Thin: keep every n-th slice.
     pub keep_nth: usize,
-    /// Move / scale / rotate, in the plane of the drawing axis.
-    pub shift: [f32; 2],
+    /// Move / rotate / scale the whole structure: millimetres along the
+    /// image's i / j / k, degrees about them, per cent about the centroid.
+    pub shift: [f32; 3],
+    pub rotate_deg: [f32; 3],
     pub scale_pct: f32,
-    pub rotate_deg: f32,
+    /// *Draw axis*: while on, a left drag in any view of the editor's
+    /// dataset draws the axis the two buttons next to it move along and
+    /// turn about.
+    pub axis_draw: bool,
+    pub axis: Option<DrawnAxis>,
+    pub axis_mm: f32,
+    pub axis_deg: f32,
+    /// The ✋ next to *Move the structure*: a left drag in the views
+    /// moves the selected structure in the plane.
+    pub hand_struct: bool,
+    /// The ✋ next to *Draw axis*: a left drag moves the drawn axis (an
+    /// end when grabbed near one, the whole line otherwise).
+    pub hand_axis: bool,
+    /// The structure as it was before the first Move / Rotate / Scale /
+    /// hand drag on it, for *Reset*.
+    pub origin: Option<MoveOrigin>,
+    /// Out-of-plane millimetres a hand drag has gathered but not yet
+    /// turned into a whole slice.
+    pub hand_carry: f64,
+    /// What the axis hand holds: `0` / `1` an end, `2` the whole line.
+    pub axis_grab: u8,
     pub new: NewRoi,
+}
+
+/// What *Reset* goes back to: the contours before the moves started.
+#[derive(Clone)]
+pub struct MoveOrigin {
+    pub slot: usize,
+    pub set: usize,
+    pub roi: usize,
+    pub contours: Vec<crate::rtstruct::Contour>,
+}
+
+/// The axis drawn in a view: two voxel positions of `slot`'s volume.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrawnAxis {
+    pub slot: usize,
+    pub a: [f64; 3],
+    pub b: [f64; 3],
+}
+
+impl DrawnAxis {
+    /// Ends and direction in the lattice's millimetre frame; `None` while
+    /// the two points are the same.
+    pub fn line_mm(&self, spacing: [f64; 3]) -> Option<([f64; 3], [f64; 3])> {
+        let a = [
+            self.a[0] * spacing[0],
+            self.a[1] * spacing[1],
+            self.a[2] * spacing[2],
+        ];
+        let b = [
+            self.b[0] * spacing[0],
+            self.b[1] * spacing[1],
+            self.b[2] * spacing[2],
+        ];
+        let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        (n > 1e-6).then(|| (a, d.map(|v| v / n)))
+    }
 }
 
 impl Default for StructTools {
@@ -168,9 +228,18 @@ impl Default for StructTools {
             max_points: 200,
             smooth: 1,
             keep_nth: 2,
-            shift: [0.0, 0.0],
+            shift: [0.0; 3],
+            rotate_deg: [0.0; 3],
             scale_pct: 100.0,
-            rotate_deg: 0.0,
+            axis_draw: false,
+            axis: None,
+            axis_mm: 10.0,
+            axis_deg: 10.0,
+            hand_struct: false,
+            hand_axis: false,
+            origin: None,
+            hand_carry: 0.0,
+            axis_grab: 2,
             new: NewRoi::default(),
         }
     }
@@ -196,6 +265,12 @@ enum Act {
     Translate,
     Scale,
     Rotate,
+    /// Along / about the drawn axis.
+    AxisMove,
+    AxisRotate,
+    /// One step back (the contour undo), and back to where the moves began.
+    Back,
+    Reset,
     Component(bool),
     ToCrosshair,
     DerivedUpdate,
@@ -218,6 +293,13 @@ fn act_row(ui: &mut egui::Ui, out: &mut Option<Act>, buttons: &[(&str, &str, boo
             *out = Some(*act);
         }
     }
+}
+
+/// Whether the drawn axis belongs to `slot` and has a direction.
+fn ready_axis(t: &StructTools, slot: usize) -> bool {
+    t.axis_draw
+        && t.axis
+            .is_some_and(|a| a.slot == slot && a.line_mm([1.0; 3]).is_some())
 }
 
 impl ViewerApp {
@@ -266,7 +348,7 @@ impl ViewerApp {
         let title = egui::RichText::new("Structure editor").strong();
         if !self.any_volume() {
             egui::CollapsingHeader::new(title)
-                .default_open(true)
+                .default_open(false)
                 .show(ui, |ui| {
                     ui.weak("Load a dataset with an image volume to draw on");
                 });
@@ -282,7 +364,7 @@ impl ViewerApp {
         let reveal = self.tools.reveal.take();
         let mut new_slot = None;
         egui::CollapsingHeader::new(title)
-            .default_open(true)
+            .default_open(false)
             .open(reveal.map(|_| true))
             .show(ui, |ui| {
                 new_slot = seg_engines::dataset_row(ui, self.tools.slot, self.volume_slots(), true);
@@ -793,57 +875,176 @@ impl ViewerApp {
         });
 
         // -- transforms ------------------------------------------------------
-        ui.label(egui::RichText::new("Move the whole structure").strong())
-            .on_hover_text("In the plane it is drawn on");
-        ui.horizontal_wrapped(|ui| {
-            for (i, prefix) in ["x ", "y "].iter().enumerate() {
-                ui.add(
-                    egui::DragValue::new(&mut t.shift[i])
-                        .speed(0.5)
-                        .range(-500.0..=500.0)
-                        .prefix(*prefix)
-                        .suffix(" mm"),
-                );
+        let id = ui.make_persistent_id("move_the_structure");
+        let state =
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true);
+        let header = state.show_header(ui, |ui| {
+            ui.label(egui::RichText::new("Move the structure").strong())
+                .on_hover_text("Millimetres and degrees along the image's own axes");
+            if ui
+                .toggle_value(&mut t.hand_struct, "✋")
+                .on_hover_text(
+                    "Drag the selected structure with the left button in any view of \
+                     this dataset, in the plane of that view. One undo step per drag.",
+                )
+                .changed()
+                && t.hand_struct
+            {
+                t.hand_axis = false;
             }
-            act_row(
-                ui,
-                &mut act,
-                &[
-                    ("Move", "In millimetres", true, Act::Translate),
-                    (
-                        "To crosshair",
+        });
+        header.body(|ui| {
+            ui.horizontal_wrapped(|ui| {
+                for (i, prefix) in ["x ", "y ", "z "].iter().enumerate() {
+                    ui.add(
+                        egui::DragValue::new(&mut t.shift[i])
+                            .speed(0.5)
+                            .range(-500.0..=500.0)
+                            .prefix(*prefix)
+                            .suffix(" mm"),
+                    );
+                }
+                act_row(ui, &mut act, &[("Move", "", true, Act::Translate)]);
+            });
+            ui.horizontal_wrapped(|ui| {
+                for (i, prefix) in ["x ", "y ", "z "].iter().enumerate() {
+                    ui.add(
+                        egui::DragValue::new(&mut t.rotate_deg[i])
+                            .speed(1.0)
+                            .range(-180.0..=180.0)
+                            .prefix(*prefix)
+                            .suffix("°"),
+                    );
+                }
+                act_row(
+                    ui,
+                    &mut act,
+                    &[(
+                        "Rotate",
+                        "About the structure's centroid",
+                        true,
+                        Act::Rotate,
+                    )],
+                );
+            });
+            ui.horizontal_wrapped(|ui| {
+                act_row(
+                    ui,
+                    &mut act,
+                    &[(
+                        "Move to crosshair",
                         "Put the structure's centroid under the crosshair - the \"move to \
                          slice intersection\" of a planning system",
                         true,
                         Act::ToCrosshair,
-                    ),
-                ],
-            );
-        });
-        ui.horizontal_wrapped(|ui| {
-            ui.add(
-                egui::DragValue::new(&mut t.scale_pct)
-                    .speed(0.5)
-                    .range(10.0..=400.0)
-                    .suffix(" %"),
-            );
-            act_row(
-                ui,
-                &mut act,
-                &[(
-                    "Scale",
-                    "About the structure's own centroid",
-                    true,
-                    Act::Scale,
-                )],
-            );
-            ui.add(
-                egui::DragValue::new(&mut t.rotate_deg)
-                    .speed(1.0)
-                    .range(-180.0..=180.0)
-                    .suffix("°"),
-            );
-            act_row(ui, &mut act, &[("Rotate", "", true, Act::Rotate)]);
+                    )],
+                );
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.add(
+                    egui::DragValue::new(&mut t.scale_pct)
+                        .speed(0.5)
+                        .range(10.0..=400.0)
+                        .suffix(" %"),
+                );
+                act_row(
+                    ui,
+                    &mut act,
+                    &[(
+                        "Scale",
+                        "About the structure's own centroid",
+                        true,
+                        Act::Scale,
+                    )],
+                );
+            });
+            ui.horizontal_wrapped(|ui| {
+                let was = t.axis_draw;
+                ui.toggle_value(&mut t.axis_draw, "Draw axis")
+                    .on_hover_text(
+                        "Drag with the left button in any view of this dataset to draw an axis \
+                     (one slice thick, shown in every view and in 3D); the structure is then \
+                     moved along it and turned about it",
+                    );
+                if was && !t.axis_draw {
+                    t.axis = None;
+                    t.hand_axis = false;
+                }
+                let ready = ready_axis(t, slot);
+                if ui
+                    .add_enabled(ready, egui::Button::new("✋").selected(t.hand_axis))
+                    .on_hover_text(
+                        "Move the axis by hand: drag near an end to move that end, \
+                         anywhere else on it to move the whole line",
+                    )
+                    .clicked()
+                {
+                    t.hand_axis = !t.hand_axis;
+                    if t.hand_axis {
+                        t.hand_struct = false;
+                    }
+                }
+                ui.add_enabled(
+                    t.axis_draw,
+                    egui::DragValue::new(&mut t.axis_mm)
+                        .speed(0.5)
+                        .range(-500.0..=500.0)
+                        .suffix(" mm"),
+                );
+                act_row(
+                    ui,
+                    &mut act,
+                    &[(
+                        "Move",
+                        "Along the axis, from its first point towards its second",
+                        ready,
+                        Act::AxisMove,
+                    )],
+                );
+                ui.add_enabled(
+                    t.axis_draw,
+                    egui::DragValue::new(&mut t.axis_deg)
+                        .speed(1.0)
+                        .range(-180.0..=180.0)
+                        .suffix("°"),
+                );
+                act_row(
+                    ui,
+                    &mut act,
+                    &[("Rotate", "About the axis", ready, Act::AxisRotate)],
+                );
+            });
+            if t.axis_draw && !ready_axis(t, slot) {
+                ui.label(
+                    egui::RichText::new("Drag in a view to draw the axis")
+                        .weak()
+                        .small(),
+                );
+            }
+            ui.horizontal_wrapped(|ui| {
+                let has_origin = t
+                    .origin
+                    .as_ref()
+                    .is_some_and(|o| o.slot == slot && Some((o.set, o.roi)) == target);
+                act_row(
+                    ui,
+                    &mut act,
+                    &[
+                        (
+                            "Back",
+                            "One step back: the last edit of this dataset is undone",
+                            true,
+                            Act::Back,
+                        ),
+                        (
+                            "Reset",
+                            "Back to where the structure was before the first move",
+                            has_origin,
+                            Act::Reset,
+                        ),
+                    ],
+                );
+            });
         });
         ui.label(
             egui::RichText::new(
@@ -857,6 +1058,149 @@ impl ViewerApp {
         }
     }
 
+    /// The edited structure's centroid in the lattice's millimetre frame.
+    fn edit_centroid_mm(&self, slot: usize, spacing: [f64; 3]) -> [f64; 3] {
+        let Some((set, roi)) = self.edit_target(slot) else {
+            return [0.0; 3];
+        };
+        let Some(study) = self.slots[slot].study.as_ref() else {
+            return [0.0; 3];
+        };
+        let Some(r) = study
+            .structure_sets
+            .get(set)
+            .and_then(|ss| ss.rois.get(roi))
+        else {
+            return [0.0; 3];
+        };
+        let v = Stack::from_roi(r, &study.volume.grid()).centroid3();
+        [v[0] * spacing[0], v[1] * spacing[1], v[2] * spacing[2]]
+    }
+
+    /// Keep the structure as it is now, unless an origin for it is already
+    /// held: *Reset* goes back to before the first move.
+    pub(super) fn remember_origin(&mut self, slot: usize) {
+        let Some((set, roi)) = self.edit_target(slot) else {
+            return;
+        };
+        let held = self
+            .tools
+            .origin
+            .as_ref()
+            .is_some_and(|o| o.slot == slot && o.set == set && o.roi == roi);
+        if held {
+            return;
+        }
+        if let Some(contours) = self.slots[slot].roi(set, roi).map(|r| r.contours.clone()) {
+            self.tools.origin = Some(MoveOrigin {
+                slot,
+                set,
+                roi,
+                contours,
+            });
+        }
+    }
+
+    /// *Reset*: the structure back to its origin, as one undo step.
+    fn reset_moves(&mut self, slot: usize) {
+        let Some(o) = self.tools.origin.clone() else {
+            return;
+        };
+        if o.slot != slot || self.edit_target(slot) != Some((o.set, o.roi)) {
+            return;
+        }
+        if self.set_locked(slot, o.set) {
+            self.locked_notice(slot);
+            return;
+        }
+        self.push_roi_undo(slot, o.set, o.roi);
+        if let Some(r) = self.slots[slot].roi_mut(o.set, o.roi) {
+            r.contours = o.contours;
+        }
+        self.edit = None;
+        self.interp = None;
+        self.settings_gen += 1;
+        self.mark_overridden(slot, o.set, o.roi);
+    }
+
+    /// Drag the selected structure by `shift` millimetres (lattice axes):
+    /// the first sample of a drag is the undo step, the rest ride on it.
+    /// In the plane the move is exact; along the stacking axis whole
+    /// slices are taken as the drag accumulates them (`hand_carry`).
+    pub(super) fn drag_structure(&mut self, slot: usize, shift: [f64; 3], start: bool) {
+        if start {
+            self.remember_origin(slot);
+            self.tools.hand_carry = 0.0;
+        }
+        let axis = self.edit_axis(slot);
+        let spacing = self.slots[slot].spacing_or_unit();
+        let total = self.tools.hand_carry + shift[axis];
+        let slices = (total / spacing[axis].max(1e-9)).round();
+        self.tools.hand_carry = total - slices * spacing[axis];
+        let mut s = shift;
+        s[axis] = slices * spacing[axis];
+        self.edit_stack_step(slot, start, |st, dims| st.translate_mm(s, spacing, dims));
+    }
+
+    /// Drag the drawn axis: at the drag's start, a grab within twelve screen
+    /// pixels of an end takes that end, anywhere else the whole line.
+    /// `grab_at` is in the view's pixel units, `px_per_pixel` the zoom.
+    pub(super) fn drag_axis(
+        &mut self,
+        slot: usize,
+        plane: ViewPlane,
+        d_vox: [f64; 3],
+        start: bool,
+        grab_at: Option<[f32; 2]>,
+        px_per_pixel: f32,
+    ) {
+        let Some(vol) = self.slots[slot].study.as_ref().map(|s| &s.volume) else {
+            return;
+        };
+        let Some(ax) = self.tools.axis.as_mut().filter(|a| a.slot == slot) else {
+            return;
+        };
+        if start {
+            self.tools.axis_grab = 2;
+            if let Some(g) = grab_at {
+                let tol = 12.0 / px_per_pixel.max(1e-3);
+                for (i, p) in [ax.a, ax.b].into_iter().enumerate() {
+                    let q = vol.voxel_to_plane_pixel(plane, p);
+                    let d = ((q[0] as f32 - g[0]).powi(2) + (q[1] as f32 - g[1]).powi(2)).sqrt();
+                    if d <= tol {
+                        self.tools.axis_grab = i as u8;
+                        break;
+                    }
+                }
+            }
+        }
+        let add = |p: &mut [f64; 3]| {
+            for k in 0..3 {
+                p[k] += d_vox[k];
+            }
+        };
+        match self.tools.axis_grab {
+            0 => add(&mut ax.a),
+            1 => add(&mut ax.b),
+            _ => {
+                add(&mut ax.a);
+                add(&mut ax.b);
+            }
+        }
+    }
+
+    /// Apply a rigid motion to the edited structure through its voxel mask
+    /// (see [`Stack::rigid_moved`]); one undo step like every other button.
+    fn rigid_edit(&mut self, slot: usize, m: Rigid) {
+        if m.is_identity() {
+            return;
+        }
+        let spacing = self.slots[slot].spacing_or_unit();
+        self.with_edit_stack(slot, |st, dims| {
+            *st = st.rigid_moved(dims, spacing, &m);
+        });
+    }
+
     fn apply_contour_act(&mut self, slot: usize, act: Act) {
         let t = &self.tools;
         let (min_area, max_points, smooth, keep, shift, scale, rot) = (
@@ -864,13 +1208,26 @@ impl ViewerApp {
             t.max_points,
             t.smooth,
             t.keep_nth,
-            t.shift,
+            t.shift.map(|v| v as f64),
             t.scale_pct as f64 / 100.0,
-            (t.rotate_deg as f64).to_radians(),
+            t.rotate_deg.map(|v| (v as f64).to_radians()),
         );
-        let axis = self.edit_axis(slot);
+        let (axis_mm, axis_deg, axis) =
+            (t.axis_mm as f64, (t.axis_deg as f64).to_radians(), t.axis);
+        let axis_idx = self.edit_axis(slot);
         let spacing = self.slots[slot].spacing_or_unit();
-        let [ua, va] = plane_axes(axis);
+        let [ua, va] = plane_axes(axis_idx);
+        if matches!(
+            act,
+            Act::Translate
+                | Act::Rotate
+                | Act::Scale
+                | Act::ToCrosshair
+                | Act::AxisMove
+                | Act::AxisRotate
+        ) {
+            self.remember_origin(slot);
+        }
         match act {
             Act::AcceptInterp(all) => {
                 self.accept_interp(slot, all);
@@ -931,17 +1288,39 @@ impl ViewerApp {
                 self.with_edit_stack(slot, |st, _| st.smooth(smooth));
             }
             Act::Translate => {
-                let d = [
-                    shift[0] as f64 / spacing[ua].max(1e-9),
-                    shift[1] as f64 / spacing[va].max(1e-9),
-                ];
-                self.with_edit_stack(slot, |st, _| st.translate(d));
+                self.with_edit_stack(slot, |st, dims| st.translate_mm(shift, spacing, dims));
             }
             Act::Scale => {
                 self.with_edit_stack(slot, |st, _| st.scale(scale));
             }
             Act::Rotate => {
-                self.with_edit_stack(slot, |st, _| st.rotate(rot));
+                if axis_idx == 2 && rot[0] == 0.0 && rot[1] == 0.0 {
+                    // About the stacking axis: the contours turn as they are.
+                    self.with_edit_stack(slot, |st, _| st.rotate(rot[2]));
+                } else {
+                    let c = self.edit_centroid_mm(slot, spacing);
+                    self.rigid_edit(slot, Rigid::euler_about(c, rot));
+                }
+            }
+            Act::AxisMove | Act::AxisRotate => {
+                let Some((a, d)) = axis
+                    .filter(|a| a.slot == slot)
+                    .and_then(|a| a.line_mm(spacing))
+                else {
+                    return;
+                };
+                if matches!(act, Act::AxisMove) {
+                    let shift = d.map(|v| v * axis_mm);
+                    self.with_edit_stack(slot, |st, dims| st.translate_mm(shift, spacing, dims));
+                } else {
+                    self.rigid_edit(slot, Rigid::rotation_about(d, a, axis_deg));
+                }
+            }
+            Act::Back => {
+                self.undo_roi_edit(slot);
+            }
+            Act::Reset => {
+                self.reset_moves(slot);
             }
             Act::Component(keep) => {
                 self.component_at_cursor(slot, keep);

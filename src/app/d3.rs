@@ -15,7 +15,34 @@ impl ViewerApp {
             h ^= (self.slots[slot].active_structs as u64) << 40;
             h ^= ss.rois.len() as u64;
         }
+        // Every contour edit changes the generation, so a moved structure
+        // is re-meshed while its window is open.
+        h ^= self.settings_gen.wrapping_mul(0x9E37_79B9_7F4A_7C15);
         h
+    }
+
+    /// The structure meshes of an open window rebuilt in the background
+    /// when its structures changed - one build in flight, the camera kept.
+    fn refresh_d3_meshes(&mut self, w: &mut D3Window) {
+        let key = self.d3_key(w.slot);
+        if w.job.is_some() || w.key == key {
+            return;
+        }
+        w.key = key;
+        let Some(ss) = self.slots[w.slot].active_structures().cloned() else {
+            w.meshes = Some(Arc::new(Vec::new()));
+            return;
+        };
+        let progress = Arc::new(Progress::default());
+        progress.set("starting");
+        let p2 = progress.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let meshes = mesh3d::build_meshes(&ss, &p2);
+            let _ = tx.send(meshes);
+        });
+        w.job = Some(Job { progress, rx });
+        w.refit = false;
     }
 
     pub(super) fn open_d3_window(&mut self, slot: usize) {
@@ -83,6 +110,7 @@ impl ViewerApp {
             radius,
             key,
             job,
+            refit: true,
         });
     }
 
@@ -93,11 +121,12 @@ impl ViewerApp {
             if !w.open {
                 continue;
             }
-            // Poll mesh building.
+            // Poll mesh building, and start one when the structures changed.
+            self.refresh_d3_meshes(w);
             {
                 let mut err = None;
                 if let Some(meshes) = poll_job(&mut w.job, ctx, "Meshing", &mut err) {
-                    {
+                    if w.refit {
                         // Scene bounding sphere for auto-fit.
                         let (mut mn, mut mx) = ([f32::MAX; 3], [f32::MIN; 3]);
                         for m in &meshes {
@@ -596,6 +625,33 @@ impl ViewerApp {
                     }
 
                     painter.add(egui::Shape::Mesh(w.frame.mesh.clone()));
+
+                    // The Structure editor's drawn axis, the same white line
+                    // as in the views, one slice thick.
+                    if self.tools.visible && self.tools.axis_draw {
+                        if let Some((ax, vol)) = self
+                            .tools
+                            .axis
+                            .filter(|a| a.slot == w.slot)
+                            .zip(self.slots[w.slot].study.as_ref().map(|st| &st.volume))
+                        {
+                            let (sy, cy) = w.yaw.sin_cos();
+                            let (sp, cp) = w.pitch.sin_cos();
+                            let c = w.center;
+                            let project = |p: Vec3| -> Pos2 {
+                                let (x, y, z) =
+                                    (p.x as f32 - c[0], p.y as f32 - c[1], p.z as f32 - c[2]);
+                                let x1 = cy * x - sy * y;
+                                let y1 = sy * x + cy * y;
+                                let z2 = sp * y1 + cp * z;
+                                Pos2::new(cx + x1 * scale, cyc - z2 * scale)
+                            };
+                            let a = project(vol.voxel_to_patient(ax.a[0], ax.a[1], ax.a[2]));
+                            let b = project(vol.voxel_to_patient(ax.b[0], ax.b[1], ax.b[2]));
+                            let thick = (vol.spacing[2] as f32 * scale).max(1.5);
+                            painter.line_segment([a, b], Stroke::new(thick, Color32::WHITE));
+                        }
+                    }
 
                     // The deformation field, drawn over the surfaces.
                     if w.show_field {

@@ -630,6 +630,7 @@ mod tree_tests {
             offsets: vec![0.0],
             units: "GY".into(),
             summation_type: "PLAN".into(),
+            dose_type: String::new(),
             max_dose: 1.0,
             frame_of_reference_uid: String::new(),
             study_uid: study.into(),

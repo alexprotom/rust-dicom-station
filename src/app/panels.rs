@@ -136,6 +136,16 @@ impl ViewerApp {
     /// panel is not built at all while they are all off, so an untouched
     /// installation looks exactly as it did before there was one.
     pub(super) fn modules_panel(&mut self, ui: &mut egui::Ui) {
+        /// The id salt of every module header (its title unless it sets
+        /// one) and the settings word for it.
+        const MODULE_HEADERS: [(&str, &str); 6] = [
+            ("Image registration", "registration"),
+            ("Image simulation", "simulation"),
+            ("Structure editor", "editor"),
+            ("Structure auto tools", "auto"),
+            ("module_propagate", "propagation"),
+            ("Dose estimation", "dose"),
+        ];
         if self.slots[0].study.is_none() && self.slots[1].study.is_none() {
             return;
         }
@@ -157,6 +167,28 @@ impl ViewerApp {
             },
             self.right_open,
             |ui| {
+                // Every section starts folded. *Restore the last session*
+                // unfolds the ones that were open at the last run; from
+                // then on the list follows the headers and is written
+                // with the settings.
+                let ids: Vec<(egui::Id, &str)> = MODULE_HEADERS
+                    .iter()
+                    .map(|(salt, key)| (ui.make_persistent_id(*salt), *key))
+                    .collect();
+                if self.apply_modules_open {
+                    self.apply_modules_open = false;
+                    self.modules_tracked = true;
+                    for (id, key) in &ids {
+                        let mut st =
+                            egui::collapsing_header::CollapsingState::load_with_default_open(
+                                ui.ctx(),
+                                *id,
+                                false,
+                            );
+                        st.set_open(self.modules_open.iter().any(|k| k == key));
+                        st.store(ui.ctx());
+                    }
+                }
                 if self.module_registration {
                     self.registration_section(ui);
                 }
@@ -171,6 +203,27 @@ impl ViewerApp {
                 }
                 if self.module_propagation {
                     self.propagate_section(ui);
+                }
+                if self.module_dose {
+                    self.dose_est_section(ui);
+                }
+                let open: Vec<String> = ids
+                    .iter()
+                    .filter(|(id, _)| {
+                        egui::collapsing_header::CollapsingState::load(ui.ctx(), *id)
+                            .is_some_and(|s| s.is_open())
+                    })
+                    .map(|(_, key)| key.to_string())
+                    .collect();
+                // Until a section has been unfolded in this run (or the
+                // last run's list applied), the list on disk is the last
+                // run's and stays as it is for *Restore the last session*.
+                if !open.is_empty() {
+                    self.modules_tracked = true;
+                }
+                if self.modules_tracked && open != self.modules_open {
+                    self.modules_open = open;
+                    self.persist_settings();
                 }
             },
         );
