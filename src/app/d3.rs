@@ -111,6 +111,9 @@ impl ViewerApp {
             key,
             job,
             refit: true,
+            mesh_gen: 0,
+            show_list: false,
+            roi_alpha: std::collections::HashMap::new(),
         });
     }
 
@@ -149,6 +152,7 @@ impl ViewerApp {
                                 .max(10.0);
                         }
                         w.meshes = Some(Arc::new(meshes));
+                        w.mesh_gen += 1;
                     }
                 }
                 self.error = self.error.take().or(err);
@@ -283,6 +287,10 @@ impl ViewerApp {
             }
 
             let visible: &[bool] = &self.slots[w.slot].roi_visible;
+            let names: Vec<(String, [u8; 3])> = self.slots[w.slot]
+                .active_structures()
+                .map(|ss| ss.rois.iter().map(|r| (r.name.clone(), r.color)).collect())
+                .unwrap_or_default();
             // Snapshot of segmentation display state (visibility + live color).
             let seg_disp: Vec<(bool, [u8; 3])> = self.slots[w.slot]
                 .segs()
@@ -317,7 +325,9 @@ impl ViewerApp {
                 &mut open,
                 detach::WinOpts::size(640.0, 700.0).no_scroll(),
                 |ui| {
-                    if let Some(job) = &w.job {
+                    // Until the first meshes: only the progress. A rebuild
+                    // after an edit keeps the scene on screen meanwhile.
+                    if let (Some(job), None) = (&w.job, &w.meshes) {
                         ui.horizontal(|ui| {
                             ui.spinner();
                             ui.label(job.progress.get());
@@ -329,6 +339,12 @@ impl ViewerApp {
                             egui::Slider::new(&mut w.opacity, 0.2..=1.0)
                                 .text(format!("Opacity {}", SLOT_NAMES[w.slot])),
                         );
+                        ui.toggle_value(&mut w.show_list, "Structures")
+                            .on_hover_text("A panel with the opacity of every structure");
+                        if let Some(job) = &w.job {
+                            ui.spinner();
+                            ui.weak(job.progress.get());
+                        }
                         if ui.small_button("⟲ Reset view").clicked() {
                             w.yaw = 0.7;
                             w.pitch = -0.5;
@@ -385,6 +401,62 @@ impl ViewerApp {
                         }
                     }
 
+                    if w.show_list {
+                        egui::Panel::right(egui::Id::new(("d3_structures", w.slot)))
+                            .resizable(false)
+                            .default_size(220.0)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.strong("Opacity per structure");
+                                    if ui
+                                        .small_button("All 100 %")
+                                        .on_hover_text(
+                                            "Every structure back to the window's opacity",
+                                        )
+                                        .clicked()
+                                    {
+                                        w.roi_alpha.clear();
+                                    }
+                                });
+                                ui.weak("Times the window's opacity above");
+                                egui::ScrollArea::vertical().show(ui, |ui| {
+                                    for m in w.meshes.iter().flat_map(|a| a.iter()) {
+                                        let Some((name, color)) = names.get(m.roi_index) else {
+                                            continue;
+                                        };
+                                        let on = visible.get(m.roi_index).copied().unwrap_or(true);
+                                        ui.horizontal(|ui| {
+                                            let (r, _) = ui.allocate_exact_size(
+                                                egui::vec2(10.0, 10.0),
+                                                egui::Sense::hover(),
+                                            );
+                                            ui.painter().rect_filled(r, 2.0, theme::rgb(*color));
+                                            let mut a = w
+                                                .roi_alpha
+                                                .get(&m.roi_index)
+                                                .copied()
+                                                .unwrap_or(1.0);
+                                            let slider = ui.add_enabled(
+                                                on,
+                                                egui::Slider::new(&mut a, 0.0..=1.0)
+                                                    .show_value(false)
+                                                    .text(name.as_str()),
+                                            );
+                                            if slider.changed() {
+                                                if (a - 1.0).abs() < 1e-6 {
+                                                    w.roi_alpha.remove(&m.roi_index);
+                                                } else {
+                                                    w.roi_alpha.insert(m.roi_index, a);
+                                                }
+                                            }
+                                            if !on {
+                                                slider.on_hover_text("Unticked in the list");
+                                            }
+                                        });
+                                    }
+                                });
+                            });
+                    }
                     let avail = ui.available_size();
                     let size = Vec2::new(avail.x.max(240.0), avail.y.max(240.0));
                     let (resp, painter) = ui.allocate_painter(size, Sense::click_and_drag());
@@ -446,7 +518,9 @@ impl ViewerApp {
                     // What the cached geometry depends on. Orientation and
                     // visibility fix the draw order; the rest only moves the
                     // already-ordered triangles around on screen.
-                    let mut order_key = mix(0x243F6A8885A308D3, Arc::as_ptr(meshes) as u64);
+                    // The generation, not the pointer: a rebuilt set can
+                    // land at the address the previous one had.
+                    let mut order_key = mix(0x243F6A8885A308D3, w.mesh_gen);
                     order_key = mix(order_key, w.yaw.to_bits() as u64);
                     order_key = mix(order_key, w.pitch.to_bits() as u64);
                     for m in meshes.iter() {
@@ -478,6 +552,9 @@ impl ViewerApp {
                     vertex_key = mix(vertex_key, cyc.to_bits() as u64);
                     vertex_key = mix(vertex_key, alpha as u64);
                     vertex_key = mix(vertex_key, other_alpha as u64);
+                    for (i, a) in &w.roi_alpha {
+                        vertex_key = mix(vertex_key, (*i as u64) << 32 | a.to_bits() as u64);
+                    }
                     // Segmentation colors are applied live at draw time.
                     for (_, c) in &seg_disp {
                         vertex_key = mix(
@@ -523,12 +600,13 @@ impl ViewerApp {
                         let entries = meshes
                             .iter()
                             .map(|m| {
+                                let own = w.roi_alpha.get(&m.roi_index).copied().unwrap_or(1.0);
                                 (
                                     m,
-                                    visible.get(m.roi_index).copied().unwrap_or(true),
+                                    visible.get(m.roi_index).copied().unwrap_or(true) && own > 0.0,
                                     m.color,
                                     m.external,
-                                    alpha,
+                                    (alpha as f32 * own).round() as u8,
                                 )
                             })
                             .chain(seg_meshes.iter().flat_map(|a| a.iter()).map(|m| {
@@ -628,7 +706,7 @@ impl ViewerApp {
 
                     // The Structure editor's drawn axis, the same white line
                     // as in the views, one slice thick.
-                    if self.tools.visible && self.tools.axis_draw {
+                    if self.module_structures && self.tools.axis_draw {
                         if let Some((ax, vol)) = self
                             .tools
                             .axis

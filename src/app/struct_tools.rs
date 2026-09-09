@@ -177,7 +177,136 @@ pub(super) struct StructTools {
     pub hand_carry: f64,
     /// What the axis hand holds: `0` / `1` an end, `2` the whole line.
     pub axis_grab: u8,
+    /// Every move since a structure's origin, per structure - what the
+    /// Dose estimation's *Dynamic* log describes each row with.
+    pub moves: Vec<MoveEvent>,
+    /// Bumped once per finished move (a button, a whole drag): the dynamic
+    /// log takes one entry per value.
+    pub move_seq: u64,
     pub new: NewRoi,
+}
+
+/// One move of one structure, as the button or the hand did it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MoveEvent {
+    pub slot: usize,
+    pub set: usize,
+    pub roi: usize,
+    pub name: String,
+    pub kind: MoveKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MoveKind {
+    /// Millimetres along the drawn axis, first point towards second.
+    Axis(f64),
+    /// Degrees about the drawn axis.
+    AxisRot(f64),
+    /// Millimetres along the image's x / y / z.
+    Shift([f64; 3]),
+    /// Degrees about the image's x / y / z, through the centroid.
+    Rot([f64; 3]),
+    /// Per cent about the centroid.
+    Scale(f64),
+    /// Centroid put under the crosshair.
+    Crosshair,
+    /// Dragged by hand, millimetres along the image's x / y / z.
+    Hand([f64; 3]),
+}
+
+/// Every move of one structure since its origin, summed up: what the
+/// dynamic dose log writes in its last columns.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MoveSummary {
+    pub relative: String,
+    pub shift: String,
+    pub rotation: String,
+    pub scale: String,
+}
+
+fn fmt3(v: [f64; 3]) -> String {
+    format!("x {:+.1} y {:+.1} z {:+.1}", v[0], v[1], v[2])
+}
+
+impl MoveSummary {
+    pub fn of(events: &[MoveEvent]) -> MoveSummary {
+        let (mut axis, mut axis_rot, mut shift, mut rot, mut scale, mut hand) =
+            (0.0, 0.0, [0.0; 3], [0.0; 3], 100.0, [0.0; 3]);
+        let (mut any_axis, mut any_img, mut any_hand, mut crosshair) = (false, false, false, false);
+        for e in events {
+            match e.kind {
+                MoveKind::Axis(mm) => {
+                    axis += mm;
+                    any_axis = true;
+                }
+                MoveKind::AxisRot(deg) => {
+                    axis_rot += deg;
+                    any_axis = true;
+                }
+                MoveKind::Shift(d) => {
+                    for k in 0..3 {
+                        shift[k] += d[k];
+                    }
+                    any_img = true;
+                }
+                MoveKind::Rot(d) => {
+                    for k in 0..3 {
+                        rot[k] += d[k];
+                    }
+                    any_img = true;
+                }
+                MoveKind::Scale(pct) => {
+                    scale *= pct / 100.0;
+                    any_img = true;
+                }
+                MoveKind::Crosshair => crosshair = true,
+                MoveKind::Hand(d) => {
+                    for k in 0..3 {
+                        hand[k] += d[k];
+                    }
+                    any_hand = true;
+                }
+            }
+        }
+        let mut relative = Vec::new();
+        let mut shifts = Vec::new();
+        let mut rots = Vec::new();
+        if any_axis {
+            relative.push("drawn axis");
+            if axis != 0.0 {
+                shifts.push(format!("axis {axis:+.1}"));
+            }
+            if axis_rot != 0.0 {
+                rots.push(format!("axis {axis_rot:+.1}"));
+            }
+        }
+        if any_img {
+            relative.push("image axes");
+            if shift != [0.0; 3] {
+                shifts.push(fmt3(shift));
+            }
+            if rot != [0.0; 3] {
+                rots.push(fmt3(rot));
+            }
+        }
+        if any_hand {
+            relative.push("hand");
+            shifts.push(format!("hand {}", fmt3(hand)));
+        }
+        if crosshair {
+            relative.push("crosshair");
+        }
+        MoveSummary {
+            relative: relative.join(" + "),
+            shift: shifts.join("; "),
+            rotation: rots.join("; "),
+            scale: if (scale - 100.0).abs() > 1e-9 {
+                format!("{scale:.1}")
+            } else {
+                String::new()
+            },
+        }
+    }
 }
 
 /// What *Reset* goes back to: the contours before the moves started.
@@ -240,6 +369,8 @@ impl Default for StructTools {
             origin: None,
             hand_carry: 0.0,
             axis_grab: 2,
+            moves: Vec::new(),
+            move_seq: 0,
             new: NewRoi::default(),
         }
     }
@@ -1101,6 +1232,37 @@ impl ViewerApp {
         }
     }
 
+    /// Note a finished move of the edited structure for the dynamic log.
+    fn log_move(&mut self, slot: usize, kind: MoveKind) {
+        let Some((set, roi)) = self.edit_target(slot) else {
+            return;
+        };
+        let name = self.slots[slot]
+            .roi(set, roi)
+            .map(|r| r.name.clone())
+            .unwrap_or_default();
+        self.tools.moves.push(MoveEvent {
+            slot,
+            set,
+            roi,
+            name,
+            kind,
+        });
+        self.tools.move_seq += 1;
+    }
+
+    /// The moves of one structure since its origin, summed up.
+    pub(super) fn move_summary(&self, slot: usize, set: usize, roi: usize) -> MoveSummary {
+        let events: Vec<MoveEvent> = self
+            .tools
+            .moves
+            .iter()
+            .filter(|e| e.slot == slot && e.set == set && e.roi == roi)
+            .cloned()
+            .collect();
+        MoveSummary::of(&events)
+    }
+
     /// *Reset*: the structure back to its origin, as one undo step.
     fn reset_moves(&mut self, slot: usize) {
         let Some(o) = self.tools.origin.clone() else {
@@ -1117,6 +1279,10 @@ impl ViewerApp {
         if let Some(r) = self.slots[slot].roi_mut(o.set, o.roi) {
             r.contours = o.contours;
         }
+        self.tools
+            .moves
+            .retain(|e| !(e.slot == slot && e.set == o.set && e.roi == o.roi));
+        self.tools.move_seq += 1;
         self.edit = None;
         self.interp = None;
         self.settings_gen += 1;
@@ -1131,6 +1297,16 @@ impl ViewerApp {
         if start {
             self.remember_origin(slot);
             self.tools.hand_carry = 0.0;
+            self.log_move(slot, MoveKind::Hand([0.0; 3]));
+        }
+        if let Some(MoveEvent {
+            kind: MoveKind::Hand(acc),
+            ..
+        }) = self.tools.moves.last_mut()
+        {
+            for k in 0..3 {
+                acc[k] += shift[k];
+            }
         }
         let axis = self.edit_axis(slot);
         let spacing = self.slots[slot].spacing_or_unit();
@@ -1288,12 +1464,17 @@ impl ViewerApp {
                 self.with_edit_stack(slot, |st, _| st.smooth(smooth));
             }
             Act::Translate => {
-                self.with_edit_stack(slot, |st, dims| st.translate_mm(shift, spacing, dims));
+                if self.with_edit_stack(slot, |st, dims| st.translate_mm(shift, spacing, dims)) {
+                    self.log_move(slot, MoveKind::Shift(shift));
+                }
             }
             Act::Scale => {
-                self.with_edit_stack(slot, |st, _| st.scale(scale));
+                if self.with_edit_stack(slot, |st, _| st.scale(scale)) {
+                    self.log_move(slot, MoveKind::Scale(scale * 100.0));
+                }
             }
             Act::Rotate => {
+                self.log_move(slot, MoveKind::Rot(rot.map(f64::to_degrees)));
                 if axis_idx == 2 && rot[0] == 0.0 && rot[1] == 0.0 {
                     // About the stacking axis: the contours turn as they are.
                     self.with_edit_stack(slot, |st, _| st.rotate(rot[2]));
@@ -1311,13 +1492,30 @@ impl ViewerApp {
                 };
                 if matches!(act, Act::AxisMove) {
                     let shift = d.map(|v| v * axis_mm);
-                    self.with_edit_stack(slot, |st, dims| st.translate_mm(shift, spacing, dims));
+                    if self.with_edit_stack(slot, |st, dims| st.translate_mm(shift, spacing, dims))
+                    {
+                        self.log_move(slot, MoveKind::Axis(axis_mm));
+                    }
                 } else {
+                    self.log_move(slot, MoveKind::AxisRot(axis_deg.to_degrees()));
                     self.rigid_edit(slot, Rigid::rotation_about(d, a, axis_deg));
                 }
             }
             Act::Back => {
                 self.undo_roi_edit(slot);
+                // The last move of this structure is what was undone, as
+                // far as the log can tell.
+                if let Some((set, roi)) = self.edit_target(slot) {
+                    if let Some(pos) = self
+                        .tools
+                        .moves
+                        .iter()
+                        .rposition(|e| e.slot == slot && e.set == set && e.roi == roi)
+                    {
+                        self.tools.moves.remove(pos);
+                    }
+                }
+                self.tools.move_seq += 1;
             }
             Act::Reset => {
                 self.reset_moves(slot);
@@ -1326,7 +1524,9 @@ impl ViewerApp {
                 self.component_at_cursor(slot, keep);
             }
             Act::ToCrosshair => {
-                self.move_to_crosshair(slot);
+                if self.move_to_crosshair(slot) {
+                    self.log_move(slot, MoveKind::Crosshair);
+                }
             }
             Act::DerivedUpdate => {
                 if let Some((set, roi)) = self.edit_target(slot) {
@@ -1807,6 +2007,29 @@ pub(super) fn mouse_hint(tool: SegTool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_move_summary_adds_up_since_the_origin() {
+        let ev = |kind| MoveEvent {
+            slot: 0,
+            set: 0,
+            roi: 0,
+            name: "sv".into(),
+            kind,
+        };
+        let s = MoveSummary::of(&[
+            ev(MoveKind::Axis(10.0)),
+            ev(MoveKind::Axis(-2.0)),
+            ev(MoveKind::AxisRot(10.0)),
+            ev(MoveKind::Shift([1.0, 0.0, 0.5])),
+            ev(MoveKind::Scale(110.0)),
+        ]);
+        assert_eq!(s.relative, "drawn axis + image axes");
+        assert_eq!(s.shift, "axis +8.0; x +1.0 y +0.0 z +0.5");
+        assert_eq!(s.rotation, "axis +10.0");
+        assert_eq!(s.scale, "110.0");
+        assert_eq!(MoveSummary::of(&[]), MoveSummary::default());
+    }
 
     #[test]
     fn every_tool_is_in_the_row_once_with_its_own_glyph() {

@@ -576,7 +576,7 @@ impl ViewerApp {
         // The Structure editor's drawn axis: a white line one slice thick,
         // in every view of its dataset. It is the same 3-D line
         // everywhere, so the other views show where it runs.
-        if self.tools.visible && self.tools.axis_draw {
+        if self.module_structures && self.tools.axis_draw {
             if let Some(ax) = self.tools.axis.filter(|a| a.slot == slot) {
                 let pa = vol.voxel_to_plane_pixel(plane, ax.a);
                 let pb = vol.voxel_to_plane_pixel(plane, ax.b);
@@ -978,8 +978,10 @@ impl ViewerApp {
         // change only by scrolling the hovered view.
         // While the editor's *Draw axis* is on, a left drag in this dataset
         // draws the axis instead.
+        // The editor's hands and axis follow the module, not the panel: a
+        // hidden right panel must not drop them.
         let editor_here =
-            self.tools.visible && self.tools.slot == slot && !seg_active && !medsam2_box;
+            self.module_structures && self.tools.slot == slot && !seg_active && !medsam2_box;
         let hand_struct = editor_here && self.tools.hand_struct;
         let hand_axis = editor_here
             && self.tools.axis_draw
@@ -989,7 +991,9 @@ impl ViewerApp {
         // The two hands: the drag's motion as a difference of voxel
         // positions, so a flipped view axis comes out right.
         let mut hand_move: Option<([f64; 3], bool)> = None;
+        let mut hand_done = false;
         if (hand_struct || hand_axis) && !over_buttons {
+            hand_done = hand_struct && resp.drag_stopped_by(egui::PointerButton::Primary);
             let start = resp.drag_started_by(egui::PointerButton::Primary);
             if start || resp.dragged_by(egui::PointerButton::Primary) {
                 if let Some(mp) = resp.interact_pointer_pos() {
@@ -1231,6 +1235,10 @@ impl ViewerApp {
                 let shift = [d_vox[0] * sp[0], d_vox[1] * sp[1], d_vox[2] * sp[2]];
                 self.drag_structure(slot, shift, start);
             }
+        }
+        if hand_done {
+            // One finished drag is one move for the dynamic dose log.
+            self.tools.move_seq += 1;
         }
         if let Some((vxl, start)) = axis_to {
             let t = &mut self.tools;
