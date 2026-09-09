@@ -151,9 +151,9 @@ impl ViewerApp {
                                 .fold(0.0f32, |acc, v| (acc * acc + v * v).sqrt())
                                 .max(10.0);
                         }
-                        w.meshes = Some(Arc::new(meshes));
-                        w.mesh_gen += 1;
                     }
+                    w.meshes = Some(Arc::new(meshes));
+                    w.mesh_gen += 1;
                 }
                 self.error = self.error.take().or(err);
             }
@@ -524,7 +524,10 @@ impl ViewerApp {
                     order_key = mix(order_key, w.yaw.to_bits() as u64);
                     order_key = mix(order_key, w.pitch.to_bits() as u64);
                     for m in meshes.iter() {
-                        let on = visible.get(m.roi_index).copied().unwrap_or(true);
+                        // A structure faded to nothing leaves the draw
+                        // order too; the sort has to know.
+                        let on = visible.get(m.roi_index).copied().unwrap_or(true)
+                            && w.roi_alpha.get(&m.roi_index).copied().unwrap_or(1.0) > 0.0;
                         order_key = mix(order_key, on as u64);
                     }
                     if let Some(sm) = &seg_meshes {
