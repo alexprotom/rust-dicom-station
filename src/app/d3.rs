@@ -3,6 +3,22 @@
 
 use super::*;
 
+/// The identity of one structure's geometry, for the 3D window's partial
+/// rebuilds.
+fn roi_hash(roi: &crate::rtstruct::Roi) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    roi.contours.len().hash(&mut h);
+    for c in &roi.contours {
+        c.geometric_type.hash(&mut h);
+        for p in &c.points {
+            (p.x.to_bits(), p.y.to_bits(), p.z.to_bits()).hash(&mut h);
+        }
+    }
+    roi.color.hash(&mut h);
+    h.finish()
+}
+
 impl ViewerApp {
     // -- 3D structure windows ----------------------------------------------
     /// Identity of the structure set a 3D window would be built from.
@@ -29,19 +45,46 @@ impl ViewerApp {
             return;
         }
         w.key = key;
-        let Some(ss) = self.slots[w.slot].active_structures().cloned() else {
+        let Some(ss) = self.slots[w.slot].active_structures() else {
             w.meshes = Some(Arc::new(Vec::new()));
+            w.roi_hashes.clear();
             return;
         };
+        // Only the structures whose contours changed are meshed again: a
+        // drag of a chamber volume must not re-mesh the heart every sample.
+        let hashes: Vec<u64> = ss.rois.iter().map(roi_hash).collect();
+        let partial = w.meshes.is_some() && w.roi_hashes.len() == hashes.len();
+        let changed: Vec<usize> = if partial {
+            (0..hashes.len())
+                .filter(|&i| hashes[i] != w.roi_hashes[i])
+                .collect()
+        } else {
+            (0..hashes.len()).collect()
+        };
+        w.roi_hashes = hashes;
+        if changed.is_empty() {
+            return;
+        }
+        let rois: Vec<(usize, crate::rtstruct::Roi)> =
+            changed.iter().map(|&i| (i, ss.rois[i].clone())).collect();
         let progress = Arc::new(Progress::default());
         progress.set("starting");
         let p2 = progress.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let meshes = mesh3d::build_meshes(&ss, &p2);
+            let n = rois.len();
+            let meshes: Vec<RoiMesh> = rois
+                .par_iter()
+                .enumerate()
+                .filter_map(|(k, (i, roi))| {
+                    p2.set(format!("Meshing structures {}/{n}", k + 1));
+                    mesh3d::build_roi_mesh(*i, roi)
+                })
+                .collect();
             let _ = tx.send(meshes);
         });
         w.job = Some(Job { progress, rx });
+        w.rebuilding = if partial { Some(changed) } else { None };
         w.refit = false;
     }
 
@@ -112,6 +155,8 @@ impl ViewerApp {
             job,
             refit: true,
             mesh_gen: 0,
+            roi_hashes: Vec::new(),
+            rebuilding: None,
             show_list: false,
             roi_alpha: std::collections::HashMap::new(),
         });
@@ -152,6 +197,19 @@ impl ViewerApp {
                                 .max(10.0);
                         }
                     }
+                    let meshes = match (w.rebuilding.take(), w.meshes.take()) {
+                        (Some(changed), Some(old)) => {
+                            let mut all: Vec<RoiMesh> = old
+                                .iter()
+                                .filter(|m| !changed.contains(&m.roi_index))
+                                .cloned()
+                                .collect();
+                            all.extend(meshes);
+                            all.sort_by_key(|m| std::cmp::Reverse(m.tris.len()));
+                            all
+                        }
+                        _ => meshes,
+                    };
                     w.meshes = Some(Arc::new(meshes));
                     w.mesh_gen += 1;
                 }
@@ -341,10 +399,10 @@ impl ViewerApp {
                         );
                         ui.toggle_value(&mut w.show_list, "Structures")
                             .on_hover_text("A panel with the opacity of every structure");
-                        if let Some(job) = &w.job {
-                            ui.spinner();
-                            ui.weak(job.progress.get());
-                        }
+                        // Always the same footprint, so the scene below does
+                        // not move while a rebuild runs.
+                        ui.add_visible(w.job.is_some(), egui::Spinner::new())
+                            .on_hover_text("Meshing the structures that changed");
                         if ui.small_button("⟲ Reset view").clicked() {
                             w.yaw = 0.7;
                             w.pitch = -0.5;

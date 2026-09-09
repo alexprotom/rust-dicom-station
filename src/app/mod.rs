@@ -701,6 +701,10 @@ struct D3Window {
     /// Counts every set of meshes that landed; the frame cache is keyed on
     /// it.
     mesh_gen: u64,
+    /// Geometry hash per ROI the meshes were built from, and the ROIs a
+    /// running partial rebuild replaces (`None`: a full build).
+    roi_hashes: Vec<u64>,
+    rebuilding: Option<Vec<usize>>,
     /// The *Structures* panel: opacity per structure, times the window's
     /// own, keyed by ROI index; absent means 1.
     show_list: bool,

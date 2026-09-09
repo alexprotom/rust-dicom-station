@@ -25,6 +25,7 @@ use crate::volume::Volume;
 /// Raw surface geometry: (vertices, unit normals, triangle indices).
 pub type SurfaceMesh = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[u32; 3]>);
 
+#[derive(Clone)]
 pub struct RoiMesh {
     /// Index of the ROI within the structure set (drives visibility).
     pub roi_index: usize,
@@ -61,7 +62,8 @@ pub fn build_meshes(ss: &StructureSet, progress: &Progress) -> Vec<RoiMesh> {
     meshes
 }
 
-fn build_roi_mesh(roi_index: usize, roi: &Roi) -> Option<RoiMesh> {
+/// One structure's surface; `None` when it has no usable contours.
+pub fn build_roi_mesh(roi_index: usize, roi: &Roi) -> Option<RoiMesh> {
     // Collect usable planar contours.
     let contours: Vec<&crate::rtstruct::Contour> = roi
         .contours
