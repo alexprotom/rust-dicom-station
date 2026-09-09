@@ -99,8 +99,21 @@ to start with, then D95 % and D2 %; the box and its `+` add any column of
 the table above, every column has a `✖` to go, and *Reset columns* brings
 the six back. A name that does not read as a metric, or asks for more than
 100 % of the volume, is refused under the box rather than computed.
+The column headings carry the units (`Volume [cm³]`, `Dmean [Gy]`).
 *Export CSV* writes the table as it stands, with the dose-grid coverage of
 every structure as a last column.
+
+**Dynamic** (the switch in the section's title line) turns the table into a
+log of the Structure editor's moves: switching it on records the table as it
+is (step 0), and every finished Move / Rotate / Scale / Move to crosshair /
+hand drag of a structure adds the rows as they then stand - three moves of
+four ticked structures give sixteen rows. Each row carries the step, which
+structure was moved last, what the moves were relative to (*drawn axis*,
+*image axes*, *hand*, *crosshair*) and their sum since the structure's
+origin: shift in millimetres (`axis +10.0`, `x +2.0 y +0.0 z +1.0`),
+rotation in degrees and scale in per cent. *Back* takes the last move out of
+the sum, *Reset* clears it. *Clear log* starts again from the current table;
+*Export CSV* writes the whole log with those columns in front.
 
 The table follows what it depends on by itself: tick or untick a structure,
 move or redraw one in the Structure editor, pick another dose or another

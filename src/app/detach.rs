@@ -29,6 +29,9 @@
 const GEOM: &str = "tool_window_geometry";
 /// egui-memory key prefix of the pass this window was last drawn in.
 const SEEN: &str = "tool_window_last_pass";
+/// egui-memory key prefix of the *Keep on top* switch of one window. It
+/// starts off every time a window opens and is not part of the settings.
+const ON_TOP: &str = "tool_window_on_top";
 
 /// A window with no height of its own opens this tall.
 const DEFAULT_TALL: f32 = 620.0;
@@ -135,6 +138,10 @@ pub(super) fn tool_window<R>(
         .data(|d| d.get_temp::<u64>(seen_key))
         .is_none_or(|last| pass.saturating_sub(last) > 1);
     ctx.data_mut(|d| d.insert_temp(seen_key, pass));
+    let on_top_key = egui::Id::new((ON_TOP, id));
+    if fresh {
+        ctx.data_mut(|d| d.insert_temp(on_top_key, false));
+    }
 
     let title = window_title(&title.into());
     let mut builder = egui::ViewportBuilder::default().with_title(&title);
@@ -169,6 +176,36 @@ pub(super) fn tool_window<R>(
         egui::ViewportId::from_hash_of(("tool_window", id)),
         builder,
         |ui, _class| {
+            // *Keep on top*: the window stays over the main one (and every
+            // other) while the switch is on. The switch is per window, off
+            // when the window opens, and never written to the settings.
+            let mut on_top = ui
+                .ctx()
+                .data(|d| d.get_temp::<bool>(on_top_key))
+                .unwrap_or(false);
+            egui::Panel::top(egui::Id::new(("tool_window_bar", id)))
+                .show_separator_line(false)
+                .show(ui, |ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add(egui::Button::new("📌 Keep on top").small().selected(on_top))
+                            .on_hover_text(
+                                "Keep this window above the main window while it is open. \
+                                 Off whenever a window is opened; not remembered.",
+                            )
+                            .clicked()
+                        {
+                            on_top = !on_top;
+                            ui.ctx().data_mut(|d| d.insert_temp(on_top_key, on_top));
+                            ui.ctx()
+                                .send_viewport_cmd(egui::ViewportCommand::WindowLevel(if on_top {
+                                    egui::WindowLevel::AlwaysOnTop
+                                } else {
+                                    egui::WindowLevel::Normal
+                                }));
+                        }
+                    });
+                });
             if opts.scroll {
                 egui::ScrollArea::both()
                     .auto_shrink([false, false])

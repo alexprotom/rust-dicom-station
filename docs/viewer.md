@@ -121,6 +121,14 @@ crosshair-sync toggle beside it (shown while the crosshair is on, active with
 two datasets loaded), the **3D A / 3D B** buttons and the segmentation
 tools.
 
+**The 3D window** (3D A / 3D B) meshes the active structure set and keeps
+up with it: a structure moved or redrawn in the Structure editor is
+re-meshed in the background while the scene stays on screen, and the
+editor's drawn axis is shown in it. The *Opacity* slider is the whole
+scene's; the **Structures** toggle opens a panel with one slider per
+structure on top of that, so the target can fade while a chamber volume
+stays solid (*All 100 %* clears them).
+
 **Window/level.** Right-drag on any view adjusts interactively
 (x = width, y = center); the toolbar offers numeric fields and the common CT
 presets: brain, subdural, stroke, head/neck soft tissue, temporal bone, lungs,
@@ -137,7 +145,10 @@ task-bar entry, to be dragged onto a second or third monitor, resized or
 maximized there, and left open beside the images while the main window keeps
 all six viewports. Any number can be open at once, on any mix of screens, and
 each one reopens at the size and place it was last left - on the monitor it
-was left on. Closing a window closes that tool alone.
+was left on. Closing a window closes that tool alone. Each has a **📌 Keep
+on top** switch in its top right corner: on, the window stays above the
+main window (and everything else) while it is open. It is off whenever a
+window opens and is not remembered between runs.
 
 Every window of the program is titled the same way: **Rust DICOM Station:**
 followed by what the window is - *Viewer* for the main one, then *PACS -

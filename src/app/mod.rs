@@ -698,6 +698,17 @@ struct D3Window {
     /// Fit the camera to the meshes when they land: the first time only,
     /// a rebuild after an edit keeps the view where it was.
     refit: bool,
+    /// Counts every set of meshes that landed; the frame cache is keyed on
+    /// it.
+    mesh_gen: u64,
+    /// Geometry hash per ROI the meshes were built from, and the ROIs a
+    /// running partial rebuild replaces (`None`: a full build).
+    roi_hashes: Vec<u64>,
+    rebuilding: Option<Vec<usize>>,
+    /// The *Structures* panel: opacity per structure, times the window's
+    /// own, keyed by ROI index; absent means 1.
+    show_list: bool,
+    roi_alpha: std::collections::HashMap<usize, f32>,
     job: Option<Job<Vec<RoiMesh>>>,
     /// Live meshes of the painted segmentations (`roi_index` = seg index).
     seg_meshes: Option<Arc<Vec<RoiMesh>>>,

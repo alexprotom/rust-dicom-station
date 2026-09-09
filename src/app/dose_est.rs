@@ -61,6 +61,23 @@ pub(super) struct DoseEst {
     pub running: Option<u64>,
     pub units: String,
     pub dose_label: String,
+    /// *Dynamic*: every finished move of a structure adds the table as it
+    /// then stands to `log`, with what was moved and by how much.
+    pub dynamic: bool,
+    pub log: Vec<LogEntry>,
+    /// The move sequence the run in flight started at, and the last one
+    /// logged - one entry per finished move, none for a drag in progress.
+    pub run_seq: u64,
+    pub logged_seq: Option<u64>,
+}
+
+/// One state of the table in the dynamic log.
+pub(super) struct LogEntry {
+    pub step: usize,
+    /// The structure moved last (empty for the initial state).
+    pub moved: String,
+    pub summary: super::struct_tools::MoveSummary,
+    pub rows: Vec<DoseRow>,
 }
 
 impl Default for DoseEst {
@@ -77,6 +94,10 @@ impl Default for DoseEst {
             running: None,
             units: "GY".into(),
             dose_label: String::new(),
+            dynamic: false,
+            log: Vec::new(),
+            run_seq: 0,
+            logged_seq: None,
         }
     }
 }
@@ -129,20 +150,57 @@ impl DoseEst {
 pub(super) fn rows_csv(metrics: &[Metric], units: &str, rows: &[DoseRow]) -> String {
     let mut out = String::from("structure");
     for m in metrics {
-        out.push_str(&format!(",{} [{}]", m.label(), m.unit(units)));
+        out.push_str(&format!(",{}", column_title(m, units)));
     }
     out.push_str(",outside_dose_grid_pct\n");
     for r in rows {
-        out.push_str(&csv_field(&r.name));
-        for v in &r.values {
-            match v {
-                Some(v) => out.push_str(&format!(",{v:.4}")),
-                None => out.push(','),
-            }
-        }
-        out.push_str(&format!(",{:.2}\n", r.outside * 100.0));
+        out.push_str(&row_csv(r));
+        out.push('\n');
     }
     out
+}
+
+/// The dynamic log as CSV: the step and the move columns in front of the
+/// same values.
+pub(super) fn log_csv(metrics: &[Metric], units: &str, log: &[LogEntry]) -> String {
+    let mut out =
+        String::from("step,moved_structure,relative_to,shift_mm,rotation_deg,scale_pct,structure");
+    for m in metrics {
+        out.push_str(&format!(",{}", column_title(m, units)));
+    }
+    out.push_str(",outside_dose_grid_pct\n");
+    for e in log {
+        for r in &e.rows {
+            out.push_str(&format!(
+                "{},{},{},{},{},{},{}\n",
+                e.step,
+                csv_field(&e.moved),
+                csv_field(&e.summary.relative),
+                csv_field(&e.summary.shift),
+                csv_field(&e.summary.rotation),
+                csv_field(&e.summary.scale),
+                row_csv(r)
+            ));
+        }
+    }
+    out
+}
+
+fn row_csv(r: &DoseRow) -> String {
+    let mut out = csv_field(&r.name);
+    for v in &r.values {
+        match v {
+            Some(v) => out.push_str(&format!(",{v:.4}")),
+            None => out.push(','),
+        }
+    }
+    out.push_str(&format!(",{:.2}", r.outside * 100.0));
+    out
+}
+
+/// `Volume [cm³]`, `Dmean [Gy]`: the column heading.
+fn column_title(m: &Metric, units: &str) -> String {
+    format!("{} [{}]", m.label(), m.unit(units))
 }
 
 fn csv_field(s: &str) -> String {
@@ -327,6 +385,7 @@ impl ViewerApp {
         self.dose_est.units = dose.units.clone();
         self.dose_est.dose_label = dose.label.clone();
         self.dose_est.running = Some(key);
+        self.dose_est.run_seq = self.tools.move_seq;
         let progress = Arc::new(Progress::default());
         self.dose_est_job = Some(Job::spawn(progress, move |_| compute_rows(&req)));
     }
@@ -334,13 +393,80 @@ impl ViewerApp {
     pub(super) fn on_dose_est_done(&mut self, rows: Vec<DoseRow>) {
         self.dose_est.rows = rows;
         self.dose_est.key = self.dose_est.running.take();
+        // One log entry per finished move: the run has to have started
+        // after the move, and no drag may be under way.
+        let seq = self.tools.move_seq;
+        if self.dose_est.dynamic
+            && self.dose_est.run_seq == seq
+            && self.dose_est.logged_seq != Some(seq)
+        {
+            self.log_dose_state();
+        }
+    }
+
+    /// Append the table as it stands to the dynamic log, described by the
+    /// last move.
+    fn log_dose_state(&mut self) {
+        let last = self.tools.moves.last().cloned();
+        let (moved, summary) = match last {
+            Some(e) => (e.name.clone(), self.move_summary(e.slot, e.set, e.roi)),
+            None => (String::new(), Default::default()),
+        };
+        let d = &mut self.dose_est;
+        let rows = d
+            .rows
+            .iter()
+            .map(|r| DoseRow {
+                name: r.name.clone(),
+                color: r.color,
+                values: r.values.clone(),
+                outside: r.outside,
+            })
+            .collect();
+        d.log.push(LogEntry {
+            step: d.log.len(),
+            moved,
+            summary,
+            rows,
+        });
+        d.logged_seq = Some(self.tools.move_seq);
     }
 
     pub(super) fn dose_est_section(&mut self, ui: &mut egui::Ui) {
-        let title = egui::RichText::new("Dose estimation").strong();
-        egui::CollapsingHeader::new(title)
-            .default_open(false)
-            .show(ui, |ui| self.dose_est_body(ui));
+        let id = ui.make_persistent_id("Dose estimation");
+        let state =
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+        let header = state.show_header(ui, |ui| {
+            ui.label(egui::RichText::new("Dose estimation").strong());
+            let was = self.dose_est.dynamic;
+            ui.toggle_value(&mut self.dose_est.dynamic, "Dynamic")
+                .on_hover_text(
+                    "Log the table after every move of a structure: each finished Move / \
+                     Rotate / Scale / hand drag adds the rows as they then stand, with \
+                     what was moved and by how much since its origin",
+                );
+            if self.dose_est.dynamic && !was {
+                // The state the moves start from is the log's first entry.
+                self.dose_est.log.clear();
+                if !self.dose_est.rows.is_empty() {
+                    self.log_dose_state();
+                }
+            }
+            if self.dose_est.dynamic
+                && !self.dose_est.log.is_empty()
+                && small_tip_button(
+                    ui,
+                    "Clear log",
+                    "Start the log again from the table as it is",
+                )
+            {
+                self.dose_est.log.clear();
+                if !self.dose_est.rows.is_empty() {
+                    self.log_dose_state();
+                }
+            }
+        });
+        header.body(|ui| self.dose_est_body(ui));
         ui.separator();
     }
 
@@ -466,7 +592,6 @@ impl ViewerApp {
         }
 
         let metrics = self.dose_est.metrics();
-        let units = dvh::nice_units(&self.dose_est.units);
         let d = &self.dose_est;
         if d.rows.is_empty() {
             if self.dose_est_job.is_some() {
@@ -476,6 +601,7 @@ impl ViewerApp {
             }
             return;
         }
+        let dynamic = d.dynamic;
         egui::ScrollArea::horizontal()
             .id_salt("dose_est_scroll")
             .show(ui, |ui| {
@@ -483,68 +609,97 @@ impl ViewerApp {
                     .striped(true)
                     .min_col_width(44.0)
                     .show(ui, |ui| {
+                        if dynamic {
+                            ui.label(egui::RichText::new("Step").strong());
+                        }
                         ui.label(egui::RichText::new("Structure").strong());
                         for m in &metrics {
-                            ui.label(egui::RichText::new(m.label()).strong())
-                                .on_hover_text(format!("in {}", m.unit(&d.units)));
+                            ui.label(egui::RichText::new(column_title(m, &d.units)).strong());
+                        }
+                        if dynamic {
+                            for h in [
+                                "Moved",
+                                "Relative to",
+                                "Shift [mm]",
+                                "Rotation [°]",
+                                "Scale [%]",
+                            ] {
+                                ui.label(egui::RichText::new(h).strong());
+                            }
                         }
                         ui.end_row();
-                        for row in &d.rows {
-                            ui.horizontal(|ui| {
-                                let (r, _) = ui.allocate_exact_size(
-                                    egui::vec2(10.0, 10.0),
-                                    egui::Sense::hover(),
-                                );
-                                ui.painter().rect_filled(r, 2.0, theme::rgb(row.color));
-                                let name = ui.label(&row.name);
-                                if row.outside > 0.001 {
-                                    name.on_hover_text(format!(
-                                        "{:.1} % of the structure lies outside the dose grid \
-                                         and counts as zero dose",
-                                        row.outside * 100.0
-                                    ));
+                        let states: Vec<(Option<&LogEntry>, &[DoseRow])> = if dynamic {
+                            d.log.iter().map(|e| (Some(e), e.rows.as_slice())).collect()
+                        } else {
+                            vec![(None, d.rows.as_slice())]
+                        };
+                        for (entry, rows) in states {
+                            for row in rows {
+                                if let Some(e) = entry {
+                                    ui.monospace(e.step.to_string());
                                 }
-                            });
-                            for (m, v) in metrics.iter().zip(&row.values) {
-                                match v {
-                                    Some(v) => {
-                                        let text = match m {
-                                            Metric::Volume | Metric::VolumeCcAtDose(_) => {
-                                                format!("{v:.3}")
-                                            }
-                                            Metric::VolumePctAtDose(_) => format!("{v:.1}"),
-                                            _ => format!("{v:.3}"),
-                                        };
-                                        ui.monospace(text);
+                                ui.horizontal(|ui| {
+                                    let (r, _) = ui.allocate_exact_size(
+                                        egui::vec2(10.0, 10.0),
+                                        egui::Sense::hover(),
+                                    );
+                                    ui.painter().rect_filled(r, 2.0, theme::rgb(row.color));
+                                    let name = ui.label(&row.name);
+                                    if row.outside > 0.001 {
+                                        name.on_hover_text(format!(
+                                            "{:.1} % of the structure lies outside the dose \
+                                             grid and counts as zero dose",
+                                            row.outside * 100.0
+                                        ));
                                     }
-                                    None => {
-                                        ui.weak("-");
+                                });
+                                for (m, v) in metrics.iter().zip(&row.values) {
+                                    match v {
+                                        Some(v) => {
+                                            let text = match m {
+                                                Metric::VolumePctAtDose(_) => format!("{v:.1}"),
+                                                _ => format!("{v:.3}"),
+                                            };
+                                            ui.monospace(text);
+                                        }
+                                        None => {
+                                            ui.weak("-");
+                                        }
                                     }
                                 }
+                                if let Some(e) = entry {
+                                    for text in [
+                                        &e.moved,
+                                        &e.summary.relative,
+                                        &e.summary.shift,
+                                        &e.summary.rotation,
+                                        &e.summary.scale,
+                                    ] {
+                                        if text.is_empty() {
+                                            ui.weak("-");
+                                        } else {
+                                            ui.label(text);
+                                        }
+                                    }
+                                }
+                                ui.end_row();
                             }
-                            ui.end_row();
                         }
                     });
             });
-        ui.label(
-            egui::RichText::new(format!(
-                "Doses in {units}, volumes in cm³; against {}. Follows every edit of the \
-                 ticked structures.",
-                if d.dose_label.is_empty() {
-                    "the dose"
-                } else {
-                    &d.dose_label
-                }
-            ))
-            .weak()
-            .small(),
-        );
+        if dynamic && d.log.is_empty() {
+            ui.weak("Move a structure to add the first entry");
+        }
         if small_tip_button(
             ui,
             "💾 Export CSV",
             "Save the table as it stands, one line per structure",
         ) {
-            let text = rows_csv(&metrics, &d.units, &d.rows);
+            let text = if d.dynamic {
+                log_csv(&metrics, &d.units, &d.log)
+            } else {
+                rows_csv(&metrics, &d.units, &d.rows)
+            };
             if let Some(path) = rfd::FileDialog::new()
                 .set_title("Save the dose estimation table")
                 .set_file_name("dose_estimation.csv")
