@@ -51,6 +51,89 @@ pub struct DoseGrid {
 }
 
 impl DoseGrid {
+    /// The lattice of this grid for meshing: its frame spacing is the mean
+    /// frame step (1 mm for a single frame).
+    pub fn mesh_geom(&self) -> crate::mesh3d::GridGeom {
+        let n = self.offsets.len();
+        let dz = if n >= 2 {
+            (self.offsets[n - 1] - self.offsets[0]) / (n - 1) as f64
+        } else {
+            1.0
+        };
+        crate::mesh3d::GridGeom {
+            origin: self.origin,
+            row_dir: self.row_dir,
+            col_dir: self.col_dir,
+            normal: self.normal,
+            spacing: [self.spacing[0], self.spacing[1], dz.abs().max(1e-6)],
+        }
+    }
+
+    /// The voxels at or above `threshold`, snapshotted the way a
+    /// segmentation is for surface meshing (see
+    /// [`crate::segmentation::Segmentation::mesh_grid`]): a bool grid over
+    /// their bounding box with one empty cell of margin, max-pooled by an
+    /// integer stride when the box is very large. `None` when nothing
+    /// reaches the threshold.
+    pub fn iso_mesh_grid(&self, threshold: f32) -> Option<crate::segmentation::MeshGrid> {
+        let [nx, ny, nz] = self.dims;
+        let mut lo = [usize::MAX; 3];
+        let mut hi = [0usize; 3];
+        let mut any = false;
+        for k in 0..nz {
+            for j in 0..ny {
+                let row = &self.data[k * nx * ny + j * nx..k * nx * ny + j * nx + nx];
+                for (i, &d) in row.iter().enumerate() {
+                    if d >= threshold {
+                        lo = [lo[0].min(i), lo[1].min(j), lo[2].min(k)];
+                        hi = [hi[0].max(i), hi[1].max(j), hi[2].max(k)];
+                        any = true;
+                    }
+                }
+            }
+        }
+        if !any {
+            return None;
+        }
+        let size = [hi[0] - lo[0] + 1, hi[1] - lo[1] + 1, hi[2] - lo[2] + 1];
+        const MAX_CELLS: usize = 6_000_000;
+        let gdim = |s: usize, st: usize| s.div_ceil(st) + 2;
+        let mut stride = 1usize;
+        while gdim(size[0], stride) * gdim(size[1], stride) * gdim(size[2], stride) > MAX_CELLS {
+            stride += 1;
+        }
+        let g = [
+            gdim(size[0], stride),
+            gdim(size[1], stride),
+            gdim(size[2], stride),
+        ];
+        let mut grid = vec![false; g[0] * g[1] * g[2]];
+        for gk in 1..g[2] - 1 {
+            let k0 = lo[2] + (gk - 1) * stride;
+            let k1 = (k0 + stride).min(hi[2] + 1);
+            for gj in 1..g[1] - 1 {
+                let j0 = lo[1] + (gj - 1) * stride;
+                let j1 = (j0 + stride).min(hi[1] + 1);
+                for gi in 1..g[0] - 1 {
+                    let i0 = lo[0] + (gi - 1) * stride;
+                    let i1 = (i0 + stride).min(hi[0] + 1);
+                    let hit = (k0..k1).any(|k| {
+                        (j0..j1).any(|j| {
+                            let base = k * nx * ny + j * nx;
+                            self.data[base + i0..base + i1]
+                                .iter()
+                                .any(|&d| d >= threshold)
+                        })
+                    });
+                    if hit {
+                        grid[gk * g[0] * g[1] + gj * g[0] + gi] = true;
+                    }
+                }
+            }
+        }
+        Some((grid, g, lo, stride))
+    }
+
     /// Trilinear dose sample at a patient-space point. `None` outside grid.
     pub fn sample(&self, p: Vec3) -> Option<f32> {
         self.sample_uvw(self.grid_coords(p))
@@ -326,4 +409,50 @@ pub fn load(path: &Path) -> Result<DoseGrid> {
             .unwrap_or_default(),
         label,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_isodose_grid_boxes_the_voxels_above_the_threshold() {
+        let (nx, ny, nz) = (12usize, 10usize, 8usize);
+        let mut data = vec![0f32; nx * ny * nz];
+        for k in 2..5 {
+            for j in 3..7 {
+                for i in 4..9 {
+                    data[k * nx * ny + j * nx + i] = 10.0;
+                }
+            }
+        }
+        let dose = DoseGrid {
+            data,
+            dims: [nx, ny, nz],
+            spacing: [2.0, 2.0],
+            origin: Vec3::new(0.0, 0.0, 0.0),
+            row_dir: Vec3::new(1.0, 0.0, 0.0),
+            col_dir: Vec3::new(0.0, 1.0, 0.0),
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            offsets: (0..nz).map(|f| 3.0 * f as f64).collect(),
+            units: "GY".into(),
+            summation_type: "PLAN".into(),
+            dose_type: String::new(),
+            max_dose: 10.0,
+            frame_of_reference_uid: String::new(),
+            sop_instance_uid: String::new(),
+            series_instance_uid: String::new(),
+            study_uid: String::new(),
+            referenced_plan_uid: String::new(),
+            label: String::new(),
+        };
+        assert_eq!(dose.mesh_geom().spacing, [2.0, 2.0, 3.0]);
+        let (grid, g, lo, stride) = dose.iso_mesh_grid(5.0).unwrap();
+        assert_eq!((lo, stride), ([4, 3, 2], 1));
+        assert_eq!(g, [7, 6, 5], "the box plus one empty cell each side");
+        assert_eq!(grid.iter().filter(|&&v| v).count(), 5 * 4 * 3);
+        assert!(!grid[0] && !grid[grid.len() - 1], "the margin stays empty");
+        assert!(dose.iso_mesh_grid(11.0).is_none());
+        assert!(crate::mesh3d::mesh_from_mask(&grid, g, lo, stride, &dose.mesh_geom()).is_some());
+    }
 }

@@ -127,7 +127,12 @@ re-meshed in the background while the scene stays on screen, and the
 editor's drawn axis is shown in it. The *Opacity* slider is the whole
 scene's; the **Structures** toggle opens a panel with one slider per
 structure on top of that, so the target can fade while a chamber volume
-stays solid (*All 100 %* clears them).
+stays solid (*All 100 %* clears them). With a dose in the dataset, **Dose
+on the surface** colours every surface by the dose that lands on it, on the
+isodose scale, and **Isodose surfaces** adds the active dose as translucent
+shells at the isodose lines switched on in the Dose display, in their
+colours and relative to the same reference dose, with their own opacity
+slider; they follow a change of dose, reference or lines by themselves.
 
 **Window/level.** Right-drag on any view adjusts interactively
 (x = width, y = center); the toolbar offers numeric fields and the common CT

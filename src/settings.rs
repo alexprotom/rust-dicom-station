@@ -233,6 +233,17 @@ pub fn data_dir() -> PathBuf {
 }
 
 /// Default root directory for downloaded model weights.
+/// Where the Structure editor keeps the axes a user saves:
+/// `<data dir>/user_data/structure_editor/user_axes`, created on demand.
+pub fn user_axes_dir() -> PathBuf {
+    let dir = data_dir()
+        .join("user_data")
+        .join("structure_editor")
+        .join("user_axes");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 pub fn default_models_dir() -> PathBuf {
     data_dir().join("models")
 }

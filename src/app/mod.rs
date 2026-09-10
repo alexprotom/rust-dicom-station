@@ -705,6 +705,14 @@ struct D3Window {
     /// running partial rebuild replaces (`None`: a full build).
     roi_hashes: Vec<u64>,
     rebuilding: Option<Vec<usize>>,
+    /// Isodose surfaces of the dataset's active dose at the isodose lines'
+    /// levels: the meshes (`roi_index` = level index), the build in flight,
+    /// what they were built from, and their opacity.
+    show_iso: bool,
+    iso_meshes: Option<Arc<Vec<RoiMesh>>>,
+    iso_job: Option<Job<Vec<RoiMesh>>>,
+    iso_built: u64,
+    iso_opacity: f32,
     /// The *Structures* panel: opacity per structure, times the window's
     /// own, keyed by ROI index; absent means 1.
     show_list: bool,

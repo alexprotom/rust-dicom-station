@@ -101,7 +101,9 @@ the six back. A name that does not read as a metric, or asks for more than
 100 % of the volume, is refused under the box rather than computed.
 The column headings carry the units (`Volume [cm³]`, `Dmean [Gy]`).
 *Export CSV* writes the table as it stands, with the dose-grid coverage of
-every structure as a last column.
+every structure as a last column. The `✖` at the end of a structure's name
+leaves that structure out of the table while it stays ticked in the views;
+an *Excluded* line under the table lists them and brings any back.
 
 **Dynamic** (the switch in the section's title line) turns the table into a
 log of the Structure editor's moves: switching it on records the table as it
