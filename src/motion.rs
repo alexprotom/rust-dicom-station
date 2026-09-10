@@ -611,6 +611,23 @@ pub struct RegQa {
     pub folding_pct: f64,
     /// 95th-percentile displacement magnitude of the deformation, mm.
     pub disp_p95_mm: f64,
+    /// Dice of the tissue of the two images after this registration and
+    /// before it: whether the phase now sits on the reference at all.
+    /// `None` when the engine could not measure it.
+    pub image_dice: Option<(f64, f64)>,
+    /// Dice of each structure this model carried onto the phase against the
+    /// phase's own contour of it, where the clinic drew one. Empty when
+    /// nothing on this phase is contoured independently.
+    pub struct_dice: Vec<(String, f64)>,
+}
+
+impl RegQa {
+    /// The Dice line this row shows, `Dice 0.912 (was 0.604)`, or nothing
+    /// when the overlap was not measured.
+    pub fn dice_line(&self) -> Option<String> {
+        self.image_dice
+            .map(|(after, before)| format!("Dice {after:.3} (was {before:.3})"))
+    }
 }
 
 /// One ITV the run produced.
@@ -740,6 +757,24 @@ impl MotionReport {
                 q.disp_p95_mm,
                 esc(&q.metric_line)
             ));
+            if let Some((after, before)) = q.image_dice {
+                s.push_str(&format!(
+                    "registration_dice,{run},,{},{},image,{:.4},{:.4},,\n",
+                    q.model.label(),
+                    esc(&q.phase),
+                    after,
+                    before
+                ));
+            }
+            for (name, d) in &q.struct_dice {
+                s.push_str(&format!(
+                    "registration_dice,{run},{},{},{},structure,{:.4},,,\n",
+                    esc(name),
+                    q.model.label(),
+                    esc(&q.phase),
+                    d
+                ));
+            }
         }
         for itv in &self.itvs {
             s.push_str(&format!(
@@ -1025,5 +1060,61 @@ mod tests {
         assert!(csv
             .lines()
             .all(|l| l.split(',').count() >= 10 || l.contains('"')));
+    }
+
+    #[test]
+    fn the_registration_quality_rows_carry_the_dice() {
+        let qa = vec![
+            RegQa {
+                phase: "50%".into(),
+                model: MotionModel::Deformable,
+                metric_line: "MSD 9700 to 1800".into(),
+                folding_pct: 0.02,
+                disp_p95_mm: 6.4,
+                image_dice: Some((0.912, 0.604)),
+                struct_dice: vec![("GTV".into(), 0.845)],
+            },
+            RegQa {
+                phase: "60%".into(),
+                model: MotionModel::Rigid,
+                metric_line: "MSD 9700 to 4100".into(),
+                folding_pct: 0.0,
+                disp_p95_mm: 3.1,
+                image_dice: None,
+                struct_dice: Vec::new(),
+            },
+        ];
+        assert_eq!(qa[0].dice_line().as_deref(), Some("Dice 0.912 (was 0.604)"));
+        assert_eq!(qa[1].dice_line(), None);
+
+        let mut rep = MotionReport {
+            run_name: "A · test".into(),
+            slot_name: "A".into(),
+            patient: "P".into(),
+            phases: vec!["50%".into(), "60%".into()],
+            reference: "0%".into(),
+            tracks: Vec::new(),
+            reference_tracks: Vec::new(),
+            reference_structure: None,
+            correlations: Vec::new(),
+            qa,
+            itvs: Vec::new(),
+        };
+        let csv = rep.csv();
+        // Header, two quality rows, one image Dice, one structure Dice.
+        assert_eq!(csv.lines().count(), 5, "{csv}");
+        assert!(
+            csv.contains("registration_dice,A · test,,deformable,50%,image,0.9120,0.6040,,"),
+            "{csv}"
+        );
+        assert!(
+            csv.contains("registration_dice,A · test,GTV,deformable,50%,structure,0.8450,,,"),
+            "{csv}"
+        );
+        // The phase that could not be measured adds no Dice row at all.
+        rep.qa.truncate(1);
+        rep.qa[0].image_dice = None;
+        rep.qa[0].struct_dice.clear();
+        assert_eq!(rep.csv().lines().count(), 2);
     }
 }

@@ -32,6 +32,7 @@ const MODULE_PROP_KEY: &str = "module_structures_propagation";
 const MODULE_TOOLS_KEY: &str = "module_structure_editor";
 const MODULE_AUTO_KEY: &str = "module_structure_auto_tools";
 const MODULE_DOSE_KEY: &str = "module_dose_estimation";
+const MODULE_INFO_KEY: &str = "module_image_information";
 /// Which module sections were unfolded, remembered for *Restore the last
 /// session*.
 const MODULES_OPEN_KEY: &str = "modules_open";
@@ -83,6 +84,11 @@ pub struct Settings {
     /// structures is shown in the modules panel. On by default.
     pub module_dose: bool,
 
+    /// *Modules ▶ Image information*: the geometry, sampling and
+    /// acquisition of the displayed series. On by default - it reads
+    /// nothing until its section is unfolded.
+    pub module_info: bool,
+
     /// The module sections that were unfolded when the settings were last
     /// written (`registration`, `simulation`, `editor`, `auto`,
     /// `propagation`, `dose`). Every section starts folded; *Restore the
@@ -116,6 +122,7 @@ impl Default for Settings {
             module_structures: true,
             module_auto: true,
             module_dose: true,
+            module_info: true,
             modules_open: Vec::new(),
             session: [Vec::new(), Vec::new()],
             // Let wgpu choose. The installer writes an explicit value when
@@ -438,6 +445,10 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
             if let Some(b) = bool_from_str(value) {
                 s.module_dose = b;
             }
+        } else if key.eq_ignore_ascii_case(MODULE_INFO_KEY) {
+            if let Some(b) = bool_from_str(value) {
+                s.module_info = b;
+            }
         } else if key.eq_ignore_ascii_case(MODULES_OPEN_KEY) {
             s.modules_open = value
                 .split(',')
@@ -477,6 +488,7 @@ fn render(s: &Settings) -> String {
          {MODULE_TOOLS_KEY} = {}\n\
          {MODULE_AUTO_KEY} = {}\n\
          {MODULE_DOSE_KEY} = {}\n\
+         {MODULE_INFO_KEY} = {}\n\
          # module sections unfolded at the last run, for Restore the last session\n\
          {MODULES_OPEN_KEY} = {}\n\
          # graphics backend = auto | vulkan | dx12 | metal | opengl\n\
@@ -488,6 +500,7 @@ fn render(s: &Settings) -> String {
         bool_to_str(s.module_structures),
         bool_to_str(s.module_auto),
         bool_to_str(s.module_dose),
+        bool_to_str(s.module_info),
         s.modules_open.join(","),
         s.graphics_backend.key()
     ));
@@ -676,5 +689,17 @@ mod tests {
                 && !parse(&format!("{MODULE_AUTO_KEY} = off")).module_auto,
             "the structures editor starts switched on and can be switched off"
         );
+        assert!(
+            parse("").module_info && !parse(&format!("{MODULE_INFO_KEY} = off")).module_info,
+            "the image information module starts switched on and can be switched off"
+        );
+        // Whatever was set survives a write and a read.
+        let s = Settings {
+            module_info: false,
+            module_dose: false,
+            ..Settings::default()
+        };
+        let back = parse(&render(&s));
+        assert!(!back.module_info && !back.module_dose);
     }
 }

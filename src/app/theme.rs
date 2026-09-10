@@ -50,6 +50,30 @@ pub(super) fn alert_color(visuals: &egui::Visuals) -> Color32 {
     }
 }
 
+/// Green accent for a value that sits where it should (a high Dice, a
+/// converged metric), darkened in light mode for the same reason the amber
+/// above is.
+pub(super) fn good_color(visuals: &egui::Visuals) -> Color32 {
+    if visuals.dark_mode {
+        Color32::from_rgb(110, 205, 120)
+    } else {
+        Color32::from_rgb(20, 118, 40)
+    }
+}
+
+/// The colour a Dice coefficient earns. The reading is the usual one in
+/// registration QA: 0.80 and above is a good match, 0.60 to 0.80 deserves a
+/// look, below 0.60 is a failure that wants explaining.
+pub(super) fn dice_color(visuals: &egui::Visuals, dice: f64) -> Color32 {
+    if dice >= 0.80 {
+        good_color(visuals)
+    } else if dice >= 0.60 {
+        warn_color(visuals)
+    } else {
+        alert_color(visuals)
+    }
+}
+
 #[cfg(test)]
 mod theme_tests {
     use super::*;
@@ -85,6 +109,7 @@ mod theme_tests {
             for (label, color) in [
                 ("warn", warn_color(&visuals)),
                 ("alert", alert_color(&visuals)),
+                ("good", good_color(&visuals)),
             ] {
                 let ratio = contrast(color, bg);
                 assert!(
@@ -92,6 +117,28 @@ mod theme_tests {
                     "{name} theme: {label} accent {color:?} on {bg:?} has contrast {ratio:.2}"
                 );
             }
+        }
+    }
+
+    /// A Dice reads as a traffic light, and the three lights have to be
+    /// three different colours in both themes.
+    #[test]
+    fn a_dice_is_coloured_by_how_good_it_is() {
+        for visuals in [egui::Visuals::dark(), egui::Visuals::light()] {
+            assert_eq!(dice_color(&visuals, 0.95), good_color(&visuals));
+            assert_eq!(dice_color(&visuals, 0.80), good_color(&visuals));
+            assert_eq!(dice_color(&visuals, 0.70), warn_color(&visuals));
+            assert_eq!(dice_color(&visuals, 0.60), warn_color(&visuals));
+            assert_eq!(dice_color(&visuals, 0.59), alert_color(&visuals));
+            assert_eq!(dice_color(&visuals, 0.0), alert_color(&visuals));
+            let three = [
+                dice_color(&visuals, 0.9),
+                dice_color(&visuals, 0.7),
+                dice_color(&visuals, 0.2),
+            ];
+            assert_ne!(three[0], three[1]);
+            assert_ne!(three[1], three[2]);
+            assert_ne!(three[0], three[2]);
         }
     }
 

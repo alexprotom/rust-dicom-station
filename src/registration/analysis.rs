@@ -22,6 +22,12 @@
 //!   above 1 the tissue expanded, below 1 it compressed, and at or below
 //!   zero the deformation folded onto itself - which is not anatomy, it is
 //!   an artefact, and the folded fraction is the standard way to say so.
+//! * **Overlap.** Everything above describes the transform; none of it says
+//!   whether the images ended up on top of each other. [`OverlapStats`] does:
+//!   a tissue mask of the fixed image against the same mask of the moving
+//!   image pulled through the transform, as a Dice coefficient - before and
+//!   after, because a Dice of 0.94 means nothing until you know it was 0.71
+//!   to begin with.
 
 use super::*;
 
@@ -92,6 +98,45 @@ impl JacobianStats {
     }
 }
 
+/// How well the two images actually overlap, as a Dice coefficient.
+///
+/// The transform statistics above are all measured on the transform alone,
+/// which is to say they describe what was *done*, never whether it was right.
+/// This is the other half: threshold both images into a tissue mask, pull the
+/// moving one through the transform, and count.
+///
+/// `before` is the same measurement with the identity in place of the
+/// transform, so the pair reads as "the images overlapped this much, and now
+/// they overlap this much". A registration that leaves Dice where it found it
+/// did nothing, however small its final metric.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct OverlapStats {
+    /// Dice of the two tissue masks with no transform applied.
+    pub before: f64,
+    /// Dice of the two tissue masks through the transform.
+    pub after: f64,
+    /// The value at or above which a voxel counted as tissue, in the image's
+    /// own units (Hounsfield units for CT).
+    pub threshold: f64,
+    /// Sample points that fell inside the moving image. A registration that
+    /// pushes the fixed image off the end of the moving one scores well on
+    /// the little that is left, so this is reported with the number.
+    pub samples: usize,
+}
+
+impl OverlapStats {
+    /// `Dice 0.71 ▶ 0.96`.
+    pub fn line(&self) -> String {
+        format!("Dice {:.3} ▶ {:.3}", self.before, self.after)
+    }
+
+    /// What the score gained. Negative means the registration made the
+    /// overlap worse than it was.
+    pub fn gain(&self) -> f64 {
+        self.after - self.before
+    }
+}
+
 /// The rigid body that best explains a mapping.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Dof6 {
@@ -133,6 +178,9 @@ pub struct RegAnalysis {
     pub samples: usize,
     /// Lattice step of the sampling, mm.
     pub step_mm: f64,
+    /// Image overlap before and after, when both images were available to
+    /// measure it (a landmark warp solved from points alone has none).
+    pub overlap: Option<OverlapStats>,
 }
 
 // ---------------------------------------------------------------------------
@@ -356,7 +404,132 @@ pub fn analyse(vol: &Volume, t: &Transform3, region: Option<&RegionMask>) -> Reg
         jacobian: jac,
         samples: from.len(),
         step_mm,
+        overlap: None,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Image overlap
+// ---------------------------------------------------------------------------
+
+/// The value at or above which a voxel of `vol` counts as tissue.
+///
+/// For CT that is a Hounsfield number and -300 HU is the usual place to cut:
+/// well above lung parenchyma and air, well below anything solid, and it puts
+/// the boundary on the patient's outline rather than on any one organ. An
+/// image with no air in it is not CT (or is a cropped field), and no fixed
+/// number means anything there, so a quarter of the way up its own value
+/// range is used instead.
+fn tissue_threshold(vol: &Volume) -> f64 {
+    const AIR: i16 = -500;
+    const CT_TISSUE_HU: f64 = -300.0;
+    if vol.min_value <= AIR {
+        return CT_TISSUE_HU;
+    }
+    let (lo, hi) = (vol.min_value as f64, vol.max_value as f64);
+    lo + 0.25 * (hi - lo)
+}
+
+/// Dice of the fixed image's tissue mask against the moving image's, before
+/// and after the transform.
+///
+/// Measured on the same lattice as [`analyse`] and by the same rule: walk the
+/// fixed image, ask the moving image what is at the mapped point. A sample
+/// that lands outside the moving image is dropped from both masks rather than
+/// counted as background - it is missing data, not empty space, and counting
+/// it as empty would reward a transform for pushing the images apart.
+///
+/// `None` when nothing overlaps at all, which is not a Dice of zero but an
+/// absence of a measurement.
+pub fn overlap(
+    fixed: &Volume,
+    moving: &Volume,
+    t: &Transform3,
+    region: Option<&RegionMask>,
+) -> Option<OverlapStats> {
+    const TARGET: usize = 120_000;
+    if fixed.is_empty() || moving.is_empty() {
+        return None;
+    }
+    let (lo, hi) = match region {
+        Some(r) => r.bbox(),
+        None => (
+            [0, 0, 0],
+            [fixed.dims[0] - 1, fixed.dims[1] - 1, fixed.dims[2] - 1],
+        ),
+    };
+    let span = [hi[0] - lo[0] + 1, hi[1] - lo[1] + 1, hi[2] - lo[2] + 1];
+    let step = analysis_step(span, TARGET);
+    let thr_fixed = tissue_threshold(fixed);
+    let thr_moving = tissue_threshold(moving);
+
+    // (intersection, fixed count, moving count) for each of the two
+    // mappings, and the number of samples that had a moving value at all.
+    let ks: Vec<usize> = (lo[2]..=hi[2]).step_by(step).collect();
+    let counts = ks
+        .par_iter()
+        .map(|&k| {
+            let mut c = [0usize; 7];
+            let mut j = lo[1];
+            while j <= hi[1] {
+                let mut i = lo[0];
+                while i <= hi[0] {
+                    let p = fixed.voxel_to_patient(i as f64, j as f64, k as f64);
+                    i += step;
+                    if !region.map(|r| r.contains(p)).unwrap_or(true) {
+                        continue;
+                    }
+                    let Some(fv) = fixed.sample_patient(p) else {
+                        continue;
+                    };
+                    let f = fv as f64 >= thr_fixed;
+                    // Identity and transform are counted over the samples
+                    // each of them can see, so neither is charged for the
+                    // other's misses.
+                    if let Some(mv) = moving.sample_patient(p) {
+                        let m = mv as f64 >= thr_moving;
+                        c[0] += usize::from(f && m);
+                        c[1] += usize::from(f);
+                        c[2] += usize::from(m);
+                    }
+                    if let Some(mv) = moving.sample_patient(t.map(p)) {
+                        let m = mv as f64 >= thr_moving;
+                        c[3] += usize::from(f && m);
+                        c[4] += usize::from(f);
+                        c[5] += usize::from(m);
+                        c[6] += 1;
+                    }
+                }
+                j += step;
+            }
+            c
+        })
+        .reduce(
+            || [0usize; 7],
+            |mut a, b| {
+                for (x, y) in a.iter_mut().zip(b) {
+                    *x += y;
+                }
+                a
+            },
+        );
+
+    let dice = |inter: usize, a: usize, b: usize| -> f64 {
+        if a + b == 0 {
+            0.0
+        } else {
+            2.0 * inter as f64 / (a + b) as f64
+        }
+    };
+    if counts[6] == 0 || (counts[4] + counts[5]) == 0 {
+        return None;
+    }
+    Some(OverlapStats {
+        before: dice(counts[0], counts[1], counts[2]),
+        after: dice(counts[3], counts[4], counts[5]),
+        threshold: thr_fixed,
+        samples: counts[6],
+    })
 }
 
 /// Determinant of the deformation Jacobian at a point, by central
@@ -488,6 +661,112 @@ mod tests {
         let d = fit_rigid(&from, &to);
         assert!(d.residual_mm > 0.0);
         assert!(d.rotation_deg.iter().all(|r| r.is_finite()));
+    }
+
+    /// A volume of air with one solid box in it, in voxel index ranges.
+    fn boxed(dims: [usize; 3], lo: [usize; 3], hi: [usize; 3]) -> Volume {
+        let mut v = vol(dims);
+        v.data.fill(-1000);
+        for k in lo[2]..hi[2] {
+            for j in lo[1]..hi[1] {
+                for i in lo[0]..hi[0] {
+                    v.data[i + dims[0] * (j + dims[1] * k)] = 200;
+                }
+            }
+        }
+        v.min_value = -1000;
+        v.max_value = 200;
+        v
+    }
+
+    #[test]
+    fn the_overlap_rises_when_the_transform_undoes_the_shift() {
+        // The moving image holds the same box five voxels (10 mm) further
+        // along x. Untransformed the two boxes only partly cover each
+        // other; the transform that carries a fixed point to where the
+        // moving image put it should land them on top of one another.
+        let dims = [40, 40, 30];
+        let fixed = boxed(dims, [10, 10, 8], [30, 30, 22]);
+        let moving = boxed(dims, [15, 10, 8], [35, 30, 22]);
+        let t = Transform3::rigid_only(RigidTransform::new(
+            [0.0, 0.0, 0.0, 10.0, 0.0, 0.0],
+            Vec3::ZERO,
+        ));
+        let ov = overlap(&fixed, &moving, &t, None).expect("both volumes have tissue");
+        // CT-like data, so the cut is the fixed Hounsfield threshold.
+        assert!((ov.threshold + 300.0).abs() < 1e-9, "{}", ov.threshold);
+        assert!(ov.samples > 1000, "{}", ov.samples);
+        assert!(ov.after > 0.98, "after {}", ov.after);
+        assert!(ov.before < 0.8, "before {}", ov.before);
+        assert!(ov.gain() > 0.2, "gain {}", ov.gain());
+        assert!(ov.line().contains("Dice"));
+    }
+
+    #[test]
+    fn the_overlap_of_an_image_with_itself_is_one() {
+        let dims = [30, 30, 20];
+        let v = boxed(dims, [8, 8, 5], [22, 22, 15]);
+        let ov = overlap(
+            &v,
+            &v,
+            &Transform3::rigid_only(RigidTransform::identity(Vec3::ZERO)),
+            None,
+        )
+        .expect("tissue");
+        assert!((ov.after - 1.0).abs() < 1e-9, "{}", ov.after);
+        assert!((ov.before - 1.0).abs() < 1e-9, "{}", ov.before);
+        assert_eq!(ov.gain(), 0.0);
+    }
+
+    #[test]
+    fn an_empty_volume_has_no_overlap_to_measure() {
+        let v = boxed([20, 20, 10], [4, 4, 2], [16, 16, 8]);
+        let e = Volume::empty();
+        assert!(overlap(
+            &e,
+            &v,
+            &Transform3::rigid_only(RigidTransform::identity(Vec3::ZERO)),
+            None
+        )
+        .is_none());
+        assert!(overlap(
+            &v,
+            &e,
+            &Transform3::rigid_only(RigidTransform::identity(Vec3::ZERO)),
+            None
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn an_image_without_air_is_cut_a_quarter_of_the_way_up_its_own_range() {
+        // MR and PET carry no Hounsfield numbers, so no fixed HU means
+        // anything: the threshold follows the data instead.
+        let mut v = vol([20, 20, 10]);
+        v.data.fill(0);
+        v.min_value = 0;
+        v.max_value = 400;
+        let ov = overlap(
+            &v,
+            &v,
+            &Transform3::rigid_only(RigidTransform::identity(Vec3::ZERO)),
+            None,
+        );
+        assert!(
+            ov.is_none(),
+            "nothing is above the cut, so there is no Dice"
+        );
+        let mut w = v.clone();
+        w.data.fill(300);
+        let ov = overlap(
+            &w,
+            &w,
+            &Transform3::rigid_only(RigidTransform::identity(Vec3::ZERO)),
+            None,
+        )
+        .expect("all tissue");
+        assert!((ov.threshold - 100.0).abs() < 1e-9, "{}", ov.threshold);
+        assert!((ov.after - 1.0).abs() < 1e-9);
     }
 
     #[test]

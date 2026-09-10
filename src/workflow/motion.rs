@@ -207,6 +207,12 @@ pub fn run(req: MotionRequest, p: &Progress) -> Result<MotionOutcome> {
             && (req.models.contains(&MotionModel::Deformable)
                 || (req.models.contains(&MotionModel::Rigid)
                     && req.local_rigid_margin_mm.is_none()));
+        // Which qa row each model of this phase owns, so the structure
+        // scores measured after propagation land on the right one.
+        let mut rigid_qa: Option<usize> = None;
+        let mut local_qa: Vec<Option<usize>> = vec![None; n_subjects];
+        let mut def_qa: Option<usize> = None;
+
         let rigid = if need_global {
             p.set_phase(base + span * 0.15, span * 0.35);
             p.set(format!("Phase {label}: rigid registration"));
@@ -223,7 +229,10 @@ pub fn run(req: MotionRequest, p: &Progress) -> Result<MotionOutcome> {
                 },
                 folding_pct: 100.0 * rigid.analysis.jacobian.folded,
                 disp_p95_mm: rigid.analysis.displacement.p95,
+                image_dice: rigid.analysis.overlap.map(|o| (o.after, o.before)),
+                struct_dice: Vec::new(),
             });
+            rigid_qa = Some(qa.len() - 1);
             Some(rigid)
         } else {
             None
@@ -260,7 +269,10 @@ pub fn run(req: MotionRequest, p: &Progress) -> Result<MotionOutcome> {
                     metric_line: format!("{}: {}", subject.name, r.metric_line()),
                     folding_pct: 0.0,
                     disp_p95_mm: r.analysis.displacement.p95,
+                    image_dice: r.analysis.overlap.map(|o| (o.after, o.before)),
+                    struct_dice: Vec::new(),
                 });
+                local_qa[si] = Some(qa.len() - 1);
                 local_rigid[si] = Some(r.transform.clone());
             }
         }
@@ -278,7 +290,10 @@ pub fn run(req: MotionRequest, p: &Progress) -> Result<MotionOutcome> {
                 metric_line: def.metric_line(),
                 folding_pct: 100.0 * def.analysis.jacobian.folded,
                 disp_p95_mm: def.analysis.displacement.p95,
+                image_dice: def.analysis.overlap.map(|o| (o.after, o.before)),
+                struct_dice: Vec::new(),
             });
+            def_qa = Some(qa.len() - 1);
             Some(def)
         } else {
             None
@@ -353,6 +368,28 @@ pub fn run(req: MotionRequest, p: &Progress) -> Result<MotionOutcome> {
                     volume_cm3: prop.result_cm3,
                     grey: motion::grey_stats(&prop.mask, &vol),
                 });
+                // Where the clinic contoured this structure on this phase
+                // too, the propagation can be scored against it: the honest
+                // measure of whether the model followed the anatomy.
+                let owner = match model {
+                    MotionModel::Rigid if req.local_rigid_margin_mm.is_some() => local_qa[si],
+                    MotionModel::Rigid => rigid_qa,
+                    MotionModel::Deformable => def_qa,
+                    MotionModel::Contoured => None,
+                };
+                if let Some(qi) = owner {
+                    if let Some(d) = req
+                        .contoured
+                        .iter()
+                        .find(|c| c.name == prop.name)
+                        .and_then(|c| c.phases.get(pi))
+                        .and_then(|s| s.as_ref())
+                        .and_then(|st| st.mask_on(&phase_grid).ok())
+                        .and_then(|m| motion::dice(&prop.mask, &m))
+                    {
+                        qa[qi].struct_dice.push((prop.name.clone(), d));
+                    }
+                }
                 if req.build_itv && si < n_targets {
                     let on_ref = resample_mask(&prop.mask, &phase_grid, &ref_grid);
                     motion::union_into(&mut unions[mi][si], &on_ref);

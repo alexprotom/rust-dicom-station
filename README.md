@@ -24,6 +24,12 @@ engine.*
   remove / rename at every level with the reference chains kept intact; RT
   structure sets and segmentation series as tree nodes, contours and masks
   converting as they move between them; six-view comparison mode.
+* **Image information** - what the displayed series actually is, read back
+  out of its own headers: voxel spacing, slice thickness and the gap or
+  overlap between slices, uneven slice positions, matrix and field of view,
+  gantry tilt, frame of reference, kV / mAs / CTDIvol / kernel, rescale and
+  units - with whatever wants a second look named and explained, and a side
+  by side of what the two datasets disagree about before you register them.
 * **Patient archive** - a local PACS on plain folders and text sidecars:
   file a study, list patients without opening a DICOM file, load into either
   dataset, and send the structures and segmentations you drew back as derived
@@ -32,7 +38,8 @@ engine.*
   stochastic sampling, ASGD), dense B-spline after **plastimatch** (analytic
   gradient, bending energy, L-BFGS, mean squares or Mattes mutual
   information) and plastimatch's **landmark warp**; any of them restricted to
-  one structure or refined on top of a previous result. Every run reports its
+  one structure or refined on top of a previous result. Every run reports the
+  Dice of the two images before and after it, per-structure Dice on request,
   6 DOF, displacement statistics, Jacobian determinant and folding; the vector
   field draws in the views and in 3D; fusion overlay; DICOM REG and Deformable
   Spatial Registration read and written; a known-transform simulator for QA.

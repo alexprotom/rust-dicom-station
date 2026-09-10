@@ -393,3 +393,125 @@ fn multiple_structure_sets_are_all_loaded() {
     );
     let _ = std::fs::remove_dir_all(&multi);
 }
+
+/// The *Image information* module reads the series' own headers back and
+/// says what the study is: the phantom is 2 mm isotropic, 40 contiguous
+/// slices, 120 kV, in Hounsfield units, and nothing about it is unusual.
+#[test]
+fn image_information_describes_the_phantom() {
+    let dir = test_data_dir();
+    let study = loader::load_directory(dir, &Progress::default()).expect("study should load");
+    let series = study
+        .series
+        .get(study.active_series)
+        .expect("an active CT series");
+    let info = rust_dicom_station::imginfo::describe(series, &study.volume);
+
+    assert_eq!(info.read, 40, "one header per slice");
+    assert_eq!(info.failed, 0);
+    assert!(info.title.contains("CT"), "{}", info.title);
+
+    let value = |label: &str| -> String {
+        info.sections
+            .iter()
+            .flat_map(|(_, rows)| rows.iter())
+            .find(|r| r.label == label)
+            .unwrap_or_else(|| panic!("row '{label}' present in {:?}", info.text()))
+            .value
+            .clone()
+    };
+    assert_eq!(value("Modality"), "CT");
+    assert_eq!(value("Dimensions"), "96 × 96 × 40 voxels");
+    assert_eq!(value("Voxel spacing"), "2 × 2 × 2 mm");
+    assert_eq!(value("Field of view"), "192 × 192 × 80 mm");
+    assert_eq!(value("Slices"), "40");
+    assert_eq!(value("Slice thickness"), "2 mm");
+    assert_eq!(value("Slice gap"), "contiguous");
+    assert_eq!(value("Slice positions"), "even, every 2 mm");
+    assert_eq!(value("Tube voltage"), "120 kV");
+    assert_eq!(value("Units"), "HU");
+    assert_eq!(value("Rescale"), "slope 1 · intercept -1024");
+    let for_uid = value("Frame of reference");
+    assert_ne!(for_uid, "none");
+    assert_eq!(for_uid, study.volume.frame_of_reference_uid);
+
+    // A regular phantom has nothing for a physicist to act on.
+    assert!(
+        info.warnings().is_empty(),
+        "unexpected warnings: {:?}",
+        info.warnings()
+            .iter()
+            .map(|r| (&r.label, &r.value, &r.note))
+            .collect::<Vec<_>>()
+    );
+    // The clipboard copy carries every section.
+    let text = info.text();
+    for section in ["Series", "Sampling", "Geometry", "Acquisition", "Pixels"] {
+        assert!(text.contains(&format!("[{section}]")), "{text}");
+    }
+}
+
+/// Slices that do not touch, and slices that are not evenly spaced, are the
+/// two things the module exists to catch. Both are made by keeping only
+/// some of the phantom's slices.
+#[test]
+fn image_information_flags_a_gap_and_uneven_spacing() {
+    let dir = test_data_dir();
+    let study = loader::load_directory(dir, &Progress::default()).expect("study should load");
+    let ct = study
+        .series
+        .get(study.active_series)
+        .expect("an active CT series")
+        .clone();
+    // The scan lists the files in whatever order the directory gave them;
+    // the generator numbers them along the patient axis.
+    let mut files = ct.files.clone();
+    files.sort();
+
+    // The folder has to outlive the report: the module reads the slice
+    // headers again, from the files themselves.
+    let subset = |name: &str, keep: &dyn Fn(usize) -> bool| -> (PathBuf, loader::LoadedStudy) {
+        let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("target/{name}"));
+        let _ = std::fs::remove_dir_all(&out);
+        std::fs::create_dir_all(&out).expect("scratch folder");
+        for (i, f) in files.iter().enumerate() {
+            if keep(i) {
+                std::fs::copy(f, out.join(f.file_name().expect("file name"))).expect("copy slice");
+            }
+        }
+        let s = loader::load_directory(&out, &Progress::default()).expect("subset loads");
+        (out, s)
+    };
+
+    let row = |info: &rust_dicom_station::imginfo::ImageInfo, label: &str| {
+        info.sections
+            .iter()
+            .flat_map(|(_, rows)| rows.iter())
+            .find(|r| r.label == label)
+            .unwrap_or_else(|| panic!("row '{label}' present"))
+            .clone()
+    };
+
+    // Every second slice: 4 mm apart, still 2 mm thick.
+    let (gap_dir, every_other) = subset("test_data_gap", &|i| i % 2 == 0);
+    let series = &every_other.series[every_other.active_series];
+    let info = rust_dicom_station::imginfo::describe(series, &every_other.volume);
+    let gap = row(&info, "Slice gap");
+    assert_eq!(gap.value, "2 mm gap");
+    assert!(gap.note.is_some(), "a gap is worth saying");
+    assert_eq!(row(&info, "Slice positions").value, "even, every 4 mm");
+    let _ = std::fs::remove_dir_all(&gap_dir);
+
+    // One slice missing from the middle: the spacing is no longer even.
+    let (uneven_dir, holed) = subset("test_data_uneven", &|i| i != 17);
+    let series = &holed.series[holed.active_series];
+    let info = rust_dicom_station::imginfo::describe(series, &holed.volume);
+    let pos = row(&info, "Slice positions");
+    assert_eq!(pos.value, "2 to 4 mm apart");
+    assert!(
+        pos.note.as_deref().unwrap_or_default().contains("Uneven"),
+        "{pos:?}"
+    );
+    assert!(info.warnings().iter().any(|r| r.label == "Slice positions"));
+    let _ = std::fs::remove_dir_all(&uneven_dir);
+}

@@ -171,14 +171,15 @@ dragging a panel's inner edge past the minimum does the same, and the arrow
 brings it back.
 
 The *Modules* menu chooses the right panel's sections, in the order they
-appear: **Image registration**, **Image simulation**, the **Structure
-editor** (insert, edit and combine structures - [contours.md](contours.md)),
-the **Structure auto tools** (the body contour and the three segmentation
+appear: **Image information** (what the displayed series is - see below),
+**Image registration**, **Image simulation**, the **Structure editor**
+(insert, edit and combine structures - [contours.md](contours.md)), the
+**Structure auto tools** (the body contour and the three segmentation
 engines - [segmentation.md](segmentation.md)), **Structure propagation** and
-**Dose estimation** (the dose metrics table - [dvh.md](dvh.md)). The editor,
-the auto tools and the dose estimation start switched on, the other three
-off; every choice is remembered between runs, and with all six off there is
-no right panel at all. Every section starts folded; which ones were
+**Dose estimation** (the dose metrics table - [dvh.md](dvh.md)). The image
+information, the editor, the auto tools and the dose estimation start
+switched on, the other three off; every choice is remembered between runs,
+and with all seven off there is no right panel at all. Every section starts folded; which ones were
 unfolded is remembered too, and *Restore the last session* unfolds them
 again. The drawing tools are not in the panel: the toolbar's **✏
 Draw structure** button unfolds them on the toolbar. The *Tools* menu keeps
@@ -186,6 +187,40 @@ the windows: **◑ Structure comparison**, **📋 Structure details** (one row
 per structure, with a Dice column against a reference of your choice) and
 **📈 Structure motion**, then transfer, DVH, DRR, the archive, the models
 and the anonymizer.
+
+## Image information
+
+The first section of the right panel says what the displayed series actually
+is, read back out of its own DICOM headers rather than out of the
+reconstruction:
+
+* **Series** - patient, study, modality, series number, body part, protocol,
+  patient position and when it was acquired.
+* **Sampling** - the matrix, the voxel spacing, the field of view, how many
+  slices there are (and how many files they came from), the slice thickness,
+  the gap or overlap between slices, whether the slice positions are evenly
+  spaced, and whether the header's own *SpacingBetweenSlices* agrees with
+  them.
+* **Geometry** - origin, orientation, gantry tilt, frame of reference, series
+  and study UID.
+* **Acquisition** - scanner, station, software, kV, mA, mAs, CTDIvol,
+  reconstruction kernel and scan options.
+* **Pixels** - value range, rescale slope and intercept, units, photometric
+  interpretation and bits stored.
+
+Anything worth a second look is repeated at the top of the section in amber
+with the reason: slices that do not touch (everything between them is
+interpolated, and a structure volume or a DVH is only as good as that
+interpolation), slices that are unevenly spaced, a tilted gantry, an
+anisotropic in-plane spacing, oblique axes, a missing frame of reference,
+files that are in the series but not in the volume. A regular study says
+*Nothing unusual*.
+
+*Compare* puts the two datasets side by side and lists only what they
+disagree about - the check to make before registering them, contouring
+across them or carrying a dose from one to the other. *Copy* puts the whole
+report on the clipboard; *Read again* re-reads the headers after the files
+on disk have changed.
 
 ## Interaction reference
 

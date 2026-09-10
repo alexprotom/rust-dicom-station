@@ -53,6 +53,7 @@ mod dvh_win;
 mod export_win;
 mod glyphs;
 mod home;
+mod img_info;
 mod jobs;
 mod livewire_app;
 mod models_win;
@@ -1060,6 +1061,30 @@ struct ActiveRegistration {
     /// The region the run was restricted to, kept so the field can be
     /// re-sampled at a different lattice without rebuilding the mask.
     region: Option<Arc<RegionMask>>,
+    /// Per-structure Dice, filled the first time it is asked for.
+    ///
+    /// Not computed with the rest of the analysis: it needs a mask
+    /// rasterized and propagated per structure, which is a second of work on
+    /// a real study - fine on a button, wrong every frame. It lives on the
+    /// registration, so installing another one throws the scores away with
+    /// the transform they belong to.
+    struct_dice: Option<Vec<StructDice>>,
+}
+
+/// One structure scored against its namesake in the other dataset.
+#[derive(Clone, Debug)]
+struct StructDice {
+    name: String,
+    color: [u8; 3],
+    /// Dice of the fixed dataset's structure against the moving dataset's,
+    /// carried through the transform.
+    after: f64,
+    /// The same two structures with no transform at all - what they already
+    /// had in common. A registration that does not raise this did not help
+    /// this structure.
+    before: f64,
+    fixed_cm3: f64,
+    moving_cm3: f64,
 }
 
 impl ActiveRegistration {
@@ -1483,6 +1508,9 @@ pub struct ViewerApp {
     module_auto: bool,
     /// *Modules ▶ Dose estimation*: the dose metrics table.
     module_dose: bool,
+    /// *Modules ▶ Image information*: voxel spacing, slice thickness and
+    /// the rest of what the displayed series is, read from its headers.
+    module_info: bool,
     /// Which module sections are unfolded (settings key `modules_open`),
     /// and whether the next panel draw has to apply that list - set by
     /// *Restore the last session*.
@@ -1493,6 +1521,8 @@ pub struct ViewerApp {
     /// keep the last run's list.
     modules_tracked: bool,
     dose_est: dose_est::DoseEst,
+    /// State of the *Image information* module.
+    info: img_info::InfoState,
     dose_est_job: Option<Job<Vec<dose_est::DoseRow>>>,
     /// The auto tools module's state: its dataset and the section to unfold.
     auto: auto_tools::AutoTools,
@@ -1559,6 +1589,7 @@ impl ViewerApp {
             || self.module_structures
             || self.module_auto
             || self.module_dose
+            || self.module_info
     }
 
     /// Both datasets show an image volume.
@@ -1790,10 +1821,12 @@ impl ViewerApp {
             module_structures: prefs.module_structures,
             module_auto: prefs.module_auto,
             module_dose: prefs.module_dose,
+            module_info: prefs.module_info,
             modules_open: prefs.modules_open.clone(),
             apply_modules_open: false,
             modules_tracked: false,
             dose_est: dose_est::DoseEst::default(),
+            info: img_info::InfoState::default(),
             dose_est_job: None,
             auto: auto_tools::AutoTools::default(),
             draw_open: false,
@@ -1849,6 +1882,7 @@ impl ViewerApp {
             module_structures: self.module_structures,
             module_auto: self.module_auto,
             module_dose: self.module_dose,
+            module_info: self.module_info,
             modules_open: self.modules_open.clone(),
             session: self.session.clone(),
             graphics_backend: self.graphics_backend,
