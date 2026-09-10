@@ -203,7 +203,11 @@ the stroke under the pointer. Every button is one undo step.
   title line drags the selected structure with the left button in any view,
   in the plane of that view, one undo step per drag. **Back** undoes the
   last edit of the dataset; **Reset** puts the structure back where it was
-  before the first move.
+  before the first move. A structure moved past the first or last image
+  slice is not cut: the slices outside the field of view are kept with
+  their signed slice index, follow every further move, and come back into
+  the image when it is moved back (only a tilt, which goes through the
+  voxel mask, is limited to the image).
 * **Type** - the RT ROI Interpreted Type (`PTV`, `ORGAN`, `EXTERNAL`, …),
   which is what a planning system branches on. It is the first line of the
   section, under the structure's name and its volume.

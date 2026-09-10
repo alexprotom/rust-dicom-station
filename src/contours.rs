@@ -1231,6 +1231,13 @@ pub struct Stack {
     pub axis: usize,
     /// Sorted by `level`, never two entries for the same level.
     pub slices: Vec<SlicePolys>,
+    /// Slices that lie off the lattice along `axis` (a structure moved past
+    /// the first or last image slice), by their signed level. They are
+    /// carried along by the in-plane operations and the level shifts, come
+    /// back onto `slices` when a shift brings them in, and are written out
+    /// with everything else - a structure pushed out of the field of view
+    /// is not cut. Nothing that goes through a voxel mask sees them.
+    pub beyond: Vec<(i64, Region)>,
 }
 
 impl Stack {
@@ -1238,6 +1245,7 @@ impl Stack {
         Stack {
             axis,
             slices: Vec::new(),
+            beyond: Vec::new(),
         }
     }
 
@@ -1284,6 +1292,7 @@ impl Stack {
     /// range mean what they say.
     pub fn prune(&mut self) {
         self.slices.retain(|s| !s.region.is_empty());
+        self.beyond.retain(|(_, r)| !r.is_empty());
     }
 
     /// First and last occupied level.
@@ -1346,11 +1355,12 @@ impl Stack {
         for pts in &vox {
             let mean = pts.iter().map(|p| p[axis]).sum::<f64>() / pts.len() as f64;
             let lvl = mean.round();
-            if lvl < 0.0 || lvl >= grid.dims[axis] as f64 {
-                continue;
-            }
             let ring = Poly::new(pts.iter().map(|p| [p[ua], p[va]]).collect());
             if ring.is_empty() {
+                continue;
+            }
+            if lvl < 0.0 || lvl >= grid.dims[axis] as f64 {
+                st.beyond_mut(lvl as i64).rings.push(ring);
                 continue;
             }
             st.region_mut(lvl as usize).rings.push(ring);
@@ -1366,8 +1376,10 @@ impl Stack {
     pub fn to_contours(&self, grid: &Grid) -> Vec<Contour> {
         let [ua, va] = plane_axes(self.axis);
         let mut out = Vec::new();
-        for s in &self.slices {
-            for ring in &s.region.rings {
+        let on = self.slices.iter().map(|s| (s.level as f64, &s.region));
+        let off = self.beyond.iter().map(|(l, r)| (*l as f64, r));
+        for (level, region) in on.chain(off) {
+            for ring in &region.rings {
                 if ring.is_empty() {
                     continue;
                 }
@@ -1378,7 +1390,7 @@ impl Stack {
                         let mut v = [0.0f64; 3];
                         v[ua] = p[0];
                         v[va] = p[1];
-                        v[self.axis] = s.level as f64;
+                        v[self.axis] = level;
                         grid.voxel_to_patient(v[0], v[1], v[2])
                     })
                     .collect();
@@ -1606,30 +1618,32 @@ impl Stack {
     }
 
     pub fn translate(&mut self, d: Pt) {
-        for s in &mut self.slices {
-            for r in &mut s.region.rings {
-                r.translate(d);
-            }
+        for r in self.rings_mut() {
+            r.translate(d);
         }
     }
 
     /// Scale every slice about the stack's own in-plane centroid.
     pub fn scale(&mut self, factor: f64) {
         let c = self.centroid();
-        for s in &mut self.slices {
-            for r in &mut s.region.rings {
-                r.scale_about(c, factor);
-            }
+        for r in self.rings_mut() {
+            r.scale_about(c, factor);
         }
     }
 
     pub fn rotate(&mut self, angle: f64) {
         let c = self.centroid();
-        for s in &mut self.slices {
-            for r in &mut s.region.rings {
-                r.rotate_about(c, angle);
-            }
+        for r in self.rings_mut() {
+            r.rotate_about(c, angle);
         }
+    }
+
+    /// Every ring, on and off the lattice.
+    fn rings_mut(&mut self) -> impl Iterator<Item = &mut Poly> {
+        self.slices
+            .iter_mut()
+            .flat_map(|s| s.region.rings.iter_mut())
+            .chain(self.beyond.iter_mut().flat_map(|(_, r)| r.rings.iter_mut()))
     }
 
     /// Area-weighted centroid in lattice indices, all three axes.
@@ -1661,15 +1675,41 @@ impl Stack {
             return;
         }
         let n = dims[self.axis] as i64;
-        self.slices.retain_mut(|s| {
-            let l = s.level as i64 + d;
+        // Every slice by `d`, on or off the lattice, then sort them back
+        // into the two lists by where they landed.
+        let mut all: Vec<(i64, Region)> = self
+            .slices
+            .drain(..)
+            .map(|s| (s.level as i64 + d, s.region))
+            .chain(self.beyond.drain(..).map(|(l, r)| (l + d, r)))
+            .collect();
+        all.sort_by_key(|(l, _)| *l);
+        for (l, region) in all {
             if (0..n).contains(&l) {
-                s.level = l as usize;
-                true
+                self.slices.push(SlicePolys {
+                    level: l as usize,
+                    region,
+                });
             } else {
-                false
+                self.beyond.push((l, region));
             }
-        });
+        }
+    }
+
+    /// The off-lattice region at a signed level, created empty if new.
+    fn beyond_mut(&mut self, level: i64) -> &mut Region {
+        let i = match self.beyond.iter().position(|(l, _)| *l >= level) {
+            Some(i) if self.beyond[i].0 == level => i,
+            Some(i) => {
+                self.beyond.insert(i, (level, Region::new()));
+                i
+            }
+            None => {
+                self.beyond.push((level, Region::new()));
+                self.beyond.len() - 1
+            }
+        };
+        &mut self.beyond[i].1
     }
 
     /// Translate by millimetres along the lattice axes: exactly in the
@@ -2024,6 +2064,65 @@ mod tests {
         // Off the lattice: nothing is left, and nothing panics.
         let gone = st.rigid_moved(dims, sp, &Rigid::translation([1000.0, 0.0, 0.0]));
         assert!(gone.slices.is_empty());
+    }
+
+    #[test]
+    fn a_structure_pushed_out_of_the_field_of_view_is_not_cut() {
+        let dims = [40, 40, 20];
+        let sp = [1.0, 1.0, 2.0];
+        let mut st = Stack::empty(2);
+        for level in 5..10 {
+            let region = Region {
+                rings: vec![Poly::new(vec![
+                    [10.0, 10.0],
+                    [20.0, 10.0],
+                    [20.0, 14.0],
+                    [10.0, 14.0],
+                ])],
+            };
+            st.slices.push(SlicePolys { level, region });
+        }
+        let grid = Grid {
+            dims,
+            spacing: sp,
+            origin: Vec3::ZERO,
+            row_dir: Vec3::new(1.0, 0.0, 0.0),
+            col_dir: Vec3::new(0.0, 1.0, 0.0),
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            frame_of_reference_uid: String::new(),
+        };
+        // Past the last slice: two stay, three wait off the lattice, and
+        // the contours written out carry all five.
+        st.translate_mm([0.0, 0.0, 26.0], sp, dims);
+        assert_eq!(st.slices.len(), 2);
+        assert_eq!(
+            st.beyond.iter().map(|(l, _)| *l).collect::<Vec<_>>(),
+            vec![20, 21, 22]
+        );
+        assert_eq!(st.to_contours(&grid).len(), 5);
+        // In-plane moves carry the off-lattice slices along.
+        st.translate([3.0, 0.0]);
+        assert!((st.beyond[0].1.rings[0].centroid()[0] - 18.0).abs() < 1e-9);
+        // Back in: everything on the lattice again.
+        st.translate_mm([0.0, 0.0, -26.0], sp, dims);
+        assert!(st.beyond.is_empty());
+        assert_eq!(
+            st.slices.iter().map(|s| s.level).collect::<Vec<_>>(),
+            vec![5, 6, 7, 8, 9]
+        );
+        // A re-read of the written contours keeps the off-lattice ones.
+        st.translate_mm([0.0, 0.0, 26.0], sp, dims);
+        let mut roi = Roi {
+            number: 1,
+            name: "box".into(),
+            color: [0; 3],
+            roi_type: String::new(),
+            description: String::new(),
+            contours: Vec::new(),
+        };
+        st.apply_to_roi(&mut roi, &grid);
+        let again = Stack::from_roi(&roi, &grid);
+        assert_eq!((again.slices.len(), again.beyond.len()), (2, 3));
     }
 
     use super::*;
