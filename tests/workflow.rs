@@ -91,6 +91,34 @@ fn the_motion_pipeline_recovers_the_phantoms_target_motion() {
     // The reference structure's track exists and the correlation ran.
     assert_eq!(r.reference_tracks.len(), 2);
     assert_eq!(r.qa.len(), 4, "two models on two non-reference phases");
+    // Every registration reports the overlap it achieved: the phantom is a
+    // solid body against air, so a correct fit lands well above the 0.80
+    // that reads as a good match, and above where it started.
+    for q in &r.qa {
+        let (after, before) = q
+            .image_dice
+            .unwrap_or_else(|| panic!("phase {} ({}) has no Dice", q.phase, q.model.label()));
+        assert!(
+            after > 0.9,
+            "phase {} ({}): Dice {after:.3} after the registration",
+            q.phase,
+            q.model.label()
+        );
+        assert!((0.0..=1.0).contains(&before), "before {before}");
+        assert!(after >= before - 1e-9, "the fit made the overlap worse");
+        assert!(q.dice_line().is_some());
+        // Nothing on these phases is contoured independently, so there is
+        // nothing to score the propagation against.
+        assert!(q.struct_dice.is_empty());
+    }
+    let csv = r.csv();
+    assert_eq!(
+        csv.lines()
+            .filter(|l| l.starts_with("registration_dice,"))
+            .count(),
+        4,
+        "one image Dice row per registration"
+    );
 
     // The ITV: one per model, larger than the target and made of it.
     let itv = out.itv_series.expect("ITVs were built");
@@ -583,6 +611,34 @@ fn a_target_every_phase_carries_is_read_as_contoured_and_the_local_rigid_fit_fol
         1,
         "the body's local rigid track only"
     );
+
+    // Every phase carries its own TARGET contour, so the local rigid fit
+    // can be scored against it: the honest measure of whether the model
+    // followed the anatomy rather than only the image.
+    let scored: Vec<(&str, f64)> =
+        r.qa.iter()
+            .flat_map(|q| q.struct_dice.iter())
+            .map(|(n, d)| (n.as_str(), *d))
+            .collect();
+    assert_eq!(
+        scored.len(),
+        2,
+        "one score per non-reference phase: {scored:?}"
+    );
+    for (name, d) in &scored {
+        assert_eq!(*name, "TARGET");
+        assert!(
+            *d > 0.7,
+            "the local rigid fit lands on the drawn contour: Dice {d:.3}"
+        );
+    }
+    // Both kinds of Dice reach the CSV.
+    let csv = r.csv();
+    assert!(
+        csv.contains(",structure,"),
+        "a structure Dice row is written"
+    );
+    assert!(csv.contains(",image,"), "an image Dice row is written");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

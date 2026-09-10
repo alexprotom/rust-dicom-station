@@ -1435,7 +1435,9 @@ pub fn register(
         let out = landmark::run(params)?;
         let transform = Arc::new(out.transform);
         progress.set("Measuring the deformation");
-        let analysis = analysis::analyse(fixed_vol, &transform, params.region.as_deref());
+        let mut analysis = analysis::analyse(fixed_vol, &transform, params.region.as_deref());
+        analysis.overlap =
+            analysis::overlap(fixed_vol, moving_vol, &transform, params.region.as_deref());
         progress.set("done");
         return Ok(RegistrationResult {
             transform,
@@ -1545,7 +1547,12 @@ pub fn register(
 
     let transform = Arc::new(out.transform);
     progress.set("Measuring the deformation");
-    let analysis = analysis::analyse(fixed_vol, &transform, params.region.as_deref());
+    let mut analysis = analysis::analyse(fixed_vol, &transform, params.region.as_deref());
+    // Both images are in hand exactly here and nowhere later, so the overlap
+    // is measured now and travels with the result to whatever displays it.
+    progress.set("Measuring the overlap");
+    analysis.overlap =
+        analysis::overlap(fixed_vol, moving_vol, &transform, params.region.as_deref());
 
     progress.set("done");
     Ok(RegistrationResult {

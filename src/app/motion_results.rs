@@ -378,15 +378,56 @@ impl ViewerApp {
             egui::CollapsingHeader::new("Registration quality")
                 .id_salt(("motion_qa", idx))
                 .show(ui, |ui| {
+                    // Dice first on every row: it is the one number that
+                    // says whether the phase landed on the reference.
                     for q in &r.qa {
-                        ui.weak(format!(
-                            "{} ({}): {} · p95 {:.1} mm · folding {:.2} %",
-                            q.phase,
-                            q.model.label(),
-                            q.metric_line,
-                            q.disp_p95_mm,
-                            q.folding_pct
-                        ));
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            ui.label(format!("{} ({}):", q.phase, q.model.label()));
+                            match q.image_dice {
+                                Some((after, before)) => {
+                                    ui.monospace(
+                                        egui::RichText::new(format!("Dice {after:.3}"))
+                                            .color(theme::dice_color(ui.visuals(), after))
+                                            .strong(),
+                                    )
+                                    .on_hover_text(
+                                        "Overlap of the tissue of the two images after this \
+                                         registration, against what it was before it",
+                                    );
+                                    ui.weak(format!("was {before:.3}"));
+                                }
+                                None => {
+                                    ui.weak("Dice not measured");
+                                }
+                            }
+                        });
+                        // The engine's own line goes underneath: it is long,
+                        // and the Dice is what the eye should land on first.
+                        ui.horizontal_wrapped(|ui| {
+                            ui.add_space(16.0);
+                            ui.weak(format!(
+                                "{} · p95 {:.1} mm · folding {:.2} %",
+                                q.metric_line, q.disp_p95_mm, q.folding_pct
+                            ));
+                        });
+                        // Where the phase carries its own contour, the
+                        // propagation can be checked against it.
+                        for (name, d) in &q.struct_dice {
+                            ui.horizontal(|ui| {
+                                ui.add_space(16.0);
+                                ui.weak(format!("{name} vs contoured"));
+                                ui.monospace(
+                                    egui::RichText::new(format!("{d:.3}"))
+                                        .color(theme::dice_color(ui.visuals(), *d)),
+                                );
+                            })
+                            .response
+                            .on_hover_text(
+                                "Dice of the structure this model put on the phase \
+                                 against the contour drawn on that phase",
+                            );
+                        }
                     }
                 });
         }

@@ -199,7 +199,13 @@ the stroke under the pointer. Every button is one undo step.
   from its first point towards its second, and *Rotate* turns the structure
   about it. The ✋ next to *Draw axis* moves the axis by hand instead: drag
   near an end to move that end, anywhere else to move the whole line. The
-  axis is dropped when the toggle is switched off. The ✋ in the block's own
+  axis is dropped when the toggle is switched off. The line below keeps
+  axes: **Save** writes the axis as two points in patient millimetres to
+  `user_data/structure_editor/user_axes` in the program's data folder
+  (`%LOCALAPPDATA%\RustDICOMStation` on Windows), a plain text `.axis` file
+  that reads back on any dataset of the same frame; **Load** picks one from
+  there; **Save last** / **Load last** keep one axis in memory for the
+  running program only. The ✋ in the block's own
   title line drags the selected structure with the left button in any view,
   in the plane of that view, one undo step per drag. **Back** undoes the
   last edit of the dataset; **Reset** puts the structure back where it was

@@ -10,6 +10,7 @@
 use anyhow::{anyhow, Result};
 
 use super::*;
+use crate::app::combine::ItemRef;
 use crate::registration::{analysis, LandmarkKernel, RegParams, Warp};
 
 /// What restricts the next registration: everything, or one structure.
@@ -300,8 +301,118 @@ impl ViewerApp {
             moving_vol: out.moving.vol,
             field: Arc::new(out.field),
             region: out.region,
+            struct_dice: None,
         });
         self.reg_gen += 1;
+    }
+
+    /// Score every structure the two datasets have in common.
+    ///
+    /// The overlap statistic in the analysis block is measured on a tissue
+    /// threshold and says whether the *images* line up. This says whether the
+    /// anatomy did, which is the question a plan is judged on - and it can
+    /// only be asked where the same structure was drawn on both sides.
+    ///
+    /// Names are matched case-insensitively and nothing else is assumed: a
+    /// structure of the fixed dataset is paired with the first structure of
+    /// the moving dataset that shares its name, whether either of them is a
+    /// contour or a segmentation.
+    pub(super) fn score_registration_structures(&mut self) {
+        let Some(reg) = &self.registration else {
+            return;
+        };
+        let (fixed_slot, moving_slot) = (reg.fixed_slot, reg.moving_slot);
+        let fixed_vol = reg.fixed_vol.clone();
+        let moving_vol = reg.moving_vol.clone();
+        let transform = reg.result.transform.clone();
+        let fixed_grid = fixed_vol.grid();
+
+        // Name -> the moving dataset's item of that name.
+        let moving: Vec<(ItemRef, String)> = self.combine_candidates(moving_slot);
+        let mut scores: Vec<StructDice> = Vec::new();
+        for (item, _) in self.combine_candidates(fixed_slot) {
+            let Some((fmask, fgrid, name, color)) = self.item_mask_grid(fixed_slot, item) else {
+                continue;
+            };
+            let Some((mitem, _)) = moving.iter().find(|(mi, _)| {
+                self.item_name(moving_slot, *mi)
+                    .is_some_and(|n| n.eq_ignore_ascii_case(&name))
+            }) else {
+                continue;
+            };
+            let Some((mmask, mgrid, _, _)) = self.item_mask_grid(moving_slot, *mitem) else {
+                continue;
+            };
+            // Both masks have to reach the fixed volume's lattice: the
+            // structure's own may be a segmentation series on a different
+            // one.
+            let fmask = if fgrid.matches(&fixed_grid) {
+                fmask
+            } else {
+                crate::dicomseg::resample_mask(&fmask, &fgrid, &fixed_grid)
+            };
+            // The moving mask on the moving volume's own lattice: what the
+            // propagation starts from either way.
+            let moving_on_its_own_grid = if mgrid.matches(&moving_vol.grid()) {
+                mmask
+            } else {
+                crate::dicomseg::resample_mask(&mmask, &mgrid, &moving_vol.grid())
+            };
+            let subject = crate::propagate::Subject {
+                name: name.clone(),
+                color,
+                mask: moving_on_its_own_grid,
+            };
+            // Both numbers are measured the same way - the mask carried onto
+            // the fixed lattice by the same code - so that the pair of them
+            // says what the registration changed and nothing else. Scoring
+            // "before" by a plain resample instead would charge the
+            // registration for the interpolation the propagation costs, and
+            // a perfect result would read below 1.
+            let carried = |t: &Transform3| -> Option<Vec<u8>> {
+                crate::propagate::propagate(
+                    &moving_vol,
+                    &fixed_vol,
+                    t,
+                    false,
+                    std::slice::from_ref(&subject),
+                    &progress::Quiet,
+                )
+                .ok()
+                .and_then(|mut v| v.pop().map(|pr| pr.mask))
+            };
+            // The transform maps fixed patient coordinates to moving ones,
+            // so arriving on the fixed lattice uses it as it is; the
+            // identity is where the two datasets started.
+            let after_mask = carried(&transform);
+            let before_mask = carried(&Transform3::rigid_only(
+                crate::registration::RigidTransform::identity(crate::geometry::Vec3::ZERO),
+            ));
+            let (Some(before), Some(after)) = (
+                before_mask
+                    .as_ref()
+                    .and_then(|m| crate::motion::dice(&fmask, m)),
+                after_mask
+                    .as_ref()
+                    .and_then(|m| crate::motion::dice(&fmask, m)),
+            ) else {
+                continue;
+            };
+            let vox = fixed_vol.voxel_cm3();
+            scores.push(StructDice {
+                name,
+                color,
+                after,
+                before,
+                fixed_cm3: fmask.iter().filter(|v| **v != 0).count() as f64 * vox,
+                moving_cm3: after_mask
+                    .map(|m| m.iter().filter(|v| **v != 0).count() as f64 * vox)
+                    .unwrap_or(0.0),
+            });
+        }
+        if let Some(reg) = &mut self.registration {
+            reg.struct_dice = Some(scores);
+        }
     }
 
     // -- running -----------------------------------------------------------
@@ -483,7 +594,8 @@ impl ViewerApp {
         // propagation) needs the section that shows and clears it.
         self.module_registration = true;
         let vol = fstudy.volume.clone();
-        let analysis = analysis::analyse(&vol, &transform, None);
+        let mut analysis = analysis::analyse(&vol, &transform, None);
+        analysis.overlap = analysis::overlap(&vol, &mstudy.volume, &transform, None);
         let field = VectorField::sample(&vol, &transform, None, self.field_step_mm);
         self.registration = Some(ActiveRegistration {
             result: RegistrationResult {
@@ -505,6 +617,7 @@ impl ViewerApp {
             moving_vol: mstudy.volume.clone(),
             field: Arc::new(field),
             region: None,
+            struct_dice: None,
         });
         self.fusion_on = true;
         self.reg_gen += 1;
@@ -619,6 +732,7 @@ impl ViewerApp {
         let mut save_field = false;
         let mut run_group: Option<(RegPick, usize, usize)> = None;
         let mut clear_group = false;
+        let mut score_structs = false;
         // 4D groups either dataset offers, keyed the way `reg_group` is.
         let group_choices: Vec<((usize, usize), String)> = self
             .propagate_group_choices()
@@ -1008,12 +1122,13 @@ impl ViewerApp {
                         .id_salt("reg_analysis")
                         .default_open(true)
                         .show(ui, |ui| {
-                            analysis_rows(
+                            score_structs |= analysis_rows(
                                 ui,
                                 res,
                                 self.slots[reg.fixed_slot].active_structures(),
                                 &res.transform,
-                            )
+                                reg.struct_dice.as_deref(),
+                            );
                         });
 
                     ui.horizontal(|ui| {
@@ -1166,6 +1281,9 @@ impl ViewerApp {
         }
         if save_field {
             self.save_vector_field();
+        }
+        if score_structs {
+            self.score_registration_structures();
         }
     }
 
@@ -1348,15 +1466,51 @@ impl ViewerApp {
     }
 }
 
-/// The analysis block: six degrees of freedom, displacements, Jacobian, and
-/// the displacement of each visible structure.
+/// The analysis block: the overlap that says whether the result is any
+/// good, six degrees of freedom, displacements, Jacobian, and the
+/// displacement (and, on request, the Dice) of each visible structure.
+///
+/// Returns whether the caller should score the structures, because the
+/// panel holds `self` immutably while this runs.
+#[must_use]
 fn analysis_rows(
     ui: &mut egui::Ui,
     res: &RegistrationResult,
     structures: Option<&crate::rtstruct::StructureSet>,
     transform: &Transform3,
-) {
+    struct_dice: Option<&[StructDice]>,
+) -> bool {
     let a = &res.analysis;
+    let mut score = false;
+
+    // The headline: how much of the two images actually covers the same
+    // anatomy now, against how much did before. Everything below explains
+    // this number.
+    if let Some(ov) = &a.overlap {
+        ui.label("Image overlap:");
+        ui.horizontal(|ui| {
+            ui.monospace(
+                egui::RichText::new(format!("Dice {:.3}", ov.after))
+                    .color(theme::dice_color(ui.visuals(), ov.after))
+                    .strong(),
+            );
+            let gain = ov.gain();
+            let arrow = if gain >= 0.0 { "▲" } else { "▼" };
+            ui.weak(format!("was {:.3}  {arrow} {:+.3}", ov.before, gain));
+        })
+        .response
+        .on_hover_text(format!(
+            "Dice of the tissue of the two images: every voxel above {:.0} HU \
+             counts as tissue, and the score is the overlap of the fixed \
+             image's tissue with the moving image's, before the transform and \
+             after it. {} probes.\n\nIt is an image score, not an anatomical \
+             one - it says the two datasets now cover the same space. For \
+             anatomy, score the structures below.",
+            ov.threshold, ov.samples
+        ));
+        ui.add_space(2.0);
+    }
+
     ui.label("Best-fitting rigid body:");
     ui.monospace(a.dof.line());
     if a.dof.residual_mm > 1e-6 {
@@ -1382,12 +1536,13 @@ fn analysis_rows(
         a.samples, a.step_mm
     ));
 
-    // Per-structure displacement: the number a physicist asks for next.
-    if let Some(ss) = structures {
-        egui::CollapsingHeader::new("Per structure")
-            .id_salt("reg_per_struct")
-            .default_open(false)
-            .show(ui, |ui| {
+    // Per-structure displacement and overlap: the numbers a physicist asks
+    // for next, because a good image score can still hide a mismatched organ.
+    egui::CollapsingHeader::new("Per structure")
+        .id_salt("reg_per_struct")
+        .default_open(false)
+        .show(ui, |ui| {
+            if let Some(ss) = structures {
                 let mut any = false;
                 for roi in &ss.rois {
                     let pts: Vec<Vec3> = roi
@@ -1420,6 +1575,65 @@ fn analysis_rows(
                 if !any {
                     ui.weak("No contoured structure on this dataset.");
                 }
-            });
-    }
+            }
+
+            // Structure Dice pairs each structure of the fixed dataset with
+            // the one of the same name on the moving dataset, carries the
+            // moving one through the transform, and scores the overlap. It
+            // costs a rasterization per structure, so it is asked for.
+            ui.separator();
+            match struct_dice {
+                None => {
+                    if tip_button(
+                        ui,
+                        "Score structures (Dice)",
+                        "Pair every structure of the fixed dataset with the one of \
+                         the same name on the moving dataset, warp the moving one \
+                         through this registration, and score the overlap",
+                    ) {
+                        score = true;
+                    }
+                }
+                Some([]) => {
+                    ui.weak(
+                        "No structure of the fixed dataset shares its name with one \
+                         on the moving dataset.",
+                    );
+                    if tip_button(ui, "Score again", "Rerun the pairing") {
+                        score = true;
+                    }
+                }
+                Some(rows) => {
+                    for d in rows {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(theme::rgb(d.color), "◼");
+                            ui.label(&d.name);
+                            ui.monospace(
+                                egui::RichText::new(format!("{:.3}", d.after))
+                                    .color(theme::dice_color(ui.visuals(), d.after)),
+                            );
+                            ui.weak(format!("was {:.3}", d.before));
+                        })
+                        .response
+                        .on_hover_text(format!(
+                            "Dice {:.3} after the registration, {:.3} before it \
+                             ({:+.3}).\nfixed {:.1} cm³, warped moving {:.1} cm³",
+                            d.after,
+                            d.before,
+                            d.after - d.before,
+                            d.fixed_cm3,
+                            d.moving_cm3
+                        ));
+                    }
+                    if tip_button(
+                        ui,
+                        "Score again",
+                        "Recompute after editing a structure or refining the fit",
+                    ) {
+                        score = true;
+                    }
+                }
+            }
+        });
+    score
 }

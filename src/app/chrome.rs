@@ -180,6 +180,15 @@ impl ViewerApp {
                         // there.
                         ui.weak("Sections of the right panel (F10):");
                         modules_changed |= ui
+                            .checkbox(&mut self.module_info, "Image information")
+                            .on_hover_text(
+                                "What the displayed series is: voxel spacing, slice \
+                                 thickness and the gap between slices, the number of \
+                                 slices, the frame of reference and the acquisition \
+                                 settings, with whatever wants a second look named.",
+                            )
+                            .changed();
+                        modules_changed |= ui
                             .checkbox(&mut self.module_registration, "Image registration")
                             .on_hover_text(
                                 "Align two datasets: direction, method, region, parameters, \

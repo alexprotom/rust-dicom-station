@@ -90,9 +90,19 @@ modality node so each series has one place.
    part in the run; the reference phase always does. ITVs land as a segmentation series `4D ITV - <group>`
    referencing the reference phase series (display that phase to see and
    edit them; they export like any segmentation - SEG or RTSTRUCT).
-6. **Registration QA** - per phase and model: the engine's metric line,
-   the 95th-percentile displacement, and the folding rate (fraction of
-   sampled points with a non-positive Jacobian).
+6. **Registration QA** - per phase and model: the Dice of the two images'
+   tissue after the registration against what it was before it, the
+   engine's metric line, the 95th-percentile displacement, and the folding
+   rate (fraction of sampled points with a non-positive Jacobian). The Dice
+   leads every row and is coloured by the usual bands (0.80 and above
+   green, 0.60 to 0.80 amber, below red), so a phase that did not land on
+   the reference is visible without reading the metric line. Where a phase
+   carries its own contour of a target, the propagated structure is also
+   scored against that contour and the score is listed under the phase
+   (`GTV vs contoured`): the honest measure of whether the model followed
+   the anatomy, not just the image. Both go into the CSV as
+   `registration_dice` rows and into the MCP report as `image_dice` and
+   `structure_dice`.
 
 *Keep per-phase segmentations* additionally stores every propagated mask
 as a segmentation series on its phase (`4D <phase> - <group>`).

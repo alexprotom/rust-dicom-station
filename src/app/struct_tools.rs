@@ -177,6 +177,9 @@ pub(super) struct StructTools {
     pub hand_carry: f64,
     /// What the axis hand holds: `0` / `1` an end, `2` the whole line.
     pub axis_grab: u8,
+    /// *Save last* / *Load last*: one axis kept in memory only, as patient
+    /// coordinates so it applies to any dataset.
+    pub last_axis: Option<[Vec3; 2]>,
     /// Every move since a structure's origin, per structure - what the
     /// Dose estimation's *Dynamic* log describes each row with.
     pub moves: Vec<MoveEvent>,
@@ -369,6 +372,7 @@ impl Default for StructTools {
             origin: None,
             hand_carry: 0.0,
             axis_grab: 2,
+            last_axis: None,
             moves: Vec::new(),
             move_seq: 0,
             new: NewRoi::default(),
@@ -402,6 +406,12 @@ enum Act {
     /// One step back (the contour undo), and back to where the moves began.
     Back,
     Reset,
+    /// The drawn axis to and from the user_axes folder, and the one kept
+    /// in memory.
+    AxisLoad,
+    AxisLoadLast,
+    AxisSave,
+    AxisSaveLast,
     Component(bool),
     ToCrosshair,
     DerivedUpdate,
@@ -427,6 +437,40 @@ fn act_row(ui: &mut egui::Ui, out: &mut Option<Act>, buttons: &[(&str, &str, boo
 }
 
 /// Whether the drawn axis belongs to `slot` and has a direction.
+/// The axis file: two points in patient millimetres, one per line, plus a
+/// comment header. Plain text, so it can be checked by eye.
+fn axis_file(pts: [Vec3; 2]) -> String {
+    format!(
+        "# Rust DICOM Station axis: two points, patient coordinates in mm (x y z)\n\
+         {:.4} {:.4} {:.4}\n{:.4} {:.4} {:.4}\n",
+        pts[0].x, pts[0].y, pts[0].z, pts[1].x, pts[1].y, pts[1].z
+    )
+}
+
+fn parse_axis_file(text: &str) -> Result<[Vec3; 2], String> {
+    let mut pts = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let v: Vec<f64> = line
+            .split(|c: char| c.is_whitespace() || c == ',' || c == ';')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.parse::<f64>().map_err(|_| format!("not a number: {s}")))
+            .collect::<Result<_, _>>()?;
+        if v.len() != 3 || v.iter().any(|x| !x.is_finite()) {
+            return Err(format!("a line must be three numbers: {line}"));
+        }
+        pts.push(Vec3::new(v[0], v[1], v[2]));
+    }
+    match pts.as_slice() {
+        [a, b] if (*a - *b).length() > 1e-6 => Ok([*a, *b]),
+        [_, _] => Err("the two points are the same".into()),
+        _ => Err(format!("expected two points, found {}", pts.len())),
+    }
+}
+
 fn ready_axis(t: &StructTools, slot: usize) -> bool {
     t.axis_draw
         && t.axis
@@ -1153,6 +1197,40 @@ impl ViewerApp {
                 );
             }
             ui.horizontal_wrapped(|ui| {
+                let ready = ready_axis(t, slot);
+                let have_last = t.last_axis.is_some();
+                act_row(
+                    ui,
+                    &mut act,
+                    &[
+                        (
+                            "Load",
+                            "Load an axis from the user_axes folder (patient millimetres)",
+                            t.axis_draw,
+                            Act::AxisLoad,
+                        ),
+                        (
+                            "Load last",
+                            "Put back the axis kept with Save last",
+                            t.axis_draw && have_last,
+                            Act::AxisLoadLast,
+                        ),
+                        (
+                            "Save",
+                            "Save the axis to the user_axes folder",
+                            ready,
+                            Act::AxisSave,
+                        ),
+                        (
+                            "Save last",
+                            "Keep the axis in memory until the program closes",
+                            ready,
+                            Act::AxisSaveLast,
+                        ),
+                    ],
+                );
+            });
+            ui.horizontal_wrapped(|ui| {
                 let has_origin = t
                     .origin
                     .as_ref()
@@ -1377,6 +1455,66 @@ impl ViewerApp {
         });
     }
 
+    /// The drawn axis of `slot` in patient millimetres.
+    fn axis_patient(&self, slot: usize) -> Option<[Vec3; 2]> {
+        let ax = self.tools.axis.filter(|a| a.slot == slot)?;
+        let vol = &self.slots[slot].study.as_ref()?.volume;
+        Some([
+            vol.voxel_to_patient(ax.a[0], ax.a[1], ax.a[2]),
+            vol.voxel_to_patient(ax.b[0], ax.b[1], ax.b[2]),
+        ])
+    }
+
+    /// Put an axis given in patient millimetres onto `slot`'s lattice.
+    fn set_axis_patient(&mut self, slot: usize, pts: [Vec3; 2]) {
+        let Some(vol) = self.slots[slot].study.as_ref().map(|s| &s.volume) else {
+            return;
+        };
+        self.tools.axis = Some(DrawnAxis {
+            slot,
+            a: vol.patient_to_voxel(pts[0]),
+            b: vol.patient_to_voxel(pts[1]),
+        });
+        self.tools.axis_draw = true;
+    }
+
+    fn save_axis_file(&mut self, slot: usize) {
+        let Some(pts) = self.axis_patient(slot) else {
+            return;
+        };
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Save the axis")
+            .set_directory(crate::settings::user_axes_dir())
+            .add_filter("Axis", &["axis"])
+            .set_file_name("axis.axis")
+            .save_file()
+        else {
+            return;
+        };
+        match std::fs::write(&path, axis_file(pts)) {
+            Ok(()) => self.notice = Some(format!("Axis saved to {}", path.display())),
+            Err(e) => self.error = Some(format!("Could not save the axis: {e}")),
+        }
+    }
+
+    fn load_axis_file(&mut self, slot: usize) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Load an axis")
+            .set_directory(crate::settings::user_axes_dir())
+            .add_filter("Axis", &["axis"])
+            .pick_file()
+        else {
+            return;
+        };
+        match std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|t| parse_axis_file(&t))
+        {
+            Ok(pts) => self.set_axis_patient(slot, pts),
+            Err(e) => self.error = Some(format!("Could not load the axis: {e}")),
+        }
+    }
+
     fn apply_contour_act(&mut self, slot: usize, act: Act) {
         let t = &self.tools;
         let (min_area, max_points, smooth, keep, shift, scale, rot) = (
@@ -1500,6 +1638,16 @@ impl ViewerApp {
                     self.log_move(slot, MoveKind::AxisRot(axis_deg.to_degrees()));
                     self.rigid_edit(slot, Rigid::rotation_about(d, a, axis_deg));
                 }
+            }
+            Act::AxisLoad => self.load_axis_file(slot),
+            Act::AxisLoadLast => {
+                if let Some(pts) = self.tools.last_axis {
+                    self.set_axis_patient(slot, pts);
+                }
+            }
+            Act::AxisSave => self.save_axis_file(slot),
+            Act::AxisSaveLast => {
+                self.tools.last_axis = self.axis_patient(slot);
             }
             Act::Back => {
                 self.undo_roi_edit(slot);
@@ -2007,6 +2155,18 @@ pub(super) fn mouse_hint(tool: SegTool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_axis_file_round_trips_and_refuses_nonsense() {
+        let pts = [Vec3::new(1.5, -2.25, 300.0), Vec3::new(-4.0, 8.0, 301.5)];
+        let back = parse_axis_file(&axis_file(pts)).unwrap();
+        assert!((back[0] - pts[0]).length() < 1e-3 && (back[1] - pts[1]).length() < 1e-3);
+        assert!(parse_axis_file("1 2 3, 4 5 6").is_err());
+        assert!(parse_axis_file("1 2 3\n1 2 3").is_err());
+        assert!(parse_axis_file("1 2\n3 4 5").is_err());
+        assert!(parse_axis_file("").is_err());
+        assert!(parse_axis_file("# only\n1 2 3\n4 5 nan").is_err());
+    }
 
     #[test]
     fn a_move_summary_adds_up_since_the_origin() {

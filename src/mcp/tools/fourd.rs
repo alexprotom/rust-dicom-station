@@ -582,6 +582,12 @@ pub fn report_json(r: &MotionReport) -> Value {
             "registration": q.metric_line,
             "folding_pct": round2(q.folding_pct),
             "displacement_p95_mm": round2(q.disp_p95_mm),
+            "image_dice": q.image_dice.map(|(after, _)| round3(after)),
+            "image_dice_before": q.image_dice.map(|(_, before)| round3(before)),
+            "structure_dice": q.struct_dice.iter().map(|(n, d)| json!({
+                "structure": clean_text(n),
+                "dice": round3(*d),
+            })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "itvs": r.itvs.iter().map(|i| json!({
             "target": clean_text(&i.target),

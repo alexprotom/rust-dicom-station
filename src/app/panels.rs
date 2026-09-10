@@ -138,7 +138,8 @@ impl ViewerApp {
     pub(super) fn modules_panel(&mut self, ui: &mut egui::Ui) {
         /// The id salt of every module header (its title unless it sets
         /// one) and the settings word for it.
-        const MODULE_HEADERS: [(&str, &str); 6] = [
+        const MODULE_HEADERS: [(&str, &str); 7] = [
+            ("Image information", "information"),
             ("Image registration", "registration"),
             ("Image simulation", "simulation"),
             ("Structure editor", "editor"),
@@ -188,6 +189,9 @@ impl ViewerApp {
                         st.set_open(self.modules_open.iter().any(|k| k == key));
                         st.store(ui.ctx());
                     }
+                }
+                if self.module_info {
+                    self.image_info_section(ui);
                 }
                 if self.module_registration {
                     self.registration_section(ui);

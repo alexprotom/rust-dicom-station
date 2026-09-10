@@ -42,9 +42,9 @@ rust-dicom-station
 │
 ├── Application (GUI, egui over wgpu)
 │   ├── Window chrome: menu bar, toolbar (W/L, presets, 3D, crosshair, reset, the draw row), status bar
-│   ├── Modules panel: the registration, simulation, Structure editor (insert,
-│   │   edit, combine), Structure auto tools (body contour and the three
-│   │   engines), propagation and Dose estimation sections
+│   ├── Modules panel: the Image information, registration, simulation, Structure
+│   │   editor (insert, edit, combine), Structure auto tools (body contour and the
+│   │   three engines), propagation and Dose estimation sections
 │   ├── Side panel: per dataset a DICOM tree - patient ▶ study ▶ modality ▶ series, with RT
 │   │   structures, segmentations, 4D groups, dose and plans inside their study -
 │   │   plus dose display, planar images, spatial registrations, records, warnings
@@ -290,6 +290,9 @@ src/
     transfer_win.rs   transfer by relationship
     dvh_win.rs        the DVH window: pickers, the plot, the metrics table,
                       constraints, export
+    img_info.rs       the Image information module: the geometry, sampling and
+                      acquisition of the displayed series (imginfo), what wants
+                      a second look, and what the two datasets disagree about
     dose_est.rs       the Dose estimation module: the dose metrics table of
                       the ticked structures against one dose (physical /
                       effective), recomputed whenever they change
@@ -303,6 +306,10 @@ src/
   dicomfile.rs      the one way a file is opened: the standard reader, plus
                     the encoding sniffer for data sets written with no file
                     meta group (no preamble, no DICM)                            DICOM
+  imginfo.rs        the geometry, sampling and acquisition of one series, read
+                    back out of its slice headers: spacing, thickness, gaps,
+                    uneven positions, tilt, frame of reference, kV / mAs / kernel,
+                    each row carrying the reason it wants attention              DICOM
   volume.rs         3D volume, patient-space geometry, slice extraction,
                     trilinear sampling, canonical [S, A, R] axes                 Core
   geometry.rs       minimal 3D vector math (Vec3, f64, patient mm)               Core

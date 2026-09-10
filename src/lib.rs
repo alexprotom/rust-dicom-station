@@ -21,6 +21,7 @@ pub mod generate;
 pub mod geometry;
 pub mod gfx;
 pub mod icon;
+pub mod imginfo;
 pub mod livewire;
 pub mod loader;
 pub mod medsam2;

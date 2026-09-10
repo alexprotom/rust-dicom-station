@@ -157,6 +157,11 @@ impl ViewerApp {
             mesh_gen: 0,
             roi_hashes: Vec::new(),
             rebuilding: None,
+            show_iso: false,
+            iso_meshes: None,
+            iso_job: None,
+            iso_built: 0,
+            iso_opacity: 0.35,
             show_list: false,
             roi_alpha: std::collections::HashMap::new(),
         });
@@ -344,6 +349,78 @@ impl ViewerApp {
                 }
             }
 
+            // Isodose surfaces: the active dose thresholded at every isodose
+            // line that is on, meshed like a segmentation; rebuilt when the
+            // dose, its reference or the lines change.
+            {
+                let mut err = None;
+                if let Some(m) = poll_job(&mut w.iso_job, ctx, "Isodose meshing", &mut err) {
+                    w.iso_meshes = Some(Arc::new(m));
+                }
+                self.error = self.error.take().or(err);
+                let dose = self.slots[w.slot]
+                    .study
+                    .as_ref()
+                    .and_then(|st| st.doses.get(self.slots[w.slot].active_dose));
+                let hash = match (w.show_iso, dose) {
+                    (true, Some(d)) => {
+                        let mut h = mix(0x1503_D0E5u64, self.slots[w.slot].active_dose as u64);
+                        for b in d.sop_instance_uid.bytes() {
+                            h = mix(h, b as u64);
+                        }
+                        h = mix(h, self.slots[w.slot].dose_reference.to_bits() as u64);
+                        for l in self.iso_levels.iter().filter(|l| l.on) {
+                            h = mix(h, l.pct.to_bits() as u64);
+                            let c = l.color;
+                            h = mix(h, (c.r() as u64) << 16 | (c.g() as u64) << 8 | c.b() as u64);
+                        }
+                        h
+                    }
+                    _ => 0,
+                };
+                if w.iso_job.is_none() && w.iso_built != hash {
+                    w.iso_built = hash;
+                    match (w.show_iso, dose) {
+                        (true, Some(d)) => {
+                            let dose = d.clone();
+                            let reference = self.slots[w.slot].dose_reference.max(1e-6);
+                            let levels: Vec<(usize, f32, [u8; 3])> = self
+                                .iso_levels
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, l)| l.on)
+                                .map(|(i, l)| (i, l.pct, [l.color.r(), l.color.g(), l.color.b()]))
+                                .collect();
+                            let progress = Arc::new(Progress::default());
+                            let (tx, rx) = mpsc::channel();
+                            std::thread::spawn(move || {
+                                let geom = dose.mesh_geom();
+                                let meshes: Vec<RoiMesh> = levels
+                                    .into_par_iter()
+                                    .filter_map(|(i, pct, color)| {
+                                        let (grid, gdims, lo, stride) =
+                                            dose.iso_mesh_grid(pct / 100.0 * reference)?;
+                                        mesh3d::mesh_from_mask(&grid, gdims, lo, stride, &geom).map(
+                                            |(verts, normals, tris)| RoiMesh {
+                                                roi_index: i,
+                                                color,
+                                                external: false,
+                                                verts,
+                                                normals,
+                                                tris,
+                                            },
+                                        )
+                                    })
+                                    .collect();
+                                let _ = tx.send(meshes);
+                            });
+                            w.iso_job = Some(Job { progress, rx });
+                        }
+                        _ => w.iso_meshes = None,
+                    }
+                }
+            }
+
             let visible: &[bool] = &self.slots[w.slot].roi_visible;
             let names: Vec<(String, [u8; 3])> = self.slots[w.slot]
                 .active_structures()
@@ -411,6 +488,29 @@ impl ViewerApp {
                         }
                         ui.weak("drag rotate · wheel zoom · middle-drag pan");
                     });
+                    if dose_here.is_some() {
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut w.show_dose, "Dose on the surface")
+                                .on_hover_text(
+                                    "Colour every surface by the dose that lands on it, \
+                                     on the same scale as the isodose lines. The \
+                                     structure's own colour comes back when this is off.",
+                                );
+                            ui.checkbox(&mut w.show_iso, "Isodose surfaces")
+                                .on_hover_text(
+                                    "The active dose as translucent shells at the isodose \
+                                     lines that are switched on in the Dose display, in their \
+                                     colours and relative to the same reference dose",
+                                );
+                            if w.show_iso {
+                                ui.add(
+                                    egui::Slider::new(&mut w.iso_opacity, 0.05..=1.0)
+                                        .text("shells"),
+                                );
+                                ui.add_visible(w.iso_job.is_some(), egui::Spinner::new());
+                            }
+                        });
+                    }
                     if registered {
                         ui.horizontal(|ui| {
                             ui.add_enabled(
@@ -436,14 +536,6 @@ impl ViewerApp {
                                 );
                             }
                         });
-                        if dose_here.is_some() {
-                            ui.checkbox(&mut w.show_dose, "Dose on the surface")
-                                .on_hover_text(
-                                    "Colour every surface by the dose that lands on it, \
-                                     on the same scale as the isodose lines. The \
-                                     structure's own colour comes back when this is off.",
-                                );
-                        }
                         if reg_here.is_some() {
                             ui.checkbox(&mut w.show_field, "Deformation field")
                                 .on_hover_text(
@@ -553,7 +645,10 @@ impl ViewerApp {
                     let n_seg = seg_meshes.as_ref().map(|m| m.len()).unwrap_or(0);
                     let other_meshes = w.other_meshes.clone();
                     let n_other = other_meshes.as_ref().map(|m| m.len()).unwrap_or(0);
-                    if meshes.is_empty() && n_seg == 0 && n_other == 0 {
+                    let iso_meshes = w.show_iso.then(|| w.iso_meshes.clone()).flatten();
+                    let n_iso = iso_meshes.as_ref().map(|m| m.len()).unwrap_or(0);
+                    let iso_alpha = (w.iso_opacity * 255.0) as u8;
+                    if meshes.is_empty() && n_seg == 0 && n_other == 0 && n_iso == 0 {
                         painter.text(
                             rect.center(),
                             Align2::CENTER_CENTER,
@@ -613,6 +708,11 @@ impl ViewerApp {
                     vertex_key = mix(vertex_key, cyc.to_bits() as u64);
                     vertex_key = mix(vertex_key, alpha as u64);
                     vertex_key = mix(vertex_key, other_alpha as u64);
+                    if let Some(im) = &iso_meshes {
+                        order_key = mix(order_key, Arc::as_ptr(im) as u64);
+                        order_key = mix(order_key, w.iso_built);
+                        vertex_key = mix(vertex_key, iso_alpha as u64);
+                    }
                     for (i, a) in &w.roi_alpha {
                         vertex_key = mix(vertex_key, (*i as u64) << 32 | a.to_bits() as u64);
                     }
@@ -680,7 +780,13 @@ impl ViewerApp {
                             .chain(other_meshes.iter().flat_map(|a| a.iter()).map(|m| {
                                 let on = other_visible.get(m.roi_index).copied().unwrap_or(true);
                                 (m, on, m.color, m.external, other_alpha)
-                            }));
+                            }))
+                            .chain(
+                                iso_meshes
+                                    .iter()
+                                    .flat_map(|a| a.iter())
+                                    .map(|m| (m, true, m.color, false, iso_alpha)),
+                            );
                         for (m, on, color, external, entry_alpha) in entries {
                             if !on {
                                 continue;

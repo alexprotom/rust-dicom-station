@@ -193,6 +193,16 @@ deformation model. The **Analysis** section is measured on the transform
 itself, on a lattice over the fixed image (or the region), so it means the
 same for every method:
 
+* **Image overlap** - the Dice coefficient of the two images' tissue, after
+  the registration and before it. Every voxel at or above a tissue threshold
+  (-300 HU for CT, a quarter of the way up its own value range for anything
+  that carries no air) counts as tissue, and the score is the overlap of the
+  fixed image's tissue with the moving image's, sampled on the same lattice
+  as the rest of the analysis. It is the headline number because it is the
+  one that says whether the result is usable at all: 0.80 and above reads as
+  a good match (green), 0.60 to 0.80 wants a look (amber), below 0.60 is a
+  failure to explain (red). It is an *image* score - it says the two
+  datasets now cover the same space, not that any one organ lines up.
 * **Best-fitting rigid body** - the orthogonal Procrustes fit: translation,
   three Euler angles in the same `Rz Ry Rx` convention as the rigid
   transform, and the RMS residual those six numbers do *not* explain.
@@ -204,7 +214,14 @@ same for every method:
   The folded fraction is reported; a regularized B-spline should show none.
 * **Per structure** - mean and maximum displacement over each contoured
   structure's own points: "the tumour moved 9 mm and the cord 0.4 mm"
-  rather than "4 mm on average".
+  rather than "4 mm on average". *Score structures (Dice)* adds the
+  anatomical half of the question: every structure of the fixed dataset is
+  paired with the structure of the same name on the moving dataset (a
+  contour or a segmentation, matched case-insensitively), the moving one is
+  carried through this registration, and the overlap is scored against the
+  fixed one - after the registration and before it, coloured by the same
+  three bands. A good image score with a poor structure score is the case
+  worth catching: the patient lines up, the organ does not.
 
 ## The fusion overlay and the vector field
 

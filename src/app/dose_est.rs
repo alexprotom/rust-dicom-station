@@ -69,6 +69,9 @@ pub(super) struct DoseEst {
     /// logged - one entry per finished move, none for a drag in progress.
     pub run_seq: u64,
     pub logged_seq: Option<u64>,
+    /// Structures left out of the table by name (the ✖ on a row), for the
+    /// case where a ticked structure is wanted in the views but not here.
+    pub excluded: Vec<String>,
 }
 
 /// One state of the table in the dynamic log.
@@ -98,6 +101,7 @@ impl Default for DoseEst {
             log: Vec::new(),
             run_seq: 0,
             logged_seq: None,
+            excluded: Vec::new(),
         }
     }
 }
@@ -340,7 +344,9 @@ impl ViewerApp {
             study.volume.dims.hash(&mut h);
             if let Some(ss) = study.structure_sets.get(s.active_structs) {
                 for (i, roi) in ss.rois.iter().enumerate() {
-                    if !s.roi_visible.get(i).copied().unwrap_or(true) {
+                    if !s.roi_visible.get(i).copied().unwrap_or(true)
+                        || self.dose_est.excluded.contains(&roi.name)
+                    {
                         continue;
                     }
                     roi.name.hash(&mut h);
@@ -371,7 +377,11 @@ impl ViewerApp {
                 ss.rois
                     .iter()
                     .enumerate()
-                    .filter(|(i, r)| s.roi_visible.get(*i).copied().unwrap_or(true) && !r.is_poi())
+                    .filter(|(i, r)| {
+                        s.roi_visible.get(*i).copied().unwrap_or(true)
+                            && !r.is_poi()
+                            && !self.dose_est.excluded.contains(&r.name)
+                    })
                     .map(|(_, r)| r.clone())
                     .collect()
             })
@@ -602,6 +612,7 @@ impl ViewerApp {
             return;
         }
         let dynamic = d.dynamic;
+        let mut exclude: Option<String> = None;
         egui::ScrollArea::horizontal()
             .id_salt("dose_est_scroll")
             .show(ui, |ui| {
@@ -652,6 +663,18 @@ impl ViewerApp {
                                             row.outside * 100.0
                                         ));
                                     }
+                                    if entry.is_none()
+                                        && ui
+                                            .small_button("✖")
+                                            .on_hover_text(
+                                                "Leave this structure out of the table (it \
+                                                 stays ticked in the views); the Excluded \
+                                                 line below brings it back",
+                                            )
+                                            .clicked()
+                                    {
+                                        exclude = Some(row.name.clone());
+                                    }
                                 });
                                 for (m, v) in metrics.iter().zip(&row.values) {
                                     match v {
@@ -690,11 +713,35 @@ impl ViewerApp {
         if dynamic && d.log.is_empty() {
             ui.weak("Move a structure to add the first entry");
         }
+        if let Some(name) = exclude {
+            if !self.dose_est.excluded.contains(&name) {
+                self.dose_est.excluded.push(name);
+            }
+        }
+        if !self.dose_est.excluded.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Excluded:");
+                let mut back = None;
+                for (i, name) in self.dose_est.excluded.iter().enumerate() {
+                    if ui
+                        .small_button(format!("{name} ✚"))
+                        .on_hover_text("Back into the table")
+                        .clicked()
+                    {
+                        back = Some(i);
+                    }
+                }
+                if let Some(i) = back {
+                    self.dose_est.excluded.remove(i);
+                }
+            });
+        }
         if small_tip_button(
             ui,
             "💾 Export CSV",
             "Save the table as it stands, one line per structure",
         ) {
+            let d = &self.dose_est;
             let text = if d.dynamic {
                 log_csv(&metrics, &d.units, &d.log)
             } else {
