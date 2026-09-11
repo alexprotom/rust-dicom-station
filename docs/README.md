@@ -25,5 +25,5 @@ Each page here covers one area.
 | [pacs.md](pacs.md) | The local patient archive: the window, the on-disk layout, filing, loading, sending changes back |
 | [mcp.md](mcp.md) | The MCP server `rds-mcp`: driving the station's tools from an AI assistant, the heart target propagation prompt, the PHI gate and redactor, the configuration file |
 | [export-and-tools.md](export-and-tools.md) | DICOM export, the model manager, the anonymizer, the test-data generator |
-| [release-versioning.md](release-versioning.md) | Versioning, the branch workflow, how CI produces a release |
+| [release-versioning.md](release-versioning.md) | Versioning, the branch workflow, how CI produces a release, publishing to winget |
 | [example-data.md](example-data.md) | The bundled example patient: contents, source, citations, license |

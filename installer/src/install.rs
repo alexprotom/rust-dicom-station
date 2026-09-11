@@ -28,7 +28,9 @@ pub enum Event {
 pub type Sink<'a> = &'a (dyn Fn(Event) + Sync);
 
 /// What the uninstaller needs to know, in the same order it should undo it.
-#[derive(Default)]
+/// An update reads the previous one to find what the new version no longer
+/// ships and which choices were made last time.
+#[derive(Clone, Debug, Default)]
 pub struct Manifest {
     pub version: String,
     pub install_dir: PathBuf,
@@ -45,7 +47,7 @@ pub struct Manifest {
 impl Manifest {
     pub fn render(&self) -> String {
         let mut out = String::from(
-            "# rust-dicom-station install manifest - used by uninstall.exe.\n\
+            "# rust-dicom-station install manifest - used by rds-setup.exe to update and uninstall.\n\
              # Editing this file changes what the uninstaller removes.\n",
         );
         out.push_str(&format!("version = {}\n", self.version));
@@ -101,21 +103,66 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
         .with_context(|| format!("create install directory {}", opts.dir.display()))?;
     check_writable(&opts.dir)?;
     if is_running(&opts.exe_path()) {
-        bail!(
-            "{} is currently running from {} - close it and start the installer again",
-            APP_NAME,
-            opts.dir.display()
-        );
+        return Err(failure(
+            EXIT_IN_USE,
+            format!(
+                "{APP_NAME} is currently running from {} - close it and start the installer again",
+                opts.dir.display()
+            ),
+        ));
     }
-    log(format!("Installing into {}", opts.dir.display()));
+    // A setup program an earlier update had to move aside while it ran.
+    let _ = std::fs::remove_file(opts.dir.join(SETUP_EXE_OLD));
+
+    let version = payload_version(payload);
+    let installed = crate::existing::find_all();
+    let (same, others) = crate::existing::split(&installed, &opts.dir);
+    match &same {
+        Some(prev) => log(format!("Updating {} to {version}", prev.describe())),
+        None => log(format!("Installing {version} into {}", opts.dir.display())),
+    }
 
     let mut manifest = Manifest {
-        version: payload_version(payload),
+        version,
         install_dir: opts.dir.clone(),
         models_dir: opts.models_dir.clone(),
         machine_wide: opts.scope == Scope::AllUsers,
         ..Default::default()
     };
+
+    // ---- other installations ----------------------------------------------
+    // One copy per machine: a previous installation in another folder, or in
+    // the other scope, goes before this one is written - including its
+    // Apps & features entry, which may be the very key this one is about to
+    // create. Its model folder is kept; it is usually the same one.
+    if opts.remove_others {
+        for other in &others {
+            if other.machine_wide() && !crate::win::is_elevated() {
+                log(format!(
+                    "Kept {}: removing an installation for all users needs administrator rights",
+                    other.describe()
+                ));
+                continue;
+            }
+            step(0.02, "Removing the other installation");
+            log(format!("Removing {}", other.describe()));
+            let target = crate::uninstall::Target {
+                dir: other.dir.clone(),
+                manifest: other.manifest.clone(),
+            };
+            let nested = |ev: Event| {
+                if let Event::Log(line) = ev {
+                    sink(Event::Log(format!("  {line}")));
+                }
+            };
+            crate::uninstall::run(&target, false, &nested)
+                .with_context(|| format!("remove {}", other.describe()))?;
+        }
+    } else {
+        for other in &others {
+            log(format!("Leaving {} in place", other.describe()));
+        }
+    }
 
     // ---- files -----------------------------------------------------------
     let skip = opts.skipped_files();
@@ -138,7 +185,7 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
         }
     })?;
     if cancel.load(Ordering::Relaxed) {
-        bail!("cancelled");
+        return Err(failure(EXIT_CANCELLED, "cancelled"));
     }
 
     // The manifest is saved after every step that creates something, so an
@@ -147,15 +194,36 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
         std::fs::write(opts.manifest_path(), m.render())
             .with_context(|| format!("write {}", opts.manifest_path().display()))
     };
-    save_manifest(&manifest)?;
+    // On an update, the files the new version no longer ships stay listed
+    // until they are gone, so an update interrupted right here still leaves
+    // an uninstaller that knows about them.
+    let obsolete = same
+        .as_ref()
+        .map(|prev| obsolete_files(&prev.manifest.files, &manifest.files))
+        .unwrap_or_default();
+    let mut interim = manifest.clone();
+    interim.files.extend(obsolete.iter().cloned());
+    save_manifest(&interim)?;
 
-    // ---- uninstaller ------------------------------------------------------
-    step(0.57, "Writing the uninstaller");
-    write_uninstaller(payload, &opts.uninstaller_path())?;
-    manifest.files.push(UNINSTALLER_EXE.to_string());
+    // ---- files the new version no longer ships ----------------------------
+    // Extracting over the old files replaced everything the new version
+    // carries; what it does not carry any more would otherwise stay behind
+    // for good, since the new manifest no longer lists it.
+    if !obsolete.is_empty() {
+        step(0.56, "Removing files of the previous version");
+        let removed = remove_relative(&opts.dir, &obsolete, &log);
+        log(format!(
+            "Removed {removed} file(s) the new version no longer ships"
+        ));
+    }
+
+    // ---- the setup program ------------------------------------------------
+    step(0.57, "Writing the setup program");
+    write_setup_exe(payload, &opts.setup_path())?;
+    manifest.files.push(SETUP_EXE.to_string());
     log(format!(
-        "Uninstaller: {}",
-        opts.uninstaller_path().display()
+        "Setup program (uninstall, update): {}",
+        opts.setup_path().display()
     ));
 
     // ---- settings seed ----------------------------------------------------
@@ -231,6 +299,16 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
         })?;
         log(format!("Start menu: {}", link.display()));
         manifest.shortcuts.push(link);
+        let link = crate::win::start_menu_programs()?.join(format!("Update {APP_NAME}.lnk"));
+        shortcut::create(&Shortcut {
+            link: &link,
+            target: &opts.setup_path(),
+            args: "--update",
+            working_dir: &opts.dir,
+            description: "Download and install the newest release",
+        })?;
+        log(format!("Start menu: {}", link.display()));
+        manifest.shortcuts.push(link);
     }
     if opts.desktop_shortcut {
         let link = crate::win::desktop_dir()?.join(format!("{APP_NAME}.lnk"));
@@ -244,26 +322,70 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
         log(format!("Desktop: {}", link.display()));
         manifest.shortcuts.push(link);
     }
+    // Shortcuts the previous installation had and this one does not want.
+    if let Some(prev) = &same {
+        for link in &prev.manifest.shortcuts {
+            let kept = manifest
+                .shortcuts
+                .iter()
+                .any(|l| crate::existing::paths_equal(l, link));
+            if !kept && link.exists() {
+                match std::fs::remove_file(link) {
+                    Ok(()) => log(format!("Removed {}", link.display())),
+                    Err(e) => log(format!("Could not remove {}: {e}", link.display())),
+                }
+            }
+        }
+    }
 
     save_manifest(&manifest)?;
 
     // ---- registry ---------------------------------------------------------
     step(0.65, "Registering the application");
     let hive = opts.scope.hive();
+    // The same folder, but switched to the other scope: the old scope's
+    // entries would otherwise list a second installation.
+    let same_hive_prev = match &same {
+        Some(prev) if prev.scope != opts.scope => {
+            let prev_hive = prev.scope.hive();
+            match crate::uninstall::remove_registration(&prev.manifest, prev_hive, &log) {
+                Ok(()) => log(format!("Removed the entries in {}", prev_hive.label())),
+                Err(e) => log(format!(
+                    "Could not remove the entries in {}: {e:#}",
+                    prev_hive.label()
+                )),
+            }
+            None
+        }
+        other => other.as_ref().map(|p| &p.manifest),
+    };
     write_uninstall_entry(opts, hive, total_bytes, &manifest.version)?;
     log(format!("Listed in Apps & features ({})", hive.label()));
     if opts.file_association {
         write_file_association(opts, hive)?;
         manifest.file_association = true;
         log("Registered .dcm files and the folder context-menu entry".into());
+    } else if same_hive_prev.is_some_and(|m| m.file_association) {
+        crate::uninstall::remove_file_association(hive)?;
+        log("Removed the file association".into());
     }
+    // `path_add` reports whether it changed anything, and on an update the
+    // folder is usually on PATH already - put there by the previous
+    // installation, which the manifest has to go on remembering or the
+    // uninstaller would leave the entry behind.
+    let path_was_ours = same_hive_prev.is_some_and(|m| m.path_added);
+    let dir = opts.dir.to_string_lossy().to_string();
     if opts.add_to_path {
-        let dir = opts.dir.to_string_lossy().to_string();
         if registry::path_add(hive, &dir)? {
             crate::win::broadcast_environment_change();
-            manifest.path_added = true;
             log("Added the program folder to PATH".into());
+            manifest.path_added = true;
+        } else {
+            manifest.path_added = path_was_ours;
         }
+    } else if path_was_ours && registry::path_remove(hive, &dir)? {
+        crate::win::broadcast_environment_change();
+        log("Removed the program folder from PATH".into());
     }
 
     save_manifest(&manifest)?;
@@ -284,7 +406,7 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
         }
     }
     if cancel.load(Ordering::Relaxed) {
-        bail!("cancelled");
+        return Err(failure(EXIT_CANCELLED, "cancelled"));
     }
 
     // ---- optional model weights ------------------------------------------
@@ -303,10 +425,30 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
     Ok(())
 }
 
-/// The uninstaller is this very binary with the appended payload cut off, so
-/// it stays a few megabytes instead of carrying a copy of the program.
-fn write_uninstaller(payload: &Payload, dest: &Path) -> Result<()> {
+/// The setup program kept in the folder is this very binary with the
+/// appended payload cut off, so it stays a few megabytes instead of carrying
+/// a copy of the program.
+fn write_setup_exe(payload: &Payload, dest: &Path) -> Result<()> {
     use std::io::{Read, Write};
+    // The copy being replaced may still be running: the Update shortcut
+    // starts it, and it hands over to the setup it downloaded. Windows will
+    // not overwrite a running program but will rename one, so wait a moment
+    // for it to exit and otherwise move it aside; the next run deletes it.
+    if dest.exists() {
+        let mut freed = false;
+        for _ in 0..20 {
+            if std::fs::remove_file(dest).is_ok() {
+                freed = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        if !freed {
+            let aside = dest.with_file_name(SETUP_EXE_OLD);
+            let _ = std::fs::remove_file(&aside);
+            std::fs::rename(dest, &aside).with_context(|| format!("replace {}", dest.display()))?;
+        }
+    }
     let exe = std::env::current_exe()?;
     let base_len = payload.base_exe_len()?;
     let mut src = std::fs::File::open(&exe)?;
@@ -335,7 +477,7 @@ fn write_uninstall_entry(
     version: &str,
 ) -> Result<()> {
     let key = Key::create(hive.hkey(), &uninstall_key_path())?;
-    let uninst = opts.uninstaller_path();
+    let uninst = opts.setup_path();
     key.set_str("DisplayName", APP_NAME)?;
     key.set_str("DisplayVersion", version)?;
     key.set_str("Publisher", PUBLISHER)?;
@@ -397,7 +539,7 @@ fn write_file_association(opts: &Options, hive: registry::Hive) -> Result<()> {
 }
 
 /// Product version: from the payload if `rds-pack` recorded one, else ours.
-fn payload_version(payload: &Payload) -> String {
+pub fn payload_version(payload: &Payload) -> String {
     payload
         .read_text("payload-info.txt")
         .and_then(|t| {
@@ -407,6 +549,71 @@ fn payload_version(payload: &Payload) -> String {
                 .map(|(_, v)| v.trim().to_string())
         })
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+}
+
+/// Files the previous installation listed that the new one does not, less
+/// the few this installation writes itself after the copy.
+fn obsolete_files(old: &[String], new: &[String]) -> Vec<String> {
+    let norm = |f: &str| f.replace('\\', "/").to_ascii_lowercase();
+    let keep: std::collections::HashSet<String> = new
+        .iter()
+        .map(|f| norm(f))
+        .chain([MANIFEST_FILE, DEFAULTS_FILE, SETUP_EXE].map(norm))
+        .collect();
+    old.iter()
+        .filter(|f| !keep.contains(&norm(f)))
+        .cloned()
+        .collect()
+}
+
+/// Delete `rels` (relative to `dir`, `/`-separated) and then the folders they
+/// leave empty, never `dir` itself or anything outside it. Returns how many
+/// files went.
+fn remove_relative(dir: &Path, rels: &[String], log: &dyn Fn(String)) -> usize {
+    let mut removed = 0;
+    let mut parents: Vec<PathBuf> = Vec::new();
+    for rel in rels {
+        let Some(path) = safe_relative(dir, rel) else {
+            continue;
+        };
+        if path.is_file() {
+            match std::fs::remove_file(&path) {
+                Ok(()) => removed += 1,
+                Err(e) => log(format!("Could not remove {}: {e}", path.display())),
+            }
+        }
+        let mut p = path.parent().map(Path::to_path_buf);
+        while let Some(d) = p {
+            if d == dir || !d.starts_with(dir) {
+                break;
+            }
+            if !parents.contains(&d) {
+                parents.push(d.clone());
+            }
+            p = d.parent().map(Path::to_path_buf);
+        }
+    }
+    parents.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+    for d in parents {
+        let _ = std::fs::remove_dir(&d);
+    }
+    removed
+}
+
+/// `dir` joined with a manifest entry, refusing anything that would climb
+/// out of it - the manifest is a text file anyone can edit.
+fn safe_relative(dir: &Path, rel: &str) -> Option<PathBuf> {
+    let mut out = dir.to_path_buf();
+    for part in rel.split(['/', '\\']) {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." || part.contains(':') {
+            return None;
+        }
+        out.push(part);
+    }
+    (out != dir).then_some(out)
 }
 
 /// Writability probe - cheaper and more honest than inspecting ACLs.
@@ -466,6 +673,63 @@ fn merge_setting(text: &str, key: &str, value: &str) -> String {
         out.push_str(&format!("{key} = {value}\n"));
     }
     out
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+
+    fn strings(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn an_update_removes_what_the_new_version_no_longer_ships() {
+        let old = strings(&[
+            "rust-dicom-station.exe",
+            "docs/old-page.md",
+            "docs/viewer.md",
+            "uninstall.exe",
+            "viewer-defaults.txt",
+        ]);
+        let new = strings(&[
+            "rust-dicom-station.exe",
+            "DOCS/viewer.md",
+            "docs/new-page.md",
+        ]);
+        assert_eq!(
+            obsolete_files(&old, &new),
+            strings(&["docs/old-page.md", "uninstall.exe"]),
+            "the old uninstaller goes, the defaults file is rewritten, not removed"
+        );
+    }
+
+    #[test]
+    fn nothing_is_obsolete_when_the_file_list_is_unchanged() {
+        let files = strings(&[
+            "a.exe",
+            "docs/b.md",
+            "rds-setup.exe",
+            "install-manifest.txt",
+        ]);
+        assert!(obsolete_files(&files, &files).is_empty());
+    }
+
+    #[test]
+    fn a_manifest_entry_cannot_reach_outside_the_folder() {
+        let dir = Path::new("/inst");
+        assert_eq!(
+            safe_relative(dir, "docs/a.md"),
+            Some(PathBuf::from("/inst/docs/a.md"))
+        );
+        assert_eq!(safe_relative(dir, "../other/file"), None);
+        assert_eq!(safe_relative(dir, "C:/Windows/x.dll"), None);
+        assert_eq!(
+            safe_relative(dir, "./"),
+            None,
+            "and never names the folder itself"
+        );
+    }
 }
 
 #[cfg(test)]

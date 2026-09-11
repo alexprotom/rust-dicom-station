@@ -169,6 +169,12 @@ jobs:
 
       # rds-pack combines rds-setup.exe with the viewer and the payload. It
       # needs no toolchain: it is one of the executables just downloaded.
+      #
+      # `--winget` also writes the three winget manifests for exactly this
+      # file (its SHA-256, the URL it will have on the release). They are
+      # attached to the release as a zip: the first submission to
+      # microsoft/winget-pkgs is made from them by hand, every later one by
+      # the `winget` job below.
       - name: Package Windows installer
         shell: pwsh
         run: |
@@ -179,7 +185,9 @@ jobs:
             --app built/viewer/rust-dicom-station.exe `
             --mcp built/viewer/rds-mcp.exe `
             --setup built/setup/rds-setup.exe `
-            --out $out
+            --out $out `
+            --winget winget-manifests `
+            --release-date (Get-Date -AsUTC -Format yyyy-MM-dd)
 
           if (!(Test-Path $out)) {
             Write-Error "Expected installer not found: $out"
@@ -193,6 +201,13 @@ jobs:
         with:
           name: windows-release
           path: rust-dicom-station-${{ needs.version.outputs.version }}-windows-x86_64.exe
+          if-no-files-found: error
+
+      - name: Upload winget manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-winget
+          path: winget-manifests/*.yaml
           if-no-files-found: error
 
   # ==========================================================================
@@ -415,6 +430,20 @@ jobs:
           name: linux-release
           path: release
 
+      - name: Download winget manifests
+        uses: actions/download-artifact@v5
+        with:
+          name: windows-winget
+          path: winget-manifests
+
+      # Kept out of SHA256SUMS on purpose: the manifests themselves carry the
+      # installer's hash, and nothing downloads them automatically.
+      - name: Zip winget manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd winget-manifests && zip -q "../release/rust-dicom-station-${{ needs.version.outputs.version }}-winget-manifests.zip" *.yaml)
+
       - name: List release files
         shell: bash
         run: |
@@ -447,3 +476,40 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "Rust DICOM Station ${{ needs.version.outputs.version }}" \
             --generate-notes
+
+  # ==========================================================================
+  # winget
+  # ==========================================================================
+  # Opens the pull request that adds this version to microsoft/winget-pkgs,
+  # so `winget upgrade` offers it. Needs a classic personal access token with
+  # the `public_repo` scope, saved as the repository secret WINGET_TOKEN, and
+  # a fork of microsoft/winget-pkgs under the same account.
+  #
+  # Without the secret the job only says so and succeeds, so a release is
+  # never held up by it. The action updates a package that already exists:
+  # the very first version is submitted by hand from the manifests zip
+  # attached to the release, and the secret is added once winget-pkgs has
+  # accepted it (docs/release-versioning.md).
+  winget:
+    name: Submit to winget
+    needs:
+      - version
+      - release
+    runs-on: ubuntu-latest
+    env:
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+
+    steps:
+      - name: No token, no submission
+        if: env.WINGET_TOKEN == ''
+        run: echo "WINGET_TOKEN is not set - skipping the winget submission."
+
+      - name: Submit the new version to winget-pkgs
+        if: env.WINGET_TOKEN != ''
+        uses: vedantmgoyal9/winget-releaser@main
+        with:
+          identifier: RDS.RustDICOMStation
+          version: ${{ needs.version.outputs.version }}
+          release-tag: ${{ needs.version.outputs.tag }}
+          installers-regex: '-windows-x86_64\.exe$'
+          token: ${{ secrets.WINGET_TOKEN }}

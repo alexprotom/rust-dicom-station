@@ -76,7 +76,11 @@ pub fn is_elevated() -> bool {
 /// Re-launch ourselves elevated with `args`, returning `Ok(())` once the UAC
 /// prompt has been accepted and the new process started.
 pub fn relaunch_elevated(args: &str) -> Result<()> {
-    let exe = std::env::current_exe()?;
+    run_elevated(&std::env::current_exe()?, args)
+}
+
+/// Start `exe` elevated with `args` (the UAC prompt), without waiting for it.
+pub fn run_elevated(exe: &Path, args: &str) -> Result<()> {
     let exe = HSTRING::from(exe.as_os_str());
     let args = HSTRING::from(args);
     let verb = HSTRING::from("runas");
