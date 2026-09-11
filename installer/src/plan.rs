@@ -1,24 +1,28 @@
-//! Product constants, install options and the defaults the UI starts from.
+//! Product constants, install options, exit codes and the defaults the UI
+//! starts from.
 
 use std::path::{Path, PathBuf};
 
 use crate::win::registry::Hive;
 
-pub const APP_NAME: &str = "Rust DICOM Station";
-pub const APP_EXE: &str = "rust-dicom-station.exe";
-/// The MCP server, shipped beside the viewer by `rds-pack` when it was built.
-/// Optional at install time: it is only of use to somebody who drives the
-/// station from an MCP client, and it is a second executable to trust and to
-/// keep up to date for everybody else.
-pub const MCP_EXE: &str = "rds-mcp.exe";
-pub const PUBLISHER: &str = "Rust DICOM Station contributors";
+pub use crate::product::*;
+
 /// Shown in Apps & features. Empty means "do not write the value".
 pub const HOMEPAGE: &str = "";
-/// Registry-safe product id, used for the Add/Remove Programs key.
-pub const PRODUCT_ID: &str = "RustDicomStation";
 /// ProgID for the optional `.dcm` file association.
 pub const PROGID: &str = "RustDicomStation.DicomFile";
-pub const UNINSTALLER_EXE: &str = "uninstall.exe";
+/// The setup program itself, left in the program folder without its
+/// payload: Apps & features runs it to uninstall (`--uninstall`) and the
+/// *Update* shortcut runs it to fetch the newest release (`--update`).
+pub const SETUP_EXE: &str = "rds-setup.exe";
+/// What [`SETUP_EXE`] was called before the setup could update. An older
+/// installation lists it in its manifest, so updating one removes it like
+/// any other file the new version no longer ships.
+pub const LEGACY_UNINSTALLER_EXE: &str = "uninstall.exe";
+/// Where a [`SETUP_EXE`] that was still running when an update replaced it
+/// is moved aside (Windows lets a running program be renamed, not
+/// overwritten). Deleted by the next installation, update or uninstall.
+pub const SETUP_EXE_OLD: &str = "rds-setup.exe.old";
 pub const MANIFEST_FILE: &str = "install-manifest.txt";
 /// The viewer's settings file, kept in the data folder of whoever runs the
 /// installer. It wins over [`DEFAULTS_FILE`], so the installer updates it
@@ -46,6 +50,54 @@ pub const SETTINGS_GRAPHICS_KEY: &str = "graphics_backend";
 pub const MODELS_DIR_NAME: &str = "models";
 /// Official Microsoft download for the x64 Visual C++ 2015-2022 runtime.
 pub const VCREDIST_URL: &str = "https://aka.ms/vs/17/release/vc_redist.x64.exe";
+
+/// Exit codes. Anything but 0 is a failure; the specific ones are listed in
+/// the winget manifest (`ExpectedReturnCodes`), so winget can tell the user
+/// what happened instead of printing a number.
+pub const EXIT_OK: u8 = 0;
+/// Any failure without a more specific code.
+pub const EXIT_FAILED: u8 = 1;
+/// The viewer is running from the folder being installed into or removed.
+pub const EXIT_IN_USE: u8 = 2;
+/// The user cancelled.
+pub const EXIT_CANCELLED: u8 = 3;
+/// `--silent` would replace a newer installed version (see
+/// `--allow-downgrade`).
+pub const EXIT_DOWNGRADE: u8 = 4;
+/// The newest release could not be looked up or downloaded.
+pub const EXIT_NO_NETWORK: u8 = 5;
+
+/// An error that carries its own exit code.
+#[derive(Debug)]
+pub struct Failure {
+    pub code: u8,
+    pub message: String,
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for Failure {}
+
+/// An `anyhow` error that `main` turns into exit code `code`.
+pub fn failure(code: u8, message: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(Failure {
+        code,
+        message: message.into(),
+    })
+}
+
+/// The exit code an error stands for: the first [`Failure`] in its chain,
+/// else [`EXIT_FAILED`].
+pub fn exit_code_of(e: &anyhow::Error) -> u8 {
+    e.chain()
+        .find_map(|c| c.downcast_ref::<Failure>())
+        .map(|f| f.code)
+        .unwrap_or(EXIT_FAILED)
+}
 
 /// Who the installation is for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -200,6 +252,12 @@ pub struct Options {
     pub launch_after: bool,
     /// Which graphics API the viewer should start on.
     pub graphics: Graphics,
+    /// Remove every other registered installation - another folder, or the
+    /// other scope - so that one copy remains. The installation in [`dir`]
+    /// itself is always updated in place.
+    ///
+    /// [`dir`]: Options::dir
+    pub remove_others: bool,
 }
 
 impl Default for Options {
@@ -225,6 +283,9 @@ impl Default for Options {
             // works on the overwhelming majority of machines. The page
             // exists for the ones where it does not.
             graphics: Graphics::Vulkan,
+            // On: a second copy is almost always a leftover, and one copy
+            // per machine is what the Update shortcut and winget assume.
+            remove_others: true,
         }
     }
 }
@@ -234,8 +295,9 @@ impl Options {
         self.dir.join(APP_EXE)
     }
 
-    pub fn uninstaller_path(&self) -> PathBuf {
-        self.dir.join(UNINSTALLER_EXE)
+    /// The setup program kept in the program folder, see [`SETUP_EXE`].
+    pub fn setup_path(&self) -> PathBuf {
+        self.dir.join(SETUP_EXE)
     }
 
     pub fn mcp_path(&self) -> PathBuf {

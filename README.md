@@ -127,7 +127,11 @@ CPU-only viewer without the GPU inference backend. Every push to `main`
 publishes a release: a Windows installer
 (`rust-dicom-station-<version>-windows-x86_64.exe` - shortcuts, "Open with"
 on folders, the VC++ runtime check, optional weight prefetch, uninstaller)
-and a Linux AppImage. The installer is its own crate in
+and a Linux AppImage. A newer installer updates an existing installation in
+place (no second copy, nothing to uninstall first), *Start ▸ Update Rust
+DICOM Station* fetches the newest release, and the package is published to
+winget as `RDS.RustDICOMStation` (`winget install` / `winget
+upgrade`). The installer is its own crate in
 [installer/](installer/README.md). No data at hand? *File ▶ 📐 Generate test
 data…* writes a complete synthetic RT study, and `example_data/` ships a real
 two-phase 4DCT ([docs/example-data.md](docs/example-data.md)).
@@ -159,7 +163,7 @@ https://alexprotom.github.io/rust-dicom-station/
 | [docs/architecture.md](docs/architecture.md) | Design, functional overview, module map, threading, the model folder, conventions, testing |
 | [docs/release-versioning.md](docs/release-versioning.md) | How versions and releases are produced |
 | [docs/example-data.md](docs/example-data.md) | Bundled patient data, source and citations |
-| [installer/README.md](installer/README.md) | The Windows installer: building it, what it installs, silent switches |
+| [installer/README.md](installer/README.md) | The Windows installer: building it, what it installs, updating, winget, silent switches |
 
 ## License and citations
 

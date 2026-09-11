@@ -5,8 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 
+use crate::existing::paths_equal;
 use crate::install::{Event, Manifest, Sink};
 use crate::plan::*;
 use crate::win::registry::{self, Hive, Key};
@@ -82,7 +83,13 @@ pub fn run(target: &Target, remove_models: bool, sink: Sink) -> Result<()> {
             .open(&app_exe)
             .is_err()
     {
-        bail!("{APP_NAME} is still running - close it and try again");
+        return Err(failure(
+            EXIT_IN_USE,
+            format!(
+                "{APP_NAME} is still running from {} - close it and try again",
+                dir.display()
+            ),
+        ));
     }
 
     // ---- registry ---------------------------------------------------------
@@ -92,36 +99,7 @@ pub fn run(target: &Target, remove_models: bool, sink: Sink) -> Result<()> {
     } else {
         Hive::CurrentUser
     };
-    registry::delete_tree(hive.hkey(), &uninstall_key_path())?;
-    if m.file_association {
-        let classes = r"Software\Classes";
-        registry::delete_tree(hive.hkey(), &format!(r"{classes}\{PROGID}"))?;
-        registry::delete_tree(
-            hive.hkey(),
-            &format!(r"{classes}\Directory\shell\{PRODUCT_ID}"),
-        )?;
-        registry::delete_tree(
-            hive.hkey(),
-            &format!(r"{classes}\Directory\Background\shell\{PRODUCT_ID}"),
-        )?;
-        for ext in [".dcm", ".dicom"] {
-            if let Ok(k) = Key::open(
-                hive.hkey(),
-                &format!(r"{classes}\{ext}\OpenWithProgids"),
-                true,
-            ) {
-                let _ = k.delete_value(PROGID);
-            }
-        }
-        log("Removed the file association".into());
-    }
-    if m.path_added {
-        let dir_s = dir.to_string_lossy().to_string();
-        if registry::path_remove(hive, &dir_s)? {
-            crate::win::broadcast_environment_change();
-            log("Removed the program folder from PATH".into());
-        }
-    }
+    remove_registration(m, hive, &log)?;
 
     // ---- shortcuts --------------------------------------------------------
     step(0.15, "Removing shortcuts");
@@ -140,7 +118,7 @@ pub fn run(target: &Target, remove_models: bool, sink: Sink) -> Result<()> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     for (i, rel) in m.files.iter().enumerate() {
         let path = dir.join(rel.replace('/', "\\"));
-        if rel == UNINSTALLER_EXE {
+        if is_setup_exe(rel) {
             continue; // handled last, it may be the running image
         }
         if path.is_file() {
@@ -190,7 +168,9 @@ pub fn run(target: &Target, remove_models: bool, sink: Sink) -> Result<()> {
     // ---- the last few files -----------------------------------------------
     step(0.9, "Cleaning up");
     let _ = remove_with_retry(&dir.join(MANIFEST_FILE));
-    let _ = remove_with_retry(&dir.join(UNINSTALLER_EXE));
+    for name in [SETUP_EXE, LEGACY_UNINSTALLER_EXE, SETUP_EXE_OLD] {
+        let _ = remove_with_retry(&dir.join(name));
+    }
     // Only removes the folder when nothing unexpected is left in it.
     match std::fs::remove_dir(dir) {
         Ok(()) => log(format!("Removed {}", dir.display())),
@@ -201,6 +181,51 @@ pub fn run(target: &Target, remove_models: bool, sink: Sink) -> Result<()> {
     }
 
     step(1.0, "Uninstall complete");
+    Ok(())
+}
+
+/// Undo an installation's registry entries in `hive`: its Apps & features
+/// key, the file association when it made one, and its `PATH` entry when it
+/// added one. Also used by an update that moves an installation to the
+/// other scope.
+pub fn remove_registration(m: &Manifest, hive: Hive, log: &dyn Fn(String)) -> Result<()> {
+    registry::delete_tree(hive.hkey(), &uninstall_key_path())?;
+    if m.file_association {
+        remove_file_association(hive)?;
+        log("Removed the file association".into());
+    }
+    if m.path_added {
+        let dir_s = m.install_dir.to_string_lossy().to_string();
+        if registry::path_remove(hive, &dir_s)? {
+            crate::win::broadcast_environment_change();
+            log("Removed the program folder from PATH".into());
+        }
+    }
+    Ok(())
+}
+
+/// Remove the ProgID, the folder verbs and the `OpenWithProgids` values
+/// `install::write_file_association` created.
+pub fn remove_file_association(hive: Hive) -> Result<()> {
+    let classes = r"Software\Classes";
+    registry::delete_tree(hive.hkey(), &format!(r"{classes}\{PROGID}"))?;
+    registry::delete_tree(
+        hive.hkey(),
+        &format!(r"{classes}\Directory\shell\{PRODUCT_ID}"),
+    )?;
+    registry::delete_tree(
+        hive.hkey(),
+        &format!(r"{classes}\Directory\Background\shell\{PRODUCT_ID}"),
+    )?;
+    for ext in [".dcm", ".dicom"] {
+        if let Ok(k) = Key::open(
+            hive.hkey(),
+            &format!(r"{classes}\{ext}\OpenWithProgids"),
+            true,
+        ) {
+            let _ = k.delete_value(PROGID);
+        }
+    }
     Ok(())
 }
 
@@ -246,12 +271,7 @@ fn prune_empty_parents(start: &Path) {
     }
 }
 
-fn paths_equal(a: &Path, b: &Path) -> bool {
-    let norm = |p: &Path| {
-        p.to_string_lossy()
-            .trim_end_matches(['\\', '/'])
-            .to_ascii_lowercase()
-            .replace('/', "\\")
-    };
-    norm(a) == norm(b)
+/// The setup program kept in the folder, under its current or its old name.
+fn is_setup_exe(rel: &str) -> bool {
+    rel.eq_ignore_ascii_case(SETUP_EXE) || rel.eq_ignore_ascii_case(LEGACY_UNINSTALLER_EXE)
 }

@@ -159,9 +159,11 @@ rust-dicom-station
 ├── Tests: 15 integration suites + in-module unit tests, synthetic phantom, reference dumps
 ├── Examples: headless CLIs and probes for the engines (shared examples/common)
 ├── Tools: the two PyTorch scripts that produce the MedSAM2 reference fixtures
-├── Installer: Windows setup (shortcuts, VC++ runtime, optional weight prefetch, uninstall)
+├── Installer: Windows setup (shortcuts, VC++ runtime, optional weight prefetch, uninstall,
+│   in-place update of an existing installation, update to the newest release, winget)
 └── CI: fmt, clippy -D warnings, tests on Linux + Windows, CPU-only build; every push
-    to main builds the installer and a Linux AppImage into a GitHub release
+    to main builds the installer, its winget manifests and a Linux AppImage into a
+    GitHub release, and submits the version to winget
 ```
 
 ### Sources of the algorithms

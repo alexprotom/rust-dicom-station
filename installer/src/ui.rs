@@ -5,18 +5,26 @@
 //! Every screen is one function; the long-running work happens on a worker
 //! thread that reports through a shared progress slot.
 
+use std::cmp::Ordering as VersionOrder;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use egui::{Color32, RichText};
 
+use crate::existing::{self, Installed};
 use crate::install::{self, Event};
 use crate::models;
 use crate::payload::Payload;
 use crate::plan::*;
 use crate::uninstall::{self, Target};
+use crate::update::{self, HandOff, Release};
+
+const AMBER: Color32 = Color32::from_rgb(230, 170, 60);
+const GREEN: Color32 = Color32::from_rgb(120, 200, 120);
+const RED: Color32 = Color32::from_rgb(230, 100, 100);
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Screen {
@@ -26,11 +34,54 @@ enum Screen {
     Working,
     Done,
     ConfirmUninstall,
+    /// The window of `--update`: what is installed, what is newest.
+    Update,
 }
 
 enum Job {
-    Install { payload: Arc<Payload> },
-    Uninstall { target: Arc<Target> },
+    Install {
+        payload: Arc<Payload>,
+    },
+    Uninstall {
+        target: Arc<Target>,
+    },
+    /// `--update`: nothing to install from this binary itself.
+    Update,
+}
+
+/// What the worker thread is doing.
+#[derive(Clone)]
+enum Work {
+    Install,
+    Uninstall,
+    /// Download a release, check it and start it; `elevate` when the
+    /// installation it will update is machine-wide.
+    Fetch {
+        release: Release,
+        how: HandOff,
+        elevate: bool,
+    },
+}
+
+/// How the wizard was started.
+#[derive(Clone, Copy, Default)]
+pub struct Mode {
+    /// Begin at once with the options given (the elevated re-launch, the
+    /// hand-over from `--update`, `--passive`).
+    pub autostart: bool,
+    /// No questions, and the window closes itself after a success.
+    pub passive: bool,
+}
+
+/// How the worker's run ended: the error carries its exit code.
+type Outcome = Result<(), (u8, String)>;
+
+/// The newest release, as far as this run knows.
+#[derive(Clone)]
+enum Online {
+    Checking,
+    Latest(Release),
+    Failed(String),
 }
 
 pub struct SetupApp {
@@ -47,11 +98,20 @@ pub struct SetupApp {
     /// Size of the MCP server in the payload, 0 when this installer carries
     /// none. The check box is only shown when there is something to install.
     mcp_size: u64,
+    /// Registered installations, found when the setup started.
+    installed: Vec<Installed>,
+    /// The newest release on GitHub; looked up in the background.
+    online: Arc<Mutex<Online>>,
+    /// What the worker is doing, once it runs.
+    work: Option<Work>,
     progress: Arc<Mutex<(f32, String)>>,
     log: Arc<Mutex<Vec<String>>>,
-    outcome: Arc<Mutex<Option<Result<(), String>>>>,
+    outcome: Arc<Mutex<Option<Outcome>>>,
     cancel: Arc<AtomicBool>,
     error: Option<String>,
+    /// The process exit code, read after the window closes. Starts as
+    /// "cancelled": closing the wizard before it did anything is that.
+    exit: Arc<Mutex<u8>>,
     /// Set when the wizard's own window had to fall back to another graphics
     /// backend: the same machine will fail the same way for the viewer, so
     /// the graphics page says so and preselects what actually worked.
@@ -59,26 +119,26 @@ pub struct SetupApp {
     /// Begin immediately instead of showing the first page (used by the
     /// elevated re-launch, which inherits the options on the command line).
     autostart: bool,
+    passive: bool,
+    /// When a passive run finished, to close the window a moment later.
+    done_at: Option<Instant>,
     /// Set once the user asks to close after a finished run.
     quit: bool,
 }
 
 /// Show the install wizard. Returns `Err` when no window could be created
 /// (head-less session, no usable GPU adapter) so the caller can fall back to
-/// the text interface.
-pub fn run_install(payload: Payload, opts: Options, autostart: bool) -> Result<()> {
+/// the text interface; otherwise the exit code to finish with.
+pub fn run_install(
+    payload: Payload,
+    opts: Options,
+    mode: Mode,
+    installed: Vec<Installed>,
+) -> Result<u8> {
     let license = payload.read_text("LICENSE.txt");
-    let version = payload
-        .read_text("payload-info.txt")
-        .and_then(|t| {
-            t.lines()
-                .filter_map(|l| l.split_once('='))
-                .find(|(k, _)| k.trim() == "version")
-                .map(|(_, v)| v.trim().to_string())
-        })
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    let version = install::payload_version(&payload);
     let payload_size = payload.total_size().unwrap_or(0);
-    let mcp_size = payload.entry_size(crate::plan::MCP_EXE);
+    let mcp_size = payload.entry_size(MCP_EXE);
     let mut app = SetupApp::new(
         Job::Install {
             payload: Arc::new(payload),
@@ -90,10 +150,43 @@ pub fn run_install(payload: Payload, opts: Options, autostart: bool) -> Result<(
         payload_size,
         mcp_size,
     );
+    app.installed = installed;
+    // An update was accepted when the installation was first made; the
+    // license stays one click away on the first page.
+    if app.same().is_some() {
+        app.accepted = true;
+    }
     // After an elevation re-launch the user has already made every choice in
     // the first window; go straight to work.
-    app.autostart = autostart;
-    launch(app, &format!("{APP_NAME}: Setup"))
+    app.autostart = mode.autostart;
+    app.passive = mode.passive;
+    if !mode.autostart {
+        app.check_online();
+    }
+    let exit = app.exit.clone();
+    launch(app, &format!("{APP_NAME}: Setup"))?;
+    let code = *exit.lock().unwrap();
+    Ok(code)
+}
+
+/// The window of `--update`.
+pub fn run_update() -> Result<u8> {
+    let mut app = SetupApp::new(
+        Job::Update,
+        Screen::Update,
+        Options::default(),
+        env!("CARGO_PKG_VERSION").to_string(),
+        None,
+        0,
+        0,
+    );
+    app.installed = existing::find_all();
+    *app.exit.lock().unwrap() = EXIT_OK;
+    app.check_online();
+    let exit = app.exit.clone();
+    launch(app, &format!("{APP_NAME}: Update"))?;
+    let code = *exit.lock().unwrap();
+    Ok(code)
 }
 
 /// Show the uninstall confirmation window.
@@ -289,22 +382,83 @@ impl SetupApp {
             remove_models: false,
             payload_size,
             mcp_size,
+            installed: Vec::new(),
+            online: Arc::new(Mutex::new(Online::Checking)),
+            work: None,
             progress: Arc::new(Mutex::new((0.0, String::new()))),
             log: Arc::new(Mutex::new(Vec::new())),
             outcome: Arc::new(Mutex::new(None)),
             cancel: Arc::new(AtomicBool::new(false)),
             error: None,
+            exit: Arc::new(Mutex::new(EXIT_CANCELLED)),
             graphics_note: None,
             autostart: false,
+            passive: false,
+            done_at: None,
             quit: false,
         }
     }
 
-    fn start(&mut self, ctx: &egui::Context) {
+    /// Look up the newest release in the background. Being offline is
+    /// normal for a clinical workstation, so a failure is only remembered.
+    fn check_online(&mut self) {
+        *self.online.lock().unwrap() = Online::Checking;
+        let slot = self.online.clone();
+        std::thread::spawn(move || {
+            let found = match update::latest() {
+                Ok(r) => Online::Latest(r),
+                Err(e) => Online::Failed(format!("{e:#}")),
+            };
+            *slot.lock().unwrap() = found;
+        });
+    }
+
+    /// The installation in the chosen folder, which this run updates.
+    fn same(&self) -> Option<Installed> {
+        existing::split(&self.installed, &self.opts.dir).0
+    }
+
+    /// Every other registered installation.
+    fn others(&self) -> Vec<Installed> {
+        existing::split(&self.installed, &self.opts.dir).1
+    }
+
+    /// Whether the run has to happen as administrator: a machine-wide
+    /// target, or a machine-wide installation to remove or to move.
+    fn needs_elevation(&self) -> bool {
+        self.opts.scope == Scope::AllUsers
+            || self.same().is_some_and(|p| p.machine_wide())
+            || (self.opts.remove_others && self.others().iter().any(|o| o.machine_wide()))
+    }
+
+    /// Install or update, asking for administrator rights first when needed.
+    fn begin(&mut self, ctx: &egui::Context) {
+        if self.needs_elevation() && !crate::win::is_elevated() {
+            let mut args = crate::args_for_relaunch(&self.opts);
+            if self.passive {
+                args.push_str(" --passive");
+            }
+            match crate::win::relaunch_elevated(&args) {
+                Ok(()) => {
+                    // The elevated copy carries on, and reports on its own.
+                    *self.exit.lock().unwrap() = EXIT_OK;
+                    self.quit = true;
+                }
+                Err(e) => self.error = Some(format!("{e:#}")),
+            }
+        } else {
+            self.start(ctx, Work::Install);
+        }
+    }
+
+    fn start(&mut self, ctx: &egui::Context, work: Work) {
         self.screen = Screen::Working;
+        self.error = None;
         self.cancel.store(false, Ordering::Relaxed);
         self.log.lock().unwrap().clear();
         *self.outcome.lock().unwrap() = None;
+        *self.progress.lock().unwrap() = (0.0, String::new());
+        self.work = Some(work.clone());
         let progress = self.progress.clone();
         let log = self.log.clone();
         let outcome = self.outcome.clone();
@@ -312,13 +466,13 @@ impl SetupApp {
         let ctx = ctx.clone();
         let opts = self.opts.clone();
         let remove_models = self.remove_models;
-        let job = match &self.job {
-            Job::Install { payload } => Job::Install {
-                payload: payload.clone(),
-            },
-            Job::Uninstall { target } => Job::Uninstall {
-                target: target.clone(),
-            },
+        let payload = match &self.job {
+            Job::Install { payload } => Some(payload.clone()),
+            _ => None,
+        };
+        let target = match &self.job {
+            Job::Uninstall { target } => Some(target.clone()),
+            _ => None,
         };
         std::thread::spawn(move || {
             let sink = move |ev: Event| {
@@ -328,11 +482,30 @@ impl SetupApp {
                 }
                 ctx.request_repaint();
             };
-            let res = match &job {
-                Job::Install { payload } => install::run(&opts, payload, &sink, &cancel),
-                Job::Uninstall { target } => uninstall::run(target, remove_models, &sink),
+            let res = match (&work, &payload, &target) {
+                (Work::Install, Some(payload), _) => install::run(&opts, payload, &sink, &cancel),
+                (Work::Uninstall, _, Some(target)) => uninstall::run(target, remove_models, &sink),
+                (
+                    Work::Fetch {
+                        release,
+                        how,
+                        elevate,
+                    },
+                    _,
+                    _,
+                ) => update::download(
+                    release,
+                    &|f, msg| sink(Event::Progress(f, msg.to_string())),
+                    &cancel,
+                )
+                .and_then(|setup| {
+                    sink(Event::Log(format!("Verified {}", setup.display())));
+                    sink(Event::Log("Starting it".into()));
+                    update::hand_off(&setup, *how, *elevate).map(|_| ())
+                }),
+                _ => Err(anyhow::anyhow!("nothing to do")),
             };
-            *outcome.lock().unwrap() = Some(res.map_err(|e| format!("{e:#}")));
+            *outcome.lock().unwrap() = Some(res.map_err(|e| (exit_code_of(&e), format!("{e:#}"))));
         });
     }
 
@@ -346,21 +519,49 @@ impl eframe::App for SetupApp {
         let ctx = ui.ctx().clone();
         if self.autostart {
             self.autostart = false;
-            self.start(&ctx);
+            self.begin(&ctx);
         }
         if self.screen == Screen::Working {
             let done = self.outcome.lock().unwrap().take();
             if let Some(res) = done {
-                self.error = res.err();
-                self.screen = Screen::Done;
+                match res {
+                    Ok(()) => {
+                        *self.exit.lock().unwrap() = EXIT_OK;
+                        self.error = None;
+                    }
+                    Err((code, msg)) => {
+                        *self.exit.lock().unwrap() = code;
+                        self.error = Some(msg);
+                    }
+                }
+                let fetched = matches!(self.work, Some(Work::Fetch { .. }));
+                if fetched && self.error.is_none() {
+                    // The downloaded setup has its own window now.
+                    self.quit = true;
+                } else {
+                    self.screen = Screen::Done;
+                    self.done_at = Some(Instant::now());
+                }
             }
             // The worker only repaints on new messages; keep the bar alive.
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            ctx.request_repaint_after(Duration::from_millis(100));
         }
-        let title = if self.is_install() {
-            format!("{APP_NAME} {}", self.version)
-        } else {
-            format!("Uninstall {APP_NAME}")
+        // A passive run closes itself shortly after a success, and stays
+        // open on a failure so the message can be read.
+        if self.passive && self.screen == Screen::Done && self.error.is_none() {
+            if self
+                .done_at
+                .is_some_and(|t| t.elapsed() > Duration::from_secs(2))
+            {
+                self.quit = true;
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(200));
+            }
+        }
+        let title = match self.job {
+            Job::Install { .. } => format!("{APP_NAME} {}", self.version),
+            Job::Uninstall { .. } => format!("Uninstall {APP_NAME}"),
+            Job::Update => format!("Update {APP_NAME}"),
         };
         egui::Panel::top(egui::Id::new("head")).show(ui, |ui| {
             ui.add_space(8.0);
@@ -376,12 +577,13 @@ impl eframe::App for SetupApp {
         });
         let screen = self.screen;
         egui::CentralPanel::default_margins().show(ui, |ui| match screen {
-            Screen::Welcome => self.welcome(ui),
+            Screen::Welcome => self.welcome(ui, &ctx),
             Screen::Options => self.options(ui),
             Screen::Graphics => self.graphics(ui, &ctx),
             Screen::Working => self.working(ui),
             Screen::Done => self.done(ui),
             Screen::ConfirmUninstall => self.confirm_uninstall(ui, &ctx),
+            Screen::Update => self.update_page(ui, &ctx),
         });
         if self.quit {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -390,37 +592,266 @@ impl eframe::App for SetupApp {
 }
 
 impl SetupApp {
-    fn welcome(&mut self, ui: &mut egui::Ui) {
-        ui.label(
-            "This will install the viewer, its Start-menu entry and, optionally, the \
-                  auto-segmentation weights.",
-        );
-        ui.add_space(6.0);
-        if let Some(text) = &self.license {
-            ui.label(RichText::new("License").strong());
-            egui::ScrollArea::vertical()
-                .max_height(280.0)
-                .show(ui, |ui| {
-                    ui.monospace(text);
-                });
-            ui.add_space(6.0);
-            ui.checkbox(&mut self.accepted, "I accept the license terms");
-        } else {
-            self.accepted = true;
-            ui.label("MIT-licensed software. Not a medical device - for research and QA only.");
-        }
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(self.accepted, egui::Button::new("Next  ▶"))
-                .clicked()
-            {
-                self.screen = Screen::Options;
+    fn welcome(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            let same = self.same();
+            match &same {
+                None => {
+                    ui.label(
+                        "This will install the viewer, its Start-menu entry and, optionally, \
+                         the auto-segmentation weights.",
+                    );
+                }
+                Some(prev) => {
+                    ui.label(RichText::new(format!("{APP_NAME} is installed")).strong());
+                    ui.label(prev.describe());
+                    ui.add_space(4.0);
+                    match compare_versions(&self.version, &prev.version) {
+                        VersionOrder::Greater => {
+                            ui.label(format!(
+                                "This setup updates it to {}. The folder, the options chosen \
+                                 at installation, your settings and the downloaded models \
+                                 stay as they are; files the new version no longer ships \
+                                 are removed.",
+                                self.version
+                            ));
+                        }
+                        VersionOrder::Equal => {
+                            ui.label(
+                                "This version is already installed. Continuing installs it \
+                                 again, which restores missing or damaged files.",
+                            );
+                        }
+                        VersionOrder::Less => {
+                            ui.colored_label(
+                                AMBER,
+                                format!(
+                                    "The installed version is newer than this setup ({}). \
+                                     Continuing replaces it with the older version.",
+                                    self.version
+                                ),
+                            );
+                        }
+                    }
+                }
             }
-            if ui.button("Cancel").clicked() {
-                self.quit = true;
+            self.others_block(ui);
+            self.online_block(ui, ctx);
+            ui.add_space(6.0);
+            match (&self.license, &same) {
+                (Some(text), Some(_)) => {
+                    egui::CollapsingHeader::new("License").show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .max_height(200.0)
+                            .show(ui, |ui| {
+                                ui.monospace(text);
+                            });
+                    });
+                }
+                (Some(text), None) => {
+                    ui.label(RichText::new("License").strong());
+                    egui::ScrollArea::vertical()
+                        .max_height(240.0)
+                        .show(ui, |ui| {
+                            ui.monospace(text);
+                        });
+                    ui.add_space(6.0);
+                    ui.checkbox(&mut self.accepted, "I accept the license terms");
+                }
+                (None, _) => {
+                    self.accepted = true;
+                    ui.label(
+                        "MIT-licensed software. Not a medical device - for research and QA only.",
+                    );
+                }
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if let Some(prev) = &same {
+                    let label = match compare_versions(&self.version, &prev.version) {
+                        VersionOrder::Greater => format!("Update to {}", self.version),
+                        VersionOrder::Equal => "Reinstall".to_string(),
+                        VersionOrder::Less => format!("Replace with {}", self.version),
+                    };
+                    if ui.button(label).clicked() {
+                        self.begin(ctx);
+                    }
+                    if ui.button("Change options  ▶").clicked() {
+                        self.screen = Screen::Options;
+                    }
+                } else if ui
+                    .add_enabled(self.accepted, egui::Button::new("Next  ▶"))
+                    .clicked()
+                {
+                    self.screen = Screen::Options;
+                }
+                if ui.button("Cancel").clicked() {
+                    self.quit = true;
+                }
+            });
+            if let Some(err) = &self.error {
+                ui.add_space(6.0);
+                ui.colored_label(RED, err);
             }
         });
+    }
+
+    /// The installations other than the one in the chosen folder, and the
+    /// choice to remove them.
+    fn others_block(&mut self, ui: &mut egui::Ui) {
+        let others = self.others();
+        if others.is_empty() {
+            return;
+        }
+        ui.add_space(10.0);
+        ui.label(
+            RichText::new(if others.len() == 1 {
+                "Another installation"
+            } else {
+                "Other installations"
+            })
+            .strong(),
+        );
+        for o in &others {
+            ui.label(o.describe());
+        }
+        ui.checkbox(
+            &mut self.opts.remove_others,
+            "Remove it, so that one copy remains (downloaded models are kept)",
+        );
+        if self.opts.remove_others
+            && others.iter().any(|o| o.machine_wide())
+            && !crate::win::is_elevated()
+        {
+            ui.colored_label(
+                AMBER,
+                "Removing an installation for all users needs administrator rights; they \
+                 will be requested.",
+            );
+        }
+    }
+
+    /// A newer release than this setup, when there is one.
+    fn online_block(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let state = self.online.lock().unwrap().clone();
+        match state {
+            Online::Checking => {
+                ctx.request_repaint_after(Duration::from_millis(300));
+            }
+            Online::Latest(r) if r.is_newer_than(&self.version) => {
+                ui.add_space(10.0);
+                ui.colored_label(
+                    AMBER,
+                    format!(
+                        "A newer release is available: {}. This setup is {}.",
+                        r.version, self.version
+                    ),
+                );
+                if ui
+                    .button(format!("Download and install {} instead", r.version))
+                    .on_hover_text(
+                        "Downloads the installer from the project's GitHub releases, checks \
+                         it against the release's SHA256SUMS and starts it.",
+                    )
+                    .clicked()
+                {
+                    self.start(
+                        ctx,
+                        Work::Fetch {
+                            release: r,
+                            how: HandOff::Wizard,
+                            elevate: false,
+                        },
+                    );
+                }
+            }
+            // Up to date, or offline - which a clinical workstation often
+            // is. Neither is worth a line.
+            Online::Latest(_) | Online::Failed(_) => {}
+        }
+    }
+
+    /// `--update`: what is installed, what is newest, and one button.
+    fn update_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let current = existing::preferred(&self.installed, None, None).cloned();
+        match &current {
+            Some(i) => {
+                ui.label(RichText::new("Installed").strong());
+                ui.label(i.describe());
+            }
+            None => {
+                ui.label(format!("{APP_NAME} is not installed on this machine."));
+            }
+        }
+        ui.add_space(10.0);
+        let state = self.online.lock().unwrap().clone();
+        match state {
+            Online::Checking => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Looking for the newest release");
+                });
+                ctx.request_repaint_after(Duration::from_millis(200));
+            }
+            Online::Failed(e) => {
+                *self.exit.lock().unwrap() = EXIT_NO_NETWORK;
+                ui.colored_label(RED, "Could not look up the newest release.");
+                ui.label(RichText::new(e).weak());
+                ui.add_space(6.0);
+                if ui.button("Try again").clicked() {
+                    *self.exit.lock().unwrap() = EXIT_OK;
+                    self.check_online();
+                }
+            }
+            Online::Latest(r) => {
+                let newer = current.as_ref().is_none_or(|i| r.is_newer_than(&i.version));
+                if newer {
+                    ui.label(RichText::new("Newest release").strong());
+                    ui.label(r.version.clone());
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(
+                            "The installer is downloaded from the project's GitHub releases \
+                             and checked against the release's SHA256SUMS before it runs. It \
+                             updates the installation in place: same folder, same options, \
+                             models kept.",
+                        )
+                        .weak(),
+                    );
+                    ui.add_space(8.0);
+                    let label = if current.is_some() {
+                        format!("Update to {}", r.version)
+                    } else {
+                        format!("Install {}", r.version)
+                    };
+                    if ui.button(label).clicked() {
+                        let (how, elevate) = match &current {
+                            Some(i) => (HandOff::Window, i.machine_wide()),
+                            // Nothing to update: the new setup asks its
+                            // questions as for any first installation.
+                            None => (HandOff::Wizard, false),
+                        };
+                        self.start(
+                            ctx,
+                            Work::Fetch {
+                                release: r,
+                                how,
+                                elevate,
+                            },
+                        );
+                    }
+                } else {
+                    ui.colored_label(
+                        GREEN,
+                        format!("{} is the newest release. Nothing to do.", r.version),
+                    );
+                }
+            }
+        }
+        ui.add_space(12.0);
+        if ui.button("Close").clicked() {
+            self.quit = true;
+        }
     }
 
     fn options(&mut self, ui: &mut egui::Ui) {
@@ -437,7 +868,7 @@ impl SetupApp {
             }
             if self.opts.scope == Scope::AllUsers && !crate::win::is_elevated() {
                 ui.colored_label(
-                    Color32::from_rgb(230, 170, 60),
+                    AMBER,
                     "Administrator rights will be requested when the installation starts.",
                 );
             }
@@ -486,6 +917,8 @@ impl SetupApp {
                 ))
                 .weak(),
             );
+
+            self.others_block(ui);
 
             // Only offered when this installer actually carries the server:
             // a box that installs nothing is worse than no box.
@@ -600,7 +1033,7 @@ impl SetupApp {
             });
             if let Some(err) = &self.error {
                 ui.add_space(6.0);
-                ui.colored_label(Color32::from_rgb(230, 100, 100), err);
+                ui.colored_label(RED, err);
             }
         });
     }
@@ -631,7 +1064,7 @@ impl SetupApp {
             );
             if let Some(note) = &self.graphics_note {
                 ui.add_space(8.0);
-                ui.colored_label(Color32::from_rgb(230, 170, 60), note);
+                ui.colored_label(AMBER, note);
             }
 
             ui.add_space(10.0);
@@ -648,15 +1081,13 @@ impl SetupApp {
                 if ui.button("◀  Back").clicked() {
                     self.screen = Screen::Options;
                 }
-                if ui.button("Install").clicked() {
-                    if self.opts.scope == Scope::AllUsers && !crate::win::is_elevated() {
-                        match crate::win::relaunch_elevated(&crate::args_for_relaunch(&self.opts)) {
-                            Ok(()) => self.quit = true,
-                            Err(e) => self.error = Some(format!("{e:#}")),
-                        }
-                    } else {
-                        self.start(ctx);
-                    }
+                let label = if self.same().is_some() {
+                    "Update"
+                } else {
+                    "Install"
+                };
+                if ui.button(label).clicked() {
+                    self.begin(ctx);
                 }
                 if ui.button("Cancel").clicked() {
                     self.quit = true;
@@ -664,7 +1095,7 @@ impl SetupApp {
             });
             if let Some(err) = &self.error {
                 ui.add_space(6.0);
-                ui.colored_label(Color32::from_rgb(230, 100, 100), err);
+                ui.colored_label(RED, err);
             }
         });
     }
@@ -677,17 +1108,26 @@ impl SetupApp {
         ui.add_space(10.0);
         log_view(ui, &self.log);
         ui.add_space(8.0);
-        if self.is_install() && ui.button("Cancel").clicked() {
+        let cancellable = !matches!(self.work, Some(Work::Uninstall) | None);
+        if cancellable && ui.button("Cancel").clicked() {
             self.cancel.store(true, Ordering::Relaxed);
         }
     }
 
     fn done(&mut self, ui: &mut egui::Ui) {
+        let fetched = matches!(self.work, Some(Work::Fetch { .. }));
+        let installed = self.is_install() && !fetched;
+        let updated = installed && self.same().is_some();
         match &self.error {
-            None if self.is_install() => {
+            None if installed => {
                 ui.colored_label(
-                    Color32::from_rgb(120, 200, 120),
-                    RichText::new("Installation complete").heading(),
+                    GREEN,
+                    RichText::new(if updated {
+                        "Update complete"
+                    } else {
+                        "Installation complete"
+                    })
+                    .heading(),
                 );
                 ui.label(format!("Installed into {}", self.opts.dir.display()));
                 if self.mcp_size > 0 && self.opts.install_mcp {
@@ -695,23 +1135,24 @@ impl SetupApp {
                     ui.label("MCP server - point your client at:");
                     ui.label(RichText::new(self.opts.mcp_path().display().to_string()).monospace());
                 }
+                if self.passive {
+                    ui.label(RichText::new("This window closes by itself.").weak());
+                }
             }
             None => {
-                ui.colored_label(
-                    Color32::from_rgb(120, 200, 120),
-                    RichText::new("Uninstall complete").heading(),
-                );
+                ui.colored_label(GREEN, RichText::new("Uninstall complete").heading());
             }
             Some(err) => {
-                ui.colored_label(
-                    Color32::from_rgb(230, 100, 100),
-                    RichText::new(if self.is_install() {
-                        "Installation failed"
-                    } else {
-                        "Uninstall failed"
-                    })
-                    .heading(),
-                );
+                let heading = if fetched {
+                    "Download failed"
+                } else if updated {
+                    "Update failed"
+                } else if installed {
+                    "Installation failed"
+                } else {
+                    "Uninstall failed"
+                };
+                ui.colored_label(RED, RichText::new(heading).heading());
                 ui.add_space(4.0);
                 ui.label(err.clone());
             }
@@ -720,11 +1161,11 @@ impl SetupApp {
         log_view(ui, &self.log);
         ui.add_space(10.0);
         ui.horizontal(|ui| {
-            if self.is_install() && self.error.is_none() {
+            if installed && self.error.is_none() {
                 ui.checkbox(&mut self.opts.launch_after, format!("Start {APP_NAME} now"));
             }
             if ui.button("Close").clicked() {
-                if self.is_install() && self.error.is_none() && self.opts.launch_after {
+                if installed && self.error.is_none() && self.opts.launch_after {
                     let _ = crate::win::shell_execute(&self.opts.exe_path(), "", false);
                 }
                 self.quit = true;
@@ -756,7 +1197,7 @@ impl SetupApp {
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             if ui.button("Uninstall").clicked() {
-                self.start(ctx);
+                self.start(ctx, Work::Uninstall);
             }
             if ui.button("Cancel").clicked() {
                 self.quit = true;
