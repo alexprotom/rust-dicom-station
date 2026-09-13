@@ -855,7 +855,7 @@ impl ViewerApp {
             }
         }
 
-        // ---- corner buttons: reset view & maximize / restore layout ----
+        // ---- corner buttons: play, reset view & maximize / restore layout ----
         // Their rectangles are needed here (the viewport handlers below ignore
         // any pointer activity over them), but the buttons themselves are
         // registered *after* the viewport interaction: the last widget at a
@@ -866,6 +866,25 @@ impl ViewerApp {
         let by = rect.top() + 22.0; // below the slice counter
         let max_rect = Rect::from_min_size(Pos2::new(rect.right() - bsize.x - 4.0, by), bsize);
         let fit_rect = Rect::from_min_size(Pos2::new(max_rect.left() - bsize.x - 4.0, by), bsize);
+        // Playing through the slices of this view, and through the phases of
+        // the 4D group the dataset is showing. Each button exists only where
+        // there is something to play: a single-slice series has no stack to
+        // run, and a series that belongs to no 4D group has no phases.
+        let slices_here = has_slider;
+        let phases_here = self.fourd_phases(slot).is_some();
+        // Wider than the glyph buttons beside them: these carry a digit as
+        // well, and the digit is what tells the two apart.
+        let psize = egui::vec2(30.0, 20.0);
+        let play3_rect = if slices_here {
+            Rect::from_min_size(Pos2::new(fit_rect.left() - psize.x - 4.0, by), psize)
+        } else {
+            fit_rect
+        };
+        let play4_rect = if phases_here {
+            Rect::from_min_size(Pos2::new(play3_rect.left() - psize.x - 4.0, by), psize)
+        } else {
+            play3_rect
+        };
         let (pointer_pos, any_click) =
             ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_click()));
         // The slice scrubber along the bottom edge belongs to the same
@@ -876,7 +895,13 @@ impl ViewerApp {
             Rect::NOTHING
         };
         let over_buttons = pointer_pos
-            .map(|p| max_rect.contains(p) || fit_rect.contains(p) || slider_rect.contains(p))
+            .map(|p| {
+                max_rect.contains(p)
+                    || fit_rect.contains(p)
+                    || (slices_here && play3_rect.contains(p))
+                    || (phases_here && play4_rect.contains(p))
+                    || slider_rect.contains(p)
+            })
             .unwrap_or(false);
 
         // ---- interaction ----
@@ -902,6 +927,40 @@ impl ViewerApp {
                 "Reset this view: fit zoom, clear pan and put the crosshair back at \
              the volume center",
             );
+        let slice_target = play::PlayTarget::Slices { slot, view: idx };
+        let phase_target = play::PlayTarget::Phases { slot };
+        let mut clicked_play3 = false;
+        if slices_here {
+            let on = self.is_playing(slice_target);
+            let resp = ui
+                .put(
+                    play3_rect,
+                    egui::Button::new(if on { "⏸3" } else { "▶3" }).small(),
+                )
+                .on_hover_text(if on {
+                    "Stop running through the slices"
+                } else {
+                    "Play 3D: run through the slices of this view. Speed and what happens                      at the end are in the Playback module."
+                });
+            clicked_play3 = resp.clicked()
+                || (any_click && pointer_pos.map(|p| play3_rect.contains(p)).unwrap_or(false));
+        }
+        let mut clicked_play4 = false;
+        if phases_here {
+            let on = self.is_playing(phase_target);
+            let resp = ui
+                .put(
+                    play4_rect,
+                    egui::Button::new(if on { "⏸4" } else { "▶4" }).small(),
+                )
+                .on_hover_text(if on {
+                    "Stop running through the phases"
+                } else {
+                    "Play 4D: run this dataset through the phases of its 4D group, with                      the structures, segmentations and dose of each phase. The first press                      reads the phases into memory."
+                });
+            clicked_play4 = resp.clicked()
+                || (any_click && pointer_pos.map(|p| play4_rect.contains(p)).unwrap_or(false));
+        }
         let clicked_max = max_resp.clicked()
             || (any_click && pointer_pos.map(|p| max_rect.contains(p)).unwrap_or(false));
         let clicked_fit = fit_resp.clicked()
@@ -1193,6 +1252,15 @@ impl ViewerApp {
         }
         if clicked_fit {
             reset_view = true;
+        }
+        if clicked_play3 || clicked_play4 {
+            let now = ui.input(|i| i.time);
+            let target = if clicked_play3 {
+                slice_target
+            } else {
+                phase_target
+            };
+            self.toggle_play(target, now);
         }
         if hovered {
             self.hovered_slot = slot;

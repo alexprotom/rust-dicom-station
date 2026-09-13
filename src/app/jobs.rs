@@ -104,6 +104,53 @@ impl ViewerApp {
         self.loading = Some(Job { progress, rx });
     }
 
+    /// Step to one phase of a 4D group off the disk.
+    ///
+    /// The same read as [`Self::start_series_switch`], landing differently:
+    /// a phase is the same patient a moment later, so the view holds still
+    /// (see [`Self::install_phase_volume`]).
+    pub(super) fn start_phase_switch(&mut self, slot: usize, idx: usize) {
+        if self.loading.is_some() {
+            return;
+        }
+        let Some(study) = &self.slots[slot].study else {
+            return;
+        };
+        let Some(series) = study.series.get(idx).cloned() else {
+            return;
+        };
+        let progress = Arc::new(Progress::default());
+        let (tx, rx) = mpsc::channel();
+        let p2 = progress.clone();
+        std::thread::spawn(move || {
+            let res = loader::load_series_volume(&series, &p2)
+                .map(|(vol, window, warnings)| (Arc::new(vol), window, warnings));
+            let _ = tx.send(LoadResult::Phase(Box::new(res), slot, idx));
+        });
+        self.loading = Some(Job { progress, rx });
+    }
+
+    /// What the 4D group calls the phase this series is, for the dose match.
+    pub(super) fn phase_label_of(&self, slot: usize, idx: usize) -> String {
+        let Some(study) = self.slots[slot].study.as_ref() else {
+            return String::new();
+        };
+        let Some(uid) = study.series.get(idx).map(|s| s.uid.as_str()) else {
+            return String::new();
+        };
+        study
+            .fourd_groups
+            .iter()
+            .filter(|g| !g.dissolved)
+            .find_map(|g| {
+                g.members
+                    .iter()
+                    .find(|m| m.series_uid == uid)
+                    .map(|m| m.label.clone())
+            })
+            .unwrap_or_default()
+    }
+
     /// A folder finished loading (*File ▶ Add DICOM folder*): merge it into
     /// an occupied slot, or install it into an empty one. Merging leaves the
     /// displayed volume and all selections untouched - the new patients /
@@ -133,6 +180,9 @@ impl ViewerApp {
     }
 
     pub(super) fn on_study_loaded(&mut self, slot: usize, study: LoadedStudy) {
+        // Whatever was played from this dataset belongs to the study that
+        // is being replaced.
+        self.drop_phase_cache(slot);
         let other_loaded = self.slots[1 - slot].study.is_some();
         // Shared W/L: adopt the study default unless another study is already up.
         if !other_loaded {

@@ -1,8 +1,9 @@
 /target
-/test_data
-/patient_data
-autoseg_models/
 models/
 Cargo.lock
+/manifests
+/plans
+/test_data
+/patient_data
 /example_data_star
-/data_clean
+/example_data_phantom_dose

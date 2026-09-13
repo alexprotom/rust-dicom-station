@@ -23,18 +23,125 @@ impl ViewerApp {
     // -- 3D structure windows ----------------------------------------------
     /// Identity of the structure set a 3D window would be built from.
     pub(super) fn d3_key(&self, slot: usize) -> u64 {
+        self.d3_key_of(slot, self.slots[slot].active_structs)
+    }
+
+    /// [`Self::d3_key`] for a structure set that is not the active one:
+    /// what the window's key *will* be once the dataset steps to the phase
+    /// that set belongs to, which is how the phase meshes are filed.
+    pub(super) fn d3_key_of(&self, slot: usize, structs: usize) -> u64 {
         let mut h: u64 = 0x9E3779B97F4A7C15 ^ (slot as u64);
-        if let Some(ss) = self.slots[slot].active_structures() {
+        if let Some(ss) = self.slots[slot]
+            .study
+            .as_ref()
+            .and_then(|st| st.structure_sets.get(structs))
+        {
             for b in ss.sop_instance_uid.bytes().chain(ss.file_name.bytes()) {
                 h = h.wrapping_mul(31).wrapping_add(b as u64);
             }
-            h ^= (self.slots[slot].active_structs as u64) << 40;
+            h ^= (structs as u64) << 40;
             h ^= ss.rois.len() as u64;
         }
         // Every contour edit changes the generation, so a moved structure
         // is re-meshed while its window is open.
         h ^= self.settings_gen.wrapping_mul(0x9E37_79B9_7F4A_7C15);
         h
+    }
+
+    /// Mesh every phase of the dataset's 4D group up front, so that
+    /// playing them is a pointer swap per frame rather than a surface-nets
+    /// run per frame.
+    ///
+    /// Each phase brings its own structure set, and the key a set will be
+    /// filed under is known before the dataset steps onto it
+    /// ([`Self::d3_key_of`]), so the whole group can be built in one pass
+    /// and dropped straight into the window's cache.
+    fn start_phase_meshes(&mut self, w: &mut D3Window) {
+        if w.prep_job.is_some() {
+            return;
+        }
+        let slot = w.slot;
+        let Some((_, idxs, _)) = self.fourd_phases(slot) else {
+            return;
+        };
+        let Some(study) = self.slots[slot].study.as_ref() else {
+            return;
+        };
+        // (key, the ROIs of that phase's structure set), for the phases
+        // whose meshes are not in the cache already.
+        let mut work: Vec<(u64, Vec<(usize, crate::rtstruct::Roi)>)> = Vec::new();
+        for idx in &idxs {
+            let Some(uid) = study.series.get(*idx).map(|se| se.uid.clone()) else {
+                continue;
+            };
+            let Some(si) = study
+                .structure_sets
+                .iter()
+                .position(|ss| ss.referenced_series_uid == uid)
+            else {
+                continue;
+            };
+            let key = self.d3_key_of(slot, si);
+            if w.mesh_cache.contains_key(&key) || work.iter().any(|(k, _)| *k == key) {
+                continue;
+            }
+            let rois = study.structure_sets[si]
+                .rois
+                .iter()
+                .cloned()
+                .enumerate()
+                .collect();
+            work.push((key, rois));
+        }
+        if work.is_empty() {
+            return;
+        }
+        let progress = Arc::new(Progress::default());
+        w.mesh_cache_gen = self.settings_gen;
+        w.prep_job = Some(Job::spawn(progress, move |p| {
+            let n = work.len();
+            let mut out = Vec::with_capacity(n);
+            for (i, (key, rois)) in work.into_iter().enumerate() {
+                if p.cancelled() {
+                    break;
+                }
+                p.set_phase(i as f32 / n as f32, 1.0 / n as f32);
+                p.set(format!("Meshing phase {}/{n}", i + 1));
+                let meshes: Vec<RoiMesh> = rois
+                    .par_iter()
+                    .filter_map(|(i, roi)| mesh3d::build_roi_mesh(*i, roi))
+                    .collect();
+                out.push((key, meshes));
+            }
+            out
+        }));
+    }
+
+    /// How many of the group's phases already have their meshes.
+    fn phase_meshes_ready(&self, w: &D3Window) -> (usize, usize) {
+        let Some((_, idxs, _)) = self.fourd_phases(w.slot) else {
+            return (0, 0);
+        };
+        let Some(study) = self.slots[w.slot].study.as_ref() else {
+            return (0, 0);
+        };
+        let mut have = 0;
+        for idx in &idxs {
+            let Some(uid) = study.series.get(*idx).map(|se| se.uid.as_str()) else {
+                continue;
+            };
+            let Some(si) = study
+                .structure_sets
+                .iter()
+                .position(|ss| ss.referenced_series_uid == uid)
+            else {
+                continue;
+            };
+            if w.mesh_cache.contains_key(&self.d3_key_of(w.slot, si)) {
+                have += 1;
+            }
+        }
+        (have, idxs.len())
     }
 
     /// The structure meshes of an open window rebuilt in the background
@@ -44,7 +151,25 @@ impl ViewerApp {
         if w.job.is_some() || w.key == key {
             return;
         }
+        // An edit invalidates every key at once, so the phase meshes built
+        // before it are not meshes of anything any more.
+        if w.mesh_cache_gen != self.settings_gen {
+            w.mesh_cache.clear();
+            w.iso_cache.clear();
+            w.mesh_cache_gen = self.settings_gen;
+        }
         w.key = key;
+        // Already meshed, most likely by *Prepare phases* or by an earlier
+        // pass through the cycle: a phase step is then a pointer swap.
+        if let Some(cached) = w.mesh_cache.get(&key) {
+            w.meshes = Some(cached.clone());
+            w.roi_hashes = self.slots[w.slot]
+                .active_structures()
+                .map(|ss| ss.rois.iter().map(roi_hash).collect())
+                .unwrap_or_default();
+            w.rebuilding = None;
+            return;
+        }
         let Some(ss) = self.slots[w.slot].active_structures() else {
             w.meshes = Some(Arc::new(Vec::new()));
             w.roi_hashes.clear();
@@ -148,6 +273,10 @@ impl ViewerApp {
             other_key: 0,
             show_field: false,
             show_dose: false,
+            mesh_cache: std::collections::HashMap::new(),
+            mesh_cache_gen: self.settings_gen,
+            iso_cache: std::collections::HashMap::new(),
+            prep_job: None,
             frame: D3Frame::default(),
             center,
             radius,
@@ -173,6 +302,21 @@ impl ViewerApp {
         for w in &mut windows {
             if !w.open {
                 continue;
+            }
+            // Poll the phase pre-meshing, then the ordinary rebuild: the
+            // phases land in the cache first, so a step that happens on the
+            // same frame finds them there.
+            {
+                let mut err = None;
+                if let Some(built) = poll_job(&mut w.prep_job, ctx, "Phase meshing", &mut err) {
+                    for (key, meshes) in built {
+                        w.mesh_cache.insert(key, Arc::new(meshes));
+                    }
+                    // The phase on display may be one of the ones just
+                    // built: take it from the cache now.
+                    w.key = 0;
+                }
+                self.error = self.error.take().or(err);
             }
             // Poll mesh building, and start one when the structures changed.
             self.refresh_d3_meshes(w);
@@ -215,7 +359,13 @@ impl ViewerApp {
                         }
                         _ => meshes,
                     };
-                    w.meshes = Some(Arc::new(meshes));
+                    let meshes = Arc::new(meshes);
+                    // File it under the key it was built for, so stepping
+                    // back onto this phase later costs nothing.
+                    if w.mesh_cache.len() < 64 {
+                        w.mesh_cache.insert(w.key, meshes.clone());
+                    }
+                    w.meshes = Some(meshes);
                     w.mesh_gen += 1;
                 }
                 self.error = self.error.take().or(err);
@@ -355,7 +505,11 @@ impl ViewerApp {
             {
                 let mut err = None;
                 if let Some(m) = poll_job(&mut w.iso_job, ctx, "Isodose meshing", &mut err) {
-                    w.iso_meshes = Some(Arc::new(m));
+                    let m = Arc::new(m);
+                    if w.iso_cache.len() < 64 {
+                        w.iso_cache.insert(w.iso_built, m.clone());
+                    }
+                    w.iso_meshes = Some(m);
                 }
                 self.error = self.error.take().or(err);
                 let dose = self.slots[w.slot]
@@ -380,43 +534,51 @@ impl ViewerApp {
                 };
                 if w.iso_job.is_none() && w.iso_built != hash {
                     w.iso_built = hash;
-                    match (w.show_iso, dose) {
-                        (true, Some(d)) => {
-                            let dose = d.clone();
-                            let reference = self.slots[w.slot].dose_reference.max(1e-6);
-                            let levels: Vec<(usize, f32, [u8; 3])> = self
-                                .iso_levels
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, l)| l.on)
-                                .map(|(i, l)| (i, l.pct, [l.color.r(), l.color.g(), l.color.b()]))
-                                .collect();
-                            let progress = Arc::new(Progress::default());
-                            let (tx, rx) = mpsc::channel();
-                            std::thread::spawn(move || {
-                                let geom = dose.mesh_geom();
-                                let meshes: Vec<RoiMesh> = levels
-                                    .into_par_iter()
-                                    .filter_map(|(i, pct, color)| {
-                                        let (grid, gdims, lo, stride) =
-                                            dose.iso_mesh_grid(pct / 100.0 * reference)?;
-                                        mesh3d::mesh_from_mask(&grid, gdims, lo, stride, &geom).map(
-                                            |(verts, normals, tris)| RoiMesh {
-                                                roi_index: i,
-                                                color,
-                                                external: false,
-                                                verts,
-                                                normals,
-                                                tris,
-                                            },
-                                        )
+                    // The shells of a phase already seen come straight back,
+                    // which is what makes the second pass through a cycle
+                    // smooth even with the dose following the phase.
+                    if let Some(cached) = w.iso_cache.get(&hash) {
+                        w.iso_meshes = Some(cached.clone());
+                    } else {
+                        match (w.show_iso, dose) {
+                            (true, Some(d)) => {
+                                let dose = d.clone();
+                                let reference = self.slots[w.slot].dose_reference.max(1e-6);
+                                let levels: Vec<(usize, f32, [u8; 3])> = self
+                                    .iso_levels
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, l)| l.on)
+                                    .map(|(i, l)| {
+                                        (i, l.pct, [l.color.r(), l.color.g(), l.color.b()])
                                     })
                                     .collect();
-                                let _ = tx.send(meshes);
-                            });
-                            w.iso_job = Some(Job { progress, rx });
+                                let progress = Arc::new(Progress::default());
+                                let (tx, rx) = mpsc::channel();
+                                std::thread::spawn(move || {
+                                    let geom = dose.mesh_geom();
+                                    let meshes: Vec<RoiMesh> = levels
+                                        .into_par_iter()
+                                        .filter_map(|(i, pct, color)| {
+                                            let (grid, gdims, lo, stride) =
+                                                dose.iso_mesh_grid(pct / 100.0 * reference)?;
+                                            mesh3d::mesh_from_mask(&grid, gdims, lo, stride, &geom)
+                                                .map(|(verts, normals, tris)| RoiMesh {
+                                                    roi_index: i,
+                                                    color,
+                                                    external: false,
+                                                    verts,
+                                                    normals,
+                                                    tris,
+                                                })
+                                        })
+                                        .collect();
+                                    let _ = tx.send(meshes);
+                                });
+                                w.iso_job = Some(Job { progress, rx });
+                            }
+                            _ => w.iso_meshes = None,
                         }
-                        _ => w.iso_meshes = None,
                     }
                 }
             }
@@ -451,6 +613,17 @@ impl ViewerApp {
                 .as_ref()
                 .and_then(|st| st.doses.get(self.slots[w.slot].active_dose).cloned())
                 .map(|d| (d, self.slots[w.slot].dose_reference.max(1e-6)));
+            // The 4D transport of this window. It starts the same run the
+            // viewports' ▶4 does - there is one phase per dataset, and this
+            // window follows it - so the two buttons are the same button in
+            // two places.
+            let phases_here = self.fourd_phases(w.slot).is_some();
+            let phase_target = play::PlayTarget::Phases { slot: w.slot };
+            let phase_playing = self.is_playing(phase_target);
+            let (meshed, n_phases) = self.phase_meshes_ready(w);
+            let prepping = w.prep_job.as_ref().map(|j| j.progress.get());
+            let mut want_play = false;
+            let mut want_prep = false;
             let title = format!("3D structures - dataset {}", SLOT_NAMES[w.slot]);
             let mut open = w.open;
             detach::tool_window(
@@ -488,6 +661,43 @@ impl ViewerApp {
                         }
                         ui.weak("drag rotate · wheel zoom · middle-drag pan");
                     });
+                    if phases_here {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            if ui
+                                .small_button(if phase_playing { "⏸4" } else { "▶4" })
+                                .on_hover_text(if phase_playing {
+                                    "Stop running through the phases"
+                                } else {
+                                    "Play 4D: run the dataset through the phases of its 4D                                      group. The structures and the isodose shells follow,                                      because each phase brings its own."
+                                })
+                                .clicked()
+                            {
+                                want_play = true;
+                            }
+                            match &prepping {
+                                Some(msg) => {
+                                    ui.spinner();
+                                    ui.weak(msg.clone());
+                                }
+                                None => {
+                                    if ui
+                                        .add_enabled(
+                                            meshed < n_phases,
+                                            egui::Button::new("Prepare phases").small(),
+                                        )
+                                        .on_hover_text(
+                                            "Mesh the structures of every phase now, so that                                              playing them is smooth. Without this the first                                              pass through the group waits for the mesher at                                              every phase.",
+                                        )
+                                        .clicked()
+                                    {
+                                        want_prep = true;
+                                    }
+                                    ui.weak(format!("{meshed} / {n_phases} phases meshed"));
+                                }
+                            }
+                        });
+                    }
                     if dose_here.is_some() {
                         ui.horizontal(|ui| {
                             ui.checkbox(&mut w.show_dose, "Dose on the surface")
@@ -954,6 +1164,13 @@ impl ViewerApp {
                 },
             );
             w.open = open;
+            if want_prep {
+                self.start_phase_meshes(w);
+            }
+            if want_play {
+                let now = ctx.input(|i| i.time);
+                self.toggle_play(phase_target, now);
+            }
         }
         windows.retain(|w| w.open);
         self.d3_windows = windows;

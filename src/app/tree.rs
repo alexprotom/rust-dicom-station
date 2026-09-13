@@ -11,6 +11,7 @@ impl ViewerApp {
     /// Empty a study slot completely (used by tree "move" actions).
     pub(super) fn tree_clear_slot(&mut self, slot: usize) {
         self.slots[slot] = StudySlot::empty();
+        self.drop_phase_cache(slot);
         self.forget_sources(slot);
         self.planar_windows.retain(|w| w.slot != slot);
         self.d3_windows.retain(|w| w.slot != slot);

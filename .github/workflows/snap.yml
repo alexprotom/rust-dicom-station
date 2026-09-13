@@ -1,0 +1,136 @@
+name: Snap
+
+# Builds the snap from snap/snapcraft.yaml, installs it on the runner, checks
+# that both commands start inside the confinement, and publishes it to the
+# Snap Store when the secret SNAPCRAFT_STORE_CREDENTIALS is set
+# (docs/snap.md).
+#
+# Two ways in:
+#   * Actions > Snap > Run workflow: a test build of any branch. The snap is
+#     attached to the run as the `linux-snap` artifact, and released to the
+#     channel picked there, if any.
+#   * the release workflow calls it on every push to main, after the version
+#     check, with the release's version and channel.
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Snap Store channel for this build
+        type: choice
+        options:
+          - none
+          - edge
+          - beta
+          - candidate
+        default: none
+  workflow_call:
+    inputs:
+      channel:
+        description: Snap Store channel to release to (none - build and test only)
+        type: string
+        default: none
+      version:
+        description: The version the snap must carry (from Cargo.toml)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  snap:
+    name: Linux snap
+    runs-on: ubuntu-24.04
+    env:
+      SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # snapcraft in a fresh LXD container: rustup, the GNOME SDK and the
+      # release build of both executables. Nothing is cached between runs.
+      - name: Build snap
+        id: build
+        uses: snapcore/action-build@v1
+
+      - name: Check the snap's version
+        if: inputs.version != ''
+        shell: bash
+        env:
+          SNAP_FILE: ${{ steps.build.outputs.snap }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          case "$SNAP_FILE" in
+            *"_${VERSION}_"*) echo "$SNAP_FILE carries $VERSION" ;;
+            *)
+              echo "::error::$SNAP_FILE does not carry the version $VERSION"
+              exit 1
+              ;;
+          esac
+
+      - name: Install the snap
+        shell: bash
+        env:
+          SNAP_FILE: ${{ steps.build.outputs.snap }}
+        run: |
+          set -euo pipefail
+          # snapd puts each snap's runtime folder under XDG_RUNTIME_DIR; the
+          # runner's service user has no login session to create it.
+          uid=$(id -u)
+          sudo install -d -m 700 -o "$uid" "/run/user/$uid"
+          echo "XDG_RUNTIME_DIR=/run/user/$uid" >> "$GITHUB_ENV"
+          sudo snap install --dangerous "$SNAP_FILE"
+          # Connected on install (snapd fetches mesa-2404 as the default
+          # provider); spelled out so that a missing provider fails here,
+          # in the check below, and not on a user's machine.
+          sudo snap connect rust-dicom-station:gpu-2404 mesa-2404 || true
+          snap connections rust-dicom-station
+
+      # Reads the configuration and exits without speaking the protocol,
+      # behind the same GPU wrapper the server always runs behind.
+      - name: The MCP server starts
+        run: /snap/bin/rust-dicom-station.rds-mcp --check
+
+      # Every library the window needs is opened at run time, so only
+      # opening a window proves they are all there. Mesa's software Vulkan
+      # driver draws it on a runner without a GPU.
+      - name: The viewer opens a window
+        shell: bash
+        run: |
+          set -uo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth
+          # -ac: no X authority to hand across the snap's private /tmp.
+          xvfb-run -a -s "-ac -screen 0 1920x1080x24" \
+            timeout 40 /snap/bin/rust-dicom-station
+          code=$?
+          if [ "$code" -ne 124 ]; then
+            echo "::error::the viewer exited with status $code instead of running until the timeout"
+            exit 1
+          fi
+          echo "The viewer was still running after 40 seconds."
+
+      - name: Upload snap artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-snap
+          path: ${{ steps.build.outputs.snap }}
+          if-no-files-found: error
+
+      - name: No channel, no upload
+        if: inputs.channel == 'none'
+        run: echo "No channel requested - the snap is not uploaded."
+
+      - name: No credentials, no upload
+        if: inputs.channel != 'none' && env.SNAPCRAFT_STORE_CREDENTIALS == ''
+        run: echo "SNAPCRAFT_STORE_CREDENTIALS is not set - skipping the Snap Store upload."
+
+      - name: Publish to the Snap Store
+        if: inputs.channel != 'none' && env.SNAPCRAFT_STORE_CREDENTIALS != ''
+        uses: snapcore/action-publish@v1
+        with:
+          snap: ${{ steps.build.outputs.snap }}
+          release: ${{ inputs.channel }}

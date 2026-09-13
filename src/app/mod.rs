@@ -62,6 +62,7 @@ mod motion_win;
 mod pacs_win;
 mod panels;
 mod planar;
+mod play;
 mod poi;
 mod prompt_seg;
 mod propagate_win;
@@ -597,6 +598,10 @@ enum LoadResult {
     Study(Box<anyhow::Result<LoadedStudy>>, usize),
     /// A single series switched into (slot, series index).
     Volume(Box<anyhow::Result<LoadedVolume>>, usize, usize),
+    /// One phase of a 4D group stepped into (slot, series index). Lands
+    /// through [`ViewerApp::install_phase_volume`] instead, so that the
+    /// crosshair, the zoom and the registration stay where they are.
+    Phase(Box<anyhow::Result<LoadedVolume>>, usize, usize),
 }
 
 /// A unit of work running on a background thread: a shared progress handle
@@ -680,6 +685,10 @@ fn poll_tool_job<T>(
     }
 }
 
+/// What *Prepare phases* answers with: the structure meshes of each phase,
+/// each under the [`ViewerApp::d3_key_of`] the window will look it up by.
+type PhaseMeshes = Vec<(u64, Vec<RoiMesh>)>;
+
 /// A floating 3D structure-rendering window (one per study slot).
 struct D3Window {
     slot: usize,
@@ -741,6 +750,19 @@ struct D3Window {
     /// structure's own colour: what a hot spot does to an organ, on the
     /// organ, rather than on a slice through it.
     show_dose: bool,
+    /// Structure meshes already built, by the key they were built for.
+    /// Each phase of a 4D group has its own structure set, so stepping
+    /// through them would otherwise re-mesh the same anatomy on every
+    /// pass; *Prepare phases* fills this up front so the cine runs.
+    mesh_cache: std::collections::HashMap<u64, Arc<Vec<RoiMesh>>>,
+    /// The `settings_gen` the caches were filled at. An edit changes every
+    /// key at once, so they are dropped rather than kept as meshes of
+    /// something that no longer exists.
+    mesh_cache_gen: u64,
+    /// The same for the isodose shells, filled as the phases are seen.
+    iso_cache: std::collections::HashMap<u64, Arc<Vec<RoiMesh>>>,
+    /// Meshing every phase of the group up front.
+    prep_job: Option<Job<PhaseMeshes>>,
     /// Cached projected geometry for the current camera.
     frame: D3Frame,
 }
@@ -1511,6 +1533,9 @@ pub struct ViewerApp {
     /// *Modules ▶ Image information*: voxel spacing, slice thickness and
     /// the rest of what the displayed series is, read from its headers.
     module_info: bool,
+    /// *Modules ▶ Playback*: the speed, the loop mode and what a phase
+    /// change carries with it, plus the transport controls themselves.
+    module_play: bool,
     /// Which module sections are unfolded (settings key `modules_open`),
     /// and whether the next panel draw has to apply that list - set by
     /// *Restore the last session*.
@@ -1521,6 +1546,9 @@ pub struct ViewerApp {
     /// keep the last run's list.
     modules_tracked: bool,
     dose_est: dose_est::DoseEst,
+    /// Playing through slices and through 4D phases: the settings the
+    /// *Playback* module carries, and the run in flight.
+    play: play::PlayState,
     /// State of the *Image information* module.
     info: img_info::InfoState,
     dose_est_job: Option<Job<Vec<dose_est::DoseRow>>>,
@@ -1590,6 +1618,7 @@ impl ViewerApp {
             || self.module_auto
             || self.module_dose
             || self.module_info
+            || self.module_play
     }
 
     /// Both datasets show an image volume.
@@ -1822,10 +1851,12 @@ impl ViewerApp {
             module_auto: prefs.module_auto,
             module_dose: prefs.module_dose,
             module_info: prefs.module_info,
+            module_play: prefs.module_play,
             modules_open: prefs.modules_open.clone(),
             apply_modules_open: false,
             modules_tracked: false,
             dose_est: dose_est::DoseEst::default(),
+            play: play::PlayState::default(),
             info: img_info::InfoState::default(),
             dose_est_job: None,
             auto: auto_tools::AutoTools::default(),
@@ -1883,6 +1914,7 @@ impl ViewerApp {
             module_auto: self.module_auto,
             module_dose: self.module_dose,
             module_info: self.module_info,
+            module_play: self.module_play,
             modules_open: self.modules_open.clone(),
             session: self.session.clone(),
             graphics_backend: self.graphics_backend,
@@ -2030,6 +2062,13 @@ impl eframe::App for ViewerApp {
                     if let Some(study) = &mut self.slots[slot].study {
                         study.warnings.extend(warnings);
                     }
+                }
+                Err(e) => self.error = Some(format!("{e:#}")),
+            },
+            Some(LoadResult::Phase(res, slot, idx)) => match *res {
+                Ok((vol, window, _)) => {
+                    let label = self.phase_label_of(slot, idx);
+                    self.install_phase_volume(slot, vol, window, idx, &label);
                 }
                 Err(e) => self.error = Some(format!("{e:#}")),
             },
@@ -2208,6 +2247,10 @@ impl eframe::App for ViewerApp {
                 }
             }
         }
+
+        // Poll the 4D phase reader, and run the cine clock.
+        self.poll_phase_cache(&ctx);
+        self.play_tick(&ctx);
 
         // Poll a vector-field re-sampling.
         if let Some(field) = poll_job(&mut self.field_job, &ctx, "Vector field", &mut self.error) {

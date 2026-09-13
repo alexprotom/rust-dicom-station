@@ -30,6 +30,12 @@ engine.*
   gantry tilt, frame of reference, kV / mAs / CTDIvol / kernel, rescale and
   units - with whatever wants a second look named and explained, and a side
   by side of what the two datasets disagree about before you register them.
+* **Playback** - ▶ on every viewport: through the slices of a view, and
+  through the phases of a 4D group. Playing a group carries the structure
+  set, the segmentation series and the dose of each phase with it and walks
+  the selection down the group in the tree; the phases are read into memory
+  once (under a budget you set) so it runs as a cine rather than a
+  slideshow, and the 3D window breathes with it.
 * **Patient archive** - a local PACS on plain folders and text sidecars:
   file a study, list patients without opening a DICOM file, load into either
   dataset, and send the structures and segmentations you drew back as derived
@@ -113,8 +119,9 @@ tumor, unfold *💬 Prompt segmentation* in the Structure auto tools module
 (right panel), prompt **Box**, **▶ Segment**.
 The engines fetch their weights on first use into one model folder
 (`%LOCALAPPDATA%\RustDICOMStation\models` on Windows,
-`~/.local/share/RustDICOMStation/models` on Linux), movable from any tool
-window; each engine also has a headless CLI in [examples/](examples/).
+`~/.local/share/RustDICOMStation/models` on Linux,
+`~/snap/rust-dicom-station/common/data/models` in the snap), movable from any
+tool window; each engine also has a headless CLI in [examples/](examples/).
 
 If the program will not start at all, it is almost certainly one thing: a
 Windows machine advertising a Vulkan driver that cannot create a device. It
@@ -127,8 +134,10 @@ CPU-only viewer without the GPU inference backend. Every push to `main`
 publishes a release: a Windows installer
 (`rust-dicom-station-<version>-windows-x86_64.exe` - shortcuts, "Open with"
 on folders, the VC++ runtime check, optional weight prefetch, uninstaller)
-and a Linux AppImage. A newer installer updates an existing installation in
-place (no second copy, nothing to uninstall first), *Start ▸ Update Rust
+and a Linux AppImage, and puts the snap into the Snap Store (`sudo snap
+install rust-dicom-station`, [docs/snap.md](docs/snap.md)). A newer
+installer updates an existing installation in place (no second copy,
+nothing to uninstall first), *Start ▸ Update Rust
 DICOM Station* fetches the newest release, and the package is published to
 winget as `RDS.RustDICOMStation` (`winget install` / `winget
 upgrade`). The installer is its own crate in
@@ -162,6 +171,7 @@ https://alexprotom.github.io/rust-dicom-station/
 | [docs/mcp.md](docs/mcp.md) | The MCP server: tools, the heart workflow prompt, patient-identity safety, configuration |
 | [docs/architecture.md](docs/architecture.md) | Design, functional overview, module map, threading, the model folder, conventions, testing |
 | [docs/release-versioning.md](docs/release-versioning.md) | How versions and releases are produced |
+| [docs/snap.md](docs/snap.md) | The Linux snap: confinement, where its files are, the MCP server in it, building and publishing |
 | [docs/example-data.md](docs/example-data.md) | Bundled patient data, source and citations |
 | [installer/README.md](installer/README.md) | The Windows installer: building it, what it installs, updating, winget, silent switches |
 

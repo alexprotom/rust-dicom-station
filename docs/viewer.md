@@ -172,14 +172,16 @@ brings it back.
 
 The *Modules* menu chooses the right panel's sections, in the order they
 appear: **Image information** (what the displayed series is - see below),
-**Image registration**, **Image simulation**, the **Structure editor**
-(insert, edit and combine structures - [contours.md](contours.md)), the
-**Structure auto tools** (the body contour and the three segmentation
-engines - [segmentation.md](segmentation.md)), **Structure propagation** and
-**Dose estimation** (the dose metrics table - [dvh.md](dvh.md)). The image
-information, the editor, the auto tools and the dose estimation start
-switched on, the other three off; every choice is remembered between runs,
-and with all seven off there is no right panel at all. Every section starts folded; which ones were
+**Playback** (the ▶ buttons on the viewports - see below), **Image
+registration**, **Image simulation**, the **Structure editor** (insert, edit
+and combine structures - [contours.md](contours.md)), the **Structure auto
+tools** (the body contour and the three segmentation engines -
+[segmentation.md](segmentation.md)), **Structure propagation** and **Dose
+estimation** (the dose metrics table - [dvh.md](dvh.md)). The image
+information, the playback, the editor, the auto tools and the dose
+estimation start switched on, the other three off; every choice is
+remembered between runs, and with all eight off there is no right panel at
+all. Every section starts folded; which ones were
 unfolded is remembered too, and *Restore the last session* unfolds them
 again. The drawing tools are not in the panel: the toolbar's **✏
 Draw structure** button unfolds them on the toolbar. The *Tools* menu keeps
@@ -221,6 +223,75 @@ disagree about - the check to make before registering them, contouring
 across them or carrying a dose from one to the other. *Copy* puts the whole
 report on the clipboard; *Read again* re-reads the headers after the files
 on disk have changed.
+
+## Playing through slices and phases
+
+Every viewport carries two play buttons in its top-right corner, beside the
+reset and maximize ones, and each appears only where there is something to
+play:
+
+* **▶3** runs through the **slices** of that view, the way one scrolls a
+  stack by hand but without the hand. It appears on any view with more than
+  one slice, and it moves that view only, exactly as the wheel and the
+  scrubber under the pane do.
+* **▶4** runs the whole dataset through the **phases** of its 4D group. It
+  appears only when the displayed series belongs to a group that still has
+  at least two phases. All three views change together because the image
+  itself changes, the selection walks down the group in the data tree, and
+  the structure set, the segmentation series and the dose of each phase come
+  with it.
+
+Either button turns into **⏸** while it runs, and one run is in flight at a
+time. The **3D structures** window has a **▶4** of its own that starts the
+same run, so the surfaces and the isodose shells breathe with the views.
+
+### Playback
+
+The module is where the settings live.
+
+* **Slices** - which view the module's own transport runs (axial, sagittal
+  or coronal), ⏮ ▶ ⏭ and a scrubber with the slice number.
+* **Phases** - the group being played, the same transport, and a scrubber
+  showing the phase label and its place in the group.
+* **Speed** - separately for slices and phases: a stack of 200 slices wants
+  to move faster than a ten-phase breathing cycle.
+* **At the end** - *Loop* starts again from the beginning, *Bounce* turns
+  around and runs back, *Once* stops. For a breathing cycle *Bounce* is the
+  honest one: the jump from the last phase to the first is a jump the
+  patient never made.
+* **Slice step** - show every n-th slice, so a long stack can be watched in
+  one pass. Phases always step one at a time.
+* **A phase change carries with it** - the structure set drawn on the new
+  phase, the segmentation series that belongs to it, and the dose named
+  after it. The first two are matched by the image series the object
+  references. A dose carries no such reference, so the only thing that can
+  tie one to a phase is what it is called: a dose whose label contains the
+  phase's own token (`50%`, `T3`) as a whole word follows the phase, and a
+  study whose doses are not named after its phases simply keeps the dose it
+  has.
+* **Phases in memory** - a phase switch means a different image series, and
+  reading one off the disk takes long enough that playing straight from
+  disk would be a slideshow. So the first press of ▶4 reads every phase of
+  the group into memory with a progress bar and then plays from there;
+  *Read phases* does the same without playing, and *Free* gives the memory
+  back. **Budget** refuses a group whose phases would need more than that,
+  with the estimate shown before anything is read: ten phases of a large CT
+  run to about a gigabyte.
+
+Stepping between the phases of the group on display - with ⏮ ⏭, with the
+scrubber, or by clicking a phase in the data tree - keeps the view where it
+is: the crosshair, the zoom, the pan, the slice of every view and the active
+registration all stay, because two phases are the same patient a moment
+apart and a view that jumps back to the middle slice hides the motion one is
+looking for. Picking any other series is an ordinary switch and still starts
+the dataset afresh.
+
+In the **3D structures** window, each phase brings its own structure set and
+so its own surfaces. **Prepare phases** meshes them all up front, which is
+what makes the cine smooth; without it the first pass through the group
+waits for the mesher at every phase, and the second pass is smooth because
+the meshes are then cached. The isodose shells cache the same way as they
+are seen.
 
 ## Interaction reference
 

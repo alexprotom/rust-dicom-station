@@ -38,6 +38,22 @@ In the tree a group renders as a `🎞` node inside its study - phases in
 temporal order, then the reconstructions; grouped series leave their
 modality node so each series has one place.
 
+### Watching a group move
+
+Any viewport showing a series of a group carries a **▶4** button, and the
+*Playback* module carries the same transport with a phase scrubber; both are
+described in [viewer.md](viewer.md#playing-through-slices-and-phases). The
+short version: the first press reads every phase into memory (a group whose
+phases would exceed the module's budget is refused rather than read), and
+then the dataset runs through the phases with the structure set,
+segmentation series and dose of each one, the tree selection walking down
+the group as it goes. Stepping between the phases of the group on display
+keeps the crosshair, the zoom, the pan and the registration where they are,
+which is what makes two phases comparable by eye. The 3D window plays the
+same run and can mesh every phase up front so the surfaces keep up.
+
+Playing is for looking; the pipeline below is for measuring.
+
 ## The pipeline (`src/app/motion_win.rs`)
 
 *Tools ▸ 📈 Structure motion* (the dataset is chosen on the window's
