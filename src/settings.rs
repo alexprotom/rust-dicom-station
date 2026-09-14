@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -33,6 +34,7 @@ const MODULE_TOOLS_KEY: &str = "module_structure_editor";
 const MODULE_AUTO_KEY: &str = "module_structure_auto_tools";
 const MODULE_DOSE_KEY: &str = "module_dose_estimation";
 const MODULE_INFO_KEY: &str = "module_image_information";
+const MODULE_PLAY_KEY: &str = "module_playback";
 /// Which module sections were unfolded, remembered for *Restore the last
 /// session*.
 const MODULES_OPEN_KEY: &str = "modules_open";
@@ -89,6 +91,10 @@ pub struct Settings {
     /// nothing until its section is unfolded.
     pub module_info: bool,
 
+    /// *Modules ▶ Playback*: the transport controls and the settings of
+    /// the Play buttons on the viewports. On by default.
+    pub module_play: bool,
+
     /// The module sections that were unfolded when the settings were last
     /// written (`registration`, `simulation`, `editor`, `auto`,
     /// `propagation`, `dose`). Every section starts folded; *Restore the
@@ -123,6 +129,7 @@ impl Default for Settings {
             module_auto: true,
             module_dose: true,
             module_info: true,
+            module_play: true,
             modules_open: Vec::new(),
             session: [Vec::new(), Vec::new()],
             // Let wgpu choose. The installer writes an explicit value when
@@ -141,12 +148,96 @@ pub fn app_dir() -> PathBuf {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
+/// Where the program runs from when it was installed as a snap.
+///
+/// snapd sets these variables for every command of a snap and nothing else
+/// sets them, so their presence is how the program knows. Three things
+/// change inside a snap:
+///
+/// * **The folders.** snapd points `$HOME` at `~/snap/<name>/<revision>` and
+///   copies that folder on every refresh, keeping the last few revisions.
+///   Multi-gigabyte model weights and the patient archive must not be copied
+///   like that, so configuration and data both live in `$SNAP_USER_COMMON`
+///   (`~/snap/<name>/common`), which every revision shares.
+/// * **The MCP server's command.** An MCP client cannot run the binary
+///   inside the snap; it runs the snap's command, `/snap/bin/<name>.rds-mcp`.
+/// * **Starting the viewer from the MCP server** goes through the snap's
+///   desktop launcher, which sets up the graphics environment the viewer
+///   command gets from its own launcher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapEnv {
+    /// `$SNAP_INSTANCE_NAME`: what the commands are called under `/snap/bin`
+    /// (the snap name, or `name_key` for a parallel installation).
+    pub instance: String,
+    /// `$SNAP`: the read-only mount of the running revision.
+    pub root: PathBuf,
+    /// `$SNAP_USER_COMMON`: per user, shared by every revision.
+    pub user_common: PathBuf,
+}
+
+impl SnapEnv {
+    /// Where the settings and `mcp.toml` live.
+    pub fn config_dir(&self) -> PathBuf {
+        self.user_common.join("config")
+    }
+
+    /// Where models, the archive, templates and the MCP audit log live.
+    pub fn data_dir(&self) -> PathBuf {
+        self.user_common.join("data")
+    }
+
+    /// The command snapd exposes for one of the snap's apps: `/snap/bin/<name>`
+    /// for the app named like the snap, `/snap/bin/<name>.<app>` otherwise.
+    pub fn command(&self, app: &str) -> PathBuf {
+        let snap_name = self.instance.split('_').next().unwrap_or(&self.instance);
+        if app == snap_name {
+            PathBuf::from("/snap/bin").join(&self.instance)
+        } else {
+            PathBuf::from("/snap/bin").join(format!("{}.{app}", self.instance))
+        }
+    }
+
+    /// The desktop launcher the snap's viewer command runs through (put
+    /// there by the GNOME extension, see `snap/snapcraft.yaml`), when it
+    /// exists.
+    pub fn desktop_launcher(&self) -> Option<PathBuf> {
+        let p = self
+            .root
+            .join("snap")
+            .join("command-chain")
+            .join("desktop-launch");
+        p.is_file().then_some(p)
+    }
+
+    /// Read the snap environment through `get`; `None` unless all three
+    /// variables are set and not empty.
+    fn from_vars(get: impl Fn(&str) -> Option<OsString>) -> Option<SnapEnv> {
+        let var = |k: &str| get(k).filter(|v| !v.is_empty());
+        let instance = var("SNAP_INSTANCE_NAME").or_else(|| var("SNAP_NAME"))?;
+        Some(SnapEnv {
+            instance: instance.to_string_lossy().into_owned(),
+            root: PathBuf::from(var("SNAP")?),
+            user_common: PathBuf::from(var("SNAP_USER_COMMON")?),
+        })
+    }
+}
+
+/// The snap this process runs from, if it runs from one (Linux only).
+pub fn snap_env() -> Option<SnapEnv> {
+    if cfg!(target_os = "linux") {
+        SnapEnv::from_vars(|k| std::env::var_os(k))
+    } else {
+        None
+    }
+}
+
 /// Return the platform-specific directory used for persistent application
 /// configuration.
 ///
 /// Linux:
 ///   $XDG_CONFIG_HOME/RustDICOMStation
 ///   or ~/.config/RustDICOMStation
+///   or, installed as a snap, ~/snap/<name>/common/config (see [`SnapEnv`])
 ///
 /// Windows:
 ///   %LOCALAPPDATA%\RustDICOMStation
@@ -156,6 +247,9 @@ pub fn app_dir() -> PathBuf {
 pub fn config_dir() -> PathBuf {
     #[cfg(target_os = "linux")]
     {
+        if let Some(snap) = snap_env() {
+            return snap.config_dir();
+        }
         if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME") {
             if !dir.is_empty() {
                 return PathBuf::from(dir).join(APP_NAME);
@@ -196,6 +290,7 @@ pub fn config_dir() -> PathBuf {
 /// Linux:
 ///   $XDG_DATA_HOME/RustDICOMStation
 ///   or ~/.local/share/RustDICOMStation
+///   or, installed as a snap, ~/snap/<name>/common/data (see [`SnapEnv`])
 ///
 /// Windows:
 ///   %LOCALAPPDATA%\RustDICOMStation
@@ -205,6 +300,9 @@ pub fn config_dir() -> PathBuf {
 pub fn data_dir() -> PathBuf {
     #[cfg(target_os = "linux")]
     {
+        if let Some(snap) = snap_env() {
+            return snap.data_dir();
+        }
         if let Some(dir) = std::env::var_os("XDG_DATA_HOME") {
             if !dir.is_empty() {
                 return PathBuf::from(dir).join(APP_NAME);
@@ -279,13 +377,80 @@ pub fn mcp_exe_path() -> PathBuf {
     app_dir().join(name)
 }
 
+/// How an MCP client starts the server: a command and its arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpLaunch {
+    pub command: PathBuf,
+    pub args: Vec<&'static str>,
+}
+
+impl McpLaunch {
+    /// Where this copy of the program was installed from decides it:
+    ///
+    /// * a snap - the snap's command, `/snap/bin/<name>.rds-mcp`; the binary
+    ///   inside the snap cannot be run from outside it;
+    /// * an AppImage (`$APPIMAGE`, set by its runtime) - the AppImage file
+    ///   with `mcp`, which its AppRun dispatches on; the executable beside
+    ///   this one lives in a mount that is gone once the program exits;
+    /// * anything else - `rds-mcp` beside this executable.
+    fn resolve(snap: Option<&SnapEnv>, appimage: Option<PathBuf>, beside: PathBuf) -> McpLaunch {
+        if let Some(snap) = snap {
+            McpLaunch {
+                command: snap.command("rds-mcp"),
+                args: Vec::new(),
+            }
+        } else if let Some(file) = appimage {
+            McpLaunch {
+                command: file,
+                args: vec!["mcp"],
+            }
+        } else {
+            McpLaunch {
+                command: beside,
+                args: Vec::new(),
+            }
+        }
+    }
+
+    /// Shown to the user: the command and its arguments on one line.
+    pub fn display(&self) -> String {
+        let mut line = self.command.display().to_string();
+        for a in &self.args {
+            line.push(' ');
+            line.push_str(a);
+        }
+        line
+    }
+
+    /// The entry for `claude_desktop_config.json` (or an equivalent MCP
+    /// client configuration).
+    pub fn client_snippet(&self) -> String {
+        let command =
+            serde_json::to_string(&self.command.to_string_lossy()).expect("a string serialises");
+        let args = serde_json::to_string(&self.args).expect("strings serialise");
+        format!(
+            "{{\n  \"mcpServers\": {{\n    \"rust-dicom-station\": {{\n      \"command\": {command},\n      \"args\": {args}\n    }}\n  }}\n}}\n"
+        )
+    }
+}
+
+/// How an MCP client starts this installation's server (see
+/// [`McpLaunch::resolve`]).
+pub fn mcp_client_launch() -> McpLaunch {
+    let appimage = if cfg!(target_os = "linux") {
+        std::env::var_os("APPIMAGE")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    } else {
+        None
+    };
+    McpLaunch::resolve(snap_env().as_ref(), appimage, mcp_exe_path())
+}
+
 /// The entry an MCP client (Claude Desktop, Claude Code) needs in its
-/// configuration to launch the server: JSON with the executable's path.
+/// configuration to launch the server.
 pub fn mcp_client_snippet() -> String {
-    let exe = mcp_exe_path().to_string_lossy().replace('\\', "\\\\");
-    format!(
-        "{{\n  \"mcpServers\": {{\n    \"rust-dicom-station\": {{\n      \"command\": \"{exe}\",\n      \"args\": []\n    }}\n  }}\n}}\n"
-    )
+    mcp_client_launch().client_snippet()
 }
 
 /// Full path of the settings file.
@@ -449,6 +614,10 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
             if let Some(b) = bool_from_str(value) {
                 s.module_info = b;
             }
+        } else if key.eq_ignore_ascii_case(MODULE_PLAY_KEY) {
+            if let Some(b) = bool_from_str(value) {
+                s.module_play = b;
+            }
         } else if key.eq_ignore_ascii_case(MODULES_OPEN_KEY) {
             s.modules_open = value
                 .split(',')
@@ -489,6 +658,7 @@ fn render(s: &Settings) -> String {
          {MODULE_AUTO_KEY} = {}\n\
          {MODULE_DOSE_KEY} = {}\n\
          {MODULE_INFO_KEY} = {}\n\
+         {MODULE_PLAY_KEY} = {}\n\
          # module sections unfolded at the last run, for Restore the last session\n\
          {MODULES_OPEN_KEY} = {}\n\
          # graphics backend = auto | vulkan | dx12 | metal | opengl\n\
@@ -501,6 +671,7 @@ fn render(s: &Settings) -> String {
         bool_to_str(s.module_auto),
         bool_to_str(s.module_dose),
         bool_to_str(s.module_info),
+        bool_to_str(s.module_play),
         s.modules_open.join(","),
         s.graphics_backend.key()
     ));
@@ -520,6 +691,131 @@ fn render(s: &Settings) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn snap_vars(vars: &[(&str, &str)]) -> Option<SnapEnv> {
+        let owned: Vec<(String, OsString)> = vars
+            .iter()
+            .map(|(k, v)| (k.to_string(), OsString::from(v)))
+            .collect();
+        SnapEnv::from_vars(|k| {
+            owned
+                .iter()
+                .find(|(name, _)| name == k)
+                .map(|(_, v)| v.clone())
+        })
+    }
+
+    const SNAP_VARS: [(&str, &str); 3] = [
+        ("SNAP_INSTANCE_NAME", "rust-dicom-station"),
+        ("SNAP", "/snap/rust-dicom-station/12"),
+        ("SNAP_USER_COMMON", "/home/u/snap/rust-dicom-station/common"),
+    ];
+
+    #[test]
+    fn a_snap_is_recognised_only_with_all_its_variables() {
+        assert_eq!(snap_vars(&[]), None);
+        for (missing, (name, _)) in SNAP_VARS.iter().enumerate() {
+            let mut vars = SNAP_VARS.to_vec();
+            vars.remove(missing);
+            assert_eq!(snap_vars(&vars), None, "without {name}");
+            // Set but empty counts as missing.
+            vars.insert(missing, (name, ""));
+            assert_eq!(snap_vars(&vars), None, "empty {name}");
+        }
+        // SNAP_NAME stands in for SNAP_INSTANCE_NAME (older snapd).
+        let mut vars = SNAP_VARS.to_vec();
+        vars[0].0 = "SNAP_NAME";
+        assert_eq!(snap_vars(&vars).unwrap().instance, "rust-dicom-station");
+    }
+
+    #[test]
+    fn inside_a_snap_config_and_data_are_shared_by_every_revision() {
+        let snap = snap_vars(&SNAP_VARS).unwrap();
+        let common = Path::new("/home/u/snap/rust-dicom-station/common");
+        assert_eq!(snap.config_dir(), common.join("config"));
+        assert_eq!(snap.data_dir(), common.join("data"));
+        // Nothing lives under the revision's own folder or the read-only mount.
+        for dir in [snap.config_dir(), snap.data_dir()] {
+            assert!(!dir.starts_with(&snap.root), "{}", dir.display());
+        }
+    }
+
+    #[test]
+    fn snap_commands_are_named_the_way_snapd_names_them() {
+        let snap = snap_vars(&SNAP_VARS).unwrap();
+        assert_eq!(
+            snap.command("rds-mcp"),
+            Path::new("/snap/bin/rust-dicom-station.rds-mcp")
+        );
+        assert_eq!(
+            snap.command("rust-dicom-station"),
+            Path::new("/snap/bin/rust-dicom-station")
+        );
+        // A parallel installation carries its key in every command name.
+        let mut vars = SNAP_VARS.to_vec();
+        vars[0].1 = "rust-dicom-station_test";
+        let snap = snap_vars(&vars).unwrap();
+        assert_eq!(
+            snap.command("rds-mcp"),
+            Path::new("/snap/bin/rust-dicom-station_test.rds-mcp")
+        );
+        assert_eq!(
+            snap.command("rust-dicom-station"),
+            Path::new("/snap/bin/rust-dicom-station_test")
+        );
+    }
+
+    #[test]
+    fn an_mcp_client_runs_what_the_installation_offers() {
+        let beside = PathBuf::from("/opt/rds/rds-mcp");
+        let snap = snap_vars(&SNAP_VARS).unwrap();
+        let appimage = PathBuf::from("/home/u/Apps/RDS.AppImage");
+
+        let plain = McpLaunch::resolve(None, None, beside.clone());
+        assert_eq!(plain.command, beside);
+        assert!(plain.args.is_empty());
+
+        let a = McpLaunch::resolve(None, Some(appimage.clone()), beside.clone());
+        assert_eq!(a.command, appimage);
+        assert_eq!(a.args, ["mcp"]);
+        assert_eq!(a.display(), "/home/u/Apps/RDS.AppImage mcp");
+
+        // A snap wins: an AppImage variable leaking into it would be stale.
+        let s = McpLaunch::resolve(Some(&snap), Some(appimage), beside);
+        assert_eq!(s.command, Path::new("/snap/bin/rust-dicom-station.rds-mcp"));
+        assert!(s.args.is_empty());
+
+        for launch in [plain, a, s] {
+            let v: serde_json::Value =
+                serde_json::from_str(&launch.client_snippet()).expect("valid JSON");
+            let entry = &v["mcpServers"]["rust-dicom-station"];
+            assert_eq!(
+                entry["command"].as_str(),
+                Some(launch.command.to_string_lossy().as_ref())
+            );
+            let args: Vec<&str> = entry["args"]
+                .as_array()
+                .expect("an array")
+                .iter()
+                .map(|a| a.as_str().expect("a string"))
+                .collect();
+            assert_eq!(args, launch.args);
+        }
+    }
+
+    #[test]
+    fn the_client_snippet_escapes_a_windows_path() {
+        let launch = McpLaunch {
+            command: PathBuf::from(r"C:\Program Files\RDS\rds-mcp.exe"),
+            args: Vec::new(),
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&launch.client_snippet()).expect("valid JSON");
+        assert_eq!(
+            v["mcpServers"]["rust-dicom-station"]["command"],
+            r"C:\Program Files\RDS\rds-mcp.exe"
+        );
+    }
 
     #[test]
     fn the_mcp_client_snippet_is_json_naming_the_executable() {
@@ -693,13 +989,18 @@ mod tests {
             parse("").module_info && !parse(&format!("{MODULE_INFO_KEY} = off")).module_info,
             "the image information module starts switched on and can be switched off"
         );
+        assert!(
+            parse("").module_play && !parse(&format!("{MODULE_PLAY_KEY} = off")).module_play,
+            "the playback module starts switched on and can be switched off"
+        );
         // Whatever was set survives a write and a read.
         let s = Settings {
             module_info: false,
             module_dose: false,
+            module_play: false,
             ..Settings::default()
         };
         let back = parse(&render(&s));
-        assert!(!back.module_info && !back.module_dose);
+        assert!(!back.module_info && !back.module_dose && !back.module_play);
     }
 }

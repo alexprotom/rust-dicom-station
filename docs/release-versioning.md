@@ -67,9 +67,10 @@ The workflow:
 2. Checks that the version has not already been released.
 3. Builds the Windows installer and the winget manifests for it.
 4. Builds the Linux AppImage.
-5. Generates SHA256 checksums.
-6. Creates the GitHub Release and uploads the binaries.
-7. Submits the new version to winget, when the `WINGET_TOKEN` secret is set (see [winget](#winget)).
+5. Builds the snap, tests it on the runner and releases it to the Snap Store, when the `SNAPCRAFT_STORE_CREDENTIALS` secret is set (see [Snap Store](#snap-store)).
+6. Generates SHA256 checksums.
+7. Creates the GitHub Release and uploads the binaries.
+8. Submits the new version to winget, when the `WINGET_TOKEN` secret is set (see [winget](#winget)).
 
 ## Release Artifacts
 
@@ -127,6 +128,16 @@ winget upgrade RDS.RustDICOMStation
 3. Save it as the repository secret `WINGET_TOKEN` (*Settings > Secrets and variables > Actions*).
 
 From then on the `winget` job of the release workflow opens the pull request for each new version itself. Add the secret only after the first version has been merged: the job updates an existing package and fails on one that does not exist yet. Without the secret the job is skipped.
+
+## Snap Store
+
+The snap is `rust-dicom-station` ([docs/snap.md](snap.md)). The `snap` job of the release workflow runs [snap.yml](../.github/workflows/snap.yml), which builds it, installs it on the runner, starts both commands, and releases it to the `stable` channel, or to the channel named by the repository variable `SNAP_CHANNEL`. The GitHub Release does not wait for it, and the snap is not one of the release's files: users get it from the store.
+
+```text
+sudo snap install rust-dicom-station
+```
+
+Setting it up (register the name, the first upload, the `SNAPCRAFT_STORE_CREDENTIALS` secret) is described step by step in [docs/snap.md](snap.md#publishing). Until the secret exists the job builds and tests the snap and uploads nothing. *Actions > Snap > Run workflow* builds any branch the same way, for testing or for the `edge` / `beta` / `candidate` channels.
 
 ## Important Rule
 

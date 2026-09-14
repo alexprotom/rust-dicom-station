@@ -138,8 +138,9 @@ impl ViewerApp {
     pub(super) fn modules_panel(&mut self, ui: &mut egui::Ui) {
         /// The id salt of every module header (its title unless it sets
         /// one) and the settings word for it.
-        const MODULE_HEADERS: [(&str, &str); 7] = [
+        const MODULE_HEADERS: [(&str, &str); 8] = [
             ("Image information", "information"),
+            ("Playback", "playback"),
             ("Image registration", "registration"),
             ("Image simulation", "simulation"),
             ("Structure editor", "editor"),
@@ -192,6 +193,9 @@ impl ViewerApp {
                 }
                 if self.module_info {
                     self.image_info_section(ui);
+                }
+                if self.module_play {
+                    self.playback_section(ui);
                 }
                 if self.module_registration {
                     self.registration_section(ui);
@@ -913,7 +917,18 @@ impl ViewerApp {
             self.rename_request = rename;
         }
         if let Some(i) = switch_to {
-            self.start_series_switch(slot, i);
+            // Stepping between the phases of the group already on display
+            // keeps the view: two phases are the same patient a moment
+            // apart, and a crosshair that jumps back to the middle slice
+            // every time hides the very motion one is looking for. Any
+            // other member is an ordinary series switch.
+            match self
+                .fourd_phases(slot)
+                .and_then(|(_, idxs, _)| idxs.iter().position(|x| *x == i))
+            {
+                Some(phase) => self.goto_phase(slot, phase),
+                None => self.start_series_switch(slot, i),
+            }
         }
     }
 

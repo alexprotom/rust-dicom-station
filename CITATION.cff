@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: "If you use this software in work that you publish, please cite it."
+title: "Rust DICOM Station"
+abstract: >-
+  DICOM and RT DICOM station for medical imaging and radiotherapy research,
+  analysis and quality assurance, written entirely in Rust. CT, MR and PET
+  series with RTSTRUCT, RTDOSE and RTPLAN; registration, structure
+  propagation, DRR generation, dose-volume histograms, 4D motion analysis,
+  interactive and AI-assisted segmentation, 3D visualization, DICOM editing
+  and export.
+type: software
+authors:
+  - family-names: Pryanichnikov
+    given-names: Alexander
+    # orcid: "https://orcid.org/0000-0000-0000-0000"   # add your ORCID here
+version: 0.9.1
+date-released: 2026-09-14
+url: "https://alexprotom.github.io/rust-dicom-station/"
+repository-code: "https://github.com/alexprotom/rust-dicom-station"
+license: MIT
+keywords:
+  - DICOM
+  - medical imaging
+  - radiotherapy
+  - proton therapy
+  - RTSTRUCT
+  - dose-volume histogram
+  - deformable image registration
+  - segmentation
+  - Rust

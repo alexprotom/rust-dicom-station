@@ -246,14 +246,30 @@ fn viewer_exe(core: &Core) -> Result<PathBuf> {
     bail!("the viewer executable was not found beside rds-mcp; set viewer_exe in mcp.toml")
 }
 
+/// How to start the viewer. Inside a snap the executable is not started
+/// bare: this server runs without the desktop environment the viewer needs
+/// (display libraries, fonts, the portal for file dialogs), so it goes
+/// through the snap's desktop launcher, exactly as the viewer's own command
+/// does. A `viewer_exe` set in mcp.toml is taken as it is.
+fn viewer_command(core: &Core) -> Result<std::process::Command> {
+    let exe = viewer_exe(core)?;
+    if core.session.config.viewer_exe.is_none() {
+        if let Some(launcher) = settings::snap_env().and_then(|s| s.desktop_launcher()) {
+            let mut cmd = std::process::Command::new(launcher);
+            cmd.arg(exe);
+            return Ok(cmd);
+        }
+    }
+    Ok(std::process::Command::new(exe))
+}
+
 pub fn open_in_viewer(core: &mut Core, a: OpenViewerArgs, _p: &Progress) -> Result<Value> {
     let a_dir = readable_folder(core, &a.path)?;
     let b_dir = match &a.path_b {
         Some(b) => Some(readable_folder(core, b)?),
         None => None,
     };
-    let exe = viewer_exe(core)?;
-    let mut cmd = std::process::Command::new(&exe);
+    let mut cmd = viewer_command(core)?;
     cmd.arg(&a_dir);
     if let Some(b) = &b_dir {
         cmd.arg(b);

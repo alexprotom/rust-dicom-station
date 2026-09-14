@@ -34,14 +34,19 @@ sequence.
      directly, for a client that will not pass an argument. Everything else -
      `--config`, `--check` - works as it does on the standalone binary:
      `./rust-dicom-station.AppImage mcp --check`.
+   * **Snap** - the server is the snap's second command,
+     `/snap/bin/rust-dicom-station.rds-mcp`; that path is what the client
+     runs ([snap.md](snap.md#the-mcp-server-in-a-snap)). Its roots must be
+     folders the snap may read: under the home folder, or on removable media
+     once that interface is connected.
    * **From source** - `cargo build --release --features mcp` produces
      `target/release/rds-mcp` beside the viewer.
 
    The viewer's *Settings ▶ MCP server* menu says whether it is present.
 2. Write the configuration, `mcp.toml`, in the station's configuration folder
    (`%LOCALAPPDATA%\RustDICOMStation` on Windows, `~/.config/RustDICOMStation`
-   on Linux; the menu shows the exact path). Without it no dataset can be
-   opened:
+   on Linux, `~/snap/rust-dicom-station/common/config` in the snap; the menu
+   shows the exact path). Without it no dataset can be opened:
 
    ```toml
    roots = ["D:/studies/anonymized"]      # folders that may be read

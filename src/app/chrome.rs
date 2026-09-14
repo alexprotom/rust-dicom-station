@@ -189,6 +189,15 @@ impl ViewerApp {
                             )
                             .changed();
                         modules_changed |= ui
+                            .checkbox(&mut self.module_play, "Playback")
+                            .on_hover_text(
+                                "The ▶ buttons on the viewports: how fast they run, what \
+                                 they do at the end of the range, and what a phase change \
+                                 carries with it. Holds the transport controls and the \
+                                 phase scrubber too.",
+                            )
+                            .changed();
+                        modules_changed |= ui
                             .checkbox(&mut self.module_registration, "Image registration")
                             .on_hover_text(
                                 "Align two datasets: direction, method, region, parameters, \
@@ -410,7 +419,12 @@ impl ViewerApp {
                         ui.add_space(4.0);
                         let exe = crate::settings::mcp_exe_path();
                         if exe.is_file() {
-                            ui.weak(format!("Installed: {}", exe.display()));
+                            // In a snap or an AppImage the file sits in a
+                            // mount; what a client runs is shown instead.
+                            ui.weak(format!(
+                                "Installed: {}",
+                                crate::settings::mcp_client_launch().display()
+                            ));
                         } else {
                             ui.weak(format!(
                                 "Not installed: {} was not found. Build it with \

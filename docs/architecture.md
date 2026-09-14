@@ -42,9 +42,9 @@ rust-dicom-station
 │
 ├── Application (GUI, egui over wgpu)
 │   ├── Window chrome: menu bar, toolbar (W/L, presets, 3D, crosshair, reset, the draw row), status bar
-│   ├── Modules panel: the Image information, registration, simulation, Structure
-│   │   editor (insert, edit, combine), Structure auto tools (body contour and the
-│   │   three engines), propagation and Dose estimation sections
+│   ├── Modules panel: the Image information, Playback, registration, simulation,
+│   │   Structure editor (insert, edit, combine), Structure auto tools (body contour
+│   │   and the three engines), propagation and Dose estimation sections
 │   ├── Side panel: per dataset a DICOM tree - patient ▶ study ▶ modality ▶ series, with RT
 │   │   structures, segmentations, 4D groups, dose and plans inside their study -
 │   │   plus dose display, planar images, spatial registrations, records, warnings
@@ -292,6 +292,10 @@ src/
     transfer_win.rs   transfer by relationship
     dvh_win.rs        the DVH window: pickers, the plot, the metrics table,
                       constraints, export
+    play.rs           playback: the ▶3D / ▶4D buttons on the viewports and in the
+                      3D window, the frame clock, the 4D phase volume cache and
+                      its budget, the light phase switch that keeps the view,
+                      and the Playback module that carries the settings
     img_info.rs       the Image information module: the geometry, sampling and
                       acquisition of the displayed series (imginfo), what wants
                       a second look, and what the two datasets disagree about

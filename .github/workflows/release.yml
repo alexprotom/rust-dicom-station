@@ -403,6 +403,23 @@ jobs:
           if-no-files-found: error
 
   # ==========================================================================
+  # Snap
+  # ==========================================================================
+  # snap.yml builds the snap, installs and starts it on the runner, and
+  # releases it to the Snap Store: to `stable`, or to the channel in the
+  # repository variable SNAP_CHANNEL. Without the secret
+  # SNAPCRAFT_STORE_CREDENTIALS it is built and tested but not uploaded
+  # (docs/snap.md). The GitHub Release below does not wait for it.
+  snap:
+    name: Snap
+    needs: version
+    uses: ./.github/workflows/snap.yml
+    with:
+      channel: ${{ vars.SNAP_CHANNEL || 'stable' }}
+      version: ${{ needs.version.outputs.version }}
+    secrets: inherit
+
+  # ==========================================================================
   # Create GitHub Release
   # ==========================================================================
   release:
