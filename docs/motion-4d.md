@@ -40,7 +40,7 @@ modality node so each series has one place.
 
 ### Watching a group move
 
-Any viewport showing a series of a group carries a **▶4** button, and the
+Any viewport showing a series of a group carries a **▶4D** button, and the
 *Playback* module carries the same transport with a phase scrubber; both are
 described in [viewer.md](viewer.md#playing-through-slices-and-phases). The
 short version: the first press reads every phase into memory (a group whose

@@ -177,7 +177,14 @@ https://alexprotom.github.io/rust-dicom-station/
 
 ## License and citations
 
-The code is MIT-licensed. The bundled example data is TCIA **4D-Lung**
+The code is MIT-licensed, so commercial use is permitted. The MIT License
+covers this project's own code; the third-party Rust libraries RDS depends on
+keep their own licences, reproduced in
+[THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt). If you publish work
+produced with RDS, a citation is appreciated: see
+[CITATION.cff](CITATION.cff).
+
+The bundled example data is TCIA **4D-Lung**
 patient P102, redistributed under CC BY 3.0 (cite it as described in
 [docs/example-data.md](docs/example-data.md)). Auto-segmentation uses
 TotalSegmentator's Apache-2.0 "total"-task weights (cite Wasserthal et al.
@@ -190,4 +197,7 @@ never redistributed; see [docs/segvol.md](docs/segvol.md) and
 [docs/medsam2.md](docs/medsam2.md).
 
 This software is a viewer for research and QA convenience. **Not a medical
-device, and not for clinical decision-making.**
+device, neither CE-marked nor FDA-cleared, and not for clinical
+decision-making.** The ADDITIONAL NOTICE in [LICENSE.txt](LICENSE.txt) states
+this in full. It is a statement of fact about the software, not a condition of
+the MIT License, which permits commercial use.

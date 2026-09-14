@@ -19,6 +19,19 @@ fn roi_hash(roi: &crate::rtstruct::Roi) -> u64 {
     h.finish()
 }
 
+/// Put a set of structure meshes on a window.
+///
+/// Always through here. The projected-geometry cache in [`D3Frame`] is
+/// keyed on `mesh_gen`, not on the meshes themselves, so a set that arrives
+/// without bumping it is drawn with the previous set's triangle order: the
+/// scene freezes, and the next thing that does move the camera or the
+/// opacity draws the new vertices through the old indices and tears the
+/// surface apart.
+fn set_meshes(w: &mut D3Window, meshes: Arc<Vec<RoiMesh>>) {
+    w.meshes = Some(meshes);
+    w.mesh_gen += 1;
+}
+
 impl ViewerApp {
     // -- 3D structure windows ----------------------------------------------
     /// Identity of the structure set a 3D window would be built from.
@@ -161,8 +174,8 @@ impl ViewerApp {
         w.key = key;
         // Already meshed, most likely by *Prepare phases* or by an earlier
         // pass through the cycle: a phase step is then a pointer swap.
-        if let Some(cached) = w.mesh_cache.get(&key) {
-            w.meshes = Some(cached.clone());
+        if let Some(cached) = w.mesh_cache.get(&key).cloned() {
+            set_meshes(w, cached);
             w.roi_hashes = self.slots[w.slot]
                 .active_structures()
                 .map(|ss| ss.rois.iter().map(roi_hash).collect())
@@ -171,7 +184,7 @@ impl ViewerApp {
             return;
         }
         let Some(ss) = self.slots[w.slot].active_structures() else {
-            w.meshes = Some(Arc::new(Vec::new()));
+            set_meshes(w, Arc::new(Vec::new()));
             w.roi_hashes.clear();
             return;
         };
@@ -365,8 +378,7 @@ impl ViewerApp {
                     if w.mesh_cache.len() < 64 {
                         w.mesh_cache.insert(w.key, meshes.clone());
                     }
-                    w.meshes = Some(meshes);
-                    w.mesh_gen += 1;
+                    set_meshes(w, meshes);
                 }
                 self.error = self.error.take().or(err);
             }
@@ -614,7 +626,7 @@ impl ViewerApp {
                 .and_then(|st| st.doses.get(self.slots[w.slot].active_dose).cloned())
                 .map(|d| (d, self.slots[w.slot].dose_reference.max(1e-6)));
             // The 4D transport of this window. It starts the same run the
-            // viewports' ▶4 does - there is one phase per dataset, and this
+            // viewports' ▶4D does - there is one phase per dataset, and this
             // window follows it - so the two buttons are the same button in
             // two places.
             let phases_here = self.fourd_phases(w.slot).is_some();
@@ -665,7 +677,7 @@ impl ViewerApp {
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
                             if ui
-                                .small_button(if phase_playing { "⏸4" } else { "▶4" })
+                                .small_button(if phase_playing { "⏸4D" } else { "▶4D" })
                                 .on_hover_text(if phase_playing {
                                     "Stop running through the phases"
                                 } else {
@@ -894,7 +906,13 @@ impl ViewerApp {
                         order_key = mix(order_key, on as u64);
                     }
                     if let Some(sm) = &seg_meshes {
+                        // The generation as well as the pointer, for the same
+                        // reason the structure meshes use one: a rebuilt set
+                        // can land at the address the previous one had, and
+                        // stepping through the phases of a group rebuilds
+                        // these over and over.
                         order_key = mix(order_key, Arc::as_ptr(sm) as u64);
+                        order_key = mix(order_key, w.seg_built);
                         for m in sm.iter() {
                             let on = seg_disp.get(m.roi_index).map(|d| d.0).unwrap_or(false);
                             order_key = mix(order_key, on as u64);
@@ -902,6 +920,7 @@ impl ViewerApp {
                     }
                     if let Some(om) = &other_meshes {
                         order_key = mix(order_key, Arc::as_ptr(om) as u64);
+                        order_key = mix(order_key, w.other_key);
                         for m in om.iter() {
                             let on = other_visible.get(m.roi_index).copied().unwrap_or(true);
                             order_key = mix(order_key, on as u64);
@@ -1174,5 +1193,47 @@ impl ViewerApp {
         }
         windows.retain(|w| w.open);
         self.d3_windows = windows;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The frame cache in `D3Frame` is keyed on `mesh_gen`, so a set of
+    /// meshes that is installed without bumping it is drawn with the
+    /// previous set's triangle order: the scene freezes, and the next thing
+    /// that touches the camera or the opacity tears the surface apart. That
+    /// is exactly what stepping through 4D phases out of the mesh cache did
+    /// once, and it is invisible to the compiler, so the guard is here.
+    #[test]
+    fn every_mesh_set_goes_through_set_meshes() {
+        // Everything above this module: the guard must not count itself.
+        let src = include_str!("d3.rs");
+        let src = src
+            .split_once("\n#[cfg(test)]")
+            .expect("this module is the last thing in the file")
+            .0;
+        let sites: Vec<(usize, &str)> = src
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.contains("w.meshes = ") && !l.trim_start().starts_with("//"))
+            .map(|(n, l)| (n + 1, l.trim()))
+            .collect();
+        assert_eq!(
+            sites.len(),
+            1,
+            "only set_meshes may assign w.meshes; found {sites:?}"
+        );
+        assert!(
+            src[..src.find(sites[0].1).expect("the line is in the file")]
+                .ends_with("fn set_meshes(w: &mut D3Window, meshes: Arc<Vec<RoiMesh>>) {\n    "),
+            "the one assignment is not the one inside set_meshes"
+        );
+        // And that function does bump the generation.
+        let body = src
+            .split_once("fn set_meshes(")
+            .expect("set_meshes exists")
+            .1;
+        let body = &body[..body.find("\n}").expect("it ends")];
+        assert!(body.contains("mesh_gen += 1"), "{body}");
     }
 }

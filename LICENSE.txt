@@ -19,3 +19,66 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+
+===============================================================================
+ADDITIONAL NOTICE
+===============================================================================
+
+This notice describes what the Software is and what it is not. It states facts
+about the Software. It adds no condition to the MIT License above and takes
+nothing away from it. The Software is free and open-source software, and
+commercial use is permitted, exactly as the MIT License provides.
+
+
+NOT A MEDICAL DEVICE
+
+Rust DICOM Station is research software. It is not a medical device.
+
+It has undergone no conformity assessment under Regulation (EU) 2017/745 on
+medical devices, carries no CE marking, has not been cleared or approved by the
+United States Food and Drug Administration, and is not certified, registered or
+approved under any other regulatory regime.
+
+It is not intended, and must not be used, for the diagnosis, prevention,
+monitoring, prediction, prognosis, treatment or alleviation of disease; for
+treatment planning; for the verification or approval of a treatment plan, a
+delivered dose or a patient position; or to inform any decision concerning the
+care of a patient.
+
+Every quantity the Software computes, including registrations, deformation
+fields, segmentations, contours, dose-volume histograms, dose estimates, and
+motion and dosimetric metrics, is approximate, may be wrong, and must be
+verified independently by qualified personnel using validated tools before it
+is relied upon for any purpose.
+
+Anyone who uses the Software, or who incorporates it into another product, is
+responsible for compliance with every law that applies to that use, including
+medical device regulation, radiation protection law, research ethics
+requirements and data protection law. The anonymization, archive and
+remote-interface features of the Software are convenience tools only. Using
+them does not make anyone compliant with Regulation (EU) 2016/679 or with any
+other data protection law, and does not discharge any obligation in respect of
+personal or patient data.
+
+
+THIRD-PARTY COMPONENTS
+
+The MIT License above covers this project's own code. The Software also
+incorporates, links to, or is distributed alongside material that is the work
+of others, which is not covered by it and which remains subject to its own
+license:
+
+  * the third-party Rust libraries the Software depends on, whose licenses and
+    notices are reproduced in THIRD-PARTY-NOTICES.txt;
+  * the bundled example patient data, taken from the TCIA 4D-Lung collection
+    and redistributed under CC BY 3.0, as described in docs/example-data.md;
+  * the neural-network model weights the Software can download at your request,
+    which are never redistributed with it and which remain subject to the terms
+    of their respective publishers.
+
+
+CITATION
+
+If you publish work produced with the aid of the Software, a citation is
+appreciated. This is a request, not a condition of the license.

@@ -709,7 +709,9 @@ struct D3Window {
     /// a rebuild after an edit keeps the view where it was.
     refit: bool,
     /// Counts every set of meshes that landed; the frame cache is keyed on
-    /// it.
+    /// it. Only [`super::d3::set_meshes`] may change `meshes`, because a
+    /// set that arrives without bumping this is drawn through the previous
+    /// set's triangle order.
     mesh_gen: u64,
     /// Geometry hash per ROI the meshes were built from, and the ROIs a
     /// running partial rebuild replaces (`None`: a full build).

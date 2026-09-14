@@ -741,7 +741,7 @@ impl ViewerApp {
                     .range(0.25..=60.0)
                     .suffix(" slices/s"),
             )
-            .on_hover_text("How fast ▶3 runs through the slices of a view");
+            .on_hover_text("How fast ▶3D runs through the slices of a view");
         });
         ui.horizontal(|ui| {
             ui.add_space(38.0);
@@ -752,7 +752,7 @@ impl ViewerApp {
                     .suffix(" phases/s"),
             )
             .on_hover_text(
-                "How fast ▶4 runs through the phases of a 4D group. A ten-phase \
+                "How fast ▶4D runs through the phases of a 4D group. A ten-phase \
                  breathing cycle at 5 phases/s is one breath every two seconds.",
             );
         });
@@ -797,7 +797,7 @@ impl ViewerApp {
         ui.separator();
         self.phase_memory_row(ui, slot);
         ui.weak(
-            "The 3D window has its own ▶4, and a Prepare that meshes every phase so the \
+            "The 3D window has its own ▶4D, and a Prepare that meshes every phase so the \
              surfaces keep up.",
         );
     }

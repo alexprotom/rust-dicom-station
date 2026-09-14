@@ -872,9 +872,9 @@ impl ViewerApp {
         // run, and a series that belongs to no 4D group has no phases.
         let slices_here = has_slider;
         let phases_here = self.fourd_phases(slot).is_some();
-        // Wider than the glyph buttons beside them: these carry a digit as
-        // well, and the digit is what tells the two apart.
-        let psize = egui::vec2(30.0, 20.0);
+        // Wider than the glyph buttons beside them: these carry `3D` / `4D`
+        // as well, and that is what tells the two apart.
+        let psize = egui::vec2(38.0, 20.0);
         let play3_rect = if slices_here {
             Rect::from_min_size(Pos2::new(fit_rect.left() - psize.x - 4.0, by), psize)
         } else {
@@ -935,7 +935,7 @@ impl ViewerApp {
             let resp = ui
                 .put(
                     play3_rect,
-                    egui::Button::new(if on { "⏸3" } else { "▶3" }).small(),
+                    egui::Button::new(if on { "⏸3D" } else { "▶3D" }).small(),
                 )
                 .on_hover_text(if on {
                     "Stop running through the slices"
@@ -951,7 +951,7 @@ impl ViewerApp {
             let resp = ui
                 .put(
                     play4_rect,
-                    egui::Button::new(if on { "⏸4" } else { "▶4" }).small(),
+                    egui::Button::new(if on { "⏸4D" } else { "▶4D" }).small(),
                 )
                 .on_hover_text(if on {
                     "Stop running through the phases"

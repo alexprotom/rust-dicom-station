@@ -147,7 +147,7 @@ fn main() -> Result<()> {
     } else if o.mcp.is_some() {
         bail!("{} not found", mcp.display());
     }
-    for name in ["LICENSE.txt", "README.md"] {
+    for name in ["LICENSE.txt", "THIRD-PARTY-NOTICES.txt", "README.md"] {
         let p = o.repo.join(name);
         if p.is_file() {
             files.push((name.to_string(), p));
@@ -378,6 +378,7 @@ impl Winget<'_> {
         s += &format!("PackageName: {}\n", q(APP_NAME));
         s += &format!("PackageUrl: {repo}\n");
         s += "License: MIT\n";
+        s += "Copyright: Copyright (c) 2026 Alexander Pryanichnikov\n";
         s += &format!("LicenseUrl: {repo}/blob/main/LICENSE.txt\n");
         s += &format!(
             "ShortDescription: {}\n",

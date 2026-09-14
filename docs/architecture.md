@@ -292,7 +292,7 @@ src/
     transfer_win.rs   transfer by relationship
     dvh_win.rs        the DVH window: pickers, the plot, the metrics table,
                       constraints, export
-    play.rs           playback: the ▶3 / ▶4 buttons on the viewports and in the
+    play.rs           playback: the ▶3D / ▶4D buttons on the viewports and in the
                       3D window, the frame clock, the 4D phase volume cache and
                       its budget, the light phase switch that keeps the view,
                       and the Playback module that carries the settings

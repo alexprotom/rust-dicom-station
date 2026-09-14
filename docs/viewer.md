@@ -230,11 +230,11 @@ Every viewport carries two play buttons in its top-right corner, beside the
 reset and maximize ones, and each appears only where there is something to
 play:
 
-* **▶3** runs through the **slices** of that view, the way one scrolls a
+* **▶3D** runs through the **slices** of that view, the way one scrolls a
   stack by hand but without the hand. It appears on any view with more than
   one slice, and it moves that view only, exactly as the wheel and the
   scrubber under the pane do.
-* **▶4** runs the whole dataset through the **phases** of its 4D group. It
+* **▶4D** runs the whole dataset through the **phases** of its 4D group. It
   appears only when the displayed series belongs to a group that still has
   at least two phases. All three views change together because the image
   itself changes, the selection walks down the group in the data tree, and
@@ -242,7 +242,7 @@ play:
   with it.
 
 Either button turns into **⏸** while it runs, and one run is in flight at a
-time. The **3D structures** window has a **▶4** of its own that starts the
+time. The **3D structures** window has a **▶4D** of its own that starts the
 same run, so the surfaces and the isodose shells breathe with the views.
 
 ### Playback
@@ -271,7 +271,7 @@ The module is where the settings live.
   has.
 * **Phases in memory** - a phase switch means a different image series, and
   reading one off the disk takes long enough that playing straight from
-  disk would be a slideshow. So the first press of ▶4 reads every phase of
+  disk would be a slideshow. So the first press of ▶4D reads every phase of
   the group into memory with a progress bar and then plays from there;
   *Read phases* does the same without playing, and *Free* gives the memory
   back. **Budget** refuses a group whose phases would need more than that,
