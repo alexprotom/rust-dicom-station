@@ -81,10 +81,31 @@ apps:
       - x11
 
 parts:
+  # The toolchain. The plugin's own way of getting one is the `rustup` snap,
+  # installed into the build instance; that install is skipped WITHOUT an
+  # error when the instance cannot reach the snap store, and the build then
+  # stops before it compiles anything with "'rustup' not found". Installing
+  # it from rustup.rs takes the store out of the picture. `rust-deps` is the
+  # name the plugin's environment check looks for, and the `after` below is
+  # what stops the plugin asking for the snap in the first place.
+  rust-deps:
+    plugin: nil
+    build-packages:
+      - curl
+      - ca-certificates
+    override-build: |
+      craftctl default
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable
+      "$HOME/.cargo/bin/rustc" --version
+
   rust-dicom-station:
+    after: [rust-deps]
     plugin: rust
     source: .
-    rust-channel: stable
+    # The toolchain comes from rust-deps above; the plugin puts
+    # $HOME/.cargo/bin on the build PATH by itself.
+    rust-channel: none
     # rds-mcp is built only with the feature; the default `gpu` stays on.
     rust-features: [mcp]
     build-environment:
