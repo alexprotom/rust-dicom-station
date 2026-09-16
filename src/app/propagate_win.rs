@@ -43,6 +43,12 @@ pub(super) struct PropagateDialog {
     pub set: Option<SetPick>,
     /// Ticks over the entries of `set`.
     pub ticked: Vec<bool>,
+    /// The colour each propagated copy lands in, over the same entries.
+    /// `None` is the source structure's own colour, which is what a
+    /// propagation means by default: the same anatomy, on another image.
+    /// A copy that has to be told apart from the original at a glance gets
+    /// one of its own here.
+    pub colors: Vec<Option<[u8; 3]>>,
     /// What they land on.
     pub target: PropTarget,
     /// Refine the registration on this region of the *fixed* dataset first.
@@ -80,6 +86,7 @@ impl Default for PropagateDialog {
             src: RegPick { slot: 0, series: 0 },
             set: None,
             ticked: Vec::new(),
+            colors: Vec::new(),
             target: PropTarget::Other,
             local: RegRoi::Whole,
             local_margin_mm: 10.0,
@@ -201,6 +208,7 @@ impl ViewerApp {
         if let Some(d) = &mut self.propagate_dialog {
             d.set = Some(pick);
             d.ticked = vec![false; n];
+            d.colors = vec![None; n];
             for &i in items {
                 if let Some(t) = d.ticked.get_mut(i) {
                     *t = true;
@@ -283,6 +291,27 @@ impl ViewerApp {
         }
     }
 
+    /// One entry of a set, frozen for a worker thread, in the colour its
+    /// propagated copy is to land in.
+    ///
+    /// The colour rides on [`Structure`] all the way through the run and
+    /// out the other side (`Subject` ▶ `Propagated` ▶ the landed segment or
+    /// ROI), so overriding it here is enough for every path: the one-shot
+    /// run, a group, an anchored group and a copy onto every phase.
+    fn set_structure_colored(
+        &self,
+        slot: usize,
+        set: SetPick,
+        idx: usize,
+        color: Option<[u8; 3]>,
+    ) -> Option<Structure> {
+        let mut st = self.set_structure(slot, set, idx)?;
+        if let Some(c) = color {
+            st.color = c;
+        }
+        Some(st)
+    }
+
     /// One entry of a set, frozen for a worker thread.
     fn set_structure(&self, slot: usize, set: SetPick, idx: usize) -> Option<Structure> {
         let st = self.slots[slot].study.as_ref()?;
@@ -327,6 +356,7 @@ impl ViewerApp {
                 .or(active)
                 .or_else(|| choices.first().map(|(c, _)| *c));
             d.ticked.clear();
+            d.colors.clear();
             d.anchor = None;
         }
         let n = d
@@ -334,6 +364,7 @@ impl ViewerApp {
             .map(|set| self.set_entries(d.src.slot, set).len())
             .unwrap_or(0);
         d.ticked.resize(n, false);
+        d.colors.resize(n, None);
         if d.anchor.is_some_and(|a| a >= n) {
             d.anchor = None;
         }
@@ -352,7 +383,9 @@ impl ViewerApp {
             .iter()
             .enumerate()
             .filter(|(_, on)| **on)
-            .filter_map(|(i, _)| self.set_structure(d.src.slot, set, i))
+            .filter_map(|(i, _)| {
+                self.set_structure_colored(d.src.slot, set, i, d.colors.get(i).copied().flatten())
+            })
             .collect();
         if out.is_empty() {
             return Err("tick at least one structure".into());
@@ -646,9 +679,11 @@ impl ViewerApp {
             let src = d.src;
             let (margin, deformable, contours) =
                 (d.anchor_margin_mm, d.anchor_deformable, d.anchor_contours);
-            let anchor = d
-                .anchor
-                .and_then(|i| d.set.and_then(|set| self.set_structure(src.slot, set, i)));
+            let anchor = d.anchor.and_then(|i| {
+                d.set.and_then(|set| {
+                    self.set_structure_colored(src.slot, set, i, d.colors.get(i).copied().flatten())
+                })
+            });
             if let Some(anchor) = anchor {
                 // The anchor carries itself as the check, so nothing else
                 // need be ticked; what is ticked travels with it.
@@ -1247,6 +1282,7 @@ impl ViewerApp {
                                 if ui.selectable_label(d.set == Some(*choice), label).clicked() {
                                     d.set = Some(*choice);
                                     d.ticked.clear();
+                                    d.colors.clear();
                                     d.anchor = None;
                                 }
                             }
@@ -1333,6 +1369,16 @@ impl ViewerApp {
                     }
                     let n = d.ticked.iter().filter(|v| **v).count();
                     ui.weak(format!("{n} selected"));
+                    if d.colors.iter().any(Option::is_some)
+                        && small_tip_button(
+                            ui,
+                            "Source colours",
+                            "Drop the colours chosen here: every copy lands in the colour \
+                             its own structure has",
+                        )
+                    {
+                        d.colors.iter_mut().for_each(|c| *c = None);
+                    }
                 });
 
                 egui::ScrollArea::vertical()
@@ -1343,10 +1389,27 @@ impl ViewerApp {
                                 if let Some(on) = d.ticked.get_mut(i) {
                                     ui.checkbox(on, "");
                                 }
-                                ui.colored_label(theme::rgb(*color), "◼");
+                                // The swatch is the colour the *copy* will
+                                // land in, which starts as the source's. The
+                                // original is never touched by it: this is
+                                // the one place where the two can be told
+                                // apart on the destination image.
+                                let chosen = d.colors.get(i).copied().flatten();
+                                let mut shown = chosen.unwrap_or(*color);
+                                if color_swatch(ui, &mut shown) {
+                                    if let Some(slot) = d.colors.get_mut(i) {
+                                        *slot = Some(shown);
+                                    }
+                                }
                                 ui.label(name);
                                 if let Some(v) = cm3 {
                                     ui.weak(format!("{v:.1} cm³"));
+                                }
+                                if chosen.is_some() {
+                                    ui.weak("recoloured").on_hover_text(
+                                        "The copy lands in this colour; the structure \
+                                             it was propagated from keeps its own",
+                                    );
                                 }
                                 if d.anchor == Some(i) {
                                     ui.weak("anchor");

@@ -243,7 +243,10 @@ play:
 
 Either button turns into **⏸** while it runs, and one run is in flight at a
 time. The **3D structures** window has a **▶4D** of its own that starts the
-same run, so the surfaces and the isodose shells breathe with the views.
+same run, so the surfaces and the isodose shells breathe with the views, and
+the Dose estimation module's *Dynamic* log has a third
+([dvh.md](dvh.md#the-dose-estimation-module)) that walks the structures back through
+the moves they were given.
 
 ### Playback
 
@@ -253,8 +256,10 @@ The module is where the settings live.
   or coronal), ⏮ ▶ ⏭ and a scrubber with the slice number.
 * **Phases** - the group being played, the same transport, and a scrubber
   showing the phase label and its place in the group.
-* **Speed** - separately for slices and phases: a stack of 200 slices wants
-  to move faster than a ten-phase breathing cycle.
+* **Speed** - separately for slices, phases and the steps of the Dose
+  estimation module's *Dynamic* log: a stack of 200 slices wants to move
+  faster than a ten-phase breathing cycle, and a log step slower still,
+  because every step brings its own dose numbers to read.
 * **At the end** - *Loop* starts again from the beginning, *Bounce* turns
   around and runs back, *Once* stops. For a breathing cycle *Bounce* is the
   honest one: the jump from the last phase to the first is a jump the

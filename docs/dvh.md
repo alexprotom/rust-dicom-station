@@ -117,6 +117,22 @@ rotation in degrees and scale in per cent. *Back* takes the last move out of
 the sum, *Reset* clears it. *Clear log* starts again from the current table;
 *Export CSV* writes the whole log with those columns in front.
 
+The log is not only a table of numbers: each step also records where the
+structures stood when those numbers were computed, so a **Step** transport
+above the table can show any of them again. ⏮ and ⏭ walk the log, the
+scrubber jumps to a step, and **▶** plays it - the structures move in the
+views and in the 3D window as they were moved, and the step being shown is
+marked down the left of the table, so what one reads matches what one sees.
+*Now* returns to the last step, where the structures actually stand; the
+speed and what happens at the end of the log (loop, bounce, once) are in the
+[Playback](viewer.md#playing-through-slices-and-phases) module. The
+geometry is stored sparsely - the first step carries every structure, each
+later one only what moved - and the step counter's tooltip says how much the
+log is holding; *Clear log* gives it back.
+
+Playing the log replays the *logged* steps, so an edit that never produced
+an entry (a brush stroke, say) is not part of it.
+
 The table follows what it depends on by itself: tick or untick a structure,
 move or redraw one in the Structure editor, pick another dose or another
 column, and it is recomputed in the background and replaced when ready. When

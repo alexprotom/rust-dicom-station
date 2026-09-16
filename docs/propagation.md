@@ -166,6 +166,17 @@ one set per phase the target goes next to that phase's heart, which is where
 a planning system expects to find it. Results are named
 `<structure> (from A)`; a name already in the set gets a counter.
 
+**Colour.** A copy lands in the colour of the structure it came from, which
+is what a propagation means by default: the same anatomy, on another image.
+Where a copy has to be told apart from an original at a glance - a
+propagated target lying next to the one drawn on that phase, say - the
+swatch in front of each structure in the list sets the colour that copy
+lands in. It changes the copy only; the structure it was propagated from
+keeps its own colour, the row says *recoloured*, and *Source colours* drops
+every choice again. The colour rides along the whole way, so it applies to
+every run the module starts: through a registration, onto a 4D group, and
+anchored on a structure.
+
 ## Verification
 
 `src/propagate.rs`'s unit tests assert that a translation carries a ball

@@ -3296,20 +3296,6 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
     patients
 }
 
-/// A small colour square that opens the colour picker when clicked - the
-/// same one for RT structures and segmentations, so a structure's colour
-/// is edited the way a segmentation's is.  Returns true when the colour
-/// changed.
-fn color_swatch(ui: &mut egui::Ui, color: &mut [u8; 3]) -> bool {
-    ui.scope(|ui| {
-        ui.spacing_mut().interact_size = egui::vec2(12.0, 12.0);
-        ui.color_edit_button_srgb(color)
-            .on_hover_text("Click to change the colour")
-            .changed()
-    })
-    .inner
-}
-
 /// Apply a check-box click to a visibility/selection list, extending from
 /// `anchor` when Shift is held, and return the new anchor.
 ///
