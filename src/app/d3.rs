@@ -1102,7 +1102,7 @@ impl ViewerApp {
 
                     // The Structure editor's drawn axis, the same white line
                     // as in the views, one slice thick.
-                    if self.module_structures && self.tools.axis_draw {
+                    if self.module_structures && struct_tools::axis_live(&self.tools) {
                         if let Some((ax, vol)) = self
                             .tools
                             .axis

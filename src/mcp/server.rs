@@ -197,8 +197,10 @@ fn progress_token(ctx: &RequestContext<RoleServer>) -> Option<ProgressToken> {
 }
 
 impl ServerHandler for RdsServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
+    // `ServerConfig` is rmcp's name for this since 3.4; `ServerInfo` is a
+    // deprecated alias for the same type.
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_prompts()

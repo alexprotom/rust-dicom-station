@@ -160,6 +160,16 @@ pub(super) struct StructTools {
     /// dataset draws the axis the two buttons next to it move along and
     /// turn about.
     pub axis_draw: bool,
+    /// *Keep*: the drawn axis stays where it is.
+    ///
+    /// Drawing an axis takes the left button, which is also how the
+    /// crosshair is moved, so the moment one wants to look around the image
+    /// the next drag starts a new axis over the old one. With this on the
+    /// axis is finished: drags go back to the crosshair, the line stays
+    /// visible in the views and in 3D whether *Draw axis* is on or not, and
+    /// the two buttons that move the structure along it keep working. The
+    /// ✋ hand still moves it, because that is asked for explicitly.
+    pub axis_keep: bool,
     pub axis: Option<DrawnAxis>,
     pub axis_mm: f32,
     pub axis_deg: f32,
@@ -364,6 +374,7 @@ impl Default for StructTools {
             rotate_deg: [0.0; 3],
             scale_pct: 100.0,
             axis_draw: false,
+            axis_keep: false,
             axis: None,
             axis_mm: 10.0,
             axis_deg: 10.0,
@@ -471,8 +482,18 @@ fn parse_axis_file(text: &str) -> Result<[Vec3; 2], String> {
     }
 }
 
+/// Is there an axis on screen at all?
+///
+/// *Draw axis* is the mode that makes one; *Keep* is what holds on to it
+/// afterwards. Either way the line is drawn, and the buttons that move a
+/// structure along it work - the difference between the two is only what
+/// the left mouse button does.
+pub(super) fn axis_live(t: &StructTools) -> bool {
+    t.axis_draw || t.axis_keep
+}
+
 fn ready_axis(t: &StructTools, slot: usize) -> bool {
-    t.axis_draw
+    axis_live(t)
         && t.axis
             .is_some_and(|a| a.slot == slot && a.line_mm([1.0; 3]).is_some())
 }
@@ -1139,10 +1160,28 @@ impl ViewerApp {
                     .on_hover_text(
                         "Drag with the left button in any view of this dataset to draw an axis \
                      (one slice thick, shown in every view and in 3D); the structure is then \
-                     moved along it and turned about it",
+                     moved along it and turned about it. While this is on the left button \
+                     draws instead of moving the crosshair - tick Keep when the axis is where \
+                     you want it.",
                     );
-                if was && !t.axis_draw {
+                // Switching the mode off throws the axis away, unless it is
+                // being kept: that is the whole point of keeping it.
+                if was && !t.axis_draw && !t.axis_keep {
                     t.axis = None;
+                    t.hand_axis = false;
+                }
+                if ui
+                    .toggle_value(&mut t.axis_keep, "Keep")
+                    .on_hover_text(
+                        "Leave the axis where it is. The left button goes back to the \
+                         crosshair, so the image can be looked through without a drag \
+                         redrawing the axis, and the line stays on screen and usable \
+                         whether Draw axis is on or off. The ✋ hand still moves it.",
+                    )
+                    .changed()
+                    && t.axis_keep
+                {
+                    // An axis worth keeping is one to stop drawing over.
                     t.hand_axis = false;
                 }
                 let ready = ready_axis(t, slot);
@@ -1160,7 +1199,7 @@ impl ViewerApp {
                     }
                 }
                 ui.add_enabled(
-                    t.axis_draw,
+                    axis_live(t),
                     egui::DragValue::new(&mut t.axis_mm)
                         .speed(0.5)
                         .range(-500.0..=500.0)
@@ -1177,7 +1216,7 @@ impl ViewerApp {
                     )],
                 );
                 ui.add_enabled(
-                    t.axis_draw,
+                    axis_live(t),
                     egui::DragValue::new(&mut t.axis_deg)
                         .speed(1.0)
                         .range(-180.0..=180.0)
@@ -1189,9 +1228,16 @@ impl ViewerApp {
                     &[("Rotate", "About the axis", ready, Act::AxisRotate)],
                 );
             });
-            if t.axis_draw && !ready_axis(t, slot) {
+            if t.axis_draw && !t.axis_keep && !ready_axis(t, slot) {
                 ui.label(
                     egui::RichText::new("Drag in a view to draw the axis")
+                        .weak()
+                        .small(),
+                );
+            }
+            if t.axis_keep && t.axis.is_none() {
+                ui.label(
+                    egui::RichText::new("Nothing to keep yet: switch Draw axis on and drag one")
                         .weak()
                         .small(),
                 );
@@ -1475,7 +1521,10 @@ impl ViewerApp {
             a: vol.patient_to_voxel(pts[0]),
             b: vol.patient_to_voxel(pts[1]),
         });
-        self.tools.axis_draw = true;
+        // A loaded axis is already the one that was wanted, so it arrives
+        // kept: on screen and usable, with the left button still the
+        // crosshair's rather than waiting to draw over it.
+        self.tools.axis_keep = true;
     }
 
     fn save_axis_file(&mut self, slot: usize) {
@@ -2210,5 +2259,44 @@ mod tests {
         assert_eq!(n.shape, Shape::Sphere);
         assert!(!n.suv);
         assert!(ROI_TYPES.contains(&n.roi_type.as_str()));
+    }
+
+    #[test]
+    fn a_kept_axis_stays_on_screen_after_the_drawing_mode_goes_off() {
+        // Drawing and keeping are two states of the same line: the first
+        // makes it, the second holds on to it. Everything that asks "is
+        // there an axis to use" has to accept either, or switching the
+        // drawing mode off to get the left button back would take the axis
+        // and the two buttons that move a structure along it with it.
+        let mut t = StructTools::default();
+        assert!(!axis_live(&t), "nothing drawn, nothing to show");
+        t.axis_draw = true;
+        assert!(axis_live(&t));
+        t.axis_draw = false;
+        assert!(!axis_live(&t));
+        t.axis_keep = true;
+        assert!(axis_live(&t), "kept without the drawing mode");
+        t.axis_draw = true;
+        assert!(axis_live(&t), "and with it");
+
+        // ready_axis needs a real line on the right dataset as well.
+        t.axis_draw = false;
+        assert!(!ready_axis(&t, 0), "kept, but nothing drawn yet");
+        t.axis = Some(DrawnAxis {
+            slot: 0,
+            a: [0.0; 3],
+            b: [0.0; 3],
+        });
+        assert!(!ready_axis(&t, 0), "a line of no length is no axis");
+        t.axis = Some(DrawnAxis {
+            slot: 0,
+            a: [0.0, 0.0, 0.0],
+            b: [10.0, 0.0, 0.0],
+        });
+        assert!(ready_axis(&t, 0));
+        assert!(
+            !ready_axis(&t, 1),
+            "it belongs to the dataset it was drawn on"
+        );
     }
 }

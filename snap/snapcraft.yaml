@@ -1,0 +1,141 @@
+# The snap package of Rust DICOM Station: docs/snap.md explains the choices
+# made here, how to build it and how it reaches the Snap Store.
+#
+#   snapcraft pack                    build it (in an LXD container)
+#   sudo snap install --dangerous ./rust-dicom-station_*.snap
+#
+# The release workflow builds and publishes it on every push to main.
+
+name: rust-dicom-station
+title: Rust DICOM Station
+base: core24
+adopt-info: rust-dicom-station
+summary: DICOM and RT DICOM viewer, registration and segmentation in pure Rust
+description: |
+  RDS (Rust DICOM Station) is open-source software for medical imaging and
+  radiotherapy research, analysis and QA, written entirely in Rust. It loads
+  complete radiotherapy studies (CT, MR and PET series, RTSTRUCT, RTDOSE,
+  photon and ion RTPLAN, DICOM SEG, planar images, registrations and
+  treatment records) for viewing, comparison and quantitative analysis.
+
+  Linked axial, sagittal and coronal views and dual-dataset comparison,
+  rigid and deformable registration, structure propagation, DRRs,
+  dose-volume histograms, 4D motion analysis, manual and AI-assisted
+  segmentation (TotalSegmentator, SegVol and MedSAM2 re-implemented in Rust,
+  GPU accelerated through Vulkan), a 3D view, a local patient archive, DICOM
+  editing, anonymization and export, and an MCP server
+  (rust-dicom-station.rds-mcp) through which an AI assistant can drive the
+  tools.
+
+  Model weights are downloaded on first use into
+  ~/snap/rust-dicom-station/common/data/models. Folders outside your home
+  folder (USB drives, /media, /mnt) need one command:
+
+      sudo snap connect rust-dicom-station:removable-media
+
+  Research software: not a medical device, neither CE-marked nor FDA-cleared,
+  and not for clinical decision-making. See LICENSE.txt.
+license: MIT
+contact: https://github.com/alexprotom/rust-dicom-station/issues
+issues: https://github.com/alexprotom/rust-dicom-station/issues
+source-code: https://github.com/alexprotom/rust-dicom-station
+website: https://alexprotom.github.io/rust-dicom-station/
+icon: assets/rust-dicom-station.png
+
+grade: stable
+confinement: strict
+
+platforms:
+  amd64:
+
+apps:
+  rust-dicom-station:
+    command: bin/rust-dicom-station
+    desktop: usr/share/applications/rust-dicom-station.desktop
+    # Display (X11 and Wayland), the GPU through mesa-2404, fonts, cursor
+    # themes and the file-chooser portal all come with the extension.
+    extensions: [gnome]
+    plugs:
+      - home
+      - removable-media
+      - network
+
+  # The MCP server speaks the protocol on standard output, so nothing may
+  # write there before it starts. The GNOME launcher can (it rebuilds icon
+  # caches after every refresh), so the server gets only the GPU wrapper,
+  # which the extension has already put into the snap. The display plugs are
+  # for open_in_viewer: the viewer it starts runs under this app's
+  # confinement, through the desktop launcher (src/mcp/tools/output.rs).
+  rds-mcp:
+    command: bin/rds-mcp
+    command-chain:
+      - snap/command-chain/gpu-2404-wrapper
+    plugs:
+      - home
+      - removable-media
+      - network
+      - opengl
+      - desktop
+      - desktop-legacy
+      - wayland
+      - x11
+
+parts:
+  # The toolchain. The plugin's own way of getting one is the `rustup` snap,
+  # installed into the build instance; that install is skipped WITHOUT an
+  # error when the instance cannot reach the snap store, and the build then
+  # stops before it compiles anything with "'rustup' not found". Installing
+  # it from rustup.rs takes the store out of the picture. `rust-deps` is the
+  # name the plugin's environment check looks for, and the `after` below is
+  # what stops the plugin asking for the snap in the first place.
+  rust-deps:
+    plugin: nil
+    build-packages:
+      - curl
+      - ca-certificates
+    override-build: |
+      craftctl default
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable
+      "$HOME/.cargo/bin/rustc" --version
+
+  rust-dicom-station:
+    after: [rust-deps]
+    plugin: rust
+    source: .
+    # The toolchain comes from rust-deps above; the plugin puts
+    # $HOME/.cargo/bin on the build PATH by itself.
+    rust-channel: none
+    # rds-mcp is built only with the feature; the default `gpu` stays on.
+    rust-features: [mcp]
+    build-environment:
+      # The release profile carries no debug info of its own; this drops the
+      # standard library's. Symbols stay, so a backtrace still names frames.
+      - CARGO_PROFILE_RELEASE_STRIP: debuginfo
+    override-pull: |
+      craftctl default
+      craftctl set version="$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -n 1)"
+    override-build: |
+      craftctl default
+      install -Dm644 snap/local/rust-dicom-station.desktop \
+        "$CRAFT_PART_INSTALL/usr/share/applications/rust-dicom-station.desktop"
+      install -Dm644 assets/rust-dicom-station.png \
+        "$CRAFT_PART_INSTALL/usr/share/icons/hicolor/256x256/apps/rust-dicom-station.png"
+
+  # In an X11 session the window system library opens libxkbcommon-x11 for
+  # the keyboard, and refuses to open a window without it. The GNOME runtime
+  # has libxkbcommon but not its X11 half; its other dependencies (libxcb,
+  # libxkbcommon) are in the runtime and in mesa-2404. Staging it is enough:
+  # snapcraft puts $SNAP/usr/lib/<arch> into the snap's LD_LIBRARY_PATH.
+  x11-keyboard:
+    plugin: nil
+    stage-packages:
+      - libxkbcommon-x11-0
+    prime:
+      - usr/lib/*/libxkbcommon-x11.so.0*
+
+lint:
+  ignore:
+    # Opened at run time with dlopen, so no binary lists it as needed.
+    - library:
+        - usr/lib/*/libxkbcommon-x11.so.0*

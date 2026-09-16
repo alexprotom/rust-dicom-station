@@ -44,6 +44,20 @@ pub(super) fn tip_widget(
     ui.add_enabled(enabled, widget).on_hover_text(tip).clicked()
 }
 
+/// A small colour square that opens the colour picker when clicked - the
+/// same one for RT structures, segmentations and the colour a propagated
+/// copy will land in, so a colour is always changed the same way. Returns
+/// true when the colour changed.
+pub(super) fn color_swatch(ui: &mut egui::Ui, color: &mut [u8; 3]) -> bool {
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size = egui::vec2(12.0, 12.0);
+        ui.color_edit_button_srgb(color)
+            .on_hover_text("Click to change the colour")
+            .changed()
+    })
+    .inner
+}
+
 /// A glyph-only selectable button, the shape every drawing tool takes.
 pub(super) fn glyph_button(ui: &mut egui::Ui, on: bool, glyph: &str, tip: &str) -> bool {
     ui.add(egui::Button::selectable(on, glyph))

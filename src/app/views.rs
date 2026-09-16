@@ -576,7 +576,7 @@ impl ViewerApp {
         // The Structure editor's drawn axis: a white line one slice thick,
         // in every view of its dataset. It is the same 3-D line
         // everywhere, so the other views show where it runs.
-        if self.module_structures && self.tools.axis_draw {
+        if self.module_structures && struct_tools::axis_live(&self.tools) {
             if let Some(ax) = self.tools.axis.filter(|a| a.slot == slot) {
                 let pa = vol.voxel_to_plane_pixel(plane, ax.a);
                 let pb = vol.voxel_to_plane_pixel(plane, ax.b);
@@ -1043,10 +1043,16 @@ impl ViewerApp {
             self.module_structures && self.tools.slot == slot && !seg_active && !medsam2_box;
         let hand_struct = editor_here && self.tools.hand_struct;
         let hand_axis = editor_here
-            && self.tools.axis_draw
+            && struct_tools::axis_live(&self.tools)
             && self.tools.hand_axis
             && self.tools.axis.is_some_and(|a| a.slot == slot);
-        let axis_draw = editor_here && self.tools.axis_draw && !hand_axis && !hand_struct;
+        // A kept axis is finished: the left button belongs to the crosshair
+        // again, and only the ✋ hand still moves the line.
+        let axis_draw = editor_here
+            && self.tools.axis_draw
+            && !self.tools.axis_keep
+            && !hand_axis
+            && !hand_struct;
         // The two hands: the drag's motion as a difference of voxel
         // positions, so a flipped view axis comes out right.
         let mut hand_move: Option<([f64; 3], bool)> = None;

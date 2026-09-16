@@ -35,12 +35,18 @@ pub(super) enum PlayTarget {
     Slices { slot: usize, view: usize },
     /// The phases of the 4D group a dataset is showing (*Play 4D*).
     Phases { slot: usize },
+    /// The steps of the Dose estimation module's *Dynamic* log: the
+    /// structure walks back through the moves it was given, and the table
+    /// follows it.
+    DoseLog { slot: usize },
 }
 
 impl PlayTarget {
     pub(super) fn slot(self) -> usize {
         match self {
-            PlayTarget::Slices { slot, .. } | PlayTarget::Phases { slot } => slot,
+            PlayTarget::Slices { slot, .. }
+            | PlayTarget::Phases { slot }
+            | PlayTarget::DoseLog { slot } => slot,
         }
     }
 }
@@ -136,6 +142,10 @@ pub(super) struct PlayState {
     /// of 200 slices wants to move faster than a 10-phase breathing cycle.
     pub(super) slice_fps: f32,
     pub(super) phase_fps: f32,
+    /// Steps per second through the *Dynamic* log. Slower than the others
+    /// by default: each step is a different arrangement of the anatomy with
+    /// its own dose numbers, and the numbers are meant to be read.
+    pub(super) log_fps: f32,
     pub(super) mode: PlayMode,
     /// Show every `slice_step`-th slice: a way through a long stack that
     /// does not take a minute.
@@ -164,6 +174,7 @@ impl Default for PlayState {
             // seconds for a ten-phase 4DCT.
             slice_fps: 10.0,
             phase_fps: 4.0,
+            log_fps: 2.0,
             mode: PlayMode::default(),
             slice_step: 1,
             follow_structs: true,
@@ -337,6 +348,9 @@ impl ViewerApp {
                 self.slots[slot].has_volume() && view < 3 && self.view_slice_count(slot, view) > 1
             }
             PlayTarget::Phases { slot } => self.phase_cache_ready(slot),
+            PlayTarget::DoseLog { slot } => {
+                self.dose_est.slot == slot && self.dose_est.dynamic && self.dose_est.log.len() > 1
+            }
         };
         if !alive {
             self.stop_play();
@@ -369,6 +383,7 @@ impl ViewerApp {
         let fps = match run.target {
             PlayTarget::Slices { .. } => self.play.slice_fps,
             PlayTarget::Phases { .. } => self.play.phase_fps,
+            PlayTarget::DoseLog { .. } => self.play.log_fps,
         };
         let period = 1.0 / f64::from(fps.clamp(0.25, 60.0));
         let now = ctx.input(|i| i.time);
@@ -400,6 +415,25 @@ impl ViewerApp {
                 match advance(cur, n, 1, run.dir, mode) {
                     Some((p, dir)) => {
                         self.show_phase(slot, p);
+                        Some(dir)
+                    }
+                    None => None,
+                }
+            }
+            PlayTarget::DoseLog { .. } => {
+                let n = self.dose_est.log.len();
+                // With no cursor the study stands at the last step, so that
+                // is where a run starts from.
+                let cur = self
+                    .dose_est
+                    .cursor
+                    .unwrap_or(n.saturating_sub(1))
+                    .min(n.saturating_sub(1));
+                // One step at a time: a log is short and each step is a
+                // different arrangement of the anatomy.
+                match advance(cur, n, 1, run.dir, mode) {
+                    Some((step, dir)) => {
+                        self.show_log_step(step);
                         Some(dir)
                     }
                     None => None,
@@ -754,6 +788,20 @@ impl ViewerApp {
             .on_hover_text(
                 "How fast ▶4D runs through the phases of a 4D group. A ten-phase \
                  breathing cycle at 5 phases/s is one breath every two seconds.",
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(38.0);
+            ui.add(
+                egui::DragValue::new(&mut self.play.log_fps)
+                    .speed(0.25)
+                    .range(0.25..=20.0)
+                    .suffix(" steps/s"),
+            )
+            .on_hover_text(
+                "How fast the Dose estimation module's Dynamic log plays. Slower than \
+                 the others by default: every step is a different arrangement of the \
+                 anatomy with its own dose numbers, and the numbers are there to be read.",
             );
         });
         ui.horizontal_wrapped(|ui| {
@@ -1132,6 +1180,25 @@ mod tests {
     fn a_zero_step_still_moves() {
         // The module clamps the setting, but nothing else should have to.
         assert_eq!(advance(0, 3, 0, 1, PlayMode::Loop), Some((1, 1)));
+    }
+
+    #[test]
+    fn every_target_names_the_dataset_it_acts_on() {
+        // The tick, the staleness check and the buttons all key off this,
+        // so a new kind of run that forgets it would act on dataset A
+        // whatever the user picked.
+        assert_eq!(PlayTarget::Slices { slot: 1, view: 2 }.slot(), 1);
+        assert_eq!(PlayTarget::Phases { slot: 1 }.slot(), 1);
+        assert_eq!(PlayTarget::DoseLog { slot: 1 }.slot(), 1);
+        // And two runs on different datasets are different runs.
+        assert_ne!(
+            PlayTarget::DoseLog { slot: 0 },
+            PlayTarget::DoseLog { slot: 1 }
+        );
+        assert_ne!(
+            PlayTarget::DoseLog { slot: 0 },
+            PlayTarget::Phases { slot: 0 }
+        );
     }
 
     #[test]

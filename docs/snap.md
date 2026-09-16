@@ -132,12 +132,20 @@ Two details of the recipe exist for the server:
 * **`base: core24`, strict confinement.** Classic confinement is granted
   only to a few kinds of software (compilers, IDEs) after a manual review; a
   viewer does not qualify, and does not need it.
-* **One part, `plugin: rust`.** It runs `cargo install --locked --path .
-  --features mcp`, which builds both executables with the release profile of
-  `Cargo.toml` (the default `gpu` feature stays on) into `$SNAP/bin`, with
-  the current stable toolchain from rustup. `Cargo.lock` is not in the
-  repository, so dependencies resolve as they do for every other release
-  build. `CARGO_PROFILE_RELEASE_STRIP=debuginfo` removes the standard
+* **`rust-deps`, the toolchain.** The rust plugin would rather install the
+  `rustup` snap into the build instance, but that install is skipped without
+  an error when the instance cannot reach the snap store, and the build then
+  stops with `'rustup' not found` before compiling anything (which is how
+  the first build failed). This part installs the stable toolchain from
+  rustup.rs instead, and `rust-channel: none` plus `after: [rust-deps]` on
+  the part below tells the plugin not to look for the snap. `rust-deps` is
+  the exact name the plugin's environment check accepts.
+* **`rust-dicom-station`, `plugin: rust`.** It runs `cargo install --locked
+  --path . --features mcp`, which builds both executables with the release
+  profile of `Cargo.toml` (the default `gpu` feature stays on) into
+  `$SNAP/bin`; the plugin puts `$HOME/.cargo/bin` on the build path itself.
+  `Cargo.lock` is not in the repository, so dependencies resolve as they do
+  for every other release build. `CARGO_PROFILE_RELEASE_STRIP=debuginfo` removes the standard
   library's debug information; symbol names stay, so a backtrace still
   names its frames. The version is read from `Cargo.toml`, with the same
   expression the release workflow uses.
@@ -245,3 +253,4 @@ shares. Until then the install instructions carry the `snap connect` line.
 | A folder shows as empty or cannot be opened | It is hidden, or outside the home folder: see *What the snap may read* |
 | The window does not open, nothing obvious on the terminal | `snap run --shell rust-dicom-station` opens a shell inside the confinement; `sudo snap install snappy-debug && sudo snappy-debug` shows what the confinement refuses while the program runs |
 | Settings from an AppImage or a source build are missing | They are not shared: the snap has its own folders, see *Where the files are* |
+| A build fails with `'rustup' not found and part ... does not depend on a part named 'rust-deps'` | The `rust-deps` part is missing, or the rust part lost `rust-channel: none` / `after: [rust-deps]`: see *The recipe, piece by piece* |

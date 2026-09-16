@@ -103,10 +103,14 @@ jobs:
           set -uo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends xvfb xauth
+          # `shell: bash` runs the step with errexit, and the command here is
+          # one that has to fail: `timeout` kills the viewer and exits 124,
+          # which is the result being tested for. `|| code=$?` keeps errexit
+          # out of it; `set -uo pipefail` does not turn errexit off.
+          code=0
           # -ac: no X authority to hand across the snap's private /tmp.
           xvfb-run -a -s "-ac -screen 0 1920x1080x24" \
-            timeout 40 /snap/bin/rust-dicom-station
-          code=$?
+            timeout 40 /snap/bin/rust-dicom-station || code=$?
           if [ "$code" -ne 124 ]; then
             echo "::error::the viewer exited with status $code instead of running until the timeout"
             exit 1
