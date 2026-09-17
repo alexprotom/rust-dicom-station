@@ -48,7 +48,9 @@ rust-dicom-station
 │   ├── Side panel: per dataset a DICOM tree - patient ▶ study ▶ modality ▶ series, with RT
 │   │   structures, segmentations, 4D groups, dose and plans inside their study -
 │   │   plus dose display, planar images, spatial registrations, records, warnings
-│   ├── Views: 1 × 3 or 2 × 3 (comparison) linked MPR viewports, crosshair,
+│   ├── Views: one row per dataset (two in comparison mode), each of up to three
+│   │   panes chosen under Settings ▸ View layout - the MPR planes and the 3D
+│   │   surface scene; linked viewports, crosshair,
 │   │   a dataset with no volume says so in place of the panes and holds back
 │   │   the voxel tools;
 │   │   zoom / pan / W-L interaction, maximize, per-view caches

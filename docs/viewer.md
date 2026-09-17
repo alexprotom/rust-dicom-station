@@ -100,35 +100,72 @@ folder…* into the same slot merges the images in and the views switch to
 them - which is the ordinary way to open a structure set first and its CT
 second, and have the contours land on the right images.
 
-## The three-view MPR layout
+## The rows and their panes
 
-The main area shows **axial, sagittal and coronal** planes side by side with
-linked crosshairs: clicking a point in any view moves all three to that
-patient-space position. Planes are extracted in acquisition index space;
-oblique acquisitions display consistently but their plane names are nominal,
-and the anatomical edge labels (L/R/A/P/S/I) always reflect the true patient
-directions from the direction cosines.
+The main area is **one row per dataset** - a second appears in *Comparison
+mode* (View menu) - and each row shows up to **three panes**, chosen under
+*Settings ▸ View layout*: the **axial**, **sagittal** and **coronal** planes,
+and the **3D** surface scene. The two rows are chosen separately, so the
+planning CT can sit above one plane of the repeat scan, or a single large
+axial above the same plane of the other dataset.
 
-The views tile the central area edge to edge, each with its own **slice
+The panes of a row split its width evenly, so a row of two is two large
+images rather than two and a gap, and a row of one is one image across the
+window. A row always shows something: the last tick of a row cannot be
+taken off, and the fourth is greyed out because three is the most a row
+carries. The choice is remembered between runs (`view_row_a` / `view_row_b`
+in the settings file, which can also be edited by hand). Both that submenu
+and the **View** menu are sets of switches rather than lists of actions, so
+ticking one leaves the menu open and a whole layout can be put together in
+one visit; they close on a click outside them or on their own title again.
+
+The MPR panes carry **linked crosshairs**: clicking a point in any of them
+moves the others to that patient-space position. Planes are extracted in
+acquisition index space; oblique acquisitions display consistently but their
+plane names are nominal, and the anatomical edge labels (L/R/A/P/S/I) always
+reflect the true patient directions from the direction cosines.
+
+The panes tile the central area edge to edge, each with its own **slice
 scrubber** drawn over its bottom edge; the plane and dataset name in the
-top-left corner is white in every view, the edge labels keep their colour.
-Two corner buttons (named on hover): **⟲** resets the view's zoom and pan and
-re-centers the crosshair in the volume, **⛶ / ⊞** maximizes the view and
-restores the layout. The toolbar holds a global **⟲** (the same reset for
-every view of both datasets), the **⌖** crosshair toggle (while hidden,
-left-click navigation is off and slices change only by scrolling), the **🔗**
-crosshair-sync toggle beside it (shown while the crosshair is on, active with
-two datasets loaded), the **3D A / 3D B** buttons and the segmentation
-tools.
+top-left corner is white in every pane, the edge labels keep their colour.
+The corner buttons (named on hover), right to left: **⛶ / ⊞** maximizes the
+pane and restores the layout, **⟲** resets the pane's zoom and pan and
+re-centers the crosshair in the volume, **✋** hands the left button the
+image - drag it and the image moves instead of the crosshair, as a middle
+drag always does - and **➕ / ➖** zoom a step about the middle of the pane.
+The hand is one switch for every pane of both datasets. The toolbar holds a
+global **⟲** (the same reset for every pane of both datasets), the **⌖**
+crosshair toggle (while hidden,
+left-click navigation is off and slices change only by scrolling), the
+**Sync** toggle beside it (shown while the crosshair is on, active with two
+datasets loaded - see below), the **3D A / 3D B** buttons and the
+segmentation tools.
+
+**The 3D scene** can live in a row or in a window. Ticking **3D** for a row
+draws it there, and the pane is furnished like any other: **3D** (with the
+dataset's letter in comparison mode) in the top-left corner, and the same
+corner buttons in the same places - **⛶ / ⊞**, **⟲** (the camera back to
+its default angle, fit zoom and no offset), **✋** (a left drag moves the
+scene instead of turning it), **➕ / ➖**, and the **▶4D** transport with
+**Prepare** beside it where the dataset has a 4D group. What only a scene
+has sits under them, wrapping onto another line where a pane is narrow:
+**Opacity** with its percentage, **Structures**, and **Dose** / **Isodose**
+where the dataset carries a dose. **Structures** lays the per-structure
+opacity panel down the pane's right-hand edge, the same panel and the same
+sliders the window shows. While a row carries the scene, that dataset's
+**3D** button leaves the toolbar - there is no window to open - and it
+comes back when the tick does.
 
 **The 3D window** (3D A / 3D B) meshes the active structure set and keeps
 up with it: a structure moved or redrawn in the Structure editor is
 re-meshed in the background while the scene stays on screen, and the
-editor's drawn axis is shown in it. The *Opacity* slider is the whole
-scene's; the **Structures** toggle opens a panel with one slider per
-structure on top of that, so the target can fade while a chamber volume
-stays solid (*All 100 %* clears them). With a dose in the dataset, **Dose
-on the surface** colours every surface by the dose that lands on it, on the
+editor's drawn axis is shown in it. Its camera buttons - **➕ / ➖**, **✋**
+and **⟲** - sit in the window's top-right corner, where a pane keeps them.
+The *Opacity* slider is the whole scene's; the **Structures** toggle opens
+a panel with one slider per structure on top of that, so the target can
+fade while a chamber volume stays solid (*All 100 %* clears them). With a
+dose in the dataset, **Dose on the surface** colours every surface by the
+dose that lands on it, on the
 isodose scale, and **Isodose surfaces** adds the active dose as translucent
 shells at the isodose lines switched on in the Dose display, in their
 colours and relative to the same reference dose, with their own opacity
@@ -242,11 +279,22 @@ play:
   with it.
 
 Either button turns into **⏸** while it runs, and one run is in flight at a
-time. The **3D structures** window has a **▶4D** of its own that starts the
-same run, so the surfaces and the isodose shells breathe with the views, and
-the Dose estimation module's *Dynamic* log has a third
-([dvh.md](dvh.md#the-dose-estimation-module)) that walks the structures back through
-the moves they were given.
+time. The 3D scene has a **▶4D** of its own, in its window and on its pane's
+bar, that starts the same run, so the surfaces and the isodose shells
+breathe with the views, and the Dose estimation module's *Dynamic* log has
+a third ([dvh.md](dvh.md#the-dose-estimation-module)) that walks the
+structures back through the moves they were given.
+
+**With Sync on, both datasets play.** **▶3D** takes the paired pane through
+its own stack by the same rule the wheel follows - the slice position in
+patient coordinates, through the registration where there is one - so the
+two rows stay on the same anatomy rather than on the same slice number.
+**▶4D** walks the other dataset's group beside this one's, which is why the
+first press reads *both* groups into memory and the budget in the Playback
+module has to cover them. Two groups of the same length step phase for
+phase; groups of different lengths are walked proportionally, so a tenth of
+one breathing cycle meets a tenth of the other. A dataset that is not
+showing a 4D group is simply left where it is.
 
 ### Playback
 
@@ -473,23 +521,36 @@ files a study was loaded from are never modified.
 ![comparison mode](screenshot_comparison.png)
 
 *Two opposite breathing phases of the same 4DCT as datasets A and B, each with
-its phase-specific structure set; the synced crosshair pins all six views to
+its phase-specific structure set; the synced crosshair pins every pane to
 the same patient-space point inside the tumor.*
 
 Load a second dataset (menu, tree copy/move, or two directories on the command
-line) and the window splits into two rows of three views - dataset A on top,
-dataset B below. Each dataset keeps its own structures, dose and plan panels
-in the sidebar; window/level and dose display are shared. The crosshair is
-synced through **patient coordinates** (the toolbar's **🔗**, or *View > Sync
-crosshairs between datasets* - both appear only while the crosshair itself is
-on); with a registration active, the link maps through the recovered transform
-instead - see [registration.md](registration.md).
+line) and the window splits into two rows - dataset A on top, dataset B below,
+each showing whatever *Settings ▸ View layout* gives it. Each dataset keeps
+its own structures, dose and plan panels in the sidebar; window/level and dose
+display are shared.
+
+**Sync** (the toolbar button, or *View ▸ Sync the two datasets*; both appear
+only while the crosshair itself is on) keeps the two rows showing the same
+thing. It carries six things across: the crosshair, through **patient
+coordinates** - with a registration active, through the recovered transform
+instead, see [registration.md](registration.md) - the slice that follows it,
+a slice **scrolled or scrubbed** in a pane (through the same patient
+coordinates, so the paired pane lands on whatever slice of the other volume
+lies there, and neither crosshair moves), the **zoom** and **pan** of a
+pane onto the other dataset's pane of the same plane, and both **players**
+(see below). Zoom is screen pixels
+per millimetre and pan is millimetres off the image centre, so copying them
+puts the two rows at the same scale and the same offset whatever the two
+matrices are; what cannot be carried across two
+unrelated images is not pretended. Window/level is shared by both datasets
+either way. Off, each dataset is navigated on its own.
 
 With the bundled data: load `example_data/`, and both 4DCT phases appear as
 two series of one study. Right-click *CT 4DCT_phase_050* ▶ *Copy series to
 dataset B* - the phase moves into the lower row with its own phase-specific
-RTSTRUCT and comparison mode switches on. Click the tumor in any view: all six
-panels jump to that point, and the rows show the respiratory differences.
+RTSTRUCT and comparison mode switches on. Click the tumor in any pane: every
+pane jumps to that point, and the rows show the respiratory differences.
 
 ## Planar images (DX / CR / RTIMAGE)
 

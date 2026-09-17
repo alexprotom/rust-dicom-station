@@ -1,5 +1,7 @@
-//! The egui application: menu bar, toolbar, side panel, and one or two rows
-//! (comparison mode) of three linked MPR views.
+//! The egui application: menu bar, toolbar, side panel, and one row per
+//! dataset (a second in comparison mode) of up to three linked panes each -
+//! the three MPR planes and the 3D surface scene, chosen under
+//! *Settings ▸ View layout*.
 
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -31,7 +33,7 @@ use crate::registration::{
 };
 use crate::render;
 use crate::segmentation::{self, GrowState, Segmentation};
-use crate::settings::{self, Settings};
+use crate::settings::{self, PaneKind, Settings};
 use crate::simulate::{self, SimParams};
 use crate::volume::{ViewPlane, Volume};
 use crate::workflow;
@@ -698,6 +700,10 @@ struct D3Window {
     /// Zoom multiplier on the auto-fit scale.
     zoom: f32,
     pan: Vec2,
+    /// The hand: while it is on, dragging with the left button moves the
+    /// scene instead of turning it. Middle-drag pans either way, but a
+    /// wheel mouse is not something every desk has.
+    pan_mode: bool,
     opacity: f32,
     meshes: Option<Arc<Vec<RoiMesh>>>,
     /// Scene bounding-sphere (patient mm) for auto-fit.
@@ -1169,12 +1175,21 @@ pub(crate) struct RegPick {
 
 pub struct ViewerApp {
     slots: [StudySlot; 2],
-    /// Comparison mode: study B shown in a second row of three views.
+    /// Comparison mode: study B shown in a second row.
     comparison: bool,
+    /// What each row shows, left to right - up to three panes, chosen under
+    /// *Settings ▸ View layout* and remembered between runs. The panes of a
+    /// row split its width evenly, so a row of one is one large image.
+    view_rows: [Vec<PaneKind>; 2],
     /// Propagate the crosshair between studies via patient coordinates.
     link_studies: bool,
     /// Slot whose readout is expanded in the status bar.
     hovered_slot: usize,
+    /// The hand on every viewport's bar: while it is on, dragging with the
+    /// left button moves the image instead of placing the crosshair. One
+    /// switch for all the views, so the pointer means the same thing
+    /// wherever it happens to be.
+    hand_pan: bool,
 
     loading: Option<Job<LoadResult>>,
     /// A load queued behind the one in flight (slot, directory).
@@ -1337,7 +1352,7 @@ pub struct ViewerApp {
     /// Shift-click can extend a range from it.
     tick_anchor: Option<(SetRef, usize)>,
     /// When set, this single (slot, view) fills the whole central area.
-    maximized: Option<(usize, usize)>,
+    maximized: Option<(usize, PaneKind)>,
     /// Invert REG matrices before applying them as the active registration.
     reg_apply_invert: bool,
 
@@ -1674,8 +1689,10 @@ impl ViewerApp {
         let mut app = ViewerApp {
             slots: [StudySlot::empty(), StudySlot::empty()],
             comparison: initial_b.is_some(),
+            view_rows: prefs.view_rows.clone(),
             link_studies: true,
             hovered_slot: 0,
+            hand_pan: false,
             loading: None,
             home_content_height: 0.0,
             // What the last run ended with, ready for the start screen's
@@ -1919,6 +1936,7 @@ impl ViewerApp {
             module_play: self.module_play,
             modules_open: self.modules_open.clone(),
             session: self.session.clone(),
+            view_rows: self.view_rows.clone(),
             graphics_backend: self.graphics_backend,
         }) {
             Ok(()) => self.settings_error = None,

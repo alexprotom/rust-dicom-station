@@ -1,0 +1,72 @@
+name: Flatpak
+
+# Builds the Flatpak from flatpak/io.github.alexprotom.rust-dicom-station.yml
+# and runs the two linters Flathub runs, so a manifest change can be proven
+# before it goes to Flathub (docs/flatpak.md).
+#
+# This workflow publishes nothing: Flathub builds and publishes the
+# application itself, from the manifest in its own repository. What comes
+# out here is a `.flatpak` bundle attached to the run as the
+# `linux-flatpak` artifact, for testing:
+#
+#   flatpak install --user ./rust-dicom-station.flatpak
+#
+# Note that the manifest builds the tagged release named in it, not the
+# branch this runs on, exactly as Flathub will.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  flatpak:
+    name: Flatpak
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # org.flatpak.Builder is the toolbox Flathub itself uses: it brings
+      # flatpak-builder and flatpak-builder-lint in matching versions.
+      - name: Install Flatpak and the builder
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak
+          flatpak remote-add --user --if-not-exists flathub \
+            https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user --noninteractive flathub org.flatpak.Builder
+
+      - name: Lint the manifest
+        run: |
+          flatpak run --command=flatpak-builder-lint org.flatpak.Builder \
+            manifest flatpak/io.github.alexprotom.rust-dicom-station.yml
+
+      # The runtime, the SDK and the Rust extension come from flathub; the
+      # crates come from cargo-sources.json, with no network in the build.
+      - name: Build
+        run: |
+          flatpak run org.flatpak.Builder --user --force-clean \
+            --install-deps-from=flathub --repo=repo \
+            build flatpak/io.github.alexprotom.rust-dicom-station.yml
+
+      - name: Lint the build
+        run: |
+          flatpak run --command=flatpak-builder-lint org.flatpak.Builder repo repo
+
+      - name: Bundle
+        run: |
+          flatpak build-bundle repo rust-dicom-station.flatpak \
+            io.github.alexprotom.rust-dicom-station \
+            --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
+
+      - name: Upload the bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-flatpak
+          path: rust-dicom-station.flatpak
+          if-no-files-found: error

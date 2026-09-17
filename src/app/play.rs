@@ -324,12 +324,55 @@ impl ViewerApp {
                 self.start_phase_cache(slot);
                 return;
             }
+            // With *Sync* on, the other dataset walks its own group beside
+            // this one, so its phases have to be in memory too. One reader
+            // runs at a time: this queues the second and comes back here
+            // when it lands.
+            if let Some(other) = self.sync_phase_partner(slot) {
+                if !self.phase_cache_ready(other) {
+                    self.play.start_after_load = Some(target);
+                    self.start_phase_cache(other);
+                    return;
+                }
+            }
         }
         self.play.running = Some(Running {
             target,
             dir: 1,
             last: now,
         });
+    }
+
+    /// The other dataset, when *Sync* means a phase run should take it
+    /// along: it has to be loaded, and it has to be showing a 4D group of
+    /// its own. [`None`] otherwise, and the run is one dataset's.
+    pub(super) fn sync_phase_partner(&self, slot: usize) -> Option<usize> {
+        if !self.link_studies || !self.both_volumes() {
+            return None;
+        }
+        let other = 1 - slot;
+        self.fourd_phases(other).is_some().then_some(other)
+    }
+
+    /// Step the other dataset's group to the phase that answers this one's.
+    ///
+    /// Two groups of the same length step together, phase for phase, which
+    /// is the ordinary case: a planning 4DCT and a repeat 4DCT of the same
+    /// protocol. Groups of different lengths are walked proportionally -
+    /// a tenth of one breathing cycle is a tenth of the other, whatever
+    /// each was reconstructed into - because the alternative is one of them
+    /// stopping partway through and the comparison ending there.
+    fn carry_phase(&mut self, slot: usize, at: usize) {
+        let Some(other) = self.sync_phase_partner(slot) else {
+            return;
+        };
+        let here = self.play.cache[slot].as_ref().map_or(0, PhaseCache::len);
+        let there = self.play.cache[other].as_ref().map_or(0, PhaseCache::len);
+        if here == 0 || there == 0 {
+            return;
+        }
+        let p = if here == there { at } else { at * there / here };
+        self.show_phase(other, p.min(there - 1));
     }
 
     pub(super) fn stop_play(&mut self) {
@@ -401,6 +444,7 @@ impl ViewerApp {
                 match advance(cur, n, step, run.dir, mode) {
                     Some((s, dir)) => {
                         self.slots[slot].views[view].slice = s;
+                        self.carry_slice(slot, view, s);
                         Some(dir)
                     }
                     None => None,
@@ -415,6 +459,7 @@ impl ViewerApp {
                 match advance(cur, n, 1, run.dir, mode) {
                     Some((p, dir)) => {
                         self.show_phase(slot, p);
+                        self.carry_phase(slot, p);
                         Some(dir)
                     }
                     None => None,
@@ -624,16 +669,20 @@ impl ViewerApp {
             return;
         };
         self.play.cache[slot] = Some(res);
-        if let Some(target) = self.play.start_after_load.take() {
-            if target.slot() == slot {
-                let now = ctx.input(|i| i.time);
-                self.play.running = Some(Running {
-                    target,
-                    dir: 1,
-                    last: now,
-                });
-            }
+        let Some(target) = self.play.start_after_load else {
+            return;
+        };
+        // Only the run that was waiting on *these* phases: its own, or the
+        // partner's when *Sync* takes both datasets along.
+        if target.slot() != slot && self.sync_phase_partner(target.slot()) != Some(slot) {
+            return;
         }
+        self.play.start_after_load = None;
+        // Back through the same door the run came in by: it starts if
+        // everything it needs is now in memory, and asks for the rest when
+        // *Sync* means there is more to read.
+        let now = ctx.input(|i| i.time);
+        self.toggle_play(target, now);
     }
 
     /// Forget the phases of one dataset: its study changed, or the user

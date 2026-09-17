@@ -34,6 +34,10 @@ sequence.
      directly, for a client that will not pass an argument. Everything else -
      `--config`, `--check` - works as it does on the standalone binary:
      `./rust-dicom-station.AppImage mcp --check`.
+   * **Flatpak** - the server is a second command of the same application:
+     `flatpak run --command=rds-mcp io.github.alexprotom.rust-dicom-station`
+     ([flatpak.md](flatpak.md#the-mcp-server-in-a-flatpak)). Its roots must
+     be paths the sandbox can see.
    * **Snap** - the server is the snap's second command,
      `/snap/bin/rust-dicom-station.rds-mcp`; that path is what the client
      runs ([snap.md](snap.md#the-mcp-server-in-a-snap)). Its roots must be
@@ -45,8 +49,9 @@ sequence.
    The viewer's *Settings ▶ MCP server* menu says whether it is present.
 2. Write the configuration, `mcp.toml`, in the station's configuration folder
    (`%LOCALAPPDATA%\RustDICOMStation` on Windows, `~/.config/RustDICOMStation`
-   on Linux, `~/snap/rust-dicom-station/common/config` in the snap; the menu
-   shows the exact path). Without it no dataset can be opened:
+   on Linux, `~/snap/rust-dicom-station/common/config` in the snap,
+   `~/.var/app/io.github.alexprotom.rust-dicom-station/config/RustDICOMStation`
+   in the Flatpak; the menu shows the exact path). Without it no dataset can be opened:
 
    ```toml
    roots = ["D:/studies/anonymized"]      # folders that may be read

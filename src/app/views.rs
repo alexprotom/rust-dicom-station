@@ -42,7 +42,7 @@ impl ViewerApp {
         h ^ self.settings_gen.wrapping_mul(0x2545F4914F6CDD1D)
     }
 
-    // -- Central: one or two rows of three views --------------------------
+    // -- Central: one row per dataset, each of up to three panes ----------
     pub(super) fn central_views(&mut self, ui: &mut egui::Ui) {
         let backdrop = backdrop_color(ui.visuals());
         egui::CentralPanel::default_margins()
@@ -52,24 +52,23 @@ impl ViewerApp {
                     self.empty_state(ui);
                     return;
                 }
-                // Maximized single-view layout: one view fills the window.
-                if let Some((mslot, midx)) = self.maximized {
-                    if self.slots[mslot.min(1)].study.is_some() && midx < 3 {
+                // Maximized single-pane layout: one pane fills the window.
+                if let Some((mslot, kind)) = self.maximized {
+                    if self.slots[mslot.min(1)].study.is_some() {
                         let full = ui.available_rect_before_wrap();
-                        self.view_cell(ui, mslot.min(1), midx, full);
+                        self.pane(ui, mslot.min(1), kind, full, true);
                         return;
                     }
                     self.maximized = None;
                 }
-                let two_rows = self.comparison;
                 let full = ui.available_rect_before_wrap();
-                // The views tile the central area edge to edge: every pixel
-                // spent on a gap is a pixel of image not shown, and each view
+                // The panes tile the central area edge to edge: every pixel
+                // spent on a gap is a pixel of image not shown, and each pane
                 // names itself in its own corner.
-                let n_rows = if two_rows { 2.0 } else { 1.0 };
-                let row_h = full.height() / n_rows;
+                let n_rows = if self.comparison { 2 } else { 1 };
+                let row_h = full.height() / n_rows as f32;
 
-                for row in 0..(n_rows as usize) {
+                for row in 0..n_rows {
                     let y0 = full.top() + row as f32 * row_h;
                     let row_rect = Rect::from_min_size(
                         Pos2::new(full.left(), y0),
@@ -84,16 +83,189 @@ impl ViewerApp {
             });
     }
 
+    /// What a row shows, left to right.
+    ///
+    /// The setting is the user's; this is what the row can actually be given
+    /// today, so a row left empty falls back to the three planes rather than
+    /// to a blank strip of window.
+    pub(super) fn row_panes(&self, slot: usize) -> Vec<PaneKind> {
+        let mut panes = self.view_rows[slot.min(1)].clone();
+        panes.truncate(crate::settings::MAX_PANES);
+        if panes.is_empty() {
+            panes = crate::settings::default_view_row();
+        }
+        panes
+    }
+
+    /// Does this row show the surface scene? The toolbar's *3D* button for
+    /// that dataset steps aside when it does.
+    pub(super) fn row_shows_scene(&self, slot: usize) -> bool {
+        (slot == 0 || self.comparison) && self.row_panes(slot).contains(&PaneKind::Scene3d)
+    }
+
     pub(super) fn study_row(&mut self, ui: &mut egui::Ui, slot: usize, row_rect: Rect) {
-        let col_w = row_rect.width() / 3.0;
-        for idx in 0..3 {
-            let x0 = row_rect.left() + idx as f32 * col_w;
+        let panes = self.row_panes(slot);
+        // An equal share each: two panes are two large images, not two and
+        // an empty third.
+        let col_w = row_rect.width() / panes.len() as f32;
+        for (i, kind) in panes.into_iter().enumerate() {
             let col = Rect::from_min_size(
-                Pos2::new(x0, row_rect.top()),
+                Pos2::new(row_rect.left() + i as f32 * col_w, row_rect.top()),
                 Vec2::new(col_w, row_rect.height()),
             );
-            self.view_cell(ui, slot, idx, col);
+            self.pane(ui, slot, kind, col, i == 0);
         }
+    }
+
+    /// One pane of a row: a plane of the volume, or the surface scene.
+    fn pane(&mut self, ui: &mut egui::Ui, slot: usize, kind: PaneKind, rect: Rect, first: bool) {
+        match kind {
+            PaneKind::Plane(p) => self.view_cell(ui, slot, super::plane_index(p), rect, first),
+            PaneKind::Scene3d => self.scene_pane(ui, slot, rect),
+        }
+    }
+
+    /// Carry a view's zoom or pan onto the other dataset's view of the same
+    /// plane, while *Sync* is on.
+    ///
+    /// The crosshair and the slice already travel through
+    /// [`Self::set_cursor`]; these two are what was left of "show me the
+    /// same thing". Both are in units that mean the same on either image -
+    /// zoom is screen pixels per millimetre, pan is millimetres off the
+    /// image centre - so copying the number really does put the two rows at
+    /// the same scale, whatever the matrices are.
+    fn carry_view(&mut self, slot: usize, idx: usize, zoom: Option<f32>, pan: Option<Vec2>) {
+        if !self.link_studies || !self.both_volumes() {
+            return;
+        }
+        let other = 1 - slot;
+        let Some(v) = self.slots[other].views.get_mut(idx) else {
+            return;
+        };
+        if let Some(z) = zoom {
+            v.zoom = z;
+        }
+        if let Some(p) = pan {
+            v.pan = p;
+        }
+    }
+
+    /// Carry a scrolled slice onto the other dataset's view of the same
+    /// plane, while *Sync* is on.
+    ///
+    /// The wheel moves a view through its own stack, so "the same slice"
+    /// only means something in patient space: the new slice position is
+    /// turned into millimetres, put through the active registration when
+    /// there is one, and turned back into whatever slice of the other
+    /// volume lies there. The two crosshairs are left where they are - the
+    /// wheel never moved them in the first place.
+    pub(super) fn carry_slice(&mut self, slot: usize, idx: usize, slice: usize) {
+        if !self.link_studies || !self.both_volumes() {
+            return;
+        }
+        let other = 1 - slot;
+        let Some(view) = self.slots[slot].views.get(idx) else {
+            return;
+        };
+        let plane = view.plane;
+        // The scrolled axis takes the new slice; the other two stay where
+        // the crosshair is, which is the only in-plane position we have.
+        let mut v = self.slots[slot].cursor;
+        match plane {
+            ViewPlane::Axial => v[2] = slice as f64,
+            ViewPlane::Sagittal => v[0] = slice as f64,
+            ViewPlane::Coronal => v[1] = slice as f64,
+        }
+        let Some(study) = &self.slots[slot].study else {
+            return;
+        };
+        let patient = study.volume.voxel_to_patient(v[0], v[1], v[2]);
+        let target = match &self.registration {
+            Some(reg) if reg.shows_fixed(slot, &self.slots) => reg.result.transform.map(patient),
+            Some(reg) if reg.shows_moving(slot, &self.slots) => reg.result.transform.unmap(patient),
+            _ => patient,
+        };
+        let new_slice = {
+            let Some(ostudy) = &self.slots[other].study else {
+                return;
+            };
+            if !ostudy.has_volume() {
+                return;
+            }
+            let Some(oview) = self.slots[other].views.get(idx) else {
+                return;
+            };
+            let opl = oview.plane;
+            let oc = ostudy.volume.patient_to_voxel(target);
+            let sc = match opl {
+                ViewPlane::Axial => oc[2],
+                ViewPlane::Sagittal => oc[0],
+                ViewPlane::Coronal => oc[1],
+            };
+            let max = ostudy.volume.plane_slice_count(opl).saturating_sub(1);
+            (sc.round().max(0.0) as usize).min(max)
+        };
+        self.slots[other].views[idx].slice = new_slice;
+    }
+
+    /// The *Settings ▸ View layout* tick boxes: what each row shows.
+    ///
+    /// A row holds up to three panes, so the fourth tick box greys out once
+    /// three are on, and the last one on a row cannot be taken off - an
+    /// empty row would be a strip of backdrop with nothing to say for
+    /// itself. Returns whether anything changed, so the caller can write
+    /// the settings out.
+    pub(super) fn view_layout_menu(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        for (slot, name) in SLOT_NAMES.iter().enumerate() {
+            ui.label(egui::RichText::new(format!("Row {name}")).strong());
+            let row = self.row_panes(slot);
+            for kind in PaneKind::ALL {
+                let mut on = row.contains(&kind);
+                // Off and the row is full, or on and it is the only one:
+                // either way the tick cannot move.
+                let full = !on && row.len() >= crate::settings::MAX_PANES;
+                let last = on && row.len() == 1;
+                let resp =
+                    ui.add_enabled(!full && !last, egui::Checkbox::new(&mut on, kind.label()));
+                if resp.changed() {
+                    let panes = &mut self.view_rows[slot];
+                    if on {
+                        panes.push(kind);
+                        // However they were ticked, a row reads in the
+                        // order the tick boxes are listed in.
+                        panes.sort_by_key(|k| {
+                            PaneKind::ALL.iter().position(|a| a == k).unwrap_or(9)
+                        });
+                    } else {
+                        panes.retain(|k| *k != kind);
+                    }
+                    changed = true;
+                }
+                if full {
+                    resp.on_hover_text("A row shows at most three panes");
+                } else if last {
+                    resp.on_hover_text("A row has to show something");
+                } else if kind == PaneKind::Scene3d {
+                    resp.on_hover_text(
+                        "Draw this dataset's surfaces in the row instead of in a window;                          the 3D button in the toolbar steps aside while it is here",
+                    );
+                }
+            }
+            if slot == 0 {
+                ui.separator();
+            }
+        }
+        if changed {
+            // A pane that has just gone from the layout must not leave a
+            // maximized pane pointing at nothing.
+            if let Some((slot, kind)) = self.maximized {
+                if !self.row_panes(slot.min(1)).contains(&kind) {
+                    self.maximized = None;
+                }
+            }
+        }
+        changed
     }
 
     /// The slice slider lies *inside* the viewport, along its bottom edge -
@@ -110,7 +282,14 @@ impl ViewerApp {
     /// One viewport filling `cell`, with its slice slider drawn on top of it
     /// (used both by the three-in-a-row layout and by the maximized
     /// single-view layout).
-    pub(super) fn view_cell(&mut self, ui: &mut egui::Ui, slot: usize, idx: usize, cell: Rect) {
+    pub(super) fn view_cell(
+        &mut self,
+        ui: &mut egui::Ui,
+        slot: usize,
+        idx: usize,
+        cell: Rect,
+        first: bool,
+    ) {
         let max_slice = self.slots[slot]
             .study
             .as_ref()
@@ -121,7 +300,7 @@ impl ViewerApp {
             })
             .unwrap_or(0);
         let slider_rect = Self::slider_strip(cell);
-        self.one_view(ui, slot, idx, cell, max_slice > 0);
+        self.one_view(ui, slot, idx, cell, max_slice > 0, first);
         if max_slice > 0 {
             // A dark band under the slider keeps it readable over bright
             // anatomy without hiding much of it.
@@ -145,6 +324,7 @@ impl ViewerApp {
             ui.spacing_mut().slider_width = saved;
             if resp.changed() {
                 self.slots[slot].views[idx].slice = slice;
+                self.carry_slice(slot, idx, slice);
             }
         }
     }
@@ -194,17 +374,17 @@ impl ViewerApp {
     /// The pane shown for a loaded dataset that carries no image volume.
     ///
     /// Modelled on [`Self::empty_row`], but it says something different: the
-    /// dataset is *there*, it simply has nothing to reformat. Only the middle
-    /// pane carries the text (or the single pane, when one is maximized), so
-    /// the message is stated once rather than three times across the row.
-    fn no_volume_row(&mut self, ui: &mut egui::Ui, slot: usize, rect: Rect, idx: usize) {
+    /// dataset is *there*, it simply has nothing to reformat. Only the first
+    /// pane of the row carries the text, so the message is stated once
+    /// rather than once per pane.
+    fn no_volume_row(&mut self, ui: &mut egui::Ui, slot: usize, rect: Rect, first: bool) {
         let (fill, hint, strong) = {
             let v = ui.visuals();
             (empty_row_color(v), v.text_color(), v.strong_text_color())
         };
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, fill);
-        if !(self.maximized.is_some() || idx == 1) {
+        if !first {
             return;
         }
         let counts = self.slots[slot]
@@ -278,6 +458,9 @@ impl ViewerApp {
         idx: usize,
         rect: Rect,
         has_slider: bool,
+        // The leftmost pane of its row: the one that carries the messages a
+        // row states once rather than in every pane.
+        first: bool,
     ) {
         let ctx = ui.ctx().clone();
         let plane = self.slots[slot].views[idx].plane;
@@ -290,7 +473,7 @@ impl ViewerApp {
         // plan - so the pane says so and offers the folder that would give
         // it a volume, instead of three black rectangles.
         if self.slots[slot].study.is_some() && !self.slots[slot].has_volume() {
-            self.no_volume_row(ui, slot, rect, idx);
+            self.no_volume_row(ui, slot, rect, first);
             return;
         }
 
@@ -842,7 +1025,7 @@ impl ViewerApp {
         // Loading overlay.
         if self.loading.is_some() {
             painter.rect_filled(rect, 0.0, Color32::from_rgba_unmultiplied(0, 0, 0, 140));
-            if idx == 1 && slot == 0 {
+            if first && slot == 0 {
                 if let Some(job) = &self.loading {
                     painter.text(
                         rect.center(),
@@ -861,7 +1044,7 @@ impl ViewerApp {
         // registered *after* the viewport interaction: the last widget at a
         // position is the topmost one, so they get the hover - and show their
         // tooltips - instead of the full-viewport rectangle underneath.
-        let is_max = self.maximized == Some((slot, idx));
+        let is_max = self.maximized == Some((slot, PaneKind::Plane(plane)));
         let bsize = egui::vec2(24.0, 20.0);
         let by = rect.top() + 22.0; // below the slice counter
         let max_rect = Rect::from_min_size(Pos2::new(rect.right() - bsize.x - 4.0, by), bsize);
@@ -875,10 +1058,15 @@ impl ViewerApp {
         // Wider than the glyph buttons beside them: these carry `3D` / `4D`
         // as well, and that is what tells the two apart.
         let psize = egui::vec2(38.0, 20.0);
+        // The camera's own three, between the play buttons and the reset -
+        // the same three, in the same place, as a 3D pane's bar.
+        let hand_rect = Rect::from_min_size(Pos2::new(fit_rect.left() - bsize.x - 4.0, by), bsize);
+        let zout_rect = Rect::from_min_size(Pos2::new(hand_rect.left() - bsize.x - 4.0, by), bsize);
+        let zin_rect = Rect::from_min_size(Pos2::new(zout_rect.left() - bsize.x - 4.0, by), bsize);
         let play3_rect = if slices_here {
-            Rect::from_min_size(Pos2::new(fit_rect.left() - psize.x - 4.0, by), psize)
+            Rect::from_min_size(Pos2::new(zin_rect.left() - psize.x - 4.0, by), psize)
         } else {
-            fit_rect
+            zin_rect
         };
         let play4_rect = if phases_here {
             Rect::from_min_size(Pos2::new(play3_rect.left() - psize.x - 4.0, by), psize)
@@ -898,6 +1086,9 @@ impl ViewerApp {
             .map(|p| {
                 max_rect.contains(p)
                     || fit_rect.contains(p)
+                    || hand_rect.contains(p)
+                    || zout_rect.contains(p)
+                    || zin_rect.contains(p)
                     || (slices_here && play3_rect.contains(p))
                     || (phases_here && play4_rect.contains(p))
                     || slider_rect.contains(p)
@@ -927,6 +1118,24 @@ impl ViewerApp {
                 "Reset this view: fit zoom, clear pan and put the crosshair back at \
              the volume center",
             );
+        let hand_resp = ui
+            .put(
+                hand_rect,
+                egui::Button::selectable(self.hand_pan, "✋")
+                    .frame_when_inactive(true)
+                    .small(),
+            )
+            .on_hover_text(
+                "Move the image: while this is on, dragging with the left button slides \
+                 the image instead of placing the crosshair. Off, a middle drag still \
+                 moves it. The switch is shared by every view.",
+            );
+        let zout_resp = ui
+            .put(zout_rect, egui::Button::new("➖").small())
+            .on_hover_text("Zoom out, about the middle of the view");
+        let zin_resp = ui
+            .put(zin_rect, egui::Button::new("➕").small())
+            .on_hover_text("Zoom in, about the middle of the view");
         let slice_target = play::PlayTarget::Slices { slot, view: idx };
         let phase_target = play::PlayTarget::Phases { slot };
         let mut clicked_play3 = false;
@@ -965,13 +1174,24 @@ impl ViewerApp {
             || (any_click && pointer_pos.map(|p| max_rect.contains(p)).unwrap_or(false));
         let clicked_fit = fit_resp.clicked()
             || (any_click && pointer_pos.map(|p| fit_rect.contains(p)).unwrap_or(false));
+        let clicked_hand = hand_resp.clicked()
+            || (any_click && pointer_pos.map(|p| hand_rect.contains(p)).unwrap_or(false));
+        let clicked_zout = zout_resp.clicked()
+            || (any_click && pointer_pos.map(|p| zout_rect.contains(p)).unwrap_or(false));
+        let clicked_zin = zin_resp.clicked()
+            || (any_click && pointer_pos.map(|p| zin_rect.contains(p)).unwrap_or(false));
         // (applied below, in the mutable phase)
         let n_slices = vol.plane_slice_count(plane);
         let seg_active = self.seg_tool != SegTool::None;
         let cur_slice = view.slice;
 
         let mut new_slice = None;
-        let mut new_zoom = None;
+        // A step of the wheel's own size, about the middle of the view: the
+        // pan is left alone, so what is in the centre stays in the centre.
+        let mut new_zoom = (clicked_zin || clicked_zout).then(|| {
+            let step = if clicked_zin { 1.25 } else { 1.0 / 1.25 };
+            (zoom * step).clamp(fit_zoom * 0.2, fit_zoom * 40.0)
+        });
         let mut new_pan = None;
         let mut new_cursor = None;
         let mut wl_delta = None;
@@ -1095,6 +1315,7 @@ impl ViewerApp {
             && !axis_draw
             && !hand_struct
             && !hand_axis
+            && !self.hand_pan
             && (resp.dragged_by(egui::PointerButton::Primary) || resp.clicked())
             && !over_buttons
         {
@@ -1250,11 +1471,31 @@ impl ViewerApp {
             let d = resp.drag_delta();
             new_pan = Some(view.pan + d / zoom);
         }
+        // The hand: the left button moves the image, as the middle one
+        // always does, and the tools that own the left button keep it.
+        if self.hand_pan
+            && !over_buttons
+            && !seg_active
+            && !medsam2_box
+            && !axis_draw
+            && !hand_struct
+            && !hand_axis
+            && resp.dragged_by(egui::PointerButton::Primary)
+        {
+            new_pan = Some(view.pan + resp.drag_delta() / zoom);
+        }
         let hovered = resp.hovered();
 
         // Apply interactions (mutable phase).
+        if clicked_hand {
+            self.hand_pan = !self.hand_pan;
+        }
         if clicked_max {
-            self.maximized = if is_max { None } else { Some((slot, idx)) };
+            self.maximized = if is_max {
+                None
+            } else {
+                Some((slot, PaneKind::Plane(plane)))
+            };
         }
         if clicked_fit {
             reset_view = true;
@@ -1276,12 +1517,15 @@ impl ViewerApp {
         }
         if let Some(s) = new_slice {
             self.slots[slot].views[idx].slice = s;
+            self.carry_slice(slot, idx, s);
         }
         if let Some(z) = new_zoom {
             self.slots[slot].views[idx].zoom = z;
+            self.carry_view(slot, idx, Some(z), None);
         }
         if let Some(p) = new_pan {
             self.slots[slot].views[idx].pan = p;
+            self.carry_view(slot, idx, None, Some(p));
         }
         if reset_view {
             self.slots[slot].views[idx].zoom = 0.0;
@@ -1289,6 +1533,7 @@ impl ViewerApp {
             // Also put the crosshair back at the volume center, which returns
             // this slot's three views to their default (central) slices.
             self.center_cursor(slot);
+            self.carry_view(slot, idx, Some(0.0), Some(Vec2::ZERO));
         }
         if let Some((dx, dy)) = wl_delta {
             self.window_width = (self.window_width * (1.0 + dx * 0.005)).clamp(1.0, 30000.0);

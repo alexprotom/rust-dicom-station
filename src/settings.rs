@@ -44,6 +44,96 @@ const MODULES_OPEN_KEY: &str = "modules_open";
 const SESSION_KEYS: [&str; 2] = ["session_a", "session_b"];
 const SESSION_SEP: char = '|';
 
+/// Settings keys of what each row of the central area shows, one per row.
+const VIEW_ROW_KEYS: [&str; 2] = ["view_row_a", "view_row_b"];
+
+/// What one pane of a row shows.
+///
+/// A row is a list of these, left to right, and the layout gives each of
+/// them an equal share of the row's width - so a row of two panes is two
+/// larger images rather than two images and a gap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneKind {
+    /// One plane of the dataset's volume: an ordinary MPR view.
+    Plane(crate::volume::ViewPlane),
+    /// The surface scene of that dataset's structures and segmentations -
+    /// the same one the *3D* button opens in a window, drawn in the row
+    /// instead.
+    Scene3d,
+}
+
+/// How many panes one row may show. Three fills a wide screen without any
+/// of them becoming a postage stamp; the layout would divide by more
+/// perfectly happily, but nobody reads a CT that small.
+pub const MAX_PANES: usize = 3;
+
+impl PaneKind {
+    /// Every kind a row can be given, in the order the tick boxes list them.
+    pub const ALL: [PaneKind; 4] = [
+        PaneKind::Plane(crate::volume::ViewPlane::Axial),
+        PaneKind::Plane(crate::volume::ViewPlane::Sagittal),
+        PaneKind::Plane(crate::volume::ViewPlane::Coronal),
+        PaneKind::Scene3d,
+    ];
+
+    /// What the tick box and the pane's own corner call it.
+    pub fn label(self) -> &'static str {
+        match self {
+            PaneKind::Plane(p) => p.title(),
+            PaneKind::Scene3d => "3D",
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            PaneKind::Plane(crate::volume::ViewPlane::Axial) => "axial",
+            PaneKind::Plane(crate::volume::ViewPlane::Sagittal) => "sagittal",
+            PaneKind::Plane(crate::volume::ViewPlane::Coronal) => "coronal",
+            PaneKind::Scene3d => "3d",
+        }
+    }
+
+    fn from_key(s: &str) -> Option<PaneKind> {
+        PaneKind::ALL.into_iter().find(|k| k.key() == s)
+    }
+}
+
+/// What a row shows when nothing says otherwise: the three planes, which is
+/// the layout the program has always had.
+pub fn default_view_row() -> Vec<PaneKind> {
+    vec![
+        PaneKind::Plane(crate::volume::ViewPlane::Axial),
+        PaneKind::Plane(crate::volume::ViewPlane::Sagittal),
+        PaneKind::Plane(crate::volume::ViewPlane::Coronal),
+    ]
+}
+
+/// Read one row back from the settings file.
+///
+/// A row that names nothing the program knows, or nothing at all, keeps the
+/// default rather than leaving the user with an empty window; anything past
+/// the third pane and any repeat is dropped.
+fn parse_view_row(value: &str) -> Vec<PaneKind> {
+    let mut out: Vec<PaneKind> = Vec::new();
+    for word in value.split(',') {
+        let Some(k) = PaneKind::from_key(word.trim().to_lowercase().as_str()) else {
+            continue;
+        };
+        if !out.contains(&k) && out.len() < MAX_PANES {
+            out.push(k);
+        }
+    }
+    if out.is_empty() {
+        default_view_row()
+    } else {
+        out
+    }
+}
+
+fn render_view_row(row: &[PaneKind]) -> String {
+    row.iter().map(|k| k.key()).collect::<Vec<_>>().join(",")
+}
+
 /// User preferences that survive a restart.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
@@ -110,6 +200,10 @@ pub struct Settings {
     /// files, in the order they were added, so *Restore the last session*
     /// can put the same data back.
     pub session: [Vec<PathBuf>; 2],
+
+    /// What each row of the central area shows, left to right: up to three
+    /// panes, chosen under *Settings ▸ View layout*.
+    pub view_rows: [Vec<PaneKind>; 2],
 }
 
 impl Default for Settings {
@@ -132,6 +226,7 @@ impl Default for Settings {
             module_play: true,
             modules_open: Vec::new(),
             session: [Vec::new(), Vec::new()],
+            view_rows: [default_view_row(), default_view_row()],
             // Let wgpu choose. The installer writes an explicit value when
             // the person installing picks one.
             graphics_backend: Backend::Auto,
@@ -381,7 +476,7 @@ pub fn mcp_exe_path() -> PathBuf {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpLaunch {
     pub command: PathBuf,
-    pub args: Vec<&'static str>,
+    pub args: Vec<String>,
 }
 
 impl McpLaunch {
@@ -389,20 +484,36 @@ impl McpLaunch {
     ///
     /// * a snap - the snap's command, `/snap/bin/<name>.rds-mcp`; the binary
     ///   inside the snap cannot be run from outside it;
+    /// * a Flatpak (`$FLATPAK_ID`, set inside the sandbox) - `flatpak run
+    ///   --command=rds-mcp <id>`, for the same reason;
     /// * an AppImage (`$APPIMAGE`, set by its runtime) - the AppImage file
     ///   with `mcp`, which its AppRun dispatches on; the executable beside
     ///   this one lives in a mount that is gone once the program exits;
     /// * anything else - `rds-mcp` beside this executable.
-    fn resolve(snap: Option<&SnapEnv>, appimage: Option<PathBuf>, beside: PathBuf) -> McpLaunch {
+    fn resolve(
+        snap: Option<&SnapEnv>,
+        flatpak: Option<&str>,
+        appimage: Option<PathBuf>,
+        beside: PathBuf,
+    ) -> McpLaunch {
         if let Some(snap) = snap {
             McpLaunch {
                 command: snap.command("rds-mcp"),
                 args: Vec::new(),
             }
+        } else if let Some(id) = flatpak {
+            McpLaunch {
+                command: PathBuf::from("flatpak"),
+                args: vec![
+                    "run".to_string(),
+                    "--command=rds-mcp".to_string(),
+                    id.to_string(),
+                ],
+            }
         } else if let Some(file) = appimage {
             McpLaunch {
                 command: file,
-                args: vec!["mcp"],
+                args: vec!["mcp".to_string()],
             }
         } else {
             McpLaunch {
@@ -437,14 +548,21 @@ impl McpLaunch {
 /// How an MCP client starts this installation's server (see
 /// [`McpLaunch::resolve`]).
 pub fn mcp_client_launch() -> McpLaunch {
-    let appimage = if cfg!(target_os = "linux") {
-        std::env::var_os("APPIMAGE")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-    } else {
-        None
+    let linux_var = |name: &str| {
+        if cfg!(target_os = "linux") {
+            std::env::var_os(name).filter(|v| !v.is_empty())
+        } else {
+            None
+        }
     };
-    McpLaunch::resolve(snap_env().as_ref(), appimage, mcp_exe_path())
+    let flatpak = linux_var("FLATPAK_ID").map(|v| v.to_string_lossy().into_owned());
+    let appimage = linux_var("APPIMAGE").map(PathBuf::from);
+    McpLaunch::resolve(
+        snap_env().as_ref(),
+        flatpak.as_deref(),
+        appimage,
+        mcp_exe_path(),
+    )
 }
 
 /// The entry an MCP client (Claude Desktop, Claude Code) needs in its
@@ -580,6 +698,11 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
             if let Some(b) = bool_from_str(value) {
                 s.module_registration = b;
             }
+        } else if let Some(row) = VIEW_ROW_KEYS
+            .iter()
+            .position(|k| key.eq_ignore_ascii_case(k))
+        {
+            s.view_rows[row] = parse_view_row(value);
         } else if let Some(slot) = SESSION_KEYS
             .iter()
             .position(|k| key.eq_ignore_ascii_case(k))
@@ -675,6 +798,11 @@ fn render(s: &Settings) -> String {
         s.modules_open.join(","),
         s.graphics_backend.key()
     ));
+    out.push_str("# what each row of the central area shows, left to right:\n");
+    out.push_str("# up to three of axial, sagittal, coronal, 3d\n");
+    for (key, row) in VIEW_ROW_KEYS.iter().zip(&s.view_rows) {
+        out.push_str(&format!("{key} = {}\n", render_view_row(row)));
+    }
     for (key, paths) in SESSION_KEYS.iter().zip(&s.session) {
         if paths.is_empty() {
             continue;
@@ -771,21 +899,43 @@ mod tests {
         let snap = snap_vars(&SNAP_VARS).unwrap();
         let appimage = PathBuf::from("/home/u/Apps/RDS.AppImage");
 
-        let plain = McpLaunch::resolve(None, None, beside.clone());
+        let plain = McpLaunch::resolve(None, None, None, beside.clone());
         assert_eq!(plain.command, beside);
         assert!(plain.args.is_empty());
 
-        let a = McpLaunch::resolve(None, Some(appimage.clone()), beside.clone());
+        let a = McpLaunch::resolve(None, None, Some(appimage.clone()), beside.clone());
         assert_eq!(a.command, appimage);
         assert_eq!(a.args, ["mcp"]);
         assert_eq!(a.display(), "/home/u/Apps/RDS.AppImage mcp");
 
-        // A snap wins: an AppImage variable leaking into it would be stale.
-        let s = McpLaunch::resolve(Some(&snap), Some(appimage), beside);
+        let f = McpLaunch::resolve(
+            None,
+            Some("io.github.alexprotom.rust-dicom-station"),
+            None,
+            beside.clone(),
+        );
+        assert_eq!(f.command, Path::new("flatpak"));
+        assert_eq!(
+            f.args,
+            [
+                "run",
+                "--command=rds-mcp",
+                "io.github.alexprotom.rust-dicom-station"
+            ]
+        );
+
+        // A snap wins: another packaging's variable leaking into it would
+        // be stale.
+        let s = McpLaunch::resolve(
+            Some(&snap),
+            Some("io.github.alexprotom.rust-dicom-station"),
+            Some(appimage),
+            beside,
+        );
         assert_eq!(s.command, Path::new("/snap/bin/rust-dicom-station.rds-mcp"));
         assert!(s.args.is_empty());
 
-        for launch in [plain, a, s] {
+        for launch in [plain, a, f, s] {
             let v: serde_json::Value =
                 serde_json::from_str(&launch.client_snippet()).expect("valid JSON");
             let entry = &v["mcpServers"]["rust-dicom-station"];
@@ -925,6 +1075,53 @@ mod tests {
         );
         let merged = parse_into(parse_into(Settings::default(), &machine), &user);
         assert_eq!(merged.graphics_backend, Backend::Vulkan);
+    }
+
+    #[test]
+    fn a_row_keeps_what_it_can_use_and_nothing_else() {
+        use crate::volume::ViewPlane;
+        let axial = PaneKind::Plane(ViewPlane::Axial);
+        let cor = PaneKind::Plane(ViewPlane::Coronal);
+        assert_eq!(parse_view_row("axial,coronal"), vec![axial, cor]);
+        // Case and spacing are the user's business, not the parser's.
+        assert_eq!(parse_view_row(" Axial , CORONAL "), vec![axial, cor]);
+        // A row shows at most three panes, and a repeat is not a pane.
+        assert_eq!(
+            parse_view_row("axial,axial,sagittal,coronal,3d"),
+            vec![axial, PaneKind::Plane(ViewPlane::Sagittal), cor]
+        );
+        // The order is the user's: this is left to right on screen.
+        assert_eq!(parse_view_row("3d,axial"), vec![PaneKind::Scene3d, axial]);
+        // Nothing usable leaves the default rather than an empty window.
+        assert_eq!(parse_view_row(""), default_view_row());
+        assert_eq!(parse_view_row("sideways, upside-down"), default_view_row());
+    }
+
+    #[test]
+    fn round_trips_the_view_rows() {
+        use crate::volume::ViewPlane;
+        let s = Settings {
+            view_rows: [
+                vec![PaneKind::Plane(ViewPlane::Axial), PaneKind::Scene3d],
+                vec![PaneKind::Plane(ViewPlane::Coronal)],
+            ],
+            ..Settings::default()
+        };
+        let back = parse(&render(&s));
+        assert_eq!(back.view_rows, s.view_rows);
+        // And the file says it in words a person can edit by hand.
+        assert!(
+            render(&s).contains("view_row_a = axial,3d"),
+            "{}",
+            render(&s)
+        );
+        assert!(render(&s).contains("view_row_b = coronal"));
+        // A file that never mentions them gets the layout the program has
+        // always had.
+        assert_eq!(
+            parse("").view_rows,
+            [default_view_row(), default_view_row()]
+        );
     }
 
     #[test]
