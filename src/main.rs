@@ -3,7 +3,7 @@
 //! Usage: `rust-dicom-station [DICOM_DIRECTORY] [COMPARISON_DIRECTORY]`
 //!
 //! With two directories, comparison mode starts automatically (study A on
-//! top, study B below - six views total).
+//! top, study B below).
 //!
 //! ## Starting on a machine whose Vulkan driver does not work
 //!

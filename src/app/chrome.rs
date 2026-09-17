@@ -114,54 +114,59 @@ impl ViewerApp {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
-                ui.menu_button("View", |ui| {
-                    if ui
-                        .checkbox(&mut self.comparison, "Comparison mode (2 × 3 views)")
-                        .clicked()
-                    {
-                        ui.close();
-                    }
-                    ui.separator();
-                    ui.checkbox(&mut self.show_contours, "Contours");
-                    ui.checkbox(&mut self.show_crosshair, "Crosshair");
-                    // Syncing is a property of the crosshair and of having a
-                    // second dataset, so it goes away with either.
-                    let both = self.both_volumes();
-                    if self.show_crosshair && both {
-                        ui.checkbox(&mut self.link_studies, "Sync crosshairs between datasets")
+                // Switches, like the Modules menu: ticking one leaves the
+                // menu open so several can be set in one visit. It closes on a
+                // click outside it or on the "View" title again.
+                egui::containers::menu::MenuButton::new("View")
+                    .config(
+                        egui::containers::menu::MenuConfig::new()
+                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+                    )
+                    .ui(ui, |ui| {
+                        ui.checkbox(&mut self.comparison, "Comparison mode");
+                        ui.separator();
+                        ui.checkbox(&mut self.show_contours, "Contours");
+                        ui.checkbox(&mut self.show_crosshair, "Crosshair");
+                        // Syncing is a property of the crosshair and of having a
+                        // second dataset, so it goes away with either.
+                        let both = self.both_volumes();
+                        if self.show_crosshair && both {
+                            ui.checkbox(&mut self.link_studies, "Sync the two datasets")
+                                .on_hover_text(
+                                    "Move, scroll or zoom one dataset and the other follows: the \
+                                 crosshair to the same patient point (through the active \
+                                 registration when there is one), the slice with it, and the \
+                                 zoom and the pan of a view onto the other dataset's view of \
+                                 the same plane. Off, each dataset is navigated on its own.",
+                                );
+                        }
+                        ui.checkbox(&mut self.show_labels, "Orientation labels");
+                        ui.checkbox(&mut self.show_isocenters, "Isocenters");
+                        ui.separator();
+                        ui.checkbox(&mut self.side_open, "Data tree (F9)")
                             .on_hover_text(
-                                "Move one crosshair and the other follows to the same patient \
-                             point - through the active registration when there is one. \
-                             Off, each dataset is navigated on its own.",
+                                "The left panel. Hidden, its arrow stays on the window's left \
+                                 edge to bring it back, and so does F9.",
                             );
-                    }
-                    ui.checkbox(&mut self.show_labels, "Orientation labels");
-                    ui.checkbox(&mut self.show_isocenters, "Isocenters");
-                    ui.separator();
-                    ui.checkbox(&mut self.side_open, "Data tree (F9)")
-                        .on_hover_text(
-                            "The left panel. Hidden, its arrow stays on the window's left \
-                             edge to bring it back, and so does F9.",
-                        );
-                    let any_module = self.any_module();
-                    ui.add_enabled_ui(any_module, |ui| {
-                        ui.checkbox(&mut self.right_open, "Modules (F10)")
-                            .on_hover_text(if any_module {
-                                "The right panel. Hidden, its arrow stays on the window's \
-                                 right edge to bring it back, and so does F10."
-                            } else {
-                                "There is no modules panel until a module is turned on in \
-                                 the Modules menu"
-                            });
+                        let any_module = self.any_module();
+                        ui.add_enabled_ui(any_module, |ui| {
+                            ui.checkbox(&mut self.right_open, "Modules (F10)")
+                                .on_hover_text(if any_module {
+                                    "The right panel. Hidden, its arrow stays on the window's \
+                                     right edge to bring it back, and so does F10."
+                                } else {
+                                    "There is no modules panel until a module is turned on in \
+                                     the Modules menu"
+                                });
+                        });
+                        ui.separator();
+                        ui.label("Appearance:");
+                        let before = self.theme;
+                        self.theme.radio_buttons(ui);
+                        if self.theme != before {
+                            new_theme = Some(self.theme);
+                        }
                     });
-                    ui.separator();
-                    ui.label("Appearance:");
-                    let before = self.theme;
-                    self.theme.radio_buttons(ui);
-                    if self.theme != before {
-                        new_theme = Some(self.theme);
-                    }
-                });
                 // This menu is a set of switches, not a list of actions:
                 // it stays open until the pointer leaves it, so both
                 // modules can be turned on in one visit.
@@ -387,6 +392,19 @@ impl ViewerApp {
                     }
                 });
                 ui.menu_button("Settings", |ui| {
+                    // Tick boxes: the submenu stays open while rows are being
+                    // put together, and goes away on a click outside it or on
+                    // "Settings" again.
+                    egui::containers::menu::SubMenuButton::new("View layout")
+                        .config(
+                            egui::containers::menu::MenuConfig::new()
+                                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+                        )
+                        .ui(ui, |ui| {
+                            if self.view_layout_menu(ui) {
+                                save_settings = true;
+                            }
+                        });
                     ui.menu_button("Graphics backend", |ui| {
                         ui.label("Which graphics API the program draws and computes with.");
                         ui.add_space(4.0);
@@ -489,7 +507,7 @@ impl ViewerApp {
                         "⌖ - show / hide the crosshair; hidden, left click no \
                          longer navigates",
                     );
-                    ui.weak("🔗 Sync - sync the crosshairs of A and B (shown while ⌖ is on)");
+                    ui.weak("Sync - keep datasets A and B on the same point and the same scale (shown while ⌖ is on)");
                     ui.separator();
                     ui.weak(format!(
                         "rust-dicom-station {} - research / QA viewer, not a medical device",
@@ -645,6 +663,11 @@ impl ViewerApp {
                         if slot == 1 && self.slots[1].study.is_none() {
                             continue;
                         }
+                        // The scene is in the row: there is no window to
+                        // open, so the button has nothing to do.
+                        if self.row_shows_scene(slot) {
+                            continue;
+                        }
                         if enabled_tip_button(
                             ui,
                             has_3d,
@@ -679,11 +702,13 @@ impl ViewerApp {
                     if self.show_crosshair
                         && both
                         && ui
-                            .add(egui::Button::selectable(self.link_studies, "🔗 Sync"))
+                            .add(egui::Button::selectable(self.link_studies, "Sync"))
                             .on_hover_text(
-                                "Sync the crosshairs of datasets A and B: move one and the \
-                                 other follows to the same patient point, through the active \
-                                 registration when there is one.\n\
+                                "Keep datasets A and B together: the crosshair, the slice, \
+                                 the zoom and the pan of a view carry over to the other \
+                                 dataset's view of the same plane, through the active \
+                                 registration when there is one, so the two rows show the \
+                                 same thing at the same scale.\n\
                                  Off: each dataset is navigated on its own",
                             )
                             .clicked()

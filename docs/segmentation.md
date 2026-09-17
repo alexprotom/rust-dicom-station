@@ -91,8 +91,10 @@ Every mask edit re-meshes that segmentation in the background
 (bounding-box-cropped surface nets, automatic striding for huge masks), so the
 3D surface follows the brush in essentially real time; meshes are cached per
 structure set, so reopening the window is instant. Drag rotates, the wheel
-zooms, middle-drag pans, a slider sets global opacity, and *⟲ Reset view*
-restores the default camera.
+zooms, middle-drag pans, and a slider sets global opacity; the same four
+buttons the 3D pane carries do it without a mouse to spare - **➕ / ➖**
+zoom a step, **✋** turns a left drag into a move, and **⟲** restores the
+default camera.
 
 ## Mask → RTSTRUCT (→RS)
 

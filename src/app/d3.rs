@@ -19,6 +19,41 @@ fn roi_hash(roi: &crate::rtstruct::Roi) -> u64 {
     h.finish()
 }
 
+/// What the pane's control strip asks the app to do afterwards, once the
+/// borrow of the window it drew has ended.
+#[derive(Default)]
+struct D3PaneActions {
+    prepare: bool,
+    play: bool,
+    maximize: bool,
+}
+
+/// Where a 3D pane's furniture sits.
+///
+/// A 2D pane names itself in its top-left corner and chains its buttons
+/// leftwards from its top-right one, 22 px down, 24 x 20 each with 4 px
+/// between them; a 3D pane is the same pane with a different picture in
+/// it, so it uses the same numbers. The rectangles are worked out before
+/// the scene is drawn, because the scene takes the whole pane and has to
+/// be told which parts of it belong to the buttons.
+struct D3PaneBar {
+    maximize: egui::Rect,
+    /// The *Structures* panel over the right-hand edge, or
+    /// [`egui::Rect::NOTHING`] while it is off.
+    list: egui::Rect,
+    reset: egui::Rect,
+    hand: egui::Rect,
+    zoom_out: egui::Rect,
+    zoom_in: egui::Rect,
+    play: egui::Rect,
+    prepare: egui::Rect,
+    /// What is left of the row for the controls only a scene has.
+    left: egui::Rect,
+    phases: bool,
+    /// Is the pointer on any of it?
+    over: bool,
+}
+
 /// Put a set of structure meshes on a window.
 ///
 /// Always through here. The projected-geometry cache in [`D3Frame`] is
@@ -30,6 +65,71 @@ fn roi_hash(roi: &crate::rtstruct::Roi) -> u64 {
 fn set_meshes(w: &mut D3Window, meshes: Arc<Vec<RoiMesh>>) {
     w.meshes = Some(meshes);
     w.mesh_gen += 1;
+}
+
+/// Read back what the opacity sliders write: "80 %", or just "80".
+fn percent_parser(text: &str) -> Option<f64> {
+    text.trim()
+        .trim_end_matches('%')
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .map(|v| v / 100.0)
+}
+
+/// The *Structures* panel: one opacity slider per structure, multiplying
+/// the scene's own.
+///
+/// The window gives it a side panel and a pane lays it over the scene's
+/// right-hand edge, but it is the same list either way - a structure faded
+/// in one is faded in the other, because both are drawing the same window's
+/// state.
+fn structure_list(
+    w: &mut D3Window,
+    ui: &mut egui::Ui,
+    names: &[(String, [u8; 3])],
+    visible: &[bool],
+) {
+    ui.horizontal(|ui| {
+        ui.strong("Opacity per structure");
+        if ui
+            .small_button("All 100 %")
+            .on_hover_text("Every structure back to the scene's opacity")
+            .clicked()
+        {
+            w.roi_alpha.clear();
+        }
+    });
+    ui.weak("Times the scene's opacity");
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        for m in w.meshes.iter().flat_map(|a| a.iter()) {
+            let Some((name, color)) = names.get(m.roi_index) else {
+                continue;
+            };
+            let on = visible.get(m.roi_index).copied().unwrap_or(true);
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                ui.painter().rect_filled(r, 2.0, theme::rgb(*color));
+                let mut a = w.roi_alpha.get(&m.roi_index).copied().unwrap_or(1.0);
+                let slider = ui.add_enabled(
+                    on,
+                    egui::Slider::new(&mut a, 0.0..=1.0)
+                        .show_value(false)
+                        .text(name.as_str()),
+                );
+                if slider.changed() {
+                    if (a - 1.0).abs() < 1e-6 {
+                        w.roi_alpha.remove(&m.roi_index);
+                    } else {
+                        w.roi_alpha.insert(m.roi_index, a);
+                    }
+                }
+                if !on {
+                    slider.on_hover_text("Unticked in the list");
+                }
+            });
+        }
+    });
 }
 
 impl ViewerApp {
@@ -274,6 +374,7 @@ impl ViewerApp {
             pitch: -0.5,
             zoom: 1.0,
             pan: Vec2::ZERO,
+            pan_mode: false,
             opacity: 1.0,
             meshes: no_structs.then(|| Arc::new(Vec::new())),
             seg_meshes: None,
@@ -313,7 +414,10 @@ impl ViewerApp {
     pub(super) fn d3_windows_ui(&mut self, ctx: &egui::Context) {
         let mut windows = std::mem::take(&mut self.d3_windows);
         for w in &mut windows {
-            if !w.open {
+            // A scene drawn as a pane of a row has no window, but it still
+            // needs its meshes built and its jobs polled.
+            let in_row = self.row_shows_scene(w.slot);
+            if !w.open && !in_row {
                 continue;
             }
             // Poll the phase pre-meshing, then the ordinary rebuild: the
@@ -595,6 +699,11 @@ impl ViewerApp {
                 }
             }
 
+            // Everything above is the upkeep both a window and a pane need;
+            // what follows draws the window, which a pane does not have.
+            if !w.open {
+                continue;
+            }
             let visible: &[bool] = &self.slots[w.slot].roi_visible;
             let names: Vec<(String, [u8; 3])> = self.slots[w.slot]
                 .active_structures()
@@ -657,7 +766,9 @@ impl ViewerApp {
                     ui.horizontal(|ui| {
                         ui.add(
                             egui::Slider::new(&mut w.opacity, 0.2..=1.0)
-                                .text(format!("Opacity {}", SLOT_NAMES[w.slot])),
+                                .text("Opacity")
+                                .custom_formatter(|v, _| format!("{:.0} %", v * 100.0))
+                                .custom_parser(percent_parser),
                         );
                         ui.toggle_value(&mut w.show_list, "Structures")
                             .on_hover_text("A panel with the opacity of every structure");
@@ -665,13 +776,45 @@ impl ViewerApp {
                         // not move while a rebuild runs.
                         ui.add_visible(w.job.is_some(), egui::Spinner::new())
                             .on_hover_text("Meshing the structures that changed");
-                        if ui.small_button("⟲ Reset view").clicked() {
-                            w.yaw = 0.7;
-                            w.pitch = -0.5;
-                            w.zoom = 1.0;
-                            w.pan = Vec2::ZERO;
-                        }
-                        ui.weak("drag rotate · wheel zoom · middle-drag pan");
+                        // The camera, as buttons, in the window's top-right
+                        // corner - where a pane keeps them. Laid out from
+                        // the right, so they read the same way round.
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            if ui
+                                .small_button("⟲")
+                                .on_hover_text(
+                                    "Reset the camera: default angle, fit zoom and no offset",
+                                )
+                                .clicked()
+                            {
+                                w.yaw = 0.7;
+                                w.pitch = -0.5;
+                                w.zoom = 1.0;
+                                w.pan = Vec2::ZERO;
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::selectable(w.pan_mode, "✋")
+                                        .frame_when_inactive(true)
+                                        .small(),
+                                )
+                                .on_hover_text(
+                                    "Move the scene: while this is on, dragging with the \
+                                         left button slides the scene instead of turning it. \
+                                         Off, a left drag turns it and a middle drag moves it.",
+                                )
+                                .clicked()
+                            {
+                                w.pan_mode = !w.pan_mode;
+                            }
+                            if ui.small_button("➖").on_hover_text("Zoom out").clicked() {
+                                w.zoom = (w.zoom / 1.25).clamp(0.1, 40.0);
+                            }
+                            if ui.small_button("➕").on_hover_text("Zoom in").clicked() {
+                                w.zoom = (w.zoom * 1.25).clamp(0.1, 40.0);
+                            }
+                        });
                     });
                     if phases_here {
                         ui.horizontal_wrapped(|ui| {
@@ -777,408 +920,21 @@ impl ViewerApp {
                         egui::Panel::right(egui::Id::new(("d3_structures", w.slot)))
                             .resizable(false)
                             .default_size(220.0)
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.strong("Opacity per structure");
-                                    if ui
-                                        .small_button("All 100 %")
-                                        .on_hover_text(
-                                            "Every structure back to the window's opacity",
-                                        )
-                                        .clicked()
-                                    {
-                                        w.roi_alpha.clear();
-                                    }
-                                });
-                                ui.weak("Times the window's opacity above");
-                                egui::ScrollArea::vertical().show(ui, |ui| {
-                                    for m in w.meshes.iter().flat_map(|a| a.iter()) {
-                                        let Some((name, color)) = names.get(m.roi_index) else {
-                                            continue;
-                                        };
-                                        let on = visible.get(m.roi_index).copied().unwrap_or(true);
-                                        ui.horizontal(|ui| {
-                                            let (r, _) = ui.allocate_exact_size(
-                                                egui::vec2(10.0, 10.0),
-                                                egui::Sense::hover(),
-                                            );
-                                            ui.painter().rect_filled(r, 2.0, theme::rgb(*color));
-                                            let mut a = w
-                                                .roi_alpha
-                                                .get(&m.roi_index)
-                                                .copied()
-                                                .unwrap_or(1.0);
-                                            let slider = ui.add_enabled(
-                                                on,
-                                                egui::Slider::new(&mut a, 0.0..=1.0)
-                                                    .show_value(false)
-                                                    .text(name.as_str()),
-                                            );
-                                            if slider.changed() {
-                                                if (a - 1.0).abs() < 1e-6 {
-                                                    w.roi_alpha.remove(&m.roi_index);
-                                                } else {
-                                                    w.roi_alpha.insert(m.roi_index, a);
-                                                }
-                                            }
-                                            if !on {
-                                                slider.on_hover_text("Unticked in the list");
-                                            }
-                                        });
-                                    }
-                                });
-                            });
+                            .show(ui, |ui| structure_list(w, ui, &names, visible));
                     }
                     let avail = ui.available_size();
                     let size = Vec2::new(avail.x.max(240.0), avail.y.max(240.0));
-                    let (resp, painter) = ui.allocate_painter(size, Sense::click_and_drag());
-                    let rect = resp.rect;
-                    painter.rect_filled(rect, 0.0, Color32::BLACK);
-
-                    // Interaction.
-                    if resp.dragged_by(egui::PointerButton::Primary) {
-                        let d = resp.drag_delta();
-                        w.yaw += d.x * 0.01;
-                        w.pitch = (w.pitch + d.y * 0.01).clamp(-1.55, 1.55);
-                    }
-                    if resp.dragged_by(egui::PointerButton::Middle) {
-                        w.pan += resp.drag_delta();
-                    }
-                    if resp.hovered() {
-                        let (lines, zd) = ui.input(|i| {
-                            let mut l = 0.0f32;
-                            for e in &i.events {
-                                if let egui::Event::MouseWheel { unit, delta, .. } = e {
-                                    l += match unit {
-                                        egui::MouseWheelUnit::Line => delta.y,
-                                        egui::MouseWheelUnit::Point => delta.y / 40.0,
-                                        egui::MouseWheelUnit::Page => delta.y * 10.0,
-                                    };
-                                }
-                            }
-                            (l, i.zoom_delta())
-                        });
-                        w.zoom = (w.zoom * (lines * 0.12).exp() * zd).clamp(0.1, 40.0);
-                    }
-
-                    // Render.
-                    let Some(meshes) = &w.meshes else { return };
-                    let seg_meshes = w.seg_meshes.clone();
-                    let n_seg = seg_meshes.as_ref().map(|m| m.len()).unwrap_or(0);
-                    let other_meshes = w.other_meshes.clone();
-                    let n_other = other_meshes.as_ref().map(|m| m.len()).unwrap_or(0);
-                    let iso_meshes = w.show_iso.then(|| w.iso_meshes.clone()).flatten();
-                    let n_iso = iso_meshes.as_ref().map(|m| m.len()).unwrap_or(0);
-                    let iso_alpha = (w.iso_opacity * 255.0) as u8;
-                    if meshes.is_empty() && n_seg == 0 && n_other == 0 && n_iso == 0 {
-                        painter.text(
-                            rect.center(),
-                            Align2::CENTER_CENTER,
-                            if w.seg_job.is_some() {
-                                "Meshing segmentation"
-                            } else {
-                                "No meshable structures"
-                            },
-                            FontId::proportional(14.0),
-                            Color32::GRAY,
-                        );
-                        return;
-                    }
-                    let scale = 0.45 * rect.width().min(rect.height()) / w.radius * w.zoom;
-                    let cx = rect.center().x + w.pan.x;
-                    let cyc = rect.center().y + w.pan.y;
-                    let alpha = (w.opacity * 255.0) as u8;
-                    let other_alpha = (w.other_opacity * 255.0) as u8;
-
-                    // What the cached geometry depends on. Orientation and
-                    // visibility fix the draw order; the rest only moves the
-                    // already-ordered triangles around on screen.
-                    // The generation, not the pointer: a rebuilt set can
-                    // land at the address the previous one had.
-                    let mut order_key = mix(0x243F6A8885A308D3, w.mesh_gen);
-                    order_key = mix(order_key, w.yaw.to_bits() as u64);
-                    order_key = mix(order_key, w.pitch.to_bits() as u64);
-                    for m in meshes.iter() {
-                        // A structure faded to nothing leaves the draw
-                        // order too; the sort has to know.
-                        let on = visible.get(m.roi_index).copied().unwrap_or(true)
-                            && w.roi_alpha.get(&m.roi_index).copied().unwrap_or(1.0) > 0.0;
-                        order_key = mix(order_key, on as u64);
-                    }
-                    if let Some(sm) = &seg_meshes {
-                        // The generation as well as the pointer, for the same
-                        // reason the structure meshes use one: a rebuilt set
-                        // can land at the address the previous one had, and
-                        // stepping through the phases of a group rebuilds
-                        // these over and over.
-                        order_key = mix(order_key, Arc::as_ptr(sm) as u64);
-                        order_key = mix(order_key, w.seg_built);
-                        for m in sm.iter() {
-                            let on = seg_disp.get(m.roi_index).map(|d| d.0).unwrap_or(false);
-                            order_key = mix(order_key, on as u64);
-                        }
-                    }
-                    if let Some(om) = &other_meshes {
-                        order_key = mix(order_key, Arc::as_ptr(om) as u64);
-                        order_key = mix(order_key, w.other_key);
-                        for m in om.iter() {
-                            let on = other_visible.get(m.roi_index).copied().unwrap_or(true);
-                            order_key = mix(order_key, on as u64);
-                        }
-                    }
-                    let paint_dose = w.show_dose && dose_here.is_some();
-                    let mut vertex_key = mix(order_key, scale.to_bits() as u64);
-                    vertex_key = mix(vertex_key, paint_dose as u64);
-                    if paint_dose {
-                        let (_, reference) = dose_here.as_ref().expect("checked");
-                        vertex_key = mix(vertex_key, reference.to_bits() as u64);
-                    }
-                    vertex_key = mix(vertex_key, cx.to_bits() as u64);
-                    vertex_key = mix(vertex_key, cyc.to_bits() as u64);
-                    vertex_key = mix(vertex_key, alpha as u64);
-                    vertex_key = mix(vertex_key, other_alpha as u64);
-                    if let Some(im) = &iso_meshes {
-                        order_key = mix(order_key, Arc::as_ptr(im) as u64);
-                        order_key = mix(order_key, w.iso_built);
-                        vertex_key = mix(vertex_key, iso_alpha as u64);
-                    }
-                    for (i, a) in &w.roi_alpha {
-                        vertex_key = mix(vertex_key, (*i as u64) << 32 | a.to_bits() as u64);
-                    }
-                    // Segmentation colors are applied live at draw time.
-                    for (_, c) in &seg_disp {
-                        vertex_key = mix(
-                            vertex_key,
-                            (c[0] as u64) | ((c[1] as u64) << 8) | ((c[2] as u64) << 16),
-                        );
-                    }
-
-                    if w.frame.vertex_key != Some(vertex_key) {
-                        let (sy, cy) = w.yaw.sin_cos();
-                        let (sp, cp) = w.pitch.sin_cos();
-                        let c = w.center;
-                        // Yaw about patient z, then pitch about the screen x.
-                        let rot = |p: [f32; 3], centered: bool| -> [f32; 3] {
-                            let (x, y, z) = if centered {
-                                (p[0] - c[0], p[1] - c[1], p[2] - c[2])
-                            } else {
-                                (p[0], p[1], p[2])
-                            };
-                            let x1 = cy * x - sy * y;
-                            let y1 = sy * x + cy * y;
-                            let y2 = cp * y1 - sp * z;
-                            let z2 = sp * y1 + cp * z;
-                            [x1, y2, z2]
-                        };
-                        let reorder = w.frame.order_key != Some(order_key);
-                        let f = &mut w.frame;
-                        // Buffers are reused across frames; `make_mut` hands
-                        // back the previous allocation because the painter has
-                        // already dropped last frame's reference.
-                        let mesh = Arc::make_mut(&mut f.mesh);
-                        mesh.vertices.clear();
-                        f.depth.clear();
-                        if reorder {
-                            f.tris.clear();
-                        }
-                        // One iterator over everything the scene draws: this
-                        // dataset's structures, its live segmentations, and
-                        // the other dataset's structures already mapped
-                        // through the registration - each with its own
-                        // opacity, which is the whole point of showing two
-                        // datasets at once.
-                        let entries = meshes
-                            .iter()
-                            .map(|m| {
-                                let own = w.roi_alpha.get(&m.roi_index).copied().unwrap_or(1.0);
-                                (
-                                    m,
-                                    visible.get(m.roi_index).copied().unwrap_or(true) && own > 0.0,
-                                    m.color,
-                                    m.external,
-                                    (alpha as f32 * own).round() as u8,
-                                )
-                            })
-                            .chain(seg_meshes.iter().flat_map(|a| a.iter()).map(|m| {
-                                let (on, c) = seg_disp
-                                    .get(m.roi_index)
-                                    .copied()
-                                    .unwrap_or((false, m.color));
-                                (m, on, c, false, alpha)
-                            }))
-                            .chain(other_meshes.iter().flat_map(|a| a.iter()).map(|m| {
-                                let on = other_visible.get(m.roi_index).copied().unwrap_or(true);
-                                (m, on, m.color, m.external, other_alpha)
-                            }))
-                            .chain(
-                                iso_meshes
-                                    .iter()
-                                    .flat_map(|a| a.iter())
-                                    .map(|m| (m, true, m.color, false, iso_alpha)),
-                            );
-                        for (m, on, color, external, entry_alpha) in entries {
-                            if !on {
-                                continue;
-                            }
-                            let base = mesh.vertices.len() as u32;
-                            // External/body contours render translucent so the
-                            // interior structures remain visible.
-                            let roi_alpha = if external {
-                                (entry_alpha as f32 * 0.22) as u8
-                            } else {
-                                entry_alpha
-                            };
-                            for (v, n) in m.verts.iter().zip(m.normals.iter()) {
-                                let t = rot(*v, true);
-                                let nn = rot(*n, false);
-                                // The vertex's own colour: the structure's,
-                                // or the dose that lands on it, sampled the
-                                // same way the isodose lines are.
-                                let color = match &dose_here {
-                                    Some((dose, reference)) if paint_dose => {
-                                        let p = Vec3::new(v[0] as f64, v[1] as f64, v[2] as f64);
-                                        match dose.sample(p) {
-                                            Some(d) => render::dose_colormap(
-                                                (d / reference).clamp(0.0, 1.0),
-                                            ),
-                                            // Outside the dose grid: grey, so
-                                            // "no dose here" cannot be read as
-                                            // "zero dose here".
-                                            None => [90, 90, 90],
-                                        }
-                                    }
-                                    _ => color,
-                                };
-                                // Headlight along the view axis, two-sided.
-                                let inten = 0.30 + 0.70 * nn[1].abs();
-                                let col = Color32::from_rgba_unmultiplied(
-                                    (color[0] as f32 * inten) as u8,
-                                    (color[1] as f32 * inten) as u8,
-                                    (color[2] as f32 * inten) as u8,
-                                    roi_alpha,
-                                );
-                                mesh.vertices.push(egui::epaint::Vertex {
-                                    pos: Pos2::new(cx + t[0] * scale, cyc - t[2] * scale),
-                                    uv: egui::epaint::WHITE_UV,
-                                    color: col,
-                                });
-                                f.depth.push(t[1]);
-                            }
-                            if reorder {
-                                f.tris.extend(
-                                    m.tris
-                                        .iter()
-                                        .map(|t| [base + t[0], base + t[1], base + t[2]]),
-                                );
-                            }
-                        }
-
-                        if reorder {
-                            // Painter's algorithm: far triangles first (viewer
-                            // at -y). Packing the depth into the high half of a
-                            // u64 lets this be a primitive sort rather than a
-                            // float comparator over a tuple.
-                            f.order.clear();
-                            f.order.extend(f.tris.iter().enumerate().map(|(i, t)| {
-                                let d = (f.depth[t[0] as usize]
-                                    + f.depth[t[1] as usize]
-                                    + f.depth[t[2] as usize])
-                                    / 3.0;
-                                ((!depth_key(d) as u64) << 32) | i as u64
-                            }));
-                            f.order.par_sort_unstable();
-                            mesh.indices.clear();
-                            mesh.indices.reserve(f.order.len() * 3);
-                            for &o in &f.order {
-                                mesh.indices
-                                    .extend_from_slice(&f.tris[(o & 0xFFFF_FFFF) as usize]);
-                            }
-                            f.order_key = Some(order_key);
-                        }
-                        f.vertex_key = Some(vertex_key);
-                    }
-
-                    painter.add(egui::Shape::Mesh(w.frame.mesh.clone()));
-
-                    // The Structure editor's drawn axis, the same white line
-                    // as in the views, one slice thick.
-                    if self.module_structures && struct_tools::axis_live(&self.tools) {
-                        if let Some((ax, vol)) = self
-                            .tools
-                            .axis
-                            .filter(|a| a.slot == w.slot)
-                            .zip(self.slots[w.slot].study.as_ref().map(|st| &st.volume))
-                        {
-                            let (sy, cy) = w.yaw.sin_cos();
-                            let (sp, cp) = w.pitch.sin_cos();
-                            let c = w.center;
-                            let project = |p: Vec3| -> Pos2 {
-                                let (x, y, z) =
-                                    (p.x as f32 - c[0], p.y as f32 - c[1], p.z as f32 - c[2]);
-                                let x1 = cy * x - sy * y;
-                                let y1 = sy * x + cy * y;
-                                let z2 = sp * y1 + cp * z;
-                                Pos2::new(cx + x1 * scale, cyc - z2 * scale)
-                            };
-                            let a = project(vol.voxel_to_patient(ax.a[0], ax.a[1], ax.a[2]));
-                            let b = project(vol.voxel_to_patient(ax.b[0], ax.b[1], ax.b[2]));
-                            let thick = (vol.spacing[2] as f32 * scale).max(1.5);
-                            painter.line_segment([a, b], Stroke::new(thick, Color32::WHITE));
-                        }
-                    }
-
-                    // The deformation field, drawn over the surfaces.
-                    if w.show_field {
-                        if let Some((field, method)) = &reg_here {
-                            let (sy, cy) = w.yaw.sin_cos();
-                            let (sp, cp) = w.pitch.sin_cos();
-                            let c = w.center;
-                            let project = |p: Vec3| -> Pos2 {
-                                let (x, y, z) =
-                                    (p.x as f32 - c[0], p.y as f32 - c[1], p.z as f32 - c[2]);
-                                let x1 = cy * x - sy * y;
-                                let y1 = sy * x + cy * y;
-                                let z2 = sp * y1 + cp * z;
-                                Pos2::new(cx + x1 * scale, cyc - z2 * scale)
-                            };
-                            let max = field.max_mag.max(1e-6) as f32;
-                            let mut drawn = 0usize;
-                            for (a, b, mag) in dvf::glyphs_3d(field, 1500) {
-                                let col = {
-                                    let t = (mag as f32 / max).clamp(0.0, 1.0);
-                                    let rgb = render::dose_colormap(t);
-                                    Color32::from_rgba_unmultiplied(rgb[0], rgb[1], rgb[2], 220)
-                                };
-                                let (pa, pb) = (project(a), project(b));
-                                painter.line_segment([pa, pb], Stroke::new(1.2, col));
-                                painter.circle_filled(pb, 1.6, col);
-                                drawn += 1;
-                            }
-                            painter.text(
-                                rect.right_bottom() + Vec2::new(-6.0, -6.0),
-                                Align2::RIGHT_BOTTOM,
-                                format!("{drawn} field arrows · {method} · max {max:.1} mm"),
-                                FontId::proportional(11.0),
-                                Color32::GRAY,
-                            );
-                        }
-                    }
-
-                    painter.text(
-                        rect.left_bottom() + Vec2::new(6.0, -6.0),
-                        Align2::LEFT_BOTTOM,
-                        format!(
-                            "{} structure(s){}, {} triangles",
-                            meshes.len() + n_seg,
-                            if n_other > 0 {
-                                format!(" + {n_other} registered")
-                            } else {
-                                String::new()
-                            },
-                            w.frame.tris.len()
-                        ),
-                        FontId::proportional(11.0),
-                        Color32::GRAY,
+                    let (_, scene_rect) = ui.allocate_space(size);
+                    self.d3_scene(
+                        w,
+                        ui,
+                        scene_rect,
+                        visible,
+                        &seg_disp,
+                        &other_visible,
+                        &reg_here,
+                        &dose_here,
+                        false,
                     );
                 },
             );
@@ -1191,8 +947,783 @@ impl ViewerApp {
                 self.toggle_play(phase_target, now);
             }
         }
-        windows.retain(|w| w.open);
+        // A scene that a row carries is kept even with no window open.
+        windows.retain(|w| w.open || self.row_shows_scene(w.slot));
         self.d3_windows = windows;
+    }
+
+    /// The surface scene as a pane of a row.
+    ///
+    /// The same scene the *3D* button opens in a window, drawn in the row
+    /// instead, with the handful of controls that belong next to it on one
+    /// strip along the top. The window's own state is reused, so a scene
+    /// that was open in a window and then put in a row keeps its camera and
+    /// its meshes.
+    pub(super) fn scene_pane(&mut self, ui: &mut egui::Ui, slot: usize, rect: egui::Rect) {
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 0.0, Color32::BLACK);
+        // A row can ask for a scene before there is anything to mesh.
+        if !self.slot_has_surfaces(slot) {
+            painter.text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                "No structures or segmentations to render",
+                FontId::proportional(13.0),
+                ui.visuals().weak_text_color(),
+            );
+            return;
+        }
+        self.ensure_d3_window(slot);
+        let mut windows = std::mem::take(&mut self.d3_windows);
+        let Some(w) = windows.iter_mut().find(|w| w.slot == slot) else {
+            self.d3_windows = windows;
+            return;
+        };
+        let visible: Vec<bool> = self.slots[slot].roi_visible.clone();
+        let seg_disp: Vec<(bool, [u8; 3])> = self.slots[slot]
+            .segs()
+            .iter()
+            .map(|s| (s.visible, s.color))
+            .collect();
+        let other_visible: Vec<bool> = self.slots[1 - slot].roi_visible.clone();
+        let reg_here = self
+            .registration
+            .as_ref()
+            .filter(|r| r.shows_fixed(slot, &self.slots))
+            .map(|r| (r.field.clone(), r.result.method.short()));
+        let dose_here: Option<(crate::rtdose::DoseGrid, f32)> = self.slots[slot]
+            .study
+            .as_ref()
+            .and_then(|st| st.doses.get(self.slots[slot].active_dose).cloned())
+            .map(|d| (d, self.slots[slot].dose_reference.max(1e-6)));
+        // Worked out first, drawn last: the scene fills the whole pane, so
+        // it has to know which parts of it the buttons own before it reads
+        // a drag, and the buttons have to be registered after it so they
+        // sit on top and get the hover.
+        let names: Vec<(String, [u8; 3])> = self.slots[slot]
+            .active_structures()
+            .map(|ss| ss.rois.iter().map(|r| (r.name.clone(), r.color)).collect())
+            .unwrap_or_default();
+        let bar = Self::d3_pane_bar(
+            ui,
+            rect,
+            self.fourd_phases(slot).is_some(),
+            dose_here.is_some(),
+            w.show_list,
+        );
+        self.d3_scene(
+            w,
+            ui,
+            rect,
+            &visible,
+            &seg_disp,
+            &other_visible,
+            &reg_here,
+            &dose_here,
+            bar.over,
+        );
+        let acts = self.d3_pane_chrome(w, ui, rect, &bar, dose_here.is_some(), &names, &visible);
+        self.d3_windows = windows;
+        if acts.prepare {
+            self.with_d3_window(slot, |app, w| app.start_phase_meshes(w));
+        }
+        if acts.play {
+            let now = ui.input(|i| i.time);
+            self.toggle_play(play::PlayTarget::Phases { slot }, now);
+        }
+        if acts.maximize {
+            self.maximized = if self.maximized == Some((slot, PaneKind::Scene3d)) {
+                None
+            } else {
+                Some((slot, PaneKind::Scene3d))
+            };
+        }
+    }
+
+    /// Lay a 3D pane's furniture out, to the millimetre a 2D pane uses.
+    fn d3_pane_bar(
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        phases: bool,
+        has_dose: bool,
+        show_list: bool,
+    ) -> D3PaneBar {
+        let bsize = egui::vec2(24.0, 20.0);
+        let psize = egui::vec2(38.0, 20.0);
+        let prep_w = 58.0;
+        let by = rect.top() + 22.0;
+        let cell = |right: f32, size: egui::Vec2| {
+            egui::Rect::from_min_size(egui::Pos2::new(right - size.x, by), size)
+        };
+        let maximize = cell(rect.right() - 4.0, bsize);
+        let reset = cell(maximize.left() - 4.0, bsize);
+        let hand = cell(reset.left() - 4.0, bsize);
+        let zoom_out = cell(hand.left() - 4.0, bsize);
+        let zoom_in = cell(zoom_out.left() - 4.0, bsize);
+        let play = if phases {
+            cell(zoom_in.left() - 4.0, psize)
+        } else {
+            zoom_in
+        };
+        let prepare = if phases {
+            cell(play.left() - 4.0, egui::vec2(prep_w, 20.0))
+        } else {
+            play
+        };
+        // What a 2D pane has no counterpart for goes below the chain, out of
+        // its way: three panes to a row leave a bar too narrow to hold both,
+        // and the top row is the one that has to match. Two lines of its
+        // own, opacity over the toggles, because at three panes to a row
+        // neither line would hold the other.
+        //
+        // The width is a generous estimate of what those controls measure
+        // rather than the measurement itself: they are drawn after the
+        // scene, and the scene needs to know first which part of itself
+        // belongs to them.
+        let left_w = if has_dose { 230.0 } else { 170.0 };
+        let left = egui::Rect::from_min_max(
+            egui::Pos2::new(rect.left() + 6.0, by + 24.0),
+            egui::Pos2::new(
+                (rect.left() + 6.0 + left_w).min(rect.right() - 6.0),
+                by + 68.0,
+            ),
+        );
+        // The structure list, when it is out: down the right-hand edge,
+        // below everything else the pane draws, so it covers none of it and
+        // takes no width away from it either.
+        let list = if show_list {
+            let pw = 220.0f32.min(rect.width() * 0.8);
+            egui::Rect::from_min_max(
+                egui::Pos2::new(rect.right() - pw, left.bottom() + 4.0),
+                egui::Pos2::new(rect.right(), rect.bottom()),
+            )
+        } else {
+            egui::Rect::NOTHING
+        };
+        let over = ui
+            .input(|i| i.pointer.interact_pos())
+            .map(|p| {
+                maximize.contains(p)
+                    || reset.contains(p)
+                    || hand.contains(p)
+                    || zoom_out.contains(p)
+                    || zoom_in.contains(p)
+                    || (phases && (play.contains(p) || prepare.contains(p)))
+                    || left.contains(p)
+                    || list.contains(p)
+            })
+            .unwrap_or(false);
+        D3PaneBar {
+            maximize,
+            list,
+            reset,
+            hand,
+            zoom_out,
+            zoom_in,
+            play,
+            prepare,
+            left,
+            phases,
+            over,
+        }
+    }
+
+    /// A 3D pane's furniture: its name in one corner and its buttons in the
+    /// other, laid out like every other pane's.
+    ///
+    /// The right-hand chain is the 2D pane's, glyph for glyph, with the
+    /// camera's own three in the middle: zoom in, zoom out and the hand
+    /// that turns a left-drag from a rotation into a move. What has no 2D
+    /// counterpart - how solid the surfaces are, the structure list, the
+    /// dose colouring - sits on the left of the same row, and is clipped
+    /// rather than allowed to collide with the chain when a pane is narrow.
+    #[allow(clippy::too_many_arguments)]
+    fn d3_pane_chrome(
+        &self,
+        w: &mut D3Window,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        bar: &D3PaneBar,
+        has_dose: bool,
+        names: &[(String, [u8; 3])],
+        visible: &[bool],
+    ) -> D3PaneActions {
+        let mut acts = D3PaneActions::default();
+        let slot = w.slot;
+        if self.show_labels {
+            let title = if self.comparison {
+                format!("3D · {}", SLOT_NAMES[slot])
+            } else {
+                "3D".to_string()
+            };
+            ui.painter_at(rect).text(
+                rect.left_top() + Vec2::new(6.0, 4.0),
+                Align2::LEFT_TOP,
+                title,
+                FontId::proportional(14.0),
+                Color32::WHITE,
+            );
+        }
+
+        // The scene's own controls, under the button row: opacity on one
+        // line, the toggles on the next. Two short lines rather than one
+        // long one, because a pane sharing a row with two others has no
+        // room for the long one and would simply cut it off.
+        if bar.left.width() > 40.0 {
+            let mut row = |top: f32, add: &mut dyn FnMut(&mut egui::Ui)| {
+                let strip = egui::Rect::from_min_max(
+                    egui::Pos2::new(bar.left.left(), top),
+                    egui::Pos2::new(bar.left.right(), top + 20.0),
+                );
+                let mut child = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(strip)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                child.set_clip_rect(strip.intersect(ui.clip_rect()));
+                child.spacing_mut().item_spacing.x = 4.0;
+                child.spacing_mut().slider_width = 60.0;
+                add(&mut child);
+            };
+            row(bar.left.top(), &mut |ui: &mut egui::Ui| {
+                ui.add(
+                    egui::Slider::new(&mut w.opacity, 0.2..=1.0)
+                        .text("Opacity")
+                        .custom_formatter(|v, _| format!("{:.0} %", v * 100.0))
+                        .custom_parser(percent_parser)
+                        .handle_shape(egui::style::HandleShape::Rect { aspect_ratio: 0.5 }),
+                )
+                .on_hover_text("How solid the surfaces are");
+            });
+            let busy = w.job.is_some() || w.prep_job.is_some();
+            row(bar.left.top() + 24.0, &mut |ui: &mut egui::Ui| {
+                ui.toggle_value(&mut w.show_list, "Structures")
+                    .on_hover_text("A panel with the opacity of every structure");
+                if has_dose {
+                    ui.toggle_value(&mut w.show_dose, "Dose")
+                        .on_hover_text("Colour every surface by the dose that lands on it");
+                    ui.toggle_value(&mut w.show_iso, "Isodose").on_hover_text(
+                        "The active dose as translucent shells at the isodose lines",
+                    );
+                }
+                ui.add_visible(busy, egui::Spinner::new().size(12.0))
+                    .on_hover_text("Meshing the structures that changed");
+            });
+        }
+
+        let (pointer_pos, any_click) =
+            ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_click()));
+        let hit = |r: egui::Rect, resp: &egui::Response| {
+            resp.clicked() || (any_click && pointer_pos.map(|p| r.contains(p)).unwrap_or(false))
+        };
+
+        if bar.phases {
+            let playing = self.is_playing(play::PlayTarget::Phases { slot });
+            let resp = ui
+                .put(
+                    bar.play,
+                    egui::Button::new(if playing { "⏸4D" } else { "▶4D" }).small(),
+                )
+                .on_hover_text(if playing {
+                    "Stop running through the phases"
+                } else {
+                    "Play 4D: run this dataset through the phases of its 4D group. The \
+                     structures and the isodose shells follow, because each phase brings \
+                     its own."
+                });
+            if hit(bar.play, &resp) {
+                acts.play = true;
+            }
+            let (meshed, n) = self.phase_meshes_ready(w);
+            let todo = meshed < n;
+            let resp = ui
+                .add_enabled_ui(todo, |ui| {
+                    ui.put(bar.prepare, egui::Button::new("Prepare").small().truncate())
+                })
+                .inner
+                .on_hover_text("Mesh the structures of every phase now, so playing them is smooth");
+            if todo && hit(bar.prepare, &resp) {
+                acts.prepare = true;
+            }
+        }
+        let resp = ui
+            .put(bar.zoom_in, egui::Button::new("➕").small())
+            .on_hover_text("Zoom in");
+        if hit(bar.zoom_in, &resp) {
+            w.zoom = (w.zoom * 1.25).clamp(0.1, 40.0);
+        }
+        let resp = ui
+            .put(bar.zoom_out, egui::Button::new("➖").small())
+            .on_hover_text("Zoom out");
+        if hit(bar.zoom_out, &resp) {
+            w.zoom = (w.zoom / 1.25).clamp(0.1, 40.0);
+        }
+        let resp = ui
+            .put(
+                bar.hand,
+                egui::Button::selectable(w.pan_mode, "✋")
+                    .frame_when_inactive(true)
+                    .small(),
+            )
+            .on_hover_text(
+                "Move the scene: while this is on, dragging with the left button slides \
+                 the scene instead of turning it. Off, a left drag turns it and a \
+                 middle drag moves it.",
+            );
+        if hit(bar.hand, &resp) {
+            w.pan_mode = !w.pan_mode;
+        }
+        let resp = ui
+            .put(bar.reset, egui::Button::new("⟲").small())
+            .on_hover_text("Reset the camera: default angle, fit zoom and no offset");
+        if hit(bar.reset, &resp) {
+            w.yaw = 0.7;
+            w.pitch = -0.5;
+            w.zoom = 1.0;
+            w.pan = Vec2::ZERO;
+        }
+        let is_max = self.maximized == Some((slot, PaneKind::Scene3d));
+        let resp = ui
+            .put(
+                bar.maximize,
+                egui::Button::new(if is_max { "⊞" } else { "⛶" }).small(),
+            )
+            .on_hover_text(if is_max {
+                "Restore the multi-view layout"
+            } else {
+                "Maximize this view to the whole window"
+            });
+        if hit(bar.maximize, &resp) {
+            acts.maximize = true;
+        }
+
+        // The structure list, over the scene's right-hand edge. Its own
+        // backdrop, because it is text and sliders on top of a black scene.
+        if w.show_list && bar.list.is_positive() {
+            ui.painter_at(bar.list)
+                .rect_filled(bar.list, 0.0, Color32::from_black_alpha(220));
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(bar.list.shrink(6.0))
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            child.set_clip_rect(bar.list.intersect(ui.clip_rect()));
+            structure_list(w, &mut child, names, visible);
+        }
+        acts
+    }
+
+    /// Run `f` with one slot's 3D window taken out of `self`, so it can have
+    /// both. The window goes back whatever `f` did.
+    fn with_d3_window(&mut self, slot: usize, f: impl FnOnce(&mut Self, &mut D3Window)) {
+        let mut windows = std::mem::take(&mut self.d3_windows);
+        if let Some(w) = windows.iter_mut().find(|w| w.slot == slot) {
+            f(self, w);
+        }
+        self.d3_windows = windows;
+    }
+
+    /// Has this dataset anything the 3D scene could draw?
+    pub(super) fn slot_has_surfaces(&self, slot: usize) -> bool {
+        self.slots[slot]
+            .study
+            .as_ref()
+            .map(|s| !s.structure_sets.is_empty())
+            .unwrap_or(false)
+            || !self.slots[slot].segs().is_empty()
+    }
+
+    /// Make sure a slot has a 3D window's worth of state, without putting a
+    /// window on screen: a pane draws from the same state.
+    fn ensure_d3_window(&mut self, slot: usize) {
+        if self.d3_windows.iter().any(|w| w.slot == slot) {
+            return;
+        }
+        self.open_d3_window(slot);
+        // It exists to be drawn in the row, not to float over it.
+        if let Some(w) = self.d3_windows.iter_mut().find(|w| w.slot == slot) {
+            w.open = false;
+        }
+    }
+
+    /// Draw one 3D scene into `rect`, and let the pointer turn it.
+    ///
+    /// Split out of the window so a row can carry the same scene in a pane:
+    /// everything here is relative to the rect it is handed, and the only
+    /// state it needs beyond the window itself is what the caller has
+    /// already taken out of `self`.
+    #[allow(clippy::too_many_arguments)]
+    fn d3_scene(
+        &self,
+        w: &mut D3Window,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        visible: &[bool],
+        seg_disp: &[(bool, [u8; 3])],
+        other_visible: &[bool],
+        reg_here: &Option<(
+            std::sync::Arc<crate::registration::dvf::VectorField>,
+            &'static str,
+        )>,
+        dose_here: &Option<(crate::rtdose::DoseGrid, f32)>,
+        over_buttons: bool,
+    ) {
+        // The scene fills whatever rect it is given: its own window, or a
+        // pane of a row. Everything below is relative to that rect, so the
+        // two are the same drawing.
+        let resp = ui.interact(
+            rect,
+            egui::Id::new(("d3_scene", w.slot)),
+            Sense::click_and_drag(),
+        );
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 0.0, Color32::BLACK);
+
+        // Interaction. A pane draws its buttons over the scene, so a drag
+        // that starts on one of them is the button's, not the camera's.
+        if resp.dragged_by(egui::PointerButton::Primary) && !over_buttons {
+            let d = resp.drag_delta();
+            if w.pan_mode {
+                w.pan += d;
+            } else {
+                w.yaw += d.x * 0.01;
+                w.pitch = (w.pitch + d.y * 0.01).clamp(-1.55, 1.55);
+            }
+        }
+        if resp.dragged_by(egui::PointerButton::Middle) && !over_buttons {
+            w.pan += resp.drag_delta();
+        }
+        if resp.hovered() {
+            let (lines, zd) = ui.input(|i| {
+                let mut l = 0.0f32;
+                for e in &i.events {
+                    if let egui::Event::MouseWheel { unit, delta, .. } = e {
+                        l += match unit {
+                            egui::MouseWheelUnit::Line => delta.y,
+                            egui::MouseWheelUnit::Point => delta.y / 40.0,
+                            egui::MouseWheelUnit::Page => delta.y * 10.0,
+                        };
+                    }
+                }
+                (l, i.zoom_delta())
+            });
+            w.zoom = (w.zoom * (lines * 0.12).exp() * zd).clamp(0.1, 40.0);
+        }
+
+        // Render.
+        let Some(meshes) = &w.meshes else { return };
+        let seg_meshes = w.seg_meshes.clone();
+        let n_seg = seg_meshes.as_ref().map(|m| m.len()).unwrap_or(0);
+        let other_meshes = w.other_meshes.clone();
+        let n_other = other_meshes.as_ref().map(|m| m.len()).unwrap_or(0);
+        let iso_meshes = w.show_iso.then(|| w.iso_meshes.clone()).flatten();
+        let n_iso = iso_meshes.as_ref().map(|m| m.len()).unwrap_or(0);
+        let iso_alpha = (w.iso_opacity * 255.0) as u8;
+        if meshes.is_empty() && n_seg == 0 && n_other == 0 && n_iso == 0 {
+            painter.text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                if w.seg_job.is_some() {
+                    "Meshing segmentation"
+                } else {
+                    "No meshable structures"
+                },
+                FontId::proportional(14.0),
+                Color32::GRAY,
+            );
+            return;
+        }
+        let scale = 0.45 * rect.width().min(rect.height()) / w.radius * w.zoom;
+        let cx = rect.center().x + w.pan.x;
+        let cyc = rect.center().y + w.pan.y;
+        let alpha = (w.opacity * 255.0) as u8;
+        let other_alpha = (w.other_opacity * 255.0) as u8;
+
+        // What the cached geometry depends on. Orientation and
+        // visibility fix the draw order; the rest only moves the
+        // already-ordered triangles around on screen.
+        // The generation, not the pointer: a rebuilt set can
+        // land at the address the previous one had.
+        let mut order_key = mix(0x243F6A8885A308D3, w.mesh_gen);
+        order_key = mix(order_key, w.yaw.to_bits() as u64);
+        order_key = mix(order_key, w.pitch.to_bits() as u64);
+        for m in meshes.iter() {
+            // A structure faded to nothing leaves the draw
+            // order too; the sort has to know.
+            let on = visible.get(m.roi_index).copied().unwrap_or(true)
+                && w.roi_alpha.get(&m.roi_index).copied().unwrap_or(1.0) > 0.0;
+            order_key = mix(order_key, on as u64);
+        }
+        if let Some(sm) = &seg_meshes {
+            // The generation as well as the pointer, for the same
+            // reason the structure meshes use one: a rebuilt set
+            // can land at the address the previous one had, and
+            // stepping through the phases of a group rebuilds
+            // these over and over.
+            order_key = mix(order_key, Arc::as_ptr(sm) as u64);
+            order_key = mix(order_key, w.seg_built);
+            for m in sm.iter() {
+                let on = seg_disp.get(m.roi_index).map(|d| d.0).unwrap_or(false);
+                order_key = mix(order_key, on as u64);
+            }
+        }
+        if let Some(om) = &other_meshes {
+            order_key = mix(order_key, Arc::as_ptr(om) as u64);
+            order_key = mix(order_key, w.other_key);
+            for m in om.iter() {
+                let on = other_visible.get(m.roi_index).copied().unwrap_or(true);
+                order_key = mix(order_key, on as u64);
+            }
+        }
+        let paint_dose = w.show_dose && dose_here.is_some();
+        let mut vertex_key = mix(order_key, scale.to_bits() as u64);
+        vertex_key = mix(vertex_key, paint_dose as u64);
+        if paint_dose {
+            let (_, reference) = dose_here.as_ref().expect("checked");
+            vertex_key = mix(vertex_key, reference.to_bits() as u64);
+        }
+        vertex_key = mix(vertex_key, cx.to_bits() as u64);
+        vertex_key = mix(vertex_key, cyc.to_bits() as u64);
+        vertex_key = mix(vertex_key, alpha as u64);
+        vertex_key = mix(vertex_key, other_alpha as u64);
+        if let Some(im) = &iso_meshes {
+            order_key = mix(order_key, Arc::as_ptr(im) as u64);
+            order_key = mix(order_key, w.iso_built);
+            vertex_key = mix(vertex_key, iso_alpha as u64);
+        }
+        for (i, a) in &w.roi_alpha {
+            vertex_key = mix(vertex_key, (*i as u64) << 32 | a.to_bits() as u64);
+        }
+        // Segmentation colors are applied live at draw time.
+        for (_, c) in seg_disp {
+            vertex_key = mix(
+                vertex_key,
+                (c[0] as u64) | ((c[1] as u64) << 8) | ((c[2] as u64) << 16),
+            );
+        }
+
+        if w.frame.vertex_key != Some(vertex_key) {
+            let (sy, cy) = w.yaw.sin_cos();
+            let (sp, cp) = w.pitch.sin_cos();
+            let c = w.center;
+            // Yaw about patient z, then pitch about the screen x.
+            let rot = |p: [f32; 3], centered: bool| -> [f32; 3] {
+                let (x, y, z) = if centered {
+                    (p[0] - c[0], p[1] - c[1], p[2] - c[2])
+                } else {
+                    (p[0], p[1], p[2])
+                };
+                let x1 = cy * x - sy * y;
+                let y1 = sy * x + cy * y;
+                let y2 = cp * y1 - sp * z;
+                let z2 = sp * y1 + cp * z;
+                [x1, y2, z2]
+            };
+            let reorder = w.frame.order_key != Some(order_key);
+            let f = &mut w.frame;
+            // Buffers are reused across frames; `make_mut` hands
+            // back the previous allocation because the painter has
+            // already dropped last frame's reference.
+            let mesh = Arc::make_mut(&mut f.mesh);
+            mesh.vertices.clear();
+            f.depth.clear();
+            if reorder {
+                f.tris.clear();
+            }
+            // One iterator over everything the scene draws: this
+            // dataset's structures, its live segmentations, and
+            // the other dataset's structures already mapped
+            // through the registration - each with its own
+            // opacity, which is the whole point of showing two
+            // datasets at once.
+            let entries = meshes
+                .iter()
+                .map(|m| {
+                    let own = w.roi_alpha.get(&m.roi_index).copied().unwrap_or(1.0);
+                    (
+                        m,
+                        visible.get(m.roi_index).copied().unwrap_or(true) && own > 0.0,
+                        m.color,
+                        m.external,
+                        (alpha as f32 * own).round() as u8,
+                    )
+                })
+                .chain(seg_meshes.iter().flat_map(|a| a.iter()).map(|m| {
+                    let (on, c) = seg_disp
+                        .get(m.roi_index)
+                        .copied()
+                        .unwrap_or((false, m.color));
+                    (m, on, c, false, alpha)
+                }))
+                .chain(other_meshes.iter().flat_map(|a| a.iter()).map(|m| {
+                    let on = other_visible.get(m.roi_index).copied().unwrap_or(true);
+                    (m, on, m.color, m.external, other_alpha)
+                }))
+                .chain(
+                    iso_meshes
+                        .iter()
+                        .flat_map(|a| a.iter())
+                        .map(|m| (m, true, m.color, false, iso_alpha)),
+                );
+            for (m, on, color, external, entry_alpha) in entries {
+                if !on {
+                    continue;
+                }
+                let base = mesh.vertices.len() as u32;
+                // External/body contours render translucent so the
+                // interior structures remain visible.
+                let roi_alpha = if external {
+                    (entry_alpha as f32 * 0.22) as u8
+                } else {
+                    entry_alpha
+                };
+                for (v, n) in m.verts.iter().zip(m.normals.iter()) {
+                    let t = rot(*v, true);
+                    let nn = rot(*n, false);
+                    // The vertex's own colour: the structure's,
+                    // or the dose that lands on it, sampled the
+                    // same way the isodose lines are.
+                    let color = match &dose_here {
+                        Some((dose, reference)) if paint_dose => {
+                            let p = Vec3::new(v[0] as f64, v[1] as f64, v[2] as f64);
+                            match dose.sample(p) {
+                                Some(d) => render::dose_colormap((d / reference).clamp(0.0, 1.0)),
+                                // Outside the dose grid: grey, so
+                                // "no dose here" cannot be read as
+                                // "zero dose here".
+                                None => [90, 90, 90],
+                            }
+                        }
+                        _ => color,
+                    };
+                    // Headlight along the view axis, two-sided.
+                    let inten = 0.30 + 0.70 * nn[1].abs();
+                    let col = Color32::from_rgba_unmultiplied(
+                        (color[0] as f32 * inten) as u8,
+                        (color[1] as f32 * inten) as u8,
+                        (color[2] as f32 * inten) as u8,
+                        roi_alpha,
+                    );
+                    mesh.vertices.push(egui::epaint::Vertex {
+                        pos: Pos2::new(cx + t[0] * scale, cyc - t[2] * scale),
+                        uv: egui::epaint::WHITE_UV,
+                        color: col,
+                    });
+                    f.depth.push(t[1]);
+                }
+                if reorder {
+                    f.tris.extend(
+                        m.tris
+                            .iter()
+                            .map(|t| [base + t[0], base + t[1], base + t[2]]),
+                    );
+                }
+            }
+
+            if reorder {
+                // Painter's algorithm: far triangles first (viewer
+                // at -y). Packing the depth into the high half of a
+                // u64 lets this be a primitive sort rather than a
+                // float comparator over a tuple.
+                f.order.clear();
+                f.order.extend(f.tris.iter().enumerate().map(|(i, t)| {
+                    let d =
+                        (f.depth[t[0] as usize] + f.depth[t[1] as usize] + f.depth[t[2] as usize])
+                            / 3.0;
+                    ((!depth_key(d) as u64) << 32) | i as u64
+                }));
+                f.order.par_sort_unstable();
+                mesh.indices.clear();
+                mesh.indices.reserve(f.order.len() * 3);
+                for &o in &f.order {
+                    mesh.indices
+                        .extend_from_slice(&f.tris[(o & 0xFFFF_FFFF) as usize]);
+                }
+                f.order_key = Some(order_key);
+            }
+            f.vertex_key = Some(vertex_key);
+        }
+
+        painter.add(egui::Shape::Mesh(w.frame.mesh.clone()));
+
+        // The Structure editor's drawn axis, the same white line
+        // as in the views, one slice thick.
+        if self.module_structures && struct_tools::axis_live(&self.tools) {
+            if let Some((ax, vol)) = self
+                .tools
+                .axis
+                .filter(|a| a.slot == w.slot)
+                .zip(self.slots[w.slot].study.as_ref().map(|st| &st.volume))
+            {
+                let (sy, cy) = w.yaw.sin_cos();
+                let (sp, cp) = w.pitch.sin_cos();
+                let c = w.center;
+                let project = |p: Vec3| -> Pos2 {
+                    let (x, y, z) = (p.x as f32 - c[0], p.y as f32 - c[1], p.z as f32 - c[2]);
+                    let x1 = cy * x - sy * y;
+                    let y1 = sy * x + cy * y;
+                    let z2 = sp * y1 + cp * z;
+                    Pos2::new(cx + x1 * scale, cyc - z2 * scale)
+                };
+                let a = project(vol.voxel_to_patient(ax.a[0], ax.a[1], ax.a[2]));
+                let b = project(vol.voxel_to_patient(ax.b[0], ax.b[1], ax.b[2]));
+                let thick = (vol.spacing[2] as f32 * scale).max(1.5);
+                painter.line_segment([a, b], Stroke::new(thick, Color32::WHITE));
+            }
+        }
+
+        // The deformation field, drawn over the surfaces.
+        if w.show_field {
+            if let Some((field, method)) = &reg_here {
+                let (sy, cy) = w.yaw.sin_cos();
+                let (sp, cp) = w.pitch.sin_cos();
+                let c = w.center;
+                let project = |p: Vec3| -> Pos2 {
+                    let (x, y, z) = (p.x as f32 - c[0], p.y as f32 - c[1], p.z as f32 - c[2]);
+                    let x1 = cy * x - sy * y;
+                    let y1 = sy * x + cy * y;
+                    let z2 = sp * y1 + cp * z;
+                    Pos2::new(cx + x1 * scale, cyc - z2 * scale)
+                };
+                let max = field.max_mag.max(1e-6) as f32;
+                let mut drawn = 0usize;
+                for (a, b, mag) in dvf::glyphs_3d(field, 1500) {
+                    let col = {
+                        let t = (mag as f32 / max).clamp(0.0, 1.0);
+                        let rgb = render::dose_colormap(t);
+                        Color32::from_rgba_unmultiplied(rgb[0], rgb[1], rgb[2], 220)
+                    };
+                    let (pa, pb) = (project(a), project(b));
+                    painter.line_segment([pa, pb], Stroke::new(1.2, col));
+                    painter.circle_filled(pb, 1.6, col);
+                    drawn += 1;
+                }
+                painter.text(
+                    rect.right_bottom() + Vec2::new(-6.0, -6.0),
+                    Align2::RIGHT_BOTTOM,
+                    format!("{drawn} field arrows · {method} · max {max:.1} mm"),
+                    FontId::proportional(11.0),
+                    Color32::GRAY,
+                );
+            }
+        }
+
+        painter.text(
+            rect.left_bottom() + Vec2::new(6.0, -6.0),
+            Align2::LEFT_BOTTOM,
+            format!(
+                "{} structure(s){}, {} triangles",
+                meshes.len() + n_seg,
+                if n_other > 0 {
+                    format!(" + {n_other} registered")
+                } else {
+                    String::new()
+                },
+                w.frame.tris.len()
+            ),
+            FontId::proportional(11.0),
+            Color32::GRAY,
+        );
     }
 }
 
