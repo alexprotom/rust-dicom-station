@@ -13,7 +13,7 @@
 id: io.github.alexprotom.rust-dicom-station
 runtime: org.freedesktop.Platform
 # Bumping this means bumping the SDK extension and the CI workflow with it.
-runtime-version: '25.08'
+runtime-version: '26.08'
 sdk: org.freedesktop.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
@@ -28,12 +28,14 @@ finish-args:
   - --device=dri
   # Model weights are downloaded from Hugging Face on first use.
   - --share=network
-  # DICOM folders. The file dialog is the desktop's own portal, so a folder
-  # picked there is readable wherever it lives; this covers the rest: a
-  # folder named on the command line, the patient archive, a model folder.
-  # Data elsewhere is a `flatpak override --filesystem=...` away
-  # (docs/flatpak.md).
-  - --filesystem=home
+  # No filesystem permission, on purpose. Flathub's linter rejects blanket
+  # home access (finish-args-home-filesystem-access), and the file dialogs
+  # are the desktop's own portal, so a folder picked there is readable
+  # wherever it lives. Settings, models, templates and the patient archive
+  # live in the application's own folder, which is always writable. What
+  # the portal cannot cover (a folder named on the command line, the MCP
+  # server's roots) is one `flatpak override --filesystem=...` away; see
+  # docs/flatpak.md.
 
 modules:
   - name: rust-dicom-station
