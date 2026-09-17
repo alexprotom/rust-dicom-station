@@ -381,7 +381,7 @@ pub fn mcp_exe_path() -> PathBuf {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpLaunch {
     pub command: PathBuf,
-    pub args: Vec<&'static str>,
+    pub args: Vec<String>,
 }
 
 impl McpLaunch {
@@ -389,20 +389,36 @@ impl McpLaunch {
     ///
     /// * a snap - the snap's command, `/snap/bin/<name>.rds-mcp`; the binary
     ///   inside the snap cannot be run from outside it;
+    /// * a Flatpak (`$FLATPAK_ID`, set inside the sandbox) - `flatpak run
+    ///   --command=rds-mcp <id>`, for the same reason;
     /// * an AppImage (`$APPIMAGE`, set by its runtime) - the AppImage file
     ///   with `mcp`, which its AppRun dispatches on; the executable beside
     ///   this one lives in a mount that is gone once the program exits;
     /// * anything else - `rds-mcp` beside this executable.
-    fn resolve(snap: Option<&SnapEnv>, appimage: Option<PathBuf>, beside: PathBuf) -> McpLaunch {
+    fn resolve(
+        snap: Option<&SnapEnv>,
+        flatpak: Option<&str>,
+        appimage: Option<PathBuf>,
+        beside: PathBuf,
+    ) -> McpLaunch {
         if let Some(snap) = snap {
             McpLaunch {
                 command: snap.command("rds-mcp"),
                 args: Vec::new(),
             }
+        } else if let Some(id) = flatpak {
+            McpLaunch {
+                command: PathBuf::from("flatpak"),
+                args: vec![
+                    "run".to_string(),
+                    "--command=rds-mcp".to_string(),
+                    id.to_string(),
+                ],
+            }
         } else if let Some(file) = appimage {
             McpLaunch {
                 command: file,
-                args: vec!["mcp"],
+                args: vec!["mcp".to_string()],
             }
         } else {
             McpLaunch {
@@ -437,14 +453,21 @@ impl McpLaunch {
 /// How an MCP client starts this installation's server (see
 /// [`McpLaunch::resolve`]).
 pub fn mcp_client_launch() -> McpLaunch {
-    let appimage = if cfg!(target_os = "linux") {
-        std::env::var_os("APPIMAGE")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-    } else {
-        None
+    let linux_var = |name: &str| {
+        if cfg!(target_os = "linux") {
+            std::env::var_os(name).filter(|v| !v.is_empty())
+        } else {
+            None
+        }
     };
-    McpLaunch::resolve(snap_env().as_ref(), appimage, mcp_exe_path())
+    let flatpak = linux_var("FLATPAK_ID").map(|v| v.to_string_lossy().into_owned());
+    let appimage = linux_var("APPIMAGE").map(PathBuf::from);
+    McpLaunch::resolve(
+        snap_env().as_ref(),
+        flatpak.as_deref(),
+        appimage,
+        mcp_exe_path(),
+    )
 }
 
 /// The entry an MCP client (Claude Desktop, Claude Code) needs in its
@@ -771,21 +794,43 @@ mod tests {
         let snap = snap_vars(&SNAP_VARS).unwrap();
         let appimage = PathBuf::from("/home/u/Apps/RDS.AppImage");
 
-        let plain = McpLaunch::resolve(None, None, beside.clone());
+        let plain = McpLaunch::resolve(None, None, None, beside.clone());
         assert_eq!(plain.command, beside);
         assert!(plain.args.is_empty());
 
-        let a = McpLaunch::resolve(None, Some(appimage.clone()), beside.clone());
+        let a = McpLaunch::resolve(None, None, Some(appimage.clone()), beside.clone());
         assert_eq!(a.command, appimage);
         assert_eq!(a.args, ["mcp"]);
         assert_eq!(a.display(), "/home/u/Apps/RDS.AppImage mcp");
 
-        // A snap wins: an AppImage variable leaking into it would be stale.
-        let s = McpLaunch::resolve(Some(&snap), Some(appimage), beside);
+        let f = McpLaunch::resolve(
+            None,
+            Some("io.github.alexprotom.rust-dicom-station"),
+            None,
+            beside.clone(),
+        );
+        assert_eq!(f.command, Path::new("flatpak"));
+        assert_eq!(
+            f.args,
+            [
+                "run",
+                "--command=rds-mcp",
+                "io.github.alexprotom.rust-dicom-station"
+            ]
+        );
+
+        // A snap wins: another packaging's variable leaking into it would
+        // be stale.
+        let s = McpLaunch::resolve(
+            Some(&snap),
+            Some("io.github.alexprotom.rust-dicom-station"),
+            Some(appimage),
+            beside,
+        );
         assert_eq!(s.command, Path::new("/snap/bin/rust-dicom-station.rds-mcp"));
         assert!(s.args.is_empty());
 
-        for launch in [plain, a, s] {
+        for launch in [plain, a, f, s] {
             let v: serde_json::Value =
                 serde_json::from_str(&launch.client_snippet()).expect("valid JSON");
             let entry = &v["mcpServers"]["rust-dicom-station"];

@@ -3,7 +3,8 @@
 Rust DICOM Station is published to the [Snap Store](https://snapcraft.io/rust-dicom-station)
 as `rust-dicom-station`. The recipe is [snap/snapcraft.yaml](../snap/snapcraft.yaml);
 this page explains what it does and why, where the program keeps its files
-inside a snap, and how a version gets from `main` to the store.
+inside a snap, and how a version gets from `main` to the store. The Flatpak
+([flatpak.md](flatpak.md)) is the same program packaged the other way.
 
 ## Installing
 

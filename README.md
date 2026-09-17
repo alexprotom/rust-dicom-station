@@ -1,6 +1,6 @@
 # rust-dicom-station
 
-[![CI](https://github.com/alexprotom/rust-dicom-station/actions/workflows/ci.yml/badge.svg)](https://github.com/alexprotom/rust-dicom-station/actions/workflows/ci.yml)
+[![CI](https://github.com/alexprotom/rust-dicom-station/actions/workflows/ci.yml/badge.svg)](https://github.com/alexprotom/rust-dicom-station/actions/workflows/ci.yml) [![rust-dicom-station](https://snapcraft.io/rust-dicom-station/badge.svg)](https://snapcraft.io/rust-dicom-station)
 
 RDS (Rust DICOM Station) is open-source software for medical imaging and radiotherapy research, analysis, and QA, **written entirely in Rust**. It loads complete radiotherapy studies (CT, MR and PET series, RTSTRUCT, RTDOSE, photon and ion RTPLAN, DICOM SEG, planar images, spatial and deformable registrations, and treatment records) into an integrated environment for visualization, comparison and quantitative analysis. Beyond the classic linked three-view layout and dual-dataset comparison, RDS provides image registration, structure propagation, DRR generation, dose-volume histograms, 4D motion analysis, interactive and AI-assisted segmentation, 3D visualization, and DICOM editing and export. The entire processing stack is native Rust: functionality normally provided through C/C++ or Python frameworks, including elastix- and plastimatch-style registration, ITK-style ray casting, TotalSegmentator, SegVol, and MedSAM2, is re-implemented directly in Rust without bindings to those frameworks.
 
@@ -120,8 +120,9 @@ tumor, unfold *💬 Prompt segmentation* in the Structure auto tools module
 The engines fetch their weights on first use into one model folder
 (`%LOCALAPPDATA%\RustDICOMStation\models` on Windows,
 `~/.local/share/RustDICOMStation/models` on Linux,
-`~/snap/rust-dicom-station/common/data/models` in the snap), movable from any
-tool window; each engine also has a headless CLI in [examples/](examples/).
+`~/snap/rust-dicom-station/common/data/models` in the snap,
+`~/.var/app/io.github.alexprotom.rust-dicom-station/data/RustDICOMStation/models`
+in the Flatpak), movable from any tool window; each engine also has a headless CLI in [examples/](examples/).
 
 If the program will not start at all, it is almost certainly one thing: a
 Windows machine advertising a Vulkan driver that cannot create a device. It
@@ -135,7 +136,9 @@ publishes a release: a Windows installer
 (`rust-dicom-station-<version>-windows-x86_64.exe` - shortcuts, "Open with"
 on folders, the VC++ runtime check, optional weight prefetch, uninstaller)
 and a Linux AppImage, and puts the snap into the Snap Store (`sudo snap
-install rust-dicom-station`, [docs/snap.md](docs/snap.md)). A newer
+install rust-dicom-station`, [docs/snap.md](docs/snap.md)); the same program
+is on Flathub as `io.github.alexprotom.rust-dicom-station`
+([docs/flatpak.md](docs/flatpak.md)). A newer
 installer updates an existing installation in place (no second copy,
 nothing to uninstall first), *Start ▸ Update Rust
 DICOM Station* fetches the newest release, and the package is published to
@@ -172,6 +175,7 @@ https://alexprotom.github.io/rust-dicom-station/
 | [docs/architecture.md](docs/architecture.md) | Design, functional overview, module map, threading, the model folder, conventions, testing |
 | [docs/release-versioning.md](docs/release-versioning.md) | How versions and releases are produced |
 | [docs/snap.md](docs/snap.md) | The Linux snap: confinement, where its files are, the MCP server in it, building and publishing |
+| [docs/flatpak.md](docs/flatpak.md) | The Flatpak: the sandbox, where its files are, the MCP server in it, building and submitting to Flathub |
 | [docs/example-data.md](docs/example-data.md) | Bundled patient data, source and citations |
 | [installer/README.md](installer/README.md) | The Windows installer: building it, what it installs, updating, winget, silent switches |
 

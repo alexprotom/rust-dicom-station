@@ -1,9 +1,3 @@
 /target
-models/
-Cargo.lock
 /manifests
 /plans
-/test_data
-/patient_data
-/example_data_star
-/example_data_phantom_dose

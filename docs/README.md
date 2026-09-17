@@ -27,4 +27,5 @@ Each page here covers one area.
 | [export-and-tools.md](export-and-tools.md) | DICOM export, the model manager, the anonymizer, the test-data generator |
 | [release-versioning.md](release-versioning.md) | Versioning, the branch workflow, how CI produces a release, publishing to winget and the Snap Store |
 | [snap.md](snap.md) | The Linux snap: installing, what the confinement allows, where the files are, graphics, the MCP server, building and publishing |
+| [flatpak.md](flatpak.md) | The Flatpak: installing, what the sandbox allows, where the files are, graphics, the MCP server, building and the Flathub submission |
 | [example-data.md](example-data.md) | The bundled example patient: contents, source, citations, license |
