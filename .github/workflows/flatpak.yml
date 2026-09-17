@@ -36,22 +36,35 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends flatpak
+          # dbus-run-session: a flatpak app that installs flatpaks (which is
+          # what --install-deps-from does) needs a session bus, and a CI
+          # runner has none.
+          sudo apt-get install -y --no-install-recommends flatpak dbus
           flatpak remote-add --user --if-not-exists flathub \
             https://flathub.org/repo/flathub.flatpakrepo
           flatpak install --user --noninteractive flathub org.flatpak.Builder
+
+      # Installed here, from the host, rather than by the builder from
+      # inside its own sandbox. Keep the versions in step with
+      # runtime-version in the manifest.
+      - name: Install the runtime, the SDK and the Rust extension
+        run: |
+          flatpak install --user --noninteractive flathub \
+            org.freedesktop.Platform//26.08 \
+            org.freedesktop.Sdk//26.08 \
+            org.freedesktop.Sdk.Extension.rust-stable//26.08
 
       - name: Lint the manifest
         run: |
           flatpak run --command=flatpak-builder-lint org.flatpak.Builder \
             manifest flatpak/io.github.alexprotom.rust-dicom-station.yml
 
-      # The runtime, the SDK and the Rust extension come from flathub; the
-      # crates come from cargo-sources.json, with no network in the build.
+      # The crates come from cargo-sources.json, so the build itself needs
+      # no network.
       - name: Build
         run: |
-          flatpak run org.flatpak.Builder --user --force-clean \
-            --install-deps-from=flathub --repo=repo \
+          dbus-run-session -- flatpak run org.flatpak.Builder --user \
+            --force-clean --repo=repo \
             build flatpak/io.github.alexprotom.rust-dicom-station.yml
 
       - name: Lint the build
