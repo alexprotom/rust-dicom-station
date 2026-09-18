@@ -65,10 +65,14 @@ impl ViewerApp {
                     return;
                 }
                 study.plans.remove(r.idx);
-                let vis = &mut self.slots[slot].plan_visible;
-                if r.idx < vis.len() {
-                    vis.remove(r.idx);
+                // Keep the selection on the plan it was on, or on the last
+                // one when the list has shrunk past it.
+                let n = study.plans.len();
+                let active = &mut self.slots[slot].active_plan;
+                if r.idx < *active {
+                    *active -= 1;
                 }
+                *active = (*active).min(n.saturating_sub(1));
             }
             ObjKind::Planar => {
                 if r.idx >= study.planar_images.len() {

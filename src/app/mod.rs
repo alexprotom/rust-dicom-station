@@ -68,11 +68,13 @@ mod play;
 mod poi;
 mod prompt_seg;
 mod propagate_win;
+mod record;
 mod reg_panel;
 mod rename;
 mod seg;
 mod seg_engines;
 mod sets;
+mod snapshot;
 mod stats_win;
 mod struct_tools;
 mod theme;
@@ -452,10 +454,14 @@ struct StudySlot {
     /// Fractional voxel coords of the linked crosshair (in this slot's volume).
     cursor: [f64; 3],
     roi_visible: Vec<bool>,
-    /// Which plans are drawn in the views (their isocenters), one flag per
-    /// entry of `study.plans`. Missing entries count as visible, so a plan
-    /// that arrives later is shown.
-    plan_visible: Vec<bool>,
+    /// Index of the active plan within `study.plans`: the one whose details
+    /// are listed and whose isocenters the views draw. One at a time, like
+    /// the structure sets and the segmentation series.
+    active_plan: usize,
+    /// The row's own switch: whether the active plan's isocenters are drawn
+    /// at all. Clicking the active row again turns them off without losing
+    /// which plan is selected.
+    plans_shown: bool,
     /// Index of the active structure set within `study.structure_sets`.
     active_structs: usize,
     /// The tick box on the RT structures series row: whether the active set
@@ -576,7 +582,8 @@ impl StudySlot {
             views: fresh_views(),
             cursor: [0.0; 3],
             roi_visible: Vec::new(),
-            plan_visible: Vec::new(),
+            active_plan: 0,
+            plans_shown: true,
             active_structs: 0,
             structs_shown: true,
             segs_shown: true,
@@ -1177,7 +1184,7 @@ pub struct ViewerApp {
     slots: [StudySlot; 2],
     /// Comparison mode: study B shown in a second row.
     comparison: bool,
-    /// What each row shows, left to right - up to three panes, chosen under
+    /// What each row shows, left to right - up to four panes, chosen under
     /// *Settings ▸ View layout* and remembered between runs. The panes of a
     /// row split its width evenly, so a row of one is one large image.
     view_rows: [Vec<PaneKind>; 2],
@@ -1185,6 +1192,25 @@ pub struct ViewerApp {
     link_studies: bool,
     /// Slot whose readout is expanded in the status bar.
     hovered_slot: usize,
+    /// Where each pane was drawn this pass, so the recorder knows what part
+    /// of the window a run is playing in.
+    pane_rects: Vec<(usize, PaneKind, Rect)>,
+    /// The run being recorded, if any, and what the next one will be
+    /// written as.
+    rec: Option<record::Recording>,
+    rec_format: record::RecFormat,
+    /// Stop a recording after this many frames, whatever the run does: an
+    /// endless loop would otherwise fill memory with pictures.
+    rec_max: usize,
+    /// What the last recording did, for the module to say.
+    rec_status: Option<String>,
+    /// Where each dataset's row of the central area was drawn this pass,
+    /// which is what *File ▸ Save image* cuts out of the window.
+    row_rects: [Option<Rect>; 2],
+    /// The *Save image* dialog, and the picture it has asked for.
+    save_img: Option<snapshot::SaveImgDialog>,
+    snap: Option<snapshot::PendingShot>,
+    snap_status: Option<String>,
     /// The hand on every viewport's bar: while it is on, dragging with the
     /// left button moves the image instead of placing the crosshair. One
     /// switch for all the views, so the pointer means the same thing
@@ -1692,6 +1718,15 @@ impl ViewerApp {
             view_rows: prefs.view_rows.clone(),
             link_studies: true,
             hovered_slot: 0,
+            pane_rects: Vec::new(),
+            rec: None,
+            rec_format: record::RecFormat::default(),
+            rec_max: 600,
+            rec_status: None,
+            row_rects: [None, None],
+            save_img: None,
+            snap: None,
+            snap_status: None,
             hand_pan: false,
             loading: None,
             home_content_height: 0.0,
@@ -2268,9 +2303,19 @@ impl eframe::App for ViewerApp {
             }
         }
 
-        // Poll the 4D phase reader, and run the cine clock.
+        // Poll the 4D phase reader, run the cine clock, and hand the frame
+        // egui has just delivered to whoever asked for it - a recording of a
+        // run, or a still of the views.
         self.poll_phase_cache(&ctx);
         self.play_tick(&ctx);
+        let shot = ctx.input(|i| {
+            i.events.iter().rev().find_map(|e| match e {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+        });
+        self.record_tick(&ctx, shot.as_ref());
+        self.snapshot_tick(&ctx, shot.as_ref());
 
         // Poll a vector-field re-sampling.
         if let Some(field) = poll_job(&mut self.field_job, &ctx, "Vector field", &mut self.error) {

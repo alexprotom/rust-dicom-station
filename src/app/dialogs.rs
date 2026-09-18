@@ -28,6 +28,7 @@ impl ViewerApp {
     // -- Modals -----------------------------------------------------------
     pub(super) fn modals(&mut self, ctx: &egui::Context) {
         self.generator_window(ctx);
+        self.save_image_window(ctx);
         self.anonymize_window(ctx);
         self.models_window(ctx);
         self.pacs_window(ctx);

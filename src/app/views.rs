@@ -42,12 +42,15 @@ impl ViewerApp {
         h ^ self.settings_gen.wrapping_mul(0x2545F4914F6CDD1D)
     }
 
-    // -- Central: one row per dataset, each of up to three panes ----------
+    // -- Central: one row per dataset, each of up to four panes -----------
     pub(super) fn central_views(&mut self, ui: &mut egui::Ui) {
         let backdrop = backdrop_color(ui.visuals());
         egui::CentralPanel::default_margins()
             .frame(egui::Frame::NONE.fill(backdrop))
             .show(ui, |ui| {
+                // Last pass's rectangles say nothing about this one: a row
+                // that is no longer drawn must not be saved from memory.
+                self.row_rects = [None, None];
                 if self.slots[0].study.is_none() && self.slots[1].study.is_none() {
                     self.empty_state(ui);
                     return;
@@ -56,6 +59,7 @@ impl ViewerApp {
                 if let Some((mslot, kind)) = self.maximized {
                     if self.slots[mslot.min(1)].study.is_some() {
                         let full = ui.available_rect_before_wrap();
+                        self.note_row_rect(mslot.min(1), full);
                         self.pane(ui, mslot.min(1), kind, full, true);
                         return;
                     }
@@ -74,6 +78,8 @@ impl ViewerApp {
                         Pos2::new(full.left(), y0),
                         Vec2::new(full.width(), row_h),
                     );
+                    // Where it landed, for File ▸ Save image.
+                    self.note_row_rect(row, row_rect);
                     if self.slots[row].study.is_some() {
                         self.study_row(ui, row, row_rect);
                     } else {
@@ -119,6 +125,8 @@ impl ViewerApp {
 
     /// One pane of a row: a plane of the volume, or the surface scene.
     fn pane(&mut self, ui: &mut egui::Ui, slot: usize, kind: PaneKind, rect: Rect, first: bool) {
+        // Where it landed, for a recording started later.
+        self.note_pane_rect(slot, kind, rect);
         match kind {
             PaneKind::Plane(p) => self.view_cell(ui, slot, super::plane_index(p), rect, first),
             PaneKind::Scene3d => self.scene_pane(ui, slot, rect),
@@ -210,50 +218,133 @@ impl ViewerApp {
 
     /// The *Settings ▸ View layout* tick boxes: what each row shows.
     ///
-    /// A row holds up to three panes, so the fourth tick box greys out once
-    /// three are on, and the last one on a row cannot be taken off - an
-    /// empty row would be a strip of backdrop with nothing to say for
-    /// itself. Returns whether anything changed, so the caller can write
-    /// the settings out.
+    /// A row holds up to [`crate::settings::MAX_PANES`] panes and the last
+    /// one on a row cannot be taken off - an empty row would be a strip of
+    /// backdrop with nothing to say for itself. Returns whether anything
+    /// changed, so the caller can write the settings out.
     pub(super) fn view_layout_menu(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
+        // One click can only do one thing, so the list is drawn from a
+        // snapshot and whatever was clicked is applied after it.
+        let mut toggle: Option<(usize, PaneKind, bool)> = None;
+        let mut shift: Option<(usize, usize, bool)> = None;
+        let mut reset: Option<usize> = None;
+        let standard = crate::settings::default_view_row();
         for (slot, name) in SLOT_NAMES.iter().enumerate() {
-            ui.label(egui::RichText::new(format!("Row {name}")).strong());
             let row = self.row_panes(slot);
-            for kind in PaneKind::ALL {
-                let mut on = row.contains(&kind);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(format!("Row {name}")).strong());
+                // Back to the three planes in the usual order, in one click:
+                // a row that has been rearranged is quicker to reset than to
+                // put right a tick and an arrow at a time.
+                if ui
+                    .add_enabled(row != standard, egui::Button::new("⟲ Reset").small())
+                    .on_hover_text(
+                        "Back to the standard row: axial, sagittal and coronal, in that \
+                         order",
+                    )
+                    .clicked()
+                {
+                    reset = Some(slot);
+                }
+            });
+            // The ticked panes first, in the order the row shows them, so
+            // the list reads left to right the way the row does and the
+            // arrows move what they appear to move. The rest follow.
+            let listed: Vec<(PaneKind, Option<usize>)> = row
+                .iter()
+                .enumerate()
+                .map(|(i, k)| (*k, Some(i)))
+                .chain(
+                    PaneKind::ALL
+                        .into_iter()
+                        .filter(|k| !row.contains(k))
+                        .map(|k| (k, None)),
+                )
+                .collect();
+            for (kind, at) in listed {
+                let mut on = at.is_some();
                 // Off and the row is full, or on and it is the only one:
                 // either way the tick cannot move.
                 let full = !on && row.len() >= crate::settings::MAX_PANES;
                 let last = on && row.len() == 1;
-                let resp =
-                    ui.add_enabled(!full && !last, egui::Checkbox::new(&mut on, kind.label()));
-                if resp.changed() {
-                    let panes = &mut self.view_rows[slot];
-                    if on {
-                        panes.push(kind);
-                        // However they were ticked, a row reads in the
-                        // order the tick boxes are listed in.
-                        panes.sort_by_key(|k| {
-                            PaneKind::ALL.iter().position(|a| a == k).unwrap_or(9)
-                        });
-                    } else {
-                        panes.retain(|k| *k != kind);
+                ui.horizontal(|ui| {
+                    let resp =
+                        ui.add_enabled(!full && !last, egui::Checkbox::new(&mut on, kind.label()));
+                    if resp.changed() {
+                        toggle = Some((slot, kind, on));
                     }
-                    changed = true;
-                }
-                if full {
-                    resp.on_hover_text("A row shows at most three panes");
-                } else if last {
-                    resp.on_hover_text("A row has to show something");
-                } else if kind == PaneKind::Scene3d {
-                    resp.on_hover_text(
-                        "Draw this dataset's surfaces in the row instead of in a window;                          the 3D button in the toolbar steps aside while it is here",
-                    );
-                }
+                    if full {
+                        resp.on_hover_text(format!(
+                            "A row shows at most {} panes",
+                            crate::settings::MAX_PANES
+                        ));
+                    } else if last {
+                        resp.on_hover_text("A row has to show something");
+                    } else if kind == PaneKind::Scene3d {
+                        resp.on_hover_text(
+                            "Draw this dataset's surfaces in the row instead of in a \
+                             window; the 3D button in the toolbar steps aside while it \
+                             is here",
+                        );
+                    }
+                    // Where in the row it sits. A pane that is not in the row
+                    // has nowhere to go, and the ends have nowhere further.
+                    let i = at.unwrap_or(0);
+                    let can_left = at.is_some() && i > 0;
+                    let can_right = at.is_some() && i + 1 < row.len();
+                    if ui
+                        .add_enabled(can_left, egui::Button::new("◀").small())
+                        .on_hover_text("Move this pane one place left in the row")
+                        .clicked()
+                    {
+                        shift = Some((slot, i, false));
+                    }
+                    if ui
+                        .add_enabled(can_right, egui::Button::new("▶").small())
+                        .on_hover_text("Move this pane one place right in the row")
+                        .clicked()
+                    {
+                        shift = Some((slot, i, true));
+                    }
+                });
             }
             if slot == 0 {
                 ui.separator();
+            }
+        }
+        if let Some((slot, kind, on)) = toggle {
+            let row = self.row_panes(slot);
+            let panes = &mut self.view_rows[slot];
+            // A row that was still the default has to become a real list
+            // before anything can be added to or taken out of it.
+            if panes.is_empty() {
+                *panes = row;
+            }
+            if on {
+                // Appended, not sorted back into the tick boxes' order: the
+                // arrows below are the order now, and a new tick joining the
+                // row at the right is the one place it cannot disturb.
+                panes.push(kind);
+            } else {
+                panes.retain(|k| *k != kind);
+            }
+            changed = true;
+        }
+        if let Some(slot) = reset {
+            self.view_rows[slot] = crate::settings::default_view_row();
+            changed = true;
+        }
+        if let Some((slot, i, right)) = shift {
+            let row = self.row_panes(slot);
+            let panes = &mut self.view_rows[slot];
+            if panes.is_empty() {
+                *panes = row;
+            }
+            let j = if right { i + 1 } else { i.wrapping_sub(1) };
+            if i < panes.len() && j < panes.len() {
+                panes.swap(i, j);
+                changed = true;
             }
         }
         if changed {
@@ -674,12 +765,12 @@ impl ViewerApp {
         // Isocenter markers.
         if self.show_isocenters {
             let mut seen: Vec<[i64; 3]> = Vec::new();
-            // A plan unticked in the data tree keeps its isocenters out of
-            // the views; a plan that arrived after the flags were sized
-            // counts as shown.
-            let shown = &slot_state.plan_visible;
+            // The active plan's isocenters, and only while its row is on:
+            // one plan is drawn at a time, the way one structure set and one
+            // segmentation series are.
+            let active_plan = slot_state.active_plan;
             for (pi, plan) in study.plans.iter().enumerate() {
-                if !shown.get(pi).copied().unwrap_or(true) {
+                if !slot_state.plans_shown || pi != active_plan {
                     continue;
                 }
                 for b in &plan.beams {
@@ -1507,6 +1598,8 @@ impl ViewerApp {
             } else {
                 phase_target
             };
+            // Which pane the run belongs to, for a recording of it.
+            self.play.from_pane = Some((slot, PaneKind::Plane(plane)));
             self.toggle_play(target, now);
         }
         if hovered {

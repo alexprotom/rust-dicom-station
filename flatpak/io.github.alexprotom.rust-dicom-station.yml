@@ -13,7 +13,7 @@
 id: io.github.alexprotom.rust-dicom-station
 runtime: org.freedesktop.Platform
 # Bumping this means bumping the SDK extension and the CI workflow with it.
-runtime-version: '25.08'
+runtime-version: '26.08'
 sdk: org.freedesktop.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
@@ -28,12 +28,14 @@ finish-args:
   - --device=dri
   # Model weights are downloaded from Hugging Face on first use.
   - --share=network
-  # DICOM folders. The file dialog is the desktop's own portal, so a folder
-  # picked there is readable wherever it lives; this covers the rest: a
-  # folder named on the command line, the patient archive, a model folder.
-  # Data elsewhere is a `flatpak override --filesystem=...` away
-  # (docs/flatpak.md).
-  - --filesystem=home
+  # No filesystem permission, on purpose. Flathub's linter rejects blanket
+  # home access (finish-args-home-filesystem-access), and the file dialogs
+  # are the desktop's own portal, so a folder picked there is readable
+  # wherever it lives. Settings, models, templates and the patient archive
+  # live in the application's own folder, which is always writable. What
+  # the portal cannot cover (a folder named on the command line, the MCP
+  # server's roots) is one `flatpak override --filesystem=...` away; see
+  # docs/flatpak.md.
 
 modules:
   - name: rust-dicom-station
@@ -56,8 +58,8 @@ modules:
       - cargo --offline build --release --features mcp
       - install -Dm755 target/release/rust-dicom-station ${FLATPAK_DEST}/bin/rust-dicom-station
       - install -Dm755 target/release/rds-mcp ${FLATPAK_DEST}/bin/rds-mcp
-      - install -Dm644 flatpak/${FLATPAK_ID}.desktop ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.desktop
-      - install -Dm644 flatpak/${FLATPAK_ID}.metainfo.xml ${FLATPAK_DEST}/share/metainfo/${FLATPAK_ID}.metainfo.xml
+      - install -Dm644 ${FLATPAK_ID}.desktop ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.desktop
+      - install -Dm644 ${FLATPAK_ID}.metainfo.xml ${FLATPAK_DEST}/share/metainfo/${FLATPAK_ID}.metainfo.xml
       - install -Dm644 assets/rust-dicom-station.png ${FLATPAK_DEST}/share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png
       - install -Dm644 LICENSE.txt ${FLATPAK_DEST}/share/licenses/${FLATPAK_ID}/LICENSE.txt
     sources:
@@ -68,4 +70,13 @@ modules:
         x-checker-data:
           type: git
           tag-pattern: ^v([\d.]+)$
+      # The desktop entry and the metainfo travel with this manifest, not
+      # with the tagged source: they are packaging, they change without a
+      # release, and a release older than they are (v0.9.2 is) has to stay
+      # buildable. flatpak-builder copies them next to the checkout, which
+      # is why the install commands above name them without a folder.
+      - type: file
+        path: io.github.alexprotom.rust-dicom-station.desktop
+      - type: file
+        path: io.github.alexprotom.rust-dicom-station.metainfo.xml
       - cargo-sources.json

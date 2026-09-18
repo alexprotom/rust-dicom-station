@@ -11,6 +11,7 @@ impl ViewerApp {
         let mut files_b = false;
         let mut close_b = false;
         let mut open_gen = false;
+        let mut open_save_img = false;
         let mut open_models = false;
         let mut open_pacs = false;
         let mut open_drr = false;
@@ -102,11 +103,11 @@ impl ViewerApp {
                     ui.separator();
                     if tip_button(
                         ui,
-                        "📐 Generate test data",
-                        "Write a complete synthetic RT study (CT, RTSTRUCT, RTPLAN, \
-                         RTDOSE, DX, RTIMAGE, REG, RTRECORD) into the application folder",
+                        "💾 Save image",
+                        "A picture of the views as they are on screen - one dataset's row \
+                         or both - as a PNG or a JPEG, at a chosen resolution",
                     ) {
-                        open_gen = true;
+                        open_save_img = true;
                         ui.close();
                     }
                     ui.separator();
@@ -127,17 +128,19 @@ impl ViewerApp {
                         ui.separator();
                         ui.checkbox(&mut self.show_contours, "Contours");
                         ui.checkbox(&mut self.show_crosshair, "Crosshair");
-                        // Syncing is a property of the crosshair and of having a
-                        // second dataset, so it goes away with either.
-                        let both = self.both_volumes();
-                        if self.show_crosshair && both {
+                        // Syncing carries the slice, the zoom, the pan and
+                        // both players as well as the crosshair, so all it
+                        // needs is a second dataset to carry them to.
+                        if self.both_volumes() {
                             ui.checkbox(&mut self.link_studies, "Sync the two datasets")
                                 .on_hover_text(
-                                    "Move, scroll or zoom one dataset and the other follows: the \
-                                 crosshair to the same patient point (through the active \
-                                 registration when there is one), the slice with it, and the \
-                                 zoom and the pan of a view onto the other dataset's view of \
-                                 the same plane. Off, each dataset is navigated on its own.",
+                                    "Move, scroll, zoom or play one dataset and the other \
+                             follows: the crosshair to the same patient point (through the \
+                             active registration when there is one), the slice with it, a \
+                             scrolled or played slice the same way, the zoom and the pan of \
+                             a view onto the other dataset's view of the same plane, and a \
+                             4D run through both groups at once. Off, each dataset is \
+                             navigated on its own.",
                                 );
                         }
                         ui.checkbox(&mut self.show_labels, "Orientation labels");
@@ -390,6 +393,16 @@ impl ViewerApp {
                         self.anon_open = true;
                         ui.close();
                     }
+                    ui.separator();
+                    if tip_button(
+                        ui,
+                        "📐 Generate test data",
+                        "Write a complete synthetic RT study (CT, RTSTRUCT, RTPLAN, \
+                         RTDOSE, DX, RTIMAGE, REG, RTRECORD) into the application folder",
+                    ) {
+                        open_gen = true;
+                        ui.close();
+                    }
                 });
                 ui.menu_button("Settings", |ui| {
                     // Tick boxes: the submenu stays open while rows are being
@@ -431,27 +444,23 @@ impl ViewerApp {
                         ));
                     });
                     ui.menu_button("MCP server", |ui| {
-                        ui.label(
-                            "rds-mcp lets an AI assistant drive the station's tools headlessly.",
-                        );
-                        ui.add_space(4.0);
                         let exe = crate::settings::mcp_exe_path();
                         if exe.is_file() {
                             // In a snap or an AppImage the file sits in a
                             // mount; what a client runs is shown instead.
                             ui.weak(format!(
-                                "Installed: {}",
+                                "MCP installed: {}",
                                 crate::settings::mcp_client_launch().display()
                             ));
                         } else {
                             ui.weak(format!(
-                                "Not installed: {} was not found. Build it with \
+                                "MCP not installed: {} was not found. Build it with \
                                  cargo build --release --features mcp.",
                                 exe.display()
                             ));
                         }
                         ui.weak(format!(
-                            "Configuration (roots, output folder, PHI policy): {}",
+                            "MCP configuration: {}",
                             crate::settings::mcp_config_path().display()
                         ));
                         ui.add_space(4.0);
@@ -464,7 +473,6 @@ impl ViewerApp {
                             ui.ctx().copy_text(crate::settings::mcp_client_snippet());
                             ui.close();
                         }
-                        ui.weak("See docs/mcp.md for the tools and the safety rules.");
                     });
                     if let Some(msg) = &self.settings_error {
                         ui.weak(msg);
@@ -507,7 +515,10 @@ impl ViewerApp {
                         "⌖ - show / hide the crosshair; hidden, left click no \
                          longer navigates",
                     );
-                    ui.weak("Sync - keep datasets A and B on the same point and the same scale (shown while ⌖ is on)");
+                    ui.weak(
+                        "Sync - keep datasets A and B on the same point, the same scale \
+                         and the same frame of a run (shown with two datasets loaded)",
+                    );
                     ui.separator();
                     ui.weak(format!(
                         "rust-dicom-station {} - research / QA viewer, not a medical device",
@@ -541,6 +552,9 @@ impl ViewerApp {
         }
         if close_b {
             self.close_comparison();
+        }
+        if open_save_img && self.save_img.is_none() {
+            self.save_img = Some(snapshot::SaveImgDialog::default());
         }
         if open_gen {
             self.gen_open = true;
@@ -695,19 +709,19 @@ impl ViewerApp {
                         self.show_crosshair = !self.show_crosshair;
                     }
 
-                    // Crosshair syncing: only meaningful while there is a
-                    // crosshair to sync and a second dataset to sync it with,
-                    // so it appears and disappears with them.
-                    let both = self.both_volumes();
-                    if self.show_crosshair
-                        && both
+                    // Syncing needs a second dataset to sync with, and
+                    // nothing else: it carries the slice, the zoom, the pan
+                    // and both players as well as the crosshair, so it stays
+                    // on the bar whether or not the crosshair is shown.
+                    if self.both_volumes()
                         && ui
                             .add(egui::Button::selectable(self.link_studies, "Sync"))
                             .on_hover_text(
                                 "Keep datasets A and B together: the crosshair, the slice, \
-                                 the zoom and the pan of a view carry over to the other \
-                                 dataset's view of the same plane, through the active \
-                                 registration when there is one, so the two rows show the \
+                                 a scrolled or played slice, the zoom and the pan of a view \
+                                 carry over to the other dataset's view of the same plane, \
+                                 through the active registration when there is one, and a \
+                                 4D run walks both groups at once, so the two rows show the \
                                  same thing at the same scale.\n\
                                  Off: each dataset is navigated on its own",
                             )

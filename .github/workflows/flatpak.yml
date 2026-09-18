@@ -36,23 +36,60 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends flatpak
+          # dbus-run-session: a flatpak app that installs flatpaks (which is
+          # what --install-deps-from does) needs a session bus, and a CI
+          # runner has none.
+          # ostree: to commit the mirrored screenshots into the repo below.
+          sudo apt-get install -y --no-install-recommends flatpak dbus ostree
           flatpak remote-add --user --if-not-exists flathub \
             https://flathub.org/repo/flathub.flatpakrepo
           flatpak install --user --noninteractive flathub org.flatpak.Builder
+
+      # Installed here, from the host, rather than by the builder from
+      # inside its own sandbox. Keep the versions in step with
+      # runtime-version in the manifest.
+      - name: Install the runtime, the SDK and the Rust extension
+        run: |
+          flatpak install --user --noninteractive flathub \
+            org.freedesktop.Platform//26.08 \
+            org.freedesktop.Sdk//26.08 \
+            org.freedesktop.Sdk.Extension.rust-stable//26.08
 
       - name: Lint the manifest
         run: |
           flatpak run --command=flatpak-builder-lint org.flatpak.Builder \
             manifest flatpak/io.github.alexprotom.rust-dicom-station.yml
 
-      # The runtime, the SDK and the Rust extension come from flathub; the
-      # crates come from cargo-sources.json, with no network in the build.
+      # The crates come from cargo-sources.json, so the build itself needs
+      # no network.
+      # --mirror-screenshots-url makes the AppStream compose step download
+      # the screenshots named in the metainfo and store them in the build,
+      # and --compose-url-policy=full makes it write the full mirrored URL
+      # into every screenshot and icon entry of the catalogue file instead
+      # of a path relative to a media_baseurl attribute. The repo linter
+      # reads those entries and nothing else, so without the second flag it
+      # reports appstream-external-screenshot-url and
+      # appstream-remote-icon-not-mirrored on a correctly mirrored build.
       - name: Build
         run: |
-          flatpak run org.flatpak.Builder --user --force-clean \
-            --install-deps-from=flathub --repo=repo \
+          dbus-run-session -- flatpak run org.flatpak.Builder --user \
+            --force-clean --repo=repo \
+            --mirror-screenshots-url=https://dl.flathub.org/media \
+            --compose-url-policy=full \
             build flatpak/io.github.alexprotom.rust-dicom-station.yml
+
+      # Newer flatpak-builder commits the mirrored screenshots itself
+      # ("Committed screenshot ref" in the Build log). Committing again would
+      # replace that ref, so this only runs for a builder that did not.
+      - name: Commit the mirrored screenshots if the builder did not
+        run: |
+          if ostree refs --repo=repo | grep -qx 'screenshots/x86_64'; then
+            echo "screenshots/x86_64 is already in the repo"
+          else
+            ostree commit --repo=repo --canonical-permissions \
+              --branch=screenshots/x86_64 build/files/share/app-info/media
+          fi
+          ostree ls -R --repo=repo screenshots/x86_64 | grep -c '\.png$'
 
       - name: Lint the build
         run: |

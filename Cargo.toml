@@ -1,6 +1,6 @@
 [package]
 name = "rust-dicom-station"
-version = "0.9.3"
+version = "0.9.4"
 edition = "2021"
 description = "Fast, robust DICOM / RT DICOM viewer in pure Rust (CT/MR volumes, RTSTRUCT, RTDOSE, RTPLAN) with a three-view MPR layout"
 license = "MIT"
@@ -14,7 +14,13 @@ dicom-object = "0.10"
 dicom-pixeldata = { version = "0.10", features = ["native", "rayon"] }
 dicom-transfer-syntax-registry = "0.10"  # read data sets that carry no file meta group (see dicomfile.rs)
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "links", "wgpu", "wayland", "x11"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
+# `gif` and `jpeg` alongside `png`: the playback recorder writes an animated
+# GIF and *File ▸ Save image* writes a JPEG. Both encoders are pure Rust like
+# everything else here (see app/record.rs and app/snapshot.rs).
+image = { version = "0.25", default-features = false, features = ["png", "gif", "jpeg"] }
+# Direct, for the one thing the image crate's PNG encoder does not expose: the
+# pHYs chunk that tells a layout program how large to print a figure.
+png = "0.18"
 egui = "0.36"
 rayon = "1.12"
 rfd = "0.17"

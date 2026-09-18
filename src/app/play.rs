@@ -161,6 +161,14 @@ pub(super) struct PlayState {
     /// Start this run as soon as the phases are in memory: what *Play 4D*
     /// asked for while the cache was still being read.
     pub(super) start_after_load: Option<PlayTarget>,
+    /// Which pane the run in flight was started from, so a recording of it
+    /// records that pane. `None` when it was started somewhere with no pane
+    /// of its own - this module's transport, or the 3D window.
+    pub(super) from_pane: Option<(usize, PaneKind)>,
+    /// Counts every frame the run has actually advanced. The window
+    /// repaints far more often than a run advances, and the recorder takes
+    /// one picture per advance rather than one per repaint.
+    pub(super) frame_no: u64,
 }
 
 impl Default for PlayState {
@@ -184,6 +192,8 @@ impl Default for PlayState {
             cache: [None, None],
             job: None,
             start_after_load: None,
+            from_pane: None,
+            frame_no: 0,
         }
     }
 }
@@ -423,6 +433,15 @@ impl ViewerApp {
         let Some(run) = self.play.running else {
             return;
         };
+        // A recording waiting for its picture holds the run still. The
+        // screenshot is asked for on one pass and delivered on the next, and
+        // a run that advanced in between would be a frame the recording
+        // never saw: the file would skip. Playing is a little slower while
+        // recording, and the recording is complete.
+        if self.rec.as_ref().is_some_and(|r| r.pending) {
+            ctx.request_repaint();
+            return;
+        }
         let fps = match run.target {
             PlayTarget::Slices { .. } => self.play.slice_fps,
             PlayTarget::Phases { .. } => self.play.phase_fps,
@@ -487,6 +506,7 @@ impl ViewerApp {
         };
         match next {
             Some(dir) => {
+                self.play.frame_no = self.play.frame_no.wrapping_add(1);
                 // The frame is timed from when it was due rather than from
                 // now, so a slow frame does not stretch the whole run.
                 let last = if due < 2.0 * period {
@@ -897,6 +917,80 @@ impl ViewerApp {
             "The 3D window has its own ▶4D, and a Prepare that meshes every phase so the \
              surfaces keep up.",
         );
+
+        ui.separator();
+        self.recording_row(ui);
+    }
+
+    /// Saving a run: what it is written as, how long it may get, and the
+    /// button that starts and stops it.
+    ///
+    /// A recording follows the run that is already playing rather than
+    /// starting one of its own, because which pane a run belongs to is a
+    /// property of the button that started it: ▶3D on the sagittal pane of
+    /// dataset B records that pane, and nothing here has to ask which.
+    fn recording_row(&mut self, ui: &mut egui::Ui) {
+        ui.label(egui::RichText::new("Save a run").strong());
+        let recording = self.rec.is_some();
+        ui.add_enabled_ui(!recording, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.label("As");
+                for f in [record::RecFormat::Gif, record::RecFormat::Pngs] {
+                    ui.selectable_value(&mut self.rec_format, f, f.label())
+                        .on_hover_text(f.hint());
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("At most");
+                ui.add(
+                    egui::DragValue::new(&mut self.rec_max)
+                        .speed(10)
+                        .range(1..=5000)
+                        .suffix(" frames"),
+                )
+                .on_hover_text(
+                    "Every frame is held in memory until the run ends, so a loop that \
+                     never stops would fill it. The recording ends by itself here.",
+                );
+            });
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if recording {
+                if ui
+                    .button("⏹ Stop and save")
+                    .on_hover_text("End the recording now and write what has been taken")
+                    .clicked()
+                {
+                    self.finish_recording(false);
+                }
+            } else if ui
+                .button("⏺ Record")
+                .on_hover_text(
+                    "Arm the recorder: you are asked where the file goes, and then the \
+                     next run you start with ▶ is taken, frame by frame, from the pane \
+                     that ▶ belongs to. It ends by itself after one full cycle.",
+                )
+                .clicked()
+            {
+                let ctx = ui.ctx().clone();
+                self.start_recording(&ctx);
+            }
+            if let Some(rec) = &self.rec {
+                match rec.bound.is_some() {
+                    true => ui.weak(format!(
+                        "{} frames · {}",
+                        rec.frames.len(),
+                        human_bytes(rec.bytes())
+                    )),
+                    false => ui.weak("armed - press ▶ to start the run it takes"),
+                };
+            }
+        });
+        if let Some(msg) = &self.rec_status {
+            ui.weak(msg);
+        }
     }
 
     /// The slice transport: which view, and the frame controls for it.
