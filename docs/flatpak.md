@@ -147,9 +147,18 @@ Any Linux machine with Flatpak:
 ```text
 flatpak install flathub org.flatpak.Builder
 flatpak run org.flatpak.Builder --user --force-clean --install-deps-from=flathub \
+  --mirror-screenshots-url=https://dl.flathub.org/media --repo=repo \
   --install build flatpak/io.github.alexprotom.rust-dicom-station.yml
+ostree commit --repo=repo --canonical-permissions \
+  --branch=screenshots/x86_64 build/screenshots
 flatpak run io.github.alexprotom.rust-dicom-station
 ```
+
+`--mirror-screenshots-url` and the `ostree commit` after it are not
+cosmetic: the repository linter checks that the screenshots named in the
+metainfo were downloaded at build time and committed to the
+`screenshots/x86_64` branch, the way Flathub's own builders do it. Without
+them the linter fails with `appstream-screenshots-not-mirrored-in-ostree`.
 
 The build takes 30 to 60 minutes, most of it the release build of the
 crate. Note that the manifest builds the **tagged release**, not your
