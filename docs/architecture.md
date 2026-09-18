@@ -303,11 +303,12 @@ src/
                       cut out of egui's screenshot, resampled to the chosen
                       DPI and written as a PNG (with pHYs) or a JPEG (with
                       the JFIF density)
-    record.rs         saving a run: the playing pane taken frame by frame out
-                      of egui's own screenshot, written as an animated GIF or
-                      a numbered PNG sequence. Pure Rust, no other program;
-                      the run's clock waits for each picture, so the file
-                      holds every frame the run played
+    record.rs         saving a run: armed first, it takes the next run that
+                      starts and ends after one full cycle. The pane, frame
+                      by frame, out of egui's own screenshot, written as an
+                      animated GIF or a numbered PNG sequence. Pure Rust, no
+                      other program; the run's clock waits for each picture,
+                      so the file holds every frame the run played
     img_info.rs       the Image information module: the geometry, sampling and
                       acquisition of the displayed series (imginfo), what wants
                       a second look, and what the two datasets disagree about

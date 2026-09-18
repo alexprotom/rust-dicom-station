@@ -957,7 +957,6 @@ impl ViewerApp {
         });
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            let playing = self.play.running.is_some();
             if recording {
                 if ui
                     .button("⏹ Stop and save")
@@ -966,27 +965,27 @@ impl ViewerApp {
                 {
                     self.finish_recording(false);
                 }
-            } else if tip_widget(
-                ui,
-                playing,
-                egui::Button::new("⏺ Record the run"),
-                if playing {
-                    "Take the playing pane, frame by frame, until the run ends or the \
-                     limit above is reached. You are asked where it goes first."
-                } else {
-                    "Press ▶ somewhere first: a recording follows a run rather than \
-                     starting one"
-                },
-            ) {
+            } else if ui
+                .button("⏺ Record")
+                .on_hover_text(
+                    "Arm the recorder: you are asked where the file goes, and then the \
+                     next run you start with ▶ is taken, frame by frame, from the pane \
+                     that ▶ belongs to. It ends by itself after one full cycle.",
+                )
+                .clicked()
+            {
                 let ctx = ui.ctx().clone();
                 self.start_recording(&ctx);
             }
             if let Some(rec) = &self.rec {
-                ui.weak(format!(
-                    "{} frames · {}",
-                    rec.frames.len(),
-                    human_bytes(rec.bytes())
-                ));
+                match rec.bound.is_some() {
+                    true => ui.weak(format!(
+                        "{} frames · {}",
+                        rec.frames.len(),
+                        human_bytes(rec.bytes())
+                    )),
+                    false => ui.weak("armed - press ▶ to start the run it takes"),
+                };
             }
         });
         if let Some(msg) = &self.rec_status {

@@ -93,6 +93,12 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.9.4" date="2026-09-18">
+      <url type="details">https://github.com/alexprotom/rust-dicom-station/releases/tag/v0.9.4</url>
+    </release>
+    <release version="0.9.3" date="2026-09-17">
+      <url type="details">https://github.com/alexprotom/rust-dicom-station/releases/tag/v0.9.3</url>
+    </release>
     <release version="0.9.2" date="2026-09-16">
       <url type="details">https://github.com/alexprotom/rust-dicom-station/releases/tag/v0.9.2</url>
     </release>

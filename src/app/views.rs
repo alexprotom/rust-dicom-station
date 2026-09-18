@@ -228,9 +228,26 @@ impl ViewerApp {
         // snapshot and whatever was clicked is applied after it.
         let mut toggle: Option<(usize, PaneKind, bool)> = None;
         let mut shift: Option<(usize, usize, bool)> = None;
+        let mut reset: Option<usize> = None;
+        let standard = crate::settings::default_view_row();
         for (slot, name) in SLOT_NAMES.iter().enumerate() {
-            ui.label(egui::RichText::new(format!("Row {name}")).strong());
             let row = self.row_panes(slot);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(format!("Row {name}")).strong());
+                // Back to the three planes in the usual order, in one click:
+                // a row that has been rearranged is quicker to reset than to
+                // put right a tick and an arrow at a time.
+                if ui
+                    .add_enabled(row != standard, egui::Button::new("⟲ Reset").small())
+                    .on_hover_text(
+                        "Back to the standard row: axial, sagittal and coronal, in that \
+                         order",
+                    )
+                    .clicked()
+                {
+                    reset = Some(slot);
+                }
+            });
             // The ticked panes first, in the order the row shows them, so
             // the list reads left to right the way the row does and the
             // arrows move what they appear to move. The rest follow.
@@ -312,6 +329,10 @@ impl ViewerApp {
             } else {
                 panes.retain(|k| *k != kind);
             }
+            changed = true;
+        }
+        if let Some(slot) = reset {
+            self.view_rows[slot] = crate::settings::default_view_row();
             changed = true;
         }
         if let Some((slot, i, right)) = shift {

@@ -8,11 +8,20 @@
 //! window over on request ([`egui::ViewportCommand::Screenshot`]) and the
 //! pane's rectangle is cut out of it.
 //!
+//! **Arm first, then play.** Pressing *Record* asks where the file goes and
+//! leaves the recorder waiting; the next run that starts is the one that is
+//! recorded, and it binds to whichever pane that run's button belongs to.
+//! The recording ends by itself when the run has come back to the frame it
+//! started on - one full cycle, whether that is a loop through the slices or
+//! a bounce out and back - and otherwise when the run stops, when the frame
+//! limit is reached, or when the user says so.
+//!
 //! One image per played frame, not per repaint. The run advances on its own
 //! clock - a few frames a second - while the window repaints far more often
 //! than that, so the recorder waits for the run's own counter to move before
 //! asking for the next picture. A frame is requested on one pass and
-//! collected on the next, because that is when egui delivers it.
+//! collected on the next, because that is when egui delivers it, and the
+//! run's clock is held meanwhile so no played frame goes unrecorded.
 
 use std::path::{Path, PathBuf};
 
@@ -55,21 +64,33 @@ impl RecFormat {
     }
 }
 
-/// A run being recorded.
+/// The run a recording has latched onto, once one has started.
+pub(super) struct Bound {
+    /// It ends when this run ends.
+    pub(super) target: play::PlayTarget,
+    /// The pane, in physical pixels of the window - fixed when the run is
+    /// picked up, so every frame of a GIF is the same size even if the
+    /// window is resized halfway through.
+    pub(super) crop: [usize; 4],
+    /// Frames per second the run is playing at: the GIF's frame delay.
+    pub(super) fps: f32,
+    /// Where the run stood when the first picture was taken. Coming back to
+    /// it is a completed cycle, and that is where the recording ends.
+    pub(super) start: Option<usize>,
+    /// The run has moved off that frame, so the next time it is there again
+    /// is a return rather than the frame it began on.
+    pub(super) left: bool,
+}
+
+/// A recording: armed and waiting for a run, or taking one.
 pub(super) struct Recording {
     pub(super) format: RecFormat,
     /// Where it goes: the GIF file, or the folder the PNGs are numbered into.
     pub(super) dest: PathBuf,
-    /// The pane, in physical pixels of the window - fixed when recording
-    /// starts, so every frame of a GIF is the same size even if the window
-    /// is resized halfway through.
-    pub(super) crop: [usize; 4],
-    /// The run this recording belongs to. It ends when that run ends.
-    pub(super) target: play::PlayTarget,
+    /// `None` while it is armed and nothing is playing yet.
+    pub(super) bound: Option<Bound>,
     pub(super) frames: Vec<egui::ColorImage>,
     pub(super) max_frames: usize,
-    /// Frames per second the run is playing at: the GIF's frame delay.
-    pub(super) fps: f32,
     /// A picture has been asked for and has not come back yet.
     pub(super) pending: bool,
     /// The run's frame counter at the last picture taken, so one played
@@ -198,25 +219,41 @@ impl ViewerApp {
         }
     }
 
-    /// Arm a recording of the run in flight.
-    pub(super) fn start_recording(&mut self, ctx: &egui::Context) {
-        let Some(target) = self.play.running.map(|r| r.target) else {
-            self.rec_status = Some("Press ▶ first: a recording follows a run.".into());
-            return;
-        };
-        let Some(pane) = self.playing_pane(target) else {
-            self.rec_status = Some("That run has no pane on screen to record.".into());
-            return;
-        };
-        let Some(rect) = self
+    /// Where a run stands, in frames of its own range: the slice, the phase,
+    /// or the step of the log. Coming back to it is how a recording knows a
+    /// cycle is complete.
+    fn play_position(&self, target: play::PlayTarget) -> Option<usize> {
+        match target {
+            play::PlayTarget::Slices { slot, view } => {
+                self.slots[slot].views.get(view).map(|v| v.slice)
+            }
+            play::PlayTarget::Phases { slot } => self.current_phase(slot).map(|(at, _)| at),
+            play::PlayTarget::DoseLog { .. } => self.dose_est.cursor,
+        }
+    }
+
+    /// The pane of a run, in physical pixels of the window.
+    fn run_crop(&self, target: play::PlayTarget, ppp: f32) -> Option<[usize; 4]> {
+        let pane = self.playing_pane(target)?;
+        let rect = self
             .pane_rects
             .iter()
             .find(|(s, k, _)| (*s, *k) == pane)
-            .map(|(_, _, r)| *r)
-        else {
-            self.rec_status = Some("That pane is not on screen.".into());
-            return;
-        };
+            .map(|(_, _, r)| *r)?;
+        Some([
+            (rect.left() * ppp).round().max(0.0) as usize,
+            (rect.top() * ppp).round().max(0.0) as usize,
+            (rect.width() * ppp).round().max(1.0) as usize,
+            (rect.height() * ppp).round().max(1.0) as usize,
+        ])
+    }
+
+    /// Arm a recording: ask where it goes, and wait for a run.
+    ///
+    /// Nothing has to be playing. The next run to start is the one that is
+    /// taken, which is also what decides the pane - the button that starts
+    /// it belongs to one.
+    pub(super) fn start_recording(&mut self, _ctx: &egui::Context) {
         let dest = match self.rec_format {
             RecFormat::Gif => rfd::FileDialog::new()
                 .set_title("Save the recording")
@@ -225,55 +262,103 @@ impl ViewerApp {
             RecFormat::Pngs => Self::pick_folder("Folder for the recorded frames"),
         };
         let Some(dest) = dest else { return };
-        // Physical pixels: the screenshot is the framebuffer, and the rect
-        // is in points.
-        let ppp = ctx.pixels_per_point();
-        let crop = [
-            (rect.left() * ppp).round().max(0.0) as usize,
-            (rect.top() * ppp).round().max(0.0) as usize,
-            (rect.width() * ppp).round().max(1.0) as usize,
-            (rect.height() * ppp).round().max(1.0) as usize,
-        ];
         self.rec_status = None;
         self.rec = Some(Recording {
             format: self.rec_format,
             dest,
-            crop,
-            target,
+            bound: None,
             frames: Vec::new(),
             max_frames: self.rec_max.max(1),
-            fps: self.record_fps(target),
             pending: false,
             at: u64::MAX,
         });
     }
 
-    /// Collect the picture that was asked for, ask for the next one, and
-    /// write the file when the run ends.
+    /// Latch onto a run when one starts, collect the picture that was asked
+    /// for, ask for the next, and write the file when the cycle is done.
     pub(super) fn record_tick(
         &mut self,
         ctx: &egui::Context,
         shot: Option<&std::sync::Arc<egui::ColorImage>>,
     ) {
-        let Some(rec) = self.rec.as_mut() else { return };
-        if let Some(shot) = shot {
-            if rec.pending {
-                rec.pending = false;
-                if let Some(f) = cut(shot, rec.crop) {
-                    rec.frames.push(f);
-                }
-            }
-        }
-        let still_running = self.play.running.map(|r| r.target) == Some(rec.target);
-        let full = rec.frames.len() >= rec.max_frames;
-        if !still_running || full {
-            self.finish_recording(full);
+        if self.rec.is_none() {
             return;
         }
-        // One picture per played frame: wait for the run's counter to move.
-        if !rec.pending && rec.at != self.play.frame_no {
-            rec.at = self.play.frame_no;
-            rec.pending = true;
+        // Everything the decision needs, read before the recording is held
+        // mutably: the borrow checker, and the fact that finishing wants the
+        // whole of `self` back.
+        let ppp = ctx.pixels_per_point();
+        let running = self.play.running.map(|r| r.target);
+        let pos = running.and_then(|t| self.play_position(t));
+        let crop = running.and_then(|t| self.run_crop(t, ppp));
+        let fps = running.map(|t| self.record_fps(t));
+        let frame_no = self.play.frame_no;
+
+        let mut finish: Option<bool> = None;
+        let mut want_shot = false;
+        {
+            let Some(rec) = self.rec.as_mut() else { return };
+            if let Some(shot) = shot {
+                if rec.pending {
+                    rec.pending = false;
+                    if let Some(b) = rec.bound.as_mut() {
+                        if let Some(f) = cut(shot, b.crop) {
+                            rec.frames.push(f);
+                            // The first picture fixes where the cycle began;
+                            // after that, leaving that frame and returning to
+                            // it is one full cycle - a loop through the range
+                            // or a bounce out and back, either way.
+                            match (b.start, pos) {
+                                (None, p) => b.start = p,
+                                (Some(s), Some(p)) if p != s => b.left = true,
+                                (Some(s), Some(p)) if p == s && b.left => {
+                                    // Back where it began: the cycle is
+                                    // complete. This frame is the first one
+                                    // over again, and a GIF that loops would
+                                    // show it twice in a row, so it goes.
+                                    rec.frames.pop();
+                                    finish = Some(false);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+            match rec.bound.as_ref() {
+                // Armed: the next run that starts is the one to take.
+                None => {
+                    if let (Some(target), Some(crop), Some(fps)) = (running, crop, fps) {
+                        rec.bound = Some(Bound {
+                            target,
+                            crop,
+                            fps,
+                            start: None,
+                            left: false,
+                        });
+                        rec.at = u64::MAX;
+                    }
+                }
+                Some(b) => {
+                    if running != Some(b.target) {
+                        // The run it was taking has ended.
+                        finish = finish.or(Some(false));
+                    } else if rec.frames.len() >= rec.max_frames {
+                        finish = Some(true);
+                    }
+                }
+            }
+            if finish.is_none() && rec.bound.is_some() && !rec.pending && rec.at != frame_no {
+                rec.at = frame_no;
+                rec.pending = true;
+                want_shot = true;
+            }
+        }
+        if let Some(capped) = finish {
+            self.finish_recording(capped);
+            return;
+        }
+        if want_shot {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
             ctx.request_repaint();
         }
@@ -283,9 +368,13 @@ impl ViewerApp {
     pub(super) fn finish_recording(&mut self, capped: bool) {
         let Some(rec) = self.rec.take() else { return };
         if rec.frames.is_empty() {
-            self.rec_status = Some("Nothing was recorded: the run ended first.".into());
+            self.rec_status = Some(match rec.bound {
+                Some(_) => "Nothing was recorded: the run ended first.".into(),
+                None => "Recording cancelled before a run started.".to_string(),
+            });
             return;
         }
+        let fps = rec.bound.as_ref().map(|b| b.fps).unwrap_or(10.0);
         let n = rec.frames.len();
         let capped = if capped {
             " (the frame limit was reached)"
@@ -293,7 +382,7 @@ impl ViewerApp {
             ""
         };
         let res = match rec.format {
-            RecFormat::Gif => write_gif(&rec.dest, &rec.frames, rec.fps).map(|()| n),
+            RecFormat::Gif => write_gif(&rec.dest, &rec.frames, fps).map(|()| n),
             RecFormat::Pngs => write_pngs(&rec.dest, &rec.frames),
         };
         self.rec_status = Some(match res {

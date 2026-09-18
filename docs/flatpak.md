@@ -205,10 +205,13 @@ is. The flow is:
 
 ### Once, by hand
 
-1. Fork [flathub/flathub](https://github.com/flathub/flathub) and create a
-   branch named after the app ID.
-2. Put the four files from `flatpak/` in the root of that branch: the
-   manifest, the metainfo, the desktop entry and `cargo-sources.json`.
+1. Fork [flathub/flathub](https://github.com/flathub/flathub), keeping every
+   branch, and create a branch off `new-pr` named after the app ID.
+2. Put the five files from `flatpak/` in the root of that branch: the
+   manifest, the metainfo, the desktop entry, `cargo-sources.json` and
+   `flathub.json`. The manifest has to sit at the top level under exactly
+   the app ID as its name, which is how the two `type: file` sources next
+   to it resolve.
 3. Open a pull request against the **`new-pr`** branch (not `master`),
    filling in the template. Reviewers look at the permissions, the metainfo
    and the licensing; the `--share=network` line is the one worth
@@ -224,9 +227,14 @@ is. The flow is:
    list matches the new `Cargo.lock`.
 2. Update `tag` and `commit` in the manifest, and add a `<release>` entry to
    the metainfo.
-3. Copy the four files into the Flathub repository and push (or let
+3. Copy the five files into the Flathub repository and push (or let
    Flathub's data checker open that pull request from `x-checker-data` and
    just refresh `cargo-sources.json` in it).
+
+`flathub.json` holds one line, `"only-arches": ["x86_64"]`. Flathub builds
+x86_64 and aarch64 by default, and a failing architecture blocks the whole
+publication; nothing here has ever been built or tested on aarch64. Deleting
+that file later is all it takes to let the other one build.
 
 Nothing in the GitHub release workflow has to change; the Flatpak is built
 by Flathub, from the tag your release created.

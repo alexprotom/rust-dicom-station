@@ -117,7 +117,10 @@ carries - every kind there is, so a row can hold the three planes and the
 surface scene at once. The **◀ ▶** buttons beside each tick move that pane
 one place left or right in the row, and the list is drawn in the row's own
 order, so it reads left to right the way the row does; a newly ticked pane
-joins at the right. The choice is remembered between runs (`view_row_a` /
+joins at the right. **⟲ Reset** beside a row's heading puts that row back to
+the standard three - axial, sagittal, coronal, in that order - in one click,
+and greys out when the row is already that. The choice is remembered between
+runs (`view_row_a` /
 `view_row_b` in the settings file, which can also be edited by hand). Both
 that submenu and the **View** menu are sets of switches rather than lists of
 actions, so ticking one leaves the menu open and a whole layout can be put
@@ -334,19 +337,22 @@ The module is where the settings live.
   back. **Budget** refuses a group whose phases would need more than that,
   with the estimate shown before anything is read: ten phases of a large CT
   run to about a gigabyte.
-* **Save a run** - record what is playing. **⏺ Record the run** follows the
-  run already in flight rather than starting one of its own, so which pane
-  is recorded is decided by the button that started it: ▶3D on the sagittal
-  pane of dataset B records that pane, ▶4D on a 3D pane records the
-  surfaces. It asks where the file goes, then takes one picture per played
-  frame - the pane's own pixels, so contours, dose wash, annotations and 3D
-  surfaces are all in it - until the run ends, the limit is reached, or
-  **⏹ Stop and save** is pressed. Written as an animated **GIF** at the
-  run's own rate (pure Rust, no other program involved, and therefore 256
-  colours a frame), or as numbered **PNG frames** in a folder, which is
-  full colour and what a video tool wants as input. **At most n frames**
-  ends a recording by itself, because every frame is held in memory until
-  the run finishes and *Loop* would otherwise never stop.
+* **Save a run** - record a run as a picture sequence. **⏺ Record** arms the
+  recorder: it asks where the file goes and then waits. The next run started
+  with ▶ is the one taken, and the pane is whichever that ▶ belongs to - ▶3D
+  on the sagittal pane of dataset B records that pane, ▶4D on a 3D pane
+  records the surfaces. One picture per played frame, of the pane's own
+  pixels, so contours, dose wash, annotations and 3D surfaces are all in it;
+  the run's clock waits for each picture, so nothing the run played is
+  missing from the file. It ends by itself when the run comes back to the
+  frame it started on - one full cycle, a loop through the range or a bounce
+  out and back - and otherwise when the run stops, when the frame limit is
+  reached, or when **⏹ Stop and save** is pressed. Written as an animated
+  **GIF** at the run's own rate (pure Rust, no other program involved, and
+  therefore 256 colours a frame), or as numbered **PNG frames** in a folder,
+  which is full colour and what a video tool wants as input. **At most n
+  frames** is the backstop, because every frame is held in memory until the
+  recording finishes.
 
 Stepping between the phases of the group on display - with ⏮ ⏭, with the
 scrubber, or by clicking a phase in the data tree - keeps the view where it
