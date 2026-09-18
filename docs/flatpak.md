@@ -147,8 +147,8 @@ Any Linux machine with Flatpak:
 ```text
 flatpak install flathub org.flatpak.Builder
 flatpak run org.flatpak.Builder --user --force-clean --install-deps-from=flathub \
-  --mirror-screenshots-url=https://dl.flathub.org/media --repo=repo \
-  --install build flatpak/io.github.alexprotom.rust-dicom-station.yml
+  --mirror-screenshots-url=https://dl.flathub.org/media --compose-url-policy=full \
+  --repo=repo --install build flatpak/io.github.alexprotom.rust-dicom-station.yml
 flatpak run io.github.alexprotom.rust-dicom-station
 ```
 
@@ -159,6 +159,14 @@ own builders do it. The current builder makes that commit itself and says so
 (`Committed screenshot ref: screenshots/x86_64`). Do not commit the branch a
 second time: a commit of the wrong folder replaces the good one, and the
 linter then fails with `appstream-screenshots-files-not-found-in-ostree`.
+
+`--compose-url-policy=full` belongs with it. Left to itself the AppStream
+compose step writes the mirrored screenshots and icons as paths relative to a
+`media_baseurl` attribute on the catalogue file, and the linter reads the
+paths alone, so a build whose media really was mirrored still fails with
+`appstream-external-screenshot-url` and `appstream-remote-icon-not-mirrored`.
+With `full` every image and icon entry carries the whole URL, which is what
+the linter is looking for.
 
 Only a builder that prints no such line needs the commit by hand, and the
 folder is the one the downloads landed in:

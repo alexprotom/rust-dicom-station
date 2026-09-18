@@ -62,14 +62,20 @@ jobs:
 
       # The crates come from cargo-sources.json, so the build itself needs
       # no network.
-      # --mirror-screenshots-url makes appstream compose download the
-      # screenshots named in the metainfo and rewrite their URLs to
-      # Flathub's media server, which is what the repo linter checks for.
+      # --mirror-screenshots-url makes the AppStream compose step download
+      # the screenshots named in the metainfo and store them in the build,
+      # and --compose-url-policy=full makes it write the full mirrored URL
+      # into every screenshot and icon entry of the catalogue file instead
+      # of a path relative to a media_baseurl attribute. The repo linter
+      # reads those entries and nothing else, so without the second flag it
+      # reports appstream-external-screenshot-url and
+      # appstream-remote-icon-not-mirrored on a correctly mirrored build.
       - name: Build
         run: |
           dbus-run-session -- flatpak run org.flatpak.Builder --user \
             --force-clean --repo=repo \
             --mirror-screenshots-url=https://dl.flathub.org/media \
+            --compose-url-policy=full \
             build flatpak/io.github.alexprotom.rust-dicom-station.yml
 
       # Newer flatpak-builder commits the mirrored screenshots itself
