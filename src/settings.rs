@@ -62,10 +62,12 @@ pub enum PaneKind {
     Scene3d,
 }
 
-/// How many panes one row may show. Three fills a wide screen without any
-/// of them becoming a postage stamp; the layout would divide by more
-/// perfectly happily, but nobody reads a CT that small.
-pub const MAX_PANES: usize = 3;
+/// How many panes one row may show: every kind there is, so a row can carry
+/// the three planes and the surface scene at once. The layout would divide
+/// by more perfectly happily; what stops it is the width each pane is left
+/// with, and four across a wide screen is about where a CT stops being
+/// readable.
+pub const MAX_PANES: usize = PaneKind::ALL.len();
 
 impl PaneKind {
     /// Every kind a row can be given, in the order the tick boxes list them.
@@ -1085,10 +1087,20 @@ mod tests {
         assert_eq!(parse_view_row("axial,coronal"), vec![axial, cor]);
         // Case and spacing are the user's business, not the parser's.
         assert_eq!(parse_view_row(" Axial , CORONAL "), vec![axial, cor]);
-        // A row shows at most three panes, and a repeat is not a pane.
+        // A repeat is not a pane, and a row takes no more than MAX_PANES.
         assert_eq!(
             parse_view_row("axial,axial,sagittal,coronal,3d"),
-            vec![axial, PaneKind::Plane(ViewPlane::Sagittal), cor]
+            vec![
+                axial,
+                PaneKind::Plane(ViewPlane::Sagittal),
+                cor,
+                PaneKind::Scene3d
+            ]
+        );
+        assert_eq!(
+            parse_view_row("axial,sagittal,coronal,3d").len(),
+            MAX_PANES,
+            "a row that names every kind keeps every kind"
         );
         // The order is the user's: this is left to right on screen.
         assert_eq!(parse_view_row("3d,axial"), vec![PaneKind::Scene3d, axial]);

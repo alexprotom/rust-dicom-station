@@ -312,52 +312,6 @@ impl ViewerApp {
         resp
     }
 
-    /// A tree node whose header carries a tick box in front of the title:
-    /// the object it stands for is drawn in the views, or it is not.
-    ///
-    /// Same wrapping behaviour as [`Self::wrapped_node`]; the tick box is
-    /// part of the header row, so it reads as one line.
-    fn checked_node<R>(
-        ui: &mut egui::Ui,
-        id_salt: impl std::hash::Hash + std::fmt::Debug,
-        default_open: bool,
-        shown: &mut bool,
-        title: impl Into<String>,
-        body: impl FnOnce(&mut egui::Ui) -> R,
-    ) -> egui::Response {
-        let id = ui.make_persistent_id(id_salt);
-        let state = egui::collapsing_header::CollapsingState::load_with_default_open(
-            ui.ctx(),
-            id,
-            default_open,
-        );
-        let title = title.into();
-        let (_, header, _) = state
-            .show_header(ui, |ui| {
-                ui.checkbox(shown, "")
-                    .on_hover_text("Show this in the views");
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(title).text_style(egui::TextStyle::Button),
-                    )
-                    .wrap()
-                    .sense(egui::Sense::click()),
-                )
-            })
-            .body(body);
-        let resp = header.inner;
-        if resp.clicked() {
-            let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
-                ui.ctx(),
-                id,
-                default_open,
-            );
-            state.toggle(ui);
-            state.store(ui.ctx());
-        }
-        resp
-    }
-
     /// Study transform simulator: apply a known rigid motion + optional
     /// Gaussian deformation to a study and generate the result into the
     /// other slot (the generated study is exportable via *File ▶ Export*).
@@ -695,6 +649,7 @@ impl ViewerApp {
                     .collect()
             })
             .unwrap_or_default();
+        let badges = self.series_badges(slot);
         {
             let Some(study) = self.slots[slot].study.as_ref() else {
                 return;
@@ -705,15 +660,18 @@ impl ViewerApp {
                     continue;
                 };
                 let label = format!(
-                    "{} ({} sl.)",
+                    "{}{} ({} sl.)",
                     if s.description.is_empty() {
                         "series"
                     } else {
                         &s.description
                     },
+                    Self::name_ordinal(study, i),
                     s.files.len()
                 );
-                let resp = ui.add(egui::Button::selectable(i == active, label).wrap());
+                // What the current selection has put on this series, right
+                // where the series is named.
+                let resp = Self::badged_series_row(ui, i == active, label, &s.uid, &badges);
                 if resp.clicked() && i != active {
                     switch_to = Some(i);
                 }
@@ -792,6 +750,7 @@ impl ViewerApp {
     /// One 4D group node: the ordered members, each row switching the
     /// displayed series like an ordinary series row.
     fn fourd_node(&mut self, ui: &mut egui::Ui, slot: usize, pi: usize, si: usize, gi: usize) {
+        let badges = self.series_badges(slot);
         let Some(study) = self.slots[slot].study.as_ref() else {
             return;
         };
@@ -800,8 +759,9 @@ impl ViewerApp {
         };
         let title = format!("🎞 {}", group.name);
         let resolved = group.resolve(&study.series);
-        // (member index, series index, row label) for every surviving member.
-        let rows: Vec<(usize, usize, String)> = group
+        // (member index, series index, row label, series UID) for every
+        // surviving member.
+        let rows: Vec<(usize, usize, String, String)> = group
             .members
             .iter()
             .enumerate()
@@ -810,12 +770,18 @@ impl ViewerApp {
                 r.map(|sidx| {
                     let se = &study.series[sidx];
                     let tag = m.role.tag();
+                    let ord = Self::name_ordinal(study, sidx);
                     let label = if tag.is_empty() {
-                        format!("{} - {} ({} sl.)", m.label, se.description, se.files.len())
+                        format!(
+                            "{} - {}{ord} ({} sl.)",
+                            m.label,
+                            se.description,
+                            se.files.len()
+                        )
                     } else {
-                        format!("{tag} - {} ({} sl.)", se.description, se.files.len())
+                        format!("{tag} - {}{ord} ({} sl.)", se.description, se.files.len())
                     };
-                    (mi, sidx, label)
+                    (mi, sidx, label, se.uid.clone())
                 })
             })
             .collect();
@@ -825,10 +791,11 @@ impl ViewerApp {
         let mut switch_to = None;
         let mut fourd: Option<FourDAction> = None;
         let mut rename = None;
-        let showing = rows.iter().any(|(_, sidx, _)| *sidx == active);
+        let showing = rows.iter().any(|(_, sidx, _, _)| *sidx == active);
         let resp = Self::wrapped_node(ui, ("fourd", slot, pi, si, gi), showing, title, |ui| {
-            for (mi, sidx, label) in &rows {
-                let resp = ui.add(egui::Button::selectable(*sidx == active, label).wrap());
+            for (mi, sidx, label, uid) in &rows {
+                let resp =
+                    Self::badged_series_row(ui, *sidx == active, label.clone(), uid, &badges);
                 if resp.clicked() && *sidx != active {
                     switch_to = Some(*sidx);
                 }
@@ -1376,6 +1343,116 @@ impl ViewerApp {
     }
 
     /// The image series a set is drawn on, as a tree suffix.
+    /// An image-series row: the selectable label, and a small framed badge
+    /// for each current selection that lands on this series.
+    ///
+    /// Used by the plain series rows and by the members of a 4D group, so a
+    /// phase says what is drawn on it exactly as a lone series does.
+    fn badged_series_row(
+        ui: &mut egui::Ui,
+        selected: bool,
+        label: String,
+        uid: &str,
+        badges: &[(&'static str, Option<String>); 4],
+    ) -> egui::Response {
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            ui.horizontal(|ui| {
+                let resp = ui.add(egui::Button::selectable(selected, label).wrap());
+                for (tag, what) in badges {
+                    if what.as_deref() != Some(uid) {
+                        continue;
+                    }
+                    ui.add(
+                        egui::Button::new(egui::RichText::new(*tag).small().strong())
+                            .small()
+                            .corner_radius(2.0)
+                            .sense(egui::Sense::hover()),
+                    )
+                    .on_hover_text(Self::badge_hint(tag));
+                }
+                resp
+            })
+            .inner
+        })
+        .inner
+    }
+
+    /// Which of RTS / SEG / RTD / RTP the *selected* objects of a dataset
+    /// sit on, as series UIDs.
+    ///
+    /// The badges follow the selection, not the study: they say what the
+    /// structure set, segmentation series, dose and plan that are active
+    /// right now were drawn on or computed for, so selecting another one
+    /// moves the badge to another series. A dose reaches its images the
+    /// long way round - through its plan, then that plan's structure set -
+    /// and falls back to its frame of reference when a link of that chain
+    /// was not loaded.
+    fn series_badges(&self, slot: usize) -> [(&'static str, Option<String>); 4] {
+        let Some(study) = self.slots[slot].study.as_ref() else {
+            return [("RTS", None), ("SEG", None), ("RTD", None), ("RTP", None)];
+        };
+        let set_series = |sop: &str| -> Option<String> {
+            study
+                .structure_sets
+                .iter()
+                .find(|ss| ss.sop_instance_uid == sop)
+                .map(|ss| ss.referenced_series_uid.clone())
+                .filter(|u| !u.is_empty())
+        };
+        let rts = study
+            .structure_sets
+            .get(self.slots[slot].active_structs)
+            .map(|ss| ss.referenced_series_uid.clone())
+            .filter(|u| !u.is_empty());
+        let seg = self.slots[slot]
+            .seg_series_idx()
+            .and_then(|i| study.seg_series.get(i))
+            .map(|ser| ser.referenced_series_uid.clone())
+            .filter(|u| !u.is_empty());
+        let plan = study.plans.get(self.slots[slot].active_plan);
+        let rtp = plan.and_then(|p| set_series(&p.referenced_structset_uid));
+        let rtd = study.doses.get(self.slots[slot].active_dose).and_then(|d| {
+            study
+                .plans
+                .iter()
+                .find(|p| p.sop_instance_uid == d.referenced_plan_uid)
+                .and_then(|p| set_series(&p.referenced_structset_uid))
+            // No plan loaded, or a plan whose structure set is not here:
+            // nothing in the files says which images this grid was computed
+            // on, so nothing is claimed.
+        });
+        [("RTS", rts), ("SEG", seg), ("RTD", rtd), ("RTP", rtp)]
+    }
+
+    /// What a badge on a series row stands for.
+    fn badge_hint(tag: &str) -> &'static str {
+        match tag {
+            "RTS" => "The selected RT structure set was drawn on this series",
+            "SEG" => "The selected segmentation series belongs to this series",
+            "RTD" => "The selected dose was computed on this series",
+            _ => "The selected plan was made on this series",
+        }
+    }
+
+    /// "#N" for a series whose description another series here also carries,
+    /// counting from 0 in tree order; nothing when the name is unique.
+    ///
+    /// Two series called *CT 4DCT* are two different acquisitions, and the
+    /// tree is where one is picked: a row that cannot be told from its
+    /// neighbour is a row that cannot be picked on purpose.
+    fn name_ordinal(study: &LoadedStudy, idx: usize) -> String {
+        let Some(me) = study.series.get(idx) else {
+            return String::new();
+        };
+        let same = |o: &loader::SeriesInfo| o.description == me.description;
+        if study.series.iter().filter(|o| same(o)).count() < 2 {
+            return String::new();
+        }
+        let n = study.series.iter().take(idx).filter(|o| same(o)).count();
+        format!(" #{n}")
+    }
+
     fn series_suffix(study: &LoadedStudy, uid: &str) -> String {
         if uid.is_empty() {
             return " ▶ (any image of this frame)".to_string();
@@ -1510,10 +1587,10 @@ impl ViewerApp {
                 vis.resize(n_rois, true);
             }
             let n_vis = vis.iter().filter(|v| **v).count();
-            let title = match active_set {
-                Some(_) => format!("RT structures ({n_vis}/{n_rois})"),
-                None => format!("RT structures ({})", which.len()),
-            };
+            // The heading counts the sets this node holds; how many of a
+            // set's structures are ticked belongs on the set's own row,
+            // where it says which set it is talking about.
+            let title = format!("RT structures ({})", which.len());
             let mut add_set = false;
             Self::wrapped_node_extra(
                 ui,
@@ -1557,9 +1634,17 @@ impl ViewerApp {
                             selected,
                             structs_shown,
                             format!(
-                                "{}{name} ({} ROIs){}",
+                                "{}{name} ({}){}",
                                 if set.locked { "🔒 " } else { "" },
-                                set.rois.len(),
+                                // Ticked of all, for the set whose list is
+                                // open; a set that is not the active one has
+                                // no tick boxes of its own to count, so it
+                                // says how many structures it holds.
+                                if selected {
+                                    format!("{n_vis}/{}", set.rois.len())
+                                } else {
+                                    format!("{}", set.rois.len())
+                                },
                                 Self::series_suffix(study, &set.referenced_series_uid)
                             ),
                         );
@@ -1957,14 +2042,9 @@ impl ViewerApp {
             let series = &study.seg_series;
             let active_seg = me.slots[slot].active_seg;
             let n_vis = rows.iter().filter(|r| r.2).count();
-            let n_segs = active_here
-                .and_then(|i| series.get(i))
-                .map(|s| s.segs.len())
-                .unwrap_or(0);
-            let title = match active_here {
-                Some(_) => format!("Segmentations ({n_vis}/{n_segs})"),
-                None => format!("Segmentations ({})", which.len()),
-            };
+            // As above: the heading counts the series, the row counts the
+            // segments of the series it names.
+            let title = format!("Segmentations ({})", which.len());
             let mut add_series = false;
             Self::wrapped_node_extra(
                 ui,
@@ -2003,9 +2083,13 @@ impl ViewerApp {
                             selected,
                             segs_shown,
                             format!(
-                                "{} ({} segments){}",
+                                "{} ({}){}",
                                 sr.label,
-                                sr.segs.len(),
+                                if selected {
+                                    format!("{n_vis}/{}", sr.segs.len())
+                                } else {
+                                    format!("{}", sr.segs.len())
+                                },
                                 Self::series_suffix(study, &sr.referenced_series_uid)
                             ),
                         );
@@ -2198,9 +2282,9 @@ impl ViewerApp {
         }
         let mut rename: Option<RenameTarget> = None;
         let mut remove: Option<ObjRef> = None;
-        // The views draw one dose grid at a time, so the tick boxes work as
-        // a set of one: ticking a grid shows it and unticks the others,
-        // unticking takes dose off the images altogether.
+        // The views draw one dose grid at a time, so the rows work the way
+        // the structure sets' do: clicking another grid makes it the drawn
+        // one, clicking the drawn grid takes dose off the images.
         let mut shown_dose: Option<Option<usize>> = None;
         let dose_on = self.dose_mode != DoseMode::Off;
         {
@@ -2222,18 +2306,30 @@ impl ViewerApp {
                 |ui| {
                     for &i in which {
                         let Some(d) = doses.get(i) else { continue };
-                        let mut on = dose_on && i == picked;
-                        let resp = ui.checkbox(&mut on, d.label.clone());
-                        if resp.changed() {
-                            shown_dose = Some(on.then_some(i));
-                            if on {
+                        let selected = i == picked;
+                        let resp = Self::series_row(
+                            ui,
+                            selected,
+                            dose_on,
+                            format!(
+                                "{}{}",
+                                d.label,
+                                Self::plan_suffix(plans, &d.referenced_plan_uid)
+                            ),
+                        );
+                        if resp.clicked() {
+                            // Clicking the drawn grid takes dose off the
+                            // images; clicking any other draws that one.
+                            if selected {
+                                shown_dose = Some((!dose_on).then_some(i));
+                            } else {
                                 picked = i;
+                                shown_dose = Some(Some(i));
                             }
-                        } else if resp.clicked() {
-                            picked = i;
                         }
                         resp.on_hover_text(format!(
-                            "{}  max {:.2} {}\nright-click: rename or remove",
+                            "{}  max {:.2} {}\nclick: draw this grid, or take dose off \
+                             the images\nright-click: rename or remove",
                             d.summation_type,
                             d.max_dose,
                             d.units.to_lowercase()
@@ -2261,22 +2357,6 @@ impl ViewerApp {
                         d.max_dose,
                         d.units.to_lowercase()
                     ));
-                    // DICOM cross-reference: which plan this dose belongs to.
-                    if !d.referenced_plan_uid.is_empty() {
-                        if let Some(p) = plans
-                            .iter()
-                            .find(|p| p.sop_instance_uid == d.referenced_plan_uid)
-                        {
-                            ui.weak(format!(
-                                "▶ plan {}",
-                                if p.label.is_empty() {
-                                    "unnamed"
-                                } else {
-                                    &p.label
-                                }
-                            ));
-                        }
-                    }
                     ui.horizontal(|ui| {
                         ui.label("Reference");
                         ui.add(
@@ -2372,40 +2452,78 @@ impl ViewerApp {
         }
         let mut rename: Option<RenameTarget> = None;
         let mut remove: Option<ObjRef> = None;
-        // One flag per plan, defaulting to shown: what is drawn from a plan
-        // is its isocenters, and a plan the user has unticked keeps them out
-        // of the views.
-        let n_plans = self.slots[slot]
-            .study
-            .as_ref()
-            .map(|s| s.plans.len())
-            .unwrap_or(0);
-        let mut visible = std::mem::take(&mut self.slots[slot].plan_visible);
-        visible.resize(n_plans, true);
+        let mut new_active: Option<usize> = None;
+        let mut new_shown: Option<bool> = None;
         {
             let Some(study) = &self.slots[slot].study else {
-                self.slots[slot].plan_visible = visible;
                 return;
             };
-            for &pi in which {
-                let Some(plan) = study.plans.get(pi) else {
-                    continue;
-                };
-                let mut shown = visible.get(pi).copied().unwrap_or(true);
-                let plan_hdr = Self::checked_node(
-                    ui,
-                    ("plan", slot, pat, stu, pi),
-                    false,
-                    &mut shown,
-                    format!(
-                        "Plan: {}",
-                        if plan.label.is_empty() {
-                            "unnamed"
-                        } else {
-                            &plan.label
+            // Like the structure sets: the plan this study node holds counts
+            // as the active one only when the node really holds it.
+            let active_plan = which
+                .contains(&self.slots[slot].active_plan)
+                .then(|| self.slots[slot].active_plan);
+            let shown = self.slots[slot].plans_shown;
+            Self::wrapped_node(
+                ui,
+                ("plans", slot, pat, stu),
+                false,
+                format!("Plans ({})", which.len()),
+                |ui| {
+                    for &pi in which {
+                        let Some(plan) = study.plans.get(pi) else {
+                            continue;
+                        };
+                        let selected = active_plan == Some(pi);
+                        let resp = Self::series_row(
+                            ui,
+                            selected,
+                            shown,
+                            format!(
+                                "{}{}",
+                                if plan.label.is_empty() {
+                                    "unnamed"
+                                } else {
+                                    &plan.label
+                                },
+                                Self::structset_suffix(study, &plan.referenced_structset_uid)
+                            ),
+                        );
+                        if resp.clicked() {
+                            // Clicking the shown plan hides its isocenters;
+                            // clicking any other makes it the shown one.
+                            if selected {
+                                new_shown = Some(!shown);
+                            } else {
+                                new_active = Some(pi);
+                                new_shown = Some(true);
+                            }
                         }
-                    ),
-                    |ui| {
+                        resp.on_hover_text(
+                            "click: draw this plan's isocenters, or take them off the \
+                             views\nright-click: rename or remove",
+                        )
+                        .context_menu(|ui| {
+                            if ui.button("✏ Rename").clicked() {
+                                rename = Some(RenameTarget::Plan { slot, idx: pi });
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("🗑 Remove").clicked() {
+                                remove = Some(ObjRef {
+                                    slot,
+                                    kind: ObjKind::Plan,
+                                    idx: pi,
+                                });
+                                ui.close();
+                            }
+                        });
+                        // What a plan is made of sits under *that* plan, not
+                        // at the end of the list - the same place a set's
+                        // structures are listed.
+                        if !selected {
+                            continue;
+                        }
                         if !plan.name.is_empty() && plan.name != plan.label {
                             ui.weak(format!("Name: {}", plan.name));
                         }
@@ -2420,24 +2538,6 @@ impl ViewerApp {
                         }
                         if !plan.date.is_empty() {
                             ui.weak(format!("Date: {}", plan.date));
-                        }
-                        // DICOM cross-reference: the structure set the plan was
-                        // created on.
-                        if !plan.referenced_structset_uid.is_empty() {
-                            if let Some(ss) = study
-                                .structure_sets
-                                .iter()
-                                .find(|s| s.sop_instance_uid == plan.referenced_structset_uid)
-                            {
-                                ui.weak(format!(
-                                    "▶ structures {}",
-                                    if ss.label.is_empty() {
-                                        &ss.file_name
-                                    } else {
-                                        &ss.label
-                                    }
-                                ));
-                            }
                         }
                         if !plan.beams.is_empty() {
                             egui::Grid::new(("beam_grid", slot, pat, stu, pi))
@@ -2501,35 +2601,66 @@ impl ViewerApp {
                                     }
                                 });
                         }
-                    },
-                );
-                if let Some(flag) = visible.get_mut(pi) {
-                    *flag = shown;
-                }
-                plan_hdr.context_menu(|ui| {
-                    if ui.button("✏ Rename").clicked() {
-                        rename = Some(RenameTarget::Plan { slot, idx: pi });
-                        ui.close();
                     }
-                    ui.separator();
-                    if ui.button("🗑 Remove").clicked() {
-                        remove = Some(ObjRef {
-                            slot,
-                            kind: ObjKind::Plan,
-                            idx: pi,
-                        });
-                        ui.close();
-                    }
-                });
-            }
+                },
+            );
         }
-        self.slots[slot].plan_visible = visible;
+        if let Some(pi) = new_active {
+            self.slots[slot].active_plan = pi;
+        }
+        if let Some(on) = new_shown {
+            self.slots[slot].plans_shown = on;
+        }
         if rename.is_some() {
             self.rename_request = rename;
         }
         if remove.is_some() {
             self.obj_remove = remove;
         }
+    }
+
+    /// " ▶ plan NAME" for the plan a dose was computed for.
+    fn plan_suffix(plans: &[crate::rtplan::PlanInfo], sop: &str) -> String {
+        if sop.is_empty() {
+            return String::new();
+        }
+        plans
+            .iter()
+            .find(|p| p.sop_instance_uid == sop)
+            .map(|p| {
+                format!(
+                    " ▶ plan {}",
+                    if p.label.is_empty() {
+                        "unnamed"
+                    } else {
+                        &p.label
+                    }
+                )
+            })
+            .unwrap_or_else(|| " ▶ (plan not loaded)".to_string())
+    }
+
+    /// " ▶ structures NAME" for the set a plan was made on, or a word about
+    /// why there is none - the counterpart of [`Self::series_suffix`].
+    fn structset_suffix(study: &LoadedStudy, sop: &str) -> String {
+        if sop.is_empty() {
+            return String::new();
+        }
+        study
+            .structure_sets
+            .iter()
+            .find(|s| s.sop_instance_uid == sop)
+            .map(|ss| {
+                format!(
+                    " ▶ {}",
+                    if ss.label.is_empty() {
+                        &ss.file_name
+                    } else {
+                        &ss.label
+                    }
+                )
+            })
+            .unwrap_or_else(|| " ▶ (structure set not loaded)".to_string())
     }
 
     /// DX / CR / RTIMAGE planar images: list with per-image viewer windows.

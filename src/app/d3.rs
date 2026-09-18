@@ -1029,6 +1029,7 @@ impl ViewerApp {
         }
         if acts.play {
             let now = ui.input(|i| i.time);
+            self.play.from_pane = Some((slot, PaneKind::Scene3d));
             self.toggle_play(play::PlayTarget::Phases { slot }, now);
         }
         if acts.maximize {

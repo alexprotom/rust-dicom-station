@@ -1,4 +1,4 @@
-# DICOM export, model manager, anonymizer and test-data generator
+# DICOM export, pictures of the views, model manager, anonymizer and test data
 
 The *Tools* menu also holds the three segmentation engines - see
 [auto-segmentation.md](auto-segmentation.md), [segvol.md](segvol.md) and
@@ -121,6 +121,41 @@ where they are - use *📤 Send dataset* in the [patient archive](pacs.md)
 window instead. The exports round-trip through this viewer and pydicom; they
 are QA/research objects, not guaranteed-complete clinical IODs.
 
+## Saving a picture of the views
+
+*File ▸ 💾 Save image* writes what the central area shows as a **PNG** or a
+**JPEG**: one dataset's row, or both rows together. The picture is the row's
+own pixels - the panes as laid out, with their contours, dose wash,
+crosshair, orientation labels, slice counters and 3D surfaces - so what the
+figure shows is what was on the screen. The dialog closes itself before the
+picture is taken, so it is never in its own figure.
+
+**Resolution.** egui draws into the window's framebuffer and nothing else, so
+a pane cannot be re-rendered larger for one frame; the capture is at screen
+resolution whatever is asked for. The **DPI** field therefore does two things,
+and the dialog says as much:
+
+* it is written into the file - the `pHYs` chunk of a PNG, the JFIF density of
+  a JPEG - so Word, LaTeX or InDesign place the figure at its intended
+  physical size instead of guessing at 96 DPI;
+* the image is resampled to match (Lanczos), so the placed figure is not a
+  handful of pixels stretched by the layout program's own filter.
+
+The reference is 96 pixels to the inch on the display's own scale: a row 600
+points wide is 6.25 inches of figure, which is 1875 pixels at 300 DPI. A
+window already drawing two pixels to the point has half of that in hand
+before anything is resampled, and the factor accounts for it. The dialog
+shows the pixel size and the printed size before anything is written, and
+says by how much it is enlarging - resampling makes a figure the right size,
+it does not add detail that was never rendered. 150, 300 and 600 are one
+click each; 300 is the default because that is what a journal asks for.
+
+**PNG or JPEG.** PNG is lossless and is what a figure of an image with
+contour lines and text on it should be. JPEG is smaller and lossy, and its
+compression rings exactly the high-contrast edges a contour and a slice
+counter are made of; its quality is adjustable, and it is there for a quick
+look rather than for publication.
+
 ## Model manager
 
 Each segmentation engine downloads its weights on first use; *Tools ▶ 📦
@@ -190,7 +225,7 @@ rewritten (UID remapping and private-tag removal do recurse).
 
 ## Synthetic test-data generator
 
-*File ▶ 📐 Generate test data…* (also offered on the empty start screen) writes
+*Tools ▶ 📐 Generate test data* (also offered on the empty start screen) writes
 a complete, analytically known RT study into `test_data/` next to the
 executable and loads it straight away - no Python, no external tooling:
 
