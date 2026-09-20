@@ -420,6 +420,21 @@ jobs:
     secrets: inherit
 
   # ==========================================================================
+  # Android
+  # ==========================================================================
+  # android.yml builds the arm64-v8a APK and returns it as the `android-apk`
+  # artifact, signed with the release key when the ANDROID_KEYSTORE_*
+  # secrets are set and with a debug key otherwise (docs/android.md). The
+  # GitHub Release waits for it, like for Windows and Linux.
+  android:
+    name: Android
+    needs: version
+    uses: ./.github/workflows/android.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+    secrets: inherit
+
+  # ==========================================================================
   # Create GitHub Release
   # ==========================================================================
   release:
@@ -428,6 +443,7 @@ jobs:
       - version
       - windows
       - linux
+      - android
 
     runs-on: ubuntu-latest
 
@@ -445,6 +461,12 @@ jobs:
         uses: actions/download-artifact@v5
         with:
           name: linux-release
+          path: release
+
+      - name: Download Android artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: android-apk
           path: release
 
       - name: Download winget manifests
@@ -476,6 +498,7 @@ jobs:
           sha256sum \
             rust-dicom-station-*.exe \
             rust-dicom-station-*.AppImage \
+            rust-dicom-station-*.apk \
             > SHA256SUMS
 
           cat SHA256SUMS

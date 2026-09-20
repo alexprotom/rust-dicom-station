@@ -38,6 +38,8 @@ use crate::simulate::{self, SimParams};
 use crate::volume::{ViewPlane, Volume};
 use crate::workflow;
 
+use pick::{CSV_FILES, PROTOCOL_FILES};
+
 mod auto_tools;
 mod body_win;
 mod box_seg;
@@ -63,6 +65,7 @@ mod motion_results;
 mod motion_win;
 mod pacs_win;
 mod panels;
+mod pick;
 mod planar;
 mod play;
 mod poi;
@@ -1621,6 +1624,9 @@ pub struct ViewerApp {
     /// be written (e.g. a read-only installation folder).
     settings_error: Option<String>,
     home_content_height: f32,
+    /// The file dialog in flight, where the platform has no native one
+    /// (see `pick.rs`); never anything on the desktop.
+    picker: pick::Picker,
 }
 
 /// Last few characters of a UID for compact display.
@@ -1924,6 +1930,7 @@ impl ViewerApp {
                 .as_ref()
                 .map(|r| crate::gfx::Backend::from_wgpu(r.adapter.get_info().backend)),
             settings_error: None,
+            picker: pick::Picker::default(),
         };
         if let Some(p) = initial_a {
             app.start_load(0, p);
@@ -2071,32 +2078,6 @@ impl ViewerApp {
             self.maximized = None;
         }
         self.clear_registration();
-    }
-
-    pub(super) fn pick_folder(title: &str) -> Option<PathBuf> {
-        rfd::FileDialog::new().set_title(title).pick_folder()
-    }
-
-    /// Pick one or more DICOM files.
-    ///
-    /// **No name filter at all**, deliberately. A DICOM file is one whose
-    /// header parses, which is a question only [`crate::loader`] can answer
-    /// and the file name never can: real archives are full of `IM_0001`,
-    /// `I0000001`, `0001.DCM`, `image.ima` and `1.2.840...` in every mixture
-    /// of upper and lower case, and plenty with no extension whatsoever.
-    ///
-    /// An extension filter here can only ever hide such a file from the
-    /// person trying to open it, and it also decides what the platform
-    /// dialog does with the name afterwards - the file-type list is what
-    /// carries the "default extension" a dialog may append to what comes
-    /// back. Neither is worth a convenience nobody asked for: the dialog
-    /// lists everything, and the loader says what was and was not DICOM,
-    /// which it has to do anyway for the files that did parse.
-    pub(super) fn pick_files(title: &str) -> Option<Vec<PathBuf>> {
-        rfd::FileDialog::new()
-            .set_title(title)
-            .pick_files()
-            .filter(|v| !v.is_empty())
     }
 }
 

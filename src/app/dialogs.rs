@@ -42,6 +42,7 @@ impl ViewerApp {
         self.transfer_window(ctx);
         self.compare_window(ctx);
         self.autoseg_result_window(ctx);
+        self.picker_window(ctx);
         if let Some(msg) = self.notice.clone() {
             egui::Window::new("Done")
                 .collapsible(false)
@@ -170,9 +171,9 @@ impl ViewerApp {
             }
         }
         if browse {
-            if let Some(dir) = Self::pick_folder("Model folder") {
-                self.models_dir = dir.display().to_string();
-            }
+            self.ask_folder("Model folder", |app, dir| {
+                app.models_dir = dir.display().to_string();
+            });
         }
         cancel_if(cancel, &self.autoseg_job);
         if run {
@@ -415,9 +416,9 @@ impl ViewerApp {
 
         self.gen_open = open;
         if browse {
-            if let Some(dir) = Self::pick_folder("Select an output folder for the test data") {
-                self.gen_dir = dir.display().to_string();
-            }
+            self.ask_folder("Select an output folder for the test data", |app, dir| {
+                app.gen_dir = dir.display().to_string();
+            });
         }
         if reset_dir {
             self.gen_dir = gen_test_data::default_output_dir().display().to_string();
@@ -680,14 +681,14 @@ impl ViewerApp {
         }
         self.anon_open = open;
         if browse_in {
-            if let Some(dir) = Self::pick_folder("Select a DICOM folder to anonymize") {
-                self.anon_dir = dir.display().to_string();
-            }
+            self.ask_folder("Select a DICOM folder to anonymize", |app, dir| {
+                app.anon_dir = dir.display().to_string();
+            });
         }
         if browse_out {
-            if let Some(dir) = Self::pick_folder("Select the output folder") {
-                self.anon_out = dir.display().to_string();
-            }
+            self.ask_folder("Select the output folder", |app, dir| {
+                app.anon_out = dir.display().to_string();
+            });
         }
         if do_scan {
             self.anon_start_scan();

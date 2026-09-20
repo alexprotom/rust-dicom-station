@@ -529,26 +529,26 @@ impl ViewerApp {
         });
 
         if open_a {
-            if let Some(dir) = Self::pick_folder("Select DICOM folder to add to dataset A") {
-                self.start_load(0, dir);
-            }
+            self.ask_folder("Select DICOM folder to add to dataset A", |app, dir| {
+                app.start_load(0, dir);
+            });
         }
         if open_b {
-            if let Some(dir) = Self::pick_folder("Select DICOM folder to add to dataset B") {
-                self.comparison = true;
-                self.start_load(1, dir);
-            }
+            self.ask_folder("Select DICOM folder to add to dataset B", |app, dir| {
+                app.comparison = true;
+                app.start_load(1, dir);
+            });
         }
         if files_a {
-            if let Some(paths) = Self::pick_files("Select DICOM file(s) to add to dataset A") {
-                self.start_load_files(0, paths);
-            }
+            self.ask_files("Select DICOM file(s) to add to dataset A", |app, paths| {
+                app.start_load_files(0, paths);
+            });
         }
         if files_b {
-            if let Some(paths) = Self::pick_files("Select DICOM file(s) to add to dataset B") {
-                self.comparison = true;
-                self.start_load_files(1, paths);
-            }
+            self.ask_files("Select DICOM file(s) to add to dataset B", |app, paths| {
+                app.comparison = true;
+                app.start_load_files(1, paths);
+            });
         }
         if close_b {
             self.close_comparison();

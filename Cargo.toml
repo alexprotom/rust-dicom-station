@@ -1,6 +1,6 @@
 [package]
 name = "rust-dicom-station"
-version = "0.9.4"
+version = "0.9.5"
 edition = "2021"
 description = "Fast, robust DICOM / RT DICOM viewer in pure Rust (CT/MR volumes, RTSTRUCT, RTDOSE, RTPLAN) with a three-view MPR layout"
 license = "MIT"
@@ -13,7 +13,6 @@ dicom-dictionary-std = "0.10"
 dicom-object = "0.10"
 dicom-pixeldata = { version = "0.10", features = ["native", "rayon"] }
 dicom-transfer-syntax-registry = "0.10"  # read data sets that carry no file meta group (see dicomfile.rs)
-eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "links", "wgpu", "wayland", "x11"] }
 # `gif` and `jpeg` alongside `png`: the playback recorder writes an animated
 # GIF and *File ▸ Save image* writes a JPEG. Both encoders are pure Rust like
 # everything else here (see app/record.rs and app/snapshot.rs).
@@ -23,15 +22,12 @@ image = { version = "0.25", default-features = false, features = ["png", "gif", 
 png = "0.18"
 egui = "0.36"
 rayon = "1.12"
-rfd = "0.17"
 walkdir = "2.5"
+
 # ---- auto-segmentation (TotalSegmentator re-implementation, pure Rust) ----
 gemm = "0.18"                       # pure-Rust SIMD GEMM kernels (CPU conv engine)
 serde_json = "1"                    # nnU-Net plans.json, CLIP vocab.json
 zip = { version = "2", default-features = false, features = ["deflate"] }
-# weight download - rustls (pure Rust TLS) with the OS trust store, so
-# corporate/clinical TLS-inspection proxies with custom CAs work
-ureq = { version = "2", features = ["native-certs"] }
 safetensors = "0.8"                 # converted-weight cache format
 # Neural-network backend. Always compiled: the MedSAM2 engine is written once
 # against a `burn` backend and falls back to the pure-Rust `ndarray` one when
@@ -49,6 +45,27 @@ tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros
 serde = { version = "1", optional = true, features = ["derive"] }
 schemars = { version = "1", optional = true }
 toml = { version = "1", optional = true, default-features = false, features = ["parse", "serde", "std"] }
+
+# ---- the desktop window stack (Windows, Linux, macOS) ----
+# The Android build (see `android/`) is the same library behind a different
+# entry point, so the three things that differ are keyed by target here and
+# the code stays one: the window library's activity glue, the file dialog
+# (`rfd` has no Android backend; `app/pick.rs` draws one in egui there), and
+# the TLS trust store for the weight download (Android has no store that
+# `rustls-native-certs` can read, so the bundled Mozilla roots are used).
+[target.'cfg(not(target_os = "android"))'.dependencies]
+eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "links", "wgpu", "wayland", "x11"] }
+rfd = "0.17"
+# weight download - rustls (pure Rust TLS) with the OS trust store, so
+# corporate/clinical TLS-inspection proxies with custom CAs work
+ureq = { version = "2", features = ["native-certs"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# `android-native-activity`: the activity is Android's own `NativeActivity`,
+# so the package needs no Java or Kotlin. `accesskit` is only offered with
+# the GameActivity glue and is left out here.
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "links", "wgpu", "android-native-activity"] }
+ureq = { version = "2" }
 
 # The Windows executable's icon resource (see `build.rs`). Host-gated: on a
 # Linux or macOS build the crate is never fetched and the script is a no-op.

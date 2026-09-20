@@ -1058,16 +1058,16 @@ impl ViewerApp {
             } else {
                 rows_csv(&metrics, &d.units, &d.rows)
             };
-            if let Some(path) = rfd::FileDialog::new()
-                .set_title("Save the dose estimation table")
-                .set_file_name("dose_estimation.csv")
-                .save_file()
-            {
-                match std::fs::write(&path, text) {
-                    Ok(()) => self.notice = Some(format!("Written to {}", path.display())),
-                    Err(e) => self.error = Some(format!("Could not write the file: {e}")),
-                }
-            }
+            self.ask_save(
+                "Save the dose estimation table",
+                "dose_estimation.csv",
+                None,
+                None,
+                move |app, path| match std::fs::write(&path, text) {
+                    Ok(()) => app.notice = Some(format!("Written to {}", path.display())),
+                    Err(e) => app.error = Some(format!("Could not write the file: {e}")),
+                },
+            );
         }
         if self.dose_est_job.is_some() {
             ui.ctx().request_repaint();

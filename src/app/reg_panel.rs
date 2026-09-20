@@ -1294,14 +1294,25 @@ impl ViewerApp {
             return;
         };
         let fixed = reg.fixed_slot;
-        let (Some(f), Some(m)) = (&self.slots[fixed].study, &self.slots[1 - fixed].study) else {
+        if self.slots[fixed].study.is_none() || self.slots[1 - fixed].study.is_none() {
+            return;
+        }
+        self.ask_save(
+            "Save the deformation field as DICOM",
+            "deformable_registration.dcm",
+            None,
+            None,
+            |app, path| app.write_vector_field(&path),
+        );
+    }
+
+    /// The writing half of [`Self::save_vector_field`], once there is a path.
+    fn write_vector_field(&mut self, path: &std::path::Path) {
+        let Some(reg) = &self.registration else {
             return;
         };
-        let Some(path) = rfd::FileDialog::new()
-            .set_title("Save the deformation field as DICOM")
-            .set_file_name("deformable_registration.dcm")
-            .save_file()
-        else {
+        let fixed = reg.fixed_slot;
+        let (Some(f), Some(m)) = (&self.slots[fixed].study, &self.slots[1 - fixed].study) else {
             return;
         };
         // The registration belongs in the fixed dataset's study when there
@@ -1324,7 +1335,7 @@ impl ViewerApp {
                 reg.result.transform.warp.describe()
             ),
         };
-        match dicom_export::write_deformable_registration(&path, &reg.field, &meta) {
+        match dicom_export::write_deformable_registration(path, &reg.field, &meta) {
             Ok(()) => {
                 self.error = Some(format!("✔ Deformation field written to {}", path.display()))
             }
