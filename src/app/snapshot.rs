@@ -373,29 +373,32 @@ impl ViewerApp {
             ImgWhat::Row(s) => format!("view_{}.{}", SLOT_NAMES[s.min(1)], d.format.ext()),
             ImgWhat::Both => format!("view_AB.{}", d.format.ext()),
         };
-        let Some(dest) = rfd::FileDialog::new()
-            .set_title("Save the image")
-            .set_file_name(&name)
-            .save_file()
-        else {
-            return Ok(false);
-        };
-        self.snap = Some(PendingShot {
-            crop: [
-                (rect.left() * ppp).round().max(0.0) as usize,
-                (rect.top() * ppp).round().max(0.0) as usize,
-                (rect.width() * ppp).round().max(1.0) as usize,
-                (rect.height() * ppp).round().max(1.0) as usize,
-            ],
-            dest,
-            format: d.format,
-            dpi: d.dpi,
-            quality: d.quality,
-            // One pass for the dialog to leave the screen.
-            wait: 1,
-            asked: false,
+        let crop = [
+            (rect.left() * ppp).round().max(0.0) as usize,
+            (rect.top() * ppp).round().max(0.0) as usize,
+            (rect.width() * ppp).round().max(1.0) as usize,
+            (rect.height() * ppp).round().max(1.0) as usize,
+        ];
+        let (format, dpi, quality) = (d.format, d.dpi, d.quality);
+        self.ask_save("Save the image", name, None, None, move |app, dest| {
+            app.snap = Some(PendingShot {
+                crop,
+                dest,
+                format,
+                dpi,
+                quality,
+                // One pass for the dialog to leave the screen.
+                wait: 1,
+                asked: false,
+            });
+            // Where the dialog outlived the file browser (Android), it has
+            // been put back in the meantime and would be in its own picture:
+            // close it the way the caller does when the answer is immediate.
+            if let Some(d) = app.save_img.take() {
+                app.snap_status = d.status;
+            }
         });
-        Ok(true)
+        Ok(self.snap.is_some())
     }
 
     /// Ask for the queued picture, and write it when it arrives.

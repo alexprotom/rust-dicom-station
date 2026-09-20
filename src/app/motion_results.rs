@@ -537,16 +537,16 @@ impl ViewerApp {
                 .map(|c| if c.is_alphanumeric() { c } else { '_' })
                 .collect::<String>()
         );
-        if let Some(path) = rfd::FileDialog::new()
-            .set_file_name(&name)
-            .add_filter("CSV", &["csv"])
-            .save_file()
-        {
-            match std::fs::write(&path, csv) {
-                Ok(()) => self.notice = Some(format!("✔ report written to {}", path.display())),
-                Err(e) => self.error = Some(format!("CSV export: {e}")),
-            }
-        }
+        self.ask_save(
+            "",
+            name,
+            None,
+            Some(CSV_FILES),
+            move |app, path| match std::fs::write(&path, csv) {
+                Ok(()) => app.notice = Some(format!("✔ report written to {}", path.display())),
+                Err(e) => app.error = Some(format!("CSV export: {e}")),
+            },
+        );
     }
 }
 

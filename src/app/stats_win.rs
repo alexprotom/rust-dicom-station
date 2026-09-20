@@ -617,16 +617,17 @@ impl ViewerApp {
                 .as_ref()
                 .map(|d| Self::stats_csv(&d.rows))
                 .unwrap_or_default();
-            if let Some(path) = rfd::FileDialog::new()
-                .set_title("Save the structure table")
-                .add_filter("CSV", &["csv"])
-                .set_file_name("structure_details.csv")
-                .save_file()
-            {
-                if let Err(e) = std::fs::write(&path, csv) {
-                    self.error = Some(format!("Could not write {}: {e}", path.display()));
-                }
-            }
+            self.ask_save(
+                "Save the structure table",
+                "structure_details.csv",
+                None,
+                Some(CSV_FILES),
+                move |app, path| {
+                    if let Err(e) = std::fs::write(&path, csv) {
+                        app.error = Some(format!("Could not write {}: {e}", path.display()));
+                    }
+                },
+            );
         }
         if close || !open {
             self.stats_dialog = None;

@@ -341,7 +341,18 @@ pub fn snap_env() -> Option<SnapEnv> {
 ///
 /// macOS:
 ///   ~/Library/Application Support/RustDICOMStation
+///
+/// Android:
+///   the app's private files folder, as handed over by the activity
+///   (see [`android::set_dirs`])
 pub fn config_dir() -> PathBuf {
+    #[cfg(target_os = "android")]
+    {
+        if let Some(dir) = android::config_dir() {
+            return dir;
+        }
+    }
+
     #[cfg(target_os = "linux")]
     {
         if let Some(snap) = snap_env() {
@@ -394,7 +405,18 @@ pub fn config_dir() -> PathBuf {
 ///
 /// macOS:
 ///   ~/Library/Application Support/RustDICOMStation
+///
+/// Android:
+///   the app's folder on the shared storage
+///   (`Android/data/<package>/files`, see [`android::set_dirs`])
 pub fn data_dir() -> PathBuf {
+    #[cfg(target_os = "android")]
+    {
+        if let Some(dir) = android::data_dir() {
+            return dir;
+        }
+    }
+
     #[cfg(target_os = "linux")]
     {
         if let Some(snap) = snap_env() {
@@ -450,9 +472,37 @@ pub fn default_models_dir() -> PathBuf {
     data_dir().join("models")
 }
 
+/// Android has no home folder and no environment variable for the app's
+/// storage: the activity hands the two folders over at start-up, and the
+/// Android entry point (`android/src/lib.rs`) stores them here before
+/// anything reads a setting. Both are private to the app: the first is
+/// file-encrypted internal storage (settings), the second the app's folder
+/// on the shared storage (models, archive), which needs no permission and
+/// is removed with the app.
+#[cfg(target_os = "android")]
+pub mod android {
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
+
+    static DIRS: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
+
+    /// Record the folders. The first call wins; later ones are ignored.
+    pub fn set_dirs(config: PathBuf, data: PathBuf) {
+        let _ = DIRS.set((config, data));
+    }
+
+    pub(super) fn config_dir() -> Option<PathBuf> {
+        DIRS.get().map(|(c, _)| c.clone())
+    }
+
+    pub(super) fn data_dir() -> Option<PathBuf> {
+        DIRS.get().map(|(_, d)| d.clone())
+    }
+}
+
 /// Best-effort home directory lookup used only as a fallback for platforms
 /// where the relevant standard environment variable is not available.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "android")))]
 fn home_dir() -> Option<PathBuf> {
     {
         std::env::var_os("HOME").map(PathBuf::from)

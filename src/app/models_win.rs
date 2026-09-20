@@ -260,11 +260,11 @@ impl ViewerApp {
         self.models_scan = scan;
 
         if browse {
-            if let Some(dir) = Self::pick_folder("Model folder") {
-                self.models_dir = dir.display().to_string();
-                self.persist_settings();
-                self.models_scan.clear();
-            }
+            self.ask_folder("Model folder", |app, dir| {
+                app.models_dir = dir.display().to_string();
+                app.persist_settings();
+                app.models_scan.clear();
+            });
         }
         cancel_if(cancel, &self.models_job);
         if let Some(act) = action {

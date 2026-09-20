@@ -21,9 +21,14 @@
 //! * **Titles follow one pattern**, [`window_title`]: `Rust DICOM Station:`
 //!   and the tool's name, so a task bar full of them reads as one program.
 //!
-//! If a backend cannot make native windows at all (there is none such on the
-//! desktop, but egui allows it), egui falls back on its own and draws the
-//! contents in a window inside the main one; nothing here has to care.
+//! If a backend cannot make native windows at all - Android is one, with
+//! its single window per process - the tool is drawn as an [`egui::Window`]
+//! inside the main one instead ([`embedded_window`]), with egui's own title
+//! bar and close button. egui would embed the viewport by itself, but
+//! without a way to close it: the viewport path learns of a close from the
+//! native window's button, which the embedded copy does not have. The
+//! desktop never takes that branch, since `eframe` reports native windows
+//! there.
 
 /// egui-memory key prefix of one window's remembered geometry.
 const GEOM: &str = "tool_window_geometry";
@@ -126,6 +131,10 @@ pub(super) fn tool_window<R>(
     if !*open {
         return None;
     }
+    let title = window_title(&title.into());
+    if ctx.embed_viewports() {
+        return embedded_window(ctx, id, &title, open, opts, contents);
+    }
     // Is this the pass that opens the window, or one of the passes that keep
     // it open? Every open window is drawn once per pass of the main window
     // (an immediate viewport repaints with its parent), so a gap in the pass
@@ -143,7 +152,6 @@ pub(super) fn tool_window<R>(
         ctx.data_mut(|d| d.insert_temp(on_top_key, false));
     }
 
-    let title = window_title(&title.into());
     let mut builder = egui::ViewportBuilder::default().with_title(&title);
     if fresh {
         // Only on the pass that creates the window. Repeating this every
@@ -247,9 +255,100 @@ pub(super) fn tool_window<R>(
     ret
 }
 
+/// The tool window where the backend has no native windows: an
+/// [`egui::Window`] in the main one, opened at the size the tool asks for,
+/// resizable, closed by its own title-bar button. egui remembers where the
+/// user leaves it, so nothing about geometry has to be kept here; *Keep on
+/// top* does not exist, there being nothing to be on top of.
+fn embedded_window<R>(
+    ctx: &egui::Context,
+    id: &str,
+    title: &str,
+    open: &mut bool,
+    opts: WinOpts,
+    contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> Option<R> {
+    let size = [
+        opts.size[0].max(MIN_SIZE[0]),
+        if opts.size[1] > 0.0 {
+            opts.size[1]
+        } else {
+            DEFAULT_TALL
+        },
+    ];
+    let mut ret = None;
+    egui::Window::new(title)
+        .id(egui::Id::new(("tool_window", id)))
+        .open(open)
+        .collapsible(false)
+        .resizable(true)
+        .default_size(size)
+        .min_size(MIN_SIZE)
+        .show(ctx, |ui| {
+            if opts.scroll {
+                egui::ScrollArea::both()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| ret = Some(contents(ui)));
+            } else {
+                ret = Some(contents(ui));
+            }
+        });
+    ret
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A headless context has no native windows, which is the Android
+    /// case: the window must draw, hand its contents a `Ui`, and close
+    /// through the flag rather than stay open for good.
+    #[test]
+    fn without_native_windows_the_tool_is_a_closable_window_inside_the_main_one() {
+        let ctx = egui::Context::default();
+        assert!(ctx.embed_viewports());
+        let mut open = true;
+        let mut drawn = 0;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let r = tool_window(
+                ui.ctx(),
+                "t",
+                "📦 Test",
+                &mut open,
+                WinOpts::default(),
+                |ui| {
+                    drawn += 1;
+                    ui.label("contents");
+                    7
+                },
+            );
+            assert_eq!(r, Some(7));
+        });
+        // No renderer here to take the font texture; dropping it unhandled
+        // is what epaint refuses.
+        out.textures_delta.clear();
+        assert_eq!(drawn, 1);
+        assert!(open);
+        // A closed window draws nothing and reports nothing.
+        open = false;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let r = tool_window(
+                ui.ctx(),
+                "t",
+                "📦 Test",
+                &mut open,
+                WinOpts::default(),
+                |ui| {
+                    drawn += 1;
+                    ui.label("contents");
+                    7
+                },
+            );
+            assert_eq!(r, None);
+        });
+        out.textures_delta.clear();
+        assert_eq!(drawn, 1);
+    }
 
     #[test]
     fn every_window_is_titled_the_same_way() {

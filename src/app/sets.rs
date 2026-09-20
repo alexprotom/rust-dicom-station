@@ -237,28 +237,22 @@ impl ViewerApp {
         let Some(full) = study.seg_series.get(r.idx) else {
             return;
         };
-        let subset;
-        let ser = if items.is_empty() {
-            full
+        // Only the name and the emptiness check are needed before the
+        // dialog; the series itself is derived when there is a path.
+        let mut chosen: Vec<usize> = if items.is_empty() {
+            (0..full.segs.len()).collect()
         } else {
-            let mut picked = items.to_vec();
-            picked.sort_unstable();
-            picked.dedup();
-            let mut s = full.clone();
-            s.segs = picked
-                .iter()
-                .filter_map(|&i| full.segs.get(i).cloned())
-                .collect();
-            s.sop_instance_uid = crate::dicom_export::new_uid();
-            subset = s;
-            &subset
+            items.to_vec()
         };
-        if ser.segs.iter().all(|s| s.count == 0) {
+        chosen.sort_unstable();
+        chosen.dedup();
+        chosen.retain(|&i| i < full.segs.len());
+        if chosen.iter().all(|&i| full.segs[i].count == 0) {
             self.error =
                 Some("nothing to write - the chosen segmentation(s) have no voxels".into());
             return;
         }
-        let stem: String = ser
+        let stem: String = full
             .label
             .chars()
             .map(|c| if c.is_alphanumeric() { c } else { '_' })
@@ -266,19 +260,33 @@ impl ViewerApp {
         let suffix = if items.is_empty() {
             String::new()
         } else {
-            format!("_{}_of_{}", ser.segs.len(), full.segs.len())
+            format!("_{}_of_{}", chosen.len(), full.segs.len())
         };
-        let Some(path) = rfd::FileDialog::new()
-            .set_title(if items.is_empty() {
+        let items = items.to_vec();
+        self.ask_save(
+            if items.is_empty() {
                 "Save the segmentation series as DICOM SEG"
             } else {
                 "Save the selected segmentation(s) as DICOM SEG"
-            })
-            .set_file_name(format!("SEG_{stem}{suffix}.dcm"))
-            .save_file()
-        else {
+            },
+            format!("SEG_{stem}{suffix}.dcm"),
+            None,
+            None,
+            move |app, path| app.write_seg_series(r, &items, &path),
+        );
+    }
+
+    /// The second half of [`Self::export_seg_series`]: the series is derived
+    /// again from the study, so nothing has to be held across the dialog.
+    fn write_seg_series(&mut self, r: SetRef, items: &[usize], path: &std::path::Path) {
+        let Some(study) = self.slots[r.slot].study.as_ref() else {
             return;
         };
+        let Some(full) = study.seg_series.get(r.idx) else {
+            return;
+        };
+        let (ser, subset) = seg_to_write(full, items);
+        let ser = subset.as_ref().unwrap_or(ser);
         let params = dicom_export::ExportParams::for_study(study);
         let (date, time) = dicom_export::today();
         let study_uid = if ser.study_uid.is_empty() {
@@ -305,7 +313,7 @@ impl ViewerApp {
             image_sop_uids: &[],
             params: &params,
         };
-        match dicomseg::write(ser, &ctx, &path) {
+        match dicomseg::write(ser, &ctx, path) {
             Ok(()) => {
                 self.notice = Some(format!(
                     "✔ {} segment(s) written to {}",
@@ -838,4 +846,24 @@ impl ViewerApp {
             }
         }
     }
+}
+
+/// The series to write for `items`: the whole of `full`, or a subset that is
+/// a series in its own right - same lattice, same referenced image series,
+/// its own SOP Instance UID, and only the segments asked for. The subset is
+/// returned owned beside the reference so a caller can use either.
+fn seg_to_write<'a>(full: &'a SegSeries, items: &[usize]) -> (&'a SegSeries, Option<SegSeries>) {
+    if items.is_empty() {
+        return (full, None);
+    }
+    let mut picked = items.to_vec();
+    picked.sort_unstable();
+    picked.dedup();
+    let mut s = full.clone();
+    s.segs = picked
+        .iter()
+        .filter_map(|&i| full.segs.get(i).cloned())
+        .collect();
+    s.sop_instance_uid = dicom_export::new_uid();
+    (full, Some(s))
 }

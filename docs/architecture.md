@@ -229,6 +229,9 @@ src/
                       structure pickers
     detach.rs         every tool window as a window of the operating system
                       (immediate viewport), titled and placed alike
+    pick.rs           the one door to a file dialog: the system dialog on the
+                      desktop, an egui folder browser on Android, and the
+                      answer handed to a continuation either way
     panels.rs         both edge panels: the shared show / hide machinery, the
                       left panel's per-dataset Data tree sections, and the
                       right panel's list of switched-on modules
@@ -501,6 +504,10 @@ examples/          autoseg_cli, autoseg_probe, body_cli, segvol_cli, segvol_prob
                    fixture); common/ holds what the CLIs share
 installer/         the Windows installer, its own workspace (see its README);
                    built by the release workflow
+android/           the Android front end, its own workspace: android_main
+                   over the same ViewerApp, the manifest, the icons and the
+                   packaging script (docs/android.md); built by the release
+                   workflow
 ```
 
 ## UI architecture
@@ -555,7 +562,19 @@ one it stored and would otherwise command a dragged window back every frame,
 which reads as shaking), and every title goes through `window_title` so the
 whole program reads as `Rust DICOM Station: <what this window is>`. The
 transient confirmations - *Error*, *Done*, *Rename* - stay inside the main
-window, being answers to the last click rather than tools.
+window, being answers to the last click rather than tools. On Android,
+which allows one window per process, egui draws every viewport as a window
+inside the main one and nothing in `detach.rs` has to know.
+
+File and folder dialogs go through `app/pick.rs`. A request names what is
+wanted (a folder, files, a file, a file to save as) and carries the
+continuation - what to do with the path - as a closure. On the desktop the
+operating system's dialog (`rfd`) blocks and the closure runs before the
+call returns, which is exactly the `if let Some(path) = dialog()` it
+replaced; on Android, where `rfd` has no backend, the same call opens a
+folder browser drawn in egui and the closure runs from the frame in which
+the user answers. The browser's model (roots, listing, sorting) is compiled
+and unit-tested on every platform.
 
 The engine-type tools - body contour, auto-segmentation, prompt
 segmentation, slice propagation - are different conversations but the
@@ -678,9 +697,10 @@ tests).
 ## Dependencies
 
 All pure Rust: `dicom-rs` (DICOM, with `dicom-pixeldata` for decoding),
-`egui` / `eframe` (UI over wgpu), `rayon`, `rfd` (file dialogs), `walkdir`,
-`anyhow`; for the engines `gemm` (SIMD matrix kernels), `serde_json`, `zip`,
-`ureq` (rustls + OS trust store), `safetensors`, and `burn` - always with
+`egui` / `eframe` (UI over wgpu), `rayon`, `rfd` (file dialogs; desktop
+only), `walkdir`, `anyhow`; for the engines `gemm` (SIMD matrix kernels),
+`serde_json`, `zip`, `ureq` (rustls + OS trust store; the bundled Mozilla
+roots on Android), `safetensors`, and `burn` - always with
 its `ndarray` CPU backend, with the wgpu backend added by the cargo feature
 `gpu` (default on). The cargo feature `mcp` (off by default) adds `rmcp`
 (the official MCP SDK), `tokio`, `serde`, `schemars` and `toml` for the

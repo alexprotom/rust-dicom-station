@@ -67,10 +67,11 @@ The workflow:
 2. Checks that the version has not already been released.
 3. Builds the Windows installer and the winget manifests for it.
 4. Builds the Linux AppImage.
-5. Builds the snap, tests it on the runner and releases it to the Snap Store, when the `SNAPCRAFT_STORE_CREDENTIALS` secret is set (see [Snap Store](#snap-store)).
-6. Generates SHA256 checksums.
-7. Creates the GitHub Release and uploads the binaries.
-8. Submits the new version to winget, when the `WINGET_TOKEN` secret is set (see [winget](#winget)).
+5. Builds the Android APK, signed with the release key when the `ANDROID_KEYSTORE_*` secrets are set (see [Android](#android)).
+6. Builds the snap, tests it on the runner and releases it to the Snap Store, when the `SNAPCRAFT_STORE_CREDENTIALS` secret is set (see [Snap Store](#snap-store)).
+7. Generates SHA256 checksums.
+8. Creates the GitHub Release and uploads the binaries.
+9. Submits the new version to winget, when the `WINGET_TOKEN` secret is set (see [winget](#winget)).
 
 ## Release Artifacts
 
@@ -79,6 +80,7 @@ Each successful release provides:
 ```text
 rust-dicom-station-X.Y.Z-windows-x86_64.exe
 rust-dicom-station-X.Y.Z-linux-x86_64.AppImage
+rust-dicom-station-X.Y.Z-arm64-v8a.apk
 rust-dicom-station-X.Y.Z-winget-manifests.zip
 SHA256SUMS
 ```
@@ -138,6 +140,12 @@ sudo snap install rust-dicom-station
 ```
 
 Setting it up (register the name, the first upload, the `SNAPCRAFT_STORE_CREDENTIALS` secret) is described step by step in [docs/snap.md](snap.md#publishing). Until the secret exists the job builds and tests the snap and uploads nothing. *Actions > Snap > Run workflow* builds any branch the same way, for testing or for the `edge` / `beta` / `candidate` channels.
+
+## Android
+
+The APK is built by [android.yml](../.github/workflows/android.yml), called by the `android` job of the release workflow; the GitHub Release waits for it like for the Windows and Linux builds. Its `versionCode` is derived from the version (`major * 10000 + minor * 100 + patch`, so 0.9.4 is 904), which is why versions must only ever go up: Android refuses to install a package whose code is lower than the installed one.
+
+The APK is signed with the release key when the four secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD` are set, and with a throwaway debug key otherwise. Only a package signed with the same key as the installed one can update it in place, so the key is made once and kept ([docs/android.md](android.md#releasing)). *Actions > Android > Run workflow* builds any branch the same way and attaches the APK to the run.
 
 ## Important Rule
 

@@ -442,12 +442,10 @@ impl ViewerApp {
             .put(btn_rect, egui::Button::new("📂 Add DICOM folder"))
             .clicked()
         {
-            if let Some(dir) = Self::pick_folder(&format!(
-                "Select DICOM folder to add to dataset {}",
-                SLOT_NAMES[slot]
-            )) {
-                self.start_load(slot, dir);
-            }
+            self.ask_folder(
+                &format!("Select DICOM folder to add to dataset {}", SLOT_NAMES[slot]),
+                move |app, dir| app.start_load(slot, dir),
+            );
         }
         if self.loading.is_some() {
             if let Some(job) = &self.loading {
@@ -532,12 +530,10 @@ impl ViewerApp {
             .on_hover_text("Add an image series to this dataset so the views have slices to show")
             .clicked()
         {
-            if let Some(dir) = Self::pick_folder(&format!(
-                "Select DICOM folder to add to dataset {}",
-                SLOT_NAMES[slot]
-            )) {
-                self.start_load(slot, dir);
-            }
+            self.ask_folder(
+                &format!("Select DICOM folder to add to dataset {}", SLOT_NAMES[slot]),
+                move |app, dir| app.start_load(slot, dir),
+            );
         }
     }
 
