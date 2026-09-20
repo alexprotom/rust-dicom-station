@@ -1,0 +1,6 @@
+# 16 KB page alignment for the shared library. Android 15 runs on devices
+# with 16 KB memory pages, and a library whose segments are aligned to
+# 4 KB does not load there. The NDK's linker aligns to 16 KB by itself
+# from r28 on; the flag makes the package right with any NDK.
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]

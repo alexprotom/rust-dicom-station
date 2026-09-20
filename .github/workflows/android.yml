@@ -1,0 +1,185 @@
+name: Android
+
+# The Android package: the viewer as a shared library for arm64-v8a, wrapped
+# in an APK by android/build-apk.sh (docs/android.md).
+#
+# Three ways in:
+#   * a pull request that touches the viewer's sources or the android/
+#     crate: `cargo ndk check` of the Android crate, which is the
+#     cross-compilation proof and takes a fraction of a release build. It is
+#     a job of its own here rather than a step of ci.yml because it is a
+#     fourth dependency graph, and one graph per job is what keeps CI fast.
+#   * Actions > Android > Run workflow: a full APK of any branch, attached to
+#     the run as the `android-apk` artifact.
+#   * the release workflow calls it on every push to main with the release's
+#     version; the APK it returns is attached to the GitHub release.
+#
+# Signing: with the four secrets ANDROID_KEYSTORE_BASE64 (the keystore file,
+# base64), ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and
+# ANDROID_KEY_PASSWORD the APK is signed with the release key. Without them
+# it is signed with a debug key made on the runner, which installs fine but
+# does not update an installation signed with another key: the previous
+# version has to be uninstalled first. A release wants the secrets.
+
+on:
+  # Pull requests only, for the same reason as ci.yml: the merge ref is what
+  # lands, and branch protection sees to it that nothing lands unchecked.
+  pull_request:
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - "android/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: The version the APK must carry (from Cargo.toml)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  # Android 11: the first release with "All files access"; build-apk.sh
+  # passes the same number as the minimum SDK.
+  ANDROID_API: 30
+
+jobs:
+  # ==========================================================================
+  # Cross-compilation check
+  # ==========================================================================
+  check:
+    name: cargo ndk check
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: android
+          cache-bin: true
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      # The runner image ships several NDKs; cargo-ndk takes the newest under
+      # $ANDROID_HOME/ndk unless told otherwise.
+      - name: cargo ndk check
+        working-directory: android
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          cargo ndk -t arm64-v8a -P "$ANDROID_API" check
+
+  # ==========================================================================
+  # The APK
+  # ==========================================================================
+  # `github.event_name` is the caller's event when this workflow is called,
+  # so the release is recognised by the version it passes.
+  apk:
+    name: Android APK
+    if: github.event_name == 'workflow_dispatch' || inputs.version != ''
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: android
+          cache-bin: true
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Check the version
+        if: inputs.version != ''
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          have=$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -n 1)
+          if [ "$have" != "$VERSION" ]; then
+            echo "::error::Cargo.toml carries $have, the release expects $VERSION"
+            exit 1
+          fi
+
+      - name: Release keystore
+        id: keystore
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "RDS_KEYSTORE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+            echo "signing with the release key"
+          else
+            echo "ANDROID_KEYSTORE_BASE64 is not set - the APK will be signed with a debug key."
+          fi
+
+      - name: Build the APK
+        shell: bash
+        env:
+          RDS_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          RDS_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          RDS_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          # Through bash, so a checkout that lost the executable bit (a
+          # commit made on Windows) still works.
+          bash android/build-apk.sh
+
+      # The package is inspected rather than run: there is no Android
+      # emulator worth the minutes on a hosted runner, and what can go wrong
+      # in the packaging - the wrong library name, a manifest that does not
+      # match, a library compressed where the loader wants it plain, an
+      # unsigned file - is all visible here.
+      - name: Inspect the APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=$(ls android/out/rust-dicom-station-*-arm64-v8a.apk)
+          tools=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n1)
+          "$tools/aapt2" dump badging "$apk" | grep -E "^(package|application-label|sdkVersion|targetSdkVersion|native-code|uses-permission)"
+          unzip -l "$apk" | grep -E "lib/arm64-v8a/librust_dicom_station.so|AndroidManifest.xml|mipmap"
+          "$tools/apksigner" verify --print-certs "$apk"
+          # Segments aligned to 16 KB, or the library does not load on a
+          # device with 16 KB pages (android/.cargo/config.toml).
+          so=android/out/lib/arm64-v8a/librust_dicom_station.so
+          readelf -lW "$so" | grep LOAD
+          readelf -lW "$so" | grep LOAD | while read -r line; do
+            align=${line##* }
+            if [ "$((align))" -lt 16384 ]; then
+              echo "::error::$so has a LOAD segment aligned to $align, less than 16 KB"
+              exit 1
+            fi
+          done
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: android/out/rust-dicom-station-*-arm64-v8a.apk
+          if-no-files-found: error

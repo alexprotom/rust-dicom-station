@@ -1,0 +1,71 @@
+# Android front end for rust-dicom-station.
+#
+# This crate is its own workspace root (the empty `[workspace]` table below),
+# exactly like `installer/`: `cargo build` in the repository root never
+# compiles it, and building it never touches the viewer's `target/`.
+#
+# It is the same viewer. The library in `..` holds every module, window and
+# algorithm; what this crate adds is the Android entry point (`android_main`
+# instead of `main`), logging to logcat, the folders the activity hands over,
+# and the one Android-only question - all files access - asked in an egui
+# window over the viewer. The result is one shared library that Android's
+# own `NativeActivity` loads, so the package carries no Java or Kotlin.
+#
+#   cargo ndk -t arm64-v8a -P 30 -o out/lib build --release   # the .so
+#   ./build-apk.sh                                             # the .apk
+#
+# See docs/android.md.
+
+[package]
+name = "rds-android"
+version = "0.1.0"
+edition = "2021"
+description = "Android front end for the rust-dicom-station DICOM / RT viewer"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[lib]
+# `android.app.lib_name` in AndroidManifest.xml is this name: the activity
+# loads `librust_dicom_station.so` and calls its `android_main`.
+name = "rust_dicom_station"
+crate-type = ["cdylib"]
+
+[dependencies]
+# The viewer itself. Its default features (`gpu`) stay on: the wgpu backend
+# of the inference engines is built like everywhere else; whether a given
+# tablet's GPU is worth using is decided at run time, per engine, as on the
+# desktop.
+rust-dicom-station = { path = ".." }
+egui = "0.36"
+log = "0.4"
+
+[target.'cfg(target_os = "android")'.dependencies]
+# The same feature set the viewer's own Cargo.toml selects for Android.
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "links", "wgpu", "android-native-activity"] }
+# `AndroidApp`: the activity, its folders and its Java VM. The version must
+# stay the one `winit` 0.30 uses, or `NativeOptions::android_app` will not
+# accept it.
+android-activity = { version = "0.6", features = ["native-activity"] }
+# logcat as the `log` sink.
+android_logger = "0.15"
+# Two calls into the Java side: is all files access granted, and open the
+# page where it is granted. The version is the one already in the tree.
+jni = "0.22"
+# `pipe` / `dup2`: standard output and error, which Android throws away,
+# are read back and sent to logcat.
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+panic = "unwind"
+# The symbols alone are hundreds of megabytes; the APK does not want them.
+strip = "debuginfo"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

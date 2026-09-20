@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The package's manifest. Versions are filled in by build-apk.sh from the
+  viewer's Cargo.toml (versionName = the crate version, versionCode =
+  major * 10000 + minor * 100 + patch), so nothing here has to be bumped on
+  a release.
+
+  The activity is Android's own NativeActivity: it loads
+  lib/arm64-v8a/librust_dicom_station.so (android.app.lib_name) and calls
+  its android_main. There is no Java or Kotlin in the package (hasCode=false).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="io.github.alexprotom.rustdicomstation">
+
+    <!-- 30 = Android 11, the first with "All files access"; that is also
+         where the shared storage is a plain file system again for a
+         program that has it. -->
+    <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="35" />
+
+    <!-- The weight download (Downloaded models) and nothing else. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- DICOM folders anywhere on the device or a USB stick; see docs/android.md.
+         Granted by the user on a system settings page, which the program
+         opens on first start. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
+    <!-- OpenGL ES 3 is the floor wgpu draws with when there is no usable
+         Vulkan; Vulkan is preferred but not required. -->
+    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
+    <uses-feature android:name="android.hardware.vulkan.level" android:required="false" />
+    <!-- A mouse, a keyboard or a stylus are all fine; none is required. -->
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
+    <!-- Tablets and larger. Phones can install it; it is not laid out for them. -->
+    <supports-screens
+        android:smallScreens="false"
+        android:normalScreens="true"
+        android:largeScreens="true"
+        android:xlargeScreens="true" />
+
+    <application
+        android:label="Rust DICOM Station"
+        android:icon="@mipmap/ic_launcher"
+        android:hasCode="false"
+        android:allowBackup="false"
+        android:extractNativeLibs="true"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+
+        <activity
+            android:name="android.app.NativeActivity"
+            android:label="Rust DICOM Station"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|locale|layoutDirection"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="android.app.lib_name" android:value="rust_dicom_station" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
