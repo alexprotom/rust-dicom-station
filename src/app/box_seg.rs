@@ -930,9 +930,9 @@ impl ViewerApp {
         }
 
         if browse {
-            if let Some(dir) = Self::pick_folder("Model folder") {
-                self.models_dir = dir.display().to_string();
-            }
+            self.ask_folder("Model folder", |app, dir| {
+                app.models_dir = dir.display().to_string();
+            });
         }
         if clear {
             self.medsam2.prompt = None;

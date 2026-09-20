@@ -28,6 +28,12 @@ use super::combine::ItemRef;
 use super::contour_edit::EdgeBand;
 use super::*;
 
+/// The file type an axis is saved as.
+const AXIS_FILES: super::pick::Filter = super::pick::Filter {
+    name: "Axis",
+    exts: &["axis"],
+};
+
 /// The RT ROI Interpreted Types offered when typing a structure. The list
 /// is the one a planning system branches on; anything else can still arrive
 /// from a file and is left alone.
@@ -1531,37 +1537,32 @@ impl ViewerApp {
         let Some(pts) = self.axis_patient(slot) else {
             return;
         };
-        let Some(path) = rfd::FileDialog::new()
-            .set_title("Save the axis")
-            .set_directory(crate::settings::user_axes_dir())
-            .add_filter("Axis", &["axis"])
-            .set_file_name("axis.axis")
-            .save_file()
-        else {
-            return;
-        };
-        match std::fs::write(&path, axis_file(pts)) {
-            Ok(()) => self.notice = Some(format!("Axis saved to {}", path.display())),
-            Err(e) => self.error = Some(format!("Could not save the axis: {e}")),
-        }
+        let text = axis_file(pts);
+        self.ask_save(
+            "Save the axis",
+            "axis.axis",
+            Some(crate::settings::user_axes_dir()),
+            Some(AXIS_FILES),
+            move |app, path| match std::fs::write(&path, text) {
+                Ok(()) => app.notice = Some(format!("Axis saved to {}", path.display())),
+                Err(e) => app.error = Some(format!("Could not save the axis: {e}")),
+            },
+        );
     }
 
     fn load_axis_file(&mut self, slot: usize) {
-        let Some(path) = rfd::FileDialog::new()
-            .set_title("Load an axis")
-            .set_directory(crate::settings::user_axes_dir())
-            .add_filter("Axis", &["axis"])
-            .pick_file()
-        else {
-            return;
-        };
-        match std::fs::read_to_string(&path)
-            .map_err(|e| e.to_string())
-            .and_then(|t| parse_axis_file(&t))
-        {
-            Ok(pts) => self.set_axis_patient(slot, pts),
-            Err(e) => self.error = Some(format!("Could not load the axis: {e}")),
-        }
+        self.ask_file(
+            "Load an axis",
+            Some(crate::settings::user_axes_dir()),
+            Some(AXIS_FILES),
+            move |app, path| match std::fs::read_to_string(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|t| parse_axis_file(&t))
+            {
+                Ok(pts) => app.set_axis_patient(slot, pts),
+                Err(e) => app.error = Some(format!("Could not load the axis: {e}")),
+            },
+        );
     }
 
     fn apply_contour_act(&mut self, slot: usize, act: Act) {

@@ -608,17 +608,16 @@ impl ViewerApp {
         self.dvh_open = open;
         cancel_if(cancel, &self.dvh_job);
         if load_protocol {
-            if let Some(path) = rfd::FileDialog::new()
-                .set_title("Open a constraint protocol")
-                .add_filter("protocol", &["txt", "csv", "protocol"])
-                .pick_file()
-            {
-                match std::fs::read_to_string(&path) {
+            self.ask_file(
+                "Open a constraint protocol",
+                None,
+                Some(PROTOCOL_FILES),
+                |app, path| match std::fs::read_to_string(&path) {
                     Ok(text) => {
                         let cs = dvh::parse_protocol(&text);
-                        if let Some(d) = &mut self.dvh_dialog {
+                        if let Some(d) = &mut app.dvh_dialog {
                             if cs.is_empty() {
-                                self.error = Some(
+                                app.error = Some(
                                     "No constraints were recognised in that file. Each line \
                                      is STRUCTURE METRIC <= LIMIT, for example \
                                      'Cord Dmax <= 45'."
@@ -634,9 +633,9 @@ impl ViewerApp {
                             }
                         }
                     }
-                    Err(e) => self.error = Some(format!("Could not read the protocol: {e}")),
-                }
-            }
+                    Err(e) => app.error = Some(format!("Could not read the protocol: {e}")),
+                },
+            );
         }
         if save_protocol {
             let text = self
@@ -644,15 +643,17 @@ impl ViewerApp {
                 .as_ref()
                 .map(|d| dvh::write_protocol(&d.constraints))
                 .unwrap_or_default();
-            if let Some(path) = rfd::FileDialog::new()
-                .set_title("Save the protocol")
-                .set_file_name("protocol.txt")
-                .save_file()
-            {
-                if let Err(e) = std::fs::write(&path, text) {
-                    self.error = Some(format!("Could not write the protocol: {e}"));
-                }
-            }
+            self.ask_save(
+                "Save the protocol",
+                "protocol.txt",
+                None,
+                None,
+                move |app, path| {
+                    if let Err(e) = std::fs::write(&path, text) {
+                        app.error = Some(format!("Could not write the protocol: {e}"));
+                    }
+                },
+            );
         }
         if let Some(curves) = export {
             let text = self.dvh_dialog.as_ref().map(|d| {
@@ -662,21 +663,21 @@ impl ViewerApp {
                     dvh::metrics_csv(&d.curves, &d.metrics)
                 }
             });
-            if let (Some(text), Some(path)) = (
-                text,
-                rfd::FileDialog::new()
-                    .set_title(if curves {
+            if let Some(text) = text {
+                self.ask_save(
+                    if curves {
                         "Save the DVH curves"
                     } else {
                         "Save the metrics table"
-                    })
-                    .set_file_name(if curves { "dvh.csv" } else { "dvh_metrics.csv" })
-                    .save_file(),
-            ) {
-                match std::fs::write(&path, text) {
-                    Ok(()) => self.notice = Some(format!("Written to {}", path.display())),
-                    Err(e) => self.error = Some(format!("Could not write the file: {e}")),
-                }
+                    },
+                    if curves { "dvh.csv" } else { "dvh_metrics.csv" },
+                    None,
+                    None,
+                    move |app, path| match std::fs::write(&path, text) {
+                        Ok(()) => app.notice = Some(format!("Written to {}", path.display())),
+                        Err(e) => app.error = Some(format!("Could not write the file: {e}")),
+                    },
+                );
             }
         }
         if recompute && !running {

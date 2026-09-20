@@ -369,16 +369,17 @@ impl ViewerApp {
                 .as_ref()
                 .map(|d| d.csv.clone())
                 .unwrap_or_default();
-            if let Some(path) = rfd::FileDialog::new()
-                .set_title("Save the comparison")
-                .add_filter("CSV", &["csv"])
-                .set_file_name("structure_comparison.csv")
-                .save_file()
-            {
-                if let Err(e) = std::fs::write(&path, csv) {
-                    self.error = Some(format!("Could not write {}: {e}", path.display()));
-                }
-            }
+            self.ask_save(
+                "Save the comparison",
+                "structure_comparison.csv",
+                None,
+                Some(CSV_FILES),
+                move |app, path| {
+                    if let Err(e) = std::fs::write(&path, csv) {
+                        app.error = Some(format!("Could not write {}: {e}", path.display()));
+                    }
+                },
+            );
         }
         if close || !open {
             self.compare_dialog = None;

@@ -28,4 +28,5 @@ Each page here covers one area.
 | [release-versioning.md](release-versioning.md) | Versioning, the branch workflow, how CI produces a release, publishing to winget and the Snap Store |
 | [snap.md](snap.md) | The Linux snap: installing, what the confinement allows, where the files are, graphics, the MCP server, building and publishing |
 | [flatpak.md](flatpak.md) | The Flatpak: installing, what the sandbox allows, where the files are, graphics, the MCP server, building and the Flathub submission |
+| [android.md](android.md) | The Android package: installing, all files access, what differs on a tablet, where the files are, the `android/` crate, building, signing and releasing |
 | [example-data.md](example-data.md) | The bundled example patient: contents, source, citations, license |

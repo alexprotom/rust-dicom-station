@@ -291,9 +291,9 @@ impl ViewerApp {
         // -------------------------------------------------------------
 
         if open_folder {
-            if let Some(dir) = Self::pick_folder("Select a DICOM folder") {
-                self.start_load(0, dir);
-            }
+            self.ask_folder("Select a DICOM folder", |app, dir| {
+                app.start_load(0, dir);
+            });
         }
 
         if open_pacs {

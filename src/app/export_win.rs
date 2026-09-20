@@ -141,9 +141,9 @@ impl ViewerApp {
             self.export_result = None;
         }
         if browse {
-            if let Some(d) = Self::pick_folder("Select the export output folder") {
-                self.export_dir = d.display().to_string();
-            }
+            self.ask_folder("Select the export output folder", |app, d| {
+                app.export_dir = d.display().to_string();
+            });
         }
         if do_export {
             self.start_export();

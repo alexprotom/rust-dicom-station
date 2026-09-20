@@ -409,14 +409,6 @@ impl ViewerApp {
         if let Some(s) = select {
             w.selected = Some(s);
         }
-        if browse {
-            if let Some(dir) = Self::pick_folder("Archive folder") {
-                w.dir = dir.display().to_string();
-                w.patients = None;
-                commit_dir = true;
-                rescan = true;
-            }
-        }
         // The window closing counts as leaving the field.
         let leaving = close || !open;
         let dir_changed = (commit_dir || leaving) && w.dir != self.archive_dir;
@@ -436,10 +428,26 @@ impl ViewerApp {
         if rescan && self.pacs.is_some() {
             self.start_pacs_scan();
         }
+        if browse {
+            // The window is back in place, so the answer lands in it the
+            // same way a typed folder does: committed, saved, rescanned.
+            self.ask_folder("Archive folder", |app, dir| {
+                let Some(w) = app.pacs.as_mut() else {
+                    return;
+                };
+                w.dir = dir.display().to_string();
+                w.patients = None;
+                if w.dir != app.archive_dir {
+                    app.archive_dir = w.dir.clone();
+                    app.persist_settings();
+                }
+                app.start_pacs_scan();
+            });
+        }
         if import {
-            if let Some(dir) = Self::pick_folder("Folder to file into the archive") {
-                self.start_pacs_import(dir);
-            }
+            self.ask_folder("Folder to file into the archive", |app, dir| {
+                app.start_pacs_import(dir);
+            });
         }
         if let Some(slot) = upload {
             self.start_pacs_upload(slot);

@@ -254,24 +254,22 @@ impl ViewerApp {
     /// taken, which is also what decides the pane - the button that starts
     /// it belongs to one.
     pub(super) fn start_recording(&mut self, _ctx: &egui::Context) {
-        let dest = match self.rec_format {
-            RecFormat::Gif => rfd::FileDialog::new()
-                .set_title("Save the recording")
-                .set_file_name("playback.gif")
-                .save_file(),
-            RecFormat::Pngs => Self::pick_folder("Folder for the recorded frames"),
+        let arm = |app: &mut ViewerApp, dest: PathBuf| {
+            app.rec_status = None;
+            app.rec = Some(Recording {
+                format: app.rec_format,
+                dest,
+                bound: None,
+                frames: Vec::new(),
+                max_frames: app.rec_max.max(1),
+                pending: false,
+                at: u64::MAX,
+            });
         };
-        let Some(dest) = dest else { return };
-        self.rec_status = None;
-        self.rec = Some(Recording {
-            format: self.rec_format,
-            dest,
-            bound: None,
-            frames: Vec::new(),
-            max_frames: self.rec_max.max(1),
-            pending: false,
-            at: u64::MAX,
-        });
+        match self.rec_format {
+            RecFormat::Gif => self.ask_save("Save the recording", "playback.gif", None, None, arm),
+            RecFormat::Pngs => self.ask_folder("Folder for the recorded frames", arm),
+        }
     }
 
     /// Latch onto a run when one starts, collect the picture that was asked

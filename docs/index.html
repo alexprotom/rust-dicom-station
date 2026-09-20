@@ -366,7 +366,7 @@
     /* Downloads */
     .download-grid {
       display: grid;
-      grid-template-columns: repeat(2, 1fr);
+      grid-template-columns: repeat(3, 1fr);
       gap: 12px;
     }
 
@@ -745,6 +745,29 @@
         </a>
         </article>
 
+
+        <article class="download-card">
+        <div class="download-logo" aria-hidden="true">
+            <img
+            src="https://upload.wikimedia.org/wikipedia/commons/d/d7/Android_robot.svg"
+            alt="Android logo"
+            >
+        </div>
+
+        <div>
+            <h3>Android</h3>
+            <p>Tablets, ARM64 · APK</p>
+        </div>
+
+        <a
+            class="button primary"
+            id="android-download"
+            href="#"
+        >
+            Download for Android
+        </a>
+        </article>
+
     </div>
 
     <p class="download-note">
@@ -1066,6 +1089,7 @@
     const versionElement = document.getElementById("latest-version");
     const windowsButton = document.getElementById("windows-download");
     const linuxButton = document.getElementById("linux-download");
+    const androidButton = document.getElementById("android-download");
 
     try {
       const response = await fetch(
@@ -1088,11 +1112,16 @@
       const linuxUrl =
         `https://github.com/alexprotom/rust-dicom-station/releases/download/v${version}/rust-dicom-station-${version}-linux-x86_64.AppImage`;
 
+      const androidUrl =
+        `https://github.com/alexprotom/rust-dicom-station/releases/download/v${version}/rust-dicom-station-${version}-arm64-v8a.apk`;
+
       windowsButton.href = windowsUrl;
       linuxButton.href = linuxUrl;
+      androidButton.href = androidUrl;
 
       windowsButton.download = "";
       linuxButton.download = "";
+      androidButton.download = "";
 
     } catch (error) {
       console.error("Failed to load latest release:", error);
@@ -1103,6 +1132,9 @@
         "https://github.com/alexprotom/rust-dicom-station/releases/latest";
 
       linuxButton.href =
+        "https://github.com/alexprotom/rust-dicom-station/releases/latest";
+
+      androidButton.href =
         "https://github.com/alexprotom/rust-dicom-station/releases/latest";
     }
   }
