@@ -121,6 +121,7 @@ tumor, unfold *💬 Prompt segmentation* in the Structure auto tools module
 The engines fetch their weights on first use into one model folder
 (`%LOCALAPPDATA%\RustDICOMStation\models` on Windows,
 `~/.local/share/RustDICOMStation/models` on Linux,
+`~/Library/Application Support/RustDICOMStation/models` on macOS,
 `~/snap/rust-dicom-station/common/data/models` in the snap,
 `~/.var/app/io.github.alexprotom.rust-dicom-station/data/RustDICOMStation/models`
 in the Flatpak), movable from any tool window; each engine also has a headless CLI in [examples/](examples/).
@@ -136,11 +137,15 @@ CPU-only viewer without the GPU inference backend. Every push to `main`
 publishes a release: a Windows installer
 (`rust-dicom-station-<version>-windows-x86_64.exe` - shortcuts, "Open with"
 on folders, the VC++ runtime check, optional weight prefetch, uninstaller),
-a Linux AppImage and an Android APK (`rust-dicom-station-<version>-arm64-v8a.apk`,
+a Linux AppImage, two macOS disk images
+(`rust-dicom-station-<version>-macos-arm64.dmg` and `-macos-x86_64.dmg`, both
+for macOS 12 Monterey and newer, [docs/macos.md](docs/macos.md)) and an
+Android APK (`rust-dicom-station-<version>-arm64-v8a.apk`,
 the same viewer on a tablet, [docs/android.md](docs/android.md)), and puts the snap into the Snap Store (`sudo snap
 install rust-dicom-station`, [docs/snap.md](docs/snap.md)); the same program
 is on Flathub as `io.github.alexprotom.rust-dicom-station`
-([docs/flatpak.md](docs/flatpak.md)). A newer
+([docs/flatpak.md](docs/flatpak.md)) and, with a tap configured, in Homebrew
+as the cask `rust-dicom-station`. A newer
 installer updates an existing installation in place (no second copy,
 nothing to uninstall first), *Start ▸ Update Rust
 DICOM Station* fetches the newest release, and the package is published to
@@ -178,6 +183,7 @@ https://alexprotom.github.io/rust-dicom-station/
 | [docs/release-versioning.md](docs/release-versioning.md) | How versions and releases are produced |
 | [docs/snap.md](docs/snap.md) | The Linux snap: confinement, where its files are, the MCP server in it, building and publishing |
 | [docs/flatpak.md](docs/flatpak.md) | The Flatpak: the sandbox, where its files are, the MCP server in it, building and submitting to Flathub |
+| [docs/macos.md](docs/macos.md) | The macOS package: the two disk images, the first launch, Metal, where its files are, building, signing, notarisation, Homebrew |
 | [docs/android.md](docs/android.md) | The Android package: installing, all files access, what differs on a tablet, where its files are, building and signing |
 | [docs/example-data.md](docs/example-data.md) | Bundled patient data, source and citations |
 | [installer/README.md](installer/README.md) | The Windows installer: building it, what it installs, updating, winget, silent switches |

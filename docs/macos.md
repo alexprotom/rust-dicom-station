@@ -124,6 +124,11 @@ The result is `macos/out/rust-dicom-station-<version>-macos-<arch>.dmg`.
 [macos/README.md](../macos/README.md) covers the options, what goes into
 the bundle and why.
 
+The workflow builds the images on every pull request into `main` as well as
+during the release, so the packaging is exercised by a check rather than
+first run while a release is being published; a pull request into any other
+branch only cross-compiles the Intel target, which is the cheap half.
+
 An Apple Silicon Mac builds both architectures; an Intel Mac builds only its
 own. This is why the release builds both on an Apple Silicon runner and
 cross-compiles the Intel half, rather than using GitHub's `macos-15-intel`

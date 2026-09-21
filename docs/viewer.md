@@ -671,7 +671,10 @@ setting only saves it the first failed attempt - worth having, because the
 attempt costs a second or two and prints a line that looks alarming.
 
 *Settings > Graphics backend* lists the backends this platform could have (no
-Direct3D outside Windows, no Metal outside macOS), each with a one-line hint,
+Direct3D outside Windows, no Metal outside macOS, and on macOS nothing but
+Metal - Apple deprecated OpenGL and never shipped Vulkan, and `wgpu` reaches
+neither there without a translation layer this program does not link), each
+with a one-line hint,
 and remembers the choice. Under the list it names the backend the program is
 actually drawing with at that moment, which after a fallback is not always the
 one that was asked for, and says that a change takes effect at the next start:

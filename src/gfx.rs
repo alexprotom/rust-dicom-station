@@ -69,11 +69,18 @@ impl Backend {
     }
 
     /// False for backends this platform cannot have at all - DirectX on
-    /// Linux, Metal anywhere but Apple. Offering them would only invite a
-    /// choice that cannot work.
+    /// Linux, Metal anywhere but Apple, OpenGL on macOS. Offering them would
+    /// only invite a choice that cannot work.
+    ///
+    /// OpenGL is the odd one: it is the floor everywhere except on Apple,
+    /// which deprecated it and never shipped a driver `wgpu` can use. `wgpu`
+    /// reaches GL on macOS only through ANGLE, which this program does not
+    /// link, so `Backends::GL` there finds no adapter at all - a menu entry
+    /// and a fallback step that can only ever fail.
     pub fn available_here(self) -> bool {
         match self {
-            Backend::Auto | Backend::OpenGl => true,
+            Backend::Auto => true,
+            Backend::OpenGl => !cfg!(target_os = "macos"),
             Backend::Vulkan => !cfg!(target_os = "macos"),
             Backend::Dx12 => cfg!(target_os = "windows"),
             Backend::Metal => cfg!(target_os = "macos"),
@@ -201,7 +208,9 @@ pub fn from_env() -> Option<Backend> {
 /// The point is that a machine which cannot do the first choice still starts.
 /// Windows always ends at DirectX 12, because a Windows machine that has
 /// neither a working Vulkan nor a working D3D12 is not going to run anything;
-/// everywhere else OpenGL is the floor.
+/// on Linux OpenGL is the floor. macOS has no floor below Metal - see
+/// [`Backend::available_here`] - so the list there is Metal and whatever
+/// `wgpu` picks on its own, which is Metal again.
 pub fn candidates(first: Backend) -> Vec<Backend> {
     let mut out = vec![first];
     let rest: [Backend; 4] = if cfg!(target_os = "windows") {
@@ -214,12 +223,9 @@ pub fn candidates(first: Backend) -> Vec<Backend> {
             Backend::Auto,
         ]
     } else if cfg!(target_os = "macos") {
-        [
-            Backend::Metal,
-            Backend::Auto,
-            Backend::OpenGl,
-            Backend::Auto,
-        ]
+        // Metal or nothing: OpenGL is not reachable here and Vulkan needs
+        // MoltenVK, which is not linked either.
+        [Backend::Metal, Backend::Auto, Backend::Auto, Backend::Auto]
     } else {
         [
             Backend::Vulkan,
@@ -293,5 +299,16 @@ mod tests {
             offered.contains(&Backend::Dx12)
         );
         assert_eq!(cfg!(target_os = "macos"), offered.contains(&Backend::Metal));
+        // Apple has no OpenGL driver wgpu can use, and no Vulkan one either:
+        // on macOS the menu offers Metal and the automatic choice, nothing
+        // that would fail the moment it is picked.
+        assert_eq!(
+            !cfg!(target_os = "macos"),
+            offered.contains(&Backend::OpenGl)
+        );
+        assert_eq!(
+            !cfg!(target_os = "macos"),
+            offered.contains(&Backend::Vulkan)
+        );
     }
 }
