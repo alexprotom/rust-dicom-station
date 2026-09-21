@@ -508,6 +508,12 @@ android/           the Android front end, its own workspace: android_main
                    over the same ViewerApp, the manifest, the icons and the
                    packaging script (docs/android.md); built by the release
                    workflow
+macos/             the macOS packaging and nothing else - no crate, no code:
+                   the .app bundle's plist, the hardened-runtime
+                   entitlements, the script that builds bundle and disk
+                   image for one architecture, and the Homebrew cask
+                   generator (docs/macos.md); run by the release workflow
+                   once per architecture
 ```
 
 ## UI architecture

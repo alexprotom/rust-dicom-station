@@ -25,8 +25,9 @@ Each page here covers one area.
 | [pacs.md](pacs.md) | The local patient archive: the window, the on-disk layout, filing, loading, sending changes back |
 | [mcp.md](mcp.md) | The MCP server `rds-mcp`: driving the station's tools from an AI assistant, the heart target propagation prompt, the PHI gate and redactor, the configuration file |
 | [export-and-tools.md](export-and-tools.md) | DICOM export, saving a picture of the views, the model manager, the anonymizer, the test-data generator |
-| [release-versioning.md](release-versioning.md) | Versioning, the branch workflow, how CI produces a release, publishing to winget and the Snap Store |
+| [release-versioning.md](release-versioning.md) | Versioning, the branch workflow, how CI produces a release, publishing to winget, the Snap Store and Homebrew |
 | [snap.md](snap.md) | The Linux snap: installing, what the confinement allows, where the files are, graphics, the MCP server, building and publishing |
 | [flatpak.md](flatpak.md) | The Flatpak: installing, what the sandbox allows, where the files are, graphics, the MCP server, building and the Flathub submission |
+| [macos.md](macos.md) | The macOS package: the two disk images, the first launch, where the files are, Metal, the MCP server in the bundle, building, signing, notarisation and Homebrew |
 | [android.md](android.md) | The Android package: installing, all files access, what differs on a tablet, where the files are, the `android/` crate, building, signing and releasing |
 | [example-data.md](example-data.md) | The bundled example patient: contents, source, citations, license |

@@ -67,11 +67,13 @@ The workflow:
 2. Checks that the version has not already been released.
 3. Builds the Windows installer and the winget manifests for it.
 4. Builds the Linux AppImage.
-5. Builds the Android APK, signed with the release key when the `ANDROID_KEYSTORE_*` secrets are set (see [Android](#android)).
-6. Builds the snap, tests it on the runner and releases it to the Snap Store, when the `SNAPCRAFT_STORE_CREDENTIALS` secret is set (see [Snap Store](#snap-store)).
-7. Generates SHA256 checksums.
-8. Creates the GitHub Release and uploads the binaries.
-9. Submits the new version to winget, when the `WINGET_TOKEN` secret is set (see [winget](#winget)).
+5. Builds the two macOS disk images, signed and notarised when the `MACOS_*` secrets are set (see [macOS](#macos)).
+6. Builds the Android APK, signed with the release key when the `ANDROID_KEYSTORE_*` secrets are set (see [Android](#android)).
+7. Builds the snap, tests it on the runner and releases it to the Snap Store, when the `SNAPCRAFT_STORE_CREDENTIALS` secret is set (see [Snap Store](#snap-store)).
+8. Generates SHA256 checksums.
+9. Creates the GitHub Release and uploads the binaries.
+10. Submits the new version to winget, when the `WINGET_TOKEN` secret is set (see [winget](#winget)).
+11. Writes the Homebrew cask, attaches it to the release and pushes it to the tap, when `HOMEBREW_TAP` and `HOMEBREW_TAP_TOKEN` are set (see [Homebrew](#homebrew)).
 
 ## Release Artifacts
 
@@ -80,8 +82,11 @@ Each successful release provides:
 ```text
 rust-dicom-station-X.Y.Z-windows-x86_64.exe
 rust-dicom-station-X.Y.Z-linux-x86_64.AppImage
+rust-dicom-station-X.Y.Z-macos-arm64.dmg
+rust-dicom-station-X.Y.Z-macos-x86_64.dmg
 rust-dicom-station-X.Y.Z-arm64-v8a.apk
 rust-dicom-station-X.Y.Z-winget-manifests.zip
+rust-dicom-station.rb
 SHA256SUMS
 ```
 
@@ -140,6 +145,71 @@ sudo snap install rust-dicom-station
 ```
 
 Setting it up (register the name, the first upload, the `SNAPCRAFT_STORE_CREDENTIALS` secret) is described step by step in [docs/snap.md](snap.md#publishing). Until the secret exists the job builds and tests the snap and uploads nothing. *Actions > Snap > Run workflow* builds any branch the same way, for testing or for the `edge` / `beta` / `candidate` channels.
+
+## macOS
+
+Two disk images, one per architecture, both for **macOS 12 Monterey and
+newer**: `rust-dicom-station-X.Y.Z-macos-arm64.dmg` and
+`-macos-x86_64.dmg`. They are built by
+[macos.yml](../.github/workflows/macos.yml), called by the `macos` job of
+the release workflow; the GitHub Release waits for them like for the
+Windows and Linux builds.
+
+The images are built **twice**: once on the pull request that merges
+`develop` into `main` - the release candidate - and once for real when that
+merge lands. The first run publishes nothing; it exists because GitHub only
+offers *Run workflow* for a file already on the default branch, so without
+it a change to the packaging would first execute during the release itself,
+and a mistake there would fail the release instead of a check. Watch the
+release-candidate run before merging: what it builds is byte-for-byte what
+the release will build.
+
+Both are built on an **Apple Silicon** runner, the Intel half
+cross-compiled. GitHub's `macos-15-intel` image is announced to be the last
+x86_64 macOS runner and to go away in August 2027, and nothing in this
+repository differs between the two architectures, so the Intel image is
+inspected rather than run - architecture, deployment target, signature and
+bundle contents, read back out of the finished `.dmg`. The floor is
+enforced in three places at once (`MACOSX_DEPLOYMENT_TARGET`, the plist's
+`LSMinimumSystemVersion`, and the load commands of the linked binary), and
+a disagreement fails the build rather than a user's machine
+([macos/README.md](../macos/README.md#macos-12-and-newer)).
+
+With the secrets `MACOS_CERTIFICATE_BASE64`, `MACOS_CERTIFICATE_PASSWORD`
+and `MACOS_SIGNING_IDENTITY` the bundle and the image are signed with a
+Developer ID under the hardened runtime; adding `MACOS_NOTARY_APPLE_ID`,
+`MACOS_NOTARY_PASSWORD` and `MACOS_NOTARY_TEAM_ID` sends the image to Apple
+and staples the ticket into it, after which it opens by double-clicking.
+Without them the images are signed ad-hoc: they run, but a user's first
+launch has to be Finder's right-click ▸ *Open*
+([docs/macos.md](macos.md#signing-and-notarisation)). *Actions ▸ macOS ▸ Run
+workflow* builds both images of any branch the same way and attaches them to
+the run.
+
+Unlike Windows and Android, macOS has no in-place updater here: a newer
+image is dragged over the old application. Settings, models and the archive
+live outside the bundle and survive it.
+
+## Homebrew
+
+The cask is `rust-dicom-station`, one file covering both architectures. The
+`homebrew` job writes it with
+[macos/brew-cask.sh](../macos/brew-cask.sh) after the release exists, taking
+the two checksums out of the release's own `SHA256SUMS` so the cask cannot
+disagree with the files it points at, attaches it to the release as
+`rust-dicom-station.rb`, and commits it to the tap named by the repository
+variable `HOMEBREW_TAP` using the secret `HOMEBREW_TAP_TOKEN`.
+
+```text
+brew tap owner/tap
+brew install --cask rust-dicom-station
+brew upgrade --cask rust-dicom-station
+```
+
+Setting the tap up is three steps, once
+([docs/macos.md](macos.md#homebrew)). Without the variable or the token the
+job says so and succeeds - a release is never held up by it - and the cask
+is still attached to the release.
 
 ## Android
 

@@ -34,6 +34,17 @@ sequence.
      directly, for a client that will not pass an argument. Everything else -
      `--config`, `--check` - works as it does on the standalone binary:
      `./rust-dicom-station.AppImage mcp --check`.
+   * **macOS disk image** - the server is inside the application bundle,
+     beside the viewer, so a client is pointed at it by full path (it has
+     spaces in it, so it needs quoting):
+
+     ```json
+     { "mcpServers": { "rust-dicom-station": { "command":
+         "/Applications/Rust DICOM Station.app/Contents/MacOS/rds-mcp" } } }
+     ```
+
+     Installed through Homebrew, plain `rds-mcp` works too: the cask links
+     that same file into the prefix ([macos.md](macos.md#the-mcp-server)).
    * **Flatpak** - the server is a second command of the same application:
      `flatpak run --command=rds-mcp io.github.alexprotom.rust-dicom-station`
      ([flatpak.md](flatpak.md#the-mcp-server-in-a-flatpak)). Its roots must
@@ -49,7 +60,8 @@ sequence.
    The viewer's *Settings ▶ MCP server* menu says whether it is present.
 2. Write the configuration, `mcp.toml`, in the station's configuration folder
    (`%LOCALAPPDATA%\RustDICOMStation` on Windows, `~/.config/RustDICOMStation`
-   on Linux, `~/snap/rust-dicom-station/common/config` in the snap,
+   on Linux, `~/Library/Application Support/RustDICOMStation` on macOS,
+   `~/snap/rust-dicom-station/common/config` in the snap,
    `~/.var/app/io.github.alexprotom.rust-dicom-station/config/RustDICOMStation`
    in the Flatpak; the menu shows the exact path). Without it no dataset can be opened:
 

@@ -435,6 +435,23 @@ jobs:
     secrets: inherit
 
   # ==========================================================================
+  # macOS
+  # ==========================================================================
+  # macos.yml builds one disk image per architecture - Apple Silicon and
+  # Intel, both from an Apple Silicon runner, both for macOS 12 and newer -
+  # and returns them as `macos-dmg-arm64` and `macos-dmg-x86_64`. Signed
+  # with a Developer ID and notarised when the MACOS_* secrets are set, and
+  # ad-hoc otherwise (docs/macos.md). The GitHub Release waits for it, like
+  # for Windows, Linux and Android.
+  macos:
+    name: macOS
+    needs: version
+    uses: ./.github/workflows/macos.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+    secrets: inherit
+
+  # ==========================================================================
   # Create GitHub Release
   # ==========================================================================
   release:
@@ -444,6 +461,7 @@ jobs:
       - windows
       - linux
       - android
+      - macos
 
     runs-on: ubuntu-latest
 
@@ -467,6 +485,15 @@ jobs:
         uses: actions/download-artifact@v5
         with:
           name: android-apk
+          path: release
+
+      # Two artifacts, one per architecture - they cannot share a name,
+      # because two jobs cannot write one artifact.
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v5
+        with:
+          pattern: macos-dmg-*
+          merge-multiple: true
           path: release
 
       - name: Download winget manifests
@@ -499,6 +526,7 @@ jobs:
             rust-dicom-station-*.exe \
             rust-dicom-station-*.AppImage \
             rust-dicom-station-*.apk \
+            rust-dicom-station-*.dmg \
             > SHA256SUMS
 
           cat SHA256SUMS
@@ -516,6 +544,121 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "Rust DICOM Station ${{ needs.version.outputs.version }}" \
             --generate-notes
+
+  # ==========================================================================
+  # Homebrew
+  # ==========================================================================
+  # Writes the cask for this version - one file covering both architectures,
+  # with the checksums taken from the release's own SHA256SUMS - attaches it
+  # to the release, and commits it to the tap named by the repository
+  # variable HOMEBREW_TAP (`owner/homebrew-something`) when the secret
+  # HOMEBREW_TAP_TOKEN is set.
+  #
+  # Without either the job only says so and succeeds, so a release is never
+  # held up by it; the cask is still attached to the release, which is
+  # enough for `brew install --cask ./rust-dicom-station.rb`
+  # (docs/macos.md#homebrew).
+  homebrew:
+    name: Homebrew cask
+    needs:
+      - version
+      - release
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    env:
+      HOMEBREW_TAP: ${{ vars.HOMEBREW_TAP }}
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # The release is the source of the checksums rather than the artifacts:
+      # what a user downloads is the file on the release, and a cask whose
+      # hash does not match it fails for everyone.
+      - name: Write the cask
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern SHA256SUMS --dir .
+
+          sha_of() {
+            awk -v want="$1" '$2 == want { print $1 }' SHA256SUMS
+          }
+          arm=$(sha_of "rust-dicom-station-$VERSION-macos-arm64.dmg")
+          intel=$(sha_of "rust-dicom-station-$VERSION-macos-x86_64.dmg")
+
+          if [ -z "$arm" ] || [ -z "$intel" ]; then
+            echo "::error::SHA256SUMS has no entry for one of the disk images"
+            cat SHA256SUMS
+            exit 1
+          fi
+
+          bash macos/brew-cask.sh \
+            --version "$VERSION" \
+            --arm-sha256 "$arm" \
+            --intel-sha256 "$intel" \
+            --out cask/rust-dicom-station.rb
+
+          cat cask/rust-dicom-station.rb
+
+      - name: Attach the cask to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" cask/rust-dicom-station.rb \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: No tap, no push
+        if: env.HOMEBREW_TAP == '' || env.HOMEBREW_TAP_TOKEN == ''
+        run: |
+          echo "HOMEBREW_TAP and/or HOMEBREW_TAP_TOKEN are not set - the cask is"
+          echo "attached to the release but not pushed to a tap (docs/macos.md)."
+
+      - name: Push the cask to the tap
+        if: env.HOMEBREW_TAP != '' && env.HOMEBREW_TAP_TOKEN != ''
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone --depth 1 \
+            "https://x-access-token:$HOMEBREW_TAP_TOKEN@github.com/$HOMEBREW_TAP.git" tap
+
+          mkdir -p tap/Casks
+          cp cask/rust-dicom-station.rb tap/Casks/rust-dicom-station.rb
+
+          cd tap
+          git add Casks/rust-dicom-station.rb
+
+          # --cached, not a plain `git diff`: the very first cask is an
+          # untracked file, which a working-tree diff does not see at all -
+          # the job would report "nothing to push" and push nothing, for
+          # ever.
+          if git diff --cached --quiet; then
+            echo "the tap already carries this cask - nothing to push."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "rust-dicom-station $VERSION"
+          # `origin HEAD` rather than a bare push: a tap that was created
+          # empty has no upstream for its first branch.
+          git push origin HEAD
 
   # ==========================================================================
   # winget
