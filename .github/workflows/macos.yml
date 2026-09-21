@@ -1,0 +1,268 @@
+name: macOS
+
+# The macOS packages: the viewer and the MCP server in a .app bundle, one
+# disk image per architecture (macos/build-app.sh, docs/macos.md).
+#
+# Three ways in, like the Android workflow:
+#   * a pull request that touches the sources or macos/: a cross-compilation
+#     check of the Intel target. The Apple Silicon build is already covered
+#     by the macOS entry of ci.yml's test matrix, which runs natively; what
+#     nothing else sees is whether the *other* architecture still links.
+#   * Actions > macOS > Run workflow: both disk images of any branch,
+#     attached to the run.
+#   * the release workflow calls it on every push to main with the release's
+#     version; the two images it returns are attached to the GitHub Release.
+#
+# Everything runs on an Apple Silicon runner and the Intel half is
+# cross-compiled. GitHub's last x86_64 macOS image (macos-15-intel) is
+# announced to go away in August 2027; cross-compiling means that date is
+# not a deadline for this repository. What it costs is that the Intel binary
+# is never *run* on the runner - it is checked for architecture, deployment
+# target and signature instead.
+#
+# Signing: with MACOS_CERTIFICATE_BASE64 (a Developer ID Application .p12,
+# base64), MACOS_CERTIFICATE_PASSWORD and MACOS_SIGNING_IDENTITY the bundle
+# is signed under the hardened runtime; with MACOS_NOTARY_APPLE_ID,
+# MACOS_NOTARY_PASSWORD and MACOS_NOTARY_TEAM_ID as well, the image is
+# notarised and the ticket stapled into it. Without them everything is
+# signed ad-hoc and runs, but a user's first launch has to be Finder >
+# right-click > Open (docs/macos.md).
+
+on:
+  # Pull requests only, for the same reason as ci.yml: the merge ref is what
+  # lands, and branch protection sees to it that nothing lands unchecked.
+  pull_request:
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - "assets/**"
+      - "macos/**"
+      - ".github/workflows/macos.yml"
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: The version the disk images must carry (from Cargo.toml)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  # macOS 12 Monterey. build-app.sh exports this for cargo, writes it into
+  # LSMinimumSystemVersion and then reads it back out of the linked binary,
+  # so the three cannot drift apart.
+  MACOSX_DEPLOYMENT_TARGET: "12.0"
+
+jobs:
+  # ==========================================================================
+  # Cross-compilation check
+  # ==========================================================================
+  # Only the Intel target: the Apple Silicon one is built and tested by
+  # ci.yml on every pull request. A `check`, not a `build` - what can break
+  # here is a dependency that does not compile for x86_64-apple-darwin, and
+  # that is visible without linking or optimising.
+  check:
+    name: check (x86_64-apple-darwin)
+    if: github.event_name == 'pull_request'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-apple-darwin
+
+      # The library and both binaries - what the bundle ships. Not
+      # --all-targets: the tests and examples add a great deal of build time
+      # and nothing this job is trying to find out.
+      - name: cargo check (Intel, with the MCP server)
+        run: cargo check --features mcp --target x86_64-apple-darwin
+
+  # ==========================================================================
+  # The disk images
+  # ==========================================================================
+  # `github.event_name` is the caller's event when this workflow is called,
+  # so the release is recognised by the version it passes.
+  #
+  # One job per architecture rather than one job building both: they are two
+  # dependency graphs and cargo would build them one after the other inside
+  # a single job. Two jobs also mean two caches, each holding one graph.
+  app:
+    name: macOS ${{ matrix.arch }}
+    if: github.event_name == 'workflow_dispatch' || inputs.version != ''
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            target: aarch64-apple-darwin
+          - arch: x86_64
+            target: x86_64-apple-darwin
+
+    # Job-level, because a step's `if:` can read `env` but not `secrets`.
+    env:
+      MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Check the version
+        if: inputs.version != ''
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          have=$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -n 1)
+          if [ "$have" != "$VERSION" ]; then
+            echo "::error::Cargo.toml carries $have, the release expects $VERSION"
+            exit 1
+          fi
+
+      # ----------------------------------------------------------------------
+      # The signing certificate
+      #
+      # A keychain of its own in the runner's temporary folder, deleted with
+      # the runner. `set-key-partition-list` is the step that is easy to miss:
+      # without it macOS asks for permission the first time codesign wants
+      # the key, and a job has nobody to ask, so it hangs until it is
+      # cancelled.
+      # ----------------------------------------------------------------------
+      - name: Import the Developer ID certificate
+        if: env.MACOS_CERTIFICATE_BASE64 != ''
+        shell: bash
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/rds-signing.keychain-db"
+          password="$(uuidgen)"
+
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+
+          echo "$CERTIFICATE_BASE64" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" \
+            -k "$keychain" -P "$CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/certificate.p12"
+
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$password" "$keychain" >/dev/null
+          security list-keychain -d user -s "$keychain" login.keychain-db
+
+          if [ -z "$SIGNING_IDENTITY" ]; then
+            echo "::error::MACOS_CERTIFICATE_BASE64 is set but MACOS_SIGNING_IDENTITY is not."
+            echo "::error::It is the identity's full name, e.g. 'Developer ID Application: Name (TEAMID)'."
+            exit 1
+          fi
+          security find-identity -v -p codesigning "$keychain"
+          echo "RDS_CODESIGN_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Build the bundle and the disk image
+        shell: bash
+        env:
+          RDS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          RDS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+          RDS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+        # Through bash, so a checkout that lost the executable bit (a commit
+        # made on Windows) still works.
+        run: bash macos/build-app.sh --arch ${{ matrix.arch }}
+
+      # ----------------------------------------------------------------------
+      # What the image actually contains
+      #
+      # build-app.sh already refuses to finish on the wrong architecture or a
+      # deployment target that does not match the plist. This opens the
+      # finished image and looks again, because what is checked above is the
+      # bundle in the build folder and what a user gets is this file.
+      # ----------------------------------------------------------------------
+      - name: Inspect the disk image
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg=$(ls macos/out/rust-dicom-station-*-macos-${{ matrix.arch }}.dmg)
+          echo "$dmg"
+
+          mount="$RUNNER_TEMP/dmg"
+          mkdir -p "$mount"
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mount"
+          trap 'hdiutil detach "$mount" >/dev/null 2>&1 || true' EXIT
+
+          app="$mount/Rust DICOM Station.app"
+          test -d "$app"
+          test -L "$mount/Applications"
+
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist"
+          min=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app/Contents/Info.plist")
+          if [ "$min" != "$MACOSX_DEPLOYMENT_TARGET" ]; then
+            echo "::error::the bundle claims macOS $min, the build targets $MACOSX_DEPLOYMENT_TARGET"
+            exit 1
+          fi
+
+          for exe in rust-dicom-station rds-mcp; do
+            bin="$app/Contents/MacOS/$exe"
+            test -x "$bin"
+            got=$(lipo -archs "$bin")
+            if [ "$got" != "${{ matrix.arch }}" ]; then
+              echo "::error::$exe in the image is $got, not ${{ matrix.arch }}"
+              exit 1
+            fi
+            # `|| true`: head closes the pipe and grep dies of SIGPIPE,
+            # which pipefail would otherwise read as a failed step. This
+            # line is for the log - the check above is the check.
+            otool -l "$bin" \
+              | grep -A3 -E 'LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX' \
+              | head -n 8 || true
+          done
+
+          codesign --verify --strict --verbose=2 "$app"
+          codesign --display --verbose=2 "$app" 2>&1 | grep -E 'Identifier|Authority|flags' || true
+          test -f "$app/Contents/Resources/rust-dicom-station.icns"
+
+      # The MCP server is the one thing in the bundle that can be started
+      # without a display, and `--check` reads its configuration and exits
+      # without speaking the protocol. Only for the native architecture: this
+      # runner cannot execute an Intel binary.
+      - name: Start the MCP server from the bundle
+        if: matrix.arch == 'arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          "macos/out/Rust DICOM Station.app/Contents/MacOS/rds-mcp" --check
+
+      - name: Upload the disk image
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg-${{ matrix.arch }}
+          path: macos/out/rust-dicom-station-*-macos-${{ matrix.arch }}.dmg
+          if-no-files-found: error

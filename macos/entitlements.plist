@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the hardened runtime, used only when the bundle is signed
+  with a Developer ID (build-app.sh passes them with --options runtime).
+  An ad-hoc signature does not enable the hardened runtime and ignores them.
+
+  Deliberately short. The program is not sandboxed - it reads the patient
+  folders the user points it at, anywhere on the disk - and asking for the
+  App Sandbox would break exactly that.
+
+  allow-jit is the one thing a Metal program needs: wgpu compiles the
+  shaders of the viewport and of burn's GPU inference backend at run time
+  and hands the result to the Metal driver, which maps it executable. Under
+  the hardened runtime that fails without this entitlement, and it fails as
+  a crash on the first frame rather than as a message.
+
+  If notarisation or a run on a signed build ever needs more, add it here
+  rather than dropping --options runtime: an unhardened Developer ID build
+  cannot be notarised at all.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+</dict>
+</plist>
