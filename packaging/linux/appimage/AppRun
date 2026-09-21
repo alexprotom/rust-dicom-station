@@ -1,0 +1,25 @@
+#!/bin/sh
+# The AppImage's entry point. One file holds two programs, and this is how
+# the second one is reached: an MCP client cannot be pointed at a binary
+# inside the image, so it is pointed at the image itself with `mcp` as the
+# first argument -
+#
+#   {"command": "/path/to/rust-dicom-station.AppImage", "args": ["mcp"]}
+#
+# and a copy or symlink named rds-mcp works too (AppImage puts the name it
+# was invoked as in $ARGV0), for clients that will not pass an argument.
+# Everything else starts the viewer.
+HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+
+case "${ARGV0:-$0}" in
+  *rds-mcp) exec "$HERE/usr/bin/rds-mcp" "$@" ;;
+esac
+
+case "${1:-}" in
+  mcp|--mcp)
+    shift
+    exec "$HERE/usr/bin/rds-mcp" "$@"
+    ;;
+esac
+
+exec "$HERE/usr/bin/rust-dicom-station" "$@"

@@ -14,7 +14,7 @@ building the installer never touches the viewer's `target/`.
 
 ```
 cargo build --release                      # 1. the viewer, from the repo root
-cd installer
+cd packaging/windows/installer
 cargo build --release                      # 2. rds-setup.exe + rds-pack.exe
 cargo run --release --bin rds-pack         # 3. dist/rust-dicom-station-setup.exe
 ```
@@ -23,7 +23,7 @@ Step 3 appends the payload to the setup binary. Useful flags:
 
 | flag | effect |
 |---|---|
-| `--example-data` | ship `example_data/` too (~137 MB before compression) |
+| `--example-data` | ship `data-test/` too (~137 MB before compression) |
 | `--no-docs` | leave `docs/` out |
 | `--app <FILE>` | use a different viewer executable |
 | `--mcp <FILE>` / `--no-mcp` | the MCP server `rds-mcp.exe` rides along when `target/release/rds-mcp.exe` exists (build it with `cargo build --release --features mcp`); these override that |
@@ -45,7 +45,7 @@ publisher" warning on first run.
 
 * **Copies the program** - `rust-dicom-station.exe`, `README.md`,
   `LICENSE.txt`, `docs/`, `rds-mcp.exe` (the MCP server, see
-  [docs/mcp.md](../docs/mcp.md)) when it was built, and `example_data/` when
+  [docs/mcp.md](../../../docs/mcp.md)) when it was built, and `data-test/` when
   it was packed in - into
   `%LOCALAPPDATA%\Programs\Rust DICOM Station` (per user, the default) or
   `%ProgramFiles%\Rust DICOM Station` (all users, asks for elevation).
@@ -167,7 +167,7 @@ winget install --manifest .\winget-manifests
 ```
 
 Publishing is described in
-[docs/release-versioning.md](../docs/release-versioning.md#winget).
+[docs/release-versioning.md](../../../docs/release-versioning.md#winget).
 
 ## Command line
 
@@ -243,7 +243,7 @@ Three details make the page do its job rather than merely exist:
 
 None of this is load-bearing for a working machine, and none of it is the
 last line of defence: the viewer falls back between backends on its own too.
-See [docs/viewer.md](../docs/viewer.md#graphics-backend).
+See [docs/viewer.md](../../../docs/viewer.md#graphics-backend).
 
 ## Source map
 

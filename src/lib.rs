@@ -43,6 +43,7 @@ pub mod settings;
 pub mod simulate;
 pub mod structops;
 pub mod templates;
+pub mod testdata;
 pub mod volume;
 pub mod workflow;
 

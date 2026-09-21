@@ -76,9 +76,14 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
 
-  # The test suite, on both platforms. Windows gets its own clippy pass here
-  # rather than a job of its own: it shares this job's dependency graph, so it
-  # costs the workspace crate and nothing else.
+  # The test suite, on all three desktop platforms. Windows and macOS each
+  # get their own clippy pass here rather than a job apiece: it shares this
+  # job's dependency graph, so it costs the workspace crate and nothing else.
+  #
+  # macOS runs on the Apple Silicon image and needs no system packages - the
+  # window stack is Metal and AppKit, which come with the SDK. The Intel
+  # half of the release is a cross-compilation and is checked by macos.yml;
+  # nothing about this repository's code differs between the two.
   #
   # The GPU agreement test is #[ignore]d on purpose: runners expose a
   # *software* adapter (Mesa's lavapipe on Linux, WARP on Windows), and
@@ -90,7 +95,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-15]
     steps:
       - uses: actions/checkout@v5
 
@@ -112,6 +117,12 @@ jobs:
       # `cfg(windows)`.
       - name: cargo clippy (windows-only code)
         if: runner.os == 'Windows'
+        run: cargo clippy --all-targets -- -D warnings
+
+      # The same for `cfg(target_os = "macos")` - the Metal arm of
+      # src/gfx.rs and the Application Support paths in src/settings.rs.
+      - name: cargo clippy (macOS-only code)
+        if: runner.os == 'macOS'
         run: cargo clippy --all-targets -- -D warnings
 
       - name: cargo test
@@ -177,7 +188,7 @@ jobs:
     runs-on: windows-latest
     defaults:
       run:
-        working-directory: installer
+        working-directory: packaging/windows/installer
     steps:
       - uses: actions/checkout@v5
 
@@ -187,7 +198,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: installer
+          workspaces: packaging/windows/installer
 
       - name: cargo fmt --check
         run: cargo fmt --all -- --check

@@ -2,7 +2,7 @@
 
 Rust DICOM Station is published to [Flathub](https://flathub.org/apps/io.github.alexprotom.rust-dicom-station)
 as `io.github.alexprotom.rust-dicom-station`. The manifest is
-[flatpak/io.github.alexprotom.rust-dicom-station.yml](../flatpak/io.github.alexprotom.rust-dicom-station.yml);
+[packaging/linux/flatpak/io.github.alexprotom.rust-dicom-station.yml](../packaging/linux/flatpak/io.github.alexprotom.rust-dicom-station.yml);
 this page explains what it does and why, where the program keeps its files
 inside the sandbox, and how a version gets from `main` to Flathub.
 
@@ -118,7 +118,7 @@ executable beside it, in the same sandbox.
   portals, none of GTK.
 * **Vendored crates.** Flathub builds offline. `cargo-sources.json` lists
   every crate with its checksum, generated from `Cargo.lock` by
-  [flatpak/update-cargo-sources.sh](../flatpak/update-cargo-sources.sh).
+  [packaging/linux/flatpak/update-cargo-sources.sh](../packaging/linux/flatpak/update-cargo-sources.sh).
   This is why `Cargo.lock` is committed: the build that Flathub performs
   and the build you perform have to resolve to the same dependencies.
 * **One module, `buildsystem: simple`.** The Rust SDK extension supplies
@@ -148,7 +148,7 @@ Any Linux machine with Flatpak:
 flatpak install flathub org.flatpak.Builder
 flatpak run org.flatpak.Builder --user --force-clean --install-deps-from=flathub \
   --mirror-screenshots-url=https://dl.flathub.org/media --compose-url-policy=full \
-  --repo=repo --install build flatpak/io.github.alexprotom.rust-dicom-station.yml
+  --repo=repo --install build packaging/linux/flatpak/io.github.alexprotom.rust-dicom-station.yml
 flatpak run io.github.alexprotom.rust-dicom-station
 ```
 
@@ -189,7 +189,7 @@ Before submitting anything, run the linter Flathub runs:
 
 ```text
 flatpak run --command=flatpak-builder-lint org.flatpak.Builder manifest \
-  flatpak/io.github.alexprotom.rust-dicom-station.yml
+  packaging/linux/flatpak/io.github.alexprotom.rust-dicom-station.yml
 flatpak run --command=flatpak-builder-lint org.flatpak.Builder repo repo
 ```
 
@@ -207,7 +207,7 @@ is. The flow is:
 
 1. Fork [flathub/flathub](https://github.com/flathub/flathub), keeping every
    branch, and create a branch off `new-pr` named after the app ID.
-2. Put the five files from `flatpak/` in the root of that branch: the
+2. Put the five files from `packaging/linux/flatpak/` in the root of that branch: the
    manifest, the metainfo, the desktop entry, `cargo-sources.json` and
    `flathub.json`. The manifest has to sit at the top level under exactly
    the app ID as its name, which is how the two `type: file` sources next
@@ -223,7 +223,7 @@ is. The flow is:
 
 ### Every release
 
-1. `flatpak/update-cargo-sources.sh` after the version bump, so the vendored
+1. `packaging/linux/flatpak/update-cargo-sources.sh` after the version bump, so the vendored
    list matches the new `Cargo.lock`.
 2. Update `tag` and `commit` in the manifest, and add a `<release>` entry to
    the metainfo.

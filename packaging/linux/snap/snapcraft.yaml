@@ -1,10 +1,15 @@
 # The snap package of Rust DICOM Station: docs/snap.md explains the choices
 # made here, how to build it and how it reaches the Snap Store.
 #
-#   snapcraft pack                    build it (in an LXD container)
+# snapcraft only reads snap/snapcraft.yaml in the project root, and the
+# project root has to be the repository (`source: .` below is the viewer's
+# sources), so this folder is copied to <repo>/snap before a build:
+#
+#   packaging/linux/snap/build-snap.sh    copies it there and runs `snapcraft pack`
 #   sudo snap install --dangerous ./rust-dicom-station_*.snap
 #
-# The release workflow builds and publishes it on every push to main.
+# The release workflow does the same copy and builds and publishes the snap
+# on every push to main.
 
 name: rust-dicom-station
 title: Rust DICOM Station
@@ -117,7 +122,7 @@ parts:
       craftctl set version="$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -n 1)"
     override-build: |
       craftctl default
-      install -Dm644 snap/local/rust-dicom-station.desktop \
+      install -Dm644 packaging/linux/snap/local/rust-dicom-station.desktop \
         "$CRAFT_PART_INSTALL/usr/share/applications/rust-dicom-station.desktop"
       install -Dm644 assets/rust-dicom-station.png \
         "$CRAFT_PART_INSTALL/usr/share/icons/hicolor/256x256/apps/rust-dicom-station.png"

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Rust DICOM Station
+Comment=DICOM / RT DICOM viewer
+Exec=rust-dicom-station
+Icon=rust-dicom-station
+Terminal=false
+Categories=Graphics;

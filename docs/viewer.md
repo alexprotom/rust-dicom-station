@@ -30,6 +30,8 @@ and the answer to "where has it gone" is on the button itself.
 
 * **Generate test data** writes a synthetic RT study to try the program on.
 * **Anonymize DICOM folder** opens the anonymizer.
+* **Download test data** fetches the bundled real 4DCT study from GitHub
+  ([export-and-tools.md](export-and-tools.md#real-test-data-from-github)).
 * **Downloaded models** opens the model manager.
 
 ## Loading and volume reconstruction
@@ -594,7 +596,7 @@ matrices are; what cannot be carried across two
 unrelated images is not pretended. Window/level is shared by both datasets
 either way. Off, each dataset is navigated on its own.
 
-With the bundled data: load `example_data/`, and both 4DCT phases appear as
+With the bundled data: load `data-test/`, and both 4DCT phases appear as
 two series of one study. Right-click *CT 4DCT_phase_050* ▶ *Copy series to
 dataset B* - the phase moves into the lower row with its own phase-specific
 RTSTRUCT and comparison mode switches on. Click the tumor in any pane: every
@@ -671,7 +673,10 @@ setting only saves it the first failed attempt - worth having, because the
 attempt costs a second or two and prints a line that looks alarming.
 
 *Settings > Graphics backend* lists the backends this platform could have (no
-Direct3D outside Windows, no Metal outside macOS), each with a one-line hint,
+Direct3D outside Windows, no Metal outside macOS, and on macOS nothing but
+Metal - Apple deprecated OpenGL and never shipped Vulkan, and `wgpu` reaches
+neither there without a translation layer this program does not link), each
+with a one-line hint,
 and remembers the choice. Under the list it names the backend the program is
 actually drawing with at that moment, which after a fallback is not always the
 one that was asked for, and says that a change takes effect at the next start:

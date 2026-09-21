@@ -1,6 +1,6 @@
 [package]
 name = "rust-dicom-station"
-version = "0.9.5"
+version = "0.9.6"
 edition = "2021"
 description = "Fast, robust DICOM / RT DICOM viewer in pure Rust (CT/MR volumes, RTSTRUCT, RTDOSE, RTPLAN) with a three-view MPR layout"
 license = "MIT"
@@ -47,7 +47,7 @@ schemars = { version = "1", optional = true }
 toml = { version = "1", optional = true, default-features = false, features = ["parse", "serde", "std"] }
 
 # ---- the desktop window stack (Windows, Linux, macOS) ----
-# The Android build (see `android/`) is the same library behind a different
+# The Android build (see `packaging/android/`) is the same library behind a different
 # entry point, so the three things that differ are keyed by target here and
 # the code stays one: the window library's activity glue, the file dialog
 # (`rfd` has no Android backend; `app/pick.rs` draws one in egui there), and

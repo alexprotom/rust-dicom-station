@@ -64,6 +64,7 @@ impl ViewerApp {
         let mut open_pacs = false;
         let mut restore = false;
         let mut generate = false;
+        let mut download = false;
         let mut anonymize = false;
 
         let two_button_row_width = BUTTON_WIDTH * 2.0 + ui.spacing().item_spacing.x;
@@ -261,10 +262,27 @@ impl ViewerApp {
 
                             ui.add_space(8.0);
 
+                            // Second row: the download below the generator,
+                            // the two ways of getting data side by side.
                             centered_button_row(ui, two_button_row_width, |ui| {
                                 if ui
                                     .add_sized(
-                                        [two_button_row_width, BUTTON_HEIGHT],
+                                        [BUTTON_WIDTH, BUTTON_HEIGHT],
+                                        egui::Button::new(
+                                            "📥  Download test data",
+                                        ),
+                                    )
+                                    .on_hover_text(
+                                        "Fetch the bundled real 4DCT study from GitHub",
+                                    )
+                                    .clicked()
+                                {
+                                    download = true;
+                                }
+
+                                if ui
+                                    .add_sized(
+                                        [BUTTON_WIDTH, BUTTON_HEIGHT],
                                         egui::Button::new(
                                             "📦  Downloaded models",
                                         ),
@@ -306,6 +324,9 @@ impl ViewerApp {
 
         if generate {
             self.gen_open = true;
+        }
+        if download {
+            self.testdata_open = true;
         }
 
         if anonymize {

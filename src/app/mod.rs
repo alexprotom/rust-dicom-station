@@ -35,6 +35,7 @@ use crate::render;
 use crate::segmentation::{self, GrowState, Segmentation};
 use crate::settings::{self, PaneKind, Settings};
 use crate::simulate::{self, SimParams};
+use crate::testdata;
 use crate::volume::{ViewPlane, Volume};
 use crate::workflow;
 
@@ -80,6 +81,7 @@ mod sets;
 mod snapshot;
 mod stats_win;
 mod struct_tools;
+mod testdata_win;
 mod theme;
 mod transfer_win;
 mod tree;
@@ -1343,6 +1345,17 @@ pub struct ViewerApp {
     /// Load the generated study into slot A once it has been written.
     gen_load_after: bool,
 
+    // Tools ▶ Download test data: the repository's data-test/ from GitHub.
+    /// Dialog visibility.
+    testdata_open: bool,
+    /// Destination folder as edited in the dialog (defaults to
+    /// `<data folder>/data-test`).
+    testdata_dir: String,
+    testdata_job: Option<Job<anyhow::Result<testdata::Summary>>>,
+    testdata_result: Option<String>,
+    /// Load the first dataset into slot A once everything is there.
+    testdata_load_after: bool,
+
     // Tools ▶ Anonymize DICOM folder.
     anon_open: bool,
     /// Input folder as edited in the dialog.
@@ -1798,6 +1811,11 @@ impl ViewerApp {
             gen_job: None,
             gen_result: None,
             gen_load_after: true,
+            testdata_open: false,
+            testdata_dir: testdata::default_output_dir().display().to_string(),
+            testdata_job: None,
+            testdata_result: None,
+            testdata_load_after: true,
             anon_open: false,
             anon_dir: String::new(),
             anon_out: String::new(),
@@ -2162,6 +2180,9 @@ impl eframe::App for ViewerApp {
             Some(Err(e)) => self.error = Some(format!("Test data generation failed: {e:#}")),
             None => {}
         }
+
+        // Poll the test-data download.
+        self.poll_testdata_job(&ctx);
 
         // Poll a model download / update batch.
         self.poll_models_job(&ctx);

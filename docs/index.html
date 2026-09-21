@@ -366,7 +366,7 @@
     /* Downloads */
     .download-grid {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       gap: 12px;
     }
 
@@ -385,7 +385,16 @@
 
     .download-card h3 { margin: 0; font-size: 21px; }
     .download-card p { margin: 3px 0 24px; color: var(--muted); font-size: 13px; }
-    .download-card .button { min-width: 205px; }
+    .download-card .button { min-width: min(205px, 100%); }
+
+    /* macOS ships one image per architecture, so its card offers two. */
+    .download-choices {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      width: 100%;
+    }
+
     .download-note { color: #777; font-size: 14px; text-align: center; margin: 17px 0 0; }
 
     /* Embedded architecture workflow */
@@ -554,6 +563,10 @@
       justify-content: space-between;
       gap: 20px;
       flex-wrap: wrap;
+    }
+
+    @media (max-width: 1100px) {
+      .download-grid { grid-template-columns: repeat(2, 1fr); }
     }
 
     @media (max-width: 900px) {
@@ -749,6 +762,39 @@
         <article class="download-card">
         <div class="download-logo" aria-hidden="true">
             <img
+            src="https://upload.wikimedia.org/wikipedia/commons/3/31/Apple_logo_white.svg"
+            alt="Apple logo"
+            >
+        </div>
+
+        <div>
+            <h3>macOS</h3>
+            <p>macOS 12+ · Disk image</p>
+        </div>
+
+        <div class="download-choices">
+            <a
+            class="button primary"
+            id="macos-arm-download"
+            href="#"
+            >
+            Apple Silicon
+            </a>
+
+            <a
+            class="button"
+            id="macos-intel-download"
+            href="#"
+            >
+            Intel
+            </a>
+        </div>
+        </article>
+
+
+        <article class="download-card">
+        <div class="download-logo" aria-hidden="true">
+            <img
             src="https://upload.wikimedia.org/wikipedia/commons/d/d7/Android_robot.svg"
             alt="Android logo"
             >
@@ -775,6 +821,8 @@
         Downloads are provided through GitHub Releases.
         On Windows, a newer installer updates the installed version in place,
         and <em>Update Rust DICOM Station</em> in the Start menu fetches the newest release.
+        On macOS, <em>About This Mac</em> says which of the two images to take,
+        and the first launch of an unsigned build needs right-click &#9656; <em>Open</em>.
         On Linux it is also in the <a href="https://snapcraft.io/rust-dicom-station">Snap Store</a>
         (<code>sudo snap install rust-dicom-station</code>) and on
         <a href="https://flathub.org/apps/io.github.alexprotom.rust-dicom-station">Flathub</a>
@@ -803,12 +851,13 @@
             <div class="terminal-bar mono">shell</div>
             <pre><span class="prompt">$</span> cargo build --release
 <span class="prompt">$</span> cargo run --release -- \
-    example_data/lung_p1_4DCT_phase_000</pre>
+    data-test/lung_p1_4DCT_phase_000</pre>
           </div>
 
           <p>
             No data at hand? The application can generate a complete synthetic
-            RT study!
+            RT study, and <em>Tools &gt; Download test data</em> fetches the
+            bundled real 4DCT study from GitHub into an installed copy.
           </p>
 
           <a class="button" href="https://github.com/alexprotom/rust-dicom-station/tree/main/docs">Browse all documentation ↗</a>
@@ -1090,6 +1139,8 @@
     const windowsButton = document.getElementById("windows-download");
     const linuxButton = document.getElementById("linux-download");
     const androidButton = document.getElementById("android-download");
+    const macosArmButton = document.getElementById("macos-arm-download");
+    const macosIntelButton = document.getElementById("macos-intel-download");
 
     try {
       const response = await fetch(
@@ -1115,13 +1166,23 @@
       const androidUrl =
         `https://github.com/alexprotom/rust-dicom-station/releases/download/v${version}/rust-dicom-station-${version}-arm64-v8a.apk`;
 
+      const macosArmUrl =
+        `https://github.com/alexprotom/rust-dicom-station/releases/download/v${version}/rust-dicom-station-${version}-macos-arm64.dmg`;
+
+      const macosIntelUrl =
+        `https://github.com/alexprotom/rust-dicom-station/releases/download/v${version}/rust-dicom-station-${version}-macos-x86_64.dmg`;
+
       windowsButton.href = windowsUrl;
       linuxButton.href = linuxUrl;
       androidButton.href = androidUrl;
+      macosArmButton.href = macosArmUrl;
+      macosIntelButton.href = macosIntelUrl;
 
       windowsButton.download = "";
       linuxButton.download = "";
       androidButton.download = "";
+      macosArmButton.download = "";
+      macosIntelButton.download = "";
 
     } catch (error) {
       console.error("Failed to load latest release:", error);
@@ -1135,6 +1196,12 @@
         "https://github.com/alexprotom/rust-dicom-station/releases/latest";
 
       androidButton.href =
+        "https://github.com/alexprotom/rust-dicom-station/releases/latest";
+
+      macosArmButton.href =
+        "https://github.com/alexprotom/rust-dicom-station/releases/latest";
+
+      macosIntelButton.href =
         "https://github.com/alexprotom/rust-dicom-station/releases/latest";
     }
   }

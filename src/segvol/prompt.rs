@@ -267,6 +267,19 @@ impl PromptEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two token rows that should be the same token. Not `assert_eq!`: the
+    /// positional part comes out of a matrix product whose accumulation
+    /// order depends on the batch shape and the target (fused multiply-add
+    /// on aarch64), so the same point encoded in a 2-row and in a 3-row
+    /// batch agrees to 1e-7 but not bit for bit. CI on Apple Silicon found
+    /// this; the neighbouring tests already compare with a tolerance.
+    fn assert_rows_close(a: &[f32], b: &[f32]) {
+        assert_eq!(a.len(), b.len());
+        for (c, (x, y)) in a.iter().zip(b).enumerate() {
+            assert!((x - y).abs() < 1e-5, "channel {c}: {x} vs {y}");
+        }
+    }
     use crate::nn::cache::WTensor;
     use std::collections::HashMap;
 
@@ -410,8 +423,8 @@ mod tests {
             None,
         );
         assert_eq!(p2.sparse.rows, 4);
-        assert_eq!(p2.sparse.row(0), p.sparse.row(0));
-        assert_eq!(p2.sparse.row(1), p.sparse.row(1));
+        assert_rows_close(p2.sparse.row(0), p.sparse.row(0));
+        assert_rows_close(p2.sparse.row(1), p.sparse.row(1));
     }
 
     #[test]
@@ -428,7 +441,7 @@ mod tests {
         );
         assert_eq!(b.sparse.rows, 3);
         // the point token itself is the same either way
-        assert_eq!(a.sparse.row(0), b.sparse.row(0));
+        assert_rows_close(a.sparse.row(0), b.sparse.row(0));
     }
 
     #[test]

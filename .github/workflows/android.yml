@@ -1,10 +1,10 @@
 name: Android
 
 # The Android package: the viewer as a shared library for arm64-v8a, wrapped
-# in an APK by android/build-apk.sh (docs/android.md).
+# in an APK by packaging/android/build-apk.sh (docs/android.md).
 #
 # Three ways in:
-#   * a pull request that touches the viewer's sources or the android/
+#   * a pull request that touches the viewer's sources or the packaging/android/
 #     crate: `cargo ndk check` of the Android crate, which is the
 #     cross-compilation proof and takes a fraction of a release build. It is
 #     a job of its own here rather than a step of ci.yml because it is a
@@ -30,7 +30,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "build.rs"
-      - "android/**"
+      - "packaging/android/**"
       - ".github/workflows/android.yml"
   workflow_dispatch:
   workflow_call:
@@ -73,7 +73,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: android
+          workspaces: packaging/android
           cache-bin: true
 
       - name: Install cargo-ndk
@@ -82,7 +82,7 @@ jobs:
       # The runner image ships several NDKs; cargo-ndk takes the newest under
       # $ANDROID_HOME/ndk unless told otherwise.
       - name: cargo ndk check
-        working-directory: android
+        working-directory: packaging/android
         run: |
           export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
           cargo ndk -t arm64-v8a -P "$ANDROID_API" check
@@ -105,7 +105,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: android
+          workspaces: packaging/android
           cache-bin: true
 
       - name: Install cargo-ndk
@@ -149,7 +149,7 @@ jobs:
           export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
           # Through bash, so a checkout that lost the executable bit (a
           # commit made on Windows) still works.
-          bash android/build-apk.sh
+          bash packaging/android/build-apk.sh
 
       # The package is inspected rather than run: there is no Android
       # emulator worth the minutes on a hosted runner, and what can go wrong
@@ -160,14 +160,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          apk=$(ls android/out/rust-dicom-station-*-arm64-v8a.apk)
+          apk=$(ls packaging/android/out/rust-dicom-station-*-arm64-v8a.apk)
           tools=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n1)
           "$tools/aapt2" dump badging "$apk" | grep -E "^(package|application-label|sdkVersion|targetSdkVersion|native-code|uses-permission)"
           unzip -l "$apk" | grep -E "lib/arm64-v8a/librust_dicom_station.so|AndroidManifest.xml|mipmap"
           "$tools/apksigner" verify --print-certs "$apk"
           # Segments aligned to 16 KB, or the library does not load on a
-          # device with 16 KB pages (android/.cargo/config.toml).
-          so=android/out/lib/arm64-v8a/librust_dicom_station.so
+          # device with 16 KB pages (packaging/android/.cargo/config.toml).
+          so=packaging/android/out/lib/arm64-v8a/librust_dicom_station.so
           readelf -lW "$so" | grep LOAD
           readelf -lW "$so" | grep LOAD | while read -r line; do
             align=${line##* }
@@ -181,5 +181,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: android-apk
-          path: android/out/rust-dicom-station-*-arm64-v8a.apk
+          path: packaging/android/out/rust-dicom-station-*-arm64-v8a.apk
           if-no-files-found: error

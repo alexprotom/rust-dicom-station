@@ -11,7 +11,7 @@
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-root=$(dirname "$here")
+root=$(CDPATH= cd -- "$here/../../.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 

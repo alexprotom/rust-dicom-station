@@ -295,7 +295,7 @@ impl SnapEnv {
     }
 
     /// The desktop launcher the snap's viewer command runs through (put
-    /// there by the GNOME extension, see `snap/snapcraft.yaml`), when it
+    /// there by the GNOME extension, see `packaging/linux/snap/snapcraft.yaml`), when it
     /// exists.
     pub fn desktop_launcher(&self) -> Option<PathBuf> {
         let p = self
@@ -474,7 +474,7 @@ pub fn default_models_dir() -> PathBuf {
 
 /// Android has no home folder and no environment variable for the app's
 /// storage: the activity hands the two folders over at start-up, and the
-/// Android entry point (`android/src/lib.rs`) stores them here before
+/// Android entry point (`packaging/android/src/lib.rs`) stores them here before
 /// anything reads a setting. Both are private to the app: the first is
 /// file-encrypted internal storage (settings), the second the app's folder
 /// on the shared storage (models, archive), which needs no permission and

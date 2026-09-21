@@ -118,7 +118,7 @@ jobs:
     runs-on: windows-latest
     defaults:
       run:
-        working-directory: installer
+        working-directory: packaging/windows/installer
 
     steps:
       - name: Checkout
@@ -130,7 +130,7 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: installer
+          workspaces: packaging/windows/installer
 
       # Build rds-setup.exe and rds-pack.exe.
       - name: Build installer
@@ -141,8 +141,8 @@ jobs:
         with:
           name: windows-setup-exe
           path: |
-            installer/target/release/rds-setup.exe
-            installer/target/release/rds-pack.exe
+            packaging/windows/installer/target/release/rds-setup.exe
+            packaging/windows/installer/target/release/rds-pack.exe
           if-no-files-found: error
           retention-days: 1
 
@@ -243,163 +243,30 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
-      # `--features mcp` adds the second executable, rds-mcp, which the
-      # AppImage carries beside the viewer.
-      - name: Build viewer
-        run: cargo build --release --features mcp
-
-      # ----------------------------------------------------------------------
-      # AppImage AppDir
+      # packaging/linux/appimage/build-appimage.sh: the release build of both
+      # executables, the AppDir (desktop entry, icon, the AppRun that routes
+      # `mcp` to the server), linuxdeploy, and the checks - the file is
+      # executable and `<image> mcp --check` starts the MCP server. Models
+      # are intentionally NOT included: the application downloads them at
+      # run time into ~/.local/share/RustDICOMStation/models.
       #
-      # Models are intentionally NOT included.
-      #
-      # The application downloads them at runtime to:
-      #
-      #   ~/.local/share/RustDICOMStation/models
-      # ----------------------------------------------------------------------
-      - name: Prepare AppDir
+      # Through bash, so a checkout that lost the executable bit (a commit
+      # made on Windows) still works.
+      - name: Build the AppImage
+        shell: bash
+        run: bash packaging/linux/appimage/build-appimage.sh
+
+      - name: Check the version
         shell: bash
         run: |
           set -euo pipefail
-
-          mkdir -p AppDir/usr/bin
-          mkdir -p AppDir/usr/share/applications
-          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
-
-
-          cp target/release/rust-dicom-station \
-             AppDir/usr/bin/rust-dicom-station
-
-          cp target/release/rds-mcp \
-             AppDir/usr/bin/rds-mcp
-
-          cp assets/rust-dicom-station.png \
-             AppDir/usr/share/icons/hicolor/256x256/apps/rust-dicom-station.png
-
-          cat > AppDir/usr/share/applications/rust-dicom-station.desktop <<'EOF'
-          [Desktop Entry]
-          Type=Application
-          Name=Rust DICOM Station
-          Comment=DICOM / RT DICOM viewer
-          Exec=rust-dicom-station
-          Icon=rust-dicom-station
-          Terminal=false
-          Categories=Graphics;
-          EOF
-
-          # An AppImage is one file, so an MCP client cannot be pointed at a
-          # binary inside it. It is pointed at the AppImage instead:
-          #
-          #   {"command": "/path/to/RDS.AppImage", "args": ["mcp"]}
-          #
-          # A copy or symlink named rds-mcp works too - AppImage puts the name
-          # it was invoked as in $ARGV0 - for clients that will not pass an
-          # argument.
-          cat > AppRun <<'EOF'
-          #!/bin/sh
-          HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-
-          case "${ARGV0:-$0}" in
-            *rds-mcp) exec "$HERE/usr/bin/rds-mcp" "$@" ;;
-          esac
-
-          case "${1:-}" in
-            mcp|--mcp)
-              shift
-              exec "$HERE/usr/bin/rds-mcp" "$@"
-              ;;
-          esac
-
-          exec "$HERE/usr/bin/rust-dicom-station" "$@"
-          EOF
-
-          chmod +x AppRun
-          cp AppRun AppDir/AppRun
-
-      # ----------------------------------------------------------------------
-      # Download linuxdeploy
-      # ----------------------------------------------------------------------
-      - name: Download linuxdeploy
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          wget -q \
-            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage \
-            -O linuxdeploy.AppImage
-
-          chmod +x linuxdeploy.AppImage
-
-      # ----------------------------------------------------------------------
-      # Build AppImage
-      # ----------------------------------------------------------------------
-      - name: Build AppImage
-        shell: bash
-        env:
-          NO_STRIP: 1
-        run: |
-          set -euo pipefail
-
-          # The AppRun is named explicitly rather than left to linuxdeploy's
-          # "keep whatever is in the AppDir" behaviour: what makes the MCP
-          # server reachable at all is the dispatcher in it, and that is not
-          # something to leave to a flag-free default in a tool pinned to
-          # `continuous`.
-          ./linuxdeploy.AppImage \
-            --appdir AppDir \
-            --custom-apprun AppRun \
-            --output appimage
-
-      - name: Rename AppImage
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          APPIMAGE=$(find . -maxdepth 1 \
-            -type f \
-            -name '*.AppImage' \
-            ! -name 'linuxdeploy.AppImage' \
-            -print -quit)
-
-          if [ -z "$APPIMAGE" ]; then
-            echo "::error::AppImage was not generated"
-            exit 1
-          fi
-
-          OUTPUT="rust-dicom-station-${{ needs.version.outputs.version }}-linux-x86_64.AppImage"
-
-          mv "$APPIMAGE" "$OUTPUT"
-          chmod +x "$OUTPUT"
-
-          echo "Created $OUTPUT"
-
-      - name: Validate AppImage
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          OUTPUT="rust-dicom-station-${{ needs.version.outputs.version }}-linux-x86_64.AppImage"
-
-          file "$OUTPUT"
-
-          if [ ! -x "$OUTPUT" ]; then
-            echo "::error::AppImage is not executable"
-            exit 1
-          fi
-
-          # The MCP server has to be reachable, which means the dispatcher in
-          # AppRun survived the packaging. `--check` reads the configuration
-          # and exits without speaking the protocol, so it is safe to run here.
-          if ! ./"$OUTPUT" mcp --check; then
-            echo "::error::the AppImage does not run the MCP server on '\''mcp'\''"
-            exit 1
-          fi
+          test -f "packaging/linux/appimage/out/rust-dicom-station-${{ needs.version.outputs.version }}-linux-x86_64.AppImage"
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
           name: linux-release
-          path: rust-dicom-station-${{ needs.version.outputs.version }}-linux-x86_64.AppImage
+          path: packaging/linux/appimage/out/rust-dicom-station-${{ needs.version.outputs.version }}-linux-x86_64.AppImage
           if-no-files-found: error
 
   # ==========================================================================
@@ -435,6 +302,23 @@ jobs:
     secrets: inherit
 
   # ==========================================================================
+  # macOS
+  # ==========================================================================
+  # macos.yml builds one disk image per architecture - Apple Silicon and
+  # Intel, both from an Apple Silicon runner, both for macOS 12 and newer -
+  # and returns them as `macos-dmg-arm64` and `macos-dmg-x86_64`. Signed
+  # with a Developer ID and notarised when the MACOS_* secrets are set, and
+  # ad-hoc otherwise (docs/macos.md). The GitHub Release waits for it, like
+  # for Windows, Linux and Android.
+  macos:
+    name: macOS
+    needs: version
+    uses: ./.github/workflows/macos.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+    secrets: inherit
+
+  # ==========================================================================
   # Create GitHub Release
   # ==========================================================================
   release:
@@ -444,6 +328,7 @@ jobs:
       - windows
       - linux
       - android
+      - macos
 
     runs-on: ubuntu-latest
 
@@ -467,6 +352,15 @@ jobs:
         uses: actions/download-artifact@v5
         with:
           name: android-apk
+          path: release
+
+      # Two artifacts, one per architecture - they cannot share a name,
+      # because two jobs cannot write one artifact.
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v5
+        with:
+          pattern: macos-dmg-*
+          merge-multiple: true
           path: release
 
       - name: Download winget manifests
@@ -499,6 +393,7 @@ jobs:
             rust-dicom-station-*.exe \
             rust-dicom-station-*.AppImage \
             rust-dicom-station-*.apk \
+            rust-dicom-station-*.dmg \
             > SHA256SUMS
 
           cat SHA256SUMS
@@ -516,6 +411,121 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "Rust DICOM Station ${{ needs.version.outputs.version }}" \
             --generate-notes
+
+  # ==========================================================================
+  # Homebrew
+  # ==========================================================================
+  # Writes the cask for this version - one file covering both architectures,
+  # with the checksums taken from the release's own SHA256SUMS - attaches it
+  # to the release, and commits it to the tap named by the repository
+  # variable HOMEBREW_TAP (`owner/homebrew-something`) when the secret
+  # HOMEBREW_TAP_TOKEN is set.
+  #
+  # Without either the job only says so and succeeds, so a release is never
+  # held up by it; the cask is still attached to the release, which is
+  # enough for `brew install --cask ./rust-dicom-station.rb`
+  # (docs/macos.md#homebrew).
+  homebrew:
+    name: Homebrew cask
+    needs:
+      - version
+      - release
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    env:
+      HOMEBREW_TAP: ${{ vars.HOMEBREW_TAP }}
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # The release is the source of the checksums rather than the artifacts:
+      # what a user downloads is the file on the release, and a cask whose
+      # hash does not match it fails for everyone.
+      - name: Write the cask
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern SHA256SUMS --dir .
+
+          sha_of() {
+            awk -v want="$1" '$2 == want { print $1 }' SHA256SUMS
+          }
+          arm=$(sha_of "rust-dicom-station-$VERSION-macos-arm64.dmg")
+          intel=$(sha_of "rust-dicom-station-$VERSION-macos-x86_64.dmg")
+
+          if [ -z "$arm" ] || [ -z "$intel" ]; then
+            echo "::error::SHA256SUMS has no entry for one of the disk images"
+            cat SHA256SUMS
+            exit 1
+          fi
+
+          bash packaging/macos/brew-cask.sh \
+            --version "$VERSION" \
+            --arm-sha256 "$arm" \
+            --intel-sha256 "$intel" \
+            --out cask/rust-dicom-station.rb
+
+          cat cask/rust-dicom-station.rb
+
+      - name: Attach the cask to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" cask/rust-dicom-station.rb \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: No tap, no push
+        if: env.HOMEBREW_TAP == '' || env.HOMEBREW_TAP_TOKEN == ''
+        run: |
+          echo "HOMEBREW_TAP and/or HOMEBREW_TAP_TOKEN are not set - the cask is"
+          echo "attached to the release but not pushed to a tap (docs/macos.md)."
+
+      - name: Push the cask to the tap
+        if: env.HOMEBREW_TAP != '' && env.HOMEBREW_TAP_TOKEN != ''
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone --depth 1 \
+            "https://x-access-token:$HOMEBREW_TAP_TOKEN@github.com/$HOMEBREW_TAP.git" tap
+
+          mkdir -p tap/Casks
+          cp cask/rust-dicom-station.rb tap/Casks/rust-dicom-station.rb
+
+          cd tap
+          git add Casks/rust-dicom-station.rb
+
+          # --cached, not a plain `git diff`: the very first cask is an
+          # untracked file, which a working-tree diff does not see at all -
+          # the job would report "nothing to push" and push nothing, for
+          # ever.
+          if git diff --cached --quiet; then
+            echo "the tap already carries this cask - nothing to push."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "rust-dicom-station $VERSION"
+          # `origin HEAD` rather than a bare push: a tap that was created
+          # empty has no upstream for its first branch.
+          git push origin HEAD
 
   # ==========================================================================
   # winget

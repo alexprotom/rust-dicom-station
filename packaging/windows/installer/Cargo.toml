@@ -5,9 +5,9 @@
 # --release` in the repository root never compiles the installer, and building
 # the installer never touches the viewer's `target/` directory.
 #
-#   cd installer
-#   cargo build --release                # -> installer/target/release/rds-setup.exe
-#   cargo run --release --bin rds-pack   # -> installer/dist/rust-dicom-station-setup.exe
+#   cd packaging/windows/installer
+#   cargo build --release                # -> packaging/windows/installer/target/release/rds-setup.exe
+#   cargo run --release --bin rds-pack   # -> packaging/windows/installer/dist/rust-dicom-station-setup.exe
 
 [package]
 name = "rds-setup"
@@ -43,7 +43,7 @@ egui = "0.36"
 # Optional: pre-download and convert the TotalSegmentator weights at install
 # time by reusing the viewer's own (pure-Rust) downloader. Built without the
 # GPU backend - this only writes the model cache, it never runs inference.
-rust-dicom-station = { path = "..", default-features = false, optional = true }
+rust-dicom-station = { path = "../../..", default-features = false, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [

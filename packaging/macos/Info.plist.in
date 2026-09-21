@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The bundle's description of itself. build-app.sh substitutes @VERSION@ and
+  @MIN_MACOS@ and writes the result to Contents/Info.plist; nothing else in
+  the file is generated, so this is the place to change what Finder, the
+  Dock and "About this Mac ▸ Software" say about the program.
+
+  Two entries are load-bearing:
+
+  * LSMinimumSystemVersion is what stops macOS 11 and older from opening a
+    binary that was built against a newer C library. It must agree with the
+    MACOSX_DEPLOYMENT_TARGET the executables were compiled with, and
+    build-app.sh checks that it does by reading the deployment target back
+    out of the linked binary.
+  * CFBundleExecutable names Contents/MacOS/rust-dicom-station. The MCP
+    server sits beside it as Contents/MacOS/rds-mcp, which is exactly where
+    settings::mcp_exe_path() looks for it (it takes the folder of the
+    running executable), so the viewer finds it inside the bundle without
+    any macOS-specific code.
+
+  No CFBundleDocumentTypes on purpose. Declaring them would put the program
+  in "Open with" for folders and DICOM files, but macOS delivers such an
+  open as an Apple Event rather than as an argument, and the viewer reads
+  its two paths from argv (main.rs). The entry would therefore promise
+  something that silently does nothing; opening a folder from inside the
+  program works as it does everywhere else.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Rust DICOM Station</string>
+    <key>CFBundleDisplayName</key>
+    <string>Rust DICOM Station</string>
+    <key>CFBundleIdentifier</key>
+    <string>io.github.alexprotom.rust-dicom-station</string>
+    <key>CFBundleExecutable</key>
+    <string>rust-dicom-station</string>
+    <key>CFBundleIconFile</key>
+    <string>rust-dicom-station</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@VERSION@</string>
+    <key>CFBundleVersion</key>
+    <string>@VERSION@</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>@MIN_MACOS@</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.medical</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <!-- The viewer has a dark theme of its own and follows the system one;
+         opting out of Aqua is what lets it be asked which that is. -->
+    <key>NSRequiresAquaSystemAppearance</key>
+    <false/>
+    <key>NSHumanReadableCopyright</key>
+    <string>MIT licensed. See LICENSE.txt in the repository.</string>
+</dict>
+</plist>

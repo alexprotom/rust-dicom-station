@@ -163,9 +163,10 @@ rust-dicom-station
 ├── Tools: the two PyTorch scripts that produce the MedSAM2 reference fixtures
 ├── Installer: Windows setup (shortcuts, VC++ runtime, optional weight prefetch, uninstall,
 │   in-place update of an existing installation, update to the newest release, winget)
-└── CI: fmt, clippy -D warnings, tests on Linux + Windows, CPU-only build; every push
-    to main builds the installer, its winget manifests and a Linux AppImage into a
-    GitHub release, and submits the version to winget
+└── CI: fmt, clippy -D warnings, tests on Linux + Windows + macOS, CPU-only build; every
+    push to main builds the Windows installer and its winget manifests, the Linux
+    AppImage and snap, the two macOS disk images and the Android APK (packaging/)
+    into a GitHub release, and submits the version to winget
 ```
 
 ### Sources of the algorithms
@@ -322,6 +323,7 @@ src/
     pacs_win.rs       the PACS window: archive root, patient / study list,
                       import, load, send back
     models_win.rs     the model manager window
+    testdata_win.rs   the Download test data window over testdata.rs
 
   loader.rs         directory / file-list scan, classification, parallel volume
                     loading, dataset merging, safe DICOM element helpers         DICOM
@@ -357,6 +359,8 @@ src/
                     references between the written objects resolvable          DICOM
   anonymize.rs      interactive DICOM anonymizer engine                          DICOM
   gen_test_data.rs  synthetic RT phantom study generator                         Sim
+  testdata.rs       the bundled real 4DCT (data-test/) fetched from GitHub:
+                    git trees listing, raw downloads, resumable                  Sim
   simulate.rs       known-transform study generator (registration QA)           Sim
   drr.rs            DRR: IEC cone-beam geometry, Siddon exact tracing and
                     ITK-style interpolating ray-casting                          Sim
@@ -502,9 +506,29 @@ tests/             the integration suites (see Testing); common/ holds the
 examples/          autoseg_cli, autoseg_probe, body_cli, segvol_cli, segvol_probe,
                    medsam2_cli, medsam2_probe, gen_ops_fixtures (writes the op
                    fixture); common/ holds what the CLIs share
-installer/         the Windows installer, its own workspace (see its README);
+packaging/         everything that turns the viewer into an installable package,
+                   one folder per platform (see packaging/README.md); nothing in
+                   it is part of a root cargo build
+  windows/
+    installer/     the Windows installer, its own workspace (see its README);
                    built by the release workflow
-android/           the Android front end, its own workspace: android_main
+    winget/        where rds-pack --winget writes the manifests (git-ignored)
+    windowsstore/  prepared for a Microsoft Store submission; nothing built yet
+  linux/
+    appimage/      AppRun, the desktop entry and build-appimage.sh; run by
+                   the release workflow
+    flatpak/       the Flathub manifest, cargo-sources.json, desktop entry
+                   and metainfo (docs/flatpak.md)
+    snap/          snapcraft.yaml and the desktop entry (docs/snap.md);
+                   copied to <repo>/snap at build time, where snapcraft
+                   looks for it
+  macos/           the macOS packaging and nothing else - no crate, no code:
+                   the .app bundle's plist, the hardened-runtime
+                   entitlements, the script that builds bundle and disk
+                   image for one architecture, and the Homebrew cask
+                   generator (docs/macos.md); run by the release workflow
+                   once per architecture
+  android/         the Android front end, its own workspace: android_main
                    over the same ViewerApp, the manifest, the icons and the
                    packaging script (docs/android.md); built by the release
                    workflow

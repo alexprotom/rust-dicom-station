@@ -1,6 +1,6 @@
 name: Flatpak
 
-# Builds the Flatpak from flatpak/io.github.alexprotom.rust-dicom-station.yml
+# Builds the Flatpak from packaging/linux/flatpak/io.github.alexprotom.rust-dicom-station.yml
 # and runs the two linters Flathub runs, so a manifest change can be proven
 # before it goes to Flathub (docs/flatpak.md).
 #
@@ -58,7 +58,7 @@ jobs:
       - name: Lint the manifest
         run: |
           flatpak run --command=flatpak-builder-lint org.flatpak.Builder \
-            manifest flatpak/io.github.alexprotom.rust-dicom-station.yml
+            manifest packaging/linux/flatpak/io.github.alexprotom.rust-dicom-station.yml
 
       # The crates come from cargo-sources.json, so the build itself needs
       # no network.
@@ -76,7 +76,7 @@ jobs:
             --force-clean --repo=repo \
             --mirror-screenshots-url=https://dl.flathub.org/media \
             --compose-url-policy=full \
-            build flatpak/io.github.alexprotom.rust-dicom-station.yml
+            build packaging/linux/flatpak/io.github.alexprotom.rust-dicom-station.yml
 
       # Newer flatpak-builder commits the mirrored screenshots itself
       # ("Committed screenshot ref" in the Build log). Committing again would
