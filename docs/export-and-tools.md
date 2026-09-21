@@ -250,3 +250,32 @@ a rigid run in the *Image registration* module should then recover the
 (12, −9, 0) mm shift to within a fraction of a millimeter. The phantom is
 analytically known, which is what the integration tests assert against - see
 [architecture.md](architecture.md#testing).
+
+## Real test data from GitHub
+
+*Tools ▶ 📥 Download test data* (also on the start screen, below the
+generator) fetches the repository's bundled patient study - two breathing
+phases of a real 4DCT with an RT Structure Set each, TCIA 4D-Lung P102,
+137 MB in 268 files, described in [example-data.md](example-data.md) - so an
+installed copy of the program has clinical data to open without a clone of
+the source tree. The destination defaults to `data-test/` in the
+application's data folder (beside the models and the generated study) and
+can be any folder; the two phases land in
+`lung_p1_4DCT_phase_000/` and `lung_p1_4DCT_phase_050/` under it, and the
+first is loaded into slot A when the download ends, unless the box is
+unticked.
+
+The listing comes from GitHub's git API (one call, no token; when that
+call is refused for the API's rate limit of 60 an hour per address, the
+built-in list of the folder's 268 files is used instead) and the files
+from `raw.githubusercontent.com`, through the same downloader the model
+weights use (`src/testdata.rs`). A file already in the folder with the
+listed size is not fetched again, so *Cancel* or a dropped connection costs
+nothing but the file in flight, which is removed; running the tool again
+continues where it stopped, and a run that finds everything present says so
+and touches nothing. Both phases in comparison mode is then *right-click
+one phase ▶ Copy series to dataset B*, or from the command line:
+
+```
+rust-dicom-station <data folder>/data-test/lung_p1_4DCT_phase_000 <data folder>/data-test/lung_p1_4DCT_phase_050
+```

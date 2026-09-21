@@ -1,6 +1,6 @@
 name: Snap
 
-# Builds the snap from snap/snapcraft.yaml, installs it on the runner, checks
+# Builds the snap from packaging/linux/snap/snapcraft.yaml, installs it on the runner, checks
 # that both commands start inside the confinement, and publishes it to the
 # Snap Store when the secret SNAPCRAFT_STORE_CREDENTIALS is set
 # (docs/snap.md).
@@ -48,6 +48,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      # snapcraft reads its recipe from snap/snapcraft.yaml in the project
+      # root and nowhere else, and the project root has to be the repository
+      # (the recipe's `source: .` is the viewer's sources). The recipe lives
+      # with the other packaging in packaging/linux/snap, so it is copied
+      # into place first; /snap is git-ignored for the same reason.
+      - name: Put the recipe where snapcraft looks for it
+        run: |
+          rm -rf snap
+          cp -r packaging/linux/snap snap
 
       # snapcraft in a fresh LXD container: rustup, the GNOME SDK and the
       # release build of both executables. Nothing is cached between runs.

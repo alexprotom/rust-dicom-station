@@ -1,5 +1,5 @@
 //! Interactive DICOM anonymizer (*Tools ▶ Anonymize DICOM folder…*). It
-//! grew out of the one-off script that prepared `example_data/` and
+//! grew out of the one-off script that prepared `data-test/` and
 //! generalizes it: any folder, every identifying tag, editable proposals.
 //!
 //! Two phases, both on background threads:

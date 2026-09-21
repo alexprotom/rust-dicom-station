@@ -5,9 +5,9 @@ The same viewer as an Android package for tablets: this crate is
 manifest, the launcher icons and the script that turns the shared library
 into an APK. Everything about installing it, what differs on a tablet,
 where its files are, building, signing and releasing is in
-[docs/android.md](../docs/android.md).
+[docs/android.md](../../docs/android.md).
 
-**This crate is a separate workspace**, like `installer/`: `cargo build` in
+**This crate is a separate workspace**, like `packaging/windows/installer/`: `cargo build` in
 the repository root never compiles it, and building it never touches the
 viewer's `target/`.
 

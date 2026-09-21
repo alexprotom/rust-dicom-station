@@ -5,9 +5,9 @@ Windows and Linux: the same viewer, the same modules, the same windows,
 compiled for `arm64-v8a` and packaged as an APK. Nothing was taken out and
 nothing was redrawn for touch; a tablet with a mouse, a keyboard or a stylus
 gets the desktop program, and a finger gets it too, with the notes below.
-The package is built by [android/build-apk.sh](../android/build-apk.sh)
-from the crate in [android/](../android/), the way the Windows installer
-is built from [installer/](../installer/README.md), and every release
+The package is built by [packaging/android/build-apk.sh](../packaging/android/build-apk.sh)
+from the crate in [packaging/android/](../packaging/android/), the way the Windows installer
+is built from [packaging/windows/installer/](../packaging/windows/installer/README.md), and every release
 attaches it as `rust-dicom-station-<version>-arm64-v8a.apk`.
 
 Phones are not a target. The three linked panes, the data tree and the
@@ -77,7 +77,7 @@ the 4D pipeline work; they heat the device.
 
 Android gives every app two folders, and the program uses both. The
 activity hands them over at start (`settings::android::set_dirs`,
-`android/src/lib.rs`), since Android has no home folder and no environment
+`packaging/android/src/lib.rs`), since Android has no home folder and no environment
 variable for either.
 
 | | Desktop (Linux) | Android |
@@ -103,7 +103,7 @@ adb logcat -s rds
 
 ## The crate, piece by piece
 
-[android/](../android/) is a separate workspace like `installer/`:
+[packaging/android/](../packaging/android/) is a separate workspace like `packaging/windows/installer/`:
 `cargo build` in the repository root never compiles it, and the desktop
 build graph does not change. It holds:
 
@@ -169,13 +169,13 @@ rustup target add aarch64-linux-android
 cargo install cargo-ndk
 export ANDROID_HOME=~/Android/Sdk            # or wherever Android Studio put it
 export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/<version>
-android/build-apk.sh                          # -> android/out/rust-dicom-station-<version>-arm64-v8a.apk
+packaging/android/build-apk.sh                          # -> packaging/android/out/rust-dicom-station-<version>-arm64-v8a.apk
 ```
 
 `--dev` builds the dev profile (quicker to build, slower to run),
-`--skip-build` repackages the library the last run left in `android/out/lib`.
+`--skip-build` repackages the library the last run left in `packaging/android/out/lib`.
 The library alone, without a package, is `cargo ndk -t arm64-v8a -P 30
-build --release` in `android/`; `cargo ndk -t arm64-v8a -P 30 check` there
+build --release` in `packaging/android/`; `cargo ndk -t arm64-v8a -P 30 check` there
 is the cross-compilation check that CI runs on pull requests.
 
 Without the SDK installed, the script also accepts `aapt2`, `zipalign` and
@@ -193,7 +193,7 @@ signed with the release key, and the release key does not update it.
 ## Releasing
 
 [android.yml](../.github/workflows/android.yml) runs on pull requests
-that touch `src/` or `android/`, with `cargo ndk check` of the Android
+that touch `src/` or `packaging/android/`, with `cargo ndk check` of the Android
 crate; *Actions > Android > Run workflow* builds the APK of any branch and
 attaches it to the run (`android-apk`); and the release workflow calls it
 with the version on every push to `main`, then attaches the APK to the

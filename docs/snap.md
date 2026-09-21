@@ -1,7 +1,7 @@
 # The snap package
 
 Rust DICOM Station is published to the [Snap Store](https://snapcraft.io/rust-dicom-station)
-as `rust-dicom-station`. The recipe is [snap/snapcraft.yaml](../snap/snapcraft.yaml);
+as `rust-dicom-station`. The recipe is [packaging/linux/snap/snapcraft.yaml](../packaging/linux/snap/snapcraft.yaml);
 this page explains what it does and why, where the program keeps its files
 inside a snap, and how a version gets from `main` to the store. The Flatpak
 ([flatpak.md](flatpak.md)) is the same program packaged the other way.
@@ -158,7 +158,7 @@ Two details of the recipe exist for the server:
   `libxkbcommon-x11`, which neither runtime ships. It is the one library the
   snap carries itself; snapcraft puts `$SNAP/usr/lib/<arch>` into the snap's
   `LD_LIBRARY_PATH`, so staging it is all it takes.
-* **The desktop entry** is `snap/local/rust-dicom-station.desktop`, installed
+* **The desktop entry** is `packaging/linux/snap/local/rust-dicom-station.desktop`, installed
   as `usr/share/applications/rust-dicom-station.desktop`; snapcraft rewrites
   its `Exec` and points `Icon` at `assets/rust-dicom-station.png`, which is
   also the store icon. It declares `application/dicom`, so a file manager
@@ -175,14 +175,17 @@ with snapd (Ubuntu, or Ubuntu under WSL 2 with systemd enabled):
 ```text
 sudo snap install snapcraft --classic
 sudo snap install lxd && sudo lxd init --auto
-snapcraft pack
+packaging/linux/snap/build-snap.sh
 sudo snap install --dangerous ./rust-dicom-station_<version>_amd64.snap
 ```
 
-Run it from a **fresh clone**: the part's source is the project folder as
-it is, and snapcraft copies it whole into the container, `target/` and the
-example data included. The first build takes 30 to 60 minutes; `snapcraft
-clean` starts over.
+`build-snap.sh` copies the recipe to `snap/` in the repository root, which
+is the one place snapcraft reads it from, and runs `snapcraft pack` there
+(any arguments are passed on); `snap/` is git-ignored. Run it from a
+**fresh clone**: the part's source is the project folder as it is, and
+snapcraft copies it whole into the container, `target/` and the test data
+included. The first build takes 30 to 60 minutes; `snapcraft clean` starts
+over.
 
 Without a Linux machine, *Actions ▶ Snap ▶ Run workflow* builds any branch
 on GitHub and attaches the snap to the run as an artifact (`linux-snap`).

@@ -230,7 +230,7 @@ fn launch(app: SetupApp, title: &str) -> Result<()> {
     // Windows icon resource (see the two `build.rs`), so the setup program
     // is recognisably the same product before anything is installed.
     let icon = Arc::new(
-        eframe::icon_data::from_png_bytes(include_bytes!("../../assets/rust-dicom-station.png"))
+        eframe::icon_data::from_png_bytes(include_bytes!("../../../../assets/rust-dicom-station.png"))
             .unwrap_or_default(),
     );
     // `run_native` consumes the app, so it waits here and the creation

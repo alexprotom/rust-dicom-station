@@ -1,11 +1,14 @@
 # Bundled example data
 
-`example_data/` holds a small real patient study (137 MB) so the viewer
+`data-test/` holds a small real patient study (137 MB) so the viewer
 can be exercised on clinical data, not only the synthetic phantom - two
-breathing phases of a 4DCT, each with its own RT Structure Set:
+breathing phases of a 4DCT, each with its own RT Structure Set. An
+installed copy of the program, which has no source tree, fetches the same
+folder from GitHub with *Tools ▶ 📥 Download test data*
+([export-and-tools.md](export-and-tools.md#real-test-data-from-github)):
 
 ```
-example_data/
+data-test/
   lung_p1_4DCT_phase_000/   133 CT slices + 1-1.dcm (RTSTRUCT, 13 ROIs)
   lung_p1_4DCT_phase_050/   133 CT slices + 1-1.dcm (RTSTRUCT, 12 ROIs)
 ```
@@ -18,14 +21,14 @@ share one Study Instance UID and one Frame of Reference, so they load as
 inhale/exhale of the same study:
 
 ```
-cargo run --release -- example_data/lung_p1_4DCT_phase_000 example_data/lung_p1_4DCT_phase_050
+cargo run --release -- data-test/lung_p1_4DCT_phase_000 data-test/lung_p1_4DCT_phase_050
 ```
 
 That is a ready-made comparison-mode and registration test case with real
 respiratory motion: the tumor and markers move visibly between the phases,
 and the deformable methods of the *Image registration* module have
 something anatomically real to recover. Equivalently, load the whole
-`example_data/` folder as dataset A (both phases appear as two series of
+`data-test/` folder as dataset A (both phases appear as two series of
 one study) and right-click one phase ▶ *Copy series to dataset B*. It is
 also the dataset the auto-segmentation was validated on
 ([auto-segmentation.md](auto-segmentation.md#validation)).

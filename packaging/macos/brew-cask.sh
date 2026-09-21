@@ -18,7 +18,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-root="$(cd "$here/.." && pwd)"
+root="$(cd "$here/../.." && pwd)"
 
 version=""
 arm_sha=""
@@ -77,7 +77,7 @@ cask "rust-dicom-station" do
     strategy :github_latest
   end
 
-  # The bundle is built for macOS 12 and newer (macos/build-app.sh checks
+  # The bundle is built for macOS 12 and newer (packaging/macos/build-app.sh checks
   # that the binaries agree with the plist).
   depends_on macos: ">= :monterey"
 

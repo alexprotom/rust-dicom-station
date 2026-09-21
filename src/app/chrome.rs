@@ -11,6 +11,7 @@ impl ViewerApp {
         let mut files_b = false;
         let mut close_b = false;
         let mut open_gen = false;
+        let mut open_testdata = false;
         let mut open_save_img = false;
         let mut open_models = false;
         let mut open_pacs = false;
@@ -403,6 +404,16 @@ impl ViewerApp {
                         open_gen = true;
                         ui.close();
                     }
+                    if tip_button(
+                        ui,
+                        "📥 Download test data",
+                        "Fetch the bundled patient data (two phases of a real 4DCT with \
+                         structure sets, 137 MB) from the project's GitHub repository \
+                         into a folder of your choice",
+                    ) {
+                        open_testdata = true;
+                        ui.close();
+                    }
                 });
                 ui.menu_button("Settings", |ui| {
                     // Tick boxes: the submenu stays open while rows are being
@@ -555,6 +566,9 @@ impl ViewerApp {
         }
         if open_save_img && self.save_img.is_none() {
             self.save_img = Some(snapshot::SaveImgDialog::default());
+        }
+        if open_testdata {
+            self.testdata_open = true;
         }
         if open_gen {
             self.gen_open = true;

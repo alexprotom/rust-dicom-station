@@ -66,7 +66,7 @@ The workflow:
 1. Reads the version from `Cargo.toml`.
 2. Checks that the version has not already been released.
 3. Builds the Windows installer and the winget manifests for it.
-4. Builds the Linux AppImage.
+4. Builds the Linux AppImage (`packaging/linux/appimage/build-appimage.sh`).
 5. Builds the two macOS disk images, signed and notarised when the `MACOS_*` secrets are set (see [macOS](#macos)).
 6. Builds the Android APK, signed with the release key when the `ANDROID_KEYSTORE_*` secrets are set (see [Android](#android)).
 7. Builds the snap, tests it on the runner and releases it to the Snap Store, when the `SNAPCRAFT_STORE_CREDENTIALS` secret is set (see [Snap Store](#snap-store)).
@@ -97,7 +97,7 @@ The installed program updates itself from these artifacts: *Start > Update Rust 
 * keep the asset names and `SHA256SUMS` exactly as the workflow writes them - the updater looks them up by name;
 * a release marked as a pre-release, or left as a draft, is never offered as an update.
 
-A newer setup run over an older installation updates it in place; nothing has to be uninstalled first ([installer/README.md](../installer/README.md#updating)).
+A newer setup run over an older installation updates it in place; nothing has to be uninstalled first ([packaging/windows/installer/README.md](../packaging/windows/installer/README.md#updating)).
 
 ## winget
 
@@ -126,7 +126,7 @@ winget upgrade RDS.RustDICOMStation
    ```
 
    or by a pull request to `microsoft/winget-pkgs` that adds the files under `manifests/r/RDS/RustDICOMStation/X.Y.Z/`.
-4. Wait for the pull request to pass validation and be merged. Reviewers may ask questions about the installer; the relevant facts are in [installer/README.md](../installer/README.md#winget).
+4. Wait for the pull request to pass validation and be merged. Reviewers may ask questions about the installer; the relevant facts are in [packaging/windows/installer/README.md](../packaging/windows/installer/README.md#winget).
 
 ### Every later release (automatic)
 
@@ -173,7 +173,7 @@ bundle contents, read back out of the finished `.dmg`. The floor is
 enforced in three places at once (`MACOSX_DEPLOYMENT_TARGET`, the plist's
 `LSMinimumSystemVersion`, and the load commands of the linked binary), and
 a disagreement fails the build rather than a user's machine
-([macos/README.md](../macos/README.md#macos-12-and-newer)).
+([packaging/macos/README.md](../packaging/macos/README.md#macos-12-and-newer)).
 
 With the secrets `MACOS_CERTIFICATE_BASE64`, `MACOS_CERTIFICATE_PASSWORD`
 and `MACOS_SIGNING_IDENTITY` the bundle and the image are signed with a
@@ -194,7 +194,7 @@ live outside the bundle and survive it.
 
 The cask is `rust-dicom-station`, one file covering both architectures. The
 `homebrew` job writes it with
-[macos/brew-cask.sh](../macos/brew-cask.sh) after the release exists, taking
+[packaging/macos/brew-cask.sh](../packaging/macos/brew-cask.sh) after the release exists, taking
 the two checksums out of the release's own `SHA256SUMS` so the cask cannot
 disagree with the files it points at, attaches it to the release as
 `rust-dicom-station.rb`, and commits it to the tap named by the repository

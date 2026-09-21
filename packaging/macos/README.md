@@ -9,7 +9,7 @@ already knows Metal is the only backend Apple has. What was missing was a
 to put it in.
 
 This folder is that packaging, and nothing else. It holds no Rust code and
-no second workspace - unlike `installer/` (Windows) and `android/`, which
+no second workspace - unlike `packaging/windows/installer/` (Windows) and `packaging/android/`, which
 are crates of their own.
 
 ```text
@@ -25,12 +25,12 @@ out/                everything this folder produces (git-ignored)
 ```bash
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
-macos/build-app.sh                  # this Mac's architecture
-macos/build-app.sh --arch x86_64    # Intel, from an Apple Silicon Mac
-macos/build-app.sh --arch arm64
+packaging/macos/build-app.sh                  # this Mac's architecture
+packaging/macos/build-app.sh --arch x86_64    # Intel, from an Apple Silicon Mac
+packaging/macos/build-app.sh --arch arm64
 ```
 
-Result: `macos/out/rust-dicom-station-<version>-macos-<arch>.dmg`, holding
+Result: `packaging/macos/out/rust-dicom-station-<version>-macos-<arch>.dmg`, holding
 `Rust DICOM Station.app` and a link to `/Applications`.
 
 An Apple Silicon Mac builds both architectures; an Intel Mac builds only its
@@ -55,7 +55,7 @@ damaged", and nothing before the user's machine would have said otherwise.
 To move the floor, set the variable - the plist and the check follow:
 
 ```bash
-MACOSX_DEPLOYMENT_TARGET=13.0 macos/build-app.sh
+MACOSX_DEPLOYMENT_TARGET=13.0 packaging/macos/build-app.sh
 ```
 
 ## What is in the bundle
@@ -107,7 +107,7 @@ never seen the program before, which is the only reason to bother with an
 Apple Developer account here.
 
 The release workflow sets these from repository secrets and skips both
-steps when they are absent; [docs/macos.md](../docs/macos.md#signing-and-notarisation)
+steps when they are absent; [docs/macos.md](../../docs/macos.md#signing-and-notarisation)
 lists the secrets and how to make the certificate.
 
 ## Homebrew
@@ -116,7 +116,7 @@ lists the secrets and how to make the certificate.
 checksums from the release's `SHA256SUMS`:
 
 ```bash
-macos/brew-cask.sh --version 0.9.5 \
+packaging/macos/brew-cask.sh --version 0.9.5 \
     --arm-sha256 <sha> --intel-sha256 <sha> \
     --out Casks/rust-dicom-station.rb
 ```

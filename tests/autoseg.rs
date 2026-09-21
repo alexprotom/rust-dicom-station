@@ -179,12 +179,12 @@ fn shape_mismatch_is_rejected() {
 /// module docs for how to run it.
 #[test]
 #[ignore]
-fn real_model_on_example_data() {
+fn real_model_on_test_data() {
     let models_dir = std::path::PathBuf::from(
         std::env::var("RDS_AUTOSEG_MODELS").expect("set RDS_AUTOSEG_MODELS"),
     );
     let data_dir = std::env::var("RDS_EXAMPLE_DATA")
-        .unwrap_or_else(|_| "example_data/lung_p1_4DCT_phase_000".into());
+        .unwrap_or_else(|_| "data-test/lung_p1_4DCT_phase_000".into());
     let study = rust_dicom_station::loader::load_directory(
         std::path::Path::new(&data_dir),
         &Default::default(),

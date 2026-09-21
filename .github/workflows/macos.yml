@@ -1,10 +1,10 @@
 name: macOS
 
 # The macOS packages: the viewer and the MCP server in a .app bundle, one
-# disk image per architecture (macos/build-app.sh, docs/macos.md).
+# disk image per architecture (packaging/macos/build-app.sh, docs/macos.md).
 #
 # Three ways in, like the Android workflow:
-#   * a pull request that touches the sources or macos/: a cross-compilation
+#   * a pull request that touches the sources or packaging/macos/: a cross-compilation
 #     check of the Intel target. The Apple Silicon build is already covered
 #     by the macOS entry of ci.yml's test matrix, which runs natively; what
 #     nothing else sees is whether the *other* architecture still links.
@@ -38,7 +38,7 @@ on:
       - "Cargo.lock"
       - "build.rs"
       - "assets/**"
-      - "macos/**"
+      - "packaging/macos/**"
       - ".github/workflows/macos.yml"
   workflow_dispatch:
   workflow_call:
@@ -195,7 +195,7 @@ jobs:
           RDS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
         # Through bash, so a checkout that lost the executable bit (a commit
         # made on Windows) still works.
-        run: bash macos/build-app.sh --arch ${{ matrix.arch }}
+        run: bash packaging/macos/build-app.sh --arch ${{ matrix.arch }}
 
       # ----------------------------------------------------------------------
       # What the image actually contains
@@ -209,7 +209,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          dmg=$(ls macos/out/rust-dicom-station-*-macos-${{ matrix.arch }}.dmg)
+          dmg=$(ls packaging/macos/out/rust-dicom-station-*-macos-${{ matrix.arch }}.dmg)
           echo "$dmg"
 
           mount="$RUNNER_TEMP/dmg"
@@ -258,11 +258,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          "macos/out/Rust DICOM Station.app/Contents/MacOS/rds-mcp" --check
+          "packaging/macos/out/Rust DICOM Station.app/Contents/MacOS/rds-mcp" --check
 
       - name: Upload the disk image
         uses: actions/upload-artifact@v4
         with:
           name: macos-dmg-${{ matrix.arch }}
-          path: macos/out/rust-dicom-station-*-macos-${{ matrix.arch }}.dmg
+          path: packaging/macos/out/rust-dicom-station-*-macos-${{ matrix.arch }}.dmg
           if-no-files-found: error

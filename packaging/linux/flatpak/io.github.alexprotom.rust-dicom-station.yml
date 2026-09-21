@@ -4,10 +4,10 @@
 # This file is the manifest Flathub builds. The copy in the Flathub
 # repository must stay in step with this one; two things change for every
 # release: the tag and commit of the source below, and cargo-sources.json
-# (regenerate it with flatpak/update-cargo-sources.sh).
+# (regenerate it with packaging/linux/flatpak/update-cargo-sources.sh).
 #
 #   flatpak run org.flatpak.Builder --user --force-clean --install-deps-from=flathub \
-#     --install build flatpak/io.github.alexprotom.rust-dicom-station.yml
+#     --install build packaging/linux/flatpak/io.github.alexprotom.rust-dicom-station.yml
 #   flatpak run io.github.alexprotom.rust-dicom-station
 
 id: io.github.alexprotom.rust-dicom-station

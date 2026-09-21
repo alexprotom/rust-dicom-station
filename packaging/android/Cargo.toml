@@ -1,10 +1,10 @@
 # Android front end for rust-dicom-station.
 #
 # This crate is its own workspace root (the empty `[workspace]` table below),
-# exactly like `installer/`: `cargo build` in the repository root never
+# exactly like `packaging/windows/installer/`: `cargo build` in the repository root never
 # compiles it, and building it never touches the viewer's `target/`.
 #
-# It is the same viewer. The library in `..` holds every module, window and
+# It is the same viewer. The library in `../..` holds every module, window and
 # algorithm; what this crate adds is the Android entry point (`android_main`
 # instead of `main`), logging to logcat, the folders the activity hands over,
 # and the one Android-only question - all files access - asked in an egui
@@ -37,7 +37,7 @@ crate-type = ["cdylib"]
 # of the inference engines is built like everywhere else; whether a given
 # tablet's GPU is worth using is decided at run time, per engine, as on the
 # desktop.
-rust-dicom-station = { path = ".." }
+rust-dicom-station = { path = "../.." }
 egui = "0.36"
 log = "0.4"
 

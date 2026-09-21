@@ -188,7 +188,7 @@ jobs:
     runs-on: windows-latest
     defaults:
       run:
-        working-directory: installer
+        working-directory: packaging/windows/installer
     steps:
       - uses: actions/checkout@v5
 
@@ -198,7 +198,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: installer
+          workspaces: packaging/windows/installer
 
       - name: cargo fmt --check
         run: cargo fmt --all -- --check

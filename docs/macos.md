@@ -15,10 +15,10 @@ rust-dicom-station-<version>-macos-x86_64.dmg    Intel
 ```
 
 Both are built for **macOS 12 Monterey and newer**. They are made by
-[macos/build-app.sh](../macos/build-app.sh) from the packaging in
-[macos/](../macos/README.md), the way the Windows installer is built from
-[installer/](../installer/README.md) and the APK from
-[android/](../android/), and the workflow that runs it is
+[packaging/macos/build-app.sh](../packaging/macos/build-app.sh) from the packaging in
+[packaging/macos/](../packaging/macos/README.md), the way the Windows installer is built from
+[packaging/windows/installer/](../packaging/windows/installer/README.md) and the APK from
+[packaging/android/](../packaging/android/), and the workflow that runs it is
 [.github/workflows/macos.yml](../.github/workflows/macos.yml).
 
 ## Installing
@@ -58,7 +58,7 @@ brew install --cask --no-quarantine rust-dicom-station
 warning means something else: an incomplete download, or an image built for
 a newer macOS than the machine runs. The published images require macOS 12,
 and the build refuses to finish if the binaries and the bundle disagree
-about that ([macos/README.md](../macos/README.md#macos-12-and-newer)), so an
+about that ([packaging/macos/README.md](../packaging/macos/README.md#macos-12-and-newer)), so an
 incomplete download is the first thing to rule out - the release's
 `SHA256SUMS` has the hash to compare against.
 
@@ -116,12 +116,12 @@ target for the architecture wanted:
 ```bash
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
-macos/build-app.sh                  # this Mac
-macos/build-app.sh --arch x86_64    # Intel, from an Apple Silicon Mac
+packaging/macos/build-app.sh                  # this Mac
+packaging/macos/build-app.sh --arch x86_64    # Intel, from an Apple Silicon Mac
 ```
 
-The result is `macos/out/rust-dicom-station-<version>-macos-<arch>.dmg`.
-[macos/README.md](../macos/README.md) covers the options, what goes into
+The result is `packaging/macos/out/rust-dicom-station-<version>-macos-<arch>.dmg`.
+[packaging/macos/README.md](../packaging/macos/README.md) covers the options, what goes into
 the bundle and why.
 
 The workflow builds the images on every pull request into `main` as well as
@@ -162,7 +162,7 @@ They are set under *Settings ▸ Secrets and variables ▸ Actions*. All of it
 needs a paid Apple Developer account; there is no free path to
 notarisation. The same variables work locally, spelled
 `RDS_CODESIGN_IDENTITY` and `RDS_NOTARY_*`
-([macos/README.md](../macos/README.md#signing-and-notarisation)).
+([packaging/macos/README.md](../packaging/macos/README.md#signing-and-notarisation)).
 
 Signing is also what makes **updating** clean: two versions signed with the
 same Developer ID replace each other without comment, while an ad-hoc
@@ -181,7 +181,7 @@ brew upgrade --cask rust-dicom-station
 ```
 
 The `homebrew` job of the release workflow writes it with
-[macos/brew-cask.sh](../macos/brew-cask.sh) - taking the two checksums from
+[packaging/macos/brew-cask.sh](../packaging/macos/brew-cask.sh) - taking the two checksums from
 the release's own `SHA256SUMS`, so the cask can never disagree with the
 files it points at - attaches it to the release as
 `rust-dicom-station.rb`, and commits it to a tap.
