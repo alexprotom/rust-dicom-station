@@ -93,6 +93,10 @@ pub struct AnchoredRequest {
     /// told apart from the phase's own contour of the same structure.
     /// `None` is `<name>_prop`.
     pub anchor_landed_name: Option<String>,
+    /// The colour it lands in; `None` keeps the anchor's own. A colour of
+    /// its own is what tells the landed copy apart from the phase's contour
+    /// of the same organ, which is exactly what it is drawn beside.
+    pub anchor_landed_color: Option<[u8; 3]>,
     /// What to carry across besides the anchor. Empty is fine: the anchor
     /// always travels, and the run is then a registration with its check.
     pub subjects: Vec<Subject>,
@@ -203,7 +207,7 @@ pub fn run(req: AnchoredRequest, p: &Progress) -> Result<AnchoredOutcome> {
     let mut subjects = req.subjects;
     subjects.push(Subject {
         name: landed_name,
-        color: req.src_anchor.color,
+        color: req.anchor_landed_color.unwrap_or(req.src_anchor.color),
         mask: src_anchor_mask,
     });
     let anchor_idx = subjects.len() - 1;

@@ -14,7 +14,7 @@
 use super::*;
 
 /// What the rename dialog is editing.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub(super) enum RenameTarget {
     /// PatientName of every series of one patient (keyed by `patient_key`).
     Patient { slot: usize, key: String },

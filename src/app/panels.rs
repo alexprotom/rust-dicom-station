@@ -327,10 +327,75 @@ impl ViewerApp {
     /// row, weakly. Nothing is lost by that, because which set is the active
     /// one is written underneath it - its structures, and the buttons that
     /// act on them, are listed under that row and no other.
-    fn series_row(ui: &mut egui::Ui, active: bool, shown: bool, title: String) -> egui::Response {
+    fn series_row(
+        ui: &mut egui::Ui,
+        active: bool,
+        shown: bool,
+        title: String,
+        focused: bool,
+    ) -> egui::Response {
         let text = egui::RichText::new(title);
         let text = if active && !shown { text.weak() } else { text };
-        ui.add(egui::Button::selectable(active && shown, text).wrap())
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            ui.horizontal(|ui| {
+                let resp = ui.add(egui::Button::selectable(active && shown, text).wrap());
+                Self::keyboard_badge(ui, focused);
+                resp
+            })
+            .inner
+        })
+        .inner
+    }
+
+    /// The badge on the row the arrow keys are standing on, drawn inline
+    /// with the row's name exactly as RTS and SEG are.
+    ///
+    /// The outline [`focus_row`](Self::focus_row) draws says *this row* but
+    /// not *what the keyboard will do here*; the glyph does, and it is the
+    /// one mark on the tree that means "typing acts here".
+    fn keyboard_badge(ui: &mut egui::Ui, focused: bool) {
+        if !focused {
+            return;
+        }
+        ui.add(
+            egui::Button::new(egui::RichText::new("⌨").small().strong())
+                .small()
+                .corner_radius(2.0)
+                .sense(egui::Sense::hover()),
+        )
+        .on_hover_text(
+            "The keyboard is on this row: ↑ and ↓ step to the row above and below at this \
+             level, F2 renames it, Delete removes it",
+        );
+    }
+
+    /// Note a click on a data-tree row - either button - as the row the
+    /// keyboard acts on (F2 renames it, Delete removes it), and outline the
+    /// row that has that focus.
+    ///
+    /// The rows are drawn behind a shared borrow of the study, so the focus
+    /// the frame started with comes in as `current` and a new one goes out
+    /// through `out`, to be written back once the borrow ends - the same
+    /// two-step every other edit the tree makes goes through.
+    fn focus_row(
+        ui: &egui::Ui,
+        resp: &egui::Response,
+        me: RenameTarget,
+        current: &Option<RenameTarget>,
+        out: &mut Option<RenameTarget>,
+    ) {
+        if current.as_ref() == Some(&me) {
+            ui.painter().rect_stroke(
+                resp.rect.expand(1.0),
+                2.0,
+                egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
+                egui::StrokeKind::Outside,
+            );
+        }
+        if resp.clicked() || resp.secondary_clicked() {
+            *out = Some(me);
+        }
     }
 
     pub(super) fn simulation_section(&mut self, ui: &mut egui::Ui) {
@@ -499,6 +564,17 @@ impl ViewerApp {
             let key = patient.key.clone();
             let mut act: Option<TreeAction> = None;
             let mut rename = None;
+            let mut focus = None;
+            Self::focus_row(
+                ui,
+                &resp,
+                RenameTarget::Patient {
+                    slot,
+                    key: key.clone(),
+                },
+                &self.tree_focus,
+                &mut focus,
+            );
             resp.context_menu(|ui| {
                 if ui.button("✏ Rename").clicked() {
                     rename = Some(RenameTarget::Patient {
@@ -532,6 +608,9 @@ impl ViewerApp {
             }
             if rename.is_some() {
                 self.rename_request = rename;
+            }
+            if focus.is_some() {
+                self.tree_focus = focus;
             }
         }
     }
@@ -599,6 +678,17 @@ impl ViewerApp {
             let uid = node.uid.clone();
             let mut act: Option<TreeAction> = None;
             let mut rename = None;
+            let mut focus = None;
+            Self::focus_row(
+                ui,
+                &resp,
+                RenameTarget::Study {
+                    slot,
+                    uid: uid.clone(),
+                },
+                &self.tree_focus,
+                &mut focus,
+            );
             resp.context_menu(|ui| {
                 if ui.button("✏ Rename").clicked() {
                     rename = Some(RenameTarget::Study {
@@ -633,6 +723,9 @@ impl ViewerApp {
             if rename.is_some() {
                 self.rename_request = rename;
             }
+            if focus.is_some() {
+                self.tree_focus = focus;
+            }
         }
     }
 
@@ -659,9 +752,10 @@ impl ViewerApp {
             let me = &mut *self;
             let title = format!("{modality} ({})", idxs.len());
             let showing = idxs.contains(&active);
-            Self::wrapped_node(ui, ("mod", slot, pi, si, mi), showing, title, |ui| {
+            let resp = Self::wrapped_node(ui, ("mod", slot, pi, si, mi), showing, title, |ui| {
                 me.series_rows(ui, slot, idxs)
             });
+            self.modality_menu(resp, slot, modality, idxs);
         }
         for &gi in &node.fourd {
             self.fourd_node(ui, slot, pi, si, gi);
@@ -669,15 +763,109 @@ impl ViewerApp {
         // Whether the images on screen are this study's. Everything that
         // writes - the tools, "+ ROI", a new segmentation - works on the
         // displayed series, so under another study of the same folder those
-        // buttons are held back instead of silently editing this one.
-        let displayed = node
-            .modalities
-            .iter()
-            .any(|(_, idxs)| idxs.contains(&active));
+        // buttons are held back instead of silently editing this one. A
+        // series filed in a 4D group has left its modality node, so the
+        // groups are asked as well: a 4DCT's structures were disabled
+        // whenever one of its phases was on screen, which is always.
+        let in_group = self.slots[slot].study.as_ref().is_some_and(|st| {
+            node.fourd.iter().any(|&gi| {
+                st.fourd_groups
+                    .get(gi)
+                    .is_some_and(|g| g.resolve(&st.series).contains(&Some(active)))
+            })
+        });
+        let displayed = in_group
+            || node
+                .modalities
+                .iter()
+                .any(|(_, idxs)| idxs.contains(&active));
         self.structures_section(ui, slot, pi, si, &node.structs, displayed);
         self.segmentation_section(ui, slot, pi, si, &node.segs, displayed);
         self.dose_section(ui, slot, pi, si, &node.doses);
         self.plan_section(ui, slot, pi, si, &node.plans);
+    }
+
+    /// Right-click on a modality node: what can be done with every series
+    /// under it at once. A 4DCT that arrived without phase markers in its
+    /// descriptions is ten CT series in one node, and this is where they
+    /// become one group in one click.
+    fn modality_menu(&mut self, resp: egui::Response, slot: usize, modality: &str, idxs: &[usize]) {
+        let n = idxs.len();
+        let targets = self.copy_targets(slot);
+        let open = self.open_slots();
+        let group_names = self.group_names(slot);
+        let what = format!("all {n} {modality} series");
+        let mut act: Option<TreeAction> = None;
+        let mut fourd: Option<FourDAction> = None;
+        resp.context_menu(|ui| {
+            if n >= 2 {
+                if tip_button(
+                    ui,
+                    format!("🎞 New 4D group from {what}"),
+                    "One custom 4D group of every series under this node, its phases in \
+                     temporal order - by the percent in their descriptions, else by \
+                     temporal position, else by series number",
+                ) {
+                    fourd = Some(FourDAction::NewFrom {
+                        slot,
+                        series: idxs.to_vec(),
+                    });
+                    ui.close();
+                }
+                for (gi, name) in &group_names {
+                    if ui.button(format!("Add {what} to {name}")).clicked() {
+                        fourd = Some(FourDAction::AddMany {
+                            slot,
+                            group: *gi,
+                            series: idxs.to_vec(),
+                        });
+                        ui.close();
+                    }
+                }
+                ui.separator();
+            }
+            Self::transfer_menu(ui, &what, &targets, &open, |to, op| {
+                act = Some(TreeAction {
+                    from: slot,
+                    to,
+                    sel: TreeSel::Many(idxs.to_vec()),
+                    op,
+                });
+            });
+            ui.separator();
+            if ui.button(format!("🗑 Remove {what}")).clicked() {
+                act = Some(TreeAction {
+                    from: slot,
+                    to: slot,
+                    sel: TreeSel::Many(idxs.to_vec()),
+                    op: TreeOp::Remove,
+                });
+                ui.close();
+            }
+        });
+        if act.is_some() {
+            self.tree_action = act;
+        }
+        if fourd.is_some() {
+            self.fourd_action = fourd;
+        }
+    }
+
+    /// The 4D groups of a workspace as (index, name), for the *Add to*
+    /// entries of the series menus.
+    fn group_names(&self, slot: usize) -> Vec<(usize, String)> {
+        self.slots[slot]
+            .study
+            .as_ref()
+            .map(|st| {
+                st.fourd_groups
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, g)| !g.dissolved)
+                    .map(|(gi, g)| (gi, g.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// The image series of one modality node.
@@ -687,19 +875,15 @@ impl ViewerApp {
         let mut switch_to = None;
         let mut act: Option<TreeAction> = None;
         let mut rename = None;
+        let mut focus = None;
         let mut fourd: Option<FourDAction> = None;
-        let group_names: Vec<(usize, String)> = self.slots[slot]
-            .study
-            .as_ref()
-            .map(|st| {
-                st.fourd_groups
-                    .iter()
-                    .enumerate()
-                    .map(|(gi, g)| (gi, g.name.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let mut toggle_pick: Option<String> = None;
+        let group_names = self.group_names(slot);
         let badges = self.series_badges(slot);
+        // What Ctrl-click has ticked in this workspace: those rows are
+        // marked, and a right-click on any of them acts on all of them.
+        let picked = self.picked_series(slot);
+        let ctrl = ui.input(|i| i.modifiers.command);
         {
             let Some(study) = self.slots[slot].study.as_ref() else {
                 return;
@@ -709,8 +893,10 @@ impl ViewerApp {
                 let Some(s) = study.series.get(i) else {
                     continue;
                 };
+                let is_picked = picked.contains(&i);
                 let label = format!(
-                    "{}{} ({} sl.)",
+                    "{}{}{} ({} sl.)",
+                    if is_picked { "✔ " } else { "" },
                     if s.description.is_empty() {
                         "series"
                     } else {
@@ -721,37 +907,101 @@ impl ViewerApp {
                 );
                 // What the current selection has put on this series, right
                 // where the series is named.
-                let resp = Self::badged_series_row(ui, i == active, label, &s.uid, &badges);
-                if resp.clicked() && i != active {
-                    switch_to = Some(i);
+                let me = RenameTarget::Series { slot, idx: i };
+                let resp = Self::badged_series_row(
+                    ui,
+                    i == active,
+                    label,
+                    &s.uid,
+                    &badges,
+                    self.tree_focus.as_ref() == Some(&me),
+                );
+                Self::focus_row(
+                    ui,
+                    &resp,
+                    RenameTarget::Series { slot, idx: i },
+                    &self.tree_focus,
+                    &mut focus,
+                );
+                if resp.clicked() {
+                    // Ctrl-click ticks the row for a multi-series action
+                    // and leaves the display alone; a plain click shows it.
+                    if ctrl {
+                        toggle_pick = Some(s.uid.clone());
+                    } else if i != active {
+                        switch_to = Some(i);
+                    }
                 }
+                // Right-clicking a ticked row acts on every ticked row;
+                // right-clicking an unticked one acts on that row alone.
+                let many: Vec<usize> = if is_picked && picked.len() > 1 {
+                    picked.clone()
+                } else {
+                    vec![i]
+                };
+                let n_many = many.len();
+                let what = if n_many > 1 {
+                    format!("the {n_many} ticked series")
+                } else {
+                    "series".to_string()
+                };
+                let sel = || {
+                    if n_many > 1 {
+                        TreeSel::Many(many.clone())
+                    } else {
+                        TreeSel::Series(i)
+                    }
+                };
                 resp.context_menu(|ui| {
                     if ui.button("✏ Rename").clicked() {
                         rename = Some(RenameTarget::Series { slot, idx: i });
                         ui.close();
                     }
                     ui.separator();
-                    Self::transfer_menu(ui, "series", &targets, &open, |to, op| {
+                    Self::transfer_menu(ui, &what, &targets, &open, |to, op| {
                         act = Some(TreeAction {
                             from: slot,
                             to,
-                            sel: TreeSel::Series(i),
+                            sel: sel(),
                             op,
                         });
                     });
                     ui.separator();
                     ui.menu_button("4D group", |ui| {
                         for (gi, name) in &group_names {
-                            if ui.button(format!("Add to {name}")).clicked() {
-                                fourd = Some(FourDAction::Add {
-                                    slot,
-                                    group: *gi,
-                                    series: i,
+                            if ui.button(format!("Add {what} to {name}")).clicked() {
+                                fourd = Some(if n_many > 1 {
+                                    FourDAction::AddMany {
+                                        slot,
+                                        group: *gi,
+                                        series: many.clone(),
+                                    }
+                                } else {
+                                    FourDAction::Add {
+                                        slot,
+                                        group: *gi,
+                                        series: i,
+                                    }
                                 });
                                 ui.close();
                             }
                         }
-                        if ui.button("New 4D group from this series").clicked() {
+                        if n_many > 1 {
+                            if tip_button(
+                                ui,
+                                format!("New 4D group from {what}"),
+                                "One custom group of the ticked series, its phases in \
+                                 temporal order - by the percent in their descriptions, \
+                                 else by temporal position, else by series number, else \
+                                 in the order they were ticked",
+                            ) {
+                                fourd = Some(FourDAction::NewFrom {
+                                    slot,
+                                    series: many.clone(),
+                                });
+                                ui.close();
+                            }
+                        } else if ui.button("New 4D group from this series").clicked() {
                             fourd = Some(FourDAction::New { slot, series: i });
                             ui.close();
                         }
@@ -761,19 +1011,22 @@ impl ViewerApp {
                         }
                     });
                     ui.separator();
-                    if ui.button("🗑 Remove").clicked() {
+                    if ui.button(format!("🗑 Remove {what}")).clicked() {
                         act = Some(TreeAction {
                             from: slot,
                             to: slot,
-                            sel: TreeSel::Series(i),
+                            sel: sel(),
                             op: TreeOp::Remove,
                         });
                         ui.close();
                     }
                 });
                 resp.on_hover_text(format!(
-                    "{} · series UID …{}\nright-click: rename, copy / move to another \
-                     workspace, or remove",
+                    "{} · series UID …{}\nclick: display\nCtrl-click: tick for a \
+                     multi-series action (a 4D group from the ticked series, say)\n\
+                     right-click: rename, 4D group, copy / move to another workspace, \
+                     or remove\n↑ / ↓: the series above and below in this node, \
+                     displayed as they are reached\nF2: rename, Delete: remove",
                     s.modality,
                     tail(&s.uid)
                 ));
@@ -785,8 +1038,14 @@ impl ViewerApp {
         if rename.is_some() {
             self.rename_request = rename;
         }
+        if focus.is_some() {
+            self.tree_focus = focus;
+        }
         if fourd.is_some() {
             self.fourd_action = fourd;
+        }
+        if let Some(uid) = toggle_pick {
+            self.toggle_pick(slot, &uid);
         }
         if let Some(i) = switch_to {
             self.start_series_switch(slot, i);
@@ -837,11 +1096,29 @@ impl ViewerApp {
         let mut switch_to = None;
         let mut fourd: Option<FourDAction> = None;
         let mut rename = None;
+        let mut focus = None;
+        let mut act: Option<TreeAction> = None;
+        let current = self.tree_focus.clone();
+        let members: Vec<usize> = rows.iter().map(|(_, sidx, _, _)| *sidx).collect();
         let showing = rows.iter().any(|(_, sidx, _, _)| *sidx == active);
         let resp = Self::wrapped_node(ui, ("fourd", slot, pi, si, gi), showing, title, |ui| {
             for (mi, sidx, label, uid) in &rows {
-                let resp =
-                    Self::badged_series_row(ui, *sidx == active, label.clone(), uid, &badges);
+                let me = RenameTarget::Series { slot, idx: *sidx };
+                let resp = Self::badged_series_row(
+                    ui,
+                    *sidx == active,
+                    label.clone(),
+                    uid,
+                    &badges,
+                    current.as_ref() == Some(&me),
+                );
+                Self::focus_row(
+                    ui,
+                    &resp,
+                    RenameTarget::Series { slot, idx: *sidx },
+                    &current,
+                    &mut focus,
+                );
                 if resp.clicked() && *sidx != active {
                     switch_to = Some(*sidx);
                 }
@@ -900,6 +1177,13 @@ impl ViewerApp {
                 ));
             }
         });
+        Self::focus_row(
+            ui,
+            &resp,
+            RenameTarget::FourD { slot, idx: gi },
+            &current,
+            &mut focus,
+        );
         resp.context_menu(|ui| {
             if ui.button("✏ Rename").clicked() {
                 rename = Some(RenameTarget::FourD { slot, idx: gi });
@@ -914,20 +1198,45 @@ impl ViewerApp {
                 fourd = Some(FourDAction::Redetect { slot });
                 ui.close();
             }
-            if ui.button("Dissolve group").clicked() {
+            if tip_button(
+                ui,
+                "Dissolve group",
+                "Take the group apart; its series stay in the study",
+            ) {
                 fourd = Some(FourDAction::Dissolve { slot, group: gi });
+                ui.close();
+            }
+            if tip_button(
+                ui,
+                format!("🗑 Remove group and its {} series", members.len()),
+                "Take the group's series - and the structure sets, plans and doses \
+                 drawn on them - out of the workspace",
+            ) {
+                act = Some(TreeAction {
+                    from: slot,
+                    to: slot,
+                    sel: TreeSel::Many(members.clone()),
+                    op: TreeOp::Remove,
+                });
                 ui.close();
             }
         });
         resp.on_hover_text(
             "A 4D sub-study: the phases in temporal order, then the reconstructions.\n\
-             Click a phase to display it; right-click for analysis and edits.",
+             Click a phase to display it; right-click for analysis and edits.\n\
+             F2: rename, Delete: dissolve",
         );
         if fourd.is_some() {
             self.fourd_action = fourd;
         }
+        if act.is_some() {
+            self.tree_action = act;
+        }
         if rename.is_some() {
             self.rename_request = rename;
+        }
+        if focus.is_some() {
+            self.tree_focus = focus;
         }
         if let Some(i) = switch_to {
             // Stepping between the phases of the group already on display
@@ -966,6 +1275,8 @@ impl ViewerApp {
         let slot = match act {
             FourDAction::Add { slot, .. }
             | FourDAction::New { slot, .. }
+            | FourDAction::NewFrom { slot, .. }
+            | FourDAction::AddMany { slot, .. }
             | FourDAction::RemoveMember { slot, .. }
             | FourDAction::Shift { slot, .. }
             | FourDAction::SetRole { slot, .. }
@@ -1007,6 +1318,58 @@ impl ViewerApp {
                     custom: true,
                     dissolved: false,
                 });
+            }
+            FourDAction::NewFrom { series, .. } => {
+                let Some(group) = fourd::group_from(&study.series, &series) else {
+                    return;
+                };
+                // A series belongs to one group: the ones just picked leave
+                // whatever group they were in, and a group left empty by
+                // that goes with them.
+                let uids: Vec<&str> = group
+                    .members
+                    .iter()
+                    .map(|m| m.series_uid.as_str())
+                    .collect();
+                for g in &mut study.fourd_groups {
+                    let before = g.members.len();
+                    g.members.retain(|m| !uids.contains(&m.series_uid.as_str()));
+                    if g.members.len() != before {
+                        g.custom = true;
+                    }
+                }
+                study.fourd_groups.retain(|g| !g.members.is_empty());
+                study.fourd_groups.push(group);
+                // The tick marks have done their job.
+                self.tree_picks.retain(|(s, _)| *s != slot);
+            }
+            FourDAction::AddMany { group, series, .. } => {
+                let Some(g) = study.fourd_groups.get(group) else {
+                    return;
+                };
+                let mut position = g.phase_members().len() + 1;
+                let mut new: Vec<fourd::Member> = Vec::new();
+                for &si in &series {
+                    let Some(se) = study.series.get(si) else {
+                        continue;
+                    };
+                    if g.members.iter().any(|m| m.series_uid == se.uid)
+                        || new.iter().any(|m| m.series_uid == se.uid)
+                    {
+                        continue;
+                    }
+                    let m = fourd::member_for(se, position);
+                    if m.role == fourd::Role::Phase {
+                        position += 1;
+                    }
+                    new.push(m);
+                }
+                if let Some(g) = study.fourd_groups.get_mut(group) {
+                    g.members.extend(new);
+                    fourd::sort_phases_by_percent(g);
+                    g.custom = true;
+                }
+                self.tree_picks.retain(|(s, _)| *s != slot);
             }
             FourDAction::RemoveMember { group, member, .. } => {
                 if let Some(g) = study.fourd_groups.get_mut(group) {
@@ -1396,6 +1759,7 @@ impl ViewerApp {
         label: String,
         uid: &str,
         badges: &[(&'static str, Option<String>); 4],
+        focused: bool,
     ) -> egui::Response {
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
@@ -1413,6 +1777,9 @@ impl ViewerApp {
                     )
                     .on_hover_text(Self::badge_hint(tag));
                 }
+                // Last, so it sits at the end of the row whatever else the
+                // selection has put on this series.
+                Self::keyboard_badge(ui, focused);
                 resp
             })
             .inner
@@ -1606,12 +1973,14 @@ impl ViewerApp {
         let mut template_act: Option<TemplateAct> = None;
         let mut poi_act: Option<(PoiAct, usize)> = None;
         let mut update_derived = false;
+        let mut focus: Option<RenameTarget> = None;
         // Derived statuses are recomputed only when something changed; the
         // list reads them behind the shared borrow below.
         self.refresh_derived(slot);
         let shift = ui.input(|i| i.modifiers.shift);
         {
             let me = &*self;
+            let current = &me.tree_focus;
             let edit_roi = me.edit_target(slot).map(|(_, r)| r);
             let study = me.slots[slot].study.as_ref().unwrap();
             let sets = &study.structure_sets;
@@ -1689,7 +2058,9 @@ impl ViewerApp {
                                 },
                                 Self::series_suffix(study, &set.referenced_series_uid)
                             ),
+                            current.as_ref() == Some(&RenameTarget::Set(here)),
                         );
+                        Self::focus_row(ui, &resp, RenameTarget::Set(here), current, &mut focus);
                         if resp.clicked() {
                             // Clicking the shown set hides it; clicking any
                             // other makes it the shown one.
@@ -1852,10 +2223,18 @@ impl ViewerApp {
                                     )
                                     .on_hover_text(format!(
                                         "ROI {} · {} contour(s)\nClick to make this the \
-                                         structure the editor and the contour tools work on",
+                                         structure the editor and the contour tools work on\n\
+                                         F2: rename, Delete: remove",
                                         roi.number,
                                         roi.contours.len()
                                     ));
+                                Self::focus_row(
+                                    ui,
+                                    &resp,
+                                    RenameTarget::Item { set: here, idx: i },
+                                    current,
+                                    &mut focus,
+                                );
                                 if resp.clicked() {
                                     new_edit = Some(i);
                                 }
@@ -1953,6 +2332,9 @@ impl ViewerApp {
             }
         }
         self.slots[slot].roi_visible = vis;
+        if focus.is_some() {
+            self.tree_focus = focus;
+        }
         if let Some((i, color)) = new_color {
             let active = self.slots[slot].active_structs;
             if let Some(roi) = self.slots[slot].roi_mut(active, i) {
@@ -2077,9 +2459,11 @@ impl ViewerApp {
         let mut set_act: Option<SetAction> = None;
         let mut item_act: Option<ItemAction> = None;
         let mut new_anchor: Option<(SetRef, usize)> = None;
+        let mut focus: Option<RenameTarget> = None;
         let shift = ui.input(|i| i.modifiers.shift);
         {
             let me = &*self;
+            let current = &me.tree_focus;
             let study = me.slots[slot].study.as_ref().unwrap();
             let series = &study.seg_series;
             let active_seg = me.slots[slot].active_seg;
@@ -2134,7 +2518,9 @@ impl ViewerApp {
                                 },
                                 Self::series_suffix(study, &sr.referenced_series_uid)
                             ),
+                            current.as_ref() == Some(&RenameTarget::Set(here)),
                         );
+                        Self::focus_row(ui, &resp, RenameTarget::Set(here), current, &mut focus);
                         if resp.clicked() {
                             if selected {
                                 new_segs_shown = Some(!segs_shown);
@@ -2229,8 +2615,16 @@ impl ViewerApp {
                                             .wrap(),
                                     )
                                     .on_hover_text(
-                                        "Click to make this the segmentation the tools edit",
+                                        "Click to make this the segmentation the tools edit\n\
+                                         F2: rename, Delete: remove",
                                     );
+                                Self::focus_row(
+                                    ui,
+                                    &resp,
+                                    RenameTarget::Item { set: here, idx: i },
+                                    current,
+                                    &mut focus,
+                                );
                                 if resp.clicked() {
                                     activate = Some(i);
                                 }
@@ -2283,6 +2677,9 @@ impl ViewerApp {
         if new_series {
             self.new_set(slot, SetKind::Segmentations);
         }
+        if focus.is_some() {
+            self.tree_focus = focus;
+        }
         if let Some(i) = new_active_series {
             let s = &mut self.slots[slot];
             s.active_seg_series = i;
@@ -2324,6 +2721,8 @@ impl ViewerApp {
         }
         let mut rename: Option<RenameTarget> = None;
         let mut remove: Option<ObjRef> = None;
+        let mut focus: Option<RenameTarget> = None;
+        let current = self.tree_focus.clone();
         // The views draw one dose grid at a time, so the rows work the way
         // the structure sets' do: clicking another grid makes it the drawn
         // one, clicking the drawn grid takes dose off the images.
@@ -2358,6 +2757,14 @@ impl ViewerApp {
                                 d.label,
                                 Self::plan_suffix(plans, &d.referenced_plan_uid)
                             ),
+                            current.as_ref() == Some(&RenameTarget::Dose { slot, idx: i }),
+                        );
+                        Self::focus_row(
+                            ui,
+                            &resp,
+                            RenameTarget::Dose { slot, idx: i },
+                            &current,
+                            &mut focus,
                         );
                         if resp.clicked() {
                             // Clicking the drawn grid takes dose off the
@@ -2371,7 +2778,8 @@ impl ViewerApp {
                         }
                         resp.on_hover_text(format!(
                             "{}  max {:.2} {}\nclick: draw this grid, or take dose off \
-                             the images\nright-click: rename or remove",
+                             the images\nright-click: rename or remove\nF2: rename, \
+                             Delete: remove",
                             d.summation_type,
                             d.max_dose,
                             d.units.to_lowercase()
@@ -2433,6 +2841,9 @@ impl ViewerApp {
         }
         if remove.is_some() {
             self.obj_remove = remove;
+        }
+        if focus.is_some() {
+            self.tree_focus = focus;
         }
     }
 
@@ -2496,6 +2907,8 @@ impl ViewerApp {
         let mut remove: Option<ObjRef> = None;
         let mut new_active: Option<usize> = None;
         let mut new_shown: Option<bool> = None;
+        let mut focus: Option<RenameTarget> = None;
+        let current = self.tree_focus.clone();
         {
             let Some(study) = &self.slots[slot].study else {
                 return;
@@ -2530,6 +2943,14 @@ impl ViewerApp {
                                 },
                                 Self::structset_suffix(study, &plan.referenced_structset_uid)
                             ),
+                            current.as_ref() == Some(&RenameTarget::Plan { slot, idx: pi }),
+                        );
+                        Self::focus_row(
+                            ui,
+                            &resp,
+                            RenameTarget::Plan { slot, idx: pi },
+                            &current,
+                            &mut focus,
                         );
                         if resp.clicked() {
                             // Clicking the shown plan hides its isocenters;
@@ -2543,7 +2964,7 @@ impl ViewerApp {
                         }
                         resp.on_hover_text(
                             "click: draw this plan's isocenters, or take them off the \
-                             views\nright-click: rename or remove",
+                             views\nright-click: rename or remove\nF2: rename, Delete: remove",
                         )
                         .context_menu(|ui| {
                             if ui.button("✏ Rename").clicked() {
@@ -2719,6 +3140,8 @@ impl ViewerApp {
         let mut close_idx = None;
         let mut rename: Option<RenameTarget> = None;
         let mut remove: Option<ObjRef> = None;
+        let mut focus: Option<RenameTarget> = None;
+        let current = self.tree_focus.clone();
         let open_windows: Vec<usize> = self
             .planar_windows
             .iter()
@@ -2741,6 +3164,13 @@ impl ViewerApp {
                             // so the tick box is that window.
                             let mut shown = open_windows.contains(&i);
                             let resp = ui.checkbox(&mut shown, &img.label);
+                            Self::focus_row(
+                                ui,
+                                &resp,
+                                RenameTarget::Planar { slot, idx: i },
+                                &current,
+                                &mut focus,
+                            );
                             if resp.changed() {
                                 if shown {
                                     open_idx = Some(i);
@@ -2749,7 +3179,8 @@ impl ViewerApp {
                                 }
                             }
                             resp.on_hover_text(
-                                "Show this image in its own window\nright-click: rename or remove",
+                                "Show this image in its own window\nright-click: rename or \
+                                 remove\nF2: rename, Delete: remove",
                             )
                             .context_menu(|ui| {
                                 if ui.button("✏ Rename").clicked() {
@@ -2775,6 +3206,9 @@ impl ViewerApp {
         }
         if remove.is_some() {
             self.obj_remove = remove;
+        }
+        if focus.is_some() {
+            self.tree_focus = focus;
         }
         if let Some(i) = close_idx {
             for w in self
@@ -2832,6 +3266,7 @@ impl ViewerApp {
         let mut apply_grid: Option<(usize, usize, usize)> = None;
         let mut rename: Option<RenameTarget> = None;
         let mut remove: Option<ObjRef> = None;
+        let mut focus: Option<RenameTarget> = None;
         {
             let study = self.slots[slot].study.as_ref().unwrap();
             // Frame-of-reference UID of every open workspace's volume, so
@@ -2856,6 +3291,7 @@ impl ViewerApp {
                     .unwrap_or_default()
             };
             let mut invert = self.reg_apply_invert;
+            let current = self.tree_focus.clone();
             egui::CollapsingHeader::new(format!("Spatial registrations ({n})"))
                 .id_salt(("regobj", slot))
                 .default_open(false)
@@ -2874,7 +3310,17 @@ impl ViewerApp {
                                 ))
                                 .strong(),
                             )
-                            .on_hover_text("right-click: rename this registration");
+                            .on_hover_text(
+                                "right-click: rename or remove this registration\nF2: rename, \
+                                 Delete: remove",
+                            );
+                        Self::focus_row(
+                            ui,
+                            &resp,
+                            RenameTarget::Registration { slot, idx: ri },
+                            &current,
+                            &mut focus,
+                        );
                         resp.context_menu(|ui| {
                             if ui.button("✏ Rename").clicked() {
                                 rename = Some(RenameTarget::Registration { slot, idx: ri });
@@ -3013,6 +3459,9 @@ impl ViewerApp {
         if rename.is_some() {
             self.rename_request = rename;
         }
+        if focus.is_some() {
+            self.tree_focus = focus;
+        }
         if let Some((rigid, fixed_slot, moving_slot)) = apply {
             self.apply_external_transform_between(
                 Transform3::rigid_only(rigid),
@@ -3048,6 +3497,8 @@ impl ViewerApp {
     pub(super) fn records_section(&mut self, ui: &mut egui::Ui, slot: usize) {
         let mut rename: Option<RenameTarget> = None;
         let mut remove: Option<ObjRef> = None;
+        let mut focus: Option<RenameTarget> = None;
+        let current = self.tree_focus.clone();
         {
             let Some(study) = &self.slots[slot].study else {
                 return;
@@ -3080,7 +3531,17 @@ impl ViewerApp {
                             ))
                             .strong(),
                         )
-                        .on_hover_text("right-click: rename this record");
+                        .on_hover_text(
+                            "right-click: rename or remove this record\nF2: rename, Delete: \
+                             remove",
+                        );
+                    Self::focus_row(
+                        ui,
+                        &resp,
+                        RenameTarget::Record { slot, idx: ri },
+                        &current,
+                        &mut focus,
+                    );
                     resp.context_menu(|ui| {
                         if ui.button("✏ Rename").clicked() {
                             rename = Some(RenameTarget::Record { slot, idx: ri });
@@ -3158,6 +3619,9 @@ impl ViewerApp {
         if remove.is_some() {
             self.obj_remove = remove;
         }
+        if focus.is_some() {
+            self.tree_focus = focus;
+        }
     }
 
     /// What the loader had to say about this workspace's files, and the
@@ -3207,6 +3671,213 @@ impl ViewerApp {
             if let Some(study) = self.slots[slot].study.as_mut() {
                 study.warnings.clear();
             }
+        }
+    }
+}
+
+/// The rows at `t`'s own level of the tree, in the order the tree draws
+/// them - the rule behind the arrow keys, kept apart from the app so it can
+/// be checked on a study alone.
+fn tree_level_of(study: &LoadedStudy, slot: usize, t: &RenameTarget) -> Vec<RenameTarget> {
+    let n_of = |n: usize| (0..n).collect::<Vec<_>>();
+    match t {
+        RenameTarget::Patient { .. } => tree_layout(study)
+            .into_iter()
+            .map(|p| RenameTarget::Patient { slot, key: p.key })
+            .collect(),
+        RenameTarget::Study { .. } => tree_layout(study)
+            .into_iter()
+            .flat_map(|p| p.studies)
+            .map(|s| RenameTarget::Study { slot, uid: s.uid })
+            .collect(),
+        RenameTarget::Series { idx, .. } => {
+            let series = |list: &[usize]| -> Vec<RenameTarget> {
+                list.iter()
+                    .map(|i| RenameTarget::Series { slot, idx: *i })
+                    .collect()
+            };
+            for p in tree_layout(study) {
+                for st in p.studies {
+                    // A 4D group first: its phases are the level, and
+                    // they are also the ones the tree does not repeat
+                    // under the modality node.
+                    for gi in &st.fourd {
+                        let Some(g) = study.fourd_groups.get(*gi) else {
+                            continue;
+                        };
+                        let members: Vec<usize> =
+                            g.resolve(&study.series).into_iter().flatten().collect();
+                        if members.contains(idx) {
+                            return series(&members);
+                        }
+                    }
+                    for (_, list) in &st.modalities {
+                        if list.contains(idx) {
+                            return series(list);
+                        }
+                    }
+                }
+            }
+            Vec::new()
+        }
+        RenameTarget::FourD { .. } => n_of(study.fourd_groups.len())
+            .into_iter()
+            .map(|idx| RenameTarget::FourD { slot, idx })
+            .collect(),
+        RenameTarget::Set(r) => {
+            let n = match r.kind {
+                SetKind::Structures => study.structure_sets.len(),
+                SetKind::Segmentations => study.seg_series.len(),
+            };
+            n_of(n)
+                .into_iter()
+                .map(|idx| {
+                    RenameTarget::Set(SetRef {
+                        slot,
+                        kind: r.kind,
+                        idx,
+                    })
+                })
+                .collect()
+        }
+        RenameTarget::Item { set, .. } => {
+            let n = match set.kind {
+                SetKind::Structures => study
+                    .structure_sets
+                    .get(set.idx)
+                    .map(|s| s.rois.len())
+                    .unwrap_or(0),
+                SetKind::Segmentations => study
+                    .seg_series
+                    .get(set.idx)
+                    .map(|s| s.segs.len())
+                    .unwrap_or(0),
+            };
+            n_of(n)
+                .into_iter()
+                .map(|idx| RenameTarget::Item { set: *set, idx })
+                .collect()
+        }
+        RenameTarget::Dose { .. } => n_of(study.doses.len())
+            .into_iter()
+            .map(|idx| RenameTarget::Dose { slot, idx })
+            .collect(),
+        RenameTarget::Plan { .. } => n_of(study.plans.len())
+            .into_iter()
+            .map(|idx| RenameTarget::Plan { slot, idx })
+            .collect(),
+        RenameTarget::Planar { .. } => n_of(study.planar_images.len())
+            .into_iter()
+            .map(|idx| RenameTarget::Planar { slot, idx })
+            .collect(),
+        RenameTarget::Registration { .. } => n_of(study.registrations.len())
+            .into_iter()
+            .map(|idx| RenameTarget::Registration { slot, idx })
+            .collect(),
+        RenameTarget::Record { .. } => n_of(study.treat_records.len())
+            .into_iter()
+            .map(|idx| RenameTarget::Record { slot, idx })
+            .collect(),
+    }
+}
+
+impl ViewerApp {
+    // -- Arrow keys on the data tree ---------------------------------------
+
+    /// The rows at the focused row's own level of the tree, in the order the
+    /// tree draws them.
+    ///
+    /// "Its own level" is what the tree shows, not what the DICOM model
+    /// says: an image series that belongs to a 4D group has the group's
+    /// other phases beside it, because that is where the tree files it; one
+    /// that does not has the other series of its study *and its modality*,
+    /// which is the node it sits under. [`tree_layout`] is asked rather than
+    /// the study directly, so the order the arrows follow is the order on
+    /// screen even after a re-detect moves a series from one node to
+    /// another.
+    fn tree_level(&self, t: &RenameTarget) -> Vec<RenameTarget> {
+        match self.slots[t.slot()].study.as_ref() {
+            Some(study) => tree_level_of(study, t.slot(), t),
+            None => Vec::new(),
+        }
+    }
+    /// ↑ / ↓ on the data tree: move the focus one row up or down its own
+    /// level, and show what it lands on.
+    ///
+    /// The ends do not wrap. Holding ↓ through the phases of a 4D group and
+    /// stopping at the last one is the behaviour a slider has; coming back
+    /// round to the first would make the count of presses meaningless.
+    pub(super) fn tree_key_step(&mut self, delta: isize) {
+        // A series switch is a load, and a load already in flight makes the
+        // next one a no-op. Moving the focus anyway would walk it past rows
+        // the views never showed, so the key does nothing until the volume
+        // it last asked for is there.
+        if self.loading.is_some() {
+            return;
+        }
+        let Some(here) = self.tree_focus.clone() else {
+            return;
+        };
+        let level = self.tree_level(&here);
+        let Some(at) = level.iter().position(|x| *x == here) else {
+            return;
+        };
+        let next = at as isize + delta;
+        if next < 0 || next as usize >= level.len() {
+            return;
+        }
+        let target = level[next as usize].clone();
+        self.tree_focus = Some(target.clone());
+        self.tree_show_focused(&target);
+    }
+
+    /// Display what a row points at, the way clicking it would.
+    ///
+    /// Only the rows that *have* something to display: stepping onto a
+    /// patient or a study is a move through the tree, a planar image opens
+    /// in its own pane rather than being selected, and stepping onto one
+    /// structure of a set would otherwise toggle its visibility, which is
+    /// what clicking it does and is not what an arrow key should do.
+    fn tree_show_focused(&mut self, t: &RenameTarget) {
+        match t {
+            RenameTarget::Series { slot, idx } => {
+                let (slot, idx) = (*slot, *idx);
+                // Between the phases of the group on display the view is
+                // kept, exactly as clicking a phase does: two phases are the
+                // same patient a moment apart, and a crosshair that jumps
+                // back to the middle slice hides the motion being looked at.
+                match self
+                    .fourd_phases(slot)
+                    .and_then(|(_, idxs, _)| idxs.iter().position(|x| *x == idx))
+                {
+                    Some(phase) => self.goto_phase(slot, phase),
+                    None => self.start_series_switch(slot, idx),
+                }
+            }
+            RenameTarget::Set(r) => {
+                let s = &mut self.slots[r.slot];
+                match r.kind {
+                    SetKind::Structures => {
+                        s.active_structs = r.idx;
+                        s.structs_shown = true;
+                    }
+                    SetKind::Segmentations => {
+                        s.active_seg_series = r.idx;
+                        s.active_seg = 0;
+                        s.segs_shown = true;
+                    }
+                }
+                self.settings_gen += 1;
+            }
+            RenameTarget::Dose { slot, idx } => {
+                self.slots[*slot].active_dose = *idx;
+                self.settings_gen += 1;
+            }
+            RenameTarget::Plan { slot, idx } => {
+                self.slots[*slot].active_plan = *idx;
+                self.settings_gen += 1;
+            }
+            _ => {}
         }
     }
 }
@@ -3717,6 +4388,89 @@ mod layout_tests {
         assert_eq!(st1.modalities[0].1, vec![0, 1], "both CT series under CT");
         assert_eq!(st1.modalities[1].1, vec![2]);
         assert_eq!(layout[1].studies[0].modalities[0].0, "US");
+    }
+
+    #[test]
+    fn the_arrows_walk_the_level_the_tree_draws() {
+        let st = study();
+        let series = |i: usize| RenameTarget::Series { slot: 0, idx: i };
+        let level = |t: &RenameTarget| tree_level_of(&st, 0, t);
+
+        // A CT of study st1: the other CT of that study, not the MR beside
+        // it and not the CT of the other study.
+        assert_eq!(level(&series(0)), vec![series(0), series(1)]);
+        assert_eq!(level(&series(1)), vec![series(0), series(1)]);
+        // The MR is alone in its own modality node.
+        assert_eq!(level(&series(2)), vec![series(2)]);
+        // A different study is a different level.
+        assert_eq!(level(&series(3)), vec![series(3)]);
+        // A different patient too.
+        assert_eq!(level(&series(4)), vec![series(4)]);
+
+        // Studies and patients walk their own levels.
+        let studies = level(&RenameTarget::Study {
+            slot: 0,
+            uid: "st1".into(),
+        });
+        assert_eq!(
+            studies.len(),
+            3,
+            "every study of the workspace: {studies:?}"
+        );
+        let patients = level(&RenameTarget::Patient {
+            slot: 0,
+            key: "P1".into(),
+        });
+        assert_eq!(patients.len(), 2);
+
+        // Structure sets: the workspace's sets, in order.
+        let sets = level(&RenameTarget::Set(SetRef {
+            slot: 0,
+            kind: SetKind::Structures,
+            idx: 0,
+        }));
+        assert_eq!(sets.len(), st.structure_sets.len());
+
+        // A row whose level has nothing else in it does not move, and a
+        // level that is empty is not a panic.
+        assert!(level(&RenameTarget::Dose { slot: 0, idx: 0 }).is_empty());
+    }
+
+    #[test]
+    fn a_four_d_group_is_the_level_for_the_phases_it_holds() {
+        use crate::fourd::{FourDGroup, Member, Role};
+        let mut st = study();
+        // Group the two CT series of st1 as a 4D acquisition. The tree files
+        // them under the group and not under the CT node, so that is the
+        // level the arrows have to follow.
+        st.fourd_groups.push(FourDGroup {
+            name: "4DCT (2 phases)".into(),
+            study_uid: "st1".into(),
+            members: vec![
+                Member {
+                    series_uid: "ct1".into(),
+                    label: "0%".into(),
+                    role: Role::Phase,
+                    percent: Some(0.0),
+                },
+                Member {
+                    series_uid: "ct2".into(),
+                    label: "50%".into(),
+                    role: Role::Phase,
+                    percent: Some(50.0),
+                },
+            ],
+            custom: false,
+            dissolved: false,
+        });
+        let series = |i: usize| RenameTarget::Series { slot: 0, idx: i };
+        assert_eq!(
+            tree_level_of(&st, 0, &series(0)),
+            vec![series(0), series(1)],
+            "the group's phases, in member order"
+        );
+        // The MR is untouched by the grouping.
+        assert_eq!(tree_level_of(&st, 0, &series(2)), vec![series(2)]);
     }
 
     /// An RT object with an incomplete StudyInstanceUID must still land

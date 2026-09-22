@@ -28,9 +28,14 @@ Move the crosshair onto the structure first; the prompt is anchored to it.
 | **Point** | A single foreground click at the crosshair | Compact, well-separated structures |
 | **Text** | A structure name through the model's trained template | Anatomy the 117-class model does not cover |
 
-The result is an ordinary segmentation - editable with brush and eraser,
-visible in 3D, convertible to RTSTRUCT - so the usual loop is *prompt, fix
-by hand, export*.
+**Output** says what the result becomes: *segments* (an ordinary
+segmentation - editable with brush and eraser, visible in 3D - so the usual
+loop is *prompt, fix by hand, export*), *RT structures* (contours in a
+structure set of the workspace or a new one named here, and no segment) or
+*both*. **Run on** appears when the displayed series is a phase of a 4D
+group and runs the same prompt on every phase, the crosshair carried over
+in patient coordinates; each phase's mask is filed on that phase under the
+same name ([auto-segmentation.md](auto-segmentation.md#running-on-every-phase-of-a-4d-group)).
 
 ### Options
 

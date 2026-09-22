@@ -40,10 +40,13 @@ module's **Workspace A / B** row). The section shares the engines' layout (see
 * **Tissue above** - on CT a Hounsfield threshold (default −300 HU); on MR a
   fraction of the bias-corrected 99th percentile, or Otsu. Re-seeded whenever
   the displayed series changes modality.
-* **Name** and **as EXTERNAL structure** - the mask lands as an ordinary
-  editable segmentation, optionally also as an RTSTRUCT ROI of interpreted
-  type `EXTERNAL`, the tag a planning system looks for; it then renders like
-  any ROI and rides the DICOM export.
+* **Name**, **Run on** and **Output** - the outline lands as an editable
+  segment, as an RTSTRUCT ROI of interpreted type `EXTERNAL` (the tag a
+  planning system looks for; it renders like any ROI and rides the DICOM
+  export) in a set of the workspace or a new one named here, or as both -
+  both by default. *Run on ▸ every phase* contours each phase of the
+  displayed series' 4D group and files each outline on its phase
+  ([auto-segmentation.md](auto-segmentation.md#running-on-every-phase-of-a-4d-group)).
 * **Options** - the smallest body detail, the equipment test with its shell
   thickness and repeat window, the smallest body part, thin-anatomy recovery,
   whether the body is reported solid, surface smoothing, and (model-assisted

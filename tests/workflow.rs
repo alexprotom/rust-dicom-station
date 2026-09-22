@@ -321,6 +321,7 @@ fn anchored_case(
         src_vol: src.clone(),
         src_anchor,
         anchor_landed_name: None,
+        anchor_landed_color: None,
         subjects,
         phases: anchored_phases,
         margin_mm: 10.0,

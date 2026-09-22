@@ -386,6 +386,11 @@ fn propagate_anchored(
         src_vol,
         src_anchor,
         anchor_landed_name: a.anchor_landed_as.clone(),
+        // The landed anchor keeps the anchor's own colour here. The viewer
+        // offers a colour of its own beside the name, because there the
+        // landed copy is drawn on top of the phase's contour and the two
+        // have to be told apart by eye; nothing reads a colour over MCP.
+        anchor_landed_color: None,
         subjects,
         phases: anchored,
         margin_mm: a.anchor_margin_mm,

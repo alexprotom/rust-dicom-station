@@ -15,6 +15,10 @@ impl ViewerApp {
         self.forget_sources(slot);
         self.planar_windows.retain(|w| w.slot != slot);
         self.d3_windows.retain(|w| w.slot != slot);
+        self.tree_picks.retain(|(s, _)| *s != slot);
+        if self.tree_focus.as_ref().is_some_and(|t| t.slot() == slot) {
+            self.tree_focus = None;
+        }
         if self.maximized.map(|(s, _)| s == slot).unwrap_or(false) {
             self.maximized = None;
         }
@@ -102,6 +106,101 @@ impl ViewerApp {
         self.tree_transfer(action.from, action.to, &action.sel, action.op);
     }
 
+    // -- Keyboard on the data tree -----------------------------------------
+
+    /// F2: rename the focused row - the one last clicked in the tree.
+    pub(super) fn tree_key_rename(&mut self) {
+        if let Some(t) = self.tree_focus.clone() {
+            self.rename_request = Some(t);
+        }
+    }
+
+    /// Delete: take the focused row out of its workspace, exactly as the
+    /// *Remove* entry of its context menu would. Every kind of row the tree
+    /// shows has one - a patient, a study, a series, a 4D group, a structure
+    /// set or segmentation series, one structure or segment, a dose grid, a
+    /// plan, a planar image, a registration, a treatment record - so every
+    /// kind of row can go this way.
+    ///
+    /// The focus is spent by the removal: what it pointed at is gone, and
+    /// the indices around it have moved.
+    pub(super) fn tree_key_remove(&mut self) {
+        let Some(t) = self.tree_focus.take() else {
+            return;
+        };
+        let tree = |slot: usize, sel: TreeSel| TreeAction {
+            from: slot,
+            to: slot,
+            sel,
+            op: TreeOp::Remove,
+        };
+        let obj = |slot: usize, kind: ObjKind, idx: usize| ObjRef { slot, kind, idx };
+        match t {
+            RenameTarget::Patient { slot, key } => {
+                self.tree_action = Some(tree(slot, TreeSel::Patient(key)));
+            }
+            RenameTarget::Study { slot, uid } => {
+                self.tree_action = Some(tree(slot, TreeSel::Study(uid)));
+            }
+            RenameTarget::Series { slot, idx } => {
+                self.tree_action = Some(tree(slot, TreeSel::Series(idx)));
+            }
+            RenameTarget::Set(r) => self.set_action = Some(SetAction::Remove(r)),
+            RenameTarget::Item { set, idx } => {
+                self.item_action = Some(ItemAction::Remove {
+                    from: set,
+                    items: vec![idx],
+                });
+            }
+            RenameTarget::Dose { slot, idx } => {
+                self.obj_remove = Some(obj(slot, ObjKind::Dose, idx))
+            }
+            RenameTarget::Plan { slot, idx } => {
+                self.obj_remove = Some(obj(slot, ObjKind::Plan, idx))
+            }
+            RenameTarget::Planar { slot, idx } => {
+                self.obj_remove = Some(obj(slot, ObjKind::Planar, idx));
+            }
+            RenameTarget::Registration { slot, idx } => {
+                self.obj_remove = Some(obj(slot, ObjKind::Registration, idx));
+            }
+            RenameTarget::Record { slot, idx } => {
+                self.obj_remove = Some(obj(slot, ObjKind::Record, idx));
+            }
+            RenameTarget::FourD { slot, idx } => {
+                self.fourd_action = Some(FourDAction::Dissolve { slot, group: idx });
+            }
+        }
+    }
+
+    /// The series of `slot` ticked with Ctrl-click, as indices into the
+    /// study's series list, in the order they were ticked. Ticks whose
+    /// series has since gone are not counted.
+    pub(super) fn picked_series(&self, slot: usize) -> Vec<usize> {
+        let Some(study) = self.slots[slot].study.as_ref() else {
+            return Vec::new();
+        };
+        self.tree_picks
+            .iter()
+            .filter(|(s, _)| *s == slot)
+            .filter_map(|(_, uid)| study.series.iter().position(|se| se.uid == *uid))
+            .collect()
+    }
+
+    /// Ctrl-click on a series row: tick it, or untick a ticked one.
+    pub(super) fn toggle_pick(&mut self, slot: usize, uid: &str) {
+        match self
+            .tree_picks
+            .iter()
+            .position(|(s, u)| *s == slot && u == uid)
+        {
+            Some(i) => {
+                self.tree_picks.remove(i);
+            }
+            None => self.tree_picks.push((slot, uid.to_string())),
+        }
+    }
+
     /// Series selection mask for a tree selection.
     pub(super) fn tree_sel_mask(study: &LoadedStudy, sel: &TreeSel) -> Vec<bool> {
         match sel {
@@ -112,6 +211,7 @@ impl ViewerApp {
                 .collect(),
             TreeSel::Study(uid) => study.series.iter().map(|s| s.study_uid == *uid).collect(),
             TreeSel::Series(i) => (0..study.series.len()).map(|k| k == *i).collect(),
+            TreeSel::Many(idxs) => (0..study.series.len()).map(|k| idxs.contains(&k)).collect(),
         }
     }
 
@@ -326,11 +426,11 @@ impl ViewerApp {
         };
         let sel_mask = Self::tree_sel_mask(study, sel);
         let any_series = sel_mask.iter().any(|b| *b);
-        let study_scope = !matches!(sel, TreeSel::Series(_));
+        let study_scope = !matches!(sel, TreeSel::Series(_) | TreeSel::Many(_));
         // The studies the selection covers, for the objects of a study that
         // has no image series to speak for it.
         let scope_uids: Vec<&str> = match sel {
-            TreeSel::Series(_) => Vec::new(),
+            TreeSel::Series(_) | TreeSel::Many(_) => Vec::new(),
             TreeSel::Study(uid) => vec![uid.as_str()],
             // A patient node with no series is the one the tree synthesises
             // for everything unattached, so it covers every such study.

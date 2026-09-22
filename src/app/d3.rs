@@ -5,6 +5,13 @@ use super::*;
 
 /// The identity of one structure's geometry, for the 3D window's partial
 /// rebuilds.
+///
+/// Geometry only. The colour is not part of it: a mesh carries the colour
+/// it was built with, but the scene paints every structure in the colour
+/// the structure set gives it *now* ([`ViewerApp::d3_scene`]), so a
+/// recolour never has to re-mesh anything - and never fails to show, in a
+/// window or in a row, whether or not anything else made the meshes
+/// rebuild.
 fn roi_hash(roi: &crate::rtstruct::Roi) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -15,7 +22,6 @@ fn roi_hash(roi: &crate::rtstruct::Roi) -> u64 {
             (p.x.to_bits(), p.y.to_bits(), p.z.to_bits()).hash(&mut h);
         }
     }
-    roi.color.hash(&mut h);
     h.finish()
 }
 
@@ -936,6 +942,7 @@ impl ViewerApp {
                         ui,
                         scene_rect,
                         visible,
+                        &names,
                         &seg_disp,
                         &other_visible,
                         &reg_here,
@@ -1028,6 +1035,7 @@ impl ViewerApp {
             ui,
             rect,
             &visible,
+            &names,
             &seg_disp,
             &other_visible,
             &reg_here,
@@ -1394,6 +1402,11 @@ impl ViewerApp {
     /// everything here is relative to the rect it is handed, and the only
     /// state it needs beyond the window itself is what the caller has
     /// already taken out of `self`.
+    ///
+    /// `names` is the active structure set's (name, colour) per ROI: the
+    /// colour a structure is drawn in comes from here, live, not from the
+    /// mesh - which is what makes a recolour show at once in the row and in
+    /// the window alike, with no rebuild in between.
     #[allow(clippy::too_many_arguments)]
     fn d3_scene(
         &self,
@@ -1401,6 +1414,7 @@ impl ViewerApp {
         ui: &mut egui::Ui,
         rect: egui::Rect,
         visible: &[bool],
+        names: &[(String, [u8; 3])],
         seg_disp: &[(bool, [u8; 3])],
         other_visible: &[bool],
         reg_here: &Option<(
@@ -1536,8 +1550,13 @@ impl ViewerApp {
         for (i, a) in &w.roi_alpha {
             vertex_key = mix(vertex_key, (*i as u64) << 32 | a.to_bits() as u64);
         }
-        // Segmentation colors are applied live at draw time.
-        for (_, c) in seg_disp {
+        // Structure and segmentation colours are applied live at draw
+        // time, so they are part of what the projected vertices depend on.
+        for c in names
+            .iter()
+            .map(|(_, c)| c)
+            .chain(seg_disp.iter().map(|(_, c)| c))
+        {
             vertex_key = mix(
                 vertex_key,
                 (c[0] as u64) | ((c[1] as u64) << 8) | ((c[2] as u64) << 16),
@@ -1585,7 +1604,9 @@ impl ViewerApp {
                     (
                         m,
                         visible.get(m.roi_index).copied().unwrap_or(true) && own > 0.0,
-                        m.color,
+                        // The set's colour of today, not the mesh's of
+                        // when it was built.
+                        names.get(m.roi_index).map(|(_, c)| *c).unwrap_or(m.color),
                         m.external,
                         (alpha as f32 * own).round() as u8,
                     )

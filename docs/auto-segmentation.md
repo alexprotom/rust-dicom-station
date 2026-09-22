@@ -41,18 +41,63 @@ module's **Workspace A / B** row; the four sections share one layout, see
   engine uses its `totalsegmentator/` sub-folder. Persisted as `models_dir`
   in `viewer_settings.txt`.
 
+* **Run on** - shown only when the displayed series is a phase of a 4D
+  group: *the displayed series*, or *every phase of <group> (n)*; see
+  below.
+
 **▶ Segment** runs in the background; the buttons become a progress row
 (device, bar, message, **Cancel** - effective during download, conversion
 and between inference tiles), mirrored in the sidebar. A **results dialog**
-then lists every detected structure with its volume; checked ones become
-ordinary editable segmentations - brush/erase/grow correction, live 3D
-view, per-structure colors from a curated anatomical palette - optionally
-converted to **RTSTRUCT contours** in the same step, which then render like
-any ROI and ride the DICOM export. Materialize only what you need: every
-mask is a full-volume voxel map (≈ 35 MB at 512 × 512 × 133).
+then lists every detected structure with its volume, and asks what the
+checked ones become:
+
+* **Output ▸ segments** - ordinary editable segmentations in the
+  segmentation series bound to the displayed image series:
+  brush/erase/grow correction, live 3D view, per-structure colours from a
+  curated anatomical palette; exports as DICOM SEG.
+* **Output ▸ RT structures** - contours in an RT structure set, and **no
+  segments**: what a planning system reads. A second row picks the set -
+  any set of the workspace, or **➕ new structure set** with a name of its
+  own (blank means *Auto-segmentation*) - so a run can start a fresh set
+  from this window rather than land in whatever set happened to be active.
+  The structures get the RT ROI Interpreted Type `ORGAN`; a name already in
+  the set gets a `(2)` suffix rather than a twin.
+* **Output ▸ both** - the segments, and contours made from them.
+
+Materialize only what you need: every mask is a full-volume voxel map
+(≈ 35 MB at 512 × 512 × 133).
 
 If the workspace is switched or modified during a run, the result is
 discarded with a message rather than applied to the wrong volume.
+
+### Running on every phase of a 4D group
+
+With *Run on ▸ every phase of <group>*, the run visits the phases in
+temporal order - the displayed one from memory, the others loaded from
+their files - and runs the same model on each; the progress row reads
+`Phase 30% (4/10): ...` and the bar covers the whole group. One results
+dialog then lists **every class any phase found**, with its mean volume
+over the phases that have it, and the checked classes are filed **on each
+phase under the same names**:
+
+* as segments, in the segmentation series already bound to that phase, or
+  in a new one called `<group> <phase>`;
+* as contours, in the structure set drawn on that phase, or in a new set
+  called `<group> <phase>` when the phase has none - which is the layout a
+  planning system expects of a 4DCT, one set per phase.
+
+A class a phase did not find lands nowhere on that phase. The phases stay
+linked to their series by UID, so the tree files each result under its
+phase, the 4D player steps through them, and the motion pipeline
+([motion-4d.md](motion-4d.md)) can take the per-phase structures from
+there. Cancelling stops at the current phase and files nothing: a 4D
+result with phases missing is not one result.
+
+The same *Run on* row is on **Body contour** and **Prompt segmentation**
+(the prompt is placed at the same point in patient coordinates on every
+phase, so the crosshair need only be set once); **Slice propagation**
+stays a single-series tool, its box being drawn on one slice of one
+series.
 
 ## Weight acquisition and caching
 

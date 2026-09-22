@@ -27,6 +27,10 @@ pub(super) struct BodyDialog {
     pub seeded_for: String,
     /// One-line summary of the last finished run.
     pub status: Option<String>,
+    /// Where the outline goes - a segment, an `EXTERNAL` structure, or
+    /// both - and whether every phase of the displayed series' 4D group
+    /// gets one.
+    pub output: ToolOutput,
 }
 
 /// Everything a run needs, snapshotted from the window when it starts.
@@ -63,6 +67,13 @@ impl ViewerApp {
                     params: BodyParams::for_modality(&modality),
                     seeded_for: modality,
                     status: None,
+                    // The outline is the one thing a planning system has
+                    // to have as a structure, so both by default.
+                    output: ToolOutput {
+                        kind: OutputKind::Both,
+                        set: self.default_set_target(slot),
+                        ..ToolOutput::default()
+                    },
                 });
             }
         }
@@ -80,31 +91,102 @@ impl ViewerApp {
             return;
         };
         let volume = study.volume.clone();
+        let displayed = PhaseInfo::displayed(study);
         let slot = d.slot;
         let mut params = d.params.clone();
         params.name = params.name.trim().to_string();
         if params.name.is_empty() {
             params.name = "BODY".into();
         }
+        // The output rows decide what becomes of the outline; the flag the
+        // engine carries is kept in step for anyone reading the result.
+        params.make_external = d.output.kind.structures();
         let req = BodyRequest {
             params,
             models_dir: self.engine_models_dir(ModelsEngine::TotalSegmentator),
+        };
+        let phases = if d.output.phases {
+            match self.phase_inputs(slot) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    self.error = Some(format!("{e:#}"));
+                    return;
+                }
+            }
+        } else {
+            None
         };
         self.persist_settings();
         let progress = Arc::new(Progress::default());
         progress.set("Preparing");
         self.body_slot = slot;
         self.body_job = Some(Job::spawn(progress, move |p| {
-            (
-                slot,
-                bodymask::contour_body(&volume, &req.params, &req.models_dir, p),
-            )
+            let run = |vol: &Volume, p: &Progress| {
+                bodymask::contour_body(vol, &req.params, &req.models_dir, p)
+            };
+            let out = match phases {
+                Some((group, inputs)) => run_on_phases(&group, inputs, p, run),
+                None => run(&volume, p).map(|r| vec![(displayed, r)]),
+            };
+            (slot, out)
         }));
     }
 
     /// A run finished: verify the slot still shows the same volume, land the
-    /// mask, and - when asked - file it as an RTSTRUCT `EXTERNAL` too.
-    pub(super) fn on_body_done(&mut self, slot: usize, result: BodyResult) {
+    /// outline the way the output rows say - as a segment, as an RTSTRUCT
+    /// `EXTERNAL`, or both - on the displayed series or on every phase.
+    pub(super) fn on_body_done(&mut self, slot: usize, results: Vec<(PhaseInfo, BodyResult)>) {
+        // Bone-white: the outline is a reference, not one more coloured
+        // structure competing with the anatomy inside it.
+        const BONE: [u8; 3] = [230, 230, 220];
+        let Some(output) = self.body_dialog.as_ref().map(|d| d.output.clone()) else {
+            return;
+        };
+        let Some((first, result)) = results.first() else {
+            return;
+        };
+        if let Some(group) = first.group.clone() {
+            // One outline per phase, filed on that phase.
+            let n = results.len();
+            let empty = results.iter().filter(|(_, r)| r.voxels == 0).count();
+            let copies: Vec<_> = results
+                .iter()
+                .map(|(info, r)| {
+                    let segs = if r.voxels == 0 {
+                        Vec::new()
+                    } else {
+                        vec![Segmentation::from_label_map(
+                            r.name.clone(),
+                            BONE,
+                            r.volume_dims,
+                            &r.mask,
+                            1,
+                        )]
+                    };
+                    let notes = (r.voxels == 0)
+                        .then(|| format!("phase {}: the body contour came out empty", info.label))
+                        .into_iter()
+                        .collect();
+                    info.copy(segs, notes)
+                })
+                .collect();
+            let landed = self.land_phases(slot, &group, output.kind, "EXTERNAL", copies);
+            if landed == 0 {
+                return;
+            }
+            let name = result.name.clone();
+            if let Some(d) = &mut self.body_dialog {
+                d.status = Some(format!(
+                    "✔ {name} on {landed} of {n} phases of {group}{}",
+                    if empty > 0 {
+                        format!(" - {empty} came out empty")
+                    } else {
+                        String::new()
+                    }
+                ));
+            }
+            return;
+        }
         if !self.slot_still_shows(slot, result.volume_dims, &result.frame_of_reference_uid) {
             self.error = Some(stale_result(&BODY_CONTOUR));
             return;
@@ -117,17 +199,15 @@ impl ViewerApp {
             );
             return;
         }
-        let idx = self.add_colored_segmentation(
-            slot,
+        let seg = Segmentation::from_label_map(
             result.name.clone(),
-            // Bone-white: the outline is a reference, not one more coloured
-            // structure competing with the anatomy inside it.
-            [230, 230, 220],
+            BONE,
             result.volume_dims,
             &result.mask,
+            1,
         );
-        if result.make_external {
-            self.seg_to_rtstruct(slot, idx, "EXTERNAL");
+        if self.land_masks(slot, &output, "EXTERNAL", "Body", vec![seg]) == 0 {
+            return;
         }
         // The cm³ conversions read `self`, so they happen before the
         // dialog is borrowed mutably.
@@ -181,6 +261,8 @@ impl ViewerApp {
         // dialog is borrowed mutably for the frame.
         let modality = self.slot_modality(slot);
         let idle = self.body_job.is_none();
+        let sets = self.structure_set_labels(slot);
+        let group = self.displayed_group(slot);
         let models_dir = models::engine_dir(
             &models::root_from_setting(&self.models_dir),
             ModelsEngine::TotalSegmentator,
@@ -256,13 +338,12 @@ impl ViewerApp {
         ui.horizontal_wrapped(|ui| {
             ui.label("Name:");
             ui.add(egui::TextEdit::singleline(&mut d.params.name).desired_width(140.0));
-            ui.checkbox(&mut d.params.make_external, "as EXTERNAL structure")
-                .on_hover_text(
-                    "Also file the result as an RTSTRUCT ROI of type EXTERNAL - \
-                     what a planning system looks for to find the patient surface. \
-                     It rides the DICOM export like any other contour.",
-                );
         });
+        // As a structure it is an `EXTERNAL` - what a planning system looks
+        // for to find the patient surface.
+        scope_row(ui, &mut d.output.phases, group.as_ref());
+        let phases = d.output.phases;
+        output_rows(ui, &mut d.output, &sets, phases, "Body");
 
         ui.separator();
         ui.collapsing("Options", |ui| {
@@ -411,7 +492,11 @@ impl ViewerApp {
                     if tip_button(
                         ui,
                         "▶ Contour",
-                        "Find the patient surface in the displayed series",
+                        if d.output.phases {
+                            "Find the patient surface on every phase of the group"
+                        } else {
+                            "Find the patient surface in the displayed series"
+                        },
                     ) {
                         run = true;
                     }

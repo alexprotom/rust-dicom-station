@@ -34,6 +34,21 @@ a hidden tombstone that only the explicit *Re-detect 4D groups* clears.
 Members reference series by **SeriesInstanceUID**, so renames, removals
 and copies never corrupt a group.
 
+A group can also be **built from a selection** when detection has nothing
+to go on - ten series called *CT* with no percent, no `phase` and no
+temporal index. Ctrl-click ticks series in the tree; right-click a ticked
+row ▸ *4D group* ▸ *New 4D group from the N ticked series*, or right-click
+the modality node for every series under it (`fourd::group_from`). The
+phases are ordered by percent when every phase has one, else by
+TemporalPositionIdentifier, else by series number, else in tick order, and
+a phase with no label of its own is called `t<n>` by position;
+reconstructions the descriptions name (AVG, MIP, MinIP) go last. The series
+taken leave any group they were in, and a group emptied that way is
+dropped. *Add the N ticked series to <group>* appends them as phases.
+
+Every engine of the *Structure auto tools* module can **run on every phase
+of a group** in one go ([auto-segmentation.md](auto-segmentation.md#running-on-every-phase-of-a-4d-group)).
+
 In the tree a group renders as a `🎞` node inside its study - phases in
 temporal order, then the reconstructions; grouped series leave their
 modality node so each series has one place.

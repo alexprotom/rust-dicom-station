@@ -392,47 +392,56 @@ impl ViewerApp {
         self.settings_gen += 1;
     }
 
-    /// Materialize the chosen organs as editable segmentations (and
-    /// optionally RTSTRUCT contours).
+    /// Materialize the chosen organs the way the results window says: as
+    /// segments, as contours in a structure set, or both - on the displayed
+    /// series, or on every phase the run covered.
     pub(super) fn apply_autoseg_selection(&mut self) {
         let Some(p) = self.autoseg_pending.take() else {
             return;
         };
         let slot = p.slot;
-        let Some(study) = self.slots[slot].study.as_ref() else {
-            return;
-        };
-        if study.volume.dims != p.result.volume_dims {
-            self.error = Some("Workspace changed - auto-segmentation result discarded.".into());
-            return;
-        }
-        let dims = study.volume.dims;
-        if self.ensure_seg_series(slot).is_none() {
-            return;
-        }
-        let first_new = self.slots[slot].segs().len();
         let classes: Vec<(u8, String, [u8; 3])> = p
-            .result
             .organs
             .iter()
             .zip(p.selected.iter())
             .filter(|(_, sel)| **sel)
             .map(|(organ, _)| (organ.label, organ.name.to_string(), organ.color))
             .collect();
-        let added = classes.len();
-        if added == 0 {
+        if classes.is_empty() {
+            return;
+        }
+        let group = p.phases.first().and_then(|(info, _)| info.group.clone());
+        if let Some(group) = group {
+            // One pass over each phase's label map for every chosen class;
+            // a class a phase did not find lands nowhere on that phase.
+            let copies: Vec<_> = p
+                .phases
+                .iter()
+                .map(|(info, r)| {
+                    let mine: Vec<(u8, String, [u8; 3])> = classes
+                        .iter()
+                        .filter(|(label, _, _)| r.organs.iter().any(|o| o.label == *label))
+                        .cloned()
+                        .collect();
+                    let segs = Segmentation::from_label_map_many(r.dims, &r.labels, &mine);
+                    info.copy(segs, Vec::new())
+                })
+                .collect();
+            self.land_phases(slot, &group, p.output.kind, "ORGAN", copies);
+            return;
+        }
+        let Some((_, result)) = p.phases.first() else {
+            return;
+        };
+        let Some(study) = self.slots[slot].study.as_ref() else {
+            return;
+        };
+        if study.volume.dims != result.volume_dims {
+            self.error = Some("Workspace changed - auto-segmentation result discarded.".into());
             return;
         }
         // One pass over the label map for every chosen structure.
-        let made = Segmentation::from_label_map_many(dims, &p.result.labels, &classes);
-        let s = &mut self.slots[slot];
-        let Some(segs) = s.segs_mut() else { return };
-        segs.extend(made);
-        s.active_seg = first_new;
-        if p.also_rs {
-            for i in first_new..first_new + added {
-                self.seg_to_rtstruct(slot, i, "ORGAN");
-            }
-        }
+        let made = Segmentation::from_label_map_many(result.dims, &result.labels, &classes);
+        self.land_masks(slot, &p.output, "ORGAN", "Auto-segmentation", made);
     }
 }
