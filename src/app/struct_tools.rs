@@ -105,6 +105,10 @@ pub(super) struct NewRoi {
     /// Centre of the shape; seeded from the crosshair when the section is
     /// revealed, and again on the ⌖ button.
     pub centre: [f32; 3],
+    /// Make the result a segmentation rather than an RT structure. The
+    /// generators build a mask either way, so this only decides whether it
+    /// is turned into contours on the way out.
+    pub as_seg: bool,
     // Dose.
     pub dose_pct: f32,
     pub dose_absolute: bool,
@@ -127,6 +131,7 @@ impl Default for NewRoi {
             shape: Shape::Sphere,
             half: [20.0, 20.0, 20.0],
             centre: [0.0; 3],
+            as_seg: false,
             dose_pct: 95.0,
             dose_absolute: false,
             dose_gy: 50.0,
@@ -135,10 +140,10 @@ impl Default for NewRoi {
     }
 }
 
-/// The editor's state: which dataset it works on, and the numbers its
+/// The editor's state: which workspace it works on, and the numbers its
 /// buttons apply.
 pub(super) struct StructTools {
-    /// The dataset the editor acts on.
+    /// The workspace the editor acts on.
     pub slot: usize,
     /// A section something asked to open (a context menu, a derived
     /// structure's *Edit recipe*); applied on the next frame the panel is
@@ -163,7 +168,7 @@ pub(super) struct StructTools {
     pub rotate_deg: [f32; 3],
     pub scale_pct: f32,
     /// *Draw axis*: while on, a left drag in any view of the editor's
-    /// dataset draws the axis the two buttons next to it move along and
+    /// workspace draws the axis the two buttons next to it move along and
     /// turn about.
     pub axis_draw: bool,
     /// *Keep*: the drawn axis stays where it is.
@@ -194,7 +199,7 @@ pub(super) struct StructTools {
     /// What the axis hand holds: `0` / `1` an end, `2` the whole line.
     pub axis_grab: u8,
     /// *Save last* / *Load last*: one axis kept in memory only, as patient
-    /// coordinates so it applies to any dataset.
+    /// coordinates so it applies to any workspace.
     pub last_axis: Option<[Vec3; 2]>,
     /// Every move since a structure's origin, per structure - what the
     /// Dose estimation's *Dynamic* log describes each row with.
@@ -203,6 +208,11 @@ pub(super) struct StructTools {
     /// log takes one entry per value.
     pub move_seq: u64,
     pub new: NewRoi,
+    /// Which of the two kinds the *Edit* section acts on, where the
+    /// workspace holds both. It follows whatever exists otherwise.
+    pub subject: seg_edit::EditSubject,
+    /// The margin *Grow* and *Shrink* use on a segmentation, in millimetres.
+    pub seg_radius_mm: f32,
 }
 
 /// One move of one structure, as the button or the hand did it.
@@ -393,6 +403,8 @@ impl Default for StructTools {
             moves: Vec::new(),
             move_seq: 0,
             new: NewRoi::default(),
+            subject: seg_edit::EditSubject::default(),
+            seg_radius_mm: 3.0,
         }
     }
 }
@@ -545,20 +557,20 @@ impl ViewerApp {
 
     // -- the panel section --------------------------------------------------
 
-    /// The whole editor: the dataset row, then the three sections.
+    /// The whole editor: the workspace row, then the three sections.
     pub(super) fn structures_editor_section(&mut self, ui: &mut egui::Ui) {
         let title = egui::RichText::new("Structure editor").strong();
         if !self.any_volume() {
             egui::CollapsingHeader::new(title)
                 .default_open(false)
                 .show(ui, |ui| {
-                    ui.weak("Load a dataset with an image volume to draw on");
+                    ui.weak("Load a workspace with an image volume to draw on");
                 });
             ui.separator();
             return;
         }
         self.tools.visible = true;
-        // The editor works on one dataset; a dataset that lost its volume
+        // The editor works on one workspace; a workspace that lost its volume
         // hands over to the one that has one.
         if !self.slots[self.tools.slot].has_volume() {
             self.tools.slot = self.first_volume_slot();
@@ -569,7 +581,8 @@ impl ViewerApp {
             .default_open(false)
             .open(reveal.map(|_| true))
             .show(ui, |ui| {
-                new_slot = seg_engines::dataset_row(ui, self.tools.slot, self.volume_slots(), true);
+                new_slot =
+                    seg_engines::workspace_row(ui, self.tools.slot, self.volume_slots(), true);
                 let open = |s: Section| (reveal == Some(s)).then_some(true);
                 egui::CollapsingHeader::new("Insert structure")
                     .default_open(false)
@@ -801,6 +814,13 @@ impl ViewerApp {
     /// Everything that acts on the whole edited structure.
     fn edit_section(&mut self, ui: &mut egui::Ui) {
         let slot = self.tools.slot;
+        // A workspace holding both kinds gets a switch; one holding either
+        // is simply edited as what it holds.
+        self.edit_subject_row(ui, slot);
+        if self.edit_subject(slot) == seg_edit::EditSubject::Segmentation {
+            self.seg_edit_section(ui, slot);
+            return;
+        }
         // The preview is recomputed here, once a frame, and only while it is
         // wanted: it is the one thing in this section that costs anything.
         if self.tools.show_interp {
@@ -1087,7 +1107,7 @@ impl ViewerApp {
                 .toggle_value(&mut t.hand_struct, "✋")
                 .on_hover_text(
                     "Drag the selected structure with the left button in any view of \
-                     this dataset, in the plane of that view. One undo step per drag.",
+                     this workspace, in the plane of that view. One undo step per drag.",
                 )
                 .changed()
                 && t.hand_struct
@@ -1164,7 +1184,7 @@ impl ViewerApp {
                 let was = t.axis_draw;
                 ui.toggle_value(&mut t.axis_draw, "Draw axis")
                     .on_hover_text(
-                        "Drag with the left button in any view of this dataset to draw an axis \
+                        "Drag with the left button in any view of this workspace to draw an axis \
                      (one slice thick, shown in every view and in 3D); the structure is then \
                      moved along it and turned about it. While this is on the left button \
                      draws instead of moving the crosshair - tick Keep when the axis is where \
@@ -1293,7 +1313,7 @@ impl ViewerApp {
                     &[
                         (
                             "Back",
-                            "One step back: the last edit of this dataset is undone",
+                            "One step back: the last edit of this workspace is undone",
                             true,
                             Act::Back,
                         ),
@@ -1975,16 +1995,51 @@ impl ViewerApp {
             });
         }
         ui.horizontal_wrapped(|ui| {
+            ui.label("Create as:");
+            // Every generator here builds a mask; an RT structure is that
+            // mask turned into contours on the way out, and a segmentation
+            // is that mask kept.
+            for (seg, label, hint) in [
+                (
+                    false,
+                    "RT structure",
+                    "Closed planar contours in the active structure set, editable with \
+                     the contour tools",
+                ),
+                (
+                    true,
+                    "Segmentation",
+                    "A mask in the active segmentation series, editable with the voxel \
+                     tools and by Grow, Shrink and Tidy",
+                ),
+            ] {
+                if ui
+                    .add(egui::Button::selectable(d.as_seg == seg, label).small())
+                    .on_hover_text(hint)
+                    .clicked()
+                {
+                    d.as_seg = seg;
+                }
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
             ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(120.0))
                 .on_hover_text("Name of the new structure");
-            egui::ComboBox::from_id_salt("newroi_type")
-                .selected_text(&d.roi_type)
-                .width(100.0)
-                .show_ui(ui, |ui| {
-                    for ty in &ROI_TYPES[..6] {
-                        ui.selectable_value(&mut d.roi_type, ty.to_string(), *ty);
-                    }
-                });
+            ui.add_enabled_ui(!d.as_seg, |ui| {
+                egui::ComboBox::from_id_salt("newroi_type")
+                    .selected_text(&d.roi_type)
+                    .width(100.0)
+                    .show_ui(ui, |ui| {
+                        for ty in &ROI_TYPES[..6] {
+                            ui.selectable_value(&mut d.roi_type, ty.to_string(), *ty);
+                        }
+                    })
+                    .response
+                    .on_hover_text(
+                        "The RT ROI Interpreted Type. A segmentation carries no such \
+                         tag, so it is greyed out for one",
+                    );
+            });
             if tip_button(ui, "▶ Create", "On the displayed image series") {
                 create = true;
             }
@@ -2006,7 +2061,7 @@ impl ViewerApp {
         let study = self.slots[slot]
             .study
             .as_ref()
-            .ok_or_else(|| "no dataset".to_string())?;
+            .ok_or_else(|| "no workspace".to_string())?;
         let grid = study.volume.grid();
         match d.source {
             Source::GreyLevel => {
@@ -2045,7 +2100,7 @@ impl ViewerApp {
                 let dose = study
                     .doses
                     .get(self.slots[slot].active_dose)
-                    .ok_or_else(|| "this dataset has no dose".to_string())?;
+                    .ok_or_else(|| "this workspace has no dose".to_string())?;
                 let level = if d.dose_absolute {
                     d.dose_gy
                 } else {
@@ -2092,20 +2147,47 @@ impl ViewerApp {
         }
         let stack = Stack::from_mask(&mask, grid.dims, 2);
         let cm3 = stack.volume_cm3(grid.spacing);
-        let (name, roi_type) = (self.tools.new.name.clone(), self.tools.new.roi_type.clone());
-        let Some(roi) = self.new_roi(slot, Some(name.clone()), &roi_type) else {
-            return;
+        let (name, roi_type, as_seg) = (
+            self.tools.new.name.clone(),
+            self.tools.new.roi_type.clone(),
+            self.tools.new.as_seg,
+        );
+        let occupied = stack.occupied();
+        let kind = if as_seg {
+            // The mask is already what a segmentation is; it only needs a
+            // series to live in and a colour to be drawn with.
+            if self.ensure_seg_series(slot).is_none() {
+                self.error = Some("Nothing was created: no segmentation series.".into());
+                return;
+            }
+            let dims = grid.dims;
+            let color =
+                segmentation::SEG_PALETTE[self.seg_counter % segmentation::SEG_PALETTE.len()];
+            self.seg_counter += 1;
+            let Some(segs) = self.slots[slot].segs_mut() else {
+                return;
+            };
+            segs.push(Segmentation::from_mask(name.clone(), color, dims, mask));
+            let n = segs.len();
+            self.slots[slot].active_seg = n - 1;
+            self.tools.subject = seg_edit::EditSubject::Segmentation;
+            "segmentation"
+        } else {
+            let Some(roi) = self.new_roi(slot, Some(name.clone()), &roi_type) else {
+                return;
+            };
+            let set_idx = self.slots[slot].active_structs;
+            if let Some(r) = self.slots[slot].roi_mut(set_idx, roi) {
+                stack.apply_to_roi(r, &grid);
+            }
+            self.tools.subject = seg_edit::EditSubject::Structure;
+            "structure"
         };
-        let set_idx = self.slots[slot].active_structs;
-        if let Some(r) = self.slots[slot].roi_mut(set_idx, roi) {
-            stack.apply_to_roi(r, &grid);
-        }
         self.settings_gen += 1;
         self.edit = None;
         self.tools.new.status = Some(format!(
-            "✔ {name} created: {cm3:.1} cm³ on {} slice(s). It is now the structure the \
-             editor works on.",
-            stack.occupied()
+            "✔ {name} created: {cm3:.1} cm³ on {occupied} slice(s). It is now the \
+             {kind} the editor works on."
         ));
     }
 }
@@ -2280,7 +2362,7 @@ mod tests {
         t.axis_draw = true;
         assert!(axis_live(&t), "and with it");
 
-        // ready_axis needs a real line on the right dataset as well.
+        // ready_axis needs a real line on the right workspace as well.
         t.axis_draw = false;
         assert!(!ready_axis(&t, 0), "kept, but nothing drawn yet");
         t.axis = Some(DrawnAxis {
@@ -2297,7 +2379,7 @@ mod tests {
         assert!(ready_axis(&t, 0));
         assert!(
             !ready_axis(&t, 1),
-            "it belongs to the dataset it was drawn on"
+            "it belongs to the workspace it was drawn on"
         );
     }
 }

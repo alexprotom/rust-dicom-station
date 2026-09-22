@@ -361,6 +361,7 @@ pub(super) fn run(params: &RegParams) -> Result<EngineOutput> {
         transform: Transform3 {
             rigid: RigidTransform::identity(center),
             warp: Warp::Rbf(warp),
+            manual: None,
         },
         iterations: params.landmarks.len(),
         final_metric: residual,

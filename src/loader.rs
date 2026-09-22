@@ -243,7 +243,7 @@ pub struct LoadedStudy {
 }
 
 impl LoadedStudy {
-    /// Whether this dataset holds a reconstructed image volume.
+    /// Whether this workspace holds a reconstructed image volume.
     ///
     /// A study with none is not an error: a folder or a handful of files can
     /// hold nothing but RT images, a structure set or a plan. Everything that
@@ -288,7 +288,7 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
 /// The same code path as [`load_directory`] - the only difference is where
 /// the list of files came from. Opening three RT images, one structure set or
 /// a single slice is therefore not a special mode with its own rules; it is
-/// an ordinary study that happens to be small, and it merges into a dataset
+/// an ordinary study that happens to be small, and it merges into a workspace
 /// exactly like a folder does.
 ///
 /// `origin` names what is being opened, for error messages only.
@@ -458,7 +458,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
 
     // No image series is not an error. RT images, a structure set, a plan or
     // a dose grid are perfectly ordinary things to open on their own, and a
-    // dataset holding only those is loaded with an empty volume rather than
+    // workspace holding only those is loaded with an empty volume rather than
     // refused; see [`Volume::empty`].
     let (volume, default_window) = match image_series.first() {
         Some(series) => {
@@ -474,7 +474,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
                     .into(),
             );
             // Keep a usable window rather than the (0, 1) an empty volume
-            // would suggest, so the other dataset's display is untouched.
+            // would suggest, so the other workspace's display is untouched.
             (Volume::empty(), (40.0, 400.0))
         }
     };

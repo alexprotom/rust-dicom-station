@@ -15,8 +15,8 @@ re-implementation of [SegVol](https://github.com/BAAI-DCAI/SegVol)
 ## Using it
 
 The **💬 Prompt segmentation** section of the *Structure auto tools* module
-(*Modules ▶ Structure auto tools*, right panel, F10; the dataset is the
-module's **Dataset A / B** row; the four sections share one layout, see
+(*Modules ▶ Structure auto tools*, right panel, F10; the workspace is the
+module's **Workspace A / B** row; the four sections share one layout, see
 [architecture.md](architecture.md#the-tool-windows-and-the-modules)). It
 reports each result on its last line.
 
@@ -121,7 +121,7 @@ a run will download.
 
 **The SegVol code is MIT, but the weights carry no licence declaration at
 all** - no licence tag, no LICENSE file - and the training corpus aggregates
-25 datasets whose terms differ, several of them non-commercial. This is
+25 workspaces whose terms differ, several of them non-commercial. This is
 unlike TotalSegmentator's Apache-2.0 weights.
 
 Consequently the weights are only ever fetched to your own machine, at your

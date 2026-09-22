@@ -45,13 +45,13 @@ rust-dicom-station
 │   ├── Modules panel: the Image information, Playback, registration, simulation,
 │   │   Structure editor (insert, edit, combine), Structure auto tools (body contour
 │   │   and the three engines), propagation and Dose estimation sections
-│   ├── Side panel: per dataset a DICOM tree - patient ▶ study ▶ modality ▶ series, with RT
+│   ├── Side panel: per workspace a DICOM tree - patient ▶ study ▶ modality ▶ series, with RT
 │   │   structures, segmentations, 4D groups, dose and plans inside their study -
 │   │   plus dose display, planar images, spatial registrations, records, warnings
-│   ├── Views: one row per dataset (two in comparison mode), each of up to three
+│   ├── Views: one row per workspace (two in comparison mode), each of up to three
 │   │   panes chosen under Settings ▸ View layout - the MPR planes and the 3D
 │   │   surface scene; linked viewports, crosshair,
-│   │   a dataset with no volume says so in place of the panes and holds back
+│   │   a workspace with no volume says so in place of the panes and holds back
 │   │   the voxel tools;
 │   │   zoom / pan / W-L interaction, maximize, per-view caches
 │   ├── Tool windows (one shared skeleton; each can be docked over the views or
@@ -71,7 +71,7 @@ rust-dicom-station
 ├── DICOM
 │   ├── Import: directory *or* file-list scan, classification, patient ▶ study ▶
 │   │   series tree, merging; a selection that reconstructs no volume (RT images,
-│   │   a structure set, a plan) loads as an ordinary dataset with an empty
+│   │   a structure set, a plan) loads as an ordinary workspace with an empty
 │   │   volume, and unpositioned image series open as single images
 │   │   ├── Volumes: CT, MR, PT, NM, US, OT (parallel decode, compressed syntaxes)
 │   │   └── Planar images: DX, CR, RTIMAGE, MG, XA, RF, PX
@@ -82,7 +82,7 @@ rust-dicom-station
 │   ├── Anonymizer: scan, review every identifying tag, rewrite with a UID remap
 │   └── Patient archive: a local store filed patient ▶ study ▶ instance with text
 │       sidecars; import with dedupe, listing without opening a file, loading into
-│       a dataset, derived objects (RTSTRUCT, SEG) sent back under the original UIDs
+│       a workspace, derived objects (RTSTRUCT, SEG) sent back under the original UIDs
 │
 ├── Data simulation
 │   ├── Synthetic RT phantom study (CT, RTSTRUCT, RTDOSE, RTPLAN, DX, RTIMAGE, REG, RTRECORD)
@@ -114,7 +114,7 @@ rust-dicom-station
 │   ├── ITV: union over phases with a margin, landed as a segmentation
 │   ├── Results window: charts, tables, CSV, run-vs-run (A/B) comparison
 │   ├── Structure comparison: volumes, centroid offset, Dice, HD95, mean surface distance
-│   └── Transfer by relationship: a structure placed in the other dataset at its
+│   └── Transfer by relationship: a structure placed in the other workspace at its
 │       offset from a reference structure
 │
 ├── Dose analysis
@@ -233,16 +233,25 @@ src/
     pick.rs           the one door to a file dialog: the system dialog on the
                       desktop, an egui folder browser on Android, and the
                       answer handed to a continuation either way
+    workspace_pick.rs the small window that asks which workspace an action is
+                      for: File > Add DICOM folder / Add DICOM file(s) /
+                      Clear workspace are one entry each, and the file dialog
+                      comes after the answer
     panels.rs         both edge panels: the shared show / hide machinery, the
-                      left panel's per-dataset Data tree sections, and the
+                      left panel's per-workspace Data tree sections, and the
                       right panel's list of switched-on modules
     reg_panel.rs      the Image registration module: method, region, parameters,
-                      landmarks, the run (against the other dataset or every
+                      landmarks, the run (against the other workspace or every
                       phase of a 4D group), the analytics, the vector field
+    matrix_edit.rs    the hand-typed 4 x 4 transform, the way Slicer's
+                      Transforms module shows one: the sixteen numbers, use
+                      / identity / invert / from the result, clipboard in
+                      and out. Shared by registration, propagation and
+                      transfer by relationship
     views.rs          central MPR viewports, interaction, texture caches
     d3.rs             live 3D structure window
     planar.rs         floating DX / CR / RTIMAGE viewers
-    tree.rs           dataset-tree copy / move / remove with reference chains
+    tree.rs           workspace-tree copy / move / remove with reference chains
     rename.rs         renaming every level of the data tree
     sets.rs           structure sets and segmentation series as tree nodes:
                       create, connect, copy / move / remove, move single
@@ -251,10 +260,15 @@ src/
                       auto-segmentation job starts
     dialogs.rs        auto-segmentation window + results, generator, anonymizer,
                       error dialog
-    export_win.rs     the export window: the selection tree over both datasets,
+    export_win.rs     the export window: the selection tree over both workspaces,
                       the name and UID editors, the RTSTRUCT / SEG radios
     seg.rs            interactive segmentation state machine, mask ▶ RTSTRUCT,
                       landing an auto-segmentation result
+    seg_edit.rs       the Edit section when the subject is a segmentation:
+                      the Structure / Segmentation switch, tidy, grow and
+                      shrink in millimetres, clear, delete, and mask to RT
+                      structure - structops, morphology and mask_to_roi
+                      given a place in the editor
     contour_edit.rs   the contour tools' state machine: the ROI under the
                       tools, the working stack, drawing and nudging, contour
                       undo, the interpolation preview
@@ -275,10 +289,10 @@ src/
                       point
     stats_win.rs      the structure-details table and its CSV
     seg_engines.rs    what the engine sections share: names and glyphs, the
-                      dataset A / B row, device / model-folder / licence /
+                      workspace A / B row, device / model-folder / licence /
                       progress rows, result landing, the "still the same
-                      dataset" check
-    auto_tools.rs     the Structure auto tools module: one dataset row and
+                      workspace" check
+    auto_tools.rs     the Structure auto tools module: one workspace row and
                       the body contour, auto-segmentation, prompt
                       segmentation and slice propagation sections
     body_win.rs       the body-contour section
@@ -287,7 +301,7 @@ src/
     prompt_seg.rs     the prompt segmentation section and worker (SegVol)
     box_seg.rs        slice propagation: the box drawn in the viewport, the
                       preview / refine / propagate loop, the resident session (MedSAM2)
-    propagate_win.rs  the Structure propagation module: onto the other dataset,
+    propagate_win.rs  the Structure propagation module: onto the other workspace,
                       or onto every phase of a 4D group through workflow::group
                       or workflow::anchored (transforms kept for the next run)
     motion_win.rs     the Structure motion (4D / ITV) window; the pipeline itself is
@@ -315,7 +329,7 @@ src/
                       so the file holds every frame the run played
     img_info.rs       the Image information module: the geometry, sampling and
                       acquisition of the displayed series (imginfo), what wants
-                      a second look, and what the two datasets disagree about
+                      a second look, and what the two workspaces disagree about
     dose_est.rs       the Dose estimation module: the dose metrics table of
                       the ticked structures against one dose (physical /
                       effective), recomputed whenever they change
@@ -326,7 +340,7 @@ src/
     testdata_win.rs   the Download test data window over testdata.rs
 
   loader.rs         directory / file-list scan, classification, parallel volume
-                    loading, dataset merging, safe DICOM element helpers         DICOM
+                    loading, workspace merging, safe DICOM element helpers         DICOM
   dicomfile.rs      the one way a file is opened: the standard reader, plus
                     the encoding sniffer for data sets written with no file
                     meta group (no preamble, no DICM)                            DICOM
@@ -353,7 +367,7 @@ src/
   dicom_export.rs   DICOM writer: the object builders (CT slice, RTSTRUCT with
                     its image reference chain, SEG, RTDOSE, RTPLAN, Deformable
                     Spatial Registration) and the patching file copier         DICOM
-  export.rs         what one export run is: the dataset / patient / study /
+  export.rs         what one export run is: the workspace / patient / study /
                     series selection tree, every editable name and UID, the
                     RTSTRUCT / SEG choice, and the runner that keeps the
                     references between the written objects resolvable          DICOM
@@ -420,9 +434,9 @@ src/
 
   mcp/              the MCP server behind rds-mcp (cargo feature `mcp`)         MCP
     config.rs         the operator's mcp.toml: roots, output folder, PHI policy
-    phi.rs            the gate (which datasets still name their patient) and
+    phi.rs            the gate (which workspaces still name their patient) and
                       the redactor every outgoing string passes
-    session.rs        open datasets, transforms, reports, and their handles
+    session.rs        open workspaces, transforms, reports, and their handles
     tools/            the tools as plain functions with schema-deriving
                       argument structs: session, segment, register, fourd,
                       analysis, output
@@ -540,7 +554,7 @@ packaging/         everything that turns the viewer into an installable package,
 sibling modules only add `impl ViewerApp` blocks, so each child reaches the
 struct's private fields without widening any visibility beyond `pub(super)`.
 
-`ViewerApp` owns two `StudySlot`s (datasets A and B). Each slot holds the
+`ViewerApp` owns two `StudySlot`s (workspaces A and B). Each slot holds the
 loaded study (series, the volume behind an `Arc`, structure sets, doses,
 plans, planar images, registrations, records, 4D groups), three `ViewState`s
 (per-plane slice, zoom / pan, texture caches), the crosshair, per-ROI
@@ -610,10 +624,10 @@ is while its run is in flight, the button row becoming the progress row
 shared `Compute` and `Model folder` rows, the licence line, `▶ Segment` /
 `▶ Propagate` / `▶ Contour`, status); rows a tool has no use for are not
 shown; and results land the same way (`add_segmentation`), a run that
-finishes after its dataset was replaced being discarded with the same
+finishes after its workspace was replaced being discarded with the same
 message. Since 2026-09-07 they are not windows but the four sections of
 the **Structure auto tools** module (`app/auto_tools.rs`), under one
-dataset row; the auto-segmentation *results* list, which appears once
+workspace row; the auto-segmentation *results* list, which appears once
 per run, is still a window.
 
 Not everything is a window. Inserting, editing and combining structures
@@ -623,7 +637,7 @@ what a planner keeps at hand while contouring should not need a window to
 be found, and a folded section costs no screen. A context menu's *Edit in
 the Structure editor* or *∪ Combine* and a derived structure's *Edit
 recipe* switch the module on and unfold the section (`reveal_editor`). The
-editor works on one dataset (the A / B row at its top). The drawing tools
+editor works on one workspace (the A / B row at its top). The drawing tools
 themselves are the toolbar's draw row, unfolded by *✏ Draw structure*
 (`draw_strip`), acting on whichever view the pointer is in.
 

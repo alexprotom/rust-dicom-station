@@ -35,7 +35,7 @@ states it and an RTPLAN beam stores it:
 * **SAD / SID** - source-to-axis and source-to-imager distances, mm.
 * **Gantry angle** - 0° source above the patient, 90° at the patient's left.
 * **Couch angle** - patient-support rotation about the vertical axis.
-* **Isocentre** - in patient coordinates; ⌖ takes the dataset's crosshair.
+* **Isocentre** - in patient coordinates; ⌖ takes the workspace's crosshair.
 * **Panel size and pixel count** - the window reports the resolution
   projected back to the isocentre plane.
 
@@ -68,10 +68,10 @@ a **Difference** view mapping signed difference blue↔red about a grey zero.
 
 ## Into the data tree
 
-*➕ Add to dataset A/B* files the rendering (or both, when run together)
-under **Planar images** in the dataset's tree as an RT Image, with its own
+*➕ Add to workspace A/B* files the rendering (or both, when run together)
+under **Planar images** in the workspace's tree as an RT Image, with its own
 viewer (window/level, correct physical aspect ratio), renaming, and travel
-with the dataset when copied or moved.
+with the workspace when copied or moved.
 
 The producing geometry rides along as the planar viewer's info rows -
 engine, SAD/SID, gantry and couch angles, isocentre, panel size, HU model,

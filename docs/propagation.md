@@ -5,8 +5,8 @@ segmentation across a registration and lands it as an ordinary, editable
 segmentation, convertible back to RTSTRUCT and exportable as DICOM. It is a
 section of the right panel, next to the image registration that drives it.
 
-The destination is either **the other dataset**, through the registration
-that is already active, or **every phase of a 4D group** of either dataset,
+The destination is either **the other workspace**, through the registration
+that is already active, or **every phase of a 4D group** of either workspace,
 which the module registers as it goes.
 
 ## What it does
@@ -18,8 +18,8 @@ which the module registers as it goes.
   thresholded at ½: the boundary lands where the contour really is, and
   structures cross grids of different spacing and orientation.
 * **Either direction.** The transform maps fixed → moving, so propagating
-  *onto* the moving dataset runs through its inverse; you only choose the
-  source dataset.
+  *onto* the moving workspace runs through its inverse; you only choose the
+  source workspace.
 * **A cached mapping.** A deformable inverse is a fixed-point iteration,
   twelve control-lattice evaluations per point - billions of operations
   over a 512³ study. So the mapping is evaluated on a 3 mm lattice across
@@ -148,7 +148,7 @@ reuses them. From the MCP server the same run is `propagate_to_group` with
    against the same moving image, on display or not.
 2. *Modules ▶ Structure propagation*, or **⇄ Propagate structures** in the
    registration module once it has a result.
-3. Choose the source image (any series of either dataset; through a
+3. Choose the source image (any series of either workspace; through a
    registration, one of its two images), the structure set or segmentation
    series to take the structures from (the one drawn on that image is
    preselected), and the destination (through a registration, the other of
@@ -176,6 +176,20 @@ keeps its own colour, the row says *recoloured*, and *Source colours* drops
 every choice again. The colour rides along the whole way, so it applies to
 every run the module starts: through a registration, onto a 4D group, and
 anchored on a structure.
+
+**Transform matrix** (foldable, under the run) is the same 4 × 4 the
+registration module carries
+([registration.md](registration.md#the-matrix-typed-in-by-hand)), and it
+shows the active registration's own transform until it is taken over, so
+what is on screen is what the next run will do. With **Use this matrix**
+ticked the run carries the structures through those numbers instead of the
+registration's transform: the pairing of images is still the
+active registration's, the numbers are yours. That is how a known couch
+shift or a transform from another program carries a set of structures, and
+how a propagation is checked against a shift whose answer is known in
+advance. To do it with no registration run at all, type the matrix into the
+registration module and press *Apply as the registration* first - the
+pairing is then the two images you chose there.
 
 ## Verification
 

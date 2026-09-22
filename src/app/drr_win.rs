@@ -12,7 +12,7 @@ use super::*;
 
 /// The DRR window's state.
 pub(super) struct DrrDialog {
-    /// Dataset the radiograph is computed from.
+    /// Workspace the radiograph is computed from.
     pub slot: usize,
     pub params: DrrParams,
     /// Render both engines and compare them.
@@ -72,7 +72,7 @@ impl ViewerApp {
         }
         let Some(d) = &self.drr_dialog else { return };
         let Some(study) = &self.slots[d.slot].study else {
-            self.error = Some("Load a dataset first".into());
+            self.error = Some("Load a workspace first".into());
             return;
         };
         let vol = study.volume.clone();
@@ -125,7 +125,7 @@ impl ViewerApp {
         let mut add_to_tree = false;
         let mut beam_pick: Option<(usize, usize)> = None;
 
-        // Read-only facts about the datasets, gathered before the closure.
+        // Read-only facts about the workspaces, gathered before the closure.
         let loaded: [bool; 2] = self.volume_slots();
         let mut d = self.drr_dialog.take().unwrap();
         let beams: Vec<(usize, usize, String)> = self.slots[d.slot]
@@ -158,7 +158,7 @@ impl ViewerApp {
         detach::tool_window(
             ctx,
             "drr",
-            format!("☢ DRR - dataset {}", SLOT_NAMES[d.slot]),
+            format!("☢ DRR - workspace {}", SLOT_NAMES[d.slot]),
             &mut open,
             detach::WinOpts::width(720.0).no_scroll(),
             |ui| {
@@ -171,7 +171,7 @@ impl ViewerApp {
                 ui.separator();
 
                 ui.horizontal(|ui| {
-                    ui.label("Dataset");
+                    ui.label("Workspace");
                     for slot in 0..2 {
                         ui.add_enabled_ui(loaded[slot] && !running, |ui| {
                             ui.selectable_value(&mut d.slot, slot, SLOT_NAMES[slot]);
@@ -246,7 +246,7 @@ impl ViewerApp {
                             if small_tip_button(
                                 ui,
                                 "⌖",
-                                "Take the isocentre from this dataset's crosshair",
+                                "Take the isocentre from this workspace's crosshair",
                             ) {
                                 set_iso = true;
                             }
@@ -348,7 +348,7 @@ impl ViewerApp {
                                 .add_enabled(
                                     !d.images.is_empty(),
                                     egui::Button::new(format!(
-                                        "➕ Add to dataset {}",
+                                        "➕ Add to workspace {}",
                                         SLOT_NAMES[d.slot]
                                     )),
                                 )
@@ -356,7 +356,7 @@ impl ViewerApp {
                                     "File the rendering(s) under Planar images in the data \
                                      tree, with the geometry that produced them - from \
                                      there they open in their own viewer, rename, and \
-                                     travel with the dataset",
+                                     travel with the workspace",
                                 )
                                 .clicked()
                             {
@@ -441,7 +441,7 @@ impl ViewerApp {
         }
     }
 
-    /// File the current rendering(s) under the source dataset's planar
+    /// File the current rendering(s) under the source workspace's planar
     /// images. Labels are made unique on the way in, because rendering the
     /// same geometry twice is exactly what one does while tuning it.
     fn add_drr_to_tree(&mut self, d: &DrrDialog) {
@@ -451,7 +451,7 @@ impl ViewerApp {
             .map(|im| im.to_planar(&d.params, d.invert))
             .collect();
         let Some(study) = self.slots[d.slot].study.as_mut() else {
-            self.error = Some(format!("dataset {} is not loaded", SLOT_NAMES[d.slot]));
+            self.error = Some(format!("workspace {} is not loaded", SLOT_NAMES[d.slot]));
             return;
         };
         let n = made.len();
@@ -466,7 +466,7 @@ impl ViewerApp {
         }
         self.settings_gen += 1;
         self.notice = Some(format!(
-            "✔ {n} radiograph(s) added to dataset {} - see Planar images in the tree",
+            "✔ {n} radiograph(s) added to workspace {} - see Planar images in the tree",
             SLOT_NAMES[d.slot]
         ));
     }

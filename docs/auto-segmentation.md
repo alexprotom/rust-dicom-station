@@ -10,7 +10,7 @@ on the CPU or on any GPU via wgpu.
 
 ## Models
 
-| Variant | nnU-Net dataset(s) | Classes | Download | Practical use |
+| Variant | nnU-Net workspace(s) | Classes | Download | Practical use |
 |---|---|---|---|---|
 | **3 mm (fast)** | 297 | all 117 in one model | ≈ 135 MB | good quality, practical on any CPU |
 | **1.5 mm (high quality)** | 291-295 (organs / vertebrae / cardiac / muscles / ribs) | 117 across five sub-models, individually selectable | ≈ 1.2 GB | reference quality; GPU recommended |
@@ -25,8 +25,8 @@ and a 1×1×1 segmentation head - rebuilt at load time from each model's
 ## Using it in the viewer
 
 The **🔬 Auto-segmentation** section of the *Structure auto tools* module
-(*Modules ▶ Structure auto tools*, right panel, F10; the dataset is the
-module's **Dataset A / B** row; the four sections share one layout, see
+(*Modules ▶ Structure auto tools*, right panel, F10; the workspace is the
+module's **Workspace A / B** row; the four sections share one layout, see
 [architecture.md](architecture.md#the-tool-windows-and-the-modules)):
 
 * **Model** - one of the three variants; the dialog shows whether weights
@@ -51,7 +51,7 @@ converted to **RTSTRUCT contours** in the same step, which then render like
 any ROI and ride the DICOM export. Materialize only what you need: every
 mask is a full-volume voxel map (≈ 35 MB at 512 × 512 × 133).
 
-If the dataset is switched or modified during a run, the result is
+If the workspace is switched or modified during a run, the result is
 discarded with a message rather than applied to the wrong volume.
 
 ## Weight acquisition and caching
@@ -88,7 +88,7 @@ The pipeline mirrors TotalSegmentator exactly:
    convention (TotalSegmentator's resampler), including its int32
    truncation.
 3. **Normalization** per model: clip to the training-set foreground's
-   [0.5, 99.5] HU percentiles, then z-score with the dataset-fingerprint
+   [0.5, 99.5] HU percentiles, then z-score with the workspace-fingerprint
    mean/std - all constants from `plans.json`.
 4. **Sliding-window inference** with nnU-Net's exact tiling (step 0.8 ×
    patch for the "total" task), Gaussian importance weighting

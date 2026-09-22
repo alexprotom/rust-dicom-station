@@ -1,10 +1,10 @@
 //! *Tools ▶ 🏥 PACS*: the local patient archive as a window.
 //!
 //! Everything the archive can do reduces to three gestures - file a folder
-//! into it, take a patient or a study out of it into a viewer dataset, and
+//! into it, take a patient or a study out of it into a viewer workspace, and
 //! give back what was drawn on one - and each is one button here. The
 //! archive itself ([`crate::archive`]) knows nothing about the UI; this
-//! window is the part that knows which dataset the user meant.
+//! window is the part that knows which workspace the user meant.
 //!
 //! Loading needs no special path: a study folder in the archive *is* a DICOM
 //! folder, so it goes through the same `loader::load_directory` as *File ▶
@@ -92,7 +92,7 @@ impl ViewerApp {
         }));
     }
 
-    /// Write the structure sets and segmentation series of a dataset back
+    /// Write the structure sets and segmentation series of a workspace back
     /// into the archive.
     ///
     /// They are written to a scratch folder first and then imported, so the
@@ -104,7 +104,7 @@ impl ViewerApp {
             return;
         }
         let Some(study) = self.slots[slot].study.as_ref() else {
-            self.error = Some(format!("dataset {} is not loaded", SLOT_NAMES[slot]));
+            self.error = Some(format!("workspace {} is not loaded", SLOT_NAMES[slot]));
             return;
         };
         let derived = study.structure_sets.iter().any(|ss| !ss.rois.is_empty())
@@ -114,7 +114,7 @@ impl ViewerApp {
                 .any(|sr| sr.segs.iter().any(|s| s.count > 0));
         if !derived {
             self.error = Some(format!(
-                "dataset {} has no structure sets or segmentations to send",
+                "workspace {} has no structure sets or segmentations to send",
                 SLOT_NAMES[slot]
             ));
             return;
@@ -230,7 +230,7 @@ impl ViewerApp {
             |ui| {
                 ui.label(
                     "The local archive: every study filed here, ready to be taken into a \
-                     dataset and given back the structures and segmentations drawn on it.",
+                     workspace and given back the structures and segmentations drawn on it.",
                 );
                 ui.separator();
 
@@ -269,10 +269,10 @@ impl ViewerApp {
                         if ui
                             .add_enabled(
                                 !busy && loaded[slot],
-                                egui::Button::new(format!("📤 Send dataset {name}")),
+                                egui::Button::new(format!("📤 Send workspace {name}")),
                             )
                             .on_hover_text(
-                                "Write this dataset's structure sets and segmentation \
+                                "Write this workspace's structure sets and segmentation \
                                  series back into the archive, attached to the study they \
                                  belong to (new SOP Instance UIDs, original Study and \
                                  Frame of Reference UIDs). Images are never re-sent.",
@@ -378,10 +378,10 @@ impl ViewerApp {
                         if ui
                             .add_enabled(
                                 !busy && picked.is_some(),
-                                egui::Button::new(format!("📩 Load into dataset {name}")),
+                                egui::Button::new(format!("📩 Load into workspace {name}")),
                             )
                             .on_hover_text(
-                                "Read the selection into this dataset, merging it with \
+                                "Read the selection into this workspace, merging it with \
                                  whatever is already there - the same as adding its folder",
                             )
                             .clicked()

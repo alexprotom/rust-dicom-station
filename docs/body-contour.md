@@ -32,8 +32,8 @@ everything else in the field of view:
 ## Using it
 
 The **👤 Body contour** section of the *Structure auto tools* module
-(*Modules ▶ Structure auto tools*, right panel, F10; the dataset is the
-module's **Dataset A / B** row). The section shares the engines' layout (see
+(*Modules ▶ Structure auto tools*, right panel, F10; the workspace is the
+module's **Workspace A / B** row). The section shares the engines' layout (see
 [architecture.md](architecture.md#the-tool-windows-and-the-modules)).
 
 * **Method** - *Classical* or *Model-assisted*; everything below adapts.
@@ -159,7 +159,7 @@ model-assisted method answers the rest.
 TotalSegmentator publishes a **body-outline nnU-Net** under the same
 Apache-2.0 licence as its "total" task, in three flavours:
 
-| Model | Dataset | Grid | Download |
+| Model | Workspace | Grid | Download |
 |---|---|---|---|
 | CT 6 mm | 300 | 6 mm isotropic | 124 MB |
 | CT 1.5 mm | 299 | 1.5 mm isotropic | 233 MB |
@@ -198,7 +198,7 @@ The MR body model needed three additions, all additive - existing models take
 exactly the code path they took before, so their numerics are untouched:
 
 * `ZScoreNormalization` alongside `CTNormalization`: CT normalizes against
-  dataset constants from `plans.json`, MR against *this image*, so its
+  workspace constants from `plans.json`, MR against *this image*, so its
   constants are only knowable after resampling.
 * **Anisotropic target spacing.** The MR model plans 3.0 × 1.19 × 0.99 mm;
   `SarMap` now takes a spacing per axis rather than one number.

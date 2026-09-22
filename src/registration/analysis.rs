@@ -637,6 +637,7 @@ mod tests {
         let t = Transform3 {
             rigid: RigidTransform::identity(Vec3::ZERO),
             warp: Warp::BSpline(b),
+            manual: None,
         };
         let a = analyse(&v, &t, None);
         assert!(

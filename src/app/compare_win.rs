@@ -2,9 +2,9 @@
 //! structures - volumes, centroids and their offset, Dice, HD95 and mean
 //! surface distance.
 //!
-//! The two structures may live in either dataset and on different lattices;
+//! The two structures may live in either workspace and on different lattices;
 //! the second is resampled onto the first's grid through patient
-//! coordinates. Across two datasets that is only meaningful when both are
+//! coordinates. Across two workspaces that is only meaningful when both are
 //! in the same frame of reference (or have been registered and propagated
 //! first) - the window says so instead of silently comparing apples to
 //! oranges.
@@ -94,7 +94,7 @@ impl ViewerApp {
         };
         // Two points of interest are compared as points: the distance
         // between them, which is the target registration error when the two
-        // are the same anatomical landmark in two datasets.
+        // are the same anatomical landmark in two workspaces.
         if let (Some((na, pa)), Some((nb, pb))) =
             (self.poi_of_item(slot_a, ia), self.poi_of_item(slot_b, ib))
         {
@@ -205,7 +205,7 @@ impl ViewerApp {
             }
             None => lines.push(
                 "Nothing to compare - one of the masks is empty (a structure from the other \
-                 dataset may lie outside this volume; resampling cannot invent it)."
+                 workspace may lie outside this volume; resampling cannot invent it)."
                     .into(),
             ),
         }

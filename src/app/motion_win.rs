@@ -11,7 +11,7 @@
 //! ITVs stored as segmentations on the reference phase.
 //!
 //! The dialog's settings survive as a *recipe*: the same targets (matched
-//! by name), models and options can be re-applied to the other dataset or
+//! by name), models and options can be re-applied to the other workspace or
 //! to the next study with two clicks, which is what makes the workflow
 //! practical over a cohort rather than a single case.
 
@@ -86,7 +86,7 @@ pub(super) struct MotionGroup {
 }
 
 /// The dialog's transferable part: what to analyse and how, with targets
-/// remembered by *name* so the same recipe applies to another dataset.
+/// remembered by *name* so the same recipe applies to another workspace.
 #[derive(Clone)]
 pub(super) struct MotionRecipe {
     pub targets: Vec<String>,
@@ -375,7 +375,7 @@ impl ViewerApp {
         use anyhow::{bail, Context};
         let slot = d.slot;
         let Some(study) = self.slots[slot].study.as_ref() else {
-            bail!("dataset {} is not loaded", SLOT_NAMES[slot]);
+            bail!("workspace {} is not loaded", SLOT_NAMES[slot]);
         };
         let Some(group) = study.fourd_groups.get(d.group) else {
             bail!("no 4D group selected");
@@ -536,7 +536,7 @@ impl ViewerApp {
             "Motion analysis finished: {}",
             outcome.report.run_name
         )];
-        // The report is kept whatever happened to the dataset meanwhile -
+        // The report is kept whatever happened to the workspace meanwhile -
         // it is self-contained - but segmentations only land in the study
         // the run analysed.
         let still_there = self.slots[slot]
@@ -544,7 +544,7 @@ impl ViewerApp {
             .as_ref()
             .is_some_and(|st| st.series.iter().any(|se| se.study_uid == outcome.study_uid));
         if !still_there {
-            lines.push("The dataset changed while it ran - segmentations were discarded.".into());
+            lines.push("The workspace changed while it ran - segmentations were discarded.".into());
             self.motion_reports.push(outcome.report);
             self.motion_sel = self.motion_reports.len() - 1;
             self.motion_results_open = true;
@@ -644,7 +644,7 @@ impl ViewerApp {
             &mut open,
             detach::WinOpts::default(),
             |ui| {
-                switch = dataset_row(ui, slot, has, running.is_none());
+                switch = workspace_row(ui, slot, has, running.is_none());
                 ui.label(
                     "Register the reference phase to every phase of a 4D group, carry the \
                      targets across, and measure their motion - trajectories, amplitudes, \
@@ -654,7 +654,7 @@ impl ViewerApp {
                 if groups.is_empty() {
                     ui.colored_label(
                         warn_color(ui.visuals()),
-                        "No 4D group in this dataset. Phases are recognised from the series \
+                        "No 4D group in this workspace. Phases are recognised from the series \
                          descriptions (e.g. \"… 30%\"); series can also be grouped by hand \
                          from the data tree (right-click a series > 4D group).",
                     );
@@ -933,7 +933,7 @@ impl ViewerApp {
                                 has_recipe,
                                 "Apply last recipe",
                                 "Tick the same targets (matched by name) and re-use the \
-                                 options of the previous run - for the other dataset or \
+                                 options of the previous run - for the other workspace or \
                                  the next study",
                             ) {
                                 apply_recipe = true;

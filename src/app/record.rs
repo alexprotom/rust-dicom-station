@@ -195,7 +195,7 @@ impl ViewerApp {
     }
 
     /// The pane a run is playing in: the one its button was pressed on when
-    /// that is known, and otherwise the first pane of that dataset's row.
+    /// that is known, and otherwise the first pane of that workspace's row.
     pub(super) fn playing_pane(&self, target: play::PlayTarget) -> Option<(usize, PaneKind)> {
         let slot = target.slot();
         if let Some(p) = self.play.from_pane.filter(|(s, _)| *s == slot) {

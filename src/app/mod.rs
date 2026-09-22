@@ -1,5 +1,5 @@
 //! The egui application: menu bar, toolbar, side panel, and one row per
-//! dataset (a second in comparison mode) of up to three linked panes each -
+//! workspace (a second in comparison mode) of up to three linked panes each -
 //! the three MPR planes and the 3D surface scene, chosen under
 //! *Settings ▸ View layout*.
 
@@ -61,6 +61,7 @@ mod home;
 mod img_info;
 mod jobs;
 mod livewire_app;
+mod matrix_edit;
 mod models_win;
 mod motion_results;
 mod motion_win;
@@ -76,6 +77,7 @@ mod record;
 mod reg_panel;
 mod rename;
 mod seg;
+mod seg_edit;
 mod seg_engines;
 mod sets;
 mod snapshot;
@@ -87,6 +89,7 @@ mod transfer_win;
 mod tree;
 mod views;
 mod widgets;
+mod workspace_pick;
 
 use drr_win::DrrDialog;
 use pacs_win::{PacsOutcome, PacsWindow};
@@ -497,7 +500,7 @@ impl StudySlot {
 
     /// Whether this slot shows an image volume.
     ///
-    /// A slot can hold a perfectly good dataset with none - RT images, a
+    /// A slot can hold a perfectly good workspace with none - RT images, a
     /// structure set, a plan. Every feature that needs voxels (the MPR views,
     /// the brush, registration, the segmentation engines, the DRR) asks this
     /// rather than `study.is_some()`.
@@ -735,7 +738,7 @@ struct D3Window {
     /// running partial rebuild replaces (`None`: a full build).
     roi_hashes: Vec<u64>,
     rebuilding: Option<Vec<usize>>,
-    /// Isodose surfaces of the dataset's active dose at the isodose lines'
+    /// Isodose surfaces of the workspace's active dose at the isodose lines'
     /// levels: the meshes (`roi_index` = level index), the build in flight,
     /// what they were built from, and their opacity.
     show_iso: bool,
@@ -753,11 +756,11 @@ struct D3Window {
     seg_job: Option<Job<Vec<RoiMesh>>>,
     /// Hash of the segmentation state `seg_meshes` was built from.
     seg_built: u64,
-    /// Also draw the *other* dataset's structures, mapped through the active
+    /// Also draw the *other* workspace's structures, mapped through the active
     /// registration - the two anatomies in one scene is what makes a
     /// deformable result readable at all.
     show_other: bool,
-    /// Opacity of that second dataset, independent of this one's.
+    /// Opacity of that second workspace, independent of this one's.
     other_opacity: f32,
     other_meshes: Option<Arc<Vec<RoiMesh>>>,
     other_job: Option<Job<Vec<RoiMesh>>>,
@@ -853,7 +856,7 @@ struct TreeAction {
     op: TreeOp,
 }
 
-/// Which of a dataset's two kinds of segmented series an action addresses.
+/// Which of a workspace's two kinds of segmented series an action addresses.
 ///
 /// The data tree treats them alike - both are series drawn on an image
 /// series, both hold named, coloured items - even though one stores contours
@@ -885,12 +888,12 @@ impl SetKind {
     }
 }
 
-/// One structure set / segmentation series of one dataset.
+/// One structure set / segmentation series of one workspace.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct SetRef {
     slot: usize,
     kind: SetKind,
-    /// Index into that dataset's list, or [`SetRef::NEW`] for a series that
+    /// Index into that workspace's list, or [`SetRef::NEW`] for a series that
     /// does not exist yet - what the *New …* transfer destinations mean.
     idx: usize,
 }
@@ -901,7 +904,7 @@ impl SetRef {
 
 /// One of the study-level objects that are neither image, structure nor
 /// segmentation series: they hang off the study, are drawn in the views (or
-/// not), and can be taken out of the dataset.
+/// not), and can be taken out of the workspace.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ObjKind {
     Dose,
@@ -911,7 +914,7 @@ enum ObjKind {
     Record,
 }
 
-/// Which object, in which dataset.
+/// Which object, in which workspace.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct ObjRef {
     slot: usize,
@@ -927,7 +930,7 @@ enum SetAction {
     Rename(SetRef),
     /// Re-point the series at the image series with this Series Instance UID.
     Connect(SetRef, String),
-    /// Copy (`copy`) or move the whole series to the other dataset.
+    /// Copy (`copy`) or move the whole series to the other workspace.
     Transfer {
         from: SetRef,
         copy: bool,
@@ -981,7 +984,7 @@ enum ItemAction {
         from: SetRef,
         items: Vec<usize>,
     },
-    /// Carry these items into the other dataset through the active
+    /// Carry these items into the other workspace through the active
     /// registration: open the propagation module aimed at them.
     Map {
         from: SetRef,
@@ -1080,10 +1083,10 @@ struct PlanarWindow {
 
 /// A completed registration plus the two images it was run on.
 ///
-/// The images are named by dataset slot and series UID, and their volumes
+/// The images are named by workspace slot and series UID, and their volumes
 /// are kept: a registration may pair any two series - the displayed one of
 /// A with a phase of B, or a cardiac CT with a 4DCT phase of the *same*
-/// dataset - so nothing here assumes the two slots display them. The views
+/// workspace - so nothing here assumes the two slots display them. The views
 /// check, per slot, whether what is on show is the fixed or the moving
 /// image and draw the fusion, the field and the crosshair link accordingly.
 struct ActiveRegistration {
@@ -1113,12 +1116,12 @@ struct ActiveRegistration {
     struct_dice: Option<Vec<StructDice>>,
 }
 
-/// One structure scored against its namesake in the other dataset.
+/// One structure scored against its namesake in the other workspace.
 #[derive(Clone, Debug)]
 struct StructDice {
     name: String,
     color: [u8; 3],
-    /// Dice of the fixed dataset's structure against the moving dataset's,
+    /// Dice of the fixed workspace's structure against the moving workspace's,
     /// carried through the transform.
     after: f64,
     /// The same two structures with no transform at all - what they already
@@ -1175,7 +1178,7 @@ enum FusionSide {
     Moving,
 }
 
-/// One image series of one dataset, as the registration module names it.
+/// One image series of one workspace, as the registration module names it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct RegPick {
     pub slot: usize,
@@ -1209,9 +1212,20 @@ pub struct ViewerApp {
     rec_max: usize,
     /// What the last recording did, for the module to say.
     rec_status: Option<String>,
-    /// Where each dataset's row of the central area was drawn this pass,
+    /// Where each workspace's row of the central area was drawn this pass,
     /// which is what *File ▸ Save image* cuts out of the window.
     row_rects: [Option<Rect>; 2],
+    /// The hand-edited transform matrix of the registration panel, and
+    /// whether it is the one to use.
+    reg_matrix: matrix_edit::ManualMatrix,
+    /// The same, for structure propagation and for transfer by relationship.
+    prop_matrix: matrix_edit::ManualMatrix,
+    transfer_matrix: matrix_edit::ManualMatrix,
+    /// The buttons on every pane are folded away behind the ◀ on its bar.
+    /// One switch for all of them, remembered between runs.
+    pane_buttons_hidden: bool,
+    /// The open "which workspace?" question, if one is being asked.
+    ws_pick: Option<workspace_pick::WsPick>,
     /// The *Save image* dialog, and the picture it has asked for.
     save_img: Option<snapshot::SaveImgDialog>,
     snap: Option<snapshot::PendingShot>,
@@ -1224,7 +1238,7 @@ pub struct ViewerApp {
 
     loading: Option<Job<LoadResult>>,
     /// A load queued behind the one in flight (slot, directory).
-    /// What each dataset has been loaded from this run, in order: the
+    /// What each workspace has been loaded from this run, in order: the
     /// *Restore the last session* button on the start screen replays it, and
     /// it is written to the settings file as it changes.
     session: [Vec<PathBuf>; 2],
@@ -1252,7 +1266,7 @@ pub struct ViewerApp {
     /// does not repeat the registrations. Cleared when the registration is.
     group_registration: Option<GroupRegistration>,
     /// Which 4D group the registration module runs against, when it runs
-    /// against one rather than the other dataset's displayed volume.
+    /// against one rather than the other workspace's displayed volume.
     reg_group: Option<(usize, usize)>,
     /// The payload carries the slot that was used as the fixed image.
     reg_job: Option<SegJob<RegOutcome>>,
@@ -1282,7 +1296,7 @@ pub struct ViewerApp {
     reg_landmark: LandmarkParams,
     /// The paired points the landmark warp interpolates.
     reg_landmarks: Vec<LandmarkPair>,
-    /// Which structure of the fixed dataset restricts the next run.
+    /// Which structure of the fixed workspace restricts the next run.
     reg_roi: RegRoi,
     /// Margin the region is grown by, mm.
     reg_margin_mm: f64,
@@ -1320,7 +1334,7 @@ pub struct ViewerApp {
     sim_params: SimParams,
     sim_job: Option<Job<(usize, LoadedStudy)>>,
     last_sim: Option<String>,
-    // DICOM export (File ▶ Export DICOM). One window for both datasets: what
+    // DICOM export (File ▶ Export DICOM). One window for both workspaces: what
     // goes out is chosen inside it, not in the menu.
     /// Window visibility.
     export_open: bool,
@@ -1342,7 +1356,7 @@ pub struct ViewerApp {
     gen_dir: String,
     gen_job: Option<Job<anyhow::Result<(usize, PathBuf)>>>,
     gen_result: Option<String>,
-    /// Load the generated study into slot A once it has been written.
+    /// Load the generated study into workspace A once it has been written.
     gen_load_after: bool,
 
     // Tools ▶ Download test data: the repository's data-test/ from GitHub.
@@ -1353,7 +1367,7 @@ pub struct ViewerApp {
     testdata_dir: String,
     testdata_job: Option<Job<anyhow::Result<testdata::Summary>>>,
     testdata_result: Option<String>,
-    /// Load the first dataset into slot A once everything is there.
+    /// Load the first workspace into slot A once everything is there.
     testdata_load_after: bool,
 
     // Tools ▶ Anonymize DICOM folder.
@@ -1456,7 +1470,7 @@ pub struct ViewerApp {
     interp: Option<contour_edit::InterpPreview>,
     /// Contours copied from one slice, and the axis they were cut on.
     contour_clip: Option<(usize, crate::contours::Region)>,
-    /// *Modules ▶ Structure editor*: which dataset it works on and the
+    /// *Modules ▶ Structure editor*: which workspace it works on and the
     /// numbers its buttons apply.
     tools: struct_tools::StructTools,
     /// The live-wire's cost image and current anchor, kept between frames.
@@ -1529,7 +1543,7 @@ pub struct ViewerApp {
     motion_job: Option<SegJob<motion_win::MotionOutcome>>,
     motion_slot: usize,
     motion_dialog: Option<motion_win::MotionDialog>,
-    /// The last run's settings, re-applicable to another dataset / study.
+    /// The last run's settings, re-applicable to another workspace / study.
     motion_recipe: Option<motion_win::MotionRecipe>,
     /// Every finished run of this session, newest last.
     motion_reports: Vec<crate::motion::MotionReport>,
@@ -1611,7 +1625,7 @@ pub struct ViewerApp {
     /// State of the *Image information* module.
     info: img_info::InfoState,
     dose_est_job: Option<Job<Vec<dose_est::DoseRow>>>,
-    /// The auto tools module's state: its dataset and the section to unfold.
+    /// The auto tools module's state: its workspace and the section to unfold.
     auto: auto_tools::AutoTools,
     /// The toolbar's *✏ Draw structure* is unfolded: the drawing tools and
     /// the options of the one in hand are on the toolbar.
@@ -1653,14 +1667,14 @@ fn tail(uid: &str) -> String {
 }
 
 impl ViewerApp {
-    /// The first dataset that shows an image volume: A, or B when A shows
+    /// The first workspace that shows an image volume: A, or B when A shows
     /// none. Where a tool has to start somewhere and nobody pointed at a
-    /// dataset.
+    /// workspace.
     pub(super) fn first_volume_slot(&self) -> usize {
         usize::from(!self.slots[0].has_volume())
     }
 
-    /// The dataset under the pointer when it shows a volume, else
+    /// The workspace under the pointer when it shows a volume, else
     /// [`Self::first_volume_slot`] - what the toolbar and the keyboard act on.
     pub(super) fn preferred_volume_slot(&self) -> usize {
         let hovered = self.hovered_slot.min(1);
@@ -1683,18 +1697,18 @@ impl ViewerApp {
             || self.module_play
     }
 
-    /// Both datasets show an image volume.
+    /// Both workspaces show an image volume.
     pub(super) fn both_volumes(&self) -> bool {
         self.slots[0].has_volume() && self.slots[1].has_volume()
     }
 
-    /// At least one dataset shows an image volume.
+    /// At least one workspace shows an image volume.
     pub(super) fn any_volume(&self) -> bool {
         self.slots[0].has_volume() || self.slots[1].has_volume()
     }
 
-    /// Which datasets show an image volume, in the form the tool windows'
-    /// dataset row takes.
+    /// Which workspaces show an image volume, in the form the tool windows'
+    /// workspace row takes.
     pub(super) fn volume_slots(&self) -> [bool; 2] {
         [self.slots[0].has_volume(), self.slots[1].has_volume()]
     }
@@ -1743,6 +1757,7 @@ impl ViewerApp {
             rec_max: 600,
             rec_status: None,
             row_rects: [None, None],
+            ws_pick: None,
             save_img: None,
             snap: None,
             snap_status: None,
@@ -1930,6 +1945,10 @@ impl ViewerApp {
             module_dose: prefs.module_dose,
             module_info: prefs.module_info,
             module_play: prefs.module_play,
+            pane_buttons_hidden: prefs.pane_buttons_hidden,
+            reg_matrix: matrix_edit::ManualMatrix::default(),
+            prop_matrix: matrix_edit::ManualMatrix::default(),
+            transfer_matrix: matrix_edit::ManualMatrix::default(),
             modules_open: prefs.modules_open.clone(),
             apply_modules_open: false,
             modules_tracked: false,
@@ -1994,6 +2013,7 @@ impl ViewerApp {
             module_dose: self.module_dose,
             module_info: self.module_info,
             module_play: self.module_play,
+            pane_buttons_hidden: self.pane_buttons_hidden,
             modules_open: self.modules_open.clone(),
             session: self.session.clone(),
             view_rows: self.view_rows.clone(),
@@ -2007,7 +2027,7 @@ impl ViewerApp {
     }
 
     /// Reset zoom, pan, crosshair and slice (all back to the volume center)
-    /// of every view of both datasets.
+    /// of every view of both workspaces.
     pub(super) fn reset_all_views(&mut self) {
         for s in &mut self.slots {
             for v in &mut s.views {
@@ -2022,8 +2042,8 @@ impl ViewerApp {
     }
 
     /// Put the crosshair of `slot` back at its volume center and follow it
-    /// with that slot's three slices. The other dataset is left alone even
-    /// when crosshair linking is on - a reset is per-dataset, and "Reset all
+    /// with that slot's three slices. The other workspace is left alone even
+    /// when crosshair linking is on - a reset is per-workspace, and "Reset all
     /// views" recenters both anyway.
     pub(super) fn center_cursor(&mut self, slot: usize) {
         let Some(study) = &self.slots[slot].study else {

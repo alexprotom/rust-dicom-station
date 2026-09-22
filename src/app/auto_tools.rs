@@ -7,12 +7,12 @@
 //! bones - a description, the tool's inputs, an *Options* fold with the
 //! compute device and the model folder, the licence line, a run button that
 //! turns into a progress row. Here they are four foldable sections under one
-//! dataset row, drawn by the same code that drew the windows
+//! workspace row, drawn by the same code that drew the windows
 //! (`body_win.rs`, `dialogs.rs`, `prompt_seg.rs`, `box_seg.rs`), so the
 //! panel and the runs behave exactly as before; only the window is gone.
 //!
-//! The module works on one dataset; every section's state is re-targeted
-//! when that changes, unless a run on the old dataset is still in flight.
+//! The module works on one workspace; every section's state is re-targeted
+//! when that changes, unless a run on the old workspace is still in flight.
 
 use super::*;
 
@@ -25,21 +25,21 @@ pub(super) enum AutoSection {
     SliceProp,
 }
 
-/// The module's state: the dataset the sections act on.
+/// The module's state: the workspace the sections act on.
 #[derive(Default)]
 pub(super) struct AutoTools {
     pub slot: usize,
 }
 
 impl ViewerApp {
-    /// The whole module: the dataset row, then the four sections.
+    /// The whole module: the workspace row, then the four sections.
     pub(super) fn auto_tools_section(&mut self, ui: &mut egui::Ui) {
         let title = egui::RichText::new("Structure auto tools").strong();
         if !self.any_volume() {
             egui::CollapsingHeader::new(title)
                 .default_open(false)
                 .show(ui, |ui| {
-                    ui.weak("Load a dataset with an image volume to segment");
+                    ui.weak("Load a workspace with an image volume to segment");
                 });
             ui.separator();
             return;
@@ -47,7 +47,7 @@ impl ViewerApp {
         if !self.slots[self.auto.slot].has_volume() {
             self.auto.slot = self.first_volume_slot();
         }
-        // A run pins the module to the dataset it started on: the sections
+        // A run pins the module to the workspace it started on: the sections
         // would otherwise be re-targeted under it.
         let busy = self.running_tool(self.auto.slot).is_some()
             || self.running_tool(1 - self.auto.slot).is_some();
@@ -55,7 +55,8 @@ impl ViewerApp {
         egui::CollapsingHeader::new(title)
             .default_open(false)
             .show(ui, |ui| {
-                new_slot = seg_engines::dataset_row(ui, self.auto.slot, self.volume_slots(), !busy);
+                new_slot =
+                    seg_engines::workspace_row(ui, self.auto.slot, self.volume_slots(), !busy);
                 for (section, info) in [
                     (AutoSection::Body, &BODY_CONTOUR),
                     (AutoSection::Autoseg, &AUTOSEG),

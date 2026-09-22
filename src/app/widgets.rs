@@ -86,7 +86,7 @@ pub(super) fn index_picker(
         });
 }
 
-/// A combo over the structures and segments of a dataset, with a sentinel
+/// A combo over the structures and segments of a workspace, with a sentinel
 /// entry for "none": the picker behind the grow limit and the threshold's
 /// limiting structure.
 pub(super) fn item_picker(

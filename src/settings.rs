@@ -38,8 +38,10 @@ const MODULE_PLAY_KEY: &str = "module_playback";
 /// Which module sections were unfolded, remembered for *Restore the last
 /// session*.
 const MODULES_OPEN_KEY: &str = "modules_open";
+/// Whether the row of buttons on each pane is folded away.
+const PANE_BUTTONS_KEY: &str = "pane_buttons";
 
-/// Settings keys of the last session's sources, one per dataset. The paths
+/// Settings keys of the last session's sources, one per workspace. The paths
 /// are separated by `|`, which no path on any supported system contains.
 const SESSION_KEYS: [&str; 2] = ["session_a", "session_b"];
 const SESSION_SEP: char = '|';
@@ -54,9 +56,9 @@ const VIEW_ROW_KEYS: [&str; 2] = ["view_row_a", "view_row_b"];
 /// larger images rather than two images and a gap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneKind {
-    /// One plane of the dataset's volume: an ordinary MPR view.
+    /// One plane of the workspace's volume: an ordinary MPR view.
     Plane(crate::volume::ViewPlane),
-    /// The surface scene of that dataset's structures and segmentations -
+    /// The surface scene of that workspace's structures and segmentations -
     /// the same one the *3D* button opens in a window, drawn in the row
     /// instead.
     Scene3d,
@@ -167,25 +169,33 @@ pub struct Settings {
     pub module_propagation: bool,
 
     /// *Modules ▶ Structure editor*: inserting, editing and combining
-    /// structures is shown in the modules panel. On by default.
+    /// structures is shown in the modules panel.
     pub module_structures: bool,
 
     /// *Modules ▶ Structure auto tools*: body contour and the three
-    /// segmentation engines are shown in the modules panel. On by default.
+    /// segmentation engines are shown in the modules panel.
     pub module_auto: bool,
 
     /// *Modules ▶ Dose estimation*: the dose metrics table of the ticked
-    /// structures is shown in the modules panel. On by default.
+    /// structures is shown in the modules panel.
     pub module_dose: bool,
 
     /// *Modules ▶ Image information*: the geometry, sampling and
-    /// acquisition of the displayed series. On by default - it reads
-    /// nothing until its section is unfolded.
+    /// acquisition of the displayed series. It reads nothing until its
+    /// section is unfolded.
     pub module_info: bool,
 
     /// *Modules ▶ Playback*: the transport controls and the settings of
-    /// the Play buttons on the viewports. On by default.
+    /// the Play buttons on the viewports.
     pub module_play: bool,
+
+    /// The buttons on each pane - play, zoom, the hand, reset - are folded
+    /// away behind the ◀ on its bar, leaving only that and the maximize.
+    ///
+    /// On for a fresh installation: an image with nothing on it is what a
+    /// viewport is for, and the buttons are one click away. What the user
+    /// last left it at is remembered.
+    pub pane_buttons_hidden: bool,
 
     /// The module sections that were unfolded when the settings were last
     /// written (`registration`, `simulation`, `editor`, `auto`,
@@ -198,7 +208,7 @@ pub struct Settings {
     /// the next run - which the menu says.
     pub graphics_backend: Backend,
 
-    /// What dataset A and dataset B were last loaded from: folders and
+    /// What workspace A and workspace B were last loaded from: folders and
     /// files, in the order they were added, so *Restore the last session*
     /// can put the same data back.
     pub session: [Vec<PathBuf>; 2],
@@ -216,16 +226,19 @@ impl Default for Settings {
             theme: ThemePreference::Dark,
             models_dir: None,
             archive_dir: None,
-            // Both optional modules start hidden; the Modules menu turns them
-            // on and the choice is remembered.
+            // Every module off on a fresh installation: the right panel is
+            // not there at all until one is asked for, so a first run opens
+            // on the images and nothing else. The Modules menu says what
+            // there is, and what is switched on is remembered.
             module_registration: false,
             module_simulation: false,
             module_propagation: false,
-            module_structures: true,
-            module_auto: true,
-            module_dose: true,
-            module_info: true,
-            module_play: true,
+            module_structures: false,
+            module_auto: false,
+            module_dose: false,
+            module_info: false,
+            module_play: false,
+            pane_buttons_hidden: true,
             modules_open: Vec::new(),
             session: [Vec::new(), Vec::new()],
             view_rows: [default_view_row(), default_view_row()],
@@ -793,6 +806,12 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
             if let Some(b) = bool_from_str(value) {
                 s.module_play = b;
             }
+        } else if key.eq_ignore_ascii_case(PANE_BUTTONS_KEY) {
+            // The file says what is *shown*, which reads better by hand than
+            // a double negative; the field holds the other way round.
+            if let Some(b) = bool_from_str(value) {
+                s.pane_buttons_hidden = !b;
+            }
         } else if key.eq_ignore_ascii_case(MODULES_OPEN_KEY) {
             s.modules_open = value
                 .split(',')
@@ -834,6 +853,8 @@ fn render(s: &Settings) -> String {
          {MODULE_DOSE_KEY} = {}\n\
          {MODULE_INFO_KEY} = {}\n\
          {MODULE_PLAY_KEY} = {}\n\
+         # the buttons on each pane (play, zoom, hand, reset) = on | off\n\
+         {PANE_BUTTONS_KEY} = {}\n\
          # module sections unfolded at the last run, for Restore the last session\n\
          {MODULES_OPEN_KEY} = {}\n\
          # graphics backend = auto | vulkan | dx12 | metal | opengl\n\
@@ -847,6 +868,7 @@ fn render(s: &Settings) -> String {
         bool_to_str(s.module_dose),
         bool_to_str(s.module_info),
         bool_to_str(s.module_play),
+        bool_to_str(!s.pane_buttons_hidden),
         s.modules_open.join(","),
         s.graphics_backend.key()
     ));
@@ -861,7 +883,7 @@ fn render(s: &Settings) -> String {
         }
         let joined: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
         out.push_str(&format!(
-            "# what this dataset was last loaded from\n{key} = {}\n",
+            "# what this workspace was last loaded from\n{key} = {}\n",
             joined.join(&SESSION_SEP.to_string())
         ));
     }
@@ -1198,7 +1220,7 @@ mod tests {
             ],
             ..Settings::default()
         };
-        assert_eq!(parse(&render(&s)), s, "both datasets round trip");
+        assert_eq!(parse(&render(&s)), s, "both workspaces round trip");
         assert_eq!(
             parse("session_a = D:/one | D:/two |\n").session[0],
             vec![PathBuf::from("D:/one"), PathBuf::from("D:/two")],
@@ -1237,20 +1259,47 @@ mod tests {
             parse(&format!("{MODULE_PROP_KEY} = on")).module_propagation,
             "the propagation module is remembered too"
         );
+        // A settings file that says nothing is a fresh installation, and a
+        // fresh installation opens on the images with no modules panel at
+        // all. Every one of them is switched on from the Modules menu, and
+        // the answer is remembered.
+        let fresh = parse("");
         assert!(
-            parse("").module_structures
-                && parse("").module_auto
-                && !parse(&format!("{MODULE_TOOLS_KEY} = off")).module_structures
-                && !parse(&format!("{MODULE_AUTO_KEY} = off")).module_auto,
-            "the structures editor starts switched on and can be switched off"
+            !fresh.module_structures
+                && !fresh.module_auto
+                && !fresh.module_info
+                && !fresh.module_play
+                && !fresh.module_dose
+                && !fresh.module_registration
+                && !fresh.module_simulation
+                && !fresh.module_propagation,
+            "a fresh installation starts with every module switched off"
         );
         assert!(
-            parse("").module_info && !parse(&format!("{MODULE_INFO_KEY} = off")).module_info,
-            "the image information module starts switched on and can be switched off"
+            parse(&format!("{MODULE_TOOLS_KEY} = on")).module_structures
+                && parse(&format!("{MODULE_AUTO_KEY} = on")).module_auto
+                && parse(&format!("{MODULE_INFO_KEY} = on")).module_info
+                && parse(&format!("{MODULE_PLAY_KEY} = on")).module_play,
+            "and each of them can be switched on again"
+        );
+        // The pane buttons are the other way round in the file from the
+        // field, and folded is what a fresh installation gets.
+        assert!(
+            fresh.pane_buttons_hidden,
+            "a fresh installation opens with the pane bars folded"
         );
         assert!(
-            parse("").module_play && !parse(&format!("{MODULE_PLAY_KEY} = off")).module_play,
-            "the playback module starts switched on and can be switched off"
+            !parse(&format!("{PANE_BUTTONS_KEY} = on")).pane_buttons_hidden
+                && parse(&format!("{PANE_BUTTONS_KEY} = off")).pane_buttons_hidden,
+            "the file says what is shown; the field holds what is hidden"
+        );
+        assert!(
+            !parse(&render(&Settings {
+                pane_buttons_hidden: false,
+                ..Settings::default()
+            }))
+            .pane_buttons_hidden,
+            "and it survives a write and a read"
         );
         // Whatever was set survives a write and a read.
         let s = Settings {

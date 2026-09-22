@@ -1,6 +1,6 @@
 # Image registration
 
-Intensity- and landmark-based registration between the two loaded datasets:
+Intensity- and landmark-based registration between the two loaded workspaces:
 three independent engines, per-run analytics, a deformation vector field
 you can see and export, and the option to restrict any of it to a single
 structure. elastix and plastimatch are C++/ITK toolboxes; nothing of either
@@ -100,7 +100,7 @@ untouched. `stiffness` (plastimatch's regularization) is added to the
 diagonal of the interpolation matrix: zero passes exactly through every
 landmark, larger values smooth the field and tolerate inconsistent pairs.
 
-Put the crosshair on the same anatomy in both datasets and press
+Put the crosshair on the same anatomy in both workspaces and press
 **➕ Add pair** in the *Landmarks* section (with *View ▶ Sync crosshairs*
 off, or both crosshairs move together). Each pair shows its displacement
 and, after a run, its residual.
@@ -110,7 +110,7 @@ and, after a run, its residual.
 *Modules ▶ Image registration* puts the section - the two images, method,
 region, parameters, landmarks, result and vector field - in the right panel.
 **Fixed image** and **Moving image** each name one image series of either
-dataset: the displayed ones, a phase of a 4DCT, or two series of one dataset
+workspace: the displayed ones, a phase of a 4DCT, or two series of one workspace
 (a cardiac CT and a phase of the 4DCT it arrived with). A series that is not
 on display is loaded for the run. The fixed image may also be *every phase
 of a 4D group*, which is one registration per phase (below). The run goes
@@ -119,9 +119,9 @@ on a background thread with progress and a **Cancel** button.
 The result names both images, and **Fusion overlay on** chooses which one
 carries the overlay: on the fixed image the moving one is warped onto it, on
 the moving image the fixed one comes back through the inverse. The overlay,
-the vector field and the crosshair link appear in whichever dataset displays
-that image, so two series of one dataset show the fusion once the same
-folder is loaded as the other dataset too; propagation works either way.
+the vector field and the crosshair link appear in whichever workspace displays
+that image, so two series of one workspace show the fusion once the same
+folder is loaded as the other workspace too; propagation works either way.
 
 The transform maps **fixed → moving** patient coordinates, as in elastix,
 ITK and plastimatch; the inverse (for the crosshair link and propagation) is
@@ -137,7 +137,7 @@ follow (it now says so rather than returning the identity as a result).
 pair, so nothing changes for those - and matches the centres of gravity when
 they do not (elastix's `AutomaticTransformInitialization`, what the
 plastimatch engine always did as `align_center`). *Centroids of a
-structure* matches one structure contoured on both datasets, which is the
+structure* matches one structure contoured on both workspaces, which is the
 surest start for an organ: the heart on a cardiac CT and on a planning CT.
 A local run always starts from the identity.
 
@@ -146,14 +146,57 @@ rigid pre-alignment plus three B-spline resolution levels, 1800 iterations
 total, ≈ 20 s on a desktop CPU, driving the mean-squared HU difference from
 ≈ 9700 to ≈ 1800.
 
+## The matrix, typed in by hand
+
+Under the *Register* row is a foldable **Transform matrix**: the same 4 × 4
+a planning system or 3D Slicer's *Transforms* module shows. Three rows of
+direction cosines with the shift in the right-hand column, in patient
+millimetres, mapping fixed → moving like everything else here; the bottom
+row is `0 0 0 1` for any spatial transform, so it is shown and not editable.
+
+Sometimes the number is already known - a couch shift from the record, a
+transform from a planning system or a colleague, or a pure 5 mm translation
+as a sanity check - and typing it is faster and more honest than tuning a
+registration until it produces it.
+
+**Use this matrix** is the switch, and nothing reads the matrix unless it is
+on. While it is off the grid *follows the tool*: it shows the transform of
+the active registration, so ticking the switch takes those numbers over and
+edits them rather than starting from an identity nobody asked for. Once it
+is on the numbers are yours, and a later run does not reach in and change
+them; untick it and the grid follows again. A deformable result is not a
+matrix - what the grid shows of it is the rigid part it starts from, and
+the section says so, because using it drops the deformation.
+
+*Identity* puts back a matrix that moves nothing; *Invert* replaces it with
+the mapping the other way, and is disabled for a matrix that flattens space,
+because that one has no inverse; *From the result* pulls the run's transform
+back in after a hand edit has wandered. **📋 Copy** and **📥 Paste** move the
+sixteen numbers through the clipboard whitespace-separated, the form Slicer
+reads and writes, so a matrix from elsewhere goes in without retyping
+(commas separate them just as well).
+
+**▶ Apply as the registration** installs it as the active registration of
+the two workspaces without running anything. Everything downstream reads the
+transform rather than the engine that made it, so the fusion overlay, the
+crosshair link, the vector field, propagation, the analytics and the REG
+export all follow it at once. The result is filed as *Given - a transform
+matrix, not a recovered one*: nothing was optimized, so the metric numbers a
+run reports would mean nothing and are not shown.
+
+The same editor, in the same shape, sits in *Structure propagation*
+([propagation.md](propagation.md)) and in *Transfer by relationship*
+([motion-4d.md](motion-4d.md#transfer-by-relationship-srcapptransfer_winrs)),
+where it stands in for that tool's own transform for the one run.
+
 ## Against a 4D group
 
 The **Fixed image** list ends with **every phase of a 4D group** of either
-dataset. That runs one registration per phase against the moving image: the
+workspace. That runs one registration per phase against the moving image: the
 phases of one acquisition differ by breathing, so a single transform for the
 group would be answering a question nobody asked.
 
-The moving image can be any series - of the group's own dataset (a planning
+The moving image can be any series - of the group's own workspace (a planning
 CT or a cardiac CT beside its 4DCT) or of the other one. Each phase
 reports its own metric line, and the transforms are kept so that propagating
 structures onto the same group afterwards costs no registration
@@ -163,7 +206,7 @@ as does clearing the registration.
 ## Local registration
 
 Any method can be restricted to a **region** - an RTSTRUCT ROI or a painted
-segmentation of the fixed dataset, dilated by a margin. Three things change:
+segmentation of the fixed workspace, dilated by a margin. Three things change:
 
 * samples come from inside the region only;
 * the B-spline control lattice covers the region's bounding box, so a small
@@ -202,7 +245,7 @@ same for every method:
   one that says whether the result is usable at all: 0.80 and above reads as
   a good match (green), 0.60 to 0.80 wants a look (amber), below 0.60 is a
   failure to explain (red). It is an *image* score - it says the two
-  datasets now cover the same space, not that any one organ lines up.
+  workspaces now cover the same space, not that any one organ lines up.
 * **Best-fitting rigid body** - the orthogonal Procrustes fit: translation,
   three Euler angles in the same `Rz Ry Rx` convention as the rigid
   transform, and the RMS residual those six numbers do *not* explain.
@@ -215,8 +258,8 @@ same for every method:
 * **Per structure** - mean and maximum displacement over each contoured
   structure's own points: "the tumour moved 9 mm and the cord 0.4 mm"
   rather than "4 mm on average". *Score structures (Dice)* adds the
-  anatomical half of the question: every structure of the fixed dataset is
-  paired with the structure of the same name on the moving dataset (a
+  anatomical half of the question: every structure of the fixed workspace is
+  paired with the structure of the same name on the moving workspace (a
   contour or a segmentation, matched case-insensitively), the moving one is
   carried through this registration, and the overlap is scored against the
   fixed one - after the registration and before it, coloured by the same
@@ -233,7 +276,7 @@ included.
 The **vector field** is the transform sampled onto a regular lattice - once,
 not per pixel on every repaint: a B-spline evaluation is 64 weighted
 lookups, a landmark warp a sum over every landmark. It is drawn in all three
-MPR views of the fixed dataset and, optionally, in the 3D window:
+MPR views of the fixed workspace and, optionally, in the 3D window:
 
 * **Arrows** from where anatomy is to where it goes, exaggerated by an
   adjustable factor (millimetre motion is invisible at 1×) and coloured by
@@ -243,8 +286,8 @@ MPR views of the fixed dataset and, optionally, in the 3D window:
 * Lattice spacing, arrow scale and colouring are adjustable; changing the
   spacing re-samples on a worker thread.
 
-In the **3D window**, *Dataset B through the registration* meshes the other
-dataset's structures and maps every vertex through the recovered transform,
+In the **3D window**, *Workspace B through the registration* meshes the other
+workspace's structures and maps every vertex through the recovered transform,
 so both anatomies stand in one frame of reference with independent
 opacities. The field can be overlaid as 3-D arrows in the same scene.
 
@@ -263,7 +306,7 @@ mapping, `T(p) − p`.
 
 ## Propagating structures
 
-Once aligned, contours drawn on one dataset can be carried to the other -
+Once aligned, contours drawn on one workspace can be carried to the other -
 see [propagation.md](propagation.md).
 
 ## Transform simulator (registration QA)
@@ -271,10 +314,10 @@ see [propagation.md](propagation.md).
 The *Simulation* module section applies an **exactly known** transform -
 rigid motion (translation + Euler rotation about the volume centre) plus an
 optional local Gaussian deformation (amplitude vector + σ, centred at the
-crosshair) - to a loaded dataset and generates the result into the other
+crosshair) - to a loaded workspace and generates the result into the other
 slot: the CT is resampled through the inverse transform; structure contours,
 dose grids and plan isocentres are carried along. The applied parameters
-stay displayed as ground truth. Any dataset, original or simulated, can then
+stay displayed as ground truth. Any workspace, original or simulated, can then
 be exported as DICOM (see [export-and-tools.md](export-and-tools.md)).
 
 ## Accuracy verification

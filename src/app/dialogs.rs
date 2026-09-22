@@ -28,6 +28,7 @@ impl ViewerApp {
     // -- Modals -----------------------------------------------------------
     pub(super) fn modals(&mut self, ctx: &egui::Context) {
         self.generator_window(ctx);
+        self.workspace_pick_window(ctx);
         self.testdata_window(ctx);
         self.save_image_window(ctx);
         self.anonymize_window(ctx);
@@ -199,7 +200,7 @@ impl ViewerApp {
             detach::WinOpts::default(),
             |ui| {
                 ui.label(format!(
-                    "{} structures found on dataset {} - {} · {:.0} s",
+                    "{} structures found on workspace {} - {} · {:.0} s",
                     p.result.organs.len(),
                     SLOT_NAMES[p.slot],
                     p.result.device,
@@ -385,7 +386,7 @@ impl ViewerApp {
                 );
                 ui.checkbox(
                     &mut self.gen_load_after,
-                    "Load the study into slot A when done",
+                    "Load the study into workspace A when done",
                 );
 
                 ui.add_space(8.0);

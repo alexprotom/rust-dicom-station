@@ -5,7 +5,7 @@
 //! Speaks MCP over standard input and output, which is how MCP clients
 //! (Claude Desktop, Claude Code and others) launch a server themselves. The
 //! configuration - which folders may be read, where results go, what happens
-//! to a dataset that still names its patient - comes from `mcp.toml` in the
+//! to a workspace that still names its patient - comes from `mcp.toml` in the
 //! station's configuration folder and never from the client. `--check` reads
 //! the configuration, prints what it says on standard error, and exits.
 //!
@@ -59,7 +59,7 @@ fn main() {
     );
     if cfg.roots.is_empty() {
         eprintln!(
-            "rds-mcp: no roots in {}; no dataset can be opened until some are configured",
+            "rds-mcp: no roots in {}; no workspace can be opened until some are configured",
             path.display()
         );
     }

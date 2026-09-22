@@ -47,7 +47,7 @@ impl DoseKind {
 pub(super) struct DoseEst {
     pub slot: usize,
     /// Which of the study's doses the table is against; `None` follows the
-    /// dataset's active dose until a dose is picked here.
+    /// workspace's active dose until a dose is picked here.
     pub dose: Option<usize>,
     pub kind: DoseKind,
     /// The columns, every one of them removable: `Dmean`, `D95%`, `V20`, …
@@ -88,7 +88,7 @@ pub(super) struct LogEntry {
     pub rows: Vec<DoseRow>,
     /// The geometry this step's numbers were computed from.
     ///
-    /// The first entry carries every structure of the dataset's active set,
+    /// The first entry carries every structure of the workspace's active set,
     /// and each later one carries only what moved, so putting the study
     /// back to step *n* is the first entry overlaid with every entry up to
     /// *n*. Without this the log is a table of numbers that cannot be shown
@@ -339,7 +339,7 @@ fn compute_rows(req: &Request) -> Vec<DoseRow> {
 }
 
 impl ViewerApp {
-    /// The doses of the section's dataset that are of the chosen kind:
+    /// The doses of the section's workspace that are of the chosen kind:
     /// index into `study.doses` and a label.
     fn dose_est_candidates(&self, slot: usize) -> Vec<(usize, String)> {
         let Some(study) = self.slots[slot].study.as_ref() else {
@@ -362,7 +362,7 @@ impl ViewerApp {
             .collect()
     }
 
-    /// Whether the dataset has physical and effective doses.
+    /// Whether the workspace has physical and effective doses.
     fn dose_kinds(&self, slot: usize) -> (bool, bool) {
         let mut kinds = (false, false);
         if let Some(study) = self.slots[slot].study.as_ref() {
@@ -392,7 +392,7 @@ impl ViewerApp {
         candidates.first().map(|(i, _)| *i)
     }
 
-    /// Everything the table depends on, hashed: the dataset, the set, the
+    /// Everything the table depends on, hashed: the workspace, the set, the
     /// tick boxes, the geometry of every ticked structure, the dose and
     /// the columns. A different key means the table is stale.
     fn dose_est_key(&self, slot: usize, dose: Option<usize>) -> u64 {
@@ -500,7 +500,7 @@ impl ViewerApp {
     /// What a log entry has to remember of the geometry.
     ///
     /// The first entry is the baseline and takes the whole active set of
-    /// the table's dataset, because any of those structures may be the one
+    /// the table's workspace, because any of those structures may be the one
     /// that moves later. Every entry after it takes only what moved, which
     /// is one structure.
     fn log_states(&self, moved: Option<(usize, usize, usize)>) -> Vec<RoiState> {
@@ -777,13 +777,14 @@ impl ViewerApp {
 
     fn dose_est_body(&mut self, ui: &mut egui::Ui) {
         if !self.any_volume() {
-            ui.weak("Load a dataset with an image volume and a dose");
+            ui.weak("Load a workspace with an image volume and a dose");
             return;
         }
         if !self.slots[self.dose_est.slot].has_volume() {
             self.dose_est.slot = self.first_volume_slot();
         }
-        if let Some(s) = seg_engines::dataset_row(ui, self.dose_est.slot, self.volume_slots(), true)
+        if let Some(s) =
+            seg_engines::workspace_row(ui, self.dose_est.slot, self.volume_slots(), true)
         {
             self.dose_est.slot = s;
             self.dose_est.dose = None;
@@ -814,7 +815,7 @@ impl ViewerApp {
         }
         let candidates = self.dose_est_candidates(slot);
         if candidates.is_empty() {
-            ui.weak("The dataset has no dose");
+            ui.weak("The workspace has no dose");
             self.dose_est.rows.clear();
             self.dose_est.key = None;
             return;
@@ -1198,7 +1199,7 @@ mod tests {
         other.slot = 1;
         let log = vec![entry(0, vec![st(0, "GTV", 1.0)]), entry(1, vec![other])];
         let states = states_at(&log, 1);
-        assert_eq!(states.len(), 2, "two datasets, two structures");
+        assert_eq!(states.len(), 2, "two workspaces, two structures");
         assert!(states
             .iter()
             .any(|s| s.slot == 0 && s.contours[0].points[0].z == 1.0));

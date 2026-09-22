@@ -11,7 +11,7 @@ use super::*;
 use std::path::Path;
 
 impl ViewerApp {
-    /// Note that a dataset was loaded from here, so *Restore the last
+    /// Note that a workspace was loaded from here, so *Restore the last
     /// session* can put it back on the next run. Repeated loads of the same
     /// folder are one entry, and the list is written out as it changes: the
     /// program is not always closed politely.
@@ -28,7 +28,7 @@ impl ViewerApp {
         self.persist_settings();
     }
 
-    /// A dataset was emptied: it is no longer part of the session.
+    /// A workspace was emptied: it is no longer part of the session.
     pub(super) fn forget_sources(&mut self, slot: usize) {
         if self.session[slot.min(1)].is_empty() {
             return;
@@ -56,7 +56,7 @@ impl ViewerApp {
     /// *File ▶ Add DICOM file(s)*: load an explicit selection of files.
     ///
     /// It lands through the same [`LoadResult::Study`] as a folder, so the
-    /// files merge into the dataset and appear in the tree exactly as a
+    /// files merge into the workspace and appear in the tree exactly as a
     /// folder's contents would. Nothing downstream knows the difference.
     pub(super) fn start_load_files(&mut self, slot: usize, paths: Vec<PathBuf>) {
         if paths.is_empty() {
@@ -164,7 +164,7 @@ impl ViewerApp {
         let notes = loader::merge_study(dest, study);
         dest.warnings.extend(notes);
         self.settings_gen += 1;
-        // A dataset that held only RT images or RT objects has just been
+        // A workspace that held only RT images or RT objects has just been
         // given an image series: display it. Merging normally leaves the
         // shown volume alone, but here there was none, and leaving the views
         // empty beside a tree that now lists a CT would be a puzzle rather
@@ -180,7 +180,7 @@ impl ViewerApp {
     }
 
     pub(super) fn on_study_loaded(&mut self, slot: usize, study: LoadedStudy) {
-        // Whatever was played from this dataset belongs to the study that
+        // Whatever was played from this workspace belongs to the study that
         // is being replaced.
         self.drop_phase_cache(slot);
         let other_loaded = self.slots[1 - slot].study.is_some();
@@ -340,7 +340,7 @@ impl ViewerApp {
         let target = 1 - source;
         let Some(study) = &self.slots[source].study else {
             self.error = Some(format!(
-                "Load a dataset into slot {} first",
+                "Load something into workspace {} first",
                 SLOT_NAMES[source]
             ));
             return;
@@ -372,7 +372,7 @@ impl ViewerApp {
 
     /// Run the export plan into its output folder.
     ///
-    /// Both datasets are handed to the worker, because one run can write out
+    /// Both workspaces are handed to the worker, because one run can write out
     /// series from either - the plan decides which.
     pub(super) fn start_export(&mut self) {
         if self.export_job.is_some() {

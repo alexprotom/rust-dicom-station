@@ -22,11 +22,11 @@ use crate::workflow::select::Structure;
 /// Where a propagation run puts its results.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum PropTarget {
-    /// The displayed volume of the other dataset, through the registration
+    /// The displayed volume of the other workspace, through the registration
     /// that is already active.
     Other,
     /// Every phase of one 4D group, registering the source volume onto each
-    /// phase on the way. `slot` is the dataset the group belongs to, which
+    /// phase on the way. `slot` is the workspace the group belongs to, which
     /// may be the source's own: a planning CT and the 4DCT of the same
     /// patient often arrive together.
     Group { slot: usize, group: usize },
@@ -35,10 +35,10 @@ pub(super) enum PropTarget {
 /// The propagation module's state.
 pub(super) struct PropagateDialog {
     /// The image the structures were drawn on: any series of either
-    /// dataset. Through the active registration it is one of the two
+    /// workspace. Through the active registration it is one of the two
     /// registered images.
     pub src: RegPick,
-    /// Which structure set or segmentation series of that dataset the
+    /// Which structure set or segmentation series of that workspace the
     /// structures are taken from.
     pub set: Option<SetPick>,
     /// Ticks over the entries of `set`.
@@ -51,7 +51,7 @@ pub(super) struct PropagateDialog {
     pub colors: Vec<Option<[u8; 3]>>,
     /// What they land on.
     pub target: PropTarget,
-    /// Refine the registration on this region of the *fixed* dataset first.
+    /// Refine the registration on this region of the *fixed* workspace first.
     pub local: RegRoi,
     pub local_margin_mm: f64,
     /// Against a group: the entry of `set` the run is anchored on (a
@@ -73,7 +73,7 @@ pub(super) struct PropagateDialog {
     pub summary: Vec<String>,
 }
 
-/// A structure set or a segmentation series of one dataset.
+/// A structure set or a segmentation series of one workspace.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum SetPick {
     Structures(usize),
@@ -130,10 +130,10 @@ pub(super) enum PropOutcome {
 /// transform is seconds. Once the group is registered, carrying another
 /// structure set across should not repeat the expensive half.
 pub(super) struct GroupRegistration {
-    /// Dataset the moving image came from, and the series it was.
+    /// Workspace the moving image came from, and the series it was.
     pub moving_slot: usize,
     pub moving_series_uid: String,
-    /// The dataset holding the group, and which group of it.
+    /// The workspace holding the group, and which group of it.
     pub slot: usize,
     pub group: usize,
     pub group_name: String,
@@ -184,7 +184,7 @@ impl ViewerApp {
     }
 
     /// Aim the propagation module at exactly these structures: the
-    /// *Map to the other dataset* entry of the structure list.
+    /// *Map to the other workspace* entry of the structure list.
     ///
     /// The module is the one place that knows how to carry geometry through
     /// a registration, so the list does not repeat any of it - it opens the
@@ -233,7 +233,7 @@ impl ViewerApp {
         })
     }
 
-    /// The sets a dataset offers, as `(pick, label)`: structure sets first,
+    /// The sets a workspace offers, as `(pick, label)`: structure sets first,
     /// then segmentation series, each with what it references.
     fn set_choices(&self, slot: usize) -> Vec<(SetPick, String)> {
         let Some(st) = self.slots[slot].study.as_ref() else {
@@ -393,9 +393,9 @@ impl ViewerApp {
         Ok(out)
     }
 
-    /// The 4D groups either dataset offers, as `(target, label)`.
+    /// The 4D groups either workspace offers, as `(target, label)`.
     ///
-    /// A group in the source's own dataset counts: a planning CT and the
+    /// A group in the source's own workspace counts: a planning CT and the
     /// 4DCT of the same patient usually arrive together, and the structures
     /// still have to travel from the one to the phases of the other.
     pub(super) fn propagate_group_choices(&self) -> Vec<(PropTarget, String)> {
@@ -457,7 +457,7 @@ impl ViewerApp {
         }
         let moving_slot = moving.slot;
         let Some(src) = self.slots[moving_slot].study.as_ref() else {
-            self.error = Some("This needs a loaded source dataset".into());
+            self.error = Some("This needs a loaded source workspace".into());
             return;
         };
         let Some(moving_series) = src.series.get(moving.series).cloned() else {
@@ -575,7 +575,7 @@ impl ViewerApp {
         }
         let moving_slot = moving.slot;
         let Some(src) = self.slots[moving_slot].study.as_ref() else {
-            self.error = Some("This needs a loaded source dataset".into());
+            self.error = Some("This needs a loaded source workspace".into());
             return;
         };
         let Some(moving_series) = src.series.get(moving.series).cloned() else {
@@ -763,7 +763,13 @@ impl ViewerApp {
                 vol: reg.moving_vol.clone(),
             },
         );
-        let transform = reg.result.transform.clone();
+        // A matrix typed into the section stands in for the recovered
+        // transform: the pairing is still the registration's, the numbers
+        // are the user's.
+        let transform = match self.prop_matrix.transform(crate::geometry::Vec3::ZERO) {
+            Some(t) => Arc::new(t),
+            None => reg.result.transform.clone(),
+        };
         let structures = match self.propagate_structures(d) {
             Ok(s) => s,
             Err(e) => {
@@ -1151,6 +1157,15 @@ impl ViewerApp {
             )
         });
         let mut d = self.propagate_dialog.take().unwrap();
+        let mut manual = self.prop_matrix;
+        let computed = self
+            .registration
+            .as_ref()
+            .map(|r| r.result.transform.as_matrix());
+        let deformable = self
+            .registration
+            .as_ref()
+            .is_some_and(|r| r.result.method.is_deformable());
         let group_choices = self.propagate_group_choices();
         // A group that was removed while the module sat open leaves a stale
         // choice behind; fall back rather than run against nothing.
@@ -1162,7 +1177,7 @@ impl ViewerApp {
         let to_group = matches!(d.target, PropTarget::Group { .. });
 
         // The images the structures may come from: any series of either
-        // dataset against a group; through a registration, its two images.
+        // workspace against a group; through a registration, its two images.
         let all_choices = self.reg_choices();
         let pick_uid = |p: RegPick| -> String {
             self.slots[p.slot]
@@ -1651,6 +1666,27 @@ impl ViewerApp {
                         });
                     }
                 }
+                // The transform the run will use, typed in rather than
+                // recovered. The registration still says which image the
+                // structures come from and which they land on; this says
+                // only where they land.
+                egui::CollapsingHeader::new("Transform matrix")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        matrix_edit::matrix_editor(ui, &mut manual, computed);
+                        if deformable {
+                            ui.weak(
+                                "the active registration is deformable: this is its rigid \
+                                 part, and using it drops the deformation",
+                            );
+                        }
+                        if manual.use_it {
+                            ui.weak(
+                                "The next run maps through these numbers instead of the \
+                                 registration's own transform.",
+                            );
+                        }
+                    });
                 if !d.summary.is_empty() {
                     ui.separator();
                     ui.label(egui::RichText::new("Last run").strong());
@@ -1670,6 +1706,7 @@ impl ViewerApp {
             d.ticked.iter_mut().for_each(|s| *s = v);
         }
         let _ = dst_slot;
+        self.prop_matrix = manual;
         self.propagate_dialog = Some(d);
         cancel_if(cancel, &self.propagate_job);
         if run {

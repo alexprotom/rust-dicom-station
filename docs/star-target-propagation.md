@@ -26,13 +26,13 @@ along, with no inversion. Ten phases, ten transforms, one CCT.
 
 ## In the viewer
 
-1. **Load.** Dataset A: the folder holding the CCT (and its RTSTRUCT). If the
+1. **Load.** Workspace A: the folder holding the CCT (and its RTSTRUCT). If the
    4DCT arrived in the same folder it is in A too; otherwise load it as
-   dataset B (*File ▶ Add DICOM folder to B*). Check in the data tree that
+   workspace B (*File ▶ Add DICOM folder*, then pick B). Check in the data tree that
    the 4DCT shows as one 4D group with its ten phases and that every phase
    has its `RTSTRUCT` with `heart_total`.
 2. **Open the module.** *Modules ▶ Structure propagation* (right panel, F10).
-3. **From image** = the CCT series (any series of either dataset is listed;
+3. **From image** = the CCT series (any series of either workspace is listed;
    one that is not on display is loaded for the run). **Structures of** =
    `CCT RTSTRUCT`; the set drawn on the chosen image is preselected. **To**
    = the 4D group (the entry `… (10 phases)`).
@@ -69,7 +69,7 @@ along, with no inversion. Ten phases, ten transforms, one CCT.
     bound to it). The registration module holds the per-phase transforms:
     switch *Fusion overlay on* to *moving* to see a phase warped back onto
     the CCT, which is the sharpest way to judge the heart alignment.
-11. **Export.** *File ▶ Export DICOM* with the 4DCT dataset; structure sets
+11. **Export.** *File ▶ Export DICOM* with the 4DCT workspace; structure sets
     as RTSTRUCT, identifiers kept, so the target arrives in each phase's set
     under that phase's series.
 
@@ -80,7 +80,7 @@ registration: the transforms are kept, and the button reads
 ### Then: the motion of the landed target
 
 With the target in every phase's structure set, *Tools ▶ 📈 Structure motion*
-on the 4DCT dataset lists it once, in the *On every phase* column of the
+on the 4DCT workspace lists it once, in the *On every phase* column of the
 Targets list. Tick it there (one tick, not one per phase), keep the
 reference structure at `heart_total`, and choose the models:
 
@@ -112,7 +112,7 @@ One call does steps 3 to 9:
 
 ```
 propagate_to_group {
-  dataset: "ds1",              // the dataset holding the 4D group
+  workspace: "ds1",              // the workspace holding the 4D group
   group: "1",
   source_dataset: "ds1",       // where the CCT is (omit when the same)
   source_series: 1,            // the CCT series number from describe_dataset
@@ -129,7 +129,7 @@ The answer lists, per phase, `registration`, the `anchor_check` (Dice,
 HD95, mean surface distance, centroid shift, displacement p95, folded
 fraction, verdict), the target's `source_cm3` / `mapped_cm3` / `result_cm3`
 and the set it landed in, plus `worst_anchor_dice` over the group. Then
-`export` on the dataset with `format: "rtstruct"`. Use the `_async` twin and
+`export` on the workspace with `format: "rtstruct"`. Use the `_async` twin and
 `list_jobs` for a run this long.
 
 ## How the anchored run works

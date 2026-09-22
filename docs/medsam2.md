@@ -20,8 +20,8 @@ as the image.
 ## Using it
 
 The **⏩ Slice propagation** section of the *Structure auto tools* module
-(*Modules ▶ Structure auto tools*, right panel, F10; the dataset is the
-module's **Dataset A / B** row; the four sections share one layout, see
+(*Modules ▶ Structure auto tools*, right panel, F10; the workspace is the
+module's **Workspace A / B** row; the four sections share one layout, see
 [architecture.md](architecture.md#the-tool-windows-and-the-modules)). The
 box is drawn in the views while the section is unfolded.
 The workflow is the one the [MedSAM2 extension for 3D

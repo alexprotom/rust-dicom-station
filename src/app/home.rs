@@ -169,7 +169,7 @@ impl ViewerApp {
                                         egui::Button::new("📂  Add DICOM folder"),
                                     )
                                     .on_hover_text(
-                                        "Scan a folder of DICOM files into dataset A",
+                                        "Scan a folder of DICOM files into workspace A",
                                     )
                                     .clicked()
                                 {

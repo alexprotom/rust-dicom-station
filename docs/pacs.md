@@ -13,8 +13,8 @@ archive is a folder on disk that this application owns.
 | | |
 |---|---|
 | **📥 Import folder…** | Copy every DICOM file under a folder into the archive, filed by patient and study |
-| **📩 Load into dataset A / B** | Read the selected patient or study into a viewer dataset |
-| **📤 Send dataset A / B** | Write that dataset's structure sets and segmentation series back into the archive, attached to the study they belong to |
+| **📩 Load into workspace A / B** | Read the selected patient or study into a viewer workspace |
+| **📤 Send workspace A / B** | Write that workspace's structure sets and segmentation series back into the archive, attached to the study they belong to |
 
 The patient list shows one row per patient - `Doe John (P0001)   3 study(ies)
 · 642 file(s)` - expanding into its studies, newest first, each as
@@ -69,14 +69,14 @@ counts and the modality list are only right once everything is in.
 ## Taking a patient into the viewer
 
 **A study folder in the archive is a DICOM folder**, so
-*Load into dataset A / B* runs it through the same `loader::load_directory`
+*Load into workspace A / B* runs it through the same `loader::load_directory`
 as *File ▶ Add DICOM folder*, with the same classification, the same
-patient ▶ study ▶ series tree and the same merging into whatever the dataset
+patient ▶ study ▶ series tree and the same merging into whatever the workspace
 already holds. Selecting the patient row loads all of their studies at once.
 
 ## Sending changes back
 
-*Send dataset A / B* writes back **derived objects only** - the structure sets
+*Send workspace A / B* writes back **derived objects only** - the structure sets
 and the segmentation series. The images are already in the archive; re-sending
 them would duplicate hundreds of megabytes under new Instance UIDs.
 

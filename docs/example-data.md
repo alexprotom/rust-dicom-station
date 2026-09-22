@@ -28,16 +28,16 @@ That is a ready-made comparison-mode and registration test case with real
 respiratory motion: the tumor and markers move visibly between the phases,
 and the deformable methods of the *Image registration* module have
 something anatomically real to recover. Equivalently, load the whole
-`data-test/` folder as dataset A (both phases appear as two series of
-one study) and right-click one phase ▶ *Copy series to dataset B*. It is
-also the dataset the auto-segmentation was validated on
+`data-test/` folder as workspace A (both phases appear as two series of
+one study) and right-click one phase ▶ *Copy series to workspace B*. It is
+also the workspace the auto-segmentation was validated on
 ([auto-segmentation.md](auto-segmentation.md#validation)).
 
 ## Source and citation
 
 The data is patient **P102** from the public **4D-Lung** collection on The
 Cancer Imaging Archive (TCIA), a longitudinal 4D fan-beam CT / 4D
-cone-beam CT dataset of 20 locally advanced NSCLC patients treated with
+cone-beam CT workspace of 20 locally advanced NSCLC patients treated with
 chemoradiotherapy:
 
 <https://www.cancerimagingarchive.net/collection/4d-lung/>
@@ -53,7 +53,7 @@ collection. If you use it, cite the data and the associated publications:
 > **Publication.** Hugo, G. D., Weiss, E., Sleeman, W. C., Balik, S.,
 > Keall, P. J., Lu, J., & Williamson, J. F. (2017). A longitudinal
 > four-dimensional computed tomography and cone beam computed tomography
-> dataset for image-guided radiation therapy research in lung cancer.
+> workspace for image-guided radiation therapy research in lung cancer.
 > *Medical Physics*, 44(2), 762-771. <https://doi.org/10.1002/mp.12059>
 >
 > **TCIA.** Clark, K., Vendt, B., Smith, K., Freymann, J., Kirby, J.,

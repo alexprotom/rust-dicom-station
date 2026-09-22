@@ -1,6 +1,6 @@
 //! The 4D motion results window: tables, charts, CSV export, and the
 //! side-by-side comparison of two runs (e.g. upright vs. supine, or
-//! dataset A vs. B).
+//! workspace A vs. B).
 //!
 //! The charts are drawn with the egui painter directly - a displacement-
 //! vs-phase line chart and grouped bar charts are simple enough that a
@@ -551,9 +551,9 @@ impl ViewerApp {
 }
 
 impl MotionReport {
-    /// `dataset A` - the comparison table's column header.
+    /// `workspace A` - the comparison table's column header.
     fn slot_label(&self) -> String {
-        format!("dataset {}", self.slot_name)
+        format!("workspace {}", self.slot_name)
     }
 }
 

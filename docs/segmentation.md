@@ -96,6 +96,15 @@ buttons the 3D pane carries do it without a mouse to spare - **➕ / ➖**
 zoom a step, **✋** turns a left drag into a move, and **⟲** restores the
 default camera.
 
+## Editing a segment as a whole
+
+The voxel tools paint; the Structure editor's *Edit* section acts on the
+selected segment as one object - tidy it (keep the largest piece, fill the
+holes), grow or shrink it by millimetres, empty it, delete it, or convert it
+to an RT structure and carry on with the contour tools. It is the same
+section the editor shows for a structure, with the mask's own verbs in it:
+[contours.md](contours.md#editing-a-segmentation).
+
 ## Mask → RTSTRUCT (→RS)
 
 The **→RS** button converts a mask to RTSTRUCT closed planar contours:

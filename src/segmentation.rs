@@ -290,6 +290,54 @@ impl Segmentation {
         }
     }
 
+    /// Replace the whole mask: a tidy pass, a margin in millimetres, an
+    /// emptying - anything that acts on the segmentation rather than on the
+    /// voxels under a brush.
+    ///
+    /// The count and the bounding box are recomputed in one pass and the
+    /// overlays and the meshes are told to rebuild, which painting does for
+    /// itself voxel by voxel and a wholesale replacement cannot. The change
+    /// is one undo step like any stroke, recorded as the voxels that
+    /// differ, unless there are so many of them that the record would cost
+    /// more than the mask it describes; then the history is dropped instead
+    /// of grown, because no undo is better than an undo that restores a mask
+    /// nobody drew.
+    pub fn replace_mask(&mut self, mut mask: Vec<u8>) {
+        let n = self.dims[0] * self.dims[1] * self.dims[2];
+        mask.resize(n, 0);
+        self.end_stroke();
+        // Five bytes an entry against one byte a voxel: past a fifth of the
+        // volume the record is the more expensive of the two.
+        let budget = (n / 5).max(4096);
+        let mut changes: Vec<(u32, u8)> = Vec::new();
+        let mut too_many = false;
+        for (i, (old, new)) in self.mask.iter().zip(mask.iter()).enumerate() {
+            if old != new {
+                if changes.len() >= budget {
+                    too_many = true;
+                    break;
+                }
+                changes.push((i as u32, *old));
+            }
+        }
+        if !too_many && changes.is_empty() {
+            return; // nothing differs, so nothing happened
+        }
+        self.mask = mask;
+        let (bbox, count) = crate::morphology::mask_extent(&self.mask, self.dims);
+        self.count = count;
+        self.bbox = bbox;
+        self.gen += 1;
+        if too_many {
+            self.undo.clear();
+        } else {
+            self.undo.push(changes);
+            if self.undo.len() > UNDO_DEPTH {
+                self.undo.remove(0);
+            }
+        }
+    }
+
     /// Close the stroke in progress, making it one undo step.
     pub fn end_stroke(&mut self) {
         if !self.pending.is_empty() {

@@ -1,4 +1,4 @@
-//! The export window: one window for both datasets, in which what goes out,
+//! The export window: one window for both workspaces, in which what goes out,
 //! what it is called and what UID it carries are all visible and all editable.
 //!
 //! The plan it edits lives in [`crate::export`]; this file is only its
@@ -8,8 +8,8 @@
 //! three tick boxes rather than three runs.
 
 use crate::export::{
-    DatasetNode, ExportPlan, Field, GroupNode, Layout, ObjKind, ObjNode, PatientNode, SeriesNode,
-    StructFormat, StudyNode, UidMode,
+    ExportPlan, Field, GroupNode, Layout, ObjKind, ObjNode, PatientNode, SeriesNode, StructFormat,
+    StudyNode, UidMode, WorkspaceNode,
 };
 
 use super::*;
@@ -45,7 +45,7 @@ impl ViewerApp {
             self.export_open = false;
             return;
         };
-        if plan.datasets.is_empty() {
+        if plan.workspaces.is_empty() {
             self.export_open = false;
             return;
         }
@@ -89,8 +89,8 @@ impl ViewerApp {
                         // A converted object is a new instance, and its UID
                         // field has to show that before the run, not after.
                         let mut formats_changed = false;
-                        for di in 0..plan.datasets.len() {
-                            dataset_node(ui, &mut plan.datasets[di], &mut formats_changed);
+                        for di in 0..plan.workspaces.len() {
+                            workspace_node(ui, &mut plan.workspaces[di], &mut formats_changed);
                         }
                         if formats_changed {
                             plan.sync_format_uids();
@@ -224,12 +224,12 @@ fn tri_checkbox(ui: &mut egui::Ui, state: Option<bool>) -> Option<bool> {
     None
 }
 
-/// Draws one dataset. `formats` is raised when a structure format radio moved.
-fn dataset_node(ui: &mut egui::Ui, d: &mut DatasetNode, formats: &mut bool) {
+/// Draws one workspace. `formats` is raised when a structure format radio moved.
+fn workspace_node(ui: &mut egui::Ui, d: &mut WorkspaceNode, formats: &mut bool) {
     let id = ui.make_persistent_id(("exp_ds", d.slot));
     let state =
         egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true);
-    let title = format!("Dataset {}", d.label);
+    let title = format!("Workspace {}", d.label);
     let n = d.patients.len();
     state
         .show_header(ui, |ui| {

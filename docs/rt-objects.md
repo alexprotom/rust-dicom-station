@@ -78,7 +78,7 @@ resampling a whole display plane. Display offers:
 
 The **reference dose** defaults to the plan's `TargetPrescriptionDose` and can
 be overridden; the status bar shows Gy and % of reference at the crosshair for
-both datasets.
+both workspaces.
 
 ## RTPLAN - photon and ion plans
 
@@ -103,7 +103,7 @@ included: the displacement lattice becomes a transform applicable in either
 direction, and everything downstream - fusion, the crosshair link, the
 analytics, the vector-field display, structure propagation - works on it
 unchanged. The panel reports the lattice size, spacing and largest
-displacement, and which loaded dataset the grid's frame of reference matches.
+displacement, and which loaded workspace the grid's frame of reference matches.
 
 A registration recovered here can be written back out as a Deformable Spatial
 Registration (*Image registration ▶ Vector field ▶ 💾 Save as DICOM…*); the

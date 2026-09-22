@@ -13,7 +13,7 @@
 //! [`ExportPlan`] is the tree the dialog shows and the runner walks:
 //!
 //! ```text
-//! dataset A
+//! workspace A
 //!   patient  STAR_Rambam_2            PatientName / PatientID
 //!     study  CCT  20250728            StudyInstanceUID / description / ID / date
 //!       4D group  4DCT (10 phases)    ticking it takes every phase
@@ -300,7 +300,7 @@ pub struct PatientNode {
 }
 
 #[derive(Clone)]
-pub struct DatasetNode {
+pub struct WorkspaceNode {
     pub slot: usize,
     /// "A" / "B".
     pub label: &'static str,
@@ -310,7 +310,7 @@ pub struct DatasetNode {
 /// Everything one export run is told to do.
 #[derive(Clone)]
 pub struct ExportPlan {
-    pub datasets: Vec<DatasetNode>,
+    pub workspaces: Vec<WorkspaceNode>,
     pub uid_mode: UidMode,
     pub layout: Layout,
     /// Patient / equipment attributes written into every object. The tree's
@@ -338,25 +338,25 @@ pub const PER_NODE_TAGS: [Tag; 7] = [
 ];
 
 impl ExportPlan {
-    /// Build the plan from the loaded datasets. Everything starts selected -
+    /// Build the plan from the loaded workspaces. Everything starts selected -
     /// the common case is "write out what I have", and unticking is easier
     /// than hunting.
     pub fn build(studies: [Option<&LoadedStudy>; 2], params: ExportParams) -> Self {
-        let mut datasets = Vec::new();
+        let mut workspaces = Vec::new();
         for (slot, study) in studies.into_iter().enumerate() {
             let Some(study) = study else { continue };
             let patients = build_patients(slot, study);
             if patients.is_empty() {
                 continue;
             }
-            datasets.push(DatasetNode {
+            workspaces.push(WorkspaceNode {
                 slot,
                 label: if slot == 0 { "A" } else { "B" },
                 patients,
             });
         }
         ExportPlan {
-            datasets,
+            workspaces,
             uid_mode: UidMode::Keep,
             layout: Layout::Tree,
             params,
@@ -367,7 +367,7 @@ impl ExportPlan {
     /// Re-fill every identifier from the mode.
     pub fn set_uid_mode(&mut self, mode: UidMode) {
         self.uid_mode = mode;
-        for d in &mut self.datasets {
+        for d in &mut self.workspaces {
             for p in &mut d.patients {
                 for st in &mut p.studies {
                     st.uid.apply_mode(mode);
@@ -425,14 +425,14 @@ impl ExportPlan {
     }
 
     pub fn studies_mut(&mut self) -> impl Iterator<Item = &mut StudyNode> {
-        self.datasets
+        self.workspaces
             .iter_mut()
             .flat_map(|d| d.patients.iter_mut())
             .flat_map(|p| p.studies.iter_mut())
     }
 
     pub fn studies(&self) -> impl Iterator<Item = &StudyNode> {
-        self.datasets
+        self.workspaces
             .iter()
             .flat_map(|d| d.patients.iter())
             .flat_map(|p| p.studies.iter())
@@ -496,7 +496,7 @@ impl PatientNode {
     }
 }
 
-impl DatasetNode {
+impl WorkspaceNode {
     pub fn set_all(&mut self, on: bool) {
         for p in &mut self.patients {
             p.set_all(on);
@@ -567,8 +567,8 @@ fn build_patients(slot: usize, study: &LoadedStudy) -> Vec<PatientNode> {
         }
     }
 
-    // Objects whose study has no image series in this dataset still have to
-    // land somewhere: they get their own study under the dataset's patient.
+    // Objects whose study has no image series in this workspace still have to
+    // land somewhere: they get their own study under the workspace's patient.
     let mut loose: Vec<String> = Vec::new();
     let note = |uid: &str, loose: &mut Vec<String>| {
         if !uid.is_empty()
@@ -950,11 +950,11 @@ pub fn run(
     let mut files = 0usize;
     let mut warnings: Vec<String> = Vec::new();
 
-    for dataset in &plan.datasets {
-        let Some(study) = studies[dataset.slot] else {
+    for workspace in &plan.workspaces {
+        let Some(study) = studies[workspace.slot] else {
             continue;
         };
-        for patient in &dataset.patients {
+        for patient in &workspace.patients {
             let pdir = match plan.layout {
                 Layout::Tree => root.join(safe(
                     if patient.id.trimmed().is_empty() {
@@ -1730,7 +1730,7 @@ impl ExportPlan {
         );
         let sdesc_off = self.params.value(tags::STUDY_DESCRIPTION).is_none();
         let series_desc = get(tags::SERIES_DESCRIPTION);
-        for d in &mut self.datasets {
+        for d in &mut self.workspaces {
             for p in &mut d.patients {
                 if let Some(v) = &pname {
                     p.name.value = v.clone();

@@ -1,9 +1,9 @@
 //! Carrying structures across a registration.
 //!
-//! Once two datasets are aligned, the alignment is only half the answer: the
+//! Once two workspaces are aligned, the alignment is only half the answer: the
 //! contours drawn on one of them have to arrive on the other. That is what
 //! this module does - an RTSTRUCT ROI or a painted segmentation of one
-//! dataset becomes an editable voxel mask on the other, mapped through
+//! workspace becomes an editable voxel mask on the other, mapped through
 //! whatever [`crate::registration`] recovered, rigid or deformable, global
 //! or local.
 //!
@@ -202,7 +202,7 @@ fn sample_mask(mask: &[u8], dims: [usize; 3], v: [f64; 3]) -> f32 {
 ///
 /// `use_inverse` says which way the transform runs relative to the two
 /// volumes: the transform always maps *fixed* patient coordinates to
-/// *moving* ones, so propagating onto the moving dataset needs its inverse
+/// *moving* ones, so propagating onto the moving workspace needs its inverse
 /// and propagating onto the fixed one does not.
 pub fn propagate(
     src: &Volume,
@@ -489,7 +489,7 @@ mod tests {
         let centre = Vec3::new(0.0, 0.0, 0.0);
         let mask = ball(&src, centre, 12.0);
         let shift = Vec3::new(6.0, -4.0, 2.0);
-        // fixed → moving is a shift; src is the fixed dataset, dst the moving
+        // fixed → moving is a shift; src is the fixed workspace, dst the moving
         // one, so the propagation runs through the inverse.
         let t = Transform3::rigid_only(RigidTransform::new(
             [0.0, 0.0, 0.0, shift.x, shift.y, shift.z],

@@ -2,7 +2,7 @@
 //!
 //! The left panel is the data tree and nothing else: one section per kind of
 //! loaded object - series, structures, segmentations, dose, plan, planar
-//! images, registrations, records - under one node per dataset.
+//! images, registrations, records - under one node per workspace.
 //!
 //! The right panel holds the modules, each one turned on and off in the
 //! Modules menu: image registration and image simulation (both in
@@ -354,7 +354,7 @@ impl ViewerApp {
                     ui.selectable_value(&mut self.sim_source, 0, "A");
                     ui.selectable_value(&mut self.sim_source, 1, "B");
                     ui.weak(format!(
-                        "▶ generates dataset {}",
+                        "▶ generates workspace {}",
                         SLOT_NAMES[1 - self.sim_source.min(1)]
                     ));
                 });
@@ -395,7 +395,7 @@ impl ViewerApp {
                     .add_enabled(
                         src_ok && self.loading.is_none(),
                         egui::Button::new(format!(
-                            "⚙ Generate transformed dataset ▶ {}",
+                            "⚙ Generate transformed workspace ▶ {}",
                             SLOT_NAMES[1 - self.sim_source.min(1)]
                         )),
                     )
@@ -414,30 +414,32 @@ impl ViewerApp {
     }
 
     pub(super) fn study_section(&mut self, ui: &mut egui::Ui, slot: usize) {
-        // A label, not a node. Which dataset a row belongs to is already
+        // A label, not a node. Which workspace a row belongs to is already
         // written on the panel by the order of the two blocks, so collapsing
         // one bought nothing and cost every row below it an indent; the
         // patients now sit at the same level as the name above them.
         let header = ui.add(
-            egui::Label::new(egui::RichText::new(format!("Dataset {}", SLOT_NAMES[slot])).strong())
-                .sense(egui::Sense::click()),
+            egui::Label::new(
+                egui::RichText::new(format!("Workspace {}", SLOT_NAMES[slot])).strong(),
+            )
+            .sense(egui::Sense::click()),
         );
         // Patient ▶ study ▶ category ▶ series. Everything that carries a
         // StudyInstanceUID lives inside a study node; the rest - planar images
         // have no study link at all, REG objects and records belong to a frame
         // of reference rather than a study, and the dose display settings are
-        // shared by both datasets - stays at dataset level below it.
+        // shared by both workspaces - stays at workspace level below it.
         self.data_tree(ui, slot);
         self.dose_display_section(ui, slot);
         self.planar_section(ui, slot);
         self.reg_objects_section(ui, slot);
         self.records_section(ui, slot);
         self.warnings_section(ui, slot);
-        // Right-click on the dataset header: clear the slot.
+        // Right-click on the workspace header: clear the slot.
         let mut clear = false;
         header.context_menu(|ui| {
             if ui
-                .button(format!("Clear dataset {}", SLOT_NAMES[slot]))
+                .button(format!("Clear workspace {}", SLOT_NAMES[slot]))
                 .clicked()
             {
                 clear = true;
@@ -445,16 +447,12 @@ impl ViewerApp {
             }
         });
         if clear {
-            if slot == 1 {
-                self.close_comparison();
-            } else {
-                self.tree_clear_slot(slot);
-            }
+            self.clear_workspace(slot);
         }
         ui.separator();
     }
 
-    /// The DICOM data tree of one dataset: patient ▶ study ▶ category ▶
+    /// The DICOM data tree of one workspace: patient ▶ study ▶ category ▶
     /// series, all visible at once.
     ///
     /// The nesting is rendered one level per method rather than as one deep
@@ -500,8 +498,8 @@ impl ViewerApp {
                 }
                 ui.separator();
                 for (label, op) in [
-                    (format!("Copy patient to dataset {other}"), TreeOp::Copy),
-                    (format!("Move patient to dataset {other}"), TreeOp::Move),
+                    (format!("Copy patient to workspace {other}"), TreeOp::Copy),
+                    (format!("Move patient to workspace {other}"), TreeOp::Move),
                 ] {
                     if ui.button(label).clicked() {
                         act = Some(TreeAction {
@@ -556,8 +554,8 @@ impl ViewerApp {
                 }
                 ui.separator();
                 for (label, op) in [
-                    (format!("Copy study to dataset {other}"), TreeOp::Copy),
-                    (format!("Move study to dataset {other}"), TreeOp::Move),
+                    (format!("Copy study to workspace {other}"), TreeOp::Copy),
+                    (format!("Move study to workspace {other}"), TreeOp::Move),
                 ] {
                     if ui.button(label).clicked() {
                         act = Some(TreeAction {
@@ -682,8 +680,8 @@ impl ViewerApp {
                     }
                     ui.separator();
                     for (label, op) in [
-                        (format!("Copy series to dataset {other}"), TreeOp::Copy),
-                        (format!("Move series to dataset {other}"), TreeOp::Move),
+                        (format!("Copy series to workspace {other}"), TreeOp::Copy),
+                        (format!("Move series to workspace {other}"), TreeOp::Move),
                     ] {
                         if ui.button(label).clicked() {
                             act = Some(TreeAction {
@@ -726,7 +724,7 @@ impl ViewerApp {
                     }
                 });
                 resp.on_hover_text(format!(
-                    "{} · series UID …{}\nright-click: rename, copy / move to dataset \
+                    "{} · series UID …{}\nright-click: rename, copy / move to workspace \
                      {other}, or remove",
                     s.modality,
                     tail(&s.uid)
@@ -1097,7 +1095,7 @@ impl ViewerApp {
         });
         ui.separator();
         if ui
-            .button(format!("Copy series to dataset {other}"))
+            .button(format!("Copy series to workspace {other}"))
             .clicked()
         {
             *out = Some(SetAction::Transfer {
@@ -1107,7 +1105,7 @@ impl ViewerApp {
             ui.close();
         }
         if ui
-            .button(format!("Move series to dataset {other}"))
+            .button(format!("Move series to workspace {other}"))
             .clicked()
         {
             *out = Some(SetAction::Transfer {
@@ -1137,7 +1135,7 @@ impl ViewerApp {
         }
     }
 
-    /// Every structure set and segmentation series of both datasets, as the
+    /// Every structure set and segmentation series of both workspaces, as the
     /// destinations of a *Copy to ▶* / *Move to ▶* submenu - plus the two
     /// "make me a new one" entries, so a transfer never needs preparing.
     fn destination_menu(&self, ui: &mut egui::Ui, from: SetRef) -> Option<Destination> {
@@ -1146,7 +1144,7 @@ impl ViewerApp {
             let Some(study) = self.slots[slot].study.as_ref() else {
                 continue;
             };
-            ui.label(egui::RichText::new(format!("Dataset {slot_name}")).strong());
+            ui.label(egui::RichText::new(format!("Workspace {slot_name}")).strong());
             for (i, ss) in study.structure_sets.iter().enumerate() {
                 let here = SetRef {
                     slot,
@@ -1307,7 +1305,7 @@ impl ViewerApp {
         }
         if tip_button(
             ui,
-            format!("⇄ Map {what} to the other dataset"),
+            format!("⇄ Map {what} to the other workspace"),
             "Open the propagation module with these structures picked, to carry them \
              through the active registration - rigid or deformable, landing as \
              contours or as masks",
@@ -1378,7 +1376,7 @@ impl ViewerApp {
         .inner
     }
 
-    /// Which of RTS / SEG / RTD / RTP the *selected* objects of a dataset
+    /// Which of RTS / SEG / RTD / RTP the *selected* objects of a workspace
     /// sit on, as series UIDs.
     ///
     /// The badges follow the selection, not the study: they say what the
@@ -1548,7 +1546,7 @@ impl ViewerApp {
         // that draws draws on the displayed series and nothing else.
         let has_volume = self.slots[slot].has_volume() && displayed;
         // Rendering runs behind a shared borrow of `self` (the context menus
-        // need to list the other dataset's series), so the one piece of
+        // need to list the other workspace's series), so the one piece of
         // mutable state in the list is edited on a copy and written back.
         let mut vis = std::mem::take(&mut self.slots[slot].roi_visible);
         let structs_shown = self.slots[slot].structs_shown;
@@ -1606,7 +1604,7 @@ impl ViewerApp {
                             "New: an empty RT structure set, drawn on the displayed image \
                              series"
                         } else if displayed {
-                            "This dataset has no image volume to draw on"
+                            "This workspace has no image volume to draw on"
                         } else {
                             "Display this study's images first - a new set is drawn on \
                              the series on screen"
@@ -1711,7 +1709,7 @@ impl ViewerApp {
                         resp.on_hover_text(format!(
                             "{}\nreferences series …{}\nclick: show or hide\nright-click: \
                              connect to another image series, copy / move to the other \
-                             dataset, remove",
+                             workspace, remove",
                             if set.file_name.is_empty() {
                                 "created here"
                             } else {
@@ -2060,7 +2058,7 @@ impl ViewerApp {
                             "New: an empty segmentation series, drawn on the displayed image \
                              series - exports as one DICOM SEG file"
                         } else if displayed {
-                            "This dataset has no image volume to draw on"
+                            "This workspace has no image volume to draw on"
                         } else {
                             "Display this study's images first - a new series is drawn on \
                              the series on screen"
@@ -2104,7 +2102,7 @@ impl ViewerApp {
                         resp.context_menu(|ui| me.set_context_menu(ui, here, &mut set_act));
                         resp.on_hover_text(format!(
                             "{}\nclick: show or hide\nright-click: connect to another image \
-                         series, copy / move to the other dataset, export as DICOM SEG, remove",
+                         series, copy / move to the other workspace, export as DICOM SEG, remove",
                             if sr.file_name.is_empty() {
                                 "created here"
                             } else {
@@ -2124,7 +2122,7 @@ impl ViewerApp {
                         // them.
                         if !study.has_volume() {
                             ui.weak(
-                                "this dataset has no image volume - add the image series these \
+                                "this workspace has no image volume - add the image series these \
                              segments were drawn on to see and edit them",
                             );
                             continue;
@@ -2268,7 +2266,7 @@ impl ViewerApp {
 
     /// The RTDOSE grids filed under one study: which one is displayed, and
     /// what it is. How dose is *drawn* is a display setting shared by both
-    /// datasets, so it lives in [`Self::dose_display_section`] instead.
+    /// workspaces, so it lives in [`Self::dose_display_section`] instead.
     pub(super) fn dose_section(
         &mut self,
         ui: &mut egui::Ui,
@@ -2395,8 +2393,8 @@ impl ViewerApp {
     }
 
     /// How dose is drawn - colorwash, isodose lines, opacity, threshold and
-    /// the isodose ladder. Shared by both datasets, so it is shown once, at
-    /// dataset level, under the first dataset that actually has dose.
+    /// the isodose ladder. Shared by both workspaces, so it is shown once, at
+    /// workspace level, under the first workspace that actually has dose.
     pub(super) fn dose_display_section(&mut self, ui: &mut egui::Ui, slot: usize) {
         let first = (0..2).find(|&s| {
             self.slots[s]
@@ -2683,7 +2681,7 @@ impl ViewerApp {
             .filter(|w| w.slot == slot && w.open)
             .map(|w| w.idx)
             .collect();
-        // Normally a side note beneath the tree; for a dataset with no image
+        // Normally a side note beneath the tree; for a workspace with no image
         // volume these *are* the images, so the section opens itself.
         let sole_content = !self.slots[slot].has_volume();
         {
@@ -2947,13 +2945,13 @@ impl ViewerApp {
                                     );
                                     let hint = match src_hint {
                                         Some(s) if s == fixed => {
-                                            "The grid's own frame of reference matches this                                              dataset - this is the direction the file means"
+                                            "The grid's own frame of reference matches this                                              workspace - this is the direction the file means"
                                         }
                                         Some(_) => {
-                                            "The grid's frame of reference matches the *other*                                              dataset; applying it this way round inverts what                                              the file says"
+                                            "The grid's frame of reference matches the *other*                                              workspace; applying it this way round inverts what                                              the file says"
                                         }
                                         None => {
-                                            "Neither loaded dataset matches the grid's frame of                                              reference - check that this is the right pair"
+                                            "Neither loaded workspace matches the grid's frame of                                              reference - check that this is the right pair"
                                         }
                                     };
                                     if enabled_tip_button(
@@ -2991,6 +2989,7 @@ impl ViewerApp {
                 let transform = Transform3 {
                     rigid: registration::RigidTransform::identity(center),
                     warp: registration::Warp::Field(Arc::new(field)),
+                    manual: None,
                 };
                 self.apply_external_transform(
                     transform,
@@ -3137,7 +3136,7 @@ impl ViewerApp {
     }
 }
 
-/// One study node of the data tree: which of the dataset's objects belong
+/// One study node of the data tree: which of the workspace's objects belong
 /// under it, as indices into the parallel arrays of [`LoadedStudy`].
 pub(super) struct StudyNode {
     uid: String,
@@ -3160,7 +3159,7 @@ pub(super) struct PatientNode {
     studies: Vec<StudyNode>,
 }
 
-/// Sort a dataset into the patient ▶ study ▶ category ▶ series tree.
+/// Sort a workspace into the patient ▶ study ▶ category ▶ series tree.
 ///
 /// Series carry the patient and study they belong to, so those two levels
 /// fall straight out of them. The RT objects carry a StudyInstanceUID as
@@ -3277,11 +3276,11 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
 
     // Studies that no image series announced.
     //
-    // A dataset does not have to contain images at all - a folder or a file
+    // A workspace does not have to contain images at all - a folder or a file
     // selection can hold nothing but a structure set, a plan, a dose grid or
     // a handful of RT images. Those objects carry their own Study Instance
     // UID, so a study node is made from it and filed under the patient the
-    // dataset's own metadata names. Without this the tree would be empty and
+    // workspace's own metadata names. Without this the tree would be empty and
     // the objects invisible, which is the one outcome worse than no images.
     {
         let known: std::collections::HashSet<String> = patients
@@ -3621,7 +3620,7 @@ mod layout_tests {
         assert_eq!(total, 3, "every structure set is reachable exactly once");
     }
 
-    /// A dataset can hold no image series at all - a folder of RT images, a
+    /// A workspace can hold no image series at all - a folder of RT images, a
     /// structure set opened on its own. Its objects must still be in the
     /// tree, under a patient and a study, or there is no way to reach them.
     #[test]
@@ -3636,7 +3635,11 @@ mod layout_tests {
             study_description: "Portal images".into(),
         };
         let layout = tree_layout(&st);
-        assert_eq!(layout.len(), 1, "one patient, from the dataset's own tags");
+        assert_eq!(
+            layout.len(),
+            1,
+            "one patient, from the workspace's own tags"
+        );
         assert_eq!(layout[0].title, "Doe John (P9)");
         // ss1 names st1, ss2 names none but references a series that is gone,
         // ss3 names none at all: two real studies plus the fallback.
@@ -3651,7 +3654,7 @@ mod layout_tests {
                 .studies
                 .iter()
                 .any(|s| s.title.contains("20260901")),
-            "the study is dated from the dataset's metadata"
+            "the study is dated from the workspace's metadata"
         );
         let total: usize = layout[0].studies.iter().map(|s| s.structs.len()).sum();
         assert_eq!(total, 3, "every structure set is still reachable");
@@ -3667,7 +3670,7 @@ mod layout_tests {
     }
 
     /// The degenerate case: objects that name no study whatsoever, in a
-    /// dataset with no series to fall back to.
+    /// workspace with no series to fall back to.
     #[test]
     fn objects_naming_no_study_at_all_still_get_one() {
         let mut st = study();

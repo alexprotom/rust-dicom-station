@@ -25,7 +25,7 @@ For every (structure, dose object) pair:
 * the statistics: minimum, mean and maximum;
 * whatever metrics the table is asked for.
 
-Structures may come from either dataset and either kind - RT structure or
+Structures may come from either workspace and either kind - RT structure or
 segmentation - and any number of dose objects may be overlaid. Structures keep
 their own colour and the dose object picks the line style, so two plans over
 the same organs read as one colour in two dashes.
@@ -94,7 +94,7 @@ One row per curve. It starts with volume, minimum, mean, maximum, D95 % and D2
 
 The same numbers without the plot: *Modules ▶ Dose estimation* (right
 panel, F10) is one table, one row per **ticked** structure of the active set
-of its dataset, against one dose. Volume, Dmean, Dmin and Dmax are there
+of its workspace, against one dose. Volume, Dmean, Dmin and Dmax are there
 to start with, then D95 % and D2 %; the box and its `+` add any column of
 the table above, every column has a `✖` to go, and *Reset columns* brings
 the six back. A name that does not read as a metric, or asks for more than
@@ -136,7 +136,7 @@ an entry (a brush stroke, say) is not part of it.
 The table follows what it depends on by itself: tick or untick a structure,
 move or redraw one in the Structure editor, pick another dose or another
 column, and it is recomputed in the background and replaced when ready. When
-the dataset carries both physical and effective (RBE-weighted, Dose Type
+the workspace carries both physical and effective (RBE-weighted, Dose Type
 `EFFECTIVE`) doses, a *Physical / Effective* switch above the dose picker
 chooses which kind the picker lists; with only one kind there is nothing to
 switch and it is not shown. Points of interest have no volume and are left
