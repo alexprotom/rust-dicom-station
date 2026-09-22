@@ -85,7 +85,12 @@ are built on a background thread - scanline rasterization of contours into a
 binary volume, a surface-nets mesher, Laplacian smoothing, area-weighted
 vertex normals, `rayon`-parallel per ROI - and drawn in the display colors
 with headlight shading; EXTERNAL/body ROIs are translucent so internal anatomy
-stays visible.
+stays visible. The colours are read from the structure set and the
+segmentation series **at draw time**, not baked into the meshes: changing a
+structure's or a segment's colour in the tree recolours the scene on the
+next frame - in the window and in a row's 3D pane alike - and re-meshes
+nothing, and the meshes cached per phase of a 4D group come back in
+whatever colour the set has now.
 
 Every mask edit re-meshes that segmentation in the background
 (bounding-box-cropped surface nets, automatic striding for huge masks), so the

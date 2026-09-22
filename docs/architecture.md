@@ -641,12 +641,27 @@ is while its run is in flight, the button row becoming the progress row
 (description, the tool's inputs, `Name`, a collapsed **Options** with the
 shared `Compute` and `Model folder` rows, the licence line, `▶ Segment` /
 `▶ Propagate` / `▶ Contour`, status); rows a tool has no use for are not
-shown; and results land the same way (`add_segmentation`), a run that
-finishes after its workspace was replaced being discarded with the same
-message. Since 2026-09-07 they are not windows but the four sections of
-the **Structure auto tools** module (`app/auto_tools.rs`), under one
-workspace row; the auto-segmentation *results* list, which appears once
-per run, is still a window.
+shown; and results land the same way, a run that finishes after its
+workspace was replaced being discarded with the same message. Since
+2026-09-07 they are not windows but the four sections of the **Structure
+auto tools** module (`app/auto_tools.rs`), under one workspace row; the
+auto-segmentation *results* list, which appears once per run, is still a
+window.
+
+Where a result lands and how far a run reaches are the same two questions
+for body contour, auto-segmentation and prompt segmentation, so they are
+asked by the same two rows (`ToolOutput`, `scope_row`, `output_rows`):
+*Output* - segments, RT structures (in a chosen or a new structure set),
+or both - and, when the displayed series is a phase of a 4D group, *Run
+on* - that series or every phase. A run on the displayed series lands
+through `land_masks`; a run over the phases goes through `run_on_phases`
+on the worker (each phase loaded in turn, the displayed one from memory,
+the engine given a `Progress` whose `set_outer` window and message prefix
+make it one slice of the bar) and lands through `land_phases`, the same
+landing *Copy to each phase* uses. Both hand back `(PhaseInfo, R)` pairs,
+one per volume the engine saw, so a tool's `on_*_done` tells the two
+apart by whether the info names a group. Slice propagation keeps its
+single-series loop.
 
 Not everything is a window. Inserting, editing and combining structures
 are sections of the **Structure editor** module (`app/struct_tools.rs`,
@@ -676,7 +691,10 @@ cancellation, which is what the user asked for.
 
 `Progress` (`progress.rs`) holds a message, a fraction, the device label,
 an atomic cancel flag and a phase window that maps a sub-step's own 0‥1 onto
-its slice of the overall bar. Workers see it through `ProgressSink`, which
+its slice of the overall bar. An *outer* window (`set_outer`) nests that:
+an engine that sets its own phases over 0‥1 runs unchanged inside one
+slice of a run over a 4D group, and a message prefix names the phase its
+messages belong to. Workers see it through `ProgressSink`, which
 the headless examples implement on standard error and the tests with
 `Quiet`. Workers use `rayon` internally; the thread-per-job is only the
 container. Results are validated on landing where the underlying data could

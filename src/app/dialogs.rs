@@ -20,6 +20,10 @@ impl ViewerApp {
                     variant: autoseg::Variant::Fast3mm,
                     device: autoseg::DevicePref::Auto,
                     parts: [true; 5],
+                    output: ToolOutput {
+                        set: self.default_set_target(slot),
+                        ..ToolOutput::default()
+                    },
                 });
             }
         }
@@ -77,6 +81,7 @@ impl ViewerApp {
     /// progress replaces the button.
     pub(super) fn autoseg_section(&mut self, ui: &mut egui::Ui) {
         self.open_autoseg_dialog(self.auto.slot);
+        let group = self.displayed_group(self.auto.slot);
         let Some(d) = &mut self.autoseg_dialog else {
             return;
         };
@@ -141,6 +146,9 @@ impl ViewerApp {
                 }
             });
         }
+        // What the result becomes is asked in the results window, with the
+        // organs; how far the run reaches has to be known now.
+        scope_row(ui, &mut d.output.phases, group.as_ref());
         ui.separator();
         ui.collapsing("Options", |ui| {
             device_row(ui, &mut d.device);
@@ -164,7 +172,11 @@ impl ViewerApp {
                         ui,
                         can_run,
                         "▶ Segment",
-                        "Run the network on the whole volume",
+                        if d.output.phases {
+                            "Run the network on every phase of the group, one after another"
+                        } else {
+                            "Run the network on the whole volume"
+                        },
                     ) {
                         run = true;
                     }
@@ -182,15 +194,36 @@ impl ViewerApp {
         }
     }
 
-    /// Organ-selection dialog shown when an auto-segmentation run finishes.
+    /// Organ-selection dialog shown when an auto-segmentation run finishes:
+    /// which of the structures it found to keep, and what they become.
     pub(super) fn autoseg_result_window(&mut self, ctx: &egui::Context) {
+        let Some(slot) = self.autoseg_pending.as_ref().map(|p| p.slot) else {
+            return;
+        };
+        let sets = self.structure_set_labels(slot);
         let Some(p) = &mut self.autoseg_pending else {
             return;
         };
         let mut open = true;
         let mut close_clicked = false;
         let mut apply_clicked = false;
-        let vol_bytes = p.result.volume_dims[0] * p.result.volume_dims[1] * p.result.volume_dims[2];
+        let n_phases = p.phases.len();
+        let vol_bytes = p
+            .phases
+            .first()
+            .map(|(info, _)| info.grid.dims.iter().product::<usize>())
+            .unwrap_or(0);
+        let (device, elapsed) = p
+            .phases
+            .first()
+            .map(|(_, r)| {
+                (
+                    r.device.clone(),
+                    p.phases.iter().map(|(_, r)| r.elapsed_secs).sum(),
+                )
+            })
+            .unwrap_or((String::new(), 0.0));
+        let group = p.phases.first().and_then(|(info, _)| info.group.clone());
         detach::tool_window(
             ctx,
             "autoseg_results",
@@ -200,16 +233,16 @@ impl ViewerApp {
             |ui| {
                 // What the run was, as a table like every other block that
                 // reports one.
-                run_report::facts(
-                    ui,
-                    "autoseg_facts",
-                    &[
-                        ("Workspace", SLOT_NAMES[p.slot].to_string()),
-                        ("Structures", p.result.organs.len().to_string()),
-                        ("Device", p.result.device.to_string()),
-                        ("t, s", format!("{:.0}", p.result.elapsed_secs)),
-                    ],
-                );
+                let mut facts = vec![("Workspace", SLOT_NAMES[p.slot].to_string())];
+                if let Some(g) = &group {
+                    facts.push(("Phases", format!("{n_phases} of {g}")));
+                }
+                facts.extend([
+                    ("Structures", p.organs.len().to_string()),
+                    ("Device", device.clone()),
+                    ("t, s", format!("{elapsed:.0}")),
+                ]);
+                run_report::facts(ui, "autoseg_facts", &facts);
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     if ui.small_button("All").clicked() {
@@ -220,9 +253,10 @@ impl ViewerApp {
                     }
                     let n_sel = p.selected.iter().filter(|s| **s).count();
                     ui.weak(format!(
-                        "{} selected · ≈ {} MB of masks",
+                        "{} selected · ≈ {} MB of masks{}",
                         n_sel,
-                        n_sel * vol_bytes / 1_000_000
+                        n_sel * vol_bytes * n_phases / 1_000_000,
+                        if n_phases > 1 { " over all phases" } else { "" }
                     ));
                 });
                 egui::ScrollArea::vertical()
@@ -239,11 +273,16 @@ impl ViewerApp {
                                 run_report::head(ui, "");
                                 run_report::head(ui, "");
                                 run_report::head(ui, "Structure");
-                                run_report::head(ui, "Volume");
+                                run_report::head(
+                                    ui,
+                                    if n_phases > 1 {
+                                        "Volume (mean)"
+                                    } else {
+                                        "Volume"
+                                    },
+                                );
                                 ui.end_row();
-                                for (organ, sel) in
-                                    p.result.organs.iter().zip(p.selected.iter_mut())
-                                {
+                                for (organ, sel) in p.organs.iter().zip(p.selected.iter_mut()) {
                                     ui.checkbox(sel, "");
                                     let (rect, _) = ui.allocate_exact_size(
                                         egui::vec2(12.0, 12.0),
@@ -265,21 +304,22 @@ impl ViewerApp {
                             });
                     });
                 ui.add_space(4.0);
-                ui.checkbox(&mut p.also_rs, "Also convert to RTSTRUCT contours (→RS)")
-                    .on_hover_text(
-                        "Adds each selected structure as a ROI to the active structure \
-                     set, so it renders like any ROI and rides the DICOM export",
-                    );
+                output_rows(
+                    ui,
+                    &mut p.output,
+                    &sets,
+                    group.is_some(),
+                    "Auto-segmentation",
+                );
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let n_sel = p.selected.iter().filter(|s| **s).count();
-                    if ui
-                        .add_enabled(
-                            n_sel > 0,
-                            egui::Button::new(format!("Add {n_sel} segmentation(s)")),
-                        )
-                        .clicked()
-                    {
+                    let verb = match p.output.kind {
+                        OutputKind::Segments => format!("Add {n_sel} segment(s)"),
+                        OutputKind::Structures => format!("Add {n_sel} structure(s)"),
+                        OutputKind::Both => format!("Add {n_sel} segment(s) and structure(s)"),
+                    };
+                    if ui.add_enabled(n_sel > 0, egui::Button::new(verb)).clicked() {
                         apply_clicked = true;
                     }
                     if ui.button("Discard").clicked() {

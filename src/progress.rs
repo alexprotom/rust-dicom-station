@@ -42,6 +42,10 @@ impl ProgressSink for Stderr {
 /// Message, fraction, device label, cancel flag, phase window.
 pub struct Progress {
     msg: Mutex<String>,
+    /// Put in front of every message read back through [`Progress::get`]:
+    /// the phase a 4D run is on, which the engine underneath knows nothing
+    /// about.
+    prefix: Mutex<String>,
     device: Mutex<String>,
     /// `f32` bits of the overall fraction (`0..=1`).
     frac: AtomicU32,
@@ -49,17 +53,25 @@ pub struct Progress {
     /// The window `report`'s fraction is mapped onto: `[base, base + span]`.
     phase_base: AtomicU32,
     phase_span: AtomicU32,
+    /// The window every [`Progress::set_phase`] is itself mapped onto -
+    /// an engine that owns "the whole bar" runs inside one slice of it
+    /// when the same engine is run once per phase of a 4D group.
+    outer_base: AtomicU32,
+    outer_span: AtomicU32,
 }
 
 impl Default for Progress {
     fn default() -> Self {
         Progress {
             msg: Mutex::new(String::new()),
+            prefix: Mutex::new(String::new()),
             device: Mutex::new(String::new()),
             frac: AtomicU32::new(0f32.to_bits()),
             cancel: AtomicBool::new(false),
             phase_base: AtomicU32::new(0f32.to_bits()),
             phase_span: AtomicU32::new(1f32.to_bits()),
+            outer_base: AtomicU32::new(0f32.to_bits()),
+            outer_span: AtomicU32::new(1f32.to_bits()),
         }
     }
 }
@@ -68,8 +80,29 @@ impl Progress {
     pub fn set(&self, m: impl Into<String>) {
         *self.msg.lock().unwrap_or_else(|e| e.into_inner()) = m.into();
     }
+    /// The message, behind the prefix when one is set.
     pub fn get(&self) -> String {
-        self.msg.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        let msg = self.msg.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let prefix = self.prefix.lock().unwrap_or_else(|e| e.into_inner());
+        if prefix.is_empty() {
+            msg
+        } else {
+            format!("{prefix}{msg}")
+        }
+    }
+    /// Put `p` in front of every message from now on (`""` clears it).
+    pub fn set_prefix(&self, p: impl Into<String>) {
+        *self.prefix.lock().unwrap_or_else(|e| e.into_inner()) = p.into();
+    }
+    /// Run everything that follows - every [`Progress::set_phase`], every
+    /// [`ProgressSink::report`] - inside `[base, base + span]` of the bar,
+    /// and move the bar to `base`. A driver that calls an engine once per
+    /// phase sets this before each call; the engine keeps believing it
+    /// owns `0..1`.
+    pub fn set_outer(&self, base: f32, span: f32) {
+        self.outer_base.store(base.to_bits(), Ordering::Relaxed);
+        self.outer_span.store(span.to_bits(), Ordering::Relaxed);
+        self.set_phase(0.0, 1.0);
     }
     /// Which device the work runs on, e.g. `GPU (wgpu)`; empty until known.
     pub fn set_device(&self, d: impl Into<String>) {
@@ -94,6 +127,10 @@ impl Progress {
     /// Map subsequent [`ProgressSink::report`] fractions onto
     /// `[base, base + span]` of the overall bar, and move the bar to `base`.
     pub fn set_phase(&self, base: f32, span: f32) {
+        let ob = f32::from_bits(self.outer_base.load(Ordering::Relaxed));
+        let os = f32::from_bits(self.outer_span.load(Ordering::Relaxed));
+        let base = ob + os * base;
+        let span = os * span;
         self.phase_base.store(base.to_bits(), Ordering::Relaxed);
         self.phase_span.store(span.to_bits(), Ordering::Relaxed);
         self.frac.store(base.to_bits(), Ordering::Relaxed);
@@ -144,6 +181,28 @@ mod tests {
         assert_eq!(p.get(), "half");
         p.report(2.0, "");
         assert!((p.frac() - 0.7).abs() < 1e-6, "fractions are clamped");
+    }
+
+    /// An engine that sets its own phases over `0..1` lands inside the outer
+    /// window a per-phase driver gave it, and its messages carry the
+    /// driver's prefix.
+    #[test]
+    fn an_outer_window_nests_the_phases_and_prefixes_the_messages() {
+        let p = Progress::default();
+        p.set_outer(0.5, 0.25);
+        assert_eq!(p.frac(), 0.5, "entering the window moves the bar to it");
+        p.set_phase(0.2, 0.4);
+        assert!((p.frac() - 0.55).abs() < 1e-6, "{}", p.frac());
+        p.report(0.5, "tile 3/6");
+        assert!((p.frac() - 0.6).abs() < 1e-6, "{}", p.frac());
+        p.set_prefix("Phase 30%: ");
+        assert_eq!(p.get(), "Phase 30%: tile 3/6");
+        p.set_prefix("");
+        assert_eq!(p.get(), "tile 3/6");
+        // Back to the whole bar.
+        p.set_outer(0.0, 1.0);
+        p.set_phase(0.5, 0.5);
+        assert_eq!(p.frac(), 0.5);
     }
 
     #[test]

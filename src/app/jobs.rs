@@ -444,37 +444,109 @@ impl ViewerApp {
             return;
         };
         let volume = study.volume.clone();
+        let displayed = PhaseInfo::displayed(study);
         let models_dir = self.engine_models_dir(models::Engine::TotalSegmentator);
         let (slot, variant, device, parts) = (d.slot, d.variant, d.device, d.parts);
+        let phases = if d.output.phases {
+            match self.phase_inputs(slot) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    self.error = Some(format!("{e:#}"));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         self.persist_settings();
         let progress = Arc::new(Progress::default());
         progress.set("Starting auto-segmentation");
         self.autoseg_slot = slot;
         self.autoseg_job = Some(Job::spawn(progress, move |p| {
-            (
-                slot,
-                autoseg::run(&volume, variant, device, parts, &models_dir, p),
-            )
+            let run = |vol: &Volume, p: &Progress| {
+                autoseg::run(vol, variant, device, parts, &models_dir, p)
+            };
+            let out = match phases {
+                Some((group, inputs)) => run_on_phases(&group, inputs, p, run),
+                None => run(&volume, p).map(|r| vec![(displayed, r)]),
+            };
+            (slot, out)
         }));
     }
 
-    /// A run finished: verify the slot still shows the same volume, then
-    /// open the organ-selection dialog.
-    pub(super) fn on_autoseg_done(&mut self, slot: usize, result: autoseg::AutosegResult) {
-        if !self.slot_still_shows(slot, result.volume_dims, &result.frame_of_reference_uid) {
+    /// A run finished: verify the slot still shows the same volume (or,
+    /// for a run over the phases, still holds the study), then open the
+    /// organ-selection dialog over everything any phase found.
+    pub(super) fn on_autoseg_done(
+        &mut self,
+        slot: usize,
+        results: Vec<(PhaseInfo, autoseg::AutosegResult)>,
+    ) {
+        let Some((first, result)) = results.first() else {
+            return;
+        };
+        let over_phases = first.group.is_some();
+        if !over_phases
+            && !self.slot_still_shows(slot, result.volume_dims, &result.frame_of_reference_uid)
+        {
             self.error = Some(stale_result(&AUTOSEG));
             return;
         }
-        if result.organs.is_empty() {
-            self.error = Some("Auto-segmentation found no organs in this volume.".into());
+        if over_phases
+            && !self.slots[slot].study.as_ref().is_some_and(|st| {
+                results
+                    .iter()
+                    .any(|(info, _)| st.series.iter().any(|se| se.uid == info.series_uid))
+            })
+        {
+            self.error = Some(stale_result(&AUTOSEG));
             return;
         }
-        let selected = vec![true; result.organs.len()];
+        // Every class any phase found, once, with its mean volume over the
+        // phases that have it; ordered by that volume like a single run's
+        // list is.
+        let mut organs: Vec<autoseg::OrganHit> = Vec::new();
+        let mut hits: Vec<usize> = Vec::new();
+        for (_, r) in &results {
+            for o in &r.organs {
+                match organs.iter().position(|k| k.label == o.label) {
+                    Some(i) => {
+                        organs[i].voxels += o.voxels;
+                        organs[i].cm3 += o.cm3;
+                        hits[i] += 1;
+                    }
+                    None => {
+                        organs.push(o.clone());
+                        hits.push(1);
+                    }
+                }
+            }
+        }
+        for (o, n) in organs.iter_mut().zip(&hits) {
+            o.voxels /= *n as u64;
+            o.cm3 /= *n as f64;
+        }
+        organs.sort_by_key(|o| std::cmp::Reverse(o.voxels));
+        if organs.is_empty() {
+            self.error = Some(if over_phases {
+                "Auto-segmentation found no organs on any phase.".into()
+            } else {
+                "Auto-segmentation found no organs in this volume.".into()
+            });
+            return;
+        }
+        let selected = vec![true; organs.len()];
+        let output = self
+            .autoseg_dialog
+            .as_ref()
+            .map(|d| d.output.clone())
+            .unwrap_or_default();
         self.autoseg_pending = Some(AutosegPending {
             slot,
-            result,
+            phases: results,
+            organs,
             selected,
-            also_rs: false,
+            output,
         });
     }
 

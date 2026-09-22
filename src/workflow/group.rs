@@ -128,6 +128,29 @@ pub fn land_in_structure_set(
     items: &[Propagated],
     new_set_label: &str,
 ) -> Option<(String, Vec<String>)> {
+    land_in_structure_set_as(
+        study,
+        series_uid,
+        study_uid,
+        grid,
+        items,
+        new_set_label,
+        "GTV",
+    )
+}
+
+/// [`land_in_structure_set`] with the RT ROI Interpreted Type spelled out:
+/// a propagated target is a `GTV`, an organ an engine found is an `ORGAN`,
+/// a body outline an `EXTERNAL`.
+pub fn land_in_structure_set_as(
+    study: &mut LoadedStudy,
+    series_uid: &str,
+    study_uid: &str,
+    grid: &Grid,
+    items: &[Propagated],
+    new_set_label: &str,
+    roi_type: &str,
+) -> Option<(String, Vec<String>)> {
     let rois: Vec<Roi> = items
         .iter()
         .filter(|it| it.voxels > 0)
@@ -135,7 +158,7 @@ pub fn land_in_structure_set(
             let seg =
                 Segmentation::from_label_map(it.name.clone(), it.color, grid.dims, &it.mask, 1);
             let mut roi = segmentation::mask_to_roi(&seg, grid, 0);
-            roi.roi_type = "GTV".into();
+            roi.roi_type = roi_type.to_string();
             roi
         })
         .filter(|r| !r.contours.is_empty())

@@ -50,6 +50,9 @@ pub(super) struct SegVolDialog {
     pub name: String,
     /// One-line summary of the last finished run.
     pub status: Option<String>,
+    /// Where the mask goes, and whether every phase of the displayed
+    /// series' 4D group is prompted at the same spot.
+    pub output: ToolOutput,
 }
 
 /// What a finished run hands back.
@@ -67,8 +70,14 @@ pub struct SegVolResult {
 }
 
 /// Everything a run needs, snapshotted from the window when it starts.
+#[derive(Clone)]
 struct SegVolRequest {
+    /// The crosshair, as fractional voxel indices of the volume the run is
+    /// on. For a run over the phases it is recomputed per phase from
+    /// `patient`, since the phases need not share a lattice.
     cursor: [f64; 3],
+    /// The crosshair in patient coordinates (mm).
+    patient: Vec3,
     kind: PromptKind,
     extent_mm: f32,
     text: String,
@@ -144,6 +153,10 @@ impl ViewerApp {
                     device: DevicePref::Auto,
                     name: "Prompted".to_string(),
                     status: None,
+                    output: ToolOutput {
+                        set: self.default_set_target(slot),
+                        ..ToolOutput::default()
+                    },
                 });
             }
         }
@@ -161,9 +174,12 @@ impl ViewerApp {
             return;
         };
         let volume = study.volume.clone();
+        let displayed = PhaseInfo::displayed(study);
         let slot = d.slot;
+        let c = self.slots[slot].cursor;
         let req = SegVolRequest {
-            cursor: self.slots[slot].cursor,
+            cursor: c,
+            patient: volume.voxel_to_patient(c[0], c[1], c[2]),
             kind: d.kind,
             extent_mm: d.extent_mm,
             text: d.text.trim().to_string(),
@@ -176,18 +192,87 @@ impl ViewerApp {
                 _ => d.name.trim().to_string(),
             },
         };
+        let phases = if d.output.phases {
+            match self.phase_inputs(slot) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    self.error = Some(format!("{e:#}"));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         self.persist_settings();
         let progress = Arc::new(Progress::default());
         progress.set("Preparing the volume");
         self.segvol_slot = slot;
         self.segvol_job = Some(Job::spawn(progress, move |p| {
-            (slot, run_segvol(&volume, &req, p))
+            let out = match phases {
+                Some((group, inputs)) => run_on_phases(&group, inputs, p, |vol, p| {
+                    // The same spot in the patient, on this phase's lattice.
+                    let mut r = req.clone();
+                    r.cursor = vol.patient_to_voxel(req.patient);
+                    run_segvol(vol, &r, p)
+                }),
+                None => run_segvol(&volume, &req, p).map(|r| vec![(displayed, r)]),
+            };
+            (slot, out)
         }));
     }
 
-    /// A run finished: verify the slot still shows the same volume, then add
-    /// the mask as an editable segmentation and summarise it in the window.
-    pub(super) fn on_segvol_done(&mut self, slot: usize, result: SegVolResult) {
+    /// A run finished: verify the slot still shows the same volume, land
+    /// the mask the way the output rows say - on the displayed series, or
+    /// on every phase - and summarise it in the window.
+    pub(super) fn on_segvol_done(&mut self, slot: usize, results: Vec<(PhaseInfo, SegVolResult)>) {
+        let Some(output) = self.segvol_dialog.as_ref().map(|d| d.output.clone()) else {
+            return;
+        };
+        let Some((first, result)) = results.first() else {
+            return;
+        };
+        if let Some(group) = first.group.clone() {
+            let n = results.len();
+            let empty = results.iter().filter(|(_, r)| r.voxels == 0).count();
+            let color = self.next_seg_color();
+            let copies: Vec<_> = results
+                .iter()
+                .map(|(info, r)| {
+                    let segs = if r.voxels == 0 {
+                        Vec::new()
+                    } else {
+                        vec![Segmentation::from_label_map(
+                            r.name.clone(),
+                            color,
+                            r.volume_dims,
+                            &r.mask,
+                            1,
+                        )]
+                    };
+                    let notes = (r.voxels == 0)
+                        .then(|| format!("phase {}: the prompt produced an empty mask", info.label))
+                        .into_iter()
+                        .collect();
+                    info.copy(segs, notes)
+                })
+                .collect();
+            let landed = self.land_phases(slot, &group, output.kind, "ORGAN", copies);
+            if landed == 0 {
+                return;
+            }
+            let name = result.name.clone();
+            if let Some(d) = &mut self.segvol_dialog {
+                d.status = Some(format!(
+                    "✔ {name} on {landed} of {n} phases of {group}{}",
+                    if empty > 0 {
+                        format!(" - {empty} came out empty")
+                    } else {
+                        String::new()
+                    }
+                ));
+            }
+            return;
+        }
         if !self.slot_still_shows(slot, result.volume_dims, &result.frame_of_reference_uid) {
             self.error = Some(stale_result(&PROMPT_SEG));
             return;
@@ -198,7 +283,17 @@ impl ViewerApp {
             );
             return;
         }
-        self.add_segmentation(slot, result.name.clone(), result.volume_dims, &result.mask);
+        let color = self.next_seg_color();
+        let seg = Segmentation::from_label_map(
+            result.name.clone(),
+            color,
+            result.volume_dims,
+            &result.mask,
+            1,
+        );
+        if self.land_masks(slot, &output, "ORGAN", "Prompt segmentation", vec![seg]) == 0 {
+            return;
+        }
         let cm3 = self.slots[slot].voxels_cm3(result.voxels);
         if let Some(d) = &mut self.segvol_dialog {
             d.status = Some(format!(
@@ -218,6 +313,8 @@ impl ViewerApp {
     /// progress row.
     pub(super) fn segvol_section(&mut self, ui: &mut egui::Ui) {
         self.open_segvol_dialog(self.auto.slot);
+        let sets = self.structure_set_labels(self.auto.slot);
+        let group = self.displayed_group(self.auto.slot);
         let Some(d) = &mut self.segvol_dialog else {
             return;
         };
@@ -287,6 +384,9 @@ impl ViewerApp {
             ui.label("Name:");
             ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(160.0));
         });
+        scope_row(ui, &mut d.output.phases, group.as_ref());
+        let phases = d.output.phases;
+        output_rows(ui, &mut d.output, &sets, phases, "Prompt segmentation");
         ui.separator();
         ui.collapsing("Options", |ui| {
             ui.checkbox(&mut d.cfg.use_zoom_in, "Refinement pass")
@@ -332,8 +432,16 @@ impl ViewerApp {
             None => {
                 ui.horizontal_wrapped(|ui| {
                     let ready = d.kind != PromptKind::Text || !d.text.trim().is_empty();
-                    if enabled_tip_button(ui, ready, "▶ Segment", "Run the network on the prompt")
-                    {
+                    if enabled_tip_button(
+                        ui,
+                        ready,
+                        "▶ Segment",
+                        if d.output.phases {
+                            "Run the network on the prompt on every phase of the group"
+                        } else {
+                            "Run the network on the prompt"
+                        },
+                    ) {
                         run = true;
                     }
                 });

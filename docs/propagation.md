@@ -5,12 +5,19 @@ segmentation across a registration and lands it as an ordinary, editable
 segmentation, convertible back to RTSTRUCT and exportable as DICOM. It is a
 section of the right panel, next to the image registration that drives it.
 
-The destination is either **the other image of the active registration** -
-whichever workspace it is in, which is what pairs the two - or a **4D group**
-of any open workspace, which the module registers as it goes: the whole group,
-or any **single phase** of it, each listed under its group in the *To* list.
-One phase is the same run with everything else left out - end-exhale alone is
-often all that is wanted, and it costs one registration rather than ten.
+The destination is either **the image at the far end of the last
+registration** - whichever workspace it is in, which is what pairs the two -
+or a **4D group** of any open workspace, which the module registers as it
+goes: the whole group, or any **single phase** of it, each listed under its
+group in the *To* list. One phase is the same run with everything else left
+out - end-exhale alone is often all that is wanted, and it costs one
+registration rather than ten.
+
+The registered image is in that list by its own name - the series, and which
+end of the registration it is - rather than as a standing phrase, and it is
+in the list only while there is a registration. With none, the entry is not
+offered at all and the destination falls to the first 4D group, because an
+entry that cannot be chosen is worse than a shorter list.
 
 ## What it does
 
@@ -139,7 +146,12 @@ contour are reported per phase with a verdict (good from 0.85, check from
 0.7, poor below). A heart that lands on the heart says the target landed too.
 The anchor's own copy is filed under the name in *Lands as* (`<anchor>_prop`
 by default; `anchor_landed_as` from the MCP server), so it never collides
-with the contour the phase already has.
+with the contour the phase already has. Beside the name is a colour swatch -
+the same one the data tree gives a structure - and it is worth using: the
+landed copy is drawn right on top of the phase's own contour of that organ,
+and two curves of the same colour lying across each other is exactly the
+picture the check was meant to make readable. It starts on the anchor's own
+colour, and **↺** puts that back.
 
 The anchored run always registers afresh; its transforms are kept like any
 group registration's, so a later plain propagation onto the same group

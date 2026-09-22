@@ -455,92 +455,25 @@ impl ViewerApp {
 
     /// File the copies a [`Self::transfer_to_phases`] made: into the
     /// segmentation series already bound to each phase (or a new one), or
-    /// as contours into each phase's own RT structure set.
+    /// as contours into each phase's own RT structure set - through
+    /// [`Self::land_phases`], the same landing an engine run over the
+    /// phases uses.
     pub(super) fn on_phases_copied(
         &mut self,
         what: PhasesCopy,
         phases: Vec<workflow::group::PhaseCopy>,
     ) {
-        let mut notes: Vec<String> = Vec::new();
-        let mut landed = 0usize;
-        for ph in &phases {
-            notes.extend(ph.notes.iter().cloned());
-            if ph.segs.is_empty() {
-                continue;
-            }
-            let Some(study) = self.slots[what.slot].study.as_mut() else {
-                return;
-            };
-            match what.landing {
-                Landing::Segmentation => {
-                    let existing = study
-                        .seg_series
-                        .iter()
-                        .rposition(|sr| sr.referenced_series_uid == ph.series_uid);
-                    match existing {
-                        Some(i) => {
-                            let sr = &mut study.seg_series[i];
-                            for seg in &ph.segs {
-                                let mask = if sr.grid.matches(&ph.grid) {
-                                    seg.mask.clone()
-                                } else {
-                                    dicomseg::resample_mask(&seg.mask, &ph.grid, &sr.grid)
-                                };
-                                sr.segs.push(Segmentation::from_mask(
-                                    seg.name.clone(),
-                                    seg.color,
-                                    sr.grid.dims,
-                                    mask,
-                                ));
-                            }
-                        }
-                        None => study.seg_series.push(ph.seg_series(&what.group_name)),
-                    }
-                    landed += ph.segs.len();
-                }
-                Landing::StructureSet => {
-                    let items: Vec<crate::propagate::Propagated> = ph
-                        .segs
-                        .iter()
-                        .map(|seg| crate::propagate::Propagated {
-                            name: seg.name.clone(),
-                            color: seg.color,
-                            mask: seg.mask.clone(),
-                            voxels: seg.count,
-                            source_cm3: 0.0,
-                            result_cm3: 0.0,
-                            mapped_cm3: 0.0,
-                        })
-                        .collect();
-                    if let Some((_, names)) = workflow::group::land_in_structure_set(
-                        study,
-                        &ph.series_uid,
-                        &ph.study_uid,
-                        &ph.grid,
-                        &items,
-                        &format!("{} {}", what.group_name, ph.label),
-                    ) {
-                        landed += names.len();
-                    }
-                }
-            }
-        }
+        let kind = match what.landing {
+            Landing::Segmentation => OutputKind::Segments,
+            Landing::StructureSet => OutputKind::Structures,
+        };
+        let landed = self.land_phases(what.slot, &what.group_name, kind, "GTV", phases);
         if landed == 0 {
-            self.error = Some(if notes.is_empty() {
-                "nothing reached any phase".into()
-            } else {
-                notes.join("\n")
-            });
             return;
-        }
-        if let Some(study) = self.slots[what.slot].study.as_mut() {
-            study.warnings.extend(notes);
         }
         if !what.copy {
             self.remove_items(what.from, &what.items);
         }
-        self.rebind_seg_series(what.slot);
-        self.settings_gen += 1;
     }
 
     /// Delete structures / segments from their series.

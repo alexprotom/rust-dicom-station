@@ -125,6 +125,16 @@ enum FourDAction {
     },
     /// Start a new custom group from one series.
     New { slot: usize, series: usize },
+    /// Start a new custom group from several series at once - the ones
+    /// ticked in the tree, or every series of a modality node - ordered by
+    /// [`fourd::group_from`].
+    NewFrom { slot: usize, series: Vec<usize> },
+    /// Add several series to an existing group, as phases.
+    AddMany {
+        slot: usize,
+        group: usize,
+        series: Vec<usize>,
+    },
     /// Remove one member from a group.
     RemoveMember {
         slot: usize,
@@ -161,14 +171,24 @@ struct AutosegDialog {
     /// Sub-model selection for the 1.5 mm variant
     /// (organs, vertebrae, cardiac, muscles, ribs).
     parts: [bool; 5],
+    /// Where the result goes, and whether the run covers every phase of
+    /// the displayed series' 4D group. The output part is asked again in
+    /// the results window, where the organs are picked; the scope has to
+    /// be known before the run.
+    output: ToolOutput,
 }
 
-/// A finished auto-segmentation waiting for the user to choose organs.
+/// A finished auto-segmentation waiting for the user to choose organs: one
+/// label map per volume it ran on - the displayed series, or every phase
+/// of its 4D group.
 struct AutosegPending {
     slot: usize,
-    result: autoseg::AutosegResult,
+    phases: Vec<(PhaseInfo, autoseg::AutosegResult)>,
+    /// Every class any phase found, in the order of the list; the volumes
+    /// shown are the mean over the phases that have the class.
+    organs: Vec<autoseg::OrganHit>,
     selected: Vec<bool>,
-    also_rs: bool,
+    output: ToolOutput,
 }
 
 // Dose display settings
@@ -849,6 +869,11 @@ enum TreeSel {
     Study(String),
     /// A single series (index into `LoadedStudy::series`).
     Series(usize),
+    /// Several series at once (indices into `LoadedStudy::series`): the
+    /// ones ticked in the tree, every series of a modality node, or the
+    /// members of a 4D group. Each takes its own reference chain along,
+    /// like a single series does.
+    Many(Vec<usize>),
 }
 
 /// What to do with the selection.
@@ -903,7 +928,7 @@ impl SetKind {
 }
 
 /// One structure set / segmentation series of one workspace.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct SetRef {
     slot: usize,
     kind: SetKind,
@@ -1436,6 +1461,16 @@ pub struct ViewerApp {
     /// A rename requested from a context menu, opened after the frame's
     /// borrows are released.
     rename_request: Option<RenameTarget>,
+    /// The data-tree row the keyboard acts on: the one last clicked, in
+    /// either button. F2 renames it, Delete removes it. The same address a
+    /// rename takes, because every row the tree shows can be renamed, and
+    /// so every row has one.
+    tree_focus: Option<RenameTarget>,
+    /// Image series ticked with Ctrl-click in the data tree, as (workspace,
+    /// series UID): the selection *New 4D group from the selected series*
+    /// and the other multi-series actions work on. UIDs, because series are
+    /// renamed, removed and moved while the selection stands.
+    tree_picks: Vec<(usize, String)>,
     /// Anchor of the last check-box click in a structure / segment list, so
     /// Shift-click can extend a range from it.
     tick_anchor: Option<(SetRef, usize)>,
@@ -1539,7 +1574,7 @@ pub struct ViewerApp {
 
     // Auto-segmentation (TotalSegmentator re-implementation, see `autoseg`).
     /// The payload carries the slot the volume came from.
-    autoseg_job: Option<SegJob<autoseg::AutosegResult>>,
+    autoseg_job: Option<SegJob<Vec<(PhaseInfo, autoseg::AutosegResult)>>>,
     /// Slot currently being segmented (progress shown in its sidebar section).
     autoseg_slot: usize,
     /// The tool window, when open; it stays open while a run is in flight.
@@ -1549,7 +1584,7 @@ pub struct ViewerApp {
 
     // Body / External contouring (see `bodymask`) - the one tool that can
     // answer with no network at all.
-    body_job: Option<SegJob<bodymask::BodyResult>>,
+    body_job: Option<SegJob<Vec<(PhaseInfo, bodymask::BodyResult)>>>,
     body_slot: usize,
     /// The tool window, when open; it stays open across runs.
     body_dialog: Option<body_win::BodyDialog>,
@@ -1594,7 +1629,7 @@ pub struct ViewerApp {
     fourd_action: Option<FourDAction>,
 
     // Prompt-driven segmentation (SegVol re-implementation, see `segvol`).
-    segvol_job: Option<SegJob<prompt_seg::SegVolResult>>,
+    segvol_job: Option<SegJob<Vec<(PhaseInfo, prompt_seg::SegVolResult)>>>,
     segvol_slot: usize,
     /// The tool window, when open; it stays open across runs.
     segvol_dialog: Option<prompt_seg::SegVolDialog>,
@@ -1889,6 +1924,8 @@ impl ViewerApp {
             item_action: None,
             rename: None,
             rename_request: None,
+            tree_focus: None,
+            tree_picks: Vec::new(),
             tick_anchor: None,
             maximized: None,
             reg_apply_invert: false,
@@ -2471,21 +2508,45 @@ impl eframe::App for ViewerApp {
         // focused): Ctrl+Z undo, Esc cancels a region-grow drag, [ ] resize
         // the brush.
         if !ctx.egui_wants_keyboard_input() {
-            let (undo, esc, smaller, bigger, toggle_side, toggle_right) = ctx.input(|i| {
+            let (undo, esc, smaller, bigger, toggle_side, toggle_right, rename, remove) = ctx
+                .input(|i| {
+                    (
+                        i.modifiers.command && i.key_pressed(egui::Key::Z),
+                        i.key_pressed(egui::Key::Escape),
+                        i.key_pressed(egui::Key::OpenBracket),
+                        i.key_pressed(egui::Key::CloseBracket),
+                        i.key_pressed(egui::Key::F9),
+                        i.key_pressed(egui::Key::F10),
+                        i.key_pressed(egui::Key::F2),
+                        i.key_pressed(egui::Key::Delete),
+                    )
+                });
+            // ↑ / ↓ walk the data tree at the level of the focused row -
+            // CT to CT within a study, phase to phase within a 4D group -
+            // and show what they land on. Repeat is honoured, so the key
+            // can be held down to run through the phases of a 4DCT.
+            let (up, down) = ctx.input(|i| {
                 (
-                    i.modifiers.command && i.key_pressed(egui::Key::Z),
-                    i.key_pressed(egui::Key::Escape),
-                    i.key_pressed(egui::Key::OpenBracket),
-                    i.key_pressed(egui::Key::CloseBracket),
-                    i.key_pressed(egui::Key::F9),
-                    i.key_pressed(egui::Key::F10),
+                    i.key_pressed(egui::Key::ArrowUp),
+                    i.key_pressed(egui::Key::ArrowDown),
                 )
             });
+            if up != down {
+                self.tree_key_step(if down { 1 } else { -1 });
+            }
             if toggle_side {
                 self.side_open = !self.side_open;
             }
             if toggle_right {
                 self.right_open = !self.right_open;
+            }
+            // F2 and Delete act on the data-tree row last clicked, the way
+            // they do in a file manager.
+            if rename {
+                self.tree_key_rename();
+            }
+            if remove {
+                self.tree_key_remove();
             }
             if undo {
                 let slot = self.preferred_volume_slot();

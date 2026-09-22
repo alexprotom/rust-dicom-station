@@ -441,6 +441,103 @@ pub fn member_for(series: &SeriesInfo, position: usize) -> Member {
     }
 }
 
+/// A custom group built from a hand-picked set of series - what *New 4D
+/// group from the selected series* makes.
+///
+/// The phases are put in temporal order the way detection would: by the
+/// percent in their descriptions when every phase declares one, else by
+/// TemporalPositionIdentifier when every phase carries one, else by series
+/// number, and by pick order when nothing else tells them apart. Series
+/// whose descriptions say AVG / MIP / MinIP come last as reconstructions.
+/// A phase with no hint of its own is labelled by its position (`t3`), so
+/// the labels are unique whatever the descriptions were.
+///
+/// `picked` are indices into `series`; duplicates and out-of-range entries
+/// are ignored. `None` when nothing usable was picked.
+pub fn group_from(series: &[SeriesInfo], picked: &[usize]) -> Option<FourDGroup> {
+    let mut idxs: Vec<usize> = Vec::new();
+    for &i in picked {
+        if i < series.len() && !idxs.contains(&i) {
+            idxs.push(i);
+        }
+    }
+    if idxs.is_empty() {
+        return None;
+    }
+    let mut phases: Vec<(usize, Member)> = Vec::new();
+    let mut extras: Vec<Member> = Vec::new();
+    for (pos, &i) in idxs.iter().enumerate() {
+        let m = member_for(&series[i], pos + 1);
+        if m.role == Role::Phase {
+            phases.push((i, m));
+        } else {
+            extras.push(m);
+        }
+    }
+    if phases.iter().all(|(_, m)| m.percent.is_some()) {
+        phases.sort_by(|a, b| {
+            a.1.percent
+                .unwrap_or(0.0)
+                .total_cmp(&b.1.percent.unwrap_or(0.0))
+        });
+    } else if phases.iter().all(|(i, _)| series[*i].temporal_id.is_some()) {
+        phases.sort_by_key(|(i, _)| series[*i].temporal_id);
+    } else if phases
+        .iter()
+        .all(|(i, _)| series[*i].series_number.is_some())
+    {
+        phases.sort_by_key(|(i, _)| series[*i].series_number);
+    }
+    // Position labels follow the final order, and stay unique next to the
+    // labels the descriptions supplied.
+    let mut members: Vec<Member> = Vec::with_capacity(idxs.len());
+    for (pos, (_, mut m)) in phases.into_iter().enumerate() {
+        if m.percent.is_none() {
+            m.label = format!("t{}", pos + 1);
+        }
+        members.push(m);
+    }
+    let n_phases = members.len();
+    members.extend(extras);
+    let first = &series[idxs[0]];
+    let stem = match hint_of(&first.description) {
+        Hint::Phase { template, .. } => template,
+        _ => normalize_template(&first.description),
+    };
+    // A series called just "CT" names its modality, not the acquisition:
+    // "4DCT (10 phases)", not "4DCT - CT (10 phases)".
+    let stem = if stem.eq_ignore_ascii_case(&first.modality) {
+        String::new()
+    } else {
+        stem
+    };
+    Some(FourDGroup {
+        name: FourDGroup::derive_name(&first.modality, &stem, n_phases, members.len() - n_phases),
+        study_uid: first.study_uid.clone(),
+        members,
+        custom: true,
+        dissolved: false,
+    })
+}
+
+/// Put a group's phases back in percent order after members were added by
+/// hand - only when every phase declares a percent, since anything else
+/// would shuffle an order the user may have set. Reconstructions keep
+/// their place after the phases.
+pub fn sort_phases_by_percent(group: &mut FourDGroup) {
+    let (mut phases, extras): (Vec<Member>, Vec<Member>) =
+        group.members.drain(..).partition(|m| m.role == Role::Phase);
+    if phases.iter().all(|m| m.percent.is_some()) {
+        phases.sort_by(|a, b| {
+            a.percent
+                .unwrap_or(0.0)
+                .total_cmp(&b.percent.unwrap_or(0.0))
+        });
+    }
+    group.members = phases;
+    group.members.extend(extras);
+}
+
 /// Re-detect after the series list changed, keeping every custom group and
 /// every custom edit: detected groups that share a member with a custom
 /// group are dropped in its favour.
@@ -638,6 +735,77 @@ mod tests {
         // A custom group whose series all vanished is dropped.
         let refreshed = refresh(&groups, &[]);
         assert!(refreshed.is_empty());
+    }
+
+    /// Hand-picked series become one custom group: percent phases ordered
+    /// by percent whatever the pick order, reconstructions last, and
+    /// series with no hint at all labelled by position.
+    #[test]
+    fn a_group_is_built_from_picked_series_in_temporal_order() {
+        let v = vec![
+            series("u50", "Thorax 4D 50%", "st1", "CT"),
+            series("uavg", "Thorax 4D AVG", "st1", "CT"),
+            series("u0", "Thorax 4D 0%", "st1", "CT"),
+            series("u20", "Thorax 4D 20%", "st1", "CT"),
+            series("other", "Head", "st1", "CT"),
+        ];
+        let g = group_from(&v, &[0, 1, 2, 3, 3, 99]).expect("a group");
+        assert!(g.custom);
+        let labels: Vec<&str> = g.members.iter().map(|m| m.label.as_str()).collect();
+        assert_eq!(labels, vec!["0%", "20%", "50%", "AVG"]);
+        assert_eq!(g.members[3].role, Role::Average);
+        assert_eq!(g.name, "4DCT - Thorax 4D (3 phases + 1)");
+        assert_eq!(g.study_uid, "st1");
+
+        // Nothing in the descriptions: pick order, labelled t1, t2, t3.
+        let plain = vec![
+            series("a", "CT", "st1", "CT"),
+            series("b", "CT", "st1", "CT"),
+            series("c", "CT", "st1", "CT"),
+        ];
+        let g = group_from(&plain, &[2, 0, 1]).expect("a group");
+        let uids: Vec<&str> = g.members.iter().map(|m| m.series_uid.as_str()).collect();
+        assert_eq!(uids, vec!["c", "a", "b"]);
+        let labels: Vec<&str> = g.members.iter().map(|m| m.label.as_str()).collect();
+        assert_eq!(labels, vec!["t1", "t2", "t3"]);
+        assert_eq!(g.name, "4DCT (3 phases)");
+
+        // Series numbers order phases that have nothing else.
+        let mut numbered = plain.clone();
+        numbered[0].series_number = Some(30);
+        numbered[1].series_number = Some(10);
+        numbered[2].series_number = Some(20);
+        let g = group_from(&numbered, &[0, 1, 2]).expect("a group");
+        let uids: Vec<&str> = g.members.iter().map(|m| m.series_uid.as_str()).collect();
+        assert_eq!(uids, vec!["b", "c", "a"]);
+
+        assert!(group_from(&plain, &[]).is_none());
+        assert!(group_from(&plain, &[7]).is_none());
+    }
+
+    #[test]
+    fn phases_added_by_hand_are_put_back_in_percent_order() {
+        let v = vec![
+            series("u50", "4D 50%", "st1", "CT"),
+            series("u0", "4D 0%", "st1", "CT"),
+            series("uavg", "4D AVG", "st1", "CT"),
+            series("u20", "4D 20%", "st1", "CT"),
+        ];
+        let mut g = group_from(&v, &[0]).unwrap();
+        for i in [1, 2, 3] {
+            g.members
+                .push(member_for(&v[i], g.phase_members().len() + 1));
+        }
+        sort_phases_by_percent(&mut g);
+        let labels: Vec<&str> = g.members.iter().map(|m| m.label.as_str()).collect();
+        assert_eq!(labels, vec!["0%", "20%", "50%", "AVG"]);
+        // One phase without a percent: the order is left as it was.
+        g.members
+            .push(member_for(&series("x", "CT", "st1", "CT"), 4));
+        g.members.swap(0, 2);
+        sort_phases_by_percent(&mut g);
+        let labels: Vec<&str> = g.members.iter().map(|m| m.label.as_str()).collect();
+        assert_eq!(labels, vec!["50%", "20%", "0%", "t4", "AVG"]);
     }
 
     #[test]

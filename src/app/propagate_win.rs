@@ -134,6 +134,11 @@ pub(super) struct PropagateDialog {
     pub anchor: Option<usize>,
     /// The name the propagated anchor lands under; empty is `<name>_prop`.
     pub anchor_name: String,
+    /// The colour it lands in. `None` follows the anchor's own colour, which
+    /// is what it did before there was a choice; a colour of its own is
+    /// what makes the landed copy tell itself apart from the phase's
+    /// contour of the same organ sitting next to it.
+    pub anchor_color: Option<[u8; 3]>,
     pub anchor_margin_mm: f64,
     /// Anchored run: refine deformably after the rigid stage.
     pub anchor_deformable: bool,
@@ -170,6 +175,7 @@ impl Default for PropagateDialog {
             local_margin_mm: 10.0,
             anchor: None,
             anchor_name: String::new(),
+            anchor_color: None,
             anchor_margin_mm: 10.0,
             anchor_deformable: true,
             anchor_contours: true,
@@ -724,6 +730,8 @@ impl ViewerApp {
         only: Option<usize>,
         src_anchor: Structure,
         anchor_name: String,
+        // The colour the landed anchor takes; None keeps the anchor's own.
+        anchor_color: Option<[u8; 3]>,
         margin_mm: f64,
         deformable: bool,
         contours: bool,
@@ -807,6 +815,7 @@ impl ViewerApp {
                 src_vol,
                 src_anchor,
                 anchor_landed_name: Some(anchor_name).filter(|n| !n.trim().is_empty()),
+                anchor_landed_color: anchor_color,
                 subjects,
                 phases: anchored,
                 margin_mm: margin_mm.max(0.0),
@@ -858,9 +867,10 @@ impl ViewerApp {
                 // need be ticked; what is ticked travels with it.
                 let structures = self.propagate_structures(d).unwrap_or_default();
                 let name = d.anchor_name.clone();
+                let color = d.anchor_color;
                 self.start_anchored_run(
-                    src, slot, group, only, anchor, name, margin, deformable, contours, finish,
-                    structures,
+                    src, slot, group, only, anchor, name, color, margin, deformable, contours,
+                    finish, structures,
                 );
             } else {
                 let structures = match self.propagate_structures(d) {
@@ -1391,6 +1401,15 @@ impl ViewerApp {
         {
             d.target = PropTarget::Other;
         }
+        // The other way round: the registered image is only a destination
+        // while there is a registration. Without one the entry is not in the
+        // list, so a target still pointing at it would leave the combo
+        // showing a choice nobody can make - take the first group instead.
+        if matches!(d.target, PropTarget::Other) && self.registration.is_none() {
+            if let Some((first, _)) = group_choices.first() {
+                d.target = *first;
+            }
+        }
         let to_group = d.target.group().is_some();
 
         // The images the structures may come from: any series of either
@@ -1465,6 +1484,25 @@ impl ViewerApp {
         // An anchored run always registers afresh: it answers a different
         // question from the plain one.
         let src_uid = pick_uid(d.src);
+        // What the registered-image destination is called: the image at the
+        // far end of the last registration, named, with the method behind
+        // it. `None` when nothing has been registered, and then the entry is
+        // left out of the list altogether.
+        let other_label: Option<(String, String)> =
+            registered.as_ref().map(|(fixed, moving, method, _)| {
+                let to = if src_uid == moving.uid && src_slot == moving.slot {
+                    format!("{} (fixed image)", fixed.label)
+                } else {
+                    format!("{} (moving image)", moving.label)
+                };
+                (
+                    to,
+                    format!(
+                        "The far side of the last registration: {method}, fixed {}, moving {}",
+                        fixed.label, moving.label
+                    ),
+                )
+            });
         let reuse = !anchored
             && match (d.target.group(), &self.group_registration) {
                 (Some((slot, group)), Some(gr)) => {
@@ -1552,16 +1590,13 @@ impl ViewerApp {
                          whole 4D group, or one phase of one.",
                         |ui| {
                             let current = match d.target {
-                                PropTarget::Other => registered
+                                PropTarget::Other => other_label
                                     .as_ref()
-                                    .map(|(fixed, moving, _, _)| {
-                                        if src_uid == moving.uid && src_slot == moving.slot {
-                                            format!("{} (fixed image)", fixed.label)
-                                        } else {
-                                            format!("{} (moving image)", moving.label)
-                                        }
-                                    })
-                                    .unwrap_or_else(|| "the registered image".into()),
+                                    .map(|(l, _)| l.clone())
+                                    // Nothing registered and no group either:
+                                    // there is no destination at all, and
+                                    // saying so is better than naming one.
+                                    .unwrap_or_else(|| "(nothing to propagate to)".into()),
                                 PropTarget::Group { .. } | PropTarget::Phase { .. } => {
                                     group_choices
                                         .iter()
@@ -1574,11 +1609,14 @@ impl ViewerApp {
                                 .selected_text(current)
                                 .width(230.0)
                                 .show_ui(ui, |ui| {
-                                    ui.selectable_value(
-                                        &mut d.target,
-                                        PropTarget::Other,
-                                        "the other registered image",
-                                    );
+                                    if let Some((label, hint)) = &other_label {
+                                        ui.selectable_value(
+                                            &mut d.target,
+                                            PropTarget::Other,
+                                            label,
+                                        )
+                                        .on_hover_text(hint);
+                                    }
                                     for (target, label) in &group_choices {
                                         // Phases are listed under their group
                                         // and indented, so a list of eleven
@@ -1777,6 +1815,7 @@ impl ViewerApp {
                                         {
                                             d.anchor = None;
                                             d.anchor_name.clear();
+                                            d.anchor_color = None;
                                         }
                                         for (i, (name, _, _)) in entries.iter().enumerate() {
                                             if ui
@@ -1785,6 +1824,7 @@ impl ViewerApp {
                                             {
                                                 d.anchor = Some(i);
                                                 d.anchor_name.clear();
+                                                d.anchor_color = None;
                                             }
                                         }
                                     });
@@ -1800,14 +1840,37 @@ impl ViewerApp {
                                 form::form(ui, "prop_anchor_form", |f| {
                                     f.row_tip(
                                         "Lands as",
-                                        "The propagated anchor's name on each phase, next \
-                                         to the phase's own contour it is compared with",
+                                        "The propagated anchor's name and colour on each \
+                                         phase, next to the phase's own contour it is \
+                                         compared with",
                                         |ui| {
                                             ui.add(
                                                 egui::TextEdit::singleline(&mut d.anchor_name)
                                                     .desired_width(160.0)
                                                     .hint_text(default_name),
                                             );
+                                            // The same swatch the data tree
+                                            // gives a structure. It starts on
+                                            // the anchor's own colour, so a
+                                            // run that is not given one is
+                                            // what it always was.
+                                            let own = entries
+                                                .get(ai)
+                                                .map(|(_, c, _)| *c)
+                                                .unwrap_or([255, 255, 255]);
+                                            let mut shown = d.anchor_color.unwrap_or(own);
+                                            if color_swatch(ui, &mut shown) {
+                                                d.anchor_color = Some(shown);
+                                            }
+                                            if d.anchor_color.is_some()
+                                                && small_tip_button(
+                                                    ui,
+                                                    "↺",
+                                                    "Back to the anchor's own colour",
+                                                )
+                                            {
+                                                d.anchor_color = None;
+                                            }
                                         },
                                     );
                                     f.row_tip(
@@ -1905,25 +1968,32 @@ impl ViewerApp {
                     Some(job) => cancel = progress_row(ui, &job.progress),
                     None => {
                         ui.horizontal(|ui| {
+                            // "to 10 phases", or "to 1 phase" when the target
+                            // is one member of the group. A single phase is
+                            // a run like any other - one registration rather
+                            // than ten - and used to be turned away here by a
+                            // count that only the whole-group case satisfies.
+                            let phases_word = if n_phases == 1 { "phase" } else { "phases" };
+                            let ready_group = n_phases >= 1;
                             let (label, hint, ready) = if to_group && reuse {
                                 (
-                                    format!("▶ Propagate to {n_phases} phases"),
+                                    format!("▶ Propagate to {n_phases} {phases_word}"),
                                     "Through the transforms already made for this group",
-                                    n_phases >= 2,
+                                    ready_group,
                                 )
                             } else if anchored {
                                 (
-                                    format!("▶ Anchor and propagate to {n_phases} phases"),
+                                    format!("▶ Anchor and propagate to {n_phases} {phases_word}"),
                                     "Per phase: centroids matched, a rigid fit on the anchor, \
                                      the refinement, then the structures (and the anchor, as \
                                      the check) carried across",
-                                    n_phases >= 2,
+                                    ready_group,
                                 )
                             } else if to_group {
                                 (
-                                    format!("▶ Register and propagate to {n_phases} phases"),
+                                    format!("▶ Register and propagate to {n_phases} {phases_word}"),
                                     "One registration per phase, then the structures",
-                                    n_phases >= 2,
+                                    ready_group,
                                 )
                             } else {
                                 (

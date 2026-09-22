@@ -512,6 +512,49 @@ sets drawn on it, the plans made on those, the doses computed for those
 plans - and study and patient selections also take the RT objects of their
 studies. Right-clicking a workspace header offers *Clear workspace*.
 
+**Several series at once.** Ctrl-click ticks a series row (a `✔` marks it)
+without changing what is displayed; right-clicking a ticked row then acts on
+every ticked series of the workspace - copy, move, remove, add to a 4D group,
+or *New 4D group from the N ticked series*. Right-clicking a **modality node**
+(*CT (10)*) offers the same for every series under it, which is how a 4DCT
+whose descriptions carry no phase markers becomes one group in one click. A
+group built this way is a *custom* group ([motion-4d.md](motion-4d.md#4d-groups-srcfourdrs)):
+its phases are put in temporal order by the percent in their descriptions,
+else by TemporalPositionIdentifier, else by series number, else in the order
+they were ticked, and labelled `t1`, `t2`, ... when nothing in the
+descriptions names them; the series it takes leave whatever group they were
+in. The 4D node's own menu adds *Remove group and its N series*, which takes
+the phases and everything drawn on them out of the workspace, next to
+*Dissolve group*, which keeps the series.
+
+**The keyboard.** The row last clicked in the tree - with either button -
+holds the keyboard. It is outlined and carries a **⌨** badge, inline with
+its name exactly as RTS and SEG are, so which row the typing will reach is
+visible rather than remembered.
+
+**↑** and **↓** step to the row above and below *at that row's own level*,
+and show what they land on. The level is the one the tree draws: another CT
+of the same study under the same modality node, another phase of the same 4D
+group, another structure set, another dose grid. So a 4DCT is flipped
+through by holding ↓ - the phases arrive one after another, the crosshair
+staying where it was put, which is what makes the motion visible - and a
+list of CTs is walked the same way. The ends do not wrap, and a level of one
+row does not move. Stepping onto a structure set or a dose grid makes it the
+shown one; stepping onto a patient or a study moves the focus alone, and
+stepping onto one structure of a set does not toggle its visibility, which
+is a click's job and not an arrow's.
+
+**F2** renames the focused row and **Delete** removes it, as they do in a
+file manager. Every row the tree shows takes both: a patient, a study, a
+series, a 4D group (Delete dissolves it), a structure set or segmentation
+series, one structure or segment, a dose grid, a plan, a planar image, a
+spatial registration, a treatment record. Delete does exactly what the row's
+*Remove* entry does, with no confirmation and no undo - the files on disk
+are never touched, so a removal costs a reload. None of these keys fire
+while a text field has the focus, and the arrows wait while a series is
+still loading rather than running the focus past rows the views never
+showed.
+
 ## Structures and segmentations in the tree
 
 Below the image series, each workspace lists its **RT structures** and
@@ -594,6 +637,7 @@ sets, segmentation series, structures and segments, dose grids, plans, planar
 images, spatial registrations and treatment records - can be renamed from its
 right-click menu. The dialog is a single text field - Enter applies, Esc
 cancels, empty names are rejected - and names the DICOM attribute it writes.
+**F2** opens the same dialog on the row last clicked.
 
 A patient and a study are *groupings* rather than objects, so renaming one
 writes `PatientName` / `StudyDescription` into **every** series filed under
