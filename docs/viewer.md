@@ -1,6 +1,6 @@
-# Image viewing, datasets and interaction
+# Image viewing, workspaces and interaction
 
-![single dataset](screenshot.png)
+![single workspace](screenshot.png)
 
 *A lung 4DCT phase with its RT Structure Set. The crosshair sits in the tumor;
 the axial view draws the native RTSTRUCT contours, sagittal/coronal show
@@ -14,9 +14,11 @@ starts the work; the two below it are the shortcuts.
 
 **Input**
 
-* **Add DICOM folder** scans a folder into dataset A.
+* **Add DICOM folder** scans a folder into workspace A. This screen is only
+  up when nothing is loaded at all, so there is nowhere else for it to go;
+  the menu entry of the same name asks.
 * **Restore last session** loads again what was open when the program was last
-  closed. The sources of both datasets are remembered in `session_a` /
+  closed. The sources of both workspaces are remembered in `session_a` /
   `session_b` in the settings file as they are loaded, so an unclean exit
   loses nothing. If the folders it names have since moved or been deleted, it
   says so and forgets the session.
@@ -39,7 +41,7 @@ and the answer to "where has it gone" is on the button itself.
 Data comes in either way round: a whole folder (*File > Add DICOM folder*, or
 directory arguments on the command line) or an explicit handful of files
 (*File > Add DICOM file(s)*, multi-select). Both start the same background
-scan and both merge into the dataset the same way - a file selection is not a
+scan and both merge into the workspace the same way - a file selection is not a
 separate mode with its own rules, it is a study that happens to be small.
 
 The scan:
@@ -50,7 +52,7 @@ The scan:
    spatial registrations, RT treatment records. Unreadable or foreign files
    become warnings, never errors.
 2. **Series grouping.** Image files are grouped by SeriesInstanceUID into the
-   dataset tree; the largest series is reconstructed first (click another to
+   workspace tree; the largest series is reconstructed first (click another to
    switch).
 3. **Volume reconstruction.** Slices are decoded in parallel (`rayon`) -
    compressed transfer syntaxes (JPEG lossless, RLE, …) via `dicom-rs`'s
@@ -70,11 +72,11 @@ image series are not yet supported (classic single-frame only). RT objects
 found in the folder are parsed alongside and attached to the study - see
 [rt-objects.md](rt-objects.md).
 
-### Datasets with no volume
+### Workspaces with no volume
 
 Not everything worth opening reconstructs into slices, and a viewer that
 insists otherwise is a viewer you cannot use to look at a portal image. So
-**a dataset without an image volume is a normal dataset here**, not a failed
+**a workspace without an image volume is a normal workspace here**, not a failed
 load. Three cases arrive at it:
 
 * the selection holds only RT images, DX/CR radiographs or other projection
@@ -87,29 +89,29 @@ load. Three cases arrive at it:
   where one slice happens to lack the tag is still a series. Before, such
   files were dropped silently.
 
-Such a dataset appears in the tree under its patient and study exactly like
+Such a workspace appears in the tree under its patient and study exactly like
 any other, and everything it holds is usable: planar images open in their
-viewers (the *Planar images* section opens itself, since for these datasets it
+viewers (the *Planar images* section opens itself, since for these workspaces it
 is the content rather than a footnote), structure sets render in the 3D
 window, plans and dose objects show their tables, and any of it can be
-renamed, copied to the other dataset or exported. What is held back is only
+renamed, copied to the other workspace or exported. What is held back is only
 what needs voxels: the MPR views say so in place of three black panes, and the
 segmentation tools, the four engines, registration, propagation, combination,
 comparison and the DRR are disabled until there is something to run them on.
 
-Adding an image series afterwards completes the dataset. *File ▶ Add DICOM
-folder…* into the same slot merges the images in and the views switch to
-them - which is the ordinary way to open a structure set first and its CT
-second, and have the contours land on the right images.
+Adding an image series afterwards completes the workspace. *File ▶ Add DICOM
+folder*, answered with the same workspace, merges the images in and the views
+switch to them - which is the ordinary way to open a structure set first and
+its CT second, and have the contours land on the right images.
 
 ## The rows and their panes
 
-The main area is **one row per dataset** - a second appears in *Comparison
+The main area is **one row per workspace** - a second appears in *Comparison
 mode* (View menu) - and each row shows up to **four panes**, chosen under
 *Settings ▸ View layout*: the **axial**, **sagittal** and **coronal** planes,
 and the **3D** surface scene. The two rows are chosen separately, so the
 planning CT can sit above one plane of the repeat scan, or a single large
-axial above the same plane of the other dataset.
+axial above the same plane of the other workspace.
 
 The panes of a row split its width evenly, so a row of two is two large
 images rather than two and a gap, and a row of one is one image across the
@@ -136,32 +138,36 @@ plane names are nominal, and the anatomical edge labels (L/R/A/P/S/I) always
 reflect the true patient directions from the direction cosines.
 
 The panes tile the central area edge to edge, each with its own **slice
-scrubber** drawn over its bottom edge; the plane and dataset name in the
+scrubber** drawn over its bottom edge; the plane and workspace name in the
 top-left corner is white in every pane, the edge labels keep their colour.
 The corner buttons (named on hover), right to left: **⛶ / ⊞** maximizes the
-pane and restores the layout, **⟲** resets the pane's zoom and pan and
-re-centers the crosshair in the volume, **✋** hands the left button the
+pane and restores the layout, **◀ / ▶** folds the rest of the bar away and
+brings it back - one switch for every pane, remembered between runs, and
+folded on a fresh installation so a viewport opens with nothing over the
+anatomy - then **⟲** resets the pane's zoom and pan and re-centers the
+crosshair in the volume, **✋** hands the left button the
 image - drag it and the image moves instead of the crosshair, as a middle
 drag always does - and **➕ / ➖** zoom a step about the middle of the pane.
-The hand is one switch for every pane of both datasets. The toolbar holds a
-global **⟲** (the same reset for every pane of both datasets), the **⌖**
+The hand is one switch for every pane of both workspaces. The toolbar holds a
+global **⟲** (the same reset for every pane of both workspaces), the **⌖**
 crosshair toggle (while hidden,
 left-click navigation is off and slices change only by scrolling), the
-**Sync** toggle beside it (shown whenever two datasets are loaded - see
+**Sync** toggle beside it (shown whenever two workspaces are loaded - see
 below), the **3D A / 3D B** buttons and the segmentation tools.
 
 **The 3D scene** can live in a row or in a window. Ticking **3D** for a row
 draws it there, and the pane is furnished like any other: **3D** (with the
-dataset's letter in comparison mode) in the top-left corner, and the same
-corner buttons in the same places - **⛶ / ⊞**, **⟲** (the camera back to
-its default angle, fit zoom and no offset), **✋** (a left drag moves the
+workspace's letter in comparison mode) in the top-left corner, and the same
+corner buttons in the same places - **⛶ / ⊞**, **◀ / ▶** (the same fold,
+the same switch), **⟲** (the camera back to its default angle, fit zoom and
+no offset), **✋** (a left drag moves the
 scene instead of turning it), **➕ / ➖**, and the **▶4D** transport with
-**Prepare** beside it where the dataset has a 4D group. What only a scene
+**Prepare** beside it where the workspace has a 4D group. What only a scene
 has sits under them, wrapping onto another line where a pane is narrow:
 **Opacity** with its percentage, **Structures**, and **Dose** / **Isodose**
-where the dataset carries a dose. **Structures** lays the per-structure
+where the workspace carries a dose. **Structures** lays the per-structure
 opacity panel down the pane's right-hand edge, the same panel and the same
-sliders the window shows. While a row carries the scene, that dataset's
+sliders the window shows. While a row carries the scene, that workspace's
 **3D** button leaves the toolbar - there is no window to open - and it
 comes back when the tick does.
 
@@ -173,7 +179,7 @@ and **⟲** - sit in the window's top-right corner, where a pane keeps them.
 The *Opacity* slider is the whole scene's; the **Structures** toggle opens
 a panel with one slider per structure on top of that, so the target can
 fade while a chamber volume stays solid (*All 100 %* clears them). With a
-dose in the dataset, **Dose on the surface** colours every surface by the
+dose in the workspace, **Dose on the surface** colours every surface by the
 dose that lands on it, on the
 isodose scale, and **Isodose surfaces** adds the active dose as translucent
 shells at the isodose lines switched on in the Dose display, in their
@@ -186,7 +192,7 @@ presets: brain, subdural, stroke, head/neck soft tissue, temporal bone, lungs,
 mediastinum, abdomen, liver, spine, bone, CT angio, full range. The list
 shows each preset's center and width; the closed list carries only the chosen
 name, and any other window - a drag or the full range - leaves it nameless.
-Window/level is shared between datasets A and B.
+Window/level is shared between workspaces A and B.
 
 **Every tool has its own window.** The archive, the model manager, the DRR,
 the 3D scenes, the segmentation, motion and DVH tools, the export and
@@ -203,10 +209,10 @@ window opens and is not remembered between runs.
 
 Every window of the program is titled the same way: **Rust DICOM Station:**
 followed by what the window is - *Viewer* for the main one, then *PACS -
-patient archive*, *Downloaded models*, *DRR - dataset A*, and so on.
+patient archive*, *Downloaded models*, *DRR - workspace A*, and so on.
 
 **Status bar.** Patient coordinates, voxel indices, HU and dose (Gy and % of
-the reference dose) at the crosshair; in comparison mode both datasets report
+the reference dose) at the crosshair; in comparison mode both workspaces report
 the full set side by side, each at its own crosshair. Hover the **?** at the
 right end to read the active tool's mouse bindings.
 
@@ -223,11 +229,11 @@ registration**, **Image simulation**, the **Structure editor** (insert, edit
 and combine structures - [contours.md](contours.md)), the **Structure auto
 tools** (the body contour and the three segmentation engines -
 [segmentation.md](segmentation.md)), **Structure propagation** and **Dose
-estimation** (the dose metrics table - [dvh.md](dvh.md)). The image
-information, the playback, the editor, the auto tools and the dose
-estimation start switched on, the other three off; every choice is
-remembered between runs, and with all eight off there is no right panel at
-all. Every section starts folded; which ones were
+estimation** (the dose metrics table - [dvh.md](dvh.md)). A fresh
+installation starts with all eight off - the program opens on the images
+with nothing over them, and the panel is built up from the menu as the work
+needs it. Every choice is remembered between runs, and with all eight off
+there is no right panel at all. Every section starts folded; which ones were
 unfolded is remembered too, and *Restore the last session* unfolds them
 again. The drawing tools are not in the panel: the toolbar's **✏
 Draw structure** button unfolds them on the toolbar. The *Tools* menu keeps
@@ -264,7 +270,7 @@ anisotropic in-plane spacing, oblique axes, a missing frame of reference,
 files that are in the series but not in the volume. A regular study says
 *Nothing unusual*.
 
-*Compare* puts the two datasets side by side and lists only what they
+*Compare* puts the two workspaces side by side and lists only what they
 disagree about - the check to make before registering them, contouring
 across them or carrying a dose from one to the other. *Copy* puts the whole
 report on the clipboard; *Read again* re-reads the headers after the files
@@ -280,7 +286,7 @@ play:
   stack by hand but without the hand. It appears on any view with more than
   one slice, and it moves that view only, exactly as the wheel and the
   scrubber under the pane do.
-* **▶4D** runs the whole dataset through the **phases** of its 4D group. It
+* **▶4D** runs the whole workspace through the **phases** of its 4D group. It
   appears only when the displayed series belongs to a group that still has
   at least two phases. All three views change together because the image
   itself changes, the selection walks down the group in the data tree, and
@@ -294,15 +300,15 @@ breathe with the views, and the Dose estimation module's *Dynamic* log has
 a third ([dvh.md](dvh.md#the-dose-estimation-module)) that walks the
 structures back through the moves they were given.
 
-**With Sync on, both datasets play.** **▶3D** takes the paired pane through
+**With Sync on, both workspaces play.** **▶3D** takes the paired pane through
 its own stack by the same rule the wheel follows - the slice position in
 patient coordinates, through the registration where there is one - so the
 two rows stay on the same anatomy rather than on the same slice number.
-**▶4D** walks the other dataset's group beside this one's, which is why the
+**▶4D** walks the other workspace's group beside this one's, which is why the
 first press reads *both* groups into memory and the budget in the Playback
 module has to cover them. Two groups of the same length step phase for
 phase; groups of different lengths are walked proportionally, so a tenth of
-one breathing cycle meets a tenth of the other. A dataset that is not
+one breathing cycle meets a tenth of the other. A workspace that is not
 showing a 4D group is simply left where it is.
 
 ### Playback
@@ -342,7 +348,7 @@ The module is where the settings live.
 * **Save a run** - record a run as a picture sequence. **⏺ Record** arms the
   recorder: it asks where the file goes and then waits. The next run started
   with ▶ is the one taken, and the pane is whichever that ▶ belongs to - ▶3D
-  on the sagittal pane of dataset B records that pane, ▶4D on a 3D pane
+  on the sagittal pane of workspace B records that pane, ▶4D on a 3D pane
   records the surfaces. One picture per played frame, of the pane's own
   pixels, so contours, dose wash, annotations and 3D surfaces are all in it;
   the run's clock waits for each picture, so nothing the run played is
@@ -362,7 +368,7 @@ is: the crosshair, the zoom, the pan, the slice of every view and the active
 registration all stay, because two phases are the same patient a moment
 apart and a view that jumps back to the middle slice hides the motion one is
 looking for. Picking any other series is an ordinary switch and still starts
-the dataset afresh.
+the workspace afresh.
 
 In the **3D structures** window, each phase brings its own structure set and
 so its own surfaces. **Prepare phases** meshes them all up front, which is
@@ -389,19 +395,25 @@ Esc cancels), one drag for freehand and nudge, Ctrl-click to pick the
 structure under the pointer. The full bindings of whichever tool is in hand
 are under the status bar's *?*.
 
-## Datasets and the patient ▶ study ▶ series tree
+## Workspaces and the patient ▶ study ▶ series tree
 
-The two viewer slots, **dataset A** and **dataset B**, each hold any number of
+The two viewer slots, **workspace A** and **workspace B**, each hold any number of
 patients, studies and series from any number of folders. *File ▶ Add DICOM
-folder to A/B…* merges a scanned folder into the slot without unloading what
-is there; duplicates (by UID) are skipped and reported. *Tools ▶ 🏥 PACS -
-patient archive…* fills a slot the same way from the application's own store
-of studies ([pacs.md](pacs.md)) - an archived study folder is ordinary DICOM.
+folder* and *Add DICOM file(s)* ask which workspace the data joins and then
+merge it in without unloading what is there; duplicates (by UID) are skipped
+and reported. *File ▶ Clear workspace* asks the same question the other way
+round and empties the one chosen. One entry each rather than one per
+workspace: the entry says what is being done and the small window that
+follows says where.
 
-The left panel shows each dataset as a full DICOM hierarchy:
+*Tools ▶ 🏥 PACS - patient archive* fills a workspace the same way from the
+application's own store of studies ([pacs.md](pacs.md)) - an archived study
+folder is ordinary DICOM.
+
+The left panel shows each workspace as a full DICOM hierarchy:
 
 ```
-Dataset A
+Workspace A
  └ Doe John (P1)                     patient - PatientName / PatientID
     └ Study 20260827 - Planning      study - StudyInstanceUID, date, description
        ├ CT (2)                      modality
@@ -427,7 +439,7 @@ object whose StudyInstanceUID is blank or names an unloaded study goes under
 the study of the image series it references, failing that under the first
 study. Planar images, spatial registrations and treatment records have no
 study and sit below the tree, as does **Dose display** - colorwash, isodose
-ladder, opacity, threshold - one setting shared by both datasets, shown once.
+ladder, opacity, threshold - one setting shared by both workspaces, shown once.
 
 Structure sets, segmentation series, **dose grids and plans** all use the
 same row - a name, and nothing in front of it. The views draw one of each
@@ -465,27 +477,27 @@ image series it is drawn on, each dose the plan it was computed for
 (ReferencedRTPlanSequence), each plan the structure set it was created on
 (ReferencedStructureSetSequence).
 
-The dataset's own name is a heading rather than a node: the patients sit at
-the same level as it, since a tree that can only hold two datasets does not
+The workspace's own name is a heading rather than a node: the patients sit at
+the same level as it, since a tree that can only hold two workspaces does not
 need a level for choosing between them.
 
 **Right-clicking** a patient, study or series opens a context menu to
 **rename**, **copy**, **move** or **remove** it. Copy/move transfer the
-selection into the other dataset (A ▶ B or B ▶ A), merging with what is there
+selection into the other workspace (A ▶ B or B ▶ A), merging with what is there
 and switching comparison mode on; move and remove then delete it from its
 source. A series carries exactly its DICOM reference chain - the structure
 sets drawn on it, the plans made on those, the doses computed for those
 plans - and study and patient selections also take the RT objects of their
-studies. Right-clicking a dataset header offers *Clear dataset*.
+studies. Right-clicking a workspace header offers *Clear workspace*.
 
 ## Structures and segmentations in the tree
 
-Below the image series, each dataset lists its **RT structures** and
+Below the image series, each workspace lists its **RT structures** and
 **Segmentations** as series nodes - one per RT structure set or DICOM
 Segmentation series - each showing the image series it is drawn on
 (`▶ CT chest`; `▶ (any image of this frame)` for a segmentation series tied
 to no image series; `▶ (image series not loaded)` when the referenced series
-is not in the dataset). Clicking a node makes it active and lists
+is not in the workspace). Clicking a node makes it active and lists
 its items **under that row**, not at the end of the list - with ten phases of
 a 4D group in the node, the buttons that act on a set belong beside the set
 they act on. The **+** on the *RT structures* / *Segmentations* heading
@@ -493,12 +505,12 @@ creates an empty structure set or segmentation series bound to the displayed
 image series. **Right-clicking a series node** offers:
 
 * *🔗 Connect to image series ▶* - re-point the series at any image series of
-  the dataset (● marks the current one); contours are in patient coordinates
+  the workspace (● marks the current one); contours are in patient coordinates
   and simply follow, a segmentation series is resampled onto the new lattice
   when next displayed. A segmentation series can also be tied to *no image
   series*: it then shows on every image of its frame of reference, every
   phase of a 4D study say, resampled onto whichever is displayed.
-* *Copy / Move series to dataset A/B*.
+* *Copy / Move series to workspace A/B*.
 * *💾 Export as DICOM SEG…* (segmentation series only) - writes this one series
   as a single SEG file.
 * *🗑 Remove this RT structure set / segmentation series*.
@@ -527,7 +539,7 @@ section.
 the ticked group:
 
 * *Copy … to ▶* / *Move … to ▶* - a submenu of every structure set and
-  segmentation series in **both** datasets, plus *➕ a new RT structure set* /
+  segmentation series in **both** workspaces, plus *➕ a new RT structure set* /
   *➕ a new segmentation series*, and, per 4D group, *⏱ each phase of <group>*
   as a segmentation series per phase or into each phase's own RT structure
   set. That copies the structure as it is, in patient coordinates, onto
@@ -547,7 +559,7 @@ segmentation series is rasterized onto its lattice (even-odd fill), a segment
 moved into a structure set becomes closed planar contours (marching squares),
 and a segment moved between different lattices is resampled. Anything that
 cannot cross - a contour outside the destination volume, a mask that does not
-overlap it - lands in the dataset's *Warnings* section.
+overlap it - lands in the workspace's *Warnings* section.
 
 ## Renaming
 
@@ -569,18 +581,18 @@ files a study was loaded from are never modified.
 
 ![comparison mode](screenshot_comparison.png)
 
-*Two opposite breathing phases of the same 4DCT as datasets A and B, each with
+*Two opposite breathing phases of the same 4DCT as workspaces A and B, each with
 its phase-specific structure set; the synced crosshair pins every pane to
 the same patient-space point inside the tumor.*
 
-Load a second dataset (menu, tree copy/move, or two directories on the command
-line) and the window splits into two rows - dataset A on top, dataset B below,
-each showing whatever *Settings ▸ View layout* gives it. Each dataset keeps
+Load a second workspace (menu, tree copy/move, or two directories on the command
+line) and the window splits into two rows - workspace A on top, workspace B below,
+each showing whatever *Settings ▸ View layout* gives it. Each workspace keeps
 its own structures, dose and plan panels in the sidebar; window/level and dose
 display are shared.
 
-**Sync** (the toolbar button, or *View ▸ Sync the two datasets*; both appear
-whenever two datasets are loaded - it carries far more than the crosshair,
+**Sync** (the toolbar button, or *View ▸ Sync the two workspaces*; both appear
+whenever two workspaces are loaded - it carries far more than the crosshair,
 so it no longer goes away with it) keeps the two rows showing the same
 thing. It carries six things across: the crosshair, through **patient
 coordinates** - with a registration active, through the recovered transform
@@ -588,24 +600,24 @@ instead, see [registration.md](registration.md) - the slice that follows it,
 a slice **scrolled or scrubbed** in a pane (through the same patient
 coordinates, so the paired pane lands on whatever slice of the other volume
 lies there, and neither crosshair moves), the **zoom** and **pan** of a
-pane onto the other dataset's pane of the same plane, and both **players**
+pane onto the other workspace's pane of the same plane, and both **players**
 (see below). Zoom is screen pixels
 per millimetre and pan is millimetres off the image centre, so copying them
 puts the two rows at the same scale and the same offset whatever the two
 matrices are; what cannot be carried across two
-unrelated images is not pretended. Window/level is shared by both datasets
-either way. Off, each dataset is navigated on its own.
+unrelated images is not pretended. Window/level is shared by both workspaces
+either way. Off, each workspace is navigated on its own.
 
 With the bundled data: load `data-test/`, and both 4DCT phases appear as
 two series of one study. Right-click *CT 4DCT_phase_050* ▶ *Copy series to
-dataset B* - the phase moves into the lower row with its own phase-specific
+workspace B* - the phase moves into the lower row with its own phase-specific
 RTSTRUCT and comparison mode switches on. Click the tumor in any pane: every
 pane jumps to that point, and the rows show the respiratory differences.
 
 ## Planar images (DX / CR / RTIMAGE)
 
 Digital radiographs and RT images (portal/setup images) in the study folder -
-plus any DRR added from the DRR window with *➕ Add to dataset A/B* (see
+plus any DRR added from the DRR window with *➕ Add to workspace A/B* (see
 [drr.md](drr.md)) - are listed in the sidebar and open in floating viewer
 windows with their own window/level (DICOM default at open; auto, manual, or
 right-drag like the CT views), correct physical aspect ratio (imager /

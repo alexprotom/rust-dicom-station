@@ -72,7 +72,7 @@ row puts the tool down.
   click, double-click or `Enter` closes. See *Following the edge* below.
 
 All six work in **any** of the three views. `Ctrl`-click picks the structure
-under the pointer; `Ctrl+Z` undoes the last contour edit of the dataset under
+under the pointer; `Ctrl+Z` undoes the last contour edit of the workspace under
 the pointer.
 
 ### What a stroke does to what is there
@@ -144,9 +144,10 @@ the toolbar, make another.
 
 ## The Structure editor
 
-*Modules ▶ Structure editor* (right panel, F10; on by default) is where a
-whole structure is made or changed, in three foldable sections: **Insert
-structure** (an empty structure, a point of interest, or a generated one -
+*Modules ▶ Structure editor* (right panel, F10; switch it on in the *Modules*
+menu) is where a whole structure is made or changed, in three foldable
+sections: **Insert structure** (an empty structure, a point of interest, or a
+generated one -
 [generators.md](generators.md)), **Edit structure** (below) and **Combine
 structures** ([structure-algebra.md](structure-algebra.md)). Right-clicking
 a structure in the list and choosing *📝 Edit in the Structure editor*
@@ -193,7 +194,7 @@ the stroke under the pointer. Every button is one undo step.
   than the image in the plane and only as large as the structure, resampled
   at the moved position and traced again - so the structure lands on the
   slices it now crosses without visibly losing its shape. **Draw axis**
-  switches the left button in the views of the editor's dataset to drawing
+  switches the left button in the views of the editor's workspace to drawing
   an axis (a white line, one slice thick, shown in every view and in the 3D
   window); *Move* then shifts the structure by so many millimetres along it,
   from its first point towards its second, and *Rotate* turns the structure
@@ -208,13 +209,13 @@ the stroke under the pointer. Every button is one undo step.
   axes: **Save** writes the axis as two points in patient millimetres to
   `user_data/structure_editor/user_axes` in the program's data folder
   (`%LOCALAPPDATA%\RustDICOMStation` on Windows), a plain text `.axis` file
-  that reads back on any dataset of the same frame; **Load** picks one from
+  that reads back on any workspace of the same frame; **Load** picks one from
   there; **Save last** / **Load last** keep one axis in memory for the
   running program only. An axis loaded from either arrives kept, since it
   is already the one that was wanted. The ✋ in the block's own
   title line drags the selected structure with the left button in any view,
   in the plane of that view, one undo step per drag. **Back** undoes the
-  last edit of the dataset; **Reset** puts the structure back where it was
+  last edit of the workspace; **Reset** puts the structure back where it was
   before the first move. A structure moved past the first or last image
   slice is not cut: the slices outside the field of view are kept with
   their signed slice index, follow every further move, and come back into
@@ -228,6 +229,45 @@ the stroke under the pointer. Every button is one undo step.
   [structure-algebra.md](structure-algebra.md#derived-structures-the-recipe-stays);
   editing a derived structure by hand here marks it *overridden*, because the
   recipe no longer describes what is on the screen.
+
+### Editing a segmentation
+
+The section above is built around contours, and most of it means nothing to a
+mask: there is no interpolation between slices of something already filled
+everywhere, no point limit, no outline to smooth. The operations a painted
+mask *does* need are ones the program already has for its generators and its
+auto tools, so when the editor is on a segmentation the section shows those
+instead.
+
+**Edit:** at the top of the section switches between the two. It appears only
+when the workspace holds both an RT structure set and a segmentation series -
+with one of them alone there is nothing to choose, and the editor follows
+whatever is there rather than saying "nothing is selected" when it means "not
+that kind". The subject is the selected segment of the segmentation series,
+the same one the voxel tools paint into ([segmentation.md](segmentation.md)).
+
+The header is the segment's colour, its name, its volume in cm³, how many
+slices it touches and how many voxels it holds. Under it:
+
+* **Tidy** - *Keep largest* throws away every connected piece but the
+  biggest, which is what a threshold's specks need; *Remove holes* fills the
+  enclosed holes slice by slice - the marrow inside a bone, the lumen inside
+  a wall.
+* **Grow and shrink** - a margin in millimetres on the volume's own lattice,
+  so anisotropic spacing is accounted for rather than counted in pixels.
+* **Whole segmentation** - *▣ To RT structure* traces the mask into closed
+  planar contours in the active structure set and switches the editor onto
+  it, so a mask can be finished with the contour tools; the segmentation
+  itself stays where it is. *Clear* empties the mask and keeps the
+  segmentation; *🗑 Delete* removes it from the series.
+
+None of this is a new algorithm: it is the cleanup pass, the millimetre
+morphology and the mask-to-contour tracer the rest of the program already
+runs, given a place in the editor. Each of these operations is one undo step,
+recorded as the voxels it changed, so it takes back exactly like a brush
+stroke - and where a change is so wholesale that recording it would cost more
+than the mask itself, the history is dropped rather than left describing a
+mask that is no longer there.
 
 ## The drawing plane
 
@@ -260,7 +300,7 @@ the structure's centre of gravity.
 
 Two points can be compared like anything else in *◑ Structure comparison*,
 which then reports their separation instead of a Dice score. When the two
-are meant to be the same landmark in two datasets, that separation is the
+are meant to be the same landmark in two workspaces, that separation is the
 target registration error.
 
 ## Templates, and locking a set

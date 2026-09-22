@@ -59,10 +59,10 @@ pub(super) struct StatRow {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum DiceRef {
     None,
-    /// The structure or segment of the same name in the other dataset -
+    /// The structure or segment of the same name in the other workspace -
     /// what a propagation, a phase or a second observer is checked with.
     SameNameOther,
-    /// One structure or segment of either dataset, for every row.
+    /// One structure or segment of either workspace, for every row.
     Item {
         slot: usize,
         item: ItemRef,
@@ -144,7 +144,7 @@ fn item_named(study: &LoadedStudy, name: &str) -> Option<ItemRef> {
 }
 
 /// One item of a study as a mask on its own lattice, with the name the
-/// Dice column shows for it (suffixed with the dataset when it is the other
+/// Dice column shows for it (suffixed with the workspace when it is the other
 /// one).
 fn reference_mask(
     study: &LoadedStudy,
@@ -189,7 +189,7 @@ fn voxel_cm3(spacing: [f64; 3], voxels: usize) -> f64 {
 
 impl ViewerApp {
     pub(super) fn open_stats_dialog(&mut self, slot: usize) {
-        // With a second dataset loaded the natural reference is the
+        // With a second workspace loaded the natural reference is the
         // same-named structure over there; alone, there is none.
         let dice_ref = if self.slots[1 - slot.min(1)].study.is_some() {
             DiceRef::SameNameOther
@@ -400,7 +400,7 @@ impl ViewerApp {
         }
         let has = [self.slots[0].study.is_some(), self.slots[1].study.is_some()];
         let other_loaded = has[1 - slot.min(1)];
-        // Every structure and segment of both datasets, as the Dice
+        // Every structure and segment of both workspaces, as the Dice
         // reference picker lists them.
         let references: Vec<(DiceRef, String)> = (0..2)
             .filter(|s| has[*s])
@@ -429,7 +429,7 @@ impl ViewerApp {
             &mut open,
             detach::WinOpts::width(700.0),
             |ui| {
-                switch = seg_engines::dataset_row(ui, d.slot, has, true);
+                switch = seg_engines::workspace_row(ui, d.slot, has, true);
                 ui.label(
                     egui::RichText::new(
                         "Volume twice over - the area of the contours times the slice \
@@ -443,7 +443,10 @@ impl ViewerApp {
                     let text = match d.dice_ref {
                         DiceRef::None => "(nothing)".to_string(),
                         DiceRef::SameNameOther => {
-                            format!("the same name in dataset {}", SLOT_NAMES[1 - d.slot.min(1)])
+                            format!(
+                                "the same name in workspace {}",
+                                SLOT_NAMES[1 - d.slot.min(1)]
+                            )
                         }
                         DiceRef::Item { .. } => references
                             .iter()
@@ -462,7 +465,7 @@ impl ViewerApp {
                                     &mut d.dice_ref,
                                     DiceRef::SameNameOther,
                                     format!(
-                                        "the same name in dataset {}",
+                                        "the same name in workspace {}",
                                         SLOT_NAMES[1 - d.slot.min(1)]
                                     ),
                                 );
@@ -474,10 +477,10 @@ impl ViewerApp {
                         .response
                         .on_hover_text(
                             "What every row's Dice is measured against: the structure of \
-                             the same name in the other dataset (a propagation or a second \
+                             the same name in the other workspace (a propagation or a second \
                              observer), or one structure for all rows (an auto-segmentation \
                              against the manual one). Contours are rasterized onto this \
-                             dataset's lattice first.",
+                             workspace's lattice first.",
                         );
                     if d.dice_ref != before {
                         refresh = true;
@@ -582,7 +585,7 @@ impl ViewerApp {
                         });
                 });
                 if d.rows.is_empty() {
-                    ui.label("This dataset has no structures yet.");
+                    ui.label("This workspace has no structures yet.");
                 }
                 ui.separator();
                 ui.horizontal(|ui| {

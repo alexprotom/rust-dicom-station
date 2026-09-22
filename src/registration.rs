@@ -73,9 +73,16 @@ pub enum RegMethod {
     /// plastimatch `landmark_warp`: a radial-basis warp through paired
     /// points - no image intensities involved.
     PlastimatchLandmark,
+    /// Typed in, or read from a file: a matrix given rather than recovered.
+    /// Nothing was optimized, so the metric numbers of a result carrying
+    /// this method mean nothing and are not shown.
+    Given,
 }
 
 impl RegMethod {
+    /// The methods offered as something to *run*. `Given` is not among
+    /// them: it is what a matrix that was handed over is filed as, not a
+    /// registration anyone asks the program to perform.
     pub const ALL: [RegMethod; 4] = [
         RegMethod::ElastixRigid,
         RegMethod::ElastixBSpline,
@@ -90,6 +97,7 @@ impl RegMethod {
             RegMethod::ElastixBSpline => "Deformable - rigid + B-spline FFD (elastix, ASGD)",
             RegMethod::PlastimatchBSpline => "Deformable - B-spline (plastimatch, L-BFGS)",
             RegMethod::PlastimatchLandmark => "Deformable - landmark warp (plastimatch, RBF)",
+            RegMethod::Given => "Given - a transform matrix, not a recovered one",
         }
     }
 
@@ -100,6 +108,7 @@ impl RegMethod {
             RegMethod::ElastixBSpline => "B-spline (elastix)",
             RegMethod::PlastimatchBSpline => "B-spline (plastimatch)",
             RegMethod::PlastimatchLandmark => "Landmarks (plastimatch)",
+            RegMethod::Given => "Given",
         }
     }
 
@@ -129,6 +138,11 @@ impl RegMethod {
                  all, so it works across modalities and where an intensity metric has \
                  nothing to lock onto."
             }
+            RegMethod::Given => {
+                "A matrix given rather than recovered: typed into the transform editor, \
+                 or read from a REG object. Nothing was optimized, so there is no \
+                 metric to report - only what the matrix does."
+            }
         }
     }
 
@@ -137,17 +151,18 @@ impl RegMethod {
         match self {
             RegMethod::ElastixRigid | RegMethod::ElastixBSpline => "elastix",
             RegMethod::PlastimatchBSpline | RegMethod::PlastimatchLandmark => "plastimatch",
+            RegMethod::Given => "given",
         }
     }
 
     /// True when the result carries a deformation, not just a rigid body.
     pub fn is_deformable(self) -> bool {
-        self != RegMethod::ElastixRigid
+        !matches!(self, RegMethod::ElastixRigid | RegMethod::Given)
     }
 
     /// True when image intensities drive the result.
     pub fn is_intensity_based(self) -> bool {
-        self != RegMethod::PlastimatchLandmark
+        !matches!(self, RegMethod::PlastimatchLandmark | RegMethod::Given)
     }
 }
 
@@ -836,6 +851,162 @@ impl Warp {
     }
 }
 
+/// A 4 x 4 homogeneous matrix in patient millimetres, row-major, the way a
+/// planning system or 3D Slicer writes one.
+///
+/// This is how a transform is shown to be read and edited by hand: the top
+/// three rows are the mapping, the last is `0 0 0 1`. It carries more than a
+/// [`RigidTransform`] can - a hand-typed matrix may scale or shear, and
+/// nothing here objects - which is exactly why a hand-edited one replaces the
+/// recovered mapping wholesale rather than being decomposed back into six
+/// parameters it might not fit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mat4(pub [[f64; 4]; 4]);
+
+impl Default for Mat4 {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+impl Mat4 {
+    pub const IDENTITY: Mat4 = Mat4([
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]);
+
+    /// A pure shift.
+    pub fn translation(d: Vec3) -> Self {
+        let mut m = Mat4::IDENTITY;
+        m.0[0][3] = d.x;
+        m.0[1][3] = d.y;
+        m.0[2][3] = d.z;
+        m
+    }
+
+    /// The same mapping a rigid transform performs.
+    ///
+    /// A rigid transform turns about its own centre, `q = R(p - c) + c + t`;
+    /// a matrix has no centre, so the centre is folded into the translation
+    /// column as `c - Rc + t`.
+    pub fn from_rigid(r: &RigidTransform) -> Self {
+        let m = r.matrix();
+        let c = r.center;
+        let t = Vec3::new(r.params[3], r.params[4], r.params[5]);
+        let rc = Vec3::new(
+            m[0] * c.x + m[1] * c.y + m[2] * c.z,
+            m[3] * c.x + m[4] * c.y + m[5] * c.z,
+            m[6] * c.x + m[7] * c.y + m[8] * c.z,
+        );
+        let off = c - rc + t;
+        Mat4([
+            [m[0], m[1], m[2], off.x],
+            [m[3], m[4], m[5], off.y],
+            [m[6], m[7], m[8], off.z],
+            [0.0, 0.0, 0.0, 1.0],
+        ])
+    }
+
+    #[inline]
+    pub fn map(&self, p: Vec3) -> Vec3 {
+        let m = &self.0;
+        Vec3::new(
+            m[0][0] * p.x + m[0][1] * p.y + m[0][2] * p.z + m[0][3],
+            m[1][0] * p.x + m[1][1] * p.y + m[1][2] * p.z + m[1][3],
+            m[2][0] * p.x + m[2][1] * p.y + m[2][2] * p.z + m[2][3],
+        )
+    }
+
+    /// Is this near enough the identity to be no transform at all?
+    pub fn is_identity(&self) -> bool {
+        self.0
+            .iter()
+            .zip(Mat4::IDENTITY.0.iter())
+            .all(|(a, b)| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9))
+    }
+
+    /// The inverse, or `None` for a matrix that maps space flat.
+    ///
+    /// Only the upper-left 3 x 3 and the translation column are inverted:
+    /// the bottom row of a transform matrix is `0 0 0 1` by construction and
+    /// a perspective row would not be a spatial transform at all.
+    pub fn invert(&self) -> Option<Mat4> {
+        let m = &self.0;
+        let (a, b, c) = (m[0][0], m[0][1], m[0][2]);
+        let (d, e, f) = (m[1][0], m[1][1], m[1][2]);
+        let (g, h, i) = (m[2][0], m[2][1], m[2][2]);
+        let det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+        if det.abs() < 1e-12 {
+            return None;
+        }
+        let inv = [
+            [
+                (e * i - f * h) / det,
+                (c * h - b * i) / det,
+                (b * f - c * e) / det,
+            ],
+            [
+                (f * g - d * i) / det,
+                (a * i - c * g) / det,
+                (c * d - a * f) / det,
+            ],
+            [
+                (d * h - e * g) / det,
+                (b * g - a * h) / det,
+                (a * e - b * d) / det,
+            ],
+        ];
+        let t = [m[0][3], m[1][3], m[2][3]];
+        let ti = [
+            -(inv[0][0] * t[0] + inv[0][1] * t[1] + inv[0][2] * t[2]),
+            -(inv[1][0] * t[0] + inv[1][1] * t[1] + inv[1][2] * t[2]),
+            -(inv[2][0] * t[0] + inv[2][1] * t[1] + inv[2][2] * t[2]),
+        ];
+        Some(Mat4([
+            [inv[0][0], inv[0][1], inv[0][2], ti[0]],
+            [inv[1][0], inv[1][1], inv[1][2], ti[1]],
+            [inv[2][0], inv[2][1], inv[2][2], ti[2]],
+            [0.0, 0.0, 0.0, 1.0],
+        ]))
+    }
+
+    /// The sixteen numbers, whitespace separated, row by row - what Slicer
+    /// puts on the clipboard and what it reads back.
+    pub fn to_text(&self) -> String {
+        self.0
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|v| format!("{v:.6}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Read sixteen numbers back, whatever separates them.
+    pub fn from_text(text: &str) -> Option<Mat4> {
+        let v: Vec<f64> = text
+            .split(|c: char| !(c.is_ascii_digit() || "+-.eE".contains(c)))
+            .filter(|t| !t.is_empty())
+            .filter_map(|t| t.parse::<f64>().ok())
+            .collect();
+        if v.len() != 16 {
+            return None;
+        }
+        let mut m = [[0.0; 4]; 4];
+        for (r, row) in m.iter_mut().enumerate() {
+            for (c, cell) in row.iter_mut().enumerate() {
+                *cell = v[r * 4 + c];
+            }
+        }
+        Some(Mat4(m))
+    }
+}
+
 /// The full recovered mapping: fixed patient point → moving patient point.
 /// Deformable results compose as `T(p) = T_rigid(p) + d_warp(p)`
 /// (displacement parameterized on the fixed domain, elastix "compose" style).
@@ -843,6 +1014,14 @@ impl Warp {
 pub struct Transform3 {
     pub rigid: RigidTransform,
     pub warp: Warp,
+    /// A hand-edited matrix standing in for the whole recovered mapping.
+    ///
+    /// When it is set, `map` and `unmap` are that matrix and nothing else -
+    /// not the rigid part, not the warp. A transform typed in by hand is a
+    /// statement about where things go, and composing it with a result it
+    /// was meant to replace would make it a correction to something the user
+    /// has already said they do not want.
+    pub manual: Option<Mat4>,
 }
 
 impl Transform3 {
@@ -851,11 +1030,32 @@ impl Transform3 {
         Transform3 {
             rigid,
             warp: Warp::None,
+            manual: None,
         }
+    }
+
+    /// A mapping that is nothing but a hand-edited matrix.
+    pub fn from_matrix(m: Mat4, center: Vec3) -> Self {
+        Transform3 {
+            rigid: RigidTransform::identity(center),
+            warp: Warp::None,
+            manual: Some(m),
+        }
+    }
+
+    /// This mapping as a matrix, for showing and for editing.
+    ///
+    /// A deformable result has no single matrix; what comes back is its
+    /// rigid part, which is what a hand edit would start from.
+    pub fn as_matrix(&self) -> Mat4 {
+        self.manual.unwrap_or_else(|| Mat4::from_rigid(&self.rigid))
     }
 
     #[inline]
     pub fn map(&self, p: Vec3) -> Vec3 {
+        if let Some(m) = &self.manual {
+            return m.map(p);
+        }
         let q = self.rigid.map(p);
         match &self.warp {
             Warp::None => q,
@@ -874,6 +1074,11 @@ impl Transform3 {
     /// iteration for the deformable part (adequate for the smooth, moderate
     /// deformations these models produce).
     pub fn unmap(&self, q: Vec3) -> Vec3 {
+        if let Some(m) = &self.manual {
+            // A singular hand-typed matrix has no inverse; the point it came
+            // from is the best answer left.
+            return m.invert().map(|i| i.map(q)).unwrap_or(q);
+        }
         match &self.warp {
             Warp::None => self.rigid.unmap(q),
             _ => {
@@ -1525,6 +1730,9 @@ pub fn register(
         RegMethod::ElastixRigid | RegMethod::ElastixBSpline => elastix::run(&setup, progress)?,
         RegMethod::PlastimatchBSpline => plastimatch::run(&setup, progress)?,
         RegMethod::PlastimatchLandmark => unreachable!("handled above"),
+        // Not something anyone asks to run: a given matrix is installed
+        // directly, never optimized towards.
+        RegMethod::Given => bail!("a given transform matrix is not a registration to run"),
     };
 
     // Whatever the engine minimized, the reported before/after pair is in

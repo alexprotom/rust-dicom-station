@@ -14,7 +14,7 @@
 //! custom`] and are never replaced by re-detection.
 //!
 //! Members reference series by UID, not by index - series are renamed,
-//! removed and moved between datasets, and a UID survives all of that
+//! removed and moved between workspaces, and a UID survives all of that
 //! (an unresolvable UID simply drops out of the resolved view).
 
 use crate::loader::SeriesInfo;

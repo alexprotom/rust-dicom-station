@@ -2,7 +2,7 @@
 //!
 //! A small PACS in the sense that matters day to day: every study ever
 //! imported is filed under its patient, listed without opening a single
-//! DICOM file, loaded into a viewer dataset on demand, and given back the
+//! DICOM file, loaded into a viewer workspace on demand, and given back the
 //! contours and segmentations drawn on it.
 //!
 //! ## Layout

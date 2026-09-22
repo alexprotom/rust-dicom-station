@@ -5,11 +5,7 @@ use super::*;
 impl ViewerApp {
     // -- Menu bar ---------------------------------------------------------
     pub(super) fn menu_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let mut open_a = false;
-        let mut open_b = false;
-        let mut files_a = false;
-        let mut files_b = false;
-        let mut close_b = false;
+        let mut ask_ws: Option<workspace_pick::WsAsk> = None;
         let mut open_gen = false;
         let mut open_testdata = false;
         let mut open_save_img = false;
@@ -25,63 +21,43 @@ impl ViewerApp {
         egui::Panel::top(egui::Id::new("menu_bar")).show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
+                    // One entry each, not one per workspace: the entry says
+                    // what is being done and the window that follows says
+                    // where, which is a menu that does not grow a line every
+                    // time a workspace is added.
                     if tip_button(
                         ui,
-                        "📂 Add DICOM folder to A",
-                        "Scan a folder and add its patients / studies / series to \
-                         dataset A (existing content stays loaded)",
+                        "📂 Add DICOM folder",
+                        "Scan a folder and add its patients / studies / series to a \
+                         workspace you choose (existing content stays loaded)",
                     ) {
-                        open_a = true;
+                        ask_ws = Some(workspace_pick::WsAsk::AddFolder);
                         ui.close();
                     }
-                    if tip_button(
-                        ui,
-                        "📂 Add DICOM folder to B",
-                        "Scan a folder and add its patients / studies / series to \
-                         dataset B (existing content stays loaded)",
-                    ) {
-                        open_b = true;
-                        ui.close();
-                    }
-                    ui.separator();
                     // Individual files, for the objects that do not come as a
                     // folder of slices: an RT image, a structure set, a plan,
                     // a single slice. They merge exactly as a folder does.
                     if tip_button(
                         ui,
-                        "📄 Add DICOM file(s) to A",
+                        "📄 Add DICOM file(s)",
                         "Open one or more DICOM files directly - RT images, a \
                          structure set, a plan, single slices. They do not have to \
                          form an image volume",
                     ) {
-                        files_a = true;
-                        ui.close();
-                    }
-                    if tip_button(
-                        ui,
-                        "📄 Add DICOM file(s) to B",
-                        "Open one or more DICOM files directly - RT images, a \
-                         structure set, a plan, single slices. They do not have to \
-                         form an image volume",
-                    ) {
-                        files_b = true;
+                        ask_ws = Some(workspace_pick::WsAsk::AddFiles);
                         ui.close();
                     }
                     ui.separator();
-                    let has_a = self.slots[0].study.is_some();
-                    if ui
-                        .add_enabled(has_a, egui::Button::new("Clear dataset A"))
-                        .clicked()
-                    {
-                        self.tree_clear_slot(0);
-                        ui.close();
-                    }
-                    let has_b = self.slots[1].study.is_some();
-                    if ui
-                        .add_enabled(has_b, egui::Button::new("Close dataset B"))
-                        .clicked()
-                    {
-                        close_b = true;
+                    let anything_loaded =
+                        (0..SLOT_NAMES.len()).any(|s| self.slots[s].study.is_some());
+                    if enabled_tip_button(
+                        ui,
+                        anything_loaded,
+                        "🗑 Clear workspace",
+                        "Empty a workspace you choose: its patients, studies, series \
+                         and everything drawn on them. Nothing is written to disk",
+                    ) {
+                        ask_ws = Some(workspace_pick::WsAsk::Clear);
                         ui.close();
                     }
                     ui.separator();
@@ -94,7 +70,7 @@ impl ViewerApp {
                         anything,
                         "💾 Export DICOM",
                         "Write any patients, studies, series and RT objects of either \
-                         dataset as DICOM - with every name and UID shown and editable, \
+                         workspace as DICOM - with every name and UID shown and editable, \
                          structures as RTSTRUCT or SEG, and the references between the \
                          objects kept intact",
                     ) {
@@ -105,7 +81,7 @@ impl ViewerApp {
                     if tip_button(
                         ui,
                         "💾 Save image",
-                        "A picture of the views as they are on screen - one dataset's row \
+                        "A picture of the views as they are on screen - one workspace's row \
                          or both - as a PNG or a JPEG, at a chosen resolution",
                     ) {
                         open_save_img = true;
@@ -131,16 +107,16 @@ impl ViewerApp {
                         ui.checkbox(&mut self.show_crosshair, "Crosshair");
                         // Syncing carries the slice, the zoom, the pan and
                         // both players as well as the crosshair, so all it
-                        // needs is a second dataset to carry them to.
+                        // needs is a second workspace to carry them to.
                         if self.both_volumes() {
-                            ui.checkbox(&mut self.link_studies, "Sync the two datasets")
+                            ui.checkbox(&mut self.link_studies, "Sync the two workspaces")
                                 .on_hover_text(
-                                    "Move, scroll, zoom or play one dataset and the other \
+                                    "Move, scroll, zoom or play one workspace and the other \
                              follows: the crosshair to the same patient point (through the \
                              active registration when there is one), the slice with it, a \
                              scrolled or played slice the same way, the zoom and the pan of \
-                             a view onto the other dataset's view of the same plane, and a \
-                             4D run through both groups at once. Off, each dataset is \
+                             a view onto the other workspace's view of the same plane, and a \
+                             4D run through both groups at once. Off, each workspace is \
                              navigated on its own.",
                                 );
                         }
@@ -209,16 +185,16 @@ impl ViewerApp {
                         modules_changed |= ui
                             .checkbox(&mut self.module_registration, "Image registration")
                             .on_hover_text(
-                                "Align two datasets: direction, method, region, parameters, \
+                                "Align two workspaces: direction, method, region, parameters, \
                              landmarks, analysis, fusion and the deformation vector field. \
-                             Needs two loaded datasets to run.",
+                             Needs two loaded workspaces to run.",
                             )
                             .changed();
                         modules_changed |= ui
                             .checkbox(&mut self.module_simulation, "Image simulation")
                             .on_hover_text(
                                 "Registration QA: apply a known rigid motion and Gaussian \
-                             deformation to one dataset and generate the result into the \
+                             deformation to one workspace and generate the result into the \
                              other - the ground truth a registration can be measured against.",
                             )
                             .changed();
@@ -243,7 +219,7 @@ impl ViewerApp {
                         modules_changed |= ui
                             .checkbox(&mut self.module_propagation, "Structure propagation")
                             .on_hover_text(
-                                "Carry contours and segmentations from one dataset to the \
+                                "Carry contours and segmentations from one workspace to the \
                              other through the active registration - globally, or refined \
                              on an enclosing structure first. Sits next to the \
                              registration that drives it.",
@@ -272,7 +248,7 @@ impl ViewerApp {
                         "◑ Structure comparison",
                         "Volumes, centroid offset, Dice, HD95, surface distances and \
                          the least-squares rigid offset of any two structures - \
-                         within a dataset or across the two",
+                         within a workspace or across the two",
                     ) {
                         self.open_compare_dialog(0);
                         ui.close();
@@ -308,7 +284,7 @@ impl ViewerApp {
                         ui,
                         both,
                         "◎ Transfer by relationship",
-                        "Place a structure into the other dataset at the same offset \
+                        "Place a structure into the other workspace at the same offset \
                          from a reference structure (e.g. the heart) - the \
                          target-reference relationship travels, not a registration",
                     ) {
@@ -368,7 +344,7 @@ impl ViewerApp {
                         ui,
                         "🏥 PACS - patient archive",
                         "The local archive: every study filed here, ready to be taken \
-                         into a dataset and given back the structures and \
+                         into a workspace and given back the structures and \
                          segmentations drawn on it",
                     ) {
                         open_pacs = true;
@@ -520,15 +496,15 @@ impl ViewerApp {
                     ui.label("Buttons:");
                     ui.weak("⟲ (view corner) - reset that view's zoom, pan and slice");
                     ui.weak("⛶ / ⊞ - maximize that view / restore the layout");
-                    ui.weak("⟲ (toolbar) - reset every view of both datasets");
+                    ui.weak("⟲ (toolbar) - reset every view of both workspaces");
                     ui.weak("✏ Draw structure (toolbar) - unfold or fold the drawing tools");
                     ui.weak(
                         "⌖ - show / hide the crosshair; hidden, left click no \
                          longer navigates",
                     );
                     ui.weak(
-                        "Sync - keep datasets A and B on the same point, the same scale \
-                         and the same frame of a run (shown with two datasets loaded)",
+                        "Sync - keep workspaces A and B on the same point, the same scale \
+                         and the same frame of a run (shown with two workspaces loaded)",
                     );
                     ui.separator();
                     ui.weak(format!(
@@ -539,30 +515,8 @@ impl ViewerApp {
             });
         });
 
-        if open_a {
-            self.ask_folder("Select DICOM folder to add to dataset A", |app, dir| {
-                app.start_load(0, dir);
-            });
-        }
-        if open_b {
-            self.ask_folder("Select DICOM folder to add to dataset B", |app, dir| {
-                app.comparison = true;
-                app.start_load(1, dir);
-            });
-        }
-        if files_a {
-            self.ask_files("Select DICOM file(s) to add to dataset A", |app, paths| {
-                app.start_load_files(0, paths);
-            });
-        }
-        if files_b {
-            self.ask_files("Select DICOM file(s) to add to dataset B", |app, paths| {
-                app.comparison = true;
-                app.start_load_files(1, paths);
-            });
-        }
-        if close_b {
-            self.close_comparison();
+        if let Some(ask) = ask_ws {
+            self.ask_workspace(ask);
         }
         if open_save_img && self.save_img.is_none() {
             self.save_img = Some(snapshot::SaveImgDialog::default());
@@ -665,9 +619,9 @@ impl ViewerApp {
                         self.wl_preset = Some(i);
                     }
                     if full_range {
-                        // Read the range off a dataset that has one; an empty
+                        // Read the range off a workspace that has one; an empty
                         // volume would otherwise set the shared window to the
-                        // degenerate C 0 / W 1 and blank the other dataset.
+                        // degenerate C 0 / W 1 and blank the other workspace.
                         let src = [self.hovered_slot.min(1), 1 - self.hovered_slot.min(1)]
                             .into_iter()
                             .find(|s| self.slots[*s].has_volume());
@@ -701,7 +655,7 @@ impl ViewerApp {
                             has_3d,
                             format!("3D {slot_name}"),
                             format!(
-                                "Open a 3D surface rendering of dataset {slot_name}'s structures \
+                                "Open a 3D surface rendering of workspace {slot_name}'s structures \
                                  and segmentations"
                             ),
                         ) {
@@ -723,7 +677,7 @@ impl ViewerApp {
                         self.show_crosshair = !self.show_crosshair;
                     }
 
-                    // Syncing needs a second dataset to sync with, and
+                    // Syncing needs a second workspace to sync with, and
                     // nothing else: it carries the slice, the zoom, the pan
                     // and both players as well as the crosshair, so it stays
                     // on the bar whether or not the crosshair is shown.
@@ -731,24 +685,24 @@ impl ViewerApp {
                         && ui
                             .add(egui::Button::selectable(self.link_studies, "Sync"))
                             .on_hover_text(
-                                "Keep datasets A and B together: the crosshair, the slice, \
+                                "Keep workspaces A and B together: the crosshair, the slice, \
                                  a scrolled or played slice, the zoom and the pan of a view \
-                                 carry over to the other dataset's view of the same plane, \
+                                 carry over to the other workspace's view of the same plane, \
                                  through the active registration when there is one, and a \
                                  4D run walks both groups at once, so the two rows show the \
                                  same thing at the same scale.\n\
-                                 Off: each dataset is navigated on its own",
+                                 Off: each workspace is navigated on its own",
                             )
                             .clicked()
                     {
                         self.link_studies = !self.link_studies;
                     }
 
-                    // Reset every view of both datasets.
+                    // Reset every view of both workspaces.
                     if tip_button(
                         ui,
                         "⟲",
-                        "Reset every view of both datasets: fit zoom, clear pan \
+                        "Reset every view of both workspaces: fit zoom, clear pan \
                          and put the crosshairs back at the volume centers",
                     ) {
                         self.reset_all_views();
@@ -839,7 +793,7 @@ impl ViewerApp {
                     } else {
                         String::new()
                     };
-                    // Both datasets report in full: each one's own cursor is
+                    // Both workspaces report in full: each one's own cursor is
                     // a real position in its own volume, whether it was
                     // clicked there or followed the other one.
                     ui.monospace(format!(

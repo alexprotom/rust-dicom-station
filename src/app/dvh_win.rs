@@ -33,7 +33,7 @@ use crate::progress::ProgressSink;
 use super::combine::ItemRef;
 use super::*;
 
-/// Which dose object, in which dataset.
+/// Which dose object, in which workspace.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct DoseRef {
     pub slot: usize,
@@ -110,7 +110,7 @@ pub struct DvhDone {
 }
 
 impl ViewerApp {
-    /// Every dose object of both datasets, as (reference, label).
+    /// Every dose object of both workspaces, as (reference, label).
     pub(super) fn dvh_dose_candidates(&self) -> Vec<(DoseRef, String)> {
         let mut out = Vec::new();
         for (slot, name) in SLOT_NAMES.iter().enumerate() {
@@ -139,7 +139,7 @@ impl ViewerApp {
         out
     }
 
-    /// Every structure and segment of both datasets, as (reference, label).
+    /// Every structure and segment of both workspaces, as (reference, label).
     pub(super) fn dvh_struct_candidates(&self) -> Vec<(StructRef, String)> {
         let mut out = Vec::new();
         for (slot, name) in SLOT_NAMES.iter().enumerate() {

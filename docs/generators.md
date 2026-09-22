@@ -10,6 +10,14 @@ What matters is where the result lands: an ordinary RT structure, editable
 with the contour tools from the moment it appears ([contours.md](contours.md)),
 not a read-only overlay.
 
+**Create as** at the top of the section says which kind. Every generator here
+builds a voxel mask; an RT structure is that mask traced into contours on the
+way out, and a **segmentation** is that mask kept as it is, painted into a
+segmentation series ([segmentation.md](segmentation.md)) and edited with the
+mask's own operations
+([contours.md](contours.md#editing-a-segmentation)). The ROI type belongs to
+a structure, so it greys out for a segmentation.
+
 ## Grey level
 
 Everything between two Hounsfield values, optionally **only inside** a

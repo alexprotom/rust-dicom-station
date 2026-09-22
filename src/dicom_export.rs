@@ -1134,11 +1134,11 @@ fn identity_matrix_item() -> InMemDicomObject {
 /// Everything a Deformable Spatial Registration needs besides the field.
 pub struct DvfExport<'a> {
     /// Frame of Reference the field's own lattice lives in - the *fixed*
-    /// dataset, since that is the domain a recovered transform is
+    /// workspace, since that is the domain a recovered transform is
     /// parameterized on.
     pub source_for_uid: &'a str,
     /// Frame of Reference the displacements point into - the *moving*
-    /// dataset.
+    /// workspace.
     pub target_for_uid: &'a str,
     pub study_uid: &'a str,
     pub patient_name: &'a str,
@@ -1233,7 +1233,7 @@ pub fn write_deformable_registration(
     put_is(&mut o, tags::SERIES_NUMBER, 1);
     put_is(&mut o, tags::INSTANCE_NUMBER, 1);
     // The Frame of Reference of the *instance* is where the displacements
-    // point: the moving dataset.
+    // point: the moving workspace.
     put_str(
         &mut o,
         tags::FRAME_OF_REFERENCE_UID,

@@ -9,18 +9,18 @@
 use super::*;
 use crate::imginfo::{describe, ImageInfo, Row};
 
-/// State of the module: which dataset it reads, and the last report of each.
+/// State of the module: which workspace it reads, and the last report of each.
 #[derive(Default)]
 pub(super) struct InfoState {
     pub(super) slot: usize,
-    /// One cached report per dataset, with the series UID it describes, so
+    /// One cached report per workspace, with the series UID it describes, so
     /// switching between A and B does not read every header again.
     cache: [Option<(String, ImageInfo)>; 2],
-    /// Show what the two datasets disagree about.
+    /// Show what the two workspaces disagree about.
     compare: bool,
 }
 
-/// The rows worth putting side by side when two datasets are compared: the
+/// The rows worth putting side by side when two workspaces are compared: the
 /// ones that decide whether they can be registered and measured together.
 const COMPARED: [&str; 10] = [
     "Modality",
@@ -47,7 +47,7 @@ impl ViewerApp {
         ui.separator();
     }
 
-    /// The cached report of `slot`, read again when the dataset now shows a
+    /// The cached report of `slot`, read again when the workspace now shows a
     /// different series.
     fn info_report(&mut self, slot: usize) -> Option<&ImageInfo> {
         let uid = self.slots[slot].displayed_uid()?.to_string();
@@ -63,13 +63,13 @@ impl ViewerApp {
 
     fn image_info_body(&mut self, ui: &mut egui::Ui) {
         if !self.any_volume() {
-            ui.weak("Load a dataset with an image volume");
+            ui.weak("Load a workspace with an image volume");
             return;
         }
         if !self.slots[self.info.slot].has_volume() {
             self.info.slot = self.first_volume_slot();
         }
-        if let Some(s) = seg_engines::dataset_row(ui, self.info.slot, self.volume_slots(), true) {
+        if let Some(s) = seg_engines::workspace_row(ui, self.info.slot, self.volume_slots(), true) {
             self.info.slot = s;
         }
         let slot = self.info.slot;
@@ -90,7 +90,7 @@ impl ViewerApp {
             }
             if both {
                 ui.checkbox(&mut self.info.compare, "Compare")
-                    .on_hover_text("Show what the two datasets disagree about");
+                    .on_hover_text("Show what the two workspaces disagree about");
             }
         });
         if refresh {
@@ -98,7 +98,7 @@ impl ViewerApp {
         }
 
         let Some(report) = self.info_report(slot).cloned() else {
-            ui.weak("This dataset shows no image series");
+            ui.weak("This workspace shows no image series");
             return;
         };
         if copy {
@@ -187,7 +187,7 @@ impl ViewerApp {
                 if differ == 0 {
                     ui.colored_label(
                         theme::good_color(ui.visuals()),
-                        "The two datasets agree on all of it",
+                        "The two workspaces agree on all of it",
                     );
                 } else if find(&mine, "Frame of reference") != find(&yours, "Frame of reference") {
                     ui.add_space(2.0);

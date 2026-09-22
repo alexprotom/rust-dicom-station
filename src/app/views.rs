@@ -42,7 +42,7 @@ impl ViewerApp {
         h ^ self.settings_gen.wrapping_mul(0x2545F4914F6CDD1D)
     }
 
-    // -- Central: one row per dataset, each of up to four panes -----------
+    // -- Central: one row per workspace, each of up to four panes -----------
     pub(super) fn central_views(&mut self, ui: &mut egui::Ui) {
         let backdrop = backdrop_color(ui.visuals());
         egui::CentralPanel::default_margins()
@@ -104,7 +104,7 @@ impl ViewerApp {
     }
 
     /// Does this row show the surface scene? The toolbar's *3D* button for
-    /// that dataset steps aside when it does.
+    /// that workspace steps aside when it does.
     pub(super) fn row_shows_scene(&self, slot: usize) -> bool {
         (slot == 0 || self.comparison) && self.row_panes(slot).contains(&PaneKind::Scene3d)
     }
@@ -133,7 +133,7 @@ impl ViewerApp {
         }
     }
 
-    /// Carry a view's zoom or pan onto the other dataset's view of the same
+    /// Carry a view's zoom or pan onto the other workspace's view of the same
     /// plane, while *Sync* is on.
     ///
     /// The crosshair and the slice already travel through
@@ -158,7 +158,7 @@ impl ViewerApp {
         }
     }
 
-    /// Carry a scrolled slice onto the other dataset's view of the same
+    /// Carry a scrolled slice onto the other workspace's view of the same
     /// plane, while *Sync* is on.
     ///
     /// The wheel moves a view through its own stack, so "the same slice"
@@ -283,7 +283,7 @@ impl ViewerApp {
                         resp.on_hover_text("A row has to show something");
                     } else if kind == PaneKind::Scene3d {
                         resp.on_hover_text(
-                            "Draw this dataset's surfaces in the row instead of in a \
+                            "Draw this workspace's surfaces in the row instead of in a \
                              window; the 3D button in the toolbar steps aside while it \
                              is here",
                         );
@@ -432,7 +432,7 @@ impl ViewerApp {
         painter.text(
             rect.center() - Vec2::new(0.0, 24.0),
             Align2::CENTER_CENTER,
-            format!("No dataset {}", SLOT_NAMES[slot]),
+            format!("No workspace {}", SLOT_NAMES[slot]),
             FontId::proportional(15.0),
             hint,
         );
@@ -443,7 +443,10 @@ impl ViewerApp {
             .clicked()
         {
             self.ask_folder(
-                &format!("Select DICOM folder to add to dataset {}", SLOT_NAMES[slot]),
+                &format!(
+                    "Select DICOM folder to add to workspace {}",
+                    SLOT_NAMES[slot]
+                ),
                 move |app, dir| app.start_load(slot, dir),
             );
         }
@@ -460,10 +463,10 @@ impl ViewerApp {
         }
     }
 
-    /// The pane shown for a loaded dataset that carries no image volume.
+    /// The pane shown for a loaded workspace that carries no image volume.
     ///
     /// Modelled on [`Self::empty_row`], but it says something different: the
-    /// dataset is *there*, it simply has nothing to reformat. Only the first
+    /// workspace is *there*, it simply has nothing to reformat. Only the first
     /// pane of the row carries the text, so the message is stated once
     /// rather than once per pane.
     fn no_volume_row(&mut self, ui: &mut egui::Ui, slot: usize, rect: Rect, first: bool) {
@@ -508,7 +511,7 @@ impl ViewerApp {
         painter.text(
             rect.center() - Vec2::new(0.0, 40.0),
             Align2::CENTER_CENTER,
-            format!("Dataset {} has no image volume", SLOT_NAMES[slot]),
+            format!("Workspace {} has no image volume", SLOT_NAMES[slot]),
             FontId::proportional(15.0),
             strong,
         );
@@ -527,11 +530,14 @@ impl ViewerApp {
             Rect::from_center_size(rect.center() + Vec2::new(0.0, 14.0), Vec2::new(240.0, 28.0));
         if ui
             .put(btn_rect, egui::Button::new("📂 Add DICOM folder"))
-            .on_hover_text("Add an image series to this dataset so the views have slices to show")
+            .on_hover_text("Add an image series to this workspace so the views have slices to show")
             .clicked()
         {
             self.ask_folder(
-                &format!("Select DICOM folder to add to dataset {}", SLOT_NAMES[slot]),
+                &format!(
+                    "Select DICOM folder to add to workspace {}",
+                    SLOT_NAMES[slot]
+                ),
                 move |app, dir| app.start_load(slot, dir),
             );
         }
@@ -555,8 +561,8 @@ impl ViewerApp {
         // ---- cache refresh (image, dose, contours) ----
         self.refresh_view_caches(&ctx, slot, idx);
 
-        // A dataset with no image series has nothing to reformat. It is a
-        // legitimate dataset all the same - RT images, a structure set, a
+        // A workspace with no image series has nothing to reformat. It is a
+        // legitimate workspace all the same - RT images, a structure set, a
         // plan - so the pane says so and offers the folder that would give
         // it a volume, instead of three black rectangles.
         if self.slots[slot].study.is_some() && !self.slots[slot].has_volume() {
@@ -844,7 +850,7 @@ impl ViewerApp {
         }
 
         // The Structure editor's drawn axis: a white line one slice thick,
-        // in every view of its dataset. It is the same 3-D line
+        // in every view of its workspace. It is the same 3-D line
         // everywhere, so the other views show where it runs.
         if self.module_structures && struct_tools::axis_live(&self.tools) {
             if let Some(ax) = self.tools.axis.filter(|a| a.slot == slot) {
@@ -1060,7 +1066,7 @@ impl ViewerApp {
                 Align2::LEFT_TOP,
                 title,
                 FontId::proportional(14.0),
-                // Both datasets read the same: the title says which one this
+                // Both workspaces read the same: the title says which one this
                 // is, so it needs no colour code of its own.
                 Color32::WHITE,
             );
@@ -1135,9 +1141,13 @@ impl ViewerApp {
         let bsize = egui::vec2(24.0, 20.0);
         let by = rect.top() + 22.0; // below the slice counter
         let max_rect = Rect::from_min_size(Pos2::new(rect.right() - bsize.x - 4.0, by), bsize);
-        let fit_rect = Rect::from_min_size(Pos2::new(max_rect.left() - bsize.x - 4.0, by), bsize);
+        // The fold: everything to its left goes away with it, leaving the
+        // pane with an arrow and a maximize and nothing else over the image.
+        let folded = self.pane_buttons_hidden;
+        let fold_rect = Rect::from_min_size(Pos2::new(max_rect.left() - bsize.x - 4.0, by), bsize);
+        let fit_rect = Rect::from_min_size(Pos2::new(fold_rect.left() - bsize.x - 4.0, by), bsize);
         // Playing through the slices of this view, and through the phases of
-        // the 4D group the dataset is showing. Each button exists only where
+        // the 4D group the workspace is showing. Each button exists only where
         // there is something to play: a single-slice series has no stack to
         // run, and a series that belongs to no 4D group has no phases.
         let slices_here = has_slider;
@@ -1172,12 +1182,14 @@ impl ViewerApp {
         let over_buttons = pointer_pos
             .map(|p| {
                 max_rect.contains(p)
-                    || fit_rect.contains(p)
-                    || hand_rect.contains(p)
-                    || zout_rect.contains(p)
-                    || zin_rect.contains(p)
-                    || (slices_here && play3_rect.contains(p))
-                    || (phases_here && play4_rect.contains(p))
+                    || fold_rect.contains(p)
+                    || (!folded
+                        && (fit_rect.contains(p)
+                            || hand_rect.contains(p)
+                            || zout_rect.contains(p)
+                            || zin_rect.contains(p)
+                            || (slices_here && play3_rect.contains(p))
+                            || (phases_here && play4_rect.contains(p))))
                     || slider_rect.contains(p)
             })
             .unwrap_or(false);
@@ -1199,34 +1211,59 @@ impl ViewerApp {
             } else {
                 "Maximize this view to the whole window"
             });
-        let fit_resp = ui
-            .put(fit_rect, egui::Button::new("⟲").small())
-            .on_hover_text(
-                "Reset this view: fit zoom, clear pan and put the crosshair back at \
-             the volume center",
-            );
-        let hand_resp = ui
+        let fold_resp = ui
             .put(
-                hand_rect,
-                egui::Button::selectable(self.hand_pan, "✋")
-                    .frame_when_inactive(true)
-                    .small(),
+                fold_rect,
+                egui::Button::new(if folded { "◀" } else { "▶" }).small(),
             )
-            .on_hover_text(
-                "Move the image: while this is on, dragging with the left button slides \
-                 the image instead of placing the crosshair. Off, a middle drag still \
-                 moves it. The switch is shared by every view.",
+            .on_hover_text(if folded {
+                "Show the buttons of this bar: play, zoom, the hand and reset. One \
+                 switch for every pane, and it is remembered between runs."
+            } else {
+                "Fold these buttons away, leaving the image. One switch for every \
+                 pane, and it is remembered between runs."
+            });
+        // Folded, the rest of the bar is not drawn at all - not drawn dim,
+        // not drawn small. A viewport with nothing over the anatomy is the
+        // point of folding it.
+        let mut fit_resp = None;
+        let mut hand_resp = None;
+        let mut zout_resp = None;
+        let mut zin_resp = None;
+        if !folded {
+            fit_resp = Some(
+                ui.put(fit_rect, egui::Button::new("⟲").small())
+                    .on_hover_text(
+                        "Reset this view: fit zoom, clear pan and put the crosshair back \
+                         at the volume center",
+                    ),
             );
-        let zout_resp = ui
-            .put(zout_rect, egui::Button::new("➖").small())
-            .on_hover_text("Zoom out, about the middle of the view");
-        let zin_resp = ui
-            .put(zin_rect, egui::Button::new("➕").small())
-            .on_hover_text("Zoom in, about the middle of the view");
+            hand_resp = Some(
+                ui.put(
+                    hand_rect,
+                    egui::Button::selectable(self.hand_pan, "✋")
+                        .frame_when_inactive(true)
+                        .small(),
+                )
+                .on_hover_text(
+                    "Move the image: while this is on, dragging with the left button \
+                     slides the image instead of placing the crosshair. Off, a middle \
+                     drag still moves it. The switch is shared by every view.",
+                ),
+            );
+            zout_resp = Some(
+                ui.put(zout_rect, egui::Button::new("➖").small())
+                    .on_hover_text("Zoom out, about the middle of the view"),
+            );
+            zin_resp = Some(
+                ui.put(zin_rect, egui::Button::new("➕").small())
+                    .on_hover_text("Zoom in, about the middle of the view"),
+            );
+        }
         let slice_target = play::PlayTarget::Slices { slot, view: idx };
         let phase_target = play::PlayTarget::Phases { slot };
         let mut clicked_play3 = false;
-        if slices_here {
+        if slices_here && !folded {
             let on = self.is_playing(slice_target);
             let resp = ui
                 .put(
@@ -1242,7 +1279,7 @@ impl ViewerApp {
                 || (any_click && pointer_pos.map(|p| play3_rect.contains(p)).unwrap_or(false));
         }
         let mut clicked_play4 = false;
-        if phases_here {
+        if phases_here && !folded {
             let on = self.is_playing(phase_target);
             let resp = ui
                 .put(
@@ -1252,21 +1289,25 @@ impl ViewerApp {
                 .on_hover_text(if on {
                     "Stop running through the phases"
                 } else {
-                    "Play 4D: run this dataset through the phases of its 4D group, with                      the structures, segmentations and dose of each phase. The first press                      reads the phases into memory."
+                    "Play 4D: run this workspace through the phases of its 4D group, with                      the structures, segmentations and dose of each phase. The first press                      reads the phases into memory."
                 });
             clicked_play4 = resp.clicked()
                 || (any_click && pointer_pos.map(|p| play4_rect.contains(p)).unwrap_or(false));
         }
         let clicked_max = max_resp.clicked()
             || (any_click && pointer_pos.map(|p| max_rect.contains(p)).unwrap_or(false));
-        let clicked_fit = fit_resp.clicked()
-            || (any_click && pointer_pos.map(|p| fit_rect.contains(p)).unwrap_or(false));
-        let clicked_hand = hand_resp.clicked()
-            || (any_click && pointer_pos.map(|p| hand_rect.contains(p)).unwrap_or(false));
-        let clicked_zout = zout_resp.clicked()
-            || (any_click && pointer_pos.map(|p| zout_rect.contains(p)).unwrap_or(false));
-        let clicked_zin = zin_resp.clicked()
-            || (any_click && pointer_pos.map(|p| zin_rect.contains(p)).unwrap_or(false));
+        let clicked_fold = fold_resp.clicked()
+            || (any_click && pointer_pos.map(|p| fold_rect.contains(p)).unwrap_or(false));
+        // A folded bar has no buttons under the pointer, so a click in the
+        // space where one used to be belongs to the image.
+        let hit = |r: Rect, resp: &Option<egui::Response>| {
+            resp.as_ref().is_some_and(|x| x.clicked())
+                || (!folded && any_click && pointer_pos.map(|p| r.contains(p)).unwrap_or(false))
+        };
+        let clicked_fit = hit(fit_rect, &fit_resp);
+        let clicked_hand = hit(hand_rect, &hand_resp);
+        let clicked_zout = hit(zout_rect, &zout_resp);
+        let clicked_zin = hit(zin_rect, &zin_resp);
         // (applied below, in the mutable phase)
         let n_slices = vol.plane_slice_count(plane);
         let seg_active = self.seg_tool != SegTool::None;
@@ -1342,7 +1383,7 @@ impl ViewerApp {
         // Left-click crosshair navigation only while the crosshair is shown
         // and no segmentation tool holds the left button; with ⌖ off, slices
         // change only by scrolling the hovered view.
-        // While the editor's *Draw axis* is on, a left drag in this dataset
+        // While the editor's *Draw axis* is on, a left drag in this workspace
         // draws the axis instead.
         // The editor's hands and axis follow the module, not the panel: a
         // hidden right panel must not drop them.
@@ -1574,6 +1615,13 @@ impl ViewerApp {
         let hovered = resp.hovered();
 
         // Apply interactions (mutable phase).
+        if clicked_fold {
+            self.pane_buttons_hidden = !self.pane_buttons_hidden;
+            // Straight to disk: this is a preference, and the one thing
+            // worse than a fold that is not remembered is one that is
+            // remembered only if the program is closed the right way.
+            self.persist_settings();
+        }
         if clicked_hand {
             self.hand_pan = !self.hand_pan;
         }

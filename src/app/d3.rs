@@ -26,6 +26,8 @@ struct D3PaneActions {
     prepare: bool,
     play: bool,
     maximize: bool,
+    /// The fold was clicked; the app flips the switch every pane shares.
+    fold: bool,
 }
 
 /// Where a 3D pane's furniture sits.
@@ -38,6 +40,10 @@ struct D3PaneActions {
 /// be told which parts of it belong to the buttons.
 struct D3PaneBar {
     maximize: egui::Rect,
+    /// The arrow that folds the rest of the bar away.
+    fold: egui::Rect,
+    /// Is it folded right now?
+    folded: bool,
     /// The *Structures* panel over the right-hand edge, or
     /// [`egui::Rect::NOTHING`] while it is off.
     list: egui::Rect,
@@ -140,7 +146,7 @@ impl ViewerApp {
     }
 
     /// [`Self::d3_key`] for a structure set that is not the active one:
-    /// what the window's key *will* be once the dataset steps to the phase
+    /// what the window's key *will* be once the workspace steps to the phase
     /// that set belongs to, which is how the phase meshes are filed.
     pub(super) fn d3_key_of(&self, slot: usize, structs: usize) -> u64 {
         let mut h: u64 = 0x9E3779B97F4A7C15 ^ (slot as u64);
@@ -161,12 +167,12 @@ impl ViewerApp {
         h
     }
 
-    /// Mesh every phase of the dataset's 4D group up front, so that
+    /// Mesh every phase of the workspace's 4D group up front, so that
     /// playing them is a pointer swap per frame rather than a surface-nets
     /// run per frame.
     ///
     /// Each phase brings its own structure set, and the key a set will be
-    /// filed under is known before the dataset steps onto it
+    /// filed under is known before the workspace steps onto it
     /// ([`Self::d3_key_of`]), so the whole group can be built in one pass
     /// and dropped straight into the window's cache.
     fn start_phase_meshes(&mut self, w: &mut D3Window) {
@@ -537,7 +543,7 @@ impl ViewerApp {
                 }
             }
 
-            // The other dataset's structures, mapped through the active
+            // The other workspace's structures, mapped through the active
             // registration. Meshing and mapping both happen once, on a
             // worker: a deformable inverse is a fixed-point iteration per
             // vertex, which is not something a paint loop can afford.
@@ -564,7 +570,7 @@ impl ViewerApp {
                     let ss = self.slots[other].active_structures().cloned();
                     if let (Some(reg), Some(ss)) = (reg, ss) {
                         // The transform maps fixed → moving. Whichever of the
-                        // two this window shows, the *other* dataset has to
+                        // two this window shows, the *other* workspace has to
                         // come the other way round.
                         let inverse = reg.shows_fixed(w.slot, &self.slots);
                         let t = reg.result.transform.clone();
@@ -728,14 +734,14 @@ impl ViewerApp {
                 .map(|r| (r.field.clone(), r.result.method.short()));
             let registered = self.registration.is_some();
             // The dose the surfaces can be painted with: the one selected in
-            // this dataset, with its own reference for the colour scale.
+            // this workspace, with its own reference for the colour scale.
             let dose_here: Option<(crate::rtdose::DoseGrid, f32)> = self.slots[w.slot]
                 .study
                 .as_ref()
                 .and_then(|st| st.doses.get(self.slots[w.slot].active_dose).cloned())
                 .map(|d| (d, self.slots[w.slot].dose_reference.max(1e-6)));
             // The 4D transport of this window. It starts the same run the
-            // viewports' ▶4D does - there is one phase per dataset, and this
+            // viewports' ▶4D does - there is one phase per workspace, and this
             // window follows it - so the two buttons are the same button in
             // two places.
             let phases_here = self.fourd_phases(w.slot).is_some();
@@ -745,7 +751,7 @@ impl ViewerApp {
             let prepping = w.prep_job.as_ref().map(|j| j.progress.get());
             let mut want_play = false;
             let mut want_prep = false;
-            let title = format!("3D structures - dataset {}", SLOT_NAMES[w.slot]);
+            let title = format!("3D structures - workspace {}", SLOT_NAMES[w.slot]);
             let mut open = w.open;
             detach::tool_window(
                 ctx,
@@ -824,7 +830,7 @@ impl ViewerApp {
                                 .on_hover_text(if phase_playing {
                                     "Stop running through the phases"
                                 } else {
-                                    "Play 4D: run the dataset through the phases of its 4D                                      group. The structures and the isodose shells follow,                                      because each phase brings its own."
+                                    "Play 4D: run the workspace through the phases of its 4D                                      group. The structures and the isodose shells follow,                                      because each phase brings its own."
                                 })
                                 .clicked()
                             {
@@ -883,13 +889,13 @@ impl ViewerApp {
                                 egui::Checkbox::new(
                                     &mut w.show_other,
                                     format!(
-                                        "Dataset {} through the registration",
+                                        "Workspace {} through the registration",
                                         SLOT_NAMES[1 - w.slot]
                                     ),
                                 ),
                             )
                             .on_hover_text(
-                                "Mesh the other dataset's structures and map every vertex \
+                                "Mesh the other workspace's structures and map every vertex \
                                  through the recovered transform, so both anatomies stand \
                                  in one frame of reference - the only way to see what a \
                                  deformable registration actually did to a surface",
@@ -911,7 +917,7 @@ impl ViewerApp {
                         if w.other_job.is_some() {
                             ui.horizontal(|ui| {
                                 ui.spinner();
-                                ui.weak("Mapping the other dataset");
+                                ui.weak("Mapping the other workspace");
                             });
                         }
                     }
@@ -1009,7 +1015,8 @@ impl ViewerApp {
             rect,
             self.fourd_phases(slot).is_some(),
             dose_here.is_some(),
-            w.show_list,
+            w.show_list && !self.pane_buttons_hidden,
+            self.pane_buttons_hidden,
         );
         self.d3_scene(
             w,
@@ -1032,6 +1039,10 @@ impl ViewerApp {
             self.play.from_pane = Some((slot, PaneKind::Scene3d));
             self.toggle_play(play::PlayTarget::Phases { slot }, now);
         }
+        if acts.fold {
+            self.pane_buttons_hidden = !self.pane_buttons_hidden;
+            self.persist_settings();
+        }
         if acts.maximize {
             self.maximized = if self.maximized == Some((slot, PaneKind::Scene3d)) {
                 None
@@ -1048,6 +1059,7 @@ impl ViewerApp {
         phases: bool,
         has_dose: bool,
         show_list: bool,
+        folded: bool,
     ) -> D3PaneBar {
         let bsize = egui::vec2(24.0, 20.0);
         let psize = egui::vec2(38.0, 20.0);
@@ -1057,7 +1069,8 @@ impl ViewerApp {
             egui::Rect::from_min_size(egui::Pos2::new(right - size.x, by), size)
         };
         let maximize = cell(rect.right() - 4.0, bsize);
-        let reset = cell(maximize.left() - 4.0, bsize);
+        let fold = cell(maximize.left() - 4.0, bsize);
+        let reset = cell(fold.left() - 4.0, bsize);
         let hand = cell(reset.left() - 4.0, bsize);
         let zoom_out = cell(hand.left() - 4.0, bsize);
         let zoom_in = cell(zoom_out.left() - 4.0, bsize);
@@ -1105,17 +1118,21 @@ impl ViewerApp {
             .input(|i| i.pointer.interact_pos())
             .map(|p| {
                 maximize.contains(p)
-                    || reset.contains(p)
-                    || hand.contains(p)
-                    || zoom_out.contains(p)
-                    || zoom_in.contains(p)
-                    || (phases && (play.contains(p) || prepare.contains(p)))
-                    || left.contains(p)
-                    || list.contains(p)
+                    || fold.contains(p)
+                    || (!folded
+                        && (reset.contains(p)
+                            || hand.contains(p)
+                            || zoom_out.contains(p)
+                            || zoom_in.contains(p)
+                            || (phases && (play.contains(p) || prepare.contains(p)))
+                            || left.contains(p)
+                            || list.contains(p)))
             })
             .unwrap_or(false);
         D3PaneBar {
             maximize,
+            fold,
+            folded,
             list,
             reset,
             hand,
@@ -1166,11 +1183,13 @@ impl ViewerApp {
             );
         }
 
+        // Folded, the bar is an arrow and a maximize and nothing else.
+        let folded = bar.folded;
         // The scene's own controls, under the button row: opacity on one
         // line, the toggles on the next. Two short lines rather than one
         // long one, because a pane sharing a row with two others has no
         // room for the long one and would simply cut it off.
-        if bar.left.width() > 40.0 {
+        if !folded && bar.left.width() > 40.0 {
             let mut row = |top: f32, add: &mut dyn FnMut(&mut egui::Ui)| {
                 let strip = egui::Rect::from_min_max(
                     egui::Pos2::new(bar.left.left(), top),
@@ -1218,7 +1237,7 @@ impl ViewerApp {
             resp.clicked() || (any_click && pointer_pos.map(|p| r.contains(p)).unwrap_or(false))
         };
 
-        if bar.phases {
+        if bar.phases && !folded {
             let playing = self.is_playing(play::PlayTarget::Phases { slot });
             let resp = ui
                 .put(
@@ -1228,7 +1247,7 @@ impl ViewerApp {
                 .on_hover_text(if playing {
                     "Stop running through the phases"
                 } else {
-                    "Play 4D: run this dataset through the phases of its 4D group. The \
+                    "Play 4D: run this workspace through the phases of its 4D group. The \
                      structures and the isodose shells follow, because each phase brings \
                      its own."
                 });
@@ -1247,41 +1266,58 @@ impl ViewerApp {
                 acts.prepare = true;
             }
         }
-        let resp = ui
-            .put(bar.zoom_in, egui::Button::new("➕").small())
-            .on_hover_text("Zoom in");
-        if hit(bar.zoom_in, &resp) {
-            w.zoom = (w.zoom * 1.25).clamp(0.1, 40.0);
-        }
-        let resp = ui
-            .put(bar.zoom_out, egui::Button::new("➖").small())
-            .on_hover_text("Zoom out");
-        if hit(bar.zoom_out, &resp) {
-            w.zoom = (w.zoom / 1.25).clamp(0.1, 40.0);
+        if !folded {
+            let resp = ui
+                .put(bar.zoom_in, egui::Button::new("➕").small())
+                .on_hover_text("Zoom in");
+            if hit(bar.zoom_in, &resp) {
+                w.zoom = (w.zoom * 1.25).clamp(0.1, 40.0);
+            }
+            let resp = ui
+                .put(bar.zoom_out, egui::Button::new("➖").small())
+                .on_hover_text("Zoom out");
+            if hit(bar.zoom_out, &resp) {
+                w.zoom = (w.zoom / 1.25).clamp(0.1, 40.0);
+            }
+            let resp = ui
+                .put(
+                    bar.hand,
+                    egui::Button::selectable(w.pan_mode, "✋")
+                        .frame_when_inactive(true)
+                        .small(),
+                )
+                .on_hover_text(
+                    "Move the scene: while this is on, dragging with the left button \
+                     slides the scene instead of turning it. Off, a left drag turns it \
+                     and a middle drag moves it.",
+                );
+            if hit(bar.hand, &resp) {
+                w.pan_mode = !w.pan_mode;
+            }
+            let resp = ui
+                .put(bar.reset, egui::Button::new("⟲").small())
+                .on_hover_text("Reset the camera: default angle, fit zoom and no offset");
+            if hit(bar.reset, &resp) {
+                w.yaw = 0.7;
+                w.pitch = -0.5;
+                w.zoom = 1.0;
+                w.pan = Vec2::ZERO;
+            }
         }
         let resp = ui
             .put(
-                bar.hand,
-                egui::Button::selectable(w.pan_mode, "✋")
-                    .frame_when_inactive(true)
-                    .small(),
+                bar.fold,
+                egui::Button::new(if folded { "◀" } else { "▶" }).small(),
             )
-            .on_hover_text(
-                "Move the scene: while this is on, dragging with the left button slides \
-                 the scene instead of turning it. Off, a left drag turns it and a \
-                 middle drag moves it.",
-            );
-        if hit(bar.hand, &resp) {
-            w.pan_mode = !w.pan_mode;
-        }
-        let resp = ui
-            .put(bar.reset, egui::Button::new("⟲").small())
-            .on_hover_text("Reset the camera: default angle, fit zoom and no offset");
-        if hit(bar.reset, &resp) {
-            w.yaw = 0.7;
-            w.pitch = -0.5;
-            w.zoom = 1.0;
-            w.pan = Vec2::ZERO;
+            .on_hover_text(if folded {
+                "Show the buttons of this bar. One switch for every pane, and it is \
+                 remembered between runs."
+            } else {
+                "Fold these buttons away, leaving the scene. One switch for every pane, \
+                 and it is remembered between runs."
+            });
+        if hit(bar.fold, &resp) {
+            acts.fold = true;
         }
         let is_max = self.maximized == Some((slot, PaneKind::Scene3d));
         let resp = ui
@@ -1300,7 +1336,7 @@ impl ViewerApp {
 
         // The structure list, over the scene's right-hand edge. Its own
         // backdrop, because it is text and sliders on top of a black scene.
-        if w.show_list && bar.list.is_positive() {
+        if !folded && w.show_list && bar.list.is_positive() {
             ui.painter_at(bar.list)
                 .rect_filled(bar.list, 0.0, Color32::from_black_alpha(220));
             let mut child = ui.new_child(
@@ -1324,7 +1360,7 @@ impl ViewerApp {
         self.d3_windows = windows;
     }
 
-    /// Has this dataset anything the 3D scene could draw?
+    /// Has this workspace anything the 3D scene could draw?
     pub(super) fn slot_has_surfaces(&self, slot: usize) -> bool {
         self.slots[slot]
             .study
@@ -1532,11 +1568,11 @@ impl ViewerApp {
                 f.tris.clear();
             }
             // One iterator over everything the scene draws: this
-            // dataset's structures, its live segmentations, and
-            // the other dataset's structures already mapped
+            // workspace's structures, its live segmentations, and
+            // the other workspace's structures already mapped
             // through the registration - each with its own
             // opacity, which is the whole point of showing two
-            // datasets at once.
+            // workspaces at once.
             let entries = meshes
                 .iter()
                 .map(|m| {

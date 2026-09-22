@@ -47,7 +47,7 @@ impl ViewerApp {
     }
 
     /// The section's state for `slot`: made on first use, re-targeted when
-    /// the module moves to the other dataset and no run is in flight.
+    /// the module moves to the other workspace and no run is in flight.
     pub(super) fn open_body_dialog(&mut self, slot: usize) {
         if !self.slots[slot].has_volume() {
             return;
@@ -517,7 +517,7 @@ mod tests {
 
     #[test]
     fn the_tool_names_itself_like_the_others() {
-        assert_eq!(BODY_CONTOUR.title(0), "👤 Body contour - dataset A");
+        assert_eq!(BODY_CONTOUR.title(0), "👤 Body contour - workspace A");
         assert_eq!(BODY_CONTOUR.menu_entry(), "👤 Body contour");
     }
 

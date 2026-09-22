@@ -2,7 +2,7 @@
 //! structure sets and segmentation series, individual structures and
 //! segments, dose grids, plans, planar images, registrations and records.
 //!
-//! Every target addresses something inside one dataset's [`LoadedStudy`], so
+//! Every target addresses something inside one workspace's [`LoadedStudy`], so
 //! the rename itself is a pure function of that study - which is what makes
 //! it testable without a running UI, and what keeps the dialog down to a text
 //! field and two buttons.

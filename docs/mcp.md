@@ -63,7 +63,7 @@ sequence.
    on Linux, `~/Library/Application Support/RustDICOMStation` on macOS,
    `~/snap/rust-dicom-station/common/config` in the snap,
    `~/.var/app/io.github.alexprotom.rust-dicom-station/config/RustDICOMStation`
-   in the Flatpak; the menu shows the exact path). Without it no dataset can be opened:
+   in the Flatpak; the menu shows the exact path). Without it no workspace can be opened:
 
    ```toml
    roots = ["D:/studies/anonymized"]      # folders that may be read
@@ -94,7 +94,7 @@ never deletes.
 
 ## What the assistant can do
 
-Every entity gets a handle the assistant refers to it by: datasets `ds1`,
+Every entity gets a handle the assistant refers to it by: workspaces `ds1`,
 registrations `reg1`, 4D group registrations `greg1`, motion runs `run1`.
 Structures are named (`Heart`, `TARGET`), with the structure set or
 segmentation series added when a name repeats. Series are numbered as
@@ -106,7 +106,7 @@ segmentation series added when a name repeats. Series are numbered as
 | `segment_organs` | TotalSegmentator on one series: `fast`, `high` (with `parts` such as `cardiac`) or `preview`; `keep` narrows to named organs |
 | `segment_body` | The patient outline, classically or model-assisted |
 | `combine_structures` | Union / intersect / subtract with margins in mm (uniform or per patient direction) and cleanup |
-| `register`, `describe_registration` | Rigid, elastix B-spline or plastimatch B-spline; `region` makes a run local to a structure of the fixed dataset; `start` refines an earlier registration; `init` says where the search starts (automatic, the identity, the centres of gravity, or the centroids of a structure contoured on both) |
+| `register`, `describe_registration` | Rigid, elastix B-spline or plastimatch B-spline; `region` makes a run local to a structure of the fixed workspace; `start` refines an earlier registration; `init` says where the search starts (automatic, the identity, the centres of gravity, or the centroids of a structure contoured on both) |
 | `propagate` | Carry structures across a registration, to the fixed or the moving side |
 | `propagate_to_group` | One series onto every phase of a 4D group, one deformable registration per phase, transforms kept and reused. With `anchor` (a structure contoured on the source and on every phase, the heart say) the run is anchored on it: centroids matched, a rigid fit on the structure plus a margin, a local deformable refinement, and the anchor's Dice against each phase's own contour as the check. This is how a cardiac CT meets a 4DCT. `land` files the results as a segmentation series per phase or as contours in each phase's own structure set; `anchor_landed_as` names the anchor's own copy (`<anchor>_prop` by default) |
 | `analyse_motion` | The 4D pipeline: tracks, amplitudes, correlation with a reference structure, per-phase QA, one ITV per target and model. The rigid model is a local fit around each structure (`local_rigid_margin_mm`, 15 by default; 0 for one global fit); a target contoured on every phase is also tracked *as contoured*, straight from the phases' own contours (`contoured`); `phases` restricts the run to some of them |
@@ -140,17 +140,17 @@ Whatever the server answers ends up in a language model's context, and for
 most clients that context leaves the machine. The server is built so that it
 has nothing to leak.
 
-**The gate.** When a dataset is opened, the headers are checked against the
+**The gate.** When a workspace is opened, the headers are checked against the
 anonymizer's own list of identifying tags (patient name, ID, birth date,
-contact details, physicians, institution, accession number). A dataset in
+contact details, physicians, institution, accession number). A workspace in
 which any of them holds a value the anonymizer did not write is
 *identifying*, and `phi_policy` decides what happens:
 
 | Policy | Behaviour |
 |---|---|
-| `refuse` (default) | The dataset is closed again. The error names the tags, never their values, and points to the `anonymize` tool. |
-| `redact` | The dataset opens with the identifying values replaced in memory by the anonymizer's alias, so nothing downstream (a report header, an export field) carries them. |
-| `allow` | The dataset opens as it is, so an export carries the study's own identifiers. Everything that leaves the process is still scrubbed. |
+| `refuse` (default) | The workspace is closed again. The error names the tags, never their values, and points to the `anonymize` tool. |
+| `redact` | The workspace opens with the identifying values replaced in memory by the anonymizer's alias, so nothing downstream (a report header, an export field) carries them. |
+| `allow` | The workspace opens as it is, so an export carries the study's own identifiers. Everything that leaves the process is still scrubbed. |
 
 There is no `off`.
 
@@ -158,7 +158,7 @@ There is no `off`.
 them. Everything else that could carry a name passes one redactor before it
 becomes part of a protocol frame: tool results, error messages (which quote
 file names), progress messages, the prompt, the resources, the audit log. The
-redactor knows every identifying value seen in any open dataset and replaces
+redactor knows every identifying value seen in any open workspace and replaces
 it, and it reports paths relative to the root they are under (`root1/4DCT`),
 so a folder named after the patient never appears either. Free text from
 DICOM files (descriptions, structure names) is capped at 64 characters,
@@ -195,7 +195,7 @@ the rest of the station, it is for research and QA use.
 
 `src/mcp/` is compiled only with the `mcp` feature. `config.rs` is the
 operator's file; `phi.rs` the gate and the redactor; `session.rs` the open
-datasets and handles; `tools/` the tools as plain functions
+workspaces and handles; `tools/` the tools as plain functions
 `fn(&mut Core, Args, &Progress) -> Result<Value>` whose argument structs
 derive the JSON schema the client sees; `server.rs` the `rmcp` glue
 (transport, progress, cancellation, the `_async` jobs); `prompts.rs` the

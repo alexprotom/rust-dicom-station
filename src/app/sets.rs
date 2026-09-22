@@ -1,5 +1,5 @@
 //! Structure sets and segmentation series as data-tree nodes: creating them,
-//! re-pointing them at an image series, moving whole series between datasets,
+//! re-pointing them at an image series, moving whole series between workspaces,
 //! and moving individual structures / segments between any two of them.
 //!
 //! The two kinds are deliberately symmetric. An RT structure set stores
@@ -8,7 +8,7 @@
 //! [`segmentation::rasterize_roi`] one way, [`segmentation::mask_to_roi`] the
 //! other - and a transfer between two segmentation series on different
 //! lattices is a resampling. Doing it here, once, is what lets the context
-//! menus offer every series of both datasets as a destination without caring
+//! menus offer every series of both workspaces as a destination without caring
 //! which kind the user picked.
 
 use super::*;
@@ -128,7 +128,7 @@ impl ViewerApp {
         self.settings_gen += 1;
     }
 
-    /// Re-point a series at another image series of the same dataset.
+    /// Re-point a series at another image series of the same workspace.
     ///
     /// For contours this is bookkeeping - they are in patient coordinates
     /// either way. For a segmentation series it also decides which volume
@@ -178,12 +178,12 @@ impl ViewerApp {
         self.settings_gen += 1;
     }
 
-    /// Copy / move one whole series to the other dataset.
+    /// Copy / move one whole series to the other workspace.
     fn transfer_set(&mut self, from: SetRef, copy: bool) {
         let to = 1 - from.slot;
         if self.slots[to].study.is_none() {
             self.error = Some(format!(
-                "dataset {} is empty - load a study into it before moving series there",
+                "workspace {} is empty - load a study into it before moving series there",
                 SLOT_NAMES[to]
             ));
             return;
@@ -595,7 +595,7 @@ impl ViewerApp {
         self.settings_gen += 1;
     }
 
-    /// Copy / move structures or segments into any series of either dataset,
+    /// Copy / move structures or segments into any series of either workspace,
     /// converting between contours and masks where the two kinds differ.
     fn transfer_items(&mut self, from: SetRef, items: &[usize], to: SetRef, copy: bool) {
         if from == to {
@@ -650,7 +650,7 @@ impl ViewerApp {
                 Some(i) => to.idx = i,
                 None => {
                     self.error = Some(format!(
-                        "dataset {} is empty - load a study into it first",
+                        "workspace {} is empty - load a study into it first",
                         SLOT_NAMES[to.slot]
                     ));
                     return;

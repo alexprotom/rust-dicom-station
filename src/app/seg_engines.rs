@@ -2,13 +2,13 @@
 //!
 //! Auto-segmentation (TotalSegmentator), prompt segmentation (SegVol) and
 //! slice propagation (MedSAM2) are different conversations with the user,
-//! but they are the same *kind* of tool: a window per dataset with the same
+//! but they are the same *kind* of tool: a window per workspace with the same
 //! bones - a one-line description, the tool's own inputs, an `Options`
 //! section holding the compute device and the model folder, one line about
 //! the weights' licence, and a button row that turns into a progress row
 //! while the network runs. This module holds those bones, so the three
 //! windows look and behave alike, and the plumbing every run needs: the
-//! model folder, the check that the dataset is still the one the run
+//! model folder, the check that the workspace is still the one the run
 //! started on, and landing a mask as an editable [`Segmentation`].
 
 use crate::models::Engine;
@@ -64,38 +64,38 @@ pub(super) const MOTION: ToolInfo = ToolInfo {
 };
 
 impl ToolInfo {
-    /// `🔬 Auto-segmentation - dataset A`, the window title.
+    /// `🔬 Auto-segmentation - workspace A`, the window title.
     pub fn title(&self, slot: usize) -> String {
         format!(
-            "{} {} - dataset {}",
+            "{} {} - workspace {}",
             self.glyph, self.name, SLOT_NAMES[slot]
         )
     }
-    /// `🔬 Auto-segmentation results - dataset A`, a companion window.
+    /// `🔬 Auto-segmentation results - workspace A`, a companion window.
     pub fn titled(&self, what: &str, slot: usize) -> String {
         format!(
-            "{} {} {what} - dataset {}",
+            "{} {} {what} - workspace {}",
             self.glyph, self.name, SLOT_NAMES[slot]
         )
     }
     /// `🔬 Auto-segmentation`, the menu entry.
     ///
-    /// The menu names the tool once. Which dataset it works on is a setting
-    /// of the tool, chosen in its window by [`dataset_row`], because a menu
+    /// The menu names the tool once. Which workspace it works on is a setting
+    /// of the tool, chosen in its window by [`workspace_row`], because a menu
     /// that lists every tool twice is twice as long and no clearer.
     pub fn menu_entry(&self) -> String {
         format!("{} {}", self.glyph, self.name)
     }
 }
 
-/// The dataset row every tool window starts with.
+/// The workspace row every tool window starts with.
 ///
 /// Returns the newly chosen slot, which the window answers by reopening
-/// itself on that dataset: what a tool carries - the structures picked, the
-/// 4D group, the box drawn on a slice - belongs to one dataset and cannot
-/// follow it to the other. With one dataset loaded there is nothing to
+/// itself on that workspace: what a tool carries - the structures picked, the
+/// 4D group, the box drawn on a slice - belongs to one workspace and cannot
+/// follow it to the other. With one workspace loaded there is nothing to
 /// choose and the row is not drawn.
-pub(super) fn dataset_row(
+pub(super) fn workspace_row(
     ui: &mut egui::Ui,
     slot: usize,
     has: [bool; 2],
@@ -106,7 +106,7 @@ pub(super) fn dataset_row(
     }
     let mut picked = slot;
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Dataset").strong());
+        ui.label(egui::RichText::new("Workspace").strong());
         for (i, name) in SLOT_NAMES.iter().enumerate() {
             let r = ui.add_enabled(
                 enabled && has[i],
@@ -127,11 +127,11 @@ pub(super) fn dataset_row(
 /// One line every tool window ends its options with.
 pub(super) const RESEARCH_NOTE: &str = "Research / QA use - not a medical device.";
 
-/// The message shown when a run finishes on a dataset that was replaced
+/// The message shown when a run finishes on a workspace that was replaced
 /// meanwhile.
 pub(super) fn stale_result(tool: &ToolInfo) -> String {
     format!(
-        "{} finished, but the dataset changed while it was running - the result was discarded.",
+        "{} finished, but the workspace changed while it was running - the result was discarded.",
         tool.name
     )
 }
@@ -146,7 +146,7 @@ impl ViewerApp {
     pub(super) fn slot_still_shows(&self, slot: usize, dims: [usize; 3], uid: &str) -> bool {
         // `has_volume` first: an empty volume has dims [0, 0, 0] and a
         // blank frame of reference, which would match a stale result's own
-        // zeros and let it land on a dataset that shows nothing.
+        // zeros and let it land on a workspace that shows nothing.
         self.slots[slot].has_volume()
             && self.slots[slot]
                 .study
@@ -351,10 +351,10 @@ mod tests {
 
     #[test]
     fn titles_menu_entries_and_buttons_follow_one_pattern() {
-        assert_eq!(AUTOSEG.title(0), "🔬 Auto-segmentation - dataset A");
+        assert_eq!(AUTOSEG.title(0), "🔬 Auto-segmentation - workspace A");
         assert_eq!(
             AUTOSEG.titled("results", 1),
-            "🔬 Auto-segmentation results - dataset B"
+            "🔬 Auto-segmentation results - workspace B"
         );
         assert_eq!(PROMPT_SEG.menu_entry(), "💬 Prompt segmentation");
         assert_eq!(SLICE_PROP.menu_entry(), "⏩ Slice propagation");

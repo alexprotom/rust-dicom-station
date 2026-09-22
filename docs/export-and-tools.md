@@ -12,13 +12,13 @@ application's own store, with the same DICOM writer underneath - see
 
 *File ▶ 💾 Export DICOM* opens one window for everything that is loaded. What
 goes out is chosen inside it, not by which menu entry was clicked: the tree
-lists **dataset ▸ patient ▸ study ▸ series and RT objects** for both A and B
+lists **workspace ▸ patient ▸ study ▸ series and RT objects** for both A and B
 at once, every row has a tick box, and a tick on a study or a patient takes
 everything under it. One run can therefore write two patients, or three
 series out of forty, or the structure sets alone.
 
 ```
-[x] Dataset A
+[x] Workspace A
    [x] 👤 STAR_Rambam_2  (STAR_Rambam_2)         2 study(ies)
       [x] 📁 20250728  CCT                        1 series, 1 object(s)
            StudyInstanceUID  [1.2.840.113619.…]  ↺ ⟳
@@ -117,14 +117,14 @@ and any notes.
 A single segmentation series can still be written on its own: right-click it
 in the data tree and choose *💾 Export as DICOM SEG…*. To write only what was
 *drawn* - the structure sets and segmentation series, with the images left
-where they are - use *📤 Send dataset* in the [patient archive](pacs.md)
+where they are - use *📤 Send workspace* in the [patient archive](pacs.md)
 window instead. The exports round-trip through this viewer and pydicom; they
 are QA/research objects, not guaranteed-complete clinical IODs.
 
 ## Saving a picture of the views
 
 *File ▸ 💾 Save image* writes what the central area shows as a **PNG** or a
-**JPEG**: one dataset's row, or both rows together. The picture is the row's
+**JPEG**: one workspace's row, or both rows together. The picture is the row's
 own pixels - the panes as laid out, with their contours, dose wash,
 crosshair, orientation labels, slice counters and 3D surfaces - so what the
 figure shows is what was on the screen. The dialog closes itself before the
@@ -274,7 +274,7 @@ listed size is not fetched again, so *Cancel* or a dropped connection costs
 nothing but the file in flight, which is removed; running the tool again
 continues where it stopped, and a run that finds everything present says so
 and touches nothing. Both phases in comparison mode is then *right-click
-one phase ▶ Copy series to dataset B*, or from the command line:
+one phase ▶ Copy series to workspace B*, or from the command line:
 
 ```
 rust-dicom-station <data folder>/data-test/lung_p1_4DCT_phase_000 <data folder>/data-test/lung_p1_4DCT_phase_050

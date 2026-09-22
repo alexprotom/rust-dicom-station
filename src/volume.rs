@@ -186,9 +186,9 @@ pub struct Volume {
 }
 
 impl Volume {
-    /// A volume with no voxels, for a dataset that carries no image series.
+    /// A volume with no voxels, for a workspace that carries no image series.
     ///
-    /// A dataset does not have to contain a reconstructable volume - a folder
+    /// A workspace does not have to contain a reconstructable volume - a folder
     /// or a handful of files can hold nothing but RT images, a structure set
     /// or a plan, and those are legitimate things to open. Rather than making
     /// [`crate::loader::LoadedStudy::volume`] optional and forcing a hundred

@@ -45,7 +45,7 @@ Any viewport showing a series of a group carries a **▶4D** button, and the
 described in [viewer.md](viewer.md#playing-through-slices-and-phases). The
 short version: the first press reads every phase into memory (a group whose
 phases would exceed the module's budget is refused rather than read), and
-then the dataset runs through the phases with the structure set,
+then the workspace runs through the phases with the structure set,
 segmentation series and dose of each one, the tree selection walking down
 the group as it goes. Stepping between the phases of the group on display
 keeps the crosshair, the zoom, the pan and the registration where they are,
@@ -56,8 +56,8 @@ Playing is for looking; the pipeline below is for measuring.
 
 ## The pipeline (`src/app/motion_win.rs`)
 
-*Tools ▸ 📈 Structure motion* (the dataset is chosen on the window's
-**Dataset A / B** row), or right-click a 4D group ▸
+*Tools ▸ 📈 Structure motion* (the workspace is chosen on the window's
+**Workspace A / B** row), or right-click a 4D group ▸
 *Motion / ITV analysis…*. One run:
 
 1. **Reference phase** - chosen in the dialog (default: the 0 % phase).
@@ -124,15 +124,15 @@ Playing is for looking; the pipeline below is for measuring.
 as a segmentation series on its phase (`4D <phase> - <group>`).
 
 Cancel stops the run at the next phase boundary; a finished run is never
-applied to a dataset that was replaced while it ran.
+applied to a workspace that was replaced while it ran.
 
 ### Recipes - several studies, one workflow
 
 Starting a run remembers the dialog as a *recipe*: target and
 reference-structure names, models, ITV options and registration settings.
 *Apply last recipe* re-ticks the same structures **by name** in whatever
-dataset the dialog is open on - load the next patient (or the paired
-upright/supine study into dataset B), open the tool, apply, run. Recipes
+workspace the dialog is open on - load the next patient (or the paired
+upright/supine study into workspace B), open the tool, apply, run. Recipes
 are name-based on purpose: indices and UIDs do not travel between patients.
 
 ## Results (`src/app/motion_results.rs`)
@@ -147,7 +147,7 @@ was ticked once is one line and one amplitude; ticking the same name on
 every phase separately would have made ten targets of it, which is what
 the grouped *Targets* list prevents.
 
-**Compare with** puts a second run beside the first - dataset A vs. B,
+**Compare with** puts a second run beside the first - workspace A vs. B,
 upright vs. supine - matching ITVs and tracks *by target name and model*:
 ITV volumes with percentage change, peak-to-peak amplitudes, side by side.
 
@@ -157,18 +157,31 @@ correlations, QA, ITVs); a comparison appends the second run's rows.
 
 ## Transfer by relationship (`src/app/transfer_win.rs`)
 
-*Tools ▸ ◎ Transfer by relationship…* places a structure of one dataset
+*Tools ▸ ◎ Transfer by relationship…* places a structure of one workspace
 into the other at the same **offset from a reference structure's
 centroid** - the STAR workflow's target-heart relationship: a target is
-projected into a dataset registration cannot reach (another patient,
-another posture) via anatomy both datasets can segment. The target keeps
+projected into a workspace registration cannot reach (another patient,
+another posture) via anatomy both workspaces can segment. The target keeps
 its shape; the tool reports the offset (RL / AP / SI) it applied.
 Reference structures whose name contains "heart" are pre-picked.
+
+The window carries the same **Transform matrix** as the registration module
+([registration.md](registration.md#the-matrix-typed-in-by-hand)), and it
+shows the relationship's own answer: pick the two reference structures and
+the grid fills with the shift between their centroids, which is exactly what
+*▶ Transfer* would apply. Ticking **Use this matrix** takes that over - nudge
+a number, or put a rotation into it - and places the structure through the
+numbers instead of the centroid-to-centroid offset, so a rotation can be put into a placement
+the relationship alone only shifts, and a transform worked out elsewhere can
+be applied to anatomy the two workspaces do not share. The two reference
+structures go quiet while it is on, because nothing then asks them anything:
+only the target is needed, and the result is named `<target> (matrix)`
+rather than after a reference it was not placed against.
 
 ## Structure comparison (`src/app/compare_win.rs`)
 
 *Tools ▸ ◑ Structure comparison* computes, for any two structures (either
-dataset, contours or segmentations, different lattices): volumes, centroid
+workspace, contours or segmentations, different lattices): volumes, centroid
 offset (vector and magnitude), Dice, 95th-percentile symmetric Hausdorff
 distance and the surface distance as mean, SD and maximum. The second mask
 is resampled onto the first's lattice through patient coordinates; across
@@ -195,7 +208,7 @@ when the two are meant to be the same landmark.
 ## Structure details (`src/app/stats_win.rs`)
 
 *Tools ▸ 📋 Structure details* is the other half: one row per structure of
-one dataset rather than two structures against each other. Volume twice over
+one workspace rather than two structures against each other. Volume twice over
 - by planimetry on the contours and by counting the voxels they fill, which
 disagree by a few per cent on a coarse series and neither of which is wrong
 - the grey levels inside the structure (which is how a mis-drawn organ gives
@@ -204,9 +217,9 @@ derived structure still matches its recipe. Points of interest show their
 coordinates instead of a volume.
 
 The **Dice** column measures every row against a reference chosen above the
-table: the structure or segment of *the same name in the other dataset* (the
-default with two datasets loaded - what a propagation, a phase or a second
-observer is checked with), or one structure or segment of either dataset for
+table: the structure or segment of *the same name in the other workspace* (the
+default with two workspaces loaded - what a propagation, a phase or a second
+observer is checked with), or one structure or segment of either workspace for
 all rows (an auto-segmentation against the manual one). Contours are
 rasterized onto the row's own lattice, a reference on another lattice is
 resampled onto it, and a row with no counterpart shows `-`; the tooltip

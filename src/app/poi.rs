@@ -86,7 +86,7 @@ impl ViewerApp {
         }
     }
 
-    /// Put the crosshair on a patient point of this dataset.
+    /// Put the crosshair on a patient point of this workspace.
     fn set_cursor_patient(&mut self, slot: usize, p: Vec3) -> bool {
         let Some(study) = self.slots[slot].study.as_ref() else {
             return false;
@@ -98,7 +98,7 @@ impl ViewerApp {
             return false;
         }
         // Through `set_cursor`, so the three views follow and a linked
-        // dataset follows through the registration, exactly as a click in
+        // workspace follows through the registration, exactly as a click in
         // a view would.
         self.set_cursor(slot, v, usize::MAX);
         true

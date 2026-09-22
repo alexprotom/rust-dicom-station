@@ -648,7 +648,7 @@ pub struct MotionReport {
     /// `#1 A · 4D CT - Thorax (10 phases) · ref 0%`, the run's identity in
     /// the UI: numbered, so two runs on the same group stay distinguishable.
     pub run_name: String,
-    /// "A" or "B" - which dataset the run analysed.
+    /// "A" or "B" - which workspace the run analysed.
     pub slot_name: String,
     pub patient: String,
     /// Phase labels in order, e.g. `["0%", "10%", …]`.

@@ -486,7 +486,7 @@ impl ViewerApp {
             return;
         }
         if self.medsam2.slot != slot {
-            // Not while a run on the other dataset is still in flight: the
+            // Not while a run on the other workspace is still in flight: the
             // box, the target segmentation and the range belong to it.
             if self.medsam2_job.is_some() {
                 return;

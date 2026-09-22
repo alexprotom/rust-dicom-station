@@ -729,6 +729,7 @@ pub(super) fn run(setup: &RegSetup, progress: &Progress) -> Result<EngineOutput>
         transform: Transform3 {
             rigid,
             warp: Warp::combined(base_transform.warp.clone(), Warp::BSpline(bspline)),
+            manual: None,
         },
         iterations: total_evals,
         final_metric: final_cost,

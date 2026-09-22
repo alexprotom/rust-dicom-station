@@ -18,9 +18,9 @@ use crate::registration::{analysis, LandmarkKernel, RegParams, Warp};
 pub(super) enum RegRoi {
     /// The whole fixed image (a global registration).
     Whole,
-    /// One ROI of the fixed dataset's active structure set.
+    /// One ROI of the fixed workspace's active structure set.
     Structure(usize),
-    /// One painted / segmented mask of the fixed dataset.
+    /// One painted / segmented mask of the fixed workspace.
     Segmentation(usize),
 }
 
@@ -34,8 +34,8 @@ pub(super) enum RegInit {
     Identity,
     /// Match the centres of gravity.
     Gravity,
-    /// Match the centroids of one structure of the fixed dataset with its
-    /// namesake on the moving dataset.
+    /// Match the centroids of one structure of the fixed workspace with its
+    /// namesake on the moving workspace.
     Structure(RegRoi),
 }
 
@@ -59,7 +59,7 @@ pub(super) struct RegImage {
     pub vol: Arc<Volume>,
 }
 
-/// An image the module can be pointed at: a series of a loaded dataset,
+/// An image the module can be pointed at: a series of a loaded workspace,
 /// with its label for the pickers.
 #[derive(Clone)]
 pub(super) struct RegChoice {
@@ -72,7 +72,7 @@ pub(super) struct RegChoice {
 impl ViewerApp {
     // -- region ------------------------------------------------------------
 
-    /// The regions a dataset offers, as `(choice, label)`.
+    /// The regions a workspace offers, as `(choice, label)`.
     pub(super) fn region_choices_for(&self, slot: usize) -> Vec<(RegRoi, String)> {
         let mut out = vec![(RegRoi::Whole, "Whole image".to_string())];
         if let Some(ss) = self.slots[slot].active_structures() {
@@ -115,7 +115,7 @@ impl ViewerApp {
             let study = self.slots[slot]
                 .study
                 .as_ref()
-                .ok_or_else(|| anyhow!("dataset {} is not loaded", SLOT_NAMES[slot]))?;
+                .ok_or_else(|| anyhow!("workspace {} is not loaded", SLOT_NAMES[slot]))?;
             let vol = &study.volume;
             let (mask, name) = match choice {
                 RegRoi::Structure(i) => {
@@ -147,7 +147,7 @@ impl ViewerApp {
         Ok(None)
     }
 
-    /// The initialisation choices the fixed dataset offers.
+    /// The initialisation choices the fixed workspace offers.
     fn init_choices_for(&self, slot: usize) -> Vec<(RegInit, String)> {
         let mut out = vec![
             (RegInit::Auto, "Automatic".to_string()),
@@ -163,7 +163,7 @@ impl ViewerApp {
     }
 
     /// Turn the panel's initialisation choice into what the engine takes:
-    /// for a structure, its centroid on the fixed dataset and the centroid
+    /// for a structure, its centroid on the fixed workspace and the centroid
     /// of the structure of the same name on the moving one.
     ///
     /// The moving side's structure is the one drawn on the moving *series*
@@ -185,11 +185,11 @@ impl ViewerApp {
         let fstudy = self.slots[fixed.slot]
             .study
             .as_ref()
-            .ok_or_else(|| anyhow!("dataset {} is not loaded", SLOT_NAMES[fixed.slot]))?;
+            .ok_or_else(|| anyhow!("workspace {} is not loaded", SLOT_NAMES[fixed.slot]))?;
         let mstudy = self.slots[moving.slot]
             .study
             .as_ref()
-            .ok_or_else(|| anyhow!("dataset {} is not loaded", SLOT_NAMES[moving.slot]))?;
+            .ok_or_else(|| anyhow!("workspace {} is not loaded", SLOT_NAMES[moving.slot]))?;
         let fgrid = fstudy.volume.grid();
         let fc = crate::motion::centroid_mm(region.mask(), &fgrid)
             .ok_or_else(|| anyhow!("'{name}' is empty on the fixed image"))?;
@@ -200,7 +200,7 @@ impl ViewerApp {
         let ms = crate::workflow::select::find_on_series(mstudy, &name, &mseries.uid, "")
             .ok_or_else(|| {
                 anyhow!(
-                    "dataset {} has no structure '{name}' to match the centroids with",
+                    "workspace {} has no structure '{name}' to match the centroids with",
                     SLOT_NAMES[moving.slot]
                 )
             })?;
@@ -218,7 +218,7 @@ impl ViewerApp {
 
     // -- the images ---------------------------------------------------------
 
-    /// Every image series either dataset offers.
+    /// Every image series either workspace offers.
     pub(super) fn reg_choices(&self) -> Vec<RegChoice> {
         let mut out = Vec::new();
         for (slot, name) in SLOT_NAMES.iter().enumerate() {
@@ -238,8 +238,8 @@ impl ViewerApp {
     }
 
     /// Keep the two picks pointing at series that exist: a pick whose
-    /// dataset went, or whose series is gone, falls back to the displayed
-    /// series of its slot, and the moving image to the other dataset's.
+    /// workspace went, or whose series is gone, falls back to the displayed
+    /// series of its slot, and the moving image to the other workspace's.
     fn settle_reg_picks(&mut self) {
         let displayed = |slot: usize, slots: &[StudySlot; 2]| -> Option<RegPick> {
             let st = slots[slot].study.as_ref()?;
@@ -262,7 +262,7 @@ impl ViewerApp {
         if !valid(self.reg_moving, &self.slots) || self.reg_moving == self.reg_fixed {
             let other = 1 - self.reg_fixed.slot;
             let fallback = displayed(other, &self.slots).or_else(|| {
-                // One dataset: the next series of the same one, when it has
+                // One workspace: the next series of the same one, when it has
                 // more than one - a cardiac CT beside its 4DCT.
                 let st = self.slots[self.reg_fixed.slot].study.as_ref()?;
                 (st.series.len() > 1).then(|| RegPick {
@@ -306,7 +306,7 @@ impl ViewerApp {
         self.reg_gen += 1;
     }
 
-    /// Score every structure the two datasets have in common.
+    /// Score every structure the two workspaces have in common.
     ///
     /// The overlap statistic in the analysis block is measured on a tissue
     /// threshold and says whether the *images* line up. This says whether the
@@ -314,8 +314,8 @@ impl ViewerApp {
     /// only be asked where the same structure was drawn on both sides.
     ///
     /// Names are matched case-insensitively and nothing else is assumed: a
-    /// structure of the fixed dataset is paired with the first structure of
-    /// the moving dataset that shares its name, whether either of them is a
+    /// structure of the fixed workspace is paired with the first structure of
+    /// the moving workspace that shares its name, whether either of them is a
     /// contour or a segmentation.
     pub(super) fn score_registration_structures(&mut self) {
         let Some(reg) = &self.registration else {
@@ -327,7 +327,7 @@ impl ViewerApp {
         let transform = reg.result.transform.clone();
         let fixed_grid = fixed_vol.grid();
 
-        // Name -> the moving dataset's item of that name.
+        // Name -> the moving workspace's item of that name.
         let moving: Vec<(ItemRef, String)> = self.combine_candidates(moving_slot);
         let mut scores: Vec<StructDice> = Vec::new();
         for (item, _) in self.combine_candidates(fixed_slot) {
@@ -383,7 +383,7 @@ impl ViewerApp {
             };
             // The transform maps fixed patient coordinates to moving ones,
             // so arriving on the fixed lattice uses it as it is; the
-            // identity is where the two datasets started.
+            // identity is where the two workspaces started.
             let after_mask = carried(&transform);
             let before_mask = carried(&Transform3::rigid_only(
                 crate::registration::RigidTransform::identity(crate::geometry::Vec3::ZERO),
@@ -501,7 +501,7 @@ impl ViewerApp {
         if params.method == RegMethod::PlastimatchLandmark && params.landmarks.is_empty() {
             self.error = Some(
                 "The landmark warp needs paired points: put the crosshair on the same \
-                 anatomy in both datasets and press ➕ Add pair (turn off crosshair \
+                 anatomy in both workspaces and press ➕ Add pair (turn off crosshair \
                  linking first, or both crosshairs move together)."
                     .into(),
             );
@@ -577,8 +577,9 @@ impl ViewerApp {
             &self.slots[fixed_slot].study,
             &self.slots[moving_slot].study,
         ) else {
-            self.error =
-                Some("A transform from a file pairs the two displayed datasets; load both.".into());
+            self.error = Some(
+                "A transform from a file pairs the two displayed workspaces; load both.".into(),
+            );
             return;
         };
         if !fstudy.has_volume() || !mstudy.has_volume() {
@@ -634,7 +635,7 @@ impl ViewerApp {
         }
         self.registration = None;
         // The per-phase transforms belong to a pair of images too: when the
-        // dataset that made them goes, so do they.
+        // workspace that made them goes, so do they.
         self.group_registration = None;
         self.reg_group = None;
         self.fusion_on = false;
@@ -669,8 +670,8 @@ impl ViewerApp {
         };
         if fixed_slot == moving_slot {
             self.error = Some(
-                "Landmarks are picked with the two crosshairs, one per dataset: load the \
-                 moving image in the other dataset for that."
+                "Landmarks are picked with the two crosshairs, one per workspace: load the \
+                 moving image in the other workspace for that."
                     .into(),
             );
             return;
@@ -679,7 +680,7 @@ impl ViewerApp {
             point(&self.slots[fixed_slot]),
             point(&self.slots[moving_slot]),
         ) else {
-            self.error = Some("Load both datasets before placing landmarks".into());
+            self.error = Some("Load both workspaces before placing landmarks".into());
             return;
         };
         let n = self.reg_landmarks.len() + 1;
@@ -691,9 +692,9 @@ impl ViewerApp {
 
     pub(super) fn registration_section(&mut self, ui: &mut egui::Ui) {
         let both = self.both_volumes();
-        // The section is worth showing while two datasets are loaded, while a
+        // The section is worth showing while two workspaces are loaded, while a
         // result is on display, while a run is in flight (that is where its
-        // progress and its Cancel button live), and while one dataset holds a
+        // progress and its Cancel button live), and while one workspace holds a
         // 4D group, which can be registered against a volume of its own.
         let any_group = (0..2).any(|slot| {
             self.slots[slot]
@@ -713,7 +714,7 @@ impl ViewerApp {
                 .default_open(false)
                 .show(ui, |ui| {
                     ui.weak(
-                        "Load a second dataset (File > Add DICOM folder to B), or a dataset \
+                        "Load a second workspace (File > Add DICOM folder), or a workspace \
                          with more than one image series - registration aligns one image \
                          onto another",
                     );
@@ -733,7 +734,8 @@ impl ViewerApp {
         let mut run_group: Option<(RegPick, usize, usize)> = None;
         let mut clear_group = false;
         let mut score_structs = false;
-        // 4D groups either dataset offers, keyed the way `reg_group` is.
+        let mut apply_matrix = false;
+        // 4D groups either workspace offers, keyed the way `reg_group` is.
         let group_choices: Vec<((usize, usize), String)> = self
             .propagate_group_choices()
             .into_iter()
@@ -768,9 +770,9 @@ impl ViewerApp {
                 }
 
                 // ---- the two images ----
-                // Any series of either dataset can be the fixed or the moving
+                // Any series of either workspace can be the fixed or the moving
                 // image - the displayed ones, a phase of a 4DCT, a cardiac CT
-                // against a phase of the same dataset. The fixed image may
+                // against a phase of the same workspace. The fixed image may
                 // also be every phase of a 4D group: one registration per
                 // phase, since the phases differ by breathing, which is the
                 // whole reason the acquisition exists.
@@ -855,8 +857,8 @@ impl ViewerApp {
                     );
                 } else if self.reg_fixed.slot == self.reg_moving.slot {
                     ui.weak(
-                        "Two series of one dataset. The fusion overlay needs each on display \
-                         in its own dataset: load the same folder as the other dataset to \
+                        "Two series of one workspace. The fusion overlay needs each on display \
+                         in its own workspace: load the same folder as the other workspace to \
                          see it; propagation works either way.",
                     );
                 }
@@ -897,7 +899,7 @@ impl ViewerApp {
                         .response
                         .on_hover_text(
                             "Restrict the registration to one structure of the fixed \
-                             dataset. Samples come from inside it only and the B-spline \
+                             workspace. Samples come from inside it only and the B-spline \
                              lattice covers it alone, so a small structure can be aligned \
                              at a fine grid - and, when it refines an existing result, \
                              the rest of the patient keeps that result untouched.",
@@ -947,7 +949,7 @@ impl ViewerApp {
                              (different frames of reference: a cardiac CT and a 4DCT) never \
                              find each other. Automatic keeps the identity when they overlap \
                              and matches the centres of gravity when they do not; a \
-                             structure contoured on both datasets matches its centroids, \
+                             structure contoured on both workspaces matches its centroids, \
                              which is the surest start for an organ.",
                         );
                 });
@@ -978,7 +980,7 @@ impl ViewerApp {
                             if tip_button(
                                 ui,
                                 "➕ Add pair",
-                                "Take the crosshair of each dataset as one pair. Put \
+                                "Take the crosshair of each workspace as one pair. Put \
                                  both crosshairs on the same anatomy first - and turn \
                                  off View ▶ Sync crosshairs, or they move together.",
                             ) {
@@ -1073,8 +1075,45 @@ impl ViewerApp {
                         }
                     });
                     if !both {
-                        ui.weak("Load two datasets (comparison mode) first");
+                        ui.weak("Load two workspaces (comparison mode) first");
                     }
+                    // A transform that is already known does not have to be
+                    // recovered: type it in and apply it, and everything
+                    // downstream - fusion, the crosshair link, propagation,
+                    // the vector field - reads it as it reads any other.
+                    egui::CollapsingHeader::new("Transform matrix")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            let computed = self
+                                .registration
+                                .as_ref()
+                                .map(|r| r.result.transform.as_matrix());
+                            // A B-spline or a landmark warp is not a matrix;
+                            // what the grid can show of it is the rigid part
+                            // it starts from, and taking that over drops the
+                            // deformation. Better said than discovered.
+                            let deformable = self
+                                .registration
+                                .as_ref()
+                                .is_some_and(|r| r.result.method.is_deformable());
+                            matrix_edit::matrix_editor(ui, &mut self.reg_matrix, computed);
+                            if deformable {
+                                ui.weak(
+                                    "the active registration is deformable: this is its \
+                                     rigid part, and using it drops the deformation",
+                                );
+                            }
+                            if tip_widget(
+                                ui,
+                                both && self.reg_matrix.use_it,
+                                egui::Button::new("▶ Apply as the registration"),
+                                "Install these numbers as the active registration of the \
+                                 two workspaces, without running anything. It replaces \
+                                 whatever registration is active.",
+                            ) {
+                                apply_matrix = true;
+                            }
+                        });
                 }
 
                 // ---- what a group run left behind ----
@@ -1084,7 +1123,7 @@ impl ViewerApp {
                         egui::RichText::new(format!("✔ {} phase by phase", gr.group_name)).strong(),
                     );
                     ui.weak(format!(
-                        "moving image: dataset {}",
+                        "moving image: workspace {}",
                         SLOT_NAMES[gr.moving_slot]
                     ));
                     for ph in &gr.phases {
@@ -1115,7 +1154,14 @@ impl ViewerApp {
                     if let Some(r) = &res.region {
                         ui.weak(format!("restricted to {r}"));
                     }
-                    ui.weak(res.metric_line());
+                    // A matrix that was handed over was not optimized, so
+                    // "MSD 0.0 ▶ 0.0 (0 iters)" would be a row of zeros
+                    // pretending to be a measurement. The analysis below is
+                    // computed from the transform itself and does mean
+                    // something, so that stays.
+                    if res.method != RegMethod::Given {
+                        ui.weak(res.metric_line());
+                    }
                     ui.weak(res.transform.warp.describe());
 
                     egui::CollapsingHeader::new("Analysis")
@@ -1264,6 +1310,13 @@ impl ViewerApp {
             self.start_registration(refine);
         }
         cancel_if(cancel, &self.reg_job);
+        if apply_matrix {
+            // The matrix is absolute patient millimetres, so it needs no
+            // centre of its own; the fixed workspace is the one it maps from.
+            let t = Transform3::from_matrix(self.reg_matrix.m, crate::geometry::Vec3::ZERO);
+            let fixed = self.reg_fixed.slot;
+            self.apply_external_transform(t, RegMethod::Given, fixed);
+        }
         if clear {
             self.clear_registration();
         }
@@ -1315,7 +1368,7 @@ impl ViewerApp {
         let (Some(f), Some(m)) = (&self.slots[fixed].study, &self.slots[1 - fixed].study) else {
             return;
         };
-        // The registration belongs in the fixed dataset's study when there
+        // The registration belongs in the fixed workspace's study when there
         // is one to belong to; a fresh UID is the honest fallback.
         let study_uid = f
             .series
@@ -1383,6 +1436,8 @@ impl ViewerApp {
             });
         }
         match method {
+            // Nothing to tune: a given matrix is not optimized.
+            RegMethod::Given => {}
             RegMethod::ElastixRigid | RegMethod::ElastixBSpline => {
                 ui.horizontal(|ui| {
                     ui.label("Samples/iter");
@@ -1515,7 +1570,7 @@ fn analysis_rows(
              counts as tissue, and the score is the overlap of the fixed \
              image's tissue with the moving image's, before the transform and \
              after it. {} probes.\n\nIt is an image score, not an anatomical \
-             one - it says the two datasets now cover the same space. For \
+             one - it says the two workspaces now cover the same space. For \
              anatomy, score the structures below.",
             ov.threshold, ov.samples
         ));
@@ -1584,12 +1639,12 @@ fn analysis_rows(
                     ));
                 }
                 if !any {
-                    ui.weak("No contoured structure on this dataset.");
+                    ui.weak("No contoured structure on this workspace.");
                 }
             }
 
-            // Structure Dice pairs each structure of the fixed dataset with
-            // the one of the same name on the moving dataset, carries the
+            // Structure Dice pairs each structure of the fixed workspace with
+            // the one of the same name on the moving workspace, carries the
             // moving one through the transform, and scores the overlap. It
             // costs a rasterization per structure, so it is asked for.
             ui.separator();
@@ -1598,8 +1653,8 @@ fn analysis_rows(
                     if tip_button(
                         ui,
                         "Score structures (Dice)",
-                        "Pair every structure of the fixed dataset with the one of \
-                         the same name on the moving dataset, warp the moving one \
+                        "Pair every structure of the fixed workspace with the one of \
+                         the same name on the moving workspace, warp the moving one \
                          through this registration, and score the overlap",
                     ) {
                         score = true;
@@ -1607,8 +1662,8 @@ fn analysis_rows(
                 }
                 Some([]) => {
                     ui.weak(
-                        "No structure of the fixed dataset shares its name with one \
-                         on the moving dataset.",
+                        "No structure of the fixed workspace shares its name with one \
+                         on the moving workspace.",
                     );
                     if tip_button(ui, "Score again", "Rerun the pairing") {
                         score = true;

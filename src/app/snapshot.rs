@@ -30,7 +30,7 @@ use super::*;
 /// What a saved image holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ImgWhat {
-    /// One dataset: its row of the central area.
+    /// One workspace: its row of the central area.
     Row(usize),
     /// Both rows, as they sit one above the other.
     Both,
@@ -203,7 +203,7 @@ fn rgba_bytes(img: &egui::ColorImage) -> Vec<u8> {
 }
 
 impl ViewerApp {
-    /// Remember where a dataset's row was drawn, so *Save image* knows what
+    /// Remember where a workspace's row was drawn, so *Save image* knows what
     /// part of the window to cut out.
     pub(super) fn note_row_rect(&mut self, slot: usize, rect: Rect) {
         if slot < 2 {
@@ -259,16 +259,16 @@ impl ViewerApp {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     ui.label("Rows");
-                    ui.selectable_value(&mut d.what, ImgWhat::Row(0), "Dataset A")
+                    ui.selectable_value(&mut d.what, ImgWhat::Row(0), "Workspace A")
                         .on_hover_text("The upper row on its own");
                     ui.add_enabled_ui(both, |ui| {
-                        ui.selectable_value(&mut d.what, ImgWhat::Row(1), "Dataset B")
+                        ui.selectable_value(&mut d.what, ImgWhat::Row(1), "Workspace B")
                             .on_hover_text("The lower row on its own");
                         ui.selectable_value(&mut d.what, ImgWhat::Both, "Both")
                             .on_hover_text("The two rows together, one above the other");
                     });
                     if !both {
-                        ui.weak("one dataset loaded");
+                        ui.weak("one workspace loaded");
                     }
                 });
                 ui.horizontal_wrapped(|ui| {

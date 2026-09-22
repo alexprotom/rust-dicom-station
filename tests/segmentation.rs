@@ -264,3 +264,60 @@ fn a_label_map_splits_into_per_class_segmentations_in_one_pass() {
     assert_eq!(many[3].count, 0);
     assert_eq!(many[3].bbox, None);
 }
+
+#[test]
+fn replacing_the_whole_mask_keeps_the_count_the_box_and_one_undo_step() {
+    // What the Structure editor's segmentation section does: a margin, a
+    // tidy pass, an emptying - each one a new mask handed over whole. The
+    // bookkeeping painting maintains voxel by voxel has to be redone, or
+    // the volume readout and the 3D surface describe the mask before it.
+    let vol = test_volume([20, 20, 10], 0);
+    let mut seg = Segmentation::new("s".into(), [0, 255, 0], vol.dims);
+    let c = [10.0, 10.0, 5.0];
+    seg.paint_capsule(&vol, c, c, 3.0, false, None);
+    seg.end_stroke();
+    let painted = seg.count;
+    let painted_mask = seg.mask.clone();
+    let gen_before = seg.gen;
+    assert!(painted > 0, "the brush put something there");
+
+    // A bigger mask: everything set.
+    let n = vol.dims[0] * vol.dims[1] * vol.dims[2];
+    seg.replace_mask(vec![1u8; n]);
+    assert_eq!(
+        seg.count, n,
+        "the count is the new mask's, not the old one's"
+    );
+    assert_eq!(
+        seg.bbox,
+        Some(([0, 0, 0], [19, 19, 9])),
+        "the box is the new mask's"
+    );
+    assert!(seg.gen > gen_before, "the overlays and meshes rebuild");
+    assert!(
+        (seg.volume_cm3(vol.spacing) - n as f64 * 0.002).abs() < 1e-9,
+        "the volume follows the count: {} cm³",
+        seg.volume_cm3(vol.spacing)
+    );
+
+    // And it is one undo step, so the operation can be taken back.
+    assert!(seg.undo_last(), "the replacement is undoable");
+    assert_eq!(seg.count, painted, "undo restores the painted count");
+    assert_eq!(seg.mask, painted_mask, "undo restores the painted mask");
+
+    // Replacing a mask with itself is not an edit at all: nothing is
+    // recorded, so the step below it is still the brush stroke.
+    let gen_now = seg.gen;
+    seg.replace_mask(painted_mask.clone());
+    assert_eq!(seg.gen, gen_now, "nothing differs, so nothing is recorded");
+    assert!(seg.undo_last(), "the stroke underneath is still there");
+    assert_eq!(seg.count, 0, "and taking it back leaves nothing painted");
+
+    // Emptying a mask: the count goes to zero and the box with it.
+    seg.paint_capsule(&vol, c, c, 3.0, false, None);
+    seg.end_stroke();
+    assert!(seg.count > 0 && seg.bbox.is_some(), "painted again");
+    seg.replace_mask(vec![0u8; n]);
+    assert_eq!(seg.count, 0, "an emptied mask holds nothing");
+    assert_eq!(seg.bbox, None, "and has no extent");
+}

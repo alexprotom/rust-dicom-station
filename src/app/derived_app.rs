@@ -60,7 +60,7 @@ impl ViewerApp {
         derived::of_roi(r)
     }
 
-    /// Where an operand's name points in this dataset: a structure of any set
+    /// Where an operand's name points in this workspace: a structure of any set
     /// (the active one first), else a segment of any series.
     pub(super) fn resolve_dep(&self, slot: usize, name: &str) -> Option<ItemRef> {
         let study = self.slots[slot].study.as_ref()?;
@@ -103,7 +103,7 @@ impl ViewerApp {
         for d in &expr.deps {
             let item = self
                 .resolve_dep(slot, &d.name)
-                .ok_or_else(|| format!("'{}' is not in this dataset any more", d.name))?;
+                .ok_or_else(|| format!("'{}' is not in this workspace any more", d.name))?;
             let h = match item.kind {
                 SetKind::Structures => study
                     .structure_sets
@@ -116,7 +116,7 @@ impl ViewerApp {
                     .and_then(|s| s.segs.get(item.idx))
                     .map(|s| derived::hash_mask(&s.mask)),
             }
-            .ok_or_else(|| format!("'{}' is not in this dataset any more", d.name))?;
+            .ok_or_else(|| format!("'{}' is not in this workspace any more", d.name))?;
             // The margin is part of what the result depends on.
             parts.push(h);
             for v in d.margin.all() {
@@ -230,7 +230,7 @@ impl ViewerApp {
         for dep in &d.expr.deps {
             let Some(item) = self.resolve_dep(slot, &dep.name) else {
                 self.error = Some(format!(
-                    "'{name}' cannot be updated: '{}' is not in this dataset any more.",
+                    "'{name}' cannot be updated: '{}' is not in this workspace any more.",
                     dep.name
                 ));
                 return;
@@ -280,7 +280,7 @@ impl ViewerApp {
     pub(super) fn on_derived_done(&mut self, slot: usize, result: DerivedResult) {
         if !self.slot_still_shows(slot, result.volume_dims, &result.frame_of_reference_uid) {
             self.error = Some(
-                "The dataset changed while the structure was being updated; nothing was \
+                "The workspace changed while the structure was being updated; nothing was \
                  written."
                     .into(),
             );
@@ -358,7 +358,7 @@ impl ViewerApp {
         for dep in &d.expr.deps {
             let Some(item) = self.resolve_dep(slot, &dep.name) else {
                 self.error = Some(format!(
-                    "'{}' is not in this dataset any more, so the recipe cannot be \
+                    "'{}' is not in this workspace any more, so the recipe cannot be \
                      opened as it stands.",
                     dep.name
                 ));

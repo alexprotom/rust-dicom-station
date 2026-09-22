@@ -3,7 +3,7 @@
 //!
 //! Two different things wear the same button. *Play 3D* steps the slice of
 //! one viewport, which is free: the volume is already in memory and only a
-//! texture is rebuilt. *Play 4D* steps the whole dataset from one phase of
+//! texture is rebuilt. *Play 4D* steps the whole workspace from one phase of
 //! a 4D group to the next, which is not free at all: a phase switch means a
 //! different image series, and reading one from disk takes long enough that
 //! playing straight off the disk would be a slideshow rather than a cine.
@@ -31,9 +31,9 @@ use crate::fourd::Role;
 /// What a run steps through.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum PlayTarget {
-    /// The slices of one view of one dataset (*Play 3D*).
+    /// The slices of one view of one workspace (*Play 3D*).
     Slices { slot: usize, view: usize },
-    /// The phases of the 4D group a dataset is showing (*Play 4D*).
+    /// The phases of the 4D group a workspace is showing (*Play 4D*).
     Phases { slot: usize },
     /// The steps of the Dose estimation module's *Dynamic* log: the
     /// structure walks back through the moves it was given, and the table
@@ -132,7 +132,7 @@ impl PhaseCache {
 /// Settings and state of playback. Everything here is what the *Playback*
 /// module edits; the buttons on the viewports only start and stop.
 pub(super) struct PlayState {
-    /// The dataset the module's own controls act on.
+    /// The workspace the module's own controls act on.
     pub(super) slot: usize,
     /// The view the module's slice transport runs, as an index into the
     /// three panes.
@@ -240,7 +240,7 @@ pub(super) fn advance(
 impl ViewerApp {
     // -- what can play -----------------------------------------------------
 
-    /// The 4D group the dataset is showing, as (name, phase series indices,
+    /// The 4D group the workspace is showing, as (name, phase series indices,
     /// phase labels) in temporal order. `None` unless the displayed series
     /// belongs to a group that still resolves to at least two phases -
     /// which is exactly when a *Play 4D* button should exist.
@@ -276,7 +276,7 @@ impl ViewerApp {
         None
     }
 
-    /// Which phase of its group the dataset is showing, when it is showing
+    /// Which phase of its group the workspace is showing, when it is showing
     /// one at all (the AVG or MIP member of a group is not a phase).
     pub(super) fn current_phase(&self, slot: usize) -> Option<(usize, usize)> {
         let (_, idxs, _) = self.fourd_phases(slot)?;
@@ -290,7 +290,7 @@ impl ViewerApp {
         self.play.running.is_some_and(|r| r.target == target)
     }
 
-    /// The cache holds exactly the phases the dataset's group has now.
+    /// The cache holds exactly the phases the workspace's group has now.
     pub(super) fn phase_cache_ready(&self, slot: usize) -> bool {
         let Some(cache) = self.play.cache[slot].as_ref() else {
             return false;
@@ -308,7 +308,7 @@ impl ViewerApp {
                 .all(|(i, uid)| study.series.get(*i).is_some_and(|s| &s.uid == uid))
     }
 
-    /// What reading every phase of the dataset's group would cost, in bytes,
+    /// What reading every phase of the workspace's group would cost, in bytes,
     /// estimated from the phase on display: the phases of one acquisition
     /// share a matrix, so one of them sizes them all.
     pub(super) fn phase_cache_estimate(&self, slot: usize) -> Option<usize> {
@@ -334,7 +334,7 @@ impl ViewerApp {
                 self.start_phase_cache(slot);
                 return;
             }
-            // With *Sync* on, the other dataset walks its own group beside
+            // With *Sync* on, the other workspace walks its own group beside
             // this one, so its phases have to be in memory too. One reader
             // runs at a time: this queues the second and comes back here
             // when it lands.
@@ -353,9 +353,9 @@ impl ViewerApp {
         });
     }
 
-    /// The other dataset, when *Sync* means a phase run should take it
+    /// The other workspace, when *Sync* means a phase run should take it
     /// along: it has to be loaded, and it has to be showing a 4D group of
-    /// its own. [`None`] otherwise, and the run is one dataset's.
+    /// its own. [`None`] otherwise, and the run is one workspace's.
     pub(super) fn sync_phase_partner(&self, slot: usize) -> Option<usize> {
         if !self.link_studies || !self.both_volumes() {
             return None;
@@ -364,7 +364,7 @@ impl ViewerApp {
         self.fourd_phases(other).is_some().then_some(other)
     }
 
-    /// Step the other dataset's group to the phase that answers this one's.
+    /// Step the other workspace's group to the phase that answers this one's.
     ///
     /// Two groups of the same length step together, phase for phase, which
     /// is the ordinary case: a planning 4DCT and a repeat 4DCT of the same
@@ -390,7 +390,7 @@ impl ViewerApp {
         self.play.start_after_load = None;
     }
 
-    /// Stop a run whose subject is gone: a closed dataset, a group that was
+    /// Stop a run whose subject is gone: a closed workspace, a group that was
     /// dissolved, a view that no longer has slices.
     fn stop_if_stale(&mut self) {
         let Some(r) = self.play.running else {
@@ -548,10 +548,10 @@ impl ViewerApp {
         true
     }
 
-    /// Put a phase's volume on a dataset without disturbing the view.
+    /// Put a phase's volume on a workspace without disturbing the view.
     ///
     /// The counterpart of [`ViewerApp::apply_new_volume`], which is what
-    /// picking another series in the tree does: that one starts the dataset
+    /// picking another series in the tree does: that one starts the workspace
     /// again from the middle slice with no registration, because the user
     /// asked for a different image. Stepping a phase is the same patient one
     /// moment later, so the view has to hold still or the motion the cine is
@@ -637,13 +637,13 @@ impl ViewerApp {
 
     // -- reading the phases into memory ------------------------------------
 
-    /// Read every phase of the dataset's group in the background.
+    /// Read every phase of the workspace's group in the background.
     pub(super) fn start_phase_cache(&mut self, slot: usize) {
         if self.play.job.is_some() {
             return;
         }
         let Some((group, idxs, labels)) = self.fourd_phases(slot) else {
-            self.error = Some("This dataset is not showing a 4D group.".into());
+            self.error = Some("This workspace is not showing a 4D group.".into());
             self.play.start_after_load = None;
             return;
         };
@@ -693,7 +693,7 @@ impl ViewerApp {
             return;
         };
         // Only the run that was waiting on *these* phases: its own, or the
-        // partner's when *Sync* takes both datasets along.
+        // partner's when *Sync* takes both workspaces along.
         if target.slot() != slot && self.sync_phase_partner(target.slot()) != Some(slot) {
             return;
         }
@@ -705,7 +705,7 @@ impl ViewerApp {
         self.toggle_play(target, now);
     }
 
-    /// Forget the phases of one dataset: its study changed, or the user
+    /// Forget the phases of one workspace: its study changed, or the user
     /// asked for the memory back.
     pub(super) fn drop_phase_cache(&mut self, slot: usize) {
         self.play.cache[slot] = None;
@@ -819,13 +819,13 @@ impl ViewerApp {
 
     fn playback_body(&mut self, ui: &mut egui::Ui) {
         if !self.any_volume() {
-            ui.weak("Load a dataset with an image volume");
+            ui.weak("Load a workspace with an image volume");
             return;
         }
         if !self.slots[self.play.slot].has_volume() {
             self.play.slot = self.first_volume_slot();
         }
-        if let Some(s) = seg_engines::dataset_row(ui, self.play.slot, self.volume_slots(), true) {
+        if let Some(s) = seg_engines::workspace_row(ui, self.play.slot, self.volume_slots(), true) {
             self.play.slot = s;
         }
         let slot = self.play.slot;
@@ -928,7 +928,7 @@ impl ViewerApp {
     /// A recording follows the run that is already playing rather than
     /// starting one of its own, because which pane a run belongs to is a
     /// property of the button that started it: ▶3D on the sagittal pane of
-    /// dataset B records that pane, and nothing here has to ask which.
+    /// workspace B records that pane, and nothing here has to ask which.
     fn recording_row(&mut self, ui: &mut egui::Ui) {
         ui.label(egui::RichText::new("Save a run").strong());
         let recording = self.rec.is_some();
@@ -1060,12 +1060,12 @@ impl ViewerApp {
         }
     }
 
-    /// The phase transport, and what it says when the dataset has no group.
+    /// The phase transport, and what it says when the workspace has no group.
     fn phase_transport(&mut self, ui: &mut egui::Ui, slot: usize, now: f64) {
         let Some((group, idxs, labels)) = self.fourd_phases(slot) else {
             ui.horizontal_wrapped(|ui| {
                 ui.label(egui::RichText::new("Phases").strong());
-                ui.weak("this dataset is not showing a 4D group");
+                ui.weak("this workspace is not showing a 4D group");
             });
             return;
         };
@@ -1188,7 +1188,7 @@ impl ViewerApp {
                     ));
                 }
                 None => {
-                    ui.weak("none, and this dataset has no 4D group");
+                    ui.weak("none, and this workspace has no 4D group");
                 }
             },
         }
@@ -1212,7 +1212,7 @@ impl ViewerApp {
                     ui,
                     est.is_some() && !ready,
                     "Read phases",
-                    "Read every phase of this dataset's 4D group into memory, so that \
+                    "Read every phase of this workspace's 4D group into memory, so that \
                      playing them is smooth",
                 ) {
                     self.start_phase_cache(slot);
@@ -1328,12 +1328,12 @@ mod tests {
     #[test]
     fn every_target_names_the_dataset_it_acts_on() {
         // The tick, the staleness check and the buttons all key off this,
-        // so a new kind of run that forgets it would act on dataset A
+        // so a new kind of run that forgets it would act on workspace A
         // whatever the user picked.
         assert_eq!(PlayTarget::Slices { slot: 1, view: 2 }.slot(), 1);
         assert_eq!(PlayTarget::Phases { slot: 1 }.slot(), 1);
         assert_eq!(PlayTarget::DoseLog { slot: 1 }.slot(), 1);
-        // And two runs on different datasets are different runs.
+        // And two runs on different workspaces are different runs.
         assert_ne!(
             PlayTarget::DoseLog { slot: 0 },
             PlayTarget::DoseLog { slot: 1 }

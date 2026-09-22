@@ -366,8 +366,8 @@ mod tests {
             "only the leading glyph goes; the ones inside the name stay"
         );
         assert_eq!(
-            window_title("3D structures - dataset A"),
-            "Rust DICOM Station: 3D structures - dataset A",
+            window_title("3D structures - workspace A"),
+            "Rust DICOM Station: 3D structures - workspace A",
             "a name that starts with a digit is untouched"
         );
     }

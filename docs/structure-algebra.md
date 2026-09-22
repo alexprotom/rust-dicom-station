@@ -41,7 +41,7 @@ smoothing option is for.
 ## Using it
 
 The *Combine structures* section of the Structure editor (*Modules ▶
-Structure editor*, right panel; the dataset is the editor's **Dataset A /
+Structure editor*, right panel; the workspace is the editor's **Workspace A /
 B** row), or - usually quickest - tick the structures in the data tree,
 right-click and choose **∪ Combine …**: the section unfolds with them listed
 in the order ticked.
@@ -123,7 +123,7 @@ What that buys:
   the recipe claim something that is no longer true.
 
 Operands are stored **by name**, because that is what survives an export, a
-reload, a reordering or a copy to the other dataset. A recipe naming a
+reload, a reordering or a copy to the other workspace. A recipe naming a
 structure that has been renamed or deleted is not evaluated on whatever is
 left: it says so and stops.
 
@@ -144,7 +144,7 @@ evaluated.
 
 ## What it will not do
 
-* **Cross datasets.** Operands come from the displayed dataset; carrying one
+* **Cross workspaces.** Operands come from the displayed workspace; carrying one
   from the other is what [propagation](propagation.md) is for, and done
   silently here it would make the result depend on registration quality
   without saying so.

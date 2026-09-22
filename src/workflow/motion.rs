@@ -31,7 +31,7 @@ pub struct MotionRequest {
     pub run_name: String,
     pub slot_name: String,
     /// Shown in the report's header. The viewer passes the patient name;
-    /// the MCP server passes the dataset handle, never the name.
+    /// the MCP server passes the workspace handle, never the name.
     pub patient: String,
     pub group_name: String,
     pub study_uid: String,

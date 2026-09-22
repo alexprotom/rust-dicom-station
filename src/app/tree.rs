@@ -23,7 +23,7 @@ impl ViewerApp {
     }
 
     /// Take one dose grid, plan, planar image, registration or treatment
-    /// record out of a dataset.
+    /// record out of a workspace.
     ///
     /// The lists are plain vectors and the selections beside them are
     /// indices, so everything that pointed past the removed entry has to be
@@ -251,7 +251,7 @@ impl ViewerApp {
             })
             .unwrap_or(0);
         // Identity comes off the displayed series where there is one, and off
-        // the dataset otherwise - a study of RT objects alone still has a
+        // the workspace otherwise - a study of RT objects alone still has a
         // patient.
         let se = activate.and_then(|a| study.series.get(a));
         let meta = loader::PatientMeta {
@@ -317,7 +317,7 @@ impl ViewerApp {
     }
 
     /// Copy / move / remove a tree selection. Copy and move merge the
-    /// selection (plus its linked RT objects) into the other dataset slot;
+    /// selection (plus its linked RT objects) into the other workspace slot;
     /// move and remove then delete it from the source.
     pub(super) fn tree_transfer(&mut self, from: usize, sel: &TreeSel, op: TreeOp) {
         let Some(study) = self.slots[from].study.as_ref() else {
@@ -486,7 +486,7 @@ impl ViewerApp {
                 st.registrations.clear();
                 st.treat_records.clear();
             }
-            // "No series left" no longer means "nothing left": a dataset can
+            // "No series left" no longer means "nothing left": a workspace can
             // legitimately hold only RT images, a structure set or a plan.
             // The slot is cleared only when it really is empty.
             empty = st.series.is_empty()

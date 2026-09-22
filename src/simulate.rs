@@ -363,7 +363,7 @@ pub fn generate_transformed_study(
         treat_records: src.treat_records.clone(),
         fourd_groups: Vec::new(),
         warnings: vec![format!(
-            "Simulated dataset - ground truth: {}",
+            "Simulated workspace - ground truth: {}",
             params.describe()
         )],
         default_window: src.default_window,

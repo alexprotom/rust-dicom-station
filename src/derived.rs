@@ -17,7 +17,7 @@
 //! ## Why names and not indices
 //!
 //! Operands are named. Indices do not survive an export, a reload, a
-//! reordering of the list or a copy to the other dataset; a name does, it is
+//! reordering of the list or a copy to the other workspace; a name does, it is
 //! what the user typed, and when it no longer resolves the honest answer is
 //! to say so rather than to combine whatever is in slot three.
 

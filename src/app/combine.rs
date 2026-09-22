@@ -4,7 +4,7 @@
 //! Its one job that the core module ([`crate::structops`]) cannot do is
 //! deciding *what the operands are*. Everything else - the four operations,
 //! the margins, the tidying - is arithmetic; picking "the GTV from the second
-//! structure set of dataset A" out of a data tree, rasterizing it onto the
+//! structure set of workspace A" out of a data tree, rasterizing it onto the
 //! displayed lattice, and putting the answer back as whichever kind the user
 //! wants is the part that has to know about the application.
 //!
@@ -239,7 +239,7 @@ impl ViewerApp {
         self.reveal_editor(slot, super::struct_tools::Section::Combine);
     }
 
-    /// The editor moved to another dataset: the operands belonged to the
+    /// The editor moved to another workspace: the operands belonged to the
     /// old one and are dropped, unless a run is still using them.
     pub(super) fn combine_switch_slot(&mut self, slot: usize) {
         if self.combine_job.is_some() {
@@ -406,7 +406,7 @@ impl ViewerApp {
     pub(super) fn combine_section(&mut self, ui: &mut egui::Ui) {
         let slot = self.tools.slot;
         // A run keeps the operands it started on; the section follows the
-        // editor's dataset only between runs.
+        // editor's workspace only between runs.
         if self.combine_job.is_none() {
             self.combine_switch_slot(slot);
         }
@@ -456,7 +456,7 @@ impl ViewerApp {
         });
         if candidates.is_empty() {
             ui.label(
-                egui::RichText::new("This dataset has no structures or segments to combine yet.")
+                egui::RichText::new("This workspace has no structures or segments to combine yet.")
                     .color(warn_color(ui.visuals())),
             );
         }
@@ -729,7 +729,7 @@ mod tests {
 
     #[test]
     fn the_tool_names_itself_like_the_others() {
-        assert_eq!(COMBINE.title(0), "∪ Combine structures - dataset A");
+        assert_eq!(COMBINE.title(0), "∪ Combine structures - workspace A");
         assert_eq!(COMBINE.menu_entry(), "∪ Combine structures");
     }
 

@@ -242,7 +242,7 @@ pub struct ScanResult {
     pub warnings: Vec<String>,
 }
 
-/// Deterministic alias for the dataset's patient(s): `anon_` + 6 hex digits
+/// Deterministic alias for the workspace's patient(s): `anon_` + 6 hex digits
 /// derived from the sorted original PatientIDs (falls back to names).
 pub fn patient_alias(ids: &[String]) -> String {
     let mut h = DefaultHasher::new();

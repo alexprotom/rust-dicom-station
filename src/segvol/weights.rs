@@ -13,7 +13,7 @@
 //! The SegVol *code* is MIT (Copyright (c) 2023 BAAI-DCAI). The *weights*
 //! carry **no license declaration at all** - the model repository has no
 //! license tag and no LICENSE file - and the training corpus (M3D-Seg)
-//! aggregates 25 datasets whose own terms differ, several of them
+//! aggregates 25 workspaces whose own terms differ, several of them
 //! non-commercial. This is deliberately unlike the auto-segmentation module,
 //! whose TotalSegmentator weights are Apache-2.0.
 //!
