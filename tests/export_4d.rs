@@ -50,7 +50,7 @@ fn fourd_study(tag: &str) -> LoadedStudy {
 }
 
 fn plan_for(study: &LoadedStudy) -> ExportPlan {
-    let mut plan = ExportPlan::build([Some(study), None], ExportParams::for_study(study));
+    let mut plan = ExportPlan::build(export::one_study(study), ExportParams::for_study(study));
     // The three phases share their source files, so their slices have to be
     // written afresh rather than copied - otherwise all three would carry the
     // same SOP Instance UIDs.
@@ -77,7 +77,7 @@ fn every_phase_survives_the_round_trip_as_one_acquisition() {
     let study = fourd_study("test_4d_rt");
     let out = target("test_4d_rt_out");
     let plan = plan_for(&study);
-    let sum = export::run(&plan, [Some(&study), None], &out, &Progress::default())
+    let sum = export::run(&plan, export::one_study(&study), &out, &Progress::default())
         .expect("the export runs");
     assert!(
         !sum.warnings.iter().any(|w| w.contains("4D group")),
@@ -118,7 +118,7 @@ fn taking_only_part_of_a_4d_group_is_reported() {
         st.series[0].selected = false;
     }
     let out = target("test_4d_part_out");
-    let sum = export::run(&plan, [Some(&study), None], &out, &Progress::default())
+    let sum = export::run(&plan, export::one_study(&study), &out, &Progress::default())
         .expect("it still runs");
     assert!(
         sum.warnings.iter().any(|w| w.contains("4D group")),
@@ -134,7 +134,7 @@ fn each_phase_gets_its_own_folder() {
     let out = target("test_4d_dirs_out");
     export::run(
         &plan_for(&study),
-        [Some(&study), None],
+        export::one_study(&study),
         &out,
         &Progress::default(),
     )

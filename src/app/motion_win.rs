@@ -662,37 +662,39 @@ impl ViewerApp {
                 }
                 d.group = d.group.min(groups.len() - 1);
                 let (_, gname, _) = &groups[d.group];
-                ui.horizontal(|ui| {
-                    ui.label("4D group:");
-                    egui::ComboBox::from_id_salt("motion_group")
-                        .width(280.0)
-                        .selected_text(gname.clone())
-                        .show_ui(ui, |ui| {
-                            for (gi, name, _) in &groups {
-                                ui.selectable_value(&mut d.group, *gi, name);
-                            }
-                        });
-                });
-                let (_, _, phases) = &groups[d.group];
-                if !phases.iter().any(|(mi, _)| *mi == d.reference) {
-                    d.reference = phases.first().map(|(mi, _)| *mi).unwrap_or(0);
+                let phases = &groups[d.group].2;
+                let phases_for_ref = phases.clone();
+                if !phases_for_ref.iter().any(|(mi, _)| *mi == d.reference) {
+                    d.reference = phases_for_ref.first().map(|(mi, _)| *mi).unwrap_or(0);
                 }
-                ui.horizontal(|ui| {
-                    ui.label("Reference phase:");
-                    let sel = phases
-                        .iter()
-                        .find(|(mi, _)| *mi == d.reference)
-                        .map(|(_, l)| l.clone())
-                        .unwrap_or_default();
-                    egui::ComboBox::from_id_salt("motion_ref")
-                        .selected_text(sel)
-                        .show_ui(ui, |ui| {
-                            for (mi, label) in phases {
-                                ui.selectable_value(&mut d.reference, *mi, label);
-                            }
-                        });
-                    ui.label("·").on_hover_text(
+                form::form(ui, "motion_group_form", |f| {
+                    f.row("4D group", |ui| {
+                        egui::ComboBox::from_id_salt("motion_group")
+                            .width(280.0)
+                            .selected_text(gname.clone())
+                            .show_ui(ui, |ui| {
+                                for (gi, name, _) in &groups {
+                                    ui.selectable_value(&mut d.group, *gi, name);
+                                }
+                            });
+                    });
+                    f.row_tip(
+                        "Reference phase",
                         "Targets are defined on this phase and carried to the others",
+                        |ui| {
+                            let sel = phases_for_ref
+                                .iter()
+                                .find(|(mi, _)| *mi == d.reference)
+                                .map(|(_, l)| l.clone())
+                                .unwrap_or_default();
+                            egui::ComboBox::from_id_salt("motion_ref")
+                                .selected_text(sel)
+                                .show_ui(ui, |ui| {
+                                    for (mi, label) in &phases_for_ref {
+                                        ui.selectable_value(&mut d.reference, *mi, label);
+                                    }
+                                });
+                        },
                     );
                 });
                 ui.separator();

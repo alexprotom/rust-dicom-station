@@ -76,7 +76,7 @@ impl ViewerApp {
             SetAction::Remove(r) => self.remove_set(r),
             SetAction::Rename(r) => self.rename_request = Some(RenameTarget::Set(r)),
             SetAction::Connect(r, uid) => self.connect_set(r, &uid),
-            SetAction::Transfer { from, copy } => self.transfer_set(from, copy),
+            SetAction::Transfer { from, to, copy } => self.transfer_set(from, to, copy),
             SetAction::ExportSeg { set, items } => self.export_seg_series(set, &items),
         }
     }
@@ -178,9 +178,8 @@ impl ViewerApp {
         self.settings_gen += 1;
     }
 
-    /// Copy / move one whole series to the other workspace.
-    fn transfer_set(&mut self, from: SetRef, copy: bool) {
-        let to = 1 - from.slot;
+    /// Copy / move one whole series to another workspace.
+    fn transfer_set(&mut self, from: SetRef, to: usize, copy: bool) {
         if self.slots[to].study.is_none() {
             self.error = Some(format!(
                 "workspace {} is empty - load a study into it before moving series there",
@@ -218,7 +217,7 @@ impl ViewerApp {
         if !copy {
             self.remove_set(from);
         }
-        self.comparison = true;
+        self.show_workspace(to);
         self.rebind_seg_series(to);
         self.settings_gen += 1;
     }
@@ -770,7 +769,7 @@ impl ViewerApp {
             self.remove_items(from, &items);
         }
         if to.slot != from.slot {
-            self.comparison = true;
+            self.show_workspace(to.slot);
         }
         self.settings_gen += 1;
     }

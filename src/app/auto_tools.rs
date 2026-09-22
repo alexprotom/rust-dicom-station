@@ -49,8 +49,7 @@ impl ViewerApp {
         }
         // A run pins the module to the workspace it started on: the sections
         // would otherwise be re-targeted under it.
-        let busy = self.running_tool(self.auto.slot).is_some()
-            || self.running_tool(1 - self.auto.slot).is_some();
+        let busy = (0..MAX_WORKSPACES).any(|s| self.running_tool(s).is_some());
         let mut new_slot = None;
         egui::CollapsingHeader::new(title)
             .default_open(false)

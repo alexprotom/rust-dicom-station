@@ -16,8 +16,11 @@ use super::*;
 
 /// The window's state.
 pub(super) struct TransferDialog {
-    /// Workspace the target comes from; it lands on the other one.
+    /// Workspace the target comes from.
     pub src_slot: usize,
+    /// Workspace it lands in. With more than two open this is a choice, and
+    /// the window makes it one.
+    pub dst_slot: usize,
     /// Candidate index of the target in the source workspace.
     pub target: Option<usize>,
     /// Candidate index of the reference structure in the source workspace.
@@ -36,8 +39,10 @@ pub(super) struct TransferDialog {
 
 impl ViewerApp {
     pub(super) fn open_transfer_dialog(&mut self, src_slot: usize) {
+        let dst_slot = self.other_open(src_slot).unwrap_or(src_slot);
         let mut d = TransferDialog {
             src_slot,
+            dst_slot,
             target: None,
             src_ref: None,
             dst_ref: None,
@@ -53,7 +58,7 @@ impl ViewerApp {
             })
         };
         d.src_ref = guess(&self.combine_candidates(src_slot));
-        d.dst_ref = guess(&self.combine_candidates(1 - src_slot));
+        d.dst_ref = guess(&self.combine_candidates(dst_slot));
         self.transfer_dialog = Some(d);
     }
 
@@ -63,8 +68,12 @@ impl ViewerApp {
         let Some(d) = &self.transfer_dialog else {
             return;
         };
-        let (src, dst) = (d.src_slot, 1 - d.src_slot);
+        let (src, dst) = (d.src_slot, d.dst_slot);
         let (sel_target, sel_src_ref, sel_dst_ref) = (d.target, d.src_ref, d.dst_ref);
+        if src == dst {
+            self.transfer_status("Pick the workspace it should land in first.");
+            return;
+        }
         let pick = |slot: usize, sel: Option<usize>| {
             sel.and_then(|i| self.combine_candidates(slot).get(i).cloned())
         };
@@ -167,10 +176,10 @@ impl ViewerApp {
     fn relationship_matrix(
         &self,
         src: usize,
+        dst: usize,
         src_ref: Option<usize>,
         dst_ref: Option<usize>,
     ) -> Option<crate::registration::Mat4> {
-        let dst = 1 - src;
         let pick = |slot: usize, sel: Option<usize>| {
             sel.and_then(|i| self.combine_candidates(slot).get(i).cloned())
         };
@@ -188,11 +197,22 @@ impl ViewerApp {
             return;
         };
         let src = d.src_slot;
-        let dst = 1 - src;
-        if !self.slots[src].has_volume() || !self.slots[dst].has_volume() {
+        // Where it lands. The window keeps its own answer, falling back to
+        // the next open workspace when that one is gone.
+        let others: Vec<usize> = self
+            .volume_slot_list()
+            .into_iter()
+            .filter(|s| *s != src)
+            .collect();
+        if !self.slots[src].has_volume() || others.is_empty() {
             self.transfer_dialog = None;
             return;
         }
+        let dst = if others.contains(&d.dst_slot) {
+            d.dst_slot
+        } else {
+            others[0]
+        };
         let src_cands: Vec<String> = self
             .combine_candidates(src)
             .into_iter()
@@ -205,17 +225,18 @@ impl ViewerApp {
             .collect();
         // What the relationship itself gives, recomputed only when the
         // reference structures change.
-        let key = (src, d.src_ref, d.dst_ref);
+        let key = (src * MAX_WORKSPACES + dst, d.src_ref, d.dst_ref);
         let computed = if d.auto_for == key {
             d.auto
         } else {
-            self.relationship_matrix(src, key.1, key.2)
+            self.relationship_matrix(src, dst, key.1, key.2)
         };
         let mut run = false;
         let mut close = false;
         let mut swap = false;
         let mut open = true;
         let d = self.transfer_dialog.as_mut().expect("checked above");
+        d.dst_slot = dst;
         d.auto = computed;
         d.auto_for = key;
         let mut manual = self.transfer_matrix;
@@ -232,48 +253,51 @@ impl ViewerApp {
                      relationship travels, not the image registration.",
                     SLOT_NAMES[src], SLOT_NAMES[dst]
                 ));
-                ui.add_space(4.0);
-                let combo = |ui: &mut egui::Ui,
-                             label: &str,
-                             item: &mut Option<usize>,
-                             list: &[String],
-                             salt: &str| {
+                // Which workspace it lands in, when there is more than one
+                // to choose from.
+                if others.len() > 1 {
                     ui.horizontal(|ui| {
-                        ui.label(label);
-                        index_picker(ui, salt, item, list);
+                        ui.label("Into workspace:");
+                        for o in &others {
+                            if ui
+                                .add(egui::Button::selectable(d.dst_slot == *o, SLOT_NAMES[*o]))
+                                .clicked()
+                            {
+                                d.dst_slot = *o;
+                                d.dst_ref = None;
+                                d.status = None;
+                            }
+                        }
                     });
-                };
-                combo(
-                    ui,
-                    &format!("Target ({}):", SLOT_NAMES[src]),
-                    &mut d.target,
-                    &src_cands,
-                    "tr_target",
-                );
-                // With a matrix in charge the relationship is not consulted,
-                // so the two references go quiet rather than looking required.
-                ui.add_enabled_ui(!manual.use_it, |ui| {
-                    combo(
-                        ui,
-                        &format!("Reference in {}:", SLOT_NAMES[src]),
-                        &mut d.src_ref,
-                        &src_cands,
-                        "tr_src_ref",
-                    );
-                    combo(
-                        ui,
-                        &format!("Reference in {}:", SLOT_NAMES[dst]),
-                        &mut d.dst_ref,
-                        &dst_cands,
-                        "tr_dst_ref",
-                    );
-                });
-                if ui
-                    .button(format!("Swap direction (to workspace {})", SLOT_NAMES[src]))
-                    .clicked()
-                {
-                    swap = true;
                 }
+                ui.add_space(4.0);
+                form::form(ui, "transfer_picks", |f| {
+                    f.row(&format!("Target ({})", SLOT_NAMES[src]), |ui| {
+                        index_picker(ui, "tr_target", &mut d.target, &src_cands);
+                    });
+                    // With a matrix in charge the relationship is not
+                    // consulted, so the two references go quiet rather than
+                    // looking required.
+                    let live = !manual.use_it;
+                    f.row(&format!("Reference in {}", SLOT_NAMES[src]), |ui| {
+                        ui.add_enabled_ui(live, |ui| {
+                            index_picker(ui, "tr_src_ref", &mut d.src_ref, &src_cands);
+                        });
+                    });
+                    f.row(&format!("Reference in {}", SLOT_NAMES[dst]), |ui| {
+                        ui.add_enabled_ui(live, |ui| {
+                            index_picker(ui, "tr_dst_ref", &mut d.dst_ref, &dst_cands);
+                        });
+                    });
+                    f.wide(|ui| {
+                        if ui
+                            .button(format!("Swap direction (to workspace {})", SLOT_NAMES[src]))
+                            .clicked()
+                        {
+                            swap = true;
+                        }
+                    });
+                });
                 ui.add_space(4.0);
                 matrix_edit::matrix_editor(ui, &mut manual, computed);
                 if manual.use_it {
@@ -299,21 +323,25 @@ impl ViewerApp {
         self.transfer_matrix = manual;
         if swap {
             if let Some(d) = &mut self.transfer_dialog {
-                d.src_slot = 1 - d.src_slot;
+                std::mem::swap(&mut d.src_slot, &mut d.dst_slot);
                 d.target = None;
                 d.src_ref = None;
                 d.dst_ref = None;
                 d.status = None;
             }
-            if let Some(slot) = self.transfer_dialog.as_ref().map(|d| d.src_slot) {
+            if let Some((from, to)) = self
+                .transfer_dialog
+                .as_ref()
+                .map(|d| (d.src_slot, d.dst_slot))
+            {
                 let guess = |cands: Vec<(super::combine::ItemRef, String)>| {
                     cands.iter().position(|(_, l)| {
                         let l = l.to_lowercase();
                         l.contains("heart") || l.contains("herz")
                     })
                 };
-                let s = guess(self.combine_candidates(slot));
-                let t = guess(self.combine_candidates(1 - slot));
+                let s = guess(self.combine_candidates(from));
+                let t = guess(self.combine_candidates(to));
                 if let Some(d) = &mut self.transfer_dialog {
                     d.src_ref = s;
                     d.dst_ref = t;

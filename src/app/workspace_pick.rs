@@ -1,10 +1,13 @@
-//! The small window that asks which workspace an action belongs to.
+//! Which workspace data goes into, and the rules every such question
+//! follows.
 //!
 //! *File ▸ Add DICOM folder*, *Add DICOM file(s)* and *Clear workspace* are
-//! one entry each rather than one per workspace: the menu says what is being
-//! done and this window says where. One entry that asks is shorter than a
-//! menu that grows a line per workspace, and it is the same window whatever
-//! the workspace count turns out to be.
+//! all submenus of the File menu rather than windows: each line names a
+//! workspace and says what it holds, which is the thing worth knowing before
+//! adding to one or emptying it, and the answer is one click rather than a
+//! window to dismiss. The list is as long as the situation needs - the
+//! workspaces on screen, plus one new letter while there is room
+//! ([`transfer_targets`]).
 //!
 //! The file dialog comes after the choice, not before, so the destination is
 //! settled while there is still something to cancel.
@@ -16,19 +19,19 @@ use super::*;
 pub(super) enum WsAsk {
     AddFolder,
     AddFiles,
-    Clear,
 }
 
 impl WsAsk {
-    fn title(self) -> &'static str {
+    /// The submenu's own line in the File menu.
+    pub(super) fn menu_entry(self) -> &'static str {
         match self {
             WsAsk::AddFolder => "📂 Add DICOM folder",
             WsAsk::AddFiles => "📄 Add DICOM file(s)",
-            WsAsk::Clear => "🗑 Clear workspace",
         }
     }
 
-    fn blurb(self) -> &'static str {
+    /// What the submenu's line says on hover, before a workspace is picked.
+    pub(super) fn blurb(self) -> &'static str {
         match self {
             WsAsk::AddFolder => {
                 "Scan a folder and add its patients, studies and series to a workspace. \
@@ -39,44 +42,40 @@ impl WsAsk {
                  slices. They do not have to form an image volume, and they merge into \
                  the workspace exactly as a folder does."
             }
-            WsAsk::Clear => {
-                "Empty a workspace: its patients, studies, series and everything drawn \
-                 on them. Nothing is written to disk and nothing else is touched."
-            }
         }
     }
 
-    /// Does this action need the workspace to hold something already?
-    fn needs_content(self) -> bool {
-        self == WsAsk::Clear
+    /// The file dialog's title, which names the destination.
+    fn dialog_title(self, slot: usize) -> String {
+        let ws = SLOT_NAMES[slot];
+        match self {
+            WsAsk::AddFolder => format!("Select DICOM folder to add to workspace {ws}"),
+            WsAsk::AddFiles => format!("Select DICOM file(s) to add to workspace {ws}"),
+        }
     }
 }
 
-/// The question, and the answer so far.
-pub(super) struct WsPick {
-    pub(super) ask: WsAsk,
-    pub(super) slot: usize,
+/// Where a copy, a move or a load may go from `from`, given which
+/// workspaces are on screen.
+///
+/// The rule the whole program follows: every other open workspace, and one
+/// new letter while there is room. With A alone that is B and nothing else;
+/// with A and B it is B and C; with all four open there is no new letter to
+/// offer. `from` is excluded, and `usize::MAX` excludes nothing - which is
+/// what "load this somewhere" asks for.
+pub(super) fn transfer_targets(open: &[bool; MAX_WORKSPACES], from: usize) -> Vec<usize> {
+    let mut out: Vec<usize> = (0..MAX_WORKSPACES)
+        .filter(|s| *s != from && (*s == 0 || open[*s]))
+        .collect();
+    if let Some(new) = (1..MAX_WORKSPACES).find(|s| !open[*s]) {
+        out.push(new);
+    }
+    out
 }
 
 impl ViewerApp {
-    /// Open the workspace question for one of the three actions.
-    pub(super) fn ask_workspace(&mut self, ask: WsAsk) {
-        // Start on a workspace the action can actually act on: the first
-        // with something in it for *Clear*, the first empty one for a load,
-        // and failing that the one on screen.
-        let slot = match ask {
-            WsAsk::Clear => (0..SLOT_NAMES.len())
-                .find(|s| self.slots[*s].study.is_some())
-                .unwrap_or(0),
-            _ => (0..SLOT_NAMES.len())
-                .find(|s| self.slots[*s].study.is_none())
-                .unwrap_or(0),
-        };
-        self.ws_pick = Some(WsPick { ask, slot });
-    }
-
-    /// What a workspace holds, for the line under its button.
-    fn workspace_summary(&self, slot: usize) -> String {
+    /// What a workspace holds, for the line beside its letter.
+    pub(super) fn workspace_summary(&self, slot: usize) -> String {
         let Some(study) = self.slots[slot].study.as_ref() else {
             return "empty".to_string();
         };
@@ -89,121 +88,39 @@ impl ViewerApp {
         format!("{patient} · {} series", study.series.len())
     }
 
-    pub(super) fn workspace_pick_window(&mut self, ctx: &egui::Context) {
-        let Some(mut pick) = self.ws_pick.take() else {
-            return;
-        };
-        let ask = pick.ask;
-        let holds: Vec<bool> = (0..SLOT_NAMES.len())
-            .map(|s| self.slots[s].study.is_some())
-            .collect();
-        let summaries: Vec<String> = (0..SLOT_NAMES.len())
-            .map(|s| self.workspace_summary(s))
-            .collect();
-        // Nothing to act on at all: say so rather than offering dead buttons.
-        let any = !ask.needs_content() || holds.iter().any(|h| *h);
-        if ask.needs_content() && !holds.get(pick.slot).copied().unwrap_or(false) {
-            if let Some(s) = holds.iter().position(|h| *h) {
-                pick.slot = s;
-            }
-        }
-        let mut open = true;
-        let mut close = false;
-        let mut go = false;
-        detach::tool_window(
-            ctx,
-            "workspace_pick",
-            ask.title(),
-            &mut open,
-            detach::WinOpts::default(),
-            |ui| {
-                ui.set_max_width(440.0);
-                ui.label(ask.blurb());
-                ui.add_space(6.0);
-                if !any {
-                    ui.weak("No workspace holds anything yet.");
-                    return;
-                }
-                ui.label("Workspace:");
-                for (s, name) in SLOT_NAMES.iter().enumerate() {
-                    let usable = !ask.needs_content() || holds[s];
-                    ui.add_enabled_ui(usable, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.radio_value(&mut pick.slot, s, *name);
-                            ui.weak(&summaries[s]);
-                        });
-                    });
-                }
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    let label = match ask {
-                        WsAsk::AddFolder => "📂 Choose folder",
-                        WsAsk::AddFiles => "📄 Choose file(s)",
-                        WsAsk::Clear => "🗑 Clear",
-                    };
-                    let usable = !ask.needs_content() || holds[pick.slot];
-                    if ui.add_enabled(usable, egui::Button::new(label)).clicked() {
-                        go = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        close = true;
-                    }
-                });
-            },
-        );
-
-        if go {
-            let slot = pick.slot;
-            // The question is answered, so it leaves the screen; the file
-            // dialog is what happens next, and on Android that dialog is a
-            // browser drawn in this same window, which needs the space.
-            close = true;
-            match ask {
-                WsAsk::AddFolder => self.ask_folder(
-                    &format!(
-                        "Select DICOM folder to add to workspace {}",
-                        SLOT_NAMES[slot]
-                    ),
-                    move |app, dir| {
-                        app.open_workspace(slot);
-                        app.start_load(slot, dir);
-                    },
-                ),
-                WsAsk::AddFiles => self.ask_files(
-                    &format!(
-                        "Select DICOM file(s) to add to workspace {}",
-                        SLOT_NAMES[slot]
-                    ),
-                    move |app, paths| {
-                        app.open_workspace(slot);
-                        app.start_load_files(slot, paths);
-                    },
-                ),
-                WsAsk::Clear => self.clear_workspace(slot),
-            }
-        }
-        if open && !close {
-            self.ws_pick = Some(pick);
+    /// Answer a load question: put the workspace on screen and open the file
+    /// dialog for it. The workspace appears first, so the row is there with
+    /// its progress in it while the dialog is up.
+    pub(super) fn load_into(&mut self, ask: WsAsk, slot: usize) {
+        let title = ask.dialog_title(slot);
+        match ask {
+            WsAsk::AddFolder => self.ask_folder(&title, move |app, dir| {
+                app.open_workspace(slot);
+                app.start_load(slot, dir);
+            }),
+            WsAsk::AddFiles => self.ask_files(&title, move |app, paths| {
+                app.open_workspace(slot);
+                app.start_load_files(slot, paths);
+            }),
         }
     }
 
-    /// Make sure a workspace past the first is on screen before anything is
-    /// loaded into it.
+    /// Put a workspace on screen before anything is loaded into it, so the
+    /// row is there with its progress in it.
     pub(super) fn open_workspace(&mut self, slot: usize) {
-        if slot > 0 {
-            self.comparison = true;
-        }
+        self.show_workspace(slot);
     }
 
     /// Empty one workspace, whichever it is.
     ///
-    /// The second one also leaves the screen, because a comparison with an
-    /// empty half is a half-empty screen: emptying it is how it is closed.
+    /// A workspace past the first also leaves the screen, because a row with
+    /// an empty workspace in it is a row of nothing: emptying one is how it
+    /// is closed. The letters of the others do not shift.
     pub(super) fn clear_workspace(&mut self, slot: usize) {
         if slot == 0 {
             self.tree_clear_slot(0);
         } else {
-            self.close_comparison();
+            self.close_workspace(slot);
         }
     }
 }
@@ -212,21 +129,75 @@ impl ViewerApp {
 mod tests {
     use super::*;
 
+    /// `[A, B, C, D]` as flags, for readable expectations below.
+    fn open(flags: [bool; MAX_WORKSPACES]) -> [bool; MAX_WORKSPACES] {
+        flags
+    }
+
     #[test]
-    fn clear_needs_something_to_clear_and_a_load_does_not() {
-        assert!(WsAsk::Clear.needs_content());
-        assert!(!WsAsk::AddFolder.needs_content());
-        assert!(!WsAsk::AddFiles.needs_content());
+    fn a_transfer_offers_the_open_workspaces_and_one_new_letter() {
+        // A alone: B, and nothing else - the menu does not list letters
+        // nobody has asked for.
+        assert_eq!(
+            transfer_targets(&open([true, false, false, false]), 0),
+            vec![1],
+            "with A alone the only destination is a new B"
+        );
+        // A and B open: the other one, plus C.
+        assert_eq!(
+            transfer_targets(&open([true, true, false, false]), 0),
+            vec![1, 2],
+            "from A: B, and a new C"
+        );
+        assert_eq!(
+            transfer_targets(&open([true, true, false, false]), 1),
+            vec![0, 2],
+            "from B: A, and a new C"
+        );
+        // Three open: the two others, plus D.
+        assert_eq!(
+            transfer_targets(&open([true, true, true, false]), 1),
+            vec![0, 2, 3],
+            "from B: A and C, and a new D"
+        );
+        // Four open: there is no fifth letter to offer.
+        assert_eq!(
+            transfer_targets(&open([true, true, true, true]), 2),
+            vec![0, 1, 3],
+            "with all four open, only the three that exist"
+        );
+        // Nothing to exclude: everything on screen, plus one.
+        assert_eq!(
+            transfer_targets(&open([true, true, false, false]), usize::MAX),
+            vec![0, 1, 2],
+            "a load may go anywhere that exists, plus one new letter"
+        );
+        // A gap left by a closed workspace is the letter offered next, so
+        // closing B and copying again reuses B rather than opening C.
+        assert_eq!(
+            transfer_targets(&open([true, false, true, false]), 0),
+            vec![2, 1],
+            "the first free letter is the new one, gap or not"
+        );
     }
 
     #[test]
     fn every_action_names_itself_and_says_what_it_does() {
-        for a in [WsAsk::AddFolder, WsAsk::AddFiles, WsAsk::Clear] {
-            assert!(!a.title().is_empty(), "a window needs a title");
+        for a in [WsAsk::AddFolder, WsAsk::AddFiles] {
+            assert!(!a.menu_entry().is_empty(), "a submenu needs a line");
             assert!(
                 a.blurb().len() > 40,
-                "the window says what the action does, not just its name"
+                "the line says what the action does, not just its name"
             );
+            // Every destination the menu can offer names itself in the file
+            // dialog that follows, so a mis-click is visible before a folder
+            // is chosen.
+            for (slot, name) in SLOT_NAMES.iter().enumerate() {
+                assert!(
+                    a.dialog_title(slot).ends_with(name),
+                    "the dialog title names the workspace"
+                );
+            }
         }
     }
 }

@@ -80,6 +80,9 @@ pub struct PhaseOutcome {
     /// `MSD 9700 ▶ 1800  (900 iters, 20.1 s)` of that phase's registration,
     /// or what it says instead when the transform was reused.
     pub metric_line: String,
+    /// The same numbers, for a table. `None` when nothing was run for this
+    /// phase - a reused transform has no metric of its own.
+    pub metrics: Option<crate::registration::RunMetrics>,
 }
 
 impl PhaseOutcome {
@@ -206,8 +209,8 @@ pub fn run(req: GroupRequest, p: &Progress) -> Result<GroupOutcome> {
         let (vol, _, _) =
             loader::load_series_volume(series, p).with_context(|| format!("phase '{label}'"))?;
         let cached = req.cached.get(i).and_then(|t| t.clone());
-        let (transform, metric_line) = match cached {
-            Some(t) => (t, "transform reused".to_string()),
+        let (transform, metric_line, metrics) = match cached {
+            Some(t) => (t, "transform reused".to_string(), None),
             None => {
                 p.set_phase(base + span * 0.25, span * 0.55);
                 p.set(format!("Phase {label}: registering ({}/{n})", i + 1));
@@ -217,7 +220,7 @@ pub fn run(req: GroupRequest, p: &Progress) -> Result<GroupOutcome> {
                 // inversion.
                 let r = registration::register(&vol, &req.src_vol, &req.params, p)
                     .with_context(|| format!("phase '{label}'"))?;
-                (r.transform.clone(), r.metric_line())
+                (r.transform.clone(), r.metric_line(), Some(r.metrics()))
             }
         };
         let items = if req.subjects.is_empty() {
@@ -239,6 +242,7 @@ pub fn run(req: GroupRequest, p: &Progress) -> Result<GroupOutcome> {
             items,
             transform,
             metric_line,
+            metrics,
         });
     }
     Ok(GroupOutcome {

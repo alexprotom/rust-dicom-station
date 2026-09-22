@@ -124,7 +124,8 @@ are QA/research objects, not guaranteed-complete clinical IODs.
 ## Saving a picture of the views
 
 *File ▸ 💾 Save image* writes what the central area shows as a **PNG** or a
-**JPEG**: one workspace's row, or both rows together. The picture is the row's
+**JPEG**: one workspace's row on its own, or **All** - every row on screen,
+one above the other. The picture is the row's
 own pixels - the panes as laid out, with their contours, dose wash,
 crosshair, orientation labels, slice counters and 3D surfaces - so what the
 figure shows is what was on the screen. The dialog closes itself before the
@@ -254,28 +255,32 @@ analytically known, which is what the integration tests assert against - see
 ## Real test data from GitHub
 
 *Tools ▶ 📥 Download test data* (also on the start screen, below the
-generator) fetches the repository's bundled patient study - two breathing
-phases of a real 4DCT with an RT Structure Set each, TCIA 4D-Lung P102,
-137 MB in 268 files, described in [example-data.md](example-data.md) - so an
-installed copy of the program has clinical data to open without a clone of
-the source tree. The destination defaults to `data-test/` in the
-application's data folder (beside the models and the generated study) and
-can be any folder; the two phases land in
-`lung_p1_4DCT_phase_000/` and `lung_p1_4DCT_phase_050/` under it, and the
-first is loaded into slot A when the download ends, unless the box is
-unticked.
+generator) fetches the repository's bundled patient - TCIA 4D-Lung P102, a
+ten-phase 4DFBCT with an RT Structure Set per phase plus the matching
+ten-phase 4DCBCT, about 980 MB in 1840 files, described in
+[example-data.md](example-data.md) - so an installed copy of the program has
+clinical data to open without a clone of the source tree. The destination
+defaults to `data-test/` in the application's data folder (beside the models
+and the generated study) and can be any folder; the two studies land in
+`TCIA_4D-LUNG/P102/4DFBCT+RTS/` and `TCIA_4D-LUNG/P102/4DCBCT/` under it,
+and the first is loaded into workspace A when the download ends, unless the
+box is unticked.
+
+It is a large download: nearly a gigabyte, and the better part of an hour on
+a slow line. Nothing is lost to an interruption - see the paragraph below -
+and the folder can equally be copied from a clone of the source tree.
 
 The listing comes from GitHub's git API (one call, no token; when that
 call is refused for the API's rate limit of 60 an hour per address, the
-built-in list of the folder's 268 files is used instead) and the files
+built-in list of the folder's 1840 files is used instead) and the files
 from `raw.githubusercontent.com`, through the same downloader the model
 weights use (`src/testdata.rs`). A file already in the folder with the
 listed size is not fetched again, so *Cancel* or a dropped connection costs
 nothing but the file in flight, which is removed; running the tool again
 continues where it stopped, and a run that finds everything present says so
-and touches nothing. Both phases in comparison mode is then *right-click
-one phase ▶ Copy series to workspace B*, or from the command line:
+and touches nothing. The two studies side by side is then *right-click one
+▶ Copy series to workspace B*, or from the command line:
 
 ```
-rust-dicom-station <data folder>/data-test/lung_p1_4DCT_phase_000 <data folder>/data-test/lung_p1_4DCT_phase_050
+rust-dicom-station <data folder>/data-test/TCIA_4D-LUNG/P102/4DFBCT+RTS <data folder>/data-test/TCIA_4D-LUNG/P102/4DCBCT
 ```

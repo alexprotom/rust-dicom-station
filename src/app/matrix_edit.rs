@@ -20,6 +20,11 @@
 //! was run, the offset two reference structures give - so what is on screen
 //! is what is actually going to happen, and ticking the switch takes that
 //! transform over to be adjusted instead of starting from an identity.
+//!
+//! A run that made several transforms - one per phase of a 4D group - has
+//! several matrices to show. Ten grids one under the other would be a wall
+//! of numbers, so there is one grid and a picker above it naming which
+//! transform it is showing ([`matrix_editor_multi`]).
 
 use super::*;
 use crate::registration::Mat4;
@@ -60,6 +65,54 @@ impl ManualMatrix {
     pub(super) fn transform(&self, center: crate::geometry::Vec3) -> Option<Transform3> {
         self.use_it.then(|| Transform3::from_matrix(self.m, center))
     }
+}
+
+/// One transform a run produced, for the picker above the grid.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct MatrixChoice {
+    /// What it was of: a phase's name, or what the one transform is.
+    pub(super) label: String,
+    pub(super) m: Mat4,
+}
+
+/// The editor over a run that produced more than one transform: a picker
+/// naming each, and the one grid below it.
+///
+/// `pick` is which of them the grid is showing, kept by the caller so it
+/// survives the frame. It is clamped here, because the list shrinks when a
+/// group is re-registered with fewer phases.
+pub(super) fn matrix_editor_multi(
+    ui: &mut egui::Ui,
+    state: &mut ManualMatrix,
+    pick: &mut usize,
+    choices: &[MatrixChoice],
+) -> bool {
+    if *pick >= choices.len() {
+        *pick = 0;
+    }
+    let mut changed = false;
+    if choices.len() > 1 {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Of");
+            for (i, c) in choices.iter().enumerate() {
+                if ui
+                    .selectable_label(*pick == i, &c.label)
+                    .on_hover_text(
+                        "Show this transform in the grid. With the switch below off the                          grid follows whichever is picked; with it on, *From the result*                          copies this one in.",
+                    )
+                    .clicked()
+                {
+                    *pick = i;
+                    changed = true;
+                }
+            }
+        });
+    } else if let Some(c) = choices.first() {
+        if !c.label.is_empty() {
+            ui.weak(format!("of {}", c.label));
+        }
+    }
+    changed | matrix_editor(ui, state, choices.get(*pick).map(|c| c.m))
 }
 
 /// Draw the editor. Returns whether anything changed.
@@ -335,5 +388,44 @@ mod tests {
         m.0[2][2] = 0.0;
         assert!(m.invert().is_none(), "a singular matrix has no inverse");
         assert!(Mat4::IDENTITY.invert().is_some(), "the identity does");
+    }
+}
+
+#[cfg(test)]
+mod multi_tests {
+    use super::*;
+
+    fn choice(label: &str, tx: f64) -> MatrixChoice {
+        let mut m = Mat4::IDENTITY;
+        m.0[0][3] = tx;
+        MatrixChoice {
+            label: label.into(),
+            m,
+        }
+    }
+
+    #[test]
+    fn the_picker_index_is_clamped_to_what_there_is() {
+        // The list shrinks when a group is re-registered with fewer phases;
+        // a stale index must not index off the end.
+        let choices = [choice("0%", 1.0), choice("50%", 2.0)];
+        let mut pick = 7usize;
+        if pick >= choices.len() {
+            pick = 0;
+        }
+        assert_eq!(pick, 0);
+        assert_eq!(choices.get(pick).map(|c| c.m), Some(choices[0].m));
+    }
+
+    #[test]
+    fn each_phase_carries_its_own_matrix() {
+        let choices = [choice("0%", 1.0), choice("50%", 2.0), choice("90%", 3.0)];
+        // Following the picked one is what the grid does while the switch
+        // is off, so the numbers on screen are that phase's.
+        let mut state = ManualMatrix::default();
+        for (i, c) in choices.iter().enumerate() {
+            state.follow(Some(choices[i].m));
+            assert_eq!(state.m, c.m, "phase {} shows its own transform", c.label);
+        }
     }
 }

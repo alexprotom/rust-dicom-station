@@ -159,6 +159,15 @@ impl Field {
         }
     }
 
+    /// Fall back to `alt` when the field came out empty, for a tag that is
+    /// Type 2 and has to be written with something in it.
+    pub fn or_default(mut self, alt: &str) -> Self {
+        if self.value.is_empty() {
+            self.value = alt.to_string();
+        }
+        self
+    }
+
     /// Re-fill from the mode, unless the user typed something of their own.
     pub fn apply_mode(&mut self, mode: UidMode) {
         let Some(fresh) = &self.fresh else { return };
@@ -341,7 +350,10 @@ impl ExportPlan {
     /// Build the plan from the loaded workspaces. Everything starts selected -
     /// the common case is "write out what I have", and unticking is easier
     /// than hunting.
-    pub fn build(studies: [Option<&LoadedStudy>; 2], params: ExportParams) -> Self {
+    pub fn build(
+        studies: [Option<&LoadedStudy>; crate::settings::MAX_WORKSPACES],
+        params: ExportParams,
+    ) -> Self {
         let mut workspaces = Vec::new();
         for (slot, study) in studies.into_iter().enumerate() {
             let Some(study) = study else { continue };
@@ -810,7 +822,14 @@ fn build_study(slot: usize, study: &LoadedStudy, study_uid: &str) -> StudyNode {
                 .map(|s| s.study_description.clone())
                 .unwrap_or_else(|| study.meta.study_description.clone()),
         ),
-        id: Field::text("1"),
+        // The department's own StudyID, when the source carried one; "1"
+        // only when it did not, because the tag is Type 2 and must be there.
+        id: Field::text(
+            first
+                .map(|s| s.study_id.clone())
+                .unwrap_or_else(|| study.meta.study_id.clone()),
+        )
+        .or_default("1"),
         date: Field::text(
             first
                 .map(|s| s.study_date.clone())
@@ -932,9 +951,17 @@ fn safe(s: &str, fallback: &str) -> String {
 /// Run the plan. Nothing is written until the whole tree has been walked for
 /// the folders it needs, so a failure part way through leaves a partial
 /// export rather than a confusing one.
+/// One study in workspace A and nothing in the others - the shape the
+/// headless paths (the MCP tools, `dicom_export`, the tests) export in.
+pub fn one_study(study: &LoadedStudy) -> [Option<&LoadedStudy>; crate::settings::MAX_WORKSPACES] {
+    let mut out = [None; crate::settings::MAX_WORKSPACES];
+    out[0] = Some(study);
+    out
+}
+
 pub fn run(
     plan: &ExportPlan,
-    studies: [Option<&LoadedStudy>; 2],
+    studies: [Option<&LoadedStudy>; crate::settings::MAX_WORKSPACES],
     root: &Path,
     progress: &Progress,
 ) -> Result<ExportSummary> {

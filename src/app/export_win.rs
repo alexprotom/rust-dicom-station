@@ -22,13 +22,13 @@ const NAME_W: f32 = 210.0;
 impl ViewerApp {
     /// Open the export window, building a fresh plan from what is loaded.
     pub(super) fn open_export_dialog(&mut self) {
-        let a = self.slots[0].study.as_ref();
-        let b = self.slots[1].study.as_ref();
-        if a.is_none() && b.is_none() {
+        let studies: [Option<&LoadedStudy>; MAX_WORKSPACES] =
+            std::array::from_fn(|s| self.slots[s].study.as_ref());
+        let Some(first) = studies.iter().flatten().next() else {
             return;
-        }
-        let params = dicom_export::ExportParams::for_study(a.or(b).expect("one is loaded"));
-        self.export_plan = Some(ExportPlan::build([a, b], params));
+        };
+        let params = dicom_export::ExportParams::for_study(first);
+        self.export_plan = Some(ExportPlan::build(studies, params));
         self.export_result = None;
         self.export_warnings.clear();
         self.export_open = true;

@@ -2,12 +2,12 @@
 
 [![rust-dicom-station](https://snapcraft.io/rust-dicom-station/badge.svg)](https://snapcraft.io/rust-dicom-station) [![CI](https://github.com/alexprotom/rust-dicom-station/actions/workflows/ci.yml/badge.svg)](https://github.com/alexprotom/rust-dicom-station/actions/workflows/ci.yml) 
 
-RDS (Rust DICOM Station) is open-source software for medical imaging and radiotherapy research, analysis, and QA, **written entirely in Rust**. It loads complete radiotherapy studies (CT, MR and PET series, RTSTRUCT, RTDOSE, photon and ion RTPLAN, DICOM SEG, planar images, spatial and deformable registrations, and treatment records) into an integrated environment for visualization, comparison and quantitative analysis. Beyond the classic linked MPR layout and dual-workspace comparison, RDS provides image registration, structure propagation, DRR generation, dose-volume histograms, 4D motion analysis, interactive and AI-assisted segmentation, 3D visualization, and DICOM editing and export. The entire processing stack is native Rust: functionality normally provided through C/C++ or Python frameworks, including elastix- and plastimatch-style registration, ITK-style ray casting, TotalSegmentator, SegVol, and MedSAM2, is re-implemented directly in Rust without bindings to those frameworks.
+RDS (Rust DICOM Station) is open-source software for medical imaging and radiotherapy research, analysis, and QA, **written entirely in Rust**. It loads complete radiotherapy studies (CT, MR and PET series, RTSTRUCT, RTDOSE, photon and ion RTPLAN, DICOM SEG, planar images, spatial and deformable registrations, and treatment records) into an integrated environment for visualization, comparison and quantitative analysis. Beyond the classic linked MPR layout and multi-workspace comparison (up to four studies side by side), RDS provides image registration, structure propagation, DRR generation, dose-volume histograms, 4D motion analysis, interactive and AI-assisted segmentation, 3D visualization, and DICOM editing and export. The entire processing stack is native Rust: functionality normally provided through C/C++ or Python frameworks, including elastix- and plastimatch-style registration, ITK-style ray casting, TotalSegmentator, SegVol, and MedSAM2, is re-implemented directly in Rust without bindings to those frameworks.
 
 ![overview](docs/screenshot_overview.png)
 
-*The bundled 4D-Lung patient: two breathing phases as two rows of linked MPR
-views with their RTSTRUCT contours, and the 3D window showing the RTSTRUCT
+*Two breathing phases of the bundled 4D-Lung patient as two rows of linked
+MPR views with their RTSTRUCT contours, and the 3D window showing the RTSTRUCT
 surfaces together with organs auto-segmented by the built-in TotalSegmentator
 engine.*
 
@@ -21,16 +21,18 @@ engine.*
   files, and **the data does not have to be a volume**: a portal image, a
   structure set or a plan opens on its own, in the ordinary tree, with
   everything that does not need voxels still working.
-* **Workspaces** - a patient ▶ study ▶ series tree per workspace; copy / move /
-  remove / rename at every level with the reference chains kept intact; RT
-  structure sets and segmentation series as tree nodes, contours and masks
-  converting as they move between them; six-view comparison mode.
+* **Workspaces** - up to four (A - D), one row of panes each; a patient ▶
+  study ▶ series tree per workspace; copy / move / remove / rename at every
+  level with the reference chains kept intact; RT structure sets and
+  segmentation series as tree nodes, contours and masks converting as they
+  move between them; the crosshair, the slice, the zoom and the players
+  synced across every open workspace.
 * **Image information** - what the displayed series actually is, read back
   out of its own headers: voxel spacing, slice thickness and the gap or
   overlap between slices, uneven slice positions, matrix and field of view,
   gantry tilt, frame of reference, kV / mAs / CTDIvol / kernel, rescale and
   units - with whatever wants a second look named and explained, and a side
-  by side of what the two workspaces disagree about before you register them.
+  by side of what two workspaces disagree about before you register them.
 * **Playback** - ▶ on every viewport: through the slices of a view, and
   through the phases of a 4D group. Playing a group carries the structure
   set, the segmentation series and the dose of each phase with it and walks
@@ -115,8 +117,8 @@ Requires a Rust toolchain (<https://rustup.rs>).
 
 ```
 cargo build --release
-cargo run --release -- data-test/lung_p1_4DCT_phase_000
-cargo run --release -- data-test/lung_p1_4DCT_phase_000 data-test/lung_p1_4DCT_phase_050
+cargo run --release -- data-test/TCIA_4D-LUNG/P102/4DFBCT+RTS
+cargo run --release -- data-test/TCIA_4D-LUNG/P102/4DFBCT+RTS data-test/TCIA_4D-LUNG/P102/4DCBCT
 cargo test --release
 ```
 
@@ -145,7 +147,7 @@ on folders, the VC++ runtime check, optional weight prefetch, uninstaller),
 a Linux AppImage, two macOS disk images
 (`rust-dicom-station-<version>-macos-arm64.dmg` and `-macos-x86_64.dmg`, both
 for macOS 12 Monterey and newer, [docs/macos.md](docs/macos.md)) and an
-Android APK (`rust-dicom-station-<version>-arm64-v8a.apk`,
+Android APK (`rust-dicom-station-<version>-android-arm64.apk`,
 the same viewer on a tablet, [docs/android.md](docs/android.md)), and puts the snap into the Snap Store (`sudo snap
 install rust-dicom-station`, [docs/snap.md](docs/snap.md)); the same program
 is on Flathub as `io.github.alexprotom.rust-dicom-station`
@@ -158,8 +160,10 @@ winget as `RDS.RustDICOMStation` (`winget install` / `winget
 upgrade`). The installer is its own crate in
 [packaging/windows/installer/](packaging/windows/installer/README.md). No data at hand? *Tools ▶ 📐 Generate test
 data* writes a complete synthetic RT study, `data-test/` ships a real
-two-phase 4DCT ([docs/example-data.md](docs/example-data.md)), and *Tools ▶
-📥 Download test data* fetches that folder from GitHub into an installed copy.
+patient - a ten-phase 4DFBCT with an RT Structure Set per phase and the
+matching ten-phase 4DCBCT ([docs/example-data.md](docs/example-data.md)) -
+and *Tools ▶ 📥 Download test data* fetches that folder from GitHub into an
+installed copy.
 
 ## Documentation
 
@@ -167,7 +171,7 @@ https://alexprotom.github.io/rust-dicom-station/
 
 | | |
 |---|---|
-| [docs/viewer.md](docs/viewer.md) | Loading folders and single files, workspaces with no volume, MPR views, workspace tree, comparison mode, interaction reference, the graphics backend |
+| [docs/viewer.md](docs/viewer.md) | Loading folders and single files, workspaces with no volume, MPR views, workspace tree, the four workspaces and comparing them, interaction reference, the graphics backend |
 | [docs/rt-objects.md](docs/rt-objects.md) | RTSTRUCT, RTDOSE, RTPLAN, REG, RTRECORD, reference chains |
 | [docs/registration.md](docs/registration.md) | The four registration engines, local registration, analytics, vector fields, fusion, simulator, verification |
 | [docs/propagation.md](docs/propagation.md) | Carrying contours and segmentations across a registration |

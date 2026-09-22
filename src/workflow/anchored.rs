@@ -274,6 +274,10 @@ pub fn run(req: AnchoredRequest, p: &Progress) -> Result<AnchoredOutcome> {
         let r = registration::register(&fixed_reg, &moving_reg, &rigid, p)
             .with_context(|| format!("phase '{label}', rigid stage"))?;
         let rigid_line = r.metric_line();
+        let rigid_metrics = r.metrics();
+        // What the two stages together did to the metric: the rigid stage's
+        // starting value against whatever the last stage ended on.
+        let mut metrics = rigid_metrics;
         let mut transform = r.transform.clone();
         let mut metric_line = format!("{} rigid {rigid_line}", req.mode.label());
         let mut deformable_line = None;
@@ -296,6 +300,10 @@ pub fn run(req: AnchoredRequest, p: &Progress) -> Result<AnchoredOutcome> {
             let r = registration::register(&fixed_reg, &moving_reg, &params, p)
                 .with_context(|| format!("phase '{label}', deformable stage"))?;
             let line = r.metric_line();
+            let m = r.metrics();
+            metrics.final_value = m.final_value;
+            metrics.iterations += m.iterations;
+            metrics.secs += m.secs;
             metric_line.push_str(&format!(" · {} {line}", d.method.label()));
             deformable_line = Some(line);
             displacement_p95_mm = Some(r.analysis.displacement.p95);
@@ -337,6 +345,7 @@ pub fn run(req: AnchoredRequest, p: &Progress) -> Result<AnchoredOutcome> {
             items,
             transform,
             metric_line,
+            metrics: Some(metrics),
         });
     }
     Ok(AnchoredOutcome {

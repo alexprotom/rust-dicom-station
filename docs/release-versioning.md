@@ -84,7 +84,7 @@ rust-dicom-station-X.Y.Z-windows-x86_64.exe
 rust-dicom-station-X.Y.Z-linux-x86_64.AppImage
 rust-dicom-station-X.Y.Z-macos-arm64.dmg
 rust-dicom-station-X.Y.Z-macos-x86_64.dmg
-rust-dicom-station-X.Y.Z-arm64-v8a.apk
+rust-dicom-station-X.Y.Z-android-arm64.apk
 rust-dicom-station-X.Y.Z-winget-manifests.zip
 rust-dicom-station.rb
 SHA256SUMS

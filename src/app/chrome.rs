@@ -5,7 +5,9 @@ use super::*;
 impl ViewerApp {
     // -- Menu bar ---------------------------------------------------------
     pub(super) fn menu_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let mut ask_ws: Option<workspace_pick::WsAsk> = None;
+        let mut load_into: Option<(workspace_pick::WsAsk, usize)> = None;
+        let mut clear_ws: Option<usize> = None;
+        let mut clear_all = false;
         let mut open_gen = false;
         let mut open_testdata = false;
         let mut open_save_img = false;
@@ -21,50 +23,78 @@ impl ViewerApp {
         egui::Panel::top(egui::Id::new("menu_bar")).show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
-                    // One entry each, not one per workspace: the entry says
-                    // what is being done and the window that follows says
-                    // where, which is a menu that does not grow a line every
-                    // time a workspace is added.
-                    if tip_button(
-                        ui,
-                        "📂 Add DICOM folder",
-                        "Scan a folder and add its patients / studies / series to a \
-                         workspace you choose (existing content stays loaded)",
-                    ) {
-                        ask_ws = Some(workspace_pick::WsAsk::AddFolder);
-                        ui.close();
-                    }
-                    // Individual files, for the objects that do not come as a
-                    // folder of slices: an RT image, a structure set, a plan,
-                    // a single slice. They merge exactly as a folder does.
-                    if tip_button(
-                        ui,
-                        "📄 Add DICOM file(s)",
-                        "Open one or more DICOM files directly - RT images, a \
-                         structure set, a plan, single slices. They do not have to \
-                         form an image volume",
-                    ) {
-                        ask_ws = Some(workspace_pick::WsAsk::AddFiles);
-                        ui.close();
+                    // A submenu each, one line per workspace the data may go
+                    // into: those on screen plus one new letter while there is
+                    // room. The line says what that workspace already holds,
+                    // so adding to a full one is a deliberate act. The second
+                    // entry is for the objects that do not come as a folder of
+                    // slices - an RT image, a structure set, a plan, a single
+                    // slice; they merge exactly as a folder does.
+                    let targets = self.open_plus_new();
+                    for ask in [
+                        workspace_pick::WsAsk::AddFolder,
+                        workspace_pick::WsAsk::AddFiles,
+                    ] {
+                        ui.menu_button(ask.menu_entry(), |ui| {
+                            for slot in &targets {
+                                let label = format!(
+                                    "{} · {}",
+                                    SLOT_NAMES[*slot],
+                                    self.workspace_summary(*slot)
+                                );
+                                if ui.button(label).on_hover_text(ask.blurb()).clicked() {
+                                    load_into = Some((ask, *slot));
+                                    ui.close();
+                                }
+                            }
+                        });
                     }
                     ui.separator();
-                    let anything_loaded =
-                        (0..SLOT_NAMES.len()).any(|s| self.slots[s].study.is_some());
-                    if enabled_tip_button(
-                        ui,
-                        anything_loaded,
-                        "🗑 Clear workspace",
-                        "Empty a workspace you choose: its patients, studies, series \
-                         and everything drawn on them. Nothing is written to disk",
-                    ) {
-                        ask_ws = Some(workspace_pick::WsAsk::Clear);
-                        ui.close();
-                    }
+                    // One line per workspace that holds something, and *All*
+                    // under them: the question is short enough to answer in
+                    // the menu, so there is no window for it.
+                    let loaded: Vec<usize> = (0..MAX_WORKSPACES)
+                        .filter(|s| self.slots[*s].study.is_some())
+                        .collect();
+                    ui.add_enabled_ui(!loaded.is_empty(), |ui| {
+                        ui.menu_button("🗑 Clear workspace", |ui| {
+                            for slot in &loaded {
+                                let label = format!(
+                                    "{} · {}",
+                                    SLOT_NAMES[*slot],
+                                    self.workspace_summary(*slot)
+                                );
+                                if ui
+                                    .button(label)
+                                    .on_hover_text(
+                                        "Empty this workspace: its patients, studies, \
+                                         series and everything drawn on them. Nothing is \
+                                         written to disk",
+                                    )
+                                    .clicked()
+                                {
+                                    clear_ws = Some(*slot);
+                                    ui.close();
+                                }
+                            }
+                            if loaded.len() > 1 {
+                                ui.separator();
+                                if ui
+                                    .button("All")
+                                    .on_hover_text("Empty every workspace at once")
+                                    .clicked()
+                                {
+                                    clear_all = true;
+                                    ui.close();
+                                }
+                            }
+                        });
+                    });
                     ui.separator();
                     // One export for everything that is loaded: which
                     // patients, studies and series go out is chosen in the
                     // window, not by which menu entry was clicked.
-                    let anything = self.slots[0].study.is_some() || self.slots[1].study.is_some();
+                    let anything = self.slots.iter().any(|s| s.study.is_some());
                     if enabled_tip_button(
                         ui,
                         anything,
@@ -101,7 +131,32 @@ impl ViewerApp {
                             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
                     )
                     .ui(ui, |ui| {
-                        ui.checkbox(&mut self.comparison, "Comparison mode");
+                        // One line per workspace: which of them are on
+                        // screen. A workspace put aside keeps everything it
+                        // holds - this is the screen, not the data.
+                        ui.menu_button("Workspaces", |ui| {
+                            for (slot, name) in SLOT_NAMES.iter().enumerate() {
+                                let holds = self.slots[slot].study.is_some();
+                                let mut on = self.is_open(slot);
+                                let label = if holds {
+                                    format!("{name} · loaded")
+                                } else {
+                                    format!("{name} · empty")
+                                };
+                                let resp = ui
+                                    .add_enabled(slot > 0, egui::Checkbox::new(&mut on, label))
+                                    .on_hover_text(if holds {
+                                        "Put this workspace aside or bring it back. What it \
+                                         holds stays loaded either way."
+                                    } else {
+                                        "Open an empty workspace to load into, or close it \
+                                         again."
+                                    });
+                                if resp.changed() {
+                                    self.shown[slot] = on;
+                                }
+                            }
+                        });
                         ui.separator();
                         ui.checkbox(&mut self.show_contours, "Contours");
                         ui.checkbox(&mut self.show_crosshair, "Crosshair");
@@ -109,15 +164,15 @@ impl ViewerApp {
                         // both players as well as the crosshair, so all it
                         // needs is a second workspace to carry them to.
                         if self.both_volumes() {
-                            ui.checkbox(&mut self.link_studies, "Sync the two workspaces")
+                            ui.checkbox(&mut self.link_studies, "Sync the workspaces")
                                 .on_hover_text(
-                                    "Move, scroll, zoom or play one workspace and the other \
-                             follows: the crosshair to the same patient point (through the \
-                             active registration when there is one), the slice with it, a \
-                             scrolled or played slice the same way, the zoom and the pan of \
-                             a view onto the other workspace's view of the same plane, and a \
-                             4D run through both groups at once. Off, each workspace is \
-                             navigated on its own.",
+                                    "Move, scroll, zoom or play one workspace and every \
+                             other open one follows: the crosshair to the same patient point \
+                             (through the active registration when there is one), the slice \
+                             with it, a scrolled or played slice the same way, the zoom and \
+                             the pan of a view onto the other workspaces' views of the same \
+                             plane, and a 4D run through the groups at once. Off, each \
+                             workspace is navigated on its own.",
                                 );
                         }
                         ui.checkbox(&mut self.show_labels, "Orientation labels");
@@ -311,7 +366,7 @@ impl ViewerApp {
                                     .as_ref()
                                     .is_some_and(|s| s.doses.is_empty()),
                         );
-                        self.open_dvh_dialog(slot.min(1), Vec::new());
+                        self.open_dvh_dialog(slot.min(MAX_WORKSPACES - 1), Vec::new());
                         ui.close();
                     }
                     if ui
@@ -383,9 +438,9 @@ impl ViewerApp {
                     if tip_button(
                         ui,
                         "📥 Download test data",
-                        "Fetch the bundled patient data (two phases of a real 4DCT with \
-                         structure sets, 137 MB) from the project's GitHub repository \
-                         into a folder of your choice",
+                        "Fetch the bundled patient data (a ten-phase 4DFBCT with \
+                         structure sets and the matching 4DCBCT, 980 MB) from the \
+                         project's GitHub repository into a folder of your choice",
                     ) {
                         open_testdata = true;
                         ui.close();
@@ -515,8 +570,18 @@ impl ViewerApp {
             });
         });
 
-        if let Some(ask) = ask_ws {
-            self.ask_workspace(ask);
+        if let Some((ask, slot)) = load_into {
+            self.load_into(ask, slot);
+        }
+        if let Some(slot) = clear_ws {
+            self.clear_workspace(slot);
+        }
+        if clear_all {
+            // Backwards, so closing C and D does not move A and B about
+            // under the loop.
+            for slot in (0..MAX_WORKSPACES).rev() {
+                self.clear_workspace(slot);
+            }
         }
         if open_save_img && self.save_img.is_none() {
             self.save_img = Some(snapshot::SaveImgDialog::default());
@@ -555,7 +620,7 @@ impl ViewerApp {
     pub(super) fn top_bar(&mut self, ui: &mut egui::Ui) {
         // Only the primary reading controls live here (window/level);
         // file actions, display toggles and appearance are in the menus.
-        let any_study = self.slots[0].study.is_some() || self.slots[1].study.is_some();
+        let any_study = self.slots.iter().any(|s| s.study.is_some());
         if !any_study {
             return;
         }
@@ -622,8 +687,9 @@ impl ViewerApp {
                         // Read the range off a workspace that has one; an empty
                         // volume would otherwise set the shared window to the
                         // degenerate C 0 / W 1 and blank the other workspace.
-                        let src = [self.hovered_slot.min(1), 1 - self.hovered_slot.min(1)]
-                            .into_iter()
+                        let here = self.hovered_slot.min(MAX_WORKSPACES - 1);
+                        let src = std::iter::once(here)
+                            .chain(self.volume_slot_list())
                             .find(|s| self.slots[*s].has_volume());
                         if let Some(study) = src.and_then(|s| self.slots[s].study.as_ref()) {
                             self.wl_preset = None;
@@ -635,14 +701,15 @@ impl ViewerApp {
 
                     ui.separator();
                     // 3D structure rendering windows.
-                    for (slot, slot_name) in SLOT_NAMES.iter().enumerate() {
+                    for slot in self.open_slots() {
+                        let slot_name = SLOT_NAMES[slot];
                         let has_3d = self.slots[slot]
                             .study
                             .as_ref()
                             .map(|s| !s.structure_sets.is_empty())
                             .unwrap_or(false)
                             || !self.slots[slot].segs().is_empty();
-                        if slot == 1 && self.slots[1].study.is_none() {
+                        if slot > 0 && self.slots[slot].study.is_none() {
                             continue;
                         }
                         // The scene is in the row: there is no window to
@@ -740,9 +807,12 @@ impl ViewerApp {
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // What is on screen, in row order. A workspace put
+                    // aside is still loaded, but naming it here would be
+                    // naming a row that is not there.
                     let mut parts = Vec::new();
-                    for (i, s) in self.slots.iter().enumerate() {
-                        if let Some(study) = &s.study {
+                    for i in self.open_slots() {
+                        if let Some(study) = &self.slots[i].study {
                             let m = &study.meta;
                             parts.push(format!(
                                 "{}: {} {}",
@@ -767,16 +837,14 @@ impl ViewerApp {
                     ui.weak("No data loaded");
                     return;
                 }
-                for (slot, slot_name) in SLOT_NAMES.iter().enumerate() {
-                    if slot == 1 && !self.comparison {
-                        // Study B is hidden while comparison mode is off.
-                        continue;
-                    }
+                let comparing = self.comparing();
+                for slot in self.open_slots() {
+                    let slot_name = SLOT_NAMES[slot];
                     let s = &self.slots[slot];
                     let Some(study) = &s.study else { continue };
                     if !study.has_volume() {
                         // No voxels, so no position and no value to report.
-                        let prefix = if self.comparison && self.slots[1].study.is_some() {
+                        let prefix = if comparing {
                             format!("{slot_name}: ")
                         } else {
                             String::new()
@@ -787,8 +855,7 @@ impl ViewerApp {
                     let v = &study.volume;
                     let c = s.cursor;
                     let p = v.voxel_to_patient(c[0], c[1], c[2]);
-                    let both = self.comparison && self.slots[1].study.is_some();
-                    let prefix = if both {
+                    let prefix = if comparing {
                         format!("{slot_name}: ")
                     } else {
                         String::new()
@@ -820,7 +887,7 @@ impl ViewerApp {
                             100.0 * d / s.dose_reference.max(1e-6)
                         ));
                     }
-                    if both && slot == 0 {
+                    if comparing {
                         ui.separator();
                     }
                 }

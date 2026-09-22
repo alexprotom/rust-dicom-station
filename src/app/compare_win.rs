@@ -22,7 +22,11 @@ pub(super) struct CompareDialog {
     pub slot_b: usize,
     pub item_b: Option<usize>,
     /// The last computation, as printable lines.
+    /// Notes: what has no number of its own - a warning, or why there is
+    /// nothing to compare.
     pub result: Vec<String>,
+    /// The measurements, as they go into the table and the CSV.
+    pub rows: Vec<(String, String)>,
     /// The same numbers as a CSV table, ready to be written out.
     pub csv: String,
     /// Whether to run the closest-point rigid fit, which costs a second or
@@ -39,6 +43,7 @@ impl ViewerApp {
             slot_b: slot,
             item_b: None,
             result: Vec::new(),
+            rows: Vec::new(),
             csv: String::new(),
             fit_rigid: true,
         });
@@ -88,6 +93,7 @@ impl ViewerApp {
         else {
             if let Some(d) = &mut self.compare_dialog {
                 d.result = vec!["Pick two structures first.".into()];
+                d.rows.clear();
                 d.csv.clear();
             }
             return;
@@ -99,19 +105,25 @@ impl ViewerApp {
             (self.poi_of_item(slot_a, ia), self.poi_of_item(slot_b, ib))
         {
             let d = pb - pa;
-            let lines = vec![
-                format!("A: {na} - {:.2}, {:.2}, {:.2} mm", pa.x, pa.y, pa.z),
-                format!("B: {nb} - {:.2}, {:.2}, {:.2} mm", pb.x, pb.y, pb.z),
-                format!(
-                    "A → B: RL {:+.2} · AP {:+.2} · SI {:+.2} mm  (|d| = {:.2} mm)",
-                    d.x,
-                    d.y,
-                    d.z,
-                    d.length()
+            let lines = vec!["Two points: the distance is the target registration error \
+                 when they are meant to be the same landmark."
+                .to_string()];
+            let rows = vec![
+                ("structure A".to_string(), na.clone()),
+                ("structure B".to_string(), nb.clone()),
+                (
+                    "point A (mm)".to_string(),
+                    format!("{:+.2} {:+.2} {:+.2}", pa.x, pa.y, pa.z),
                 ),
-                "Two points: the distance is the target registration error when they \
-                 are meant to be the same landmark."
-                    .into(),
+                (
+                    "point B (mm)".to_string(),
+                    format!("{:+.2} {:+.2} {:+.2}", pb.x, pb.y, pb.z),
+                ),
+                (
+                    "offset RL/AP/SI (mm)".to_string(),
+                    format!("{:+.2} {:+.2} {:+.2}", d.x, d.y, d.z),
+                ),
+                ("distance (mm)".to_string(), format!("{:.2}", d.length())),
             ];
             let csv = format!(
                 "quantity,value\nstructure A,\"{}\"\nstructure B,\"{}\"\n\
@@ -132,6 +144,7 @@ impl ViewerApp {
             );
             if let Some(d) = &mut self.compare_dialog {
                 d.result = lines;
+                d.rows = rows;
                 d.csv = csv;
             }
             return;
@@ -142,6 +155,7 @@ impl ViewerApp {
         ) else {
             if let Some(d) = &mut self.compare_dialog {
                 d.result = vec!["One of the structures is gone or empty.".into()];
+                d.rows.clear();
                 d.csv.clear();
             }
             return;
@@ -162,8 +176,8 @@ impl ViewerApp {
         let mut rows: Vec<(String, String)> = Vec::new();
         match motion::overlap(&ma, &mb_on_a, &ga) {
             Some(o) => {
-                lines.push(format!("A: {la} - {:.2} cm³", o.vol_a_cm3));
-                lines.push(format!("B: {lb} - {:.2} cm³", o.vol_b_cm3));
+                rows.push(("structure A".into(), la.clone()));
+                rows.push(("structure B".into(), lb.clone()));
                 rows.push(("volume A (cm3)".into(), format!("{:.4}", o.vol_a_cm3)));
                 rows.push(("volume B (cm3)".into(), format!("{:.4}", o.vol_b_cm3)));
                 if let (Some(a), Some(b)) = (o.centroid_a, o.centroid_b) {
@@ -175,13 +189,6 @@ impl ViewerApp {
                     }
                 }
                 if let Some(s) = o.centroid_shift() {
-                    lines.push(format!(
-                        "Centroid offset A → B: RL {:+.2} · AP {:+.2} · SI {:+.2} mm  (|d| = {:.2} mm)",
-                        s.x,
-                        s.y,
-                        s.z,
-                        s.length()
-                    ));
                     rows.push((
                         "centroid offset (mm)".into(),
                         format!("{:.3} {:.3} {:.3}", s.x, s.y, s.z),
@@ -191,12 +198,6 @@ impl ViewerApp {
                         format!("{:.3}", s.length()),
                     ));
                 }
-                lines.push(format!("Dice: {:.3}", o.dice));
-                lines.push(format!("HD95: {:.2} mm", o.hd95_mm));
-                lines.push(format!(
-                    "Surface distance: mean {:.2} · SD {:.2} · max {:.2} mm",
-                    o.msd_mm, o.sd_mm, o.max_mm
-                ));
                 rows.push(("dice".into(), format!("{:.4}", o.dice)));
                 rows.push(("hd95 (mm)".into(), format!("{:.3}", o.hd95_mm)));
                 rows.push(("surface mean (mm)".into(), format!("{:.3}", o.msd_mm)));
@@ -214,15 +215,9 @@ impl ViewerApp {
                 Some(f) => {
                     let t = f.dof.translation;
                     let r = f.dof.rotation_deg;
-                    lines.push(format!(
-                        "Rigid offset A → B: t = ({:+.2}, {:+.2}, {:+.2}) mm  \
-                         r = ({:+.2}, {:+.2}, {:+.2})°",
-                        t.x, t.y, t.z, r[0], r[1], r[2]
-                    ));
-                    lines.push(format!(
-                        "Surface points after the fit: mean {:.2} · SD {:.2} · max {:.2} mm \
-                         (before: mean {:.2})",
-                        f.residual_mm[0], f.residual_mm[1], f.residual_mm[2], f.before_mm[0]
+                    rows.push((
+                        "surface distance before the fit (mm)".into(),
+                        format!("{:.3}", f.before_mm[0]),
                     ));
                     rows.push((
                         "rigid translation (mm)".into(),
@@ -256,6 +251,7 @@ impl ViewerApp {
         if let Some(d) = &mut self.compare_dialog {
             d.result = lines;
             d.csv = if rows.is_empty() { String::new() } else { csv };
+            d.rows = rows;
         }
     }
 
@@ -274,7 +270,10 @@ impl ViewerApp {
                 .map(|(_, l)| l)
                 .collect(),
         ];
-        let comparison = self.comparison;
+        let comparison = self.comparing();
+        // The letters the two rows may be pointed at: the open workspaces,
+        // so three or four of them are all offered and a closed one is not.
+        let choices = self.open_slots();
         let mut compute = false;
         let mut save = false;
         let mut close = false;
@@ -302,9 +301,9 @@ impl ViewerApp {
                     ui.horizontal(|ui| {
                         ui.label(what);
                         if comparison {
-                            for (s, name) in SLOT_NAMES.iter().enumerate() {
-                                if ui.selectable_label(*slot == s, *name).clicked() {
-                                    *slot = s;
+                            for s in &choices {
+                                if ui.selectable_label(*slot == *s, SLOT_NAMES[*s]).clicked() {
+                                    *slot = *s;
                                     *item = None;
                                 }
                             }
@@ -343,6 +342,19 @@ impl ViewerApp {
                 ui.add_space(4.0);
                 for line in &d.result {
                     ui.label(line.clone());
+                }
+                if !d.rows.is_empty() {
+                    egui::Grid::new("compare_rows")
+                        .striped(true)
+                        .num_columns(2)
+                        .spacing([12.0, 2.0])
+                        .show(ui, |ui| {
+                            for (k, v) in &d.rows {
+                                ui.label(k);
+                                ui.monospace(v);
+                                ui.end_row();
+                            }
+                        });
                 }
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {

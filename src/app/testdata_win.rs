@@ -1,13 +1,14 @@
 //! *Tools ▶ Download test data*: the window over `crate::testdata`, which
-//! fetches the repository's `data-test/` folder (two phases of a real 4DCT
-//! with their structure sets, `docs/example-data.md`) from GitHub.
+//! fetches the repository's `data-test/` folder (a whole real patient: a
+//! ten-phase 4DFBCT with a structure set per phase and the matching
+//! ten-phase 4DCBCT, `docs/example-data.md`) from GitHub.
 //!
 //! Same shape as the generator window beside it in the menu: a destination
 //! folder with Browse and a reset to the application's data folder, one
 //! button that starts a background job, the job's progress while it runs, a
-//! line with the outcome, and the option to load the first phase into slot
-//! A when everything is there. A run that finds every file already present
-//! touches nothing and says so.
+//! line with the outcome, and the option to load the first study into
+//! workspace A when everything is there. A run that finds every file already
+//! present touches nothing and says so.
 
 use super::*;
 
@@ -35,10 +36,11 @@ impl ViewerApp {
             |ui| {
                 ui.set_max_width(560.0);
                 ui.label(
-                    "Fetches the bundled patient data of the project from GitHub: two \
-                     breathing phases of a real 4DCT (TCIA 4D-Lung P102, 133 slices \
-                     each) with an RT Structure Set per phase - about 137 MB in 268 \
-                     files. Files already in the folder are kept, so an interrupted \
+                    "Fetches the bundled patient data of the project from GitHub: TCIA \
+                     4D-Lung P102 in full - a ten-phase 4DFBCT (133 slices a phase) \
+                     with an RT Structure Set per phase, and the matching ten-phase \
+                     4DCBCT (50 slices a phase). About 980 MB in 1840 files, so give \
+                     it time; files already in the folder are kept, and an interrupted \
                      download continues where it stopped.",
                 );
                 ui.horizontal(|ui| {
@@ -70,13 +72,13 @@ impl ViewerApp {
                     }
                 });
                 ui.weak(format!(
-                    "Datasets: {}/lung_p1_4DCT_phase_000, {}/lung_p1_4DCT_phase_050",
-                    testdata::FOLDER,
-                    testdata::FOLDER
+                    "Studies: {f}/{s}/4DCBCT, {f}/{s}/4DFBCT+RTS",
+                    f = testdata::FOLDER,
+                    s = testdata::PATIENT
                 ));
                 ui.checkbox(
                     &mut self.testdata_load_after,
-                    "Load the first phase into slot A when done",
+                    "Load the first study into workspace A when done",
                 );
 
                 ui.add_space(8.0);
@@ -149,9 +151,9 @@ impl ViewerApp {
         self.testdata_job = Some(Job { progress, rx });
     }
 
-    /// Land the finished download: the outcome line, and the first dataset
-    /// into slot A when asked for. A cancelled run is what the user asked
-    /// for and raises no error dialog.
+    /// Land the finished download: the outcome line, and the first study
+    /// into workspace A when asked for. A cancelled run is what the user
+    /// asked for and raises no error dialog.
     pub(super) fn poll_testdata_job(&mut self, ctx: &egui::Context) {
         match poll_job(
             &mut self.testdata_job,

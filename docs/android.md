@@ -8,7 +8,7 @@ gets the desktop program, and a finger gets it too, with the notes below.
 The package is built by [packaging/android/build-apk.sh](../packaging/android/build-apk.sh)
 from the crate in [packaging/android/](../packaging/android/), the way the Windows installer
 is built from [packaging/windows/installer/](../packaging/windows/installer/README.md), and every release
-attaches it as `rust-dicom-station-<version>-arm64-v8a.apk`.
+attaches it as `rust-dicom-station-<version>-android-arm64.apk`.
 
 Phones are not a target. The three linked panes, the data tree and the
 module panel want the room of a tablet; the package installs on a phone but
@@ -16,14 +16,14 @@ is not laid out for one.
 
 ## Installing
 
-Download `rust-dicom-station-<version>-arm64-v8a.apk` from the
+Download `rust-dicom-station-<version>-android-arm64.apk` from the
 [releases page](https://github.com/alexprotom/rust-dicom-station/releases)
 on the tablet, open it, and allow the installation from this source when
 Android asks. Android 11 or later on a 64-bit ARM device is required, which
 is every tablet sold in the last few years. With a computer and `adb`:
 
 ```text
-adb install rust-dicom-station-<version>-arm64-v8a.apk
+adb install rust-dicom-station-<version>-android-arm64.apk
 ```
 
 A newer APK signed with the same key installs over the old one and keeps
@@ -169,7 +169,7 @@ rustup target add aarch64-linux-android
 cargo install cargo-ndk
 export ANDROID_HOME=~/Android/Sdk            # or wherever Android Studio put it
 export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/<version>
-packaging/android/build-apk.sh                          # -> packaging/android/out/rust-dicom-station-<version>-arm64-v8a.apk
+packaging/android/build-apk.sh                          # -> packaging/android/out/rust-dicom-station-<version>-android-arm64.apk
 ```
 
 `--dev` builds the dev profile (quicker to build, slower to run),

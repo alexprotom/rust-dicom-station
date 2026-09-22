@@ -20,7 +20,10 @@
 # in place when the new package is signed with the same key as the old one.
 # Otherwise a debug key is generated once into out/debug.keystore.
 #
-# Result: out/rust-dicom-station-<version>-arm64-v8a.apk
+# Result: out/rust-dicom-station-<version>-android-arm64.apk - the naming
+# every release asset shares (-windows-x86_64.exe, -linux-x86_64.AppImage,
+# -macos-arm64.dmg); `abi` below stays arm64-v8a, which is what Android
+# calls the folder inside the package.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -101,7 +104,7 @@ rm -f "$out/res.zip" "$out/unsigned.apk" "$out/aligned.apk"
 
 # ---- 4. align and sign -------------------------------------------------------
 "$zipalign" -f 4 "$out/unsigned.apk" "$out/aligned.apk"
-apk="$out/rust-dicom-station-$version-$abi.apk"
+apk="$out/rust-dicom-station-$version-android-arm64.apk"
 if [ -n "${RDS_KEYSTORE:-}" ]; then
     : "${RDS_KEYSTORE_PASSWORD:?RDS_KEYSTORE_PASSWORD is needed with RDS_KEYSTORE}"
     : "${RDS_KEY_ALIAS:?RDS_KEY_ALIAS is needed with RDS_KEYSTORE}"

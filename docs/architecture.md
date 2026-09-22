@@ -47,8 +47,9 @@ rust-dicom-station
 │   │   and the three engines), propagation and Dose estimation sections
 │   ├── Side panel: per workspace a DICOM tree - patient ▶ study ▶ modality ▶ series, with RT
 │   │   structures, segmentations, 4D groups, dose and plans inside their study -
-│   │   plus dose display, planar images, spatial registrations, records, warnings
-│   ├── Views: one row per workspace (two in comparison mode), each of up to three
+│   │   plus dose display, planar images, spatial registrations, records,
+│   │   warnings with an Acknowledge button
+│   ├── Views: one row per open workspace (up to four), each of up to four
 │   │   panes chosen under Settings ▸ View layout - the MPR planes and the 3D
 │   │   surface scene; linked viewports, crosshair,
 │   │   a workspace with no volume says so in place of the panes and holds back
@@ -114,7 +115,7 @@ rust-dicom-station
 │   ├── ITV: union over phases with a margin, landed as a segmentation
 │   ├── Results window: charts, tables, CSV, run-vs-run (A/B) comparison
 │   ├── Structure comparison: volumes, centroid offset, Dice, HD95, mean surface distance
-│   └── Transfer by relationship: a structure placed in the other workspace at its
+│   └── Transfer by relationship: a structure placed in a chosen workspace at its
 │       offset from a reference structure
 │
 ├── Dose analysis
@@ -233,15 +234,19 @@ src/
     pick.rs           the one door to a file dialog: the system dialog on the
                       desktop, an egui folder browser on Android, and the
                       answer handed to a continuation either way
-    workspace_pick.rs the small window that asks which workspace an action is
-                      for: File > Add DICOM folder / Add DICOM file(s) /
-                      Clear workspace are one entry each, and the file dialog
-                      comes after the answer
+    workspace_pick.rs which workspace an action is for, and the rule every
+                      such question follows (the open ones plus one new
+                      letter): File > Add DICOM folder / Add DICOM file(s) /
+                      Clear workspace are submenus, and the file dialog comes
+                      after the answer
+    form.rs           the two-column parameter form every module and tool
+                      window is built from, so labels and controls line up
+                      within a section and between them
     panels.rs         both edge panels: the shared show / hide machinery, the
                       left panel's per-workspace Data tree sections, and the
                       right panel's list of switched-on modules
     reg_panel.rs      the Image registration module: method, region, parameters,
-                      landmarks, the run (against the other workspace or every
+                      landmarks, the run (against another workspace or every
                       phase of a 4D group), the analytics, the vector field
     matrix_edit.rs    the hand-typed 4 x 4 transform, the way Slicer's
                       Transforms module shows one: the sixteen numbers, use
@@ -260,7 +265,7 @@ src/
                       auto-segmentation job starts
     dialogs.rs        auto-segmentation window + results, generator, anonymizer,
                       error dialog
-    export_win.rs     the export window: the selection tree over both workspaces,
+    export_win.rs     the export window: the selection tree over every workspace,
                       the name and UID editors, the RTSTRUCT / SEG radios
     seg.rs            interactive segmentation state machine, mask ▶ RTSTRUCT,
                       landing an auto-segmentation result
@@ -301,7 +306,12 @@ src/
     prompt_seg.rs     the prompt segmentation section and worker (SegVol)
     box_seg.rs        slice propagation: the box drawn in the viewport, the
                       preview / refine / propagate loop, the resident session (MedSAM2)
-    propagate_win.rs  the Structure propagation module: onto the other workspace,
+    run_report.rs     what a run leaves behind, as two tables rather than a
+                      paragraph: per destination the metric, the cost and the
+                      anchor's Dice, per structure the three volumes and the
+                      change between them, plus the tab-separated form the
+                      clipboard button writes
+    propagate_win.rs  the Structure propagation module: onto another workspace,
                       or onto every phase of a 4D group through workflow::group
                       or workflow::anchored (transforms kept for the next run)
     motion_win.rs     the Structure motion (4D / ITV) window; the pipeline itself is
@@ -329,7 +339,7 @@ src/
                       so the file holds every frame the run played
     img_info.rs       the Image information module: the geometry, sampling and
                       acquisition of the displayed series (imginfo), what wants
-                      a second look, and what the two workspaces disagree about
+                      a second look, and what two workspaces disagree about
     dose_est.rs       the Dose estimation module: the dose metrics table of
                       the ticked structures against one dose (physical /
                       effective), recomputed whenever they change
@@ -373,7 +383,7 @@ src/
                     references between the written objects resolvable          DICOM
   anonymize.rs      interactive DICOM anonymizer engine                          DICOM
   gen_test_data.rs  synthetic RT phantom study generator                         Sim
-  testdata.rs       the bundled real 4DCT (data-test/) fetched from GitHub:
+  testdata.rs       the bundled real patient (data-test/) fetched from GitHub:
                     git trees listing, raw downloads, resumable                  Sim
   simulate.rs       known-transform study generator (registration QA)           Sim
   drr.rs            DRR: IEC cone-beam geometry, Siddon exact tracing and
@@ -554,7 +564,15 @@ packaging/         everything that turns the viewer into an installable package,
 sibling modules only add `impl ViewerApp` blocks, so each child reaches the
 struct's private fields without widening any visibility beyond `pub(super)`.
 
-`ViewerApp` owns two `StudySlot`s (workspaces A and B). Each slot holds the
+`ViewerApp` owns [`settings::MAX_WORKSPACES`] `StudySlot`s - four, workspaces
+A to D - and a flag per slot saying which of them are on screen (A always is;
+a workspace appears when something is loaded into it and goes when it is
+emptied). The letters are fixed: closing B leaves C where it is, because
+registrations, propagations and window titles all name workspaces by letter.
+`open_slots`, `other_open` and `copy_targets` are the three questions the rest
+of the program asks about them - which are on screen, which one to pair this
+with, and where a copy may go (the open ones plus one new letter). Each slot
+holds the
 loaded study (series, the volume behind an `Arc`, structure sets, doses,
 plans, planar images, registrations, records, 4D groups), three `ViewState`s
 (per-plane slice, zoom / pan, texture caches), the crosshair, per-ROI

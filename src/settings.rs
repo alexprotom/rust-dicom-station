@@ -43,11 +43,18 @@ const PANE_BUTTONS_KEY: &str = "pane_buttons";
 
 /// Settings keys of the last session's sources, one per workspace. The paths
 /// are separated by `|`, which no path on any supported system contains.
-const SESSION_KEYS: [&str; 2] = ["session_a", "session_b"];
+/// How many workspaces the program will hold at once (A - D).
+///
+/// It lives here because the settings file has a key per workspace and the
+/// viewer has a row per workspace, and both have to agree on the count.
+pub const MAX_WORKSPACES: usize = 4;
+
+const SESSION_KEYS: [&str; MAX_WORKSPACES] = ["session_a", "session_b", "session_c", "session_d"];
 const SESSION_SEP: char = '|';
 
 /// Settings keys of what each row of the central area shows, one per row.
-const VIEW_ROW_KEYS: [&str; 2] = ["view_row_a", "view_row_b"];
+const VIEW_ROW_KEYS: [&str; MAX_WORKSPACES] =
+    ["view_row_a", "view_row_b", "view_row_c", "view_row_d"];
 
 /// What one pane of a row shows.
 ///
@@ -211,11 +218,11 @@ pub struct Settings {
     /// What workspace A and workspace B were last loaded from: folders and
     /// files, in the order they were added, so *Restore the last session*
     /// can put the same data back.
-    pub session: [Vec<PathBuf>; 2],
+    pub session: [Vec<PathBuf>; MAX_WORKSPACES],
 
     /// What each row of the central area shows, left to right: up to three
     /// panes, chosen under *Settings ▸ View layout*.
-    pub view_rows: [Vec<PaneKind>; 2],
+    pub view_rows: [Vec<PaneKind>; MAX_WORKSPACES],
 }
 
 impl Default for Settings {
@@ -240,8 +247,8 @@ impl Default for Settings {
             module_play: false,
             pane_buttons_hidden: true,
             modules_open: Vec::new(),
-            session: [Vec::new(), Vec::new()],
-            view_rows: [default_view_row(), default_view_row()],
+            session: std::array::from_fn(|_| Vec::new()),
+            view_rows: std::array::from_fn(|_| default_view_row()),
             // Let wgpu choose. The installer writes an explicit value when
             // the person installing picks one.
             graphics_backend: Backend::Auto,
@@ -1188,6 +1195,8 @@ mod tests {
             view_rows: [
                 vec![PaneKind::Plane(ViewPlane::Axial), PaneKind::Scene3d],
                 vec![PaneKind::Plane(ViewPlane::Coronal)],
+                vec![PaneKind::Plane(ViewPlane::Sagittal)],
+                default_view_row(),
             ],
             ..Settings::default()
         };
@@ -1200,12 +1209,14 @@ mod tests {
             render(&s)
         );
         assert!(render(&s).contains("view_row_b = coronal"));
+        assert!(
+            render(&s).contains("view_row_d = "),
+            "every workspace has a row of its own in the file, D included"
+        );
         // A file that never mentions them gets the layout the program has
         // always had.
-        assert_eq!(
-            parse("").view_rows,
-            [default_view_row(), default_view_row()]
-        );
+        let fresh: [Vec<PaneKind>; MAX_WORKSPACES] = std::array::from_fn(|_| default_view_row());
+        assert_eq!(parse("").view_rows, fresh);
     }
 
     #[test]
@@ -1217,10 +1228,17 @@ mod tests {
                     PathBuf::from("D:/studies/two"),
                 ],
                 vec![PathBuf::from("D:/studies/three")],
+                Vec::new(),
+                vec![PathBuf::from("D:/studies/four")],
             ],
             ..Settings::default()
         };
-        assert_eq!(parse(&render(&s)), s, "both workspaces round trip");
+        assert_eq!(parse(&render(&s)), s, "every workspace round trips");
+        assert_eq!(
+            parse(&render(&s)).session[3],
+            vec![PathBuf::from("D:/studies/four")],
+            "the fourth workspace is remembered like the first"
+        );
         assert_eq!(
             parse("session_a = D:/one | D:/two |\n").session[0],
             vec![PathBuf::from("D:/one"), PathBuf::from("D:/two")],

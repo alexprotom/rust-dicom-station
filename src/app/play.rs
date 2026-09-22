@@ -156,7 +156,7 @@ pub(super) struct PlayState {
     pub(super) follow_dose: bool,
     /// Refuse to read a group whose phases would need more than this.
     pub(super) budget_mb: usize,
-    pub(super) cache: [Option<PhaseCache>; 2],
+    pub(super) cache: [Option<PhaseCache>; MAX_WORKSPACES],
     pub(super) job: Option<Job<(usize, Result<PhaseCache>)>>,
     /// Start this run as soon as the phases are in memory: what *Play 4D*
     /// asked for while the cache was still being read.
@@ -189,7 +189,7 @@ impl Default for PlayState {
             follow_segs: true,
             follow_dose: true,
             budget_mb: 4096,
-            cache: [None, None],
+            cache: std::array::from_fn(|_| None),
             job: None,
             start_after_load: None,
             from_pane: None,
@@ -338,7 +338,7 @@ impl ViewerApp {
             // this one, so its phases have to be in memory too. One reader
             // runs at a time: this queues the second and comes back here
             // when it lands.
-            if let Some(other) = self.sync_phase_partner(slot) {
+            for other in self.sync_phase_partners(slot) {
                 if !self.phase_cache_ready(other) {
                     self.play.start_after_load = Some(target);
                     self.start_phase_cache(other);
@@ -353,15 +353,17 @@ impl ViewerApp {
         });
     }
 
-    /// The other workspace, when *Sync* means a phase run should take it
-    /// along: it has to be loaded, and it has to be showing a 4D group of
-    /// its own. [`None`] otherwise, and the run is one workspace's.
-    pub(super) fn sync_phase_partner(&self, slot: usize) -> Option<usize> {
+    /// The other workspaces a phase run takes along while *Sync* is on:
+    /// the open ones showing a 4D group of their own. Empty otherwise, and
+    /// the run is one workspace's.
+    pub(super) fn sync_phase_partners(&self, slot: usize) -> Vec<usize> {
         if !self.link_studies || !self.both_volumes() {
-            return None;
+            return Vec::new();
         }
-        let other = 1 - slot;
-        self.fourd_phases(other).is_some().then_some(other)
+        self.open_slots()
+            .into_iter()
+            .filter(|s| *s != slot && self.fourd_phases(*s).is_some())
+            .collect()
     }
 
     /// Step the other workspace's group to the phase that answers this one's.
@@ -373,16 +375,18 @@ impl ViewerApp {
     /// each was reconstructed into - because the alternative is one of them
     /// stopping partway through and the comparison ending there.
     fn carry_phase(&mut self, slot: usize, at: usize) {
-        let Some(other) = self.sync_phase_partner(slot) else {
-            return;
-        };
         let here = self.play.cache[slot].as_ref().map_or(0, PhaseCache::len);
-        let there = self.play.cache[other].as_ref().map_or(0, PhaseCache::len);
-        if here == 0 || there == 0 {
+        if here == 0 {
             return;
         }
-        let p = if here == there { at } else { at * there / here };
-        self.show_phase(other, p.min(there - 1));
+        for other in self.sync_phase_partners(slot) {
+            let there = self.play.cache[other].as_ref().map_or(0, PhaseCache::len);
+            if there == 0 {
+                continue;
+            }
+            let p = if here == there { at } else { at * there / here };
+            self.show_phase(other, p.min(there - 1));
+        }
     }
 
     pub(super) fn stop_play(&mut self) {
@@ -569,7 +573,7 @@ impl ViewerApp {
             self.play.follow_segs,
             self.play.follow_dose,
         );
-        let other_loaded = self.slots[1 - slot].study.is_some();
+        let other_loaded = (0..MAX_WORKSPACES).any(|s| s != slot && self.slots[s].study.is_some());
         let s = &mut self.slots[slot];
         let Some(study) = &mut s.study else {
             return;
@@ -692,9 +696,9 @@ impl ViewerApp {
         let Some(target) = self.play.start_after_load else {
             return;
         };
-        // Only the run that was waiting on *these* phases: its own, or the
-        // partner's when *Sync* takes both workspaces along.
-        if target.slot() != slot && self.sync_phase_partner(target.slot()) != Some(slot) {
+        // Only the run that was waiting on *these* phases: its own, or a
+        // partner's when *Sync* takes the other workspaces along.
+        if target.slot() != slot && !self.sync_phase_partners(target.slot()).contains(&slot) {
             return;
         }
         self.play.start_after_load = None;

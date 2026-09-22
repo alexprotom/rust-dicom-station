@@ -1,8 +1,10 @@
 //! *Tools ▶ Download test data*: fetch the repository's bundled patient data
-//! (`data-test/`, two phases of a real 4DCT with structure sets - see
+//! (`data-test/`: TCIA 4D-Lung P102 in full - a ten-phase 4DFBCT with an RT
+//! Structure Set per phase, and the matching ten-phase 4DCBCT; see
 //! `docs/example-data.md`) from GitHub into a local folder, so an installed
 //! copy of the viewer has real data to open without a clone of the source
-//! tree.
+//! tree. It is close to a gigabyte, which is what the resumability below is
+//! for.
 //!
 //! Two requests are involved, neither needing a token:
 //!
@@ -39,12 +41,16 @@ pub const BRANCH: &str = "main";
 /// The folder inside the repository, and the name of the folder written
 /// locally.
 pub const FOLDER: &str = "data-test";
+/// The collection and patient folders inside [`FOLDER`], the level the two
+/// studies sit under (`data-test/TCIA_4D-LUNG/P102/4DFBCT+RTS`). Shown in
+/// the window; [`datasets_in`] finds the studies by walking, not by this.
+pub const PATIENT: &str = "TCIA_4D-LUNG/P102";
 
 /// One file of the folder, as the listing describes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteEntry {
     /// Path relative to [`FOLDER`], with `/` separators
-    /// (`lung_p1_4DCT_phase_000/1-001.dcm`).
+    /// (`TCIA_4D-LUNG/P102/4DCBCT/500_CT_4DCBCT__Gated__0.0_A/CT_0000.dcm`).
     pub rel: String,
     /// Size in bytes, as the listing reports it.
     pub bytes: u64,
@@ -87,10 +93,10 @@ pub struct Summary {
     pub kept: usize,
     /// Bytes fetched in this run.
     pub bytes: u64,
-    /// The local folder, `<dir>`, holding the datasets.
+    /// The local folder, `<dir>`, holding the studies.
     pub dir: PathBuf,
-    /// The dataset folders directly under `dir`, sorted, so the caller can
-    /// open the first one.
+    /// The study folders under `dir` ([`datasets_in`]), sorted, so the
+    /// caller can open the first one.
     pub datasets: Vec<PathBuf>,
 }
 
@@ -120,8 +126,9 @@ pub fn browse_url() -> String {
 /// The answer is `{"sha": .., "tree": [{"path", "type", "size", ..}, ..],
 /// "truncated": bool}`; `type` is `blob` for a file and `tree` for a folder,
 /// and only blobs carry a size. Entries come back in path order, which is
-/// kept, so the two phases download one after the other and the first
-/// phase is complete before the second starts.
+/// kept, so the studies download one after the other, a phase at a time,
+/// and an interrupted run leaves whole phases behind rather than a
+/// scattering of slices.
 pub fn parse_tree(json: &str) -> Result<Vec<RemoteEntry>> {
     let v: serde_json::Value =
         serde_json::from_str(json).context("GitHub answered with something other than JSON")?;
@@ -167,29 +174,42 @@ pub fn parse_tree(json: &str) -> Result<Vec<RemoteEntry>> {
     Ok(out)
 }
 
-/// What the folder is known to hold, for when the listing cannot be fetched:
-/// GitHub's unauthenticated API allows 60 calls an hour per address, and a
-/// clinic's shared address may have spent them on something else. Two
-/// phases, each 133 CT slices `1-001.dcm` .. `1-133.dcm` and the RTSTRUCT
-/// `1-1.dcm` (docs/example-data.md). The sizes are unknown here (`0`), so a
-/// file counts as present when it exists and is not empty, and progress is
-/// counted in files rather than bytes. A file this list names that the
-/// repository no longer has fails the download with the server's answer,
-/// which is the right outcome: the list is a stand-in for the listing, not
-/// a second source of truth.
+/// What the folder is known to hold, for when the listing cannot be
+/// fetched: GitHub's unauthenticated API allows 60 calls an hour per
+/// address, and a clinic's shared address may have spent them on something
+/// else. TCIA 4D-Lung P102 (docs/example-data.md): ten 4DCBCT phases of 50
+/// slices, then ten 4DFBCT phases of 133 slices, then one RTSTRUCT per
+/// 4DFBCT phase - 1840 files, in the path order the API would give them.
+/// The sizes are unknown here (`0`), so a file counts as present when it
+/// exists and is not empty, and progress is counted in files rather than
+/// bytes. A file this list names that the repository no longer has fails
+/// the download with the server's answer, which is the right outcome: the
+/// list is a stand-in for the listing, not a second source of truth.
 pub fn builtin_listing() -> Vec<RemoteEntry> {
-    let mut out = Vec::with_capacity(2 * 134);
-    for phase in ["lung_p1_4DCT_phase_000", "lung_p1_4DCT_phase_050"] {
-        for slice in 1..=133 {
-            out.push(RemoteEntry {
-                rel: format!("{phase}/1-{slice:03}.dcm"),
-                bytes: 0,
-            });
+    // The ten gating phases, as they are written in every folder name.
+    const PHASES: [&str; 10] = [
+        "0.0", "10.0", "20.0", "30.0", "40.0", "50.0", "60.0", "70.0", "80.0", "90.0",
+    ];
+    let mut out = Vec::with_capacity(1840);
+    let mut file = |rel: String| out.push(RemoteEntry { rel, bytes: 0 });
+    // "4DCBCT" sorts before "4DFBCT+RTS", which is the order the API lists.
+    for (i, p) in PHASES.iter().enumerate() {
+        for slice in 0..50 {
+            file(format!(
+                "{PATIENT}/4DCBCT/{n}_CT_4DCBCT__Gated__{p}_A/CT_{slice:04}.dcm",
+                n = 500 + i
+            ));
         }
-        out.push(RemoteEntry {
-            rel: format!("{phase}/1-1.dcm"),
-            bytes: 0,
-        });
+    }
+    for p in PHASES {
+        for slice in 0..133 {
+            file(format!(
+                "{PATIENT}/4DFBCT+RTS/1_CT_4DFBCT__Gated__{p}_A/CT_{slice:04}.dcm"
+            ));
+        }
+    }
+    for p in PHASES {
+        file(format!("{PATIENT}/4DFBCT+RTS/RS_RTS__{p}_A.dcm"));
     }
     out
 }
@@ -318,8 +338,34 @@ pub fn download_entries(
     Ok(summary)
 }
 
-/// The dataset folders directly under `dir`, sorted by name.
+/// The study folders to offer under `dir`, sorted by name.
+///
+/// The data nests its two studies under a collection and a patient
+/// (`data-test/TCIA_4D-LUNG/P102/4DFBCT+RTS`), and what the window wants to
+/// offer is the studies, not the one collection folder above them. So the
+/// walk goes down while a level holds exactly one folder and that folder
+/// has no files of its own, and stops at the first level that branches -
+/// here `4DCBCT` and `4DFBCT+RTS`. A flat folder of datasets is unchanged
+/// by the rule, since its first level already branches. The depth is capped
+/// so that no symlink loop can turn this into a long walk.
 pub fn datasets_in(dir: &Path) -> Vec<PathBuf> {
+    let mut level = subfolders(dir);
+    for _ in 0..8 {
+        let [only] = &level[..] else { break };
+        if holds_files(only) {
+            break;
+        }
+        let next = subfolders(only);
+        if next.is_empty() {
+            break;
+        }
+        level = next;
+    }
+    level
+}
+
+/// The folders directly inside `dir`, sorted by name.
+fn subfolders(dir: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
         .map(|rd| {
             rd.filter_map(|e| e.ok())
@@ -330,6 +376,14 @@ pub fn datasets_in(dir: &Path) -> Vec<PathBuf> {
         .unwrap_or_default();
     out.sort();
     out
+}
+
+/// True when `dir` holds at least one file of its own (so it is a folder of
+/// data, not only a step on the way down to one).
+fn holds_files(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .map(|rd| rd.filter_map(|e| e.ok()).any(|e| e.path().is_file()))
+        .unwrap_or(false)
 }
 
 /// Maps one file's `0..=1` onto its share of the whole, and replaces the
@@ -361,10 +415,10 @@ mod tests {
       "tree": [
         {"path": "Cargo.toml", "mode": "100644", "type": "blob", "size": 4729, "sha": "1"},
         {"path": "data-test", "mode": "040000", "type": "tree", "sha": "2"},
-        {"path": "data-test/lung_p1_4DCT_phase_000", "mode": "040000", "type": "tree", "sha": "3"},
-        {"path": "data-test/lung_p1_4DCT_phase_000/1-001.dcm", "mode": "100644", "type": "blob", "size": 526000, "sha": "4"},
-        {"path": "data-test/lung_p1_4DCT_phase_000/1-1.dcm", "mode": "100644", "type": "blob", "size": 91000, "sha": "5"},
-        {"path": "data-test/lung_p1_4DCT_phase_050/1-001.dcm", "mode": "100644", "type": "blob", "size": 526001, "sha": "6"},
+        {"path": "data-test/TCIA_4D-LUNG/P102/4DCBCT/500_CT_4DCBCT__Gated__0.0_A", "mode": "040000", "type": "tree", "sha": "3"},
+        {"path": "data-test/TCIA_4D-LUNG/P102/4DCBCT/500_CT_4DCBCT__Gated__0.0_A/CT_0000.dcm", "mode": "100644", "type": "blob", "size": 528100, "sha": "4"},
+        {"path": "data-test/TCIA_4D-LUNG/P102/4DFBCT+RTS/1_CT_4DFBCT__Gated__0.0_A/CT_0000.dcm", "mode": "100644", "type": "blob", "size": 526336, "sha": "5"},
+        {"path": "data-test/TCIA_4D-LUNG/P102/4DFBCT+RTS/RS_RTS__0.0_A.dcm", "mode": "100644", "type": "blob", "size": 1118624, "sha": "6"},
         {"path": "data-test-other/x.dcm", "mode": "100644", "type": "blob", "size": 1, "sha": "7"},
         {"path": "docs/data-test/y.dcm", "mode": "100644", "type": "blob", "size": 1, "sha": "8"}
       ],
@@ -378,16 +432,17 @@ mod tests {
             e,
             vec![
                 RemoteEntry {
-                    rel: "lung_p1_4DCT_phase_000/1-001.dcm".into(),
-                    bytes: 526000
+                    rel: "TCIA_4D-LUNG/P102/4DCBCT/500_CT_4DCBCT__Gated__0.0_A/CT_0000.dcm".into(),
+                    bytes: 528100
                 },
                 RemoteEntry {
-                    rel: "lung_p1_4DCT_phase_000/1-1.dcm".into(),
-                    bytes: 91000
+                    rel: "TCIA_4D-LUNG/P102/4DFBCT+RTS/1_CT_4DFBCT__Gated__0.0_A/CT_0000.dcm"
+                        .into(),
+                    bytes: 526336
                 },
                 RemoteEntry {
-                    rel: "lung_p1_4DCT_phase_050/1-001.dcm".into(),
-                    bytes: 526001
+                    rel: "TCIA_4D-LUNG/P102/4DFBCT+RTS/RS_RTS__0.0_A.dcm".into(),
+                    bytes: 1118624
                 },
             ]
         );
@@ -411,8 +466,8 @@ mod tests {
             "https://api.github.com/repos/alexprotom/rust-dicom-station/git/trees/main?recursive=1"
         );
         assert_eq!(
-            raw_url("lung_p1_4DCT_phase_000/1-001.dcm"),
-            "https://raw.githubusercontent.com/alexprotom/rust-dicom-station/main/data-test/lung_p1_4DCT_phase_000/1-001.dcm"
+            raw_url("TCIA_4D-LUNG/P102/4DCBCT/500_CT_4DCBCT__Gated__0.0_A/CT_0000.dcm"),
+            "https://raw.githubusercontent.com/alexprotom/rust-dicom-station/main/data-test/TCIA_4D-LUNG/P102/4DCBCT/500_CT_4DCBCT__Gated__0.0_A/CT_0000.dcm"
         );
         assert_eq!(
             browse_url(),
@@ -425,14 +480,18 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rds-testdata-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let entry = RemoteEntry {
-            rel: "lung_p1_4DCT_phase_000/1-001.dcm".into(),
+            rel: "TCIA_4D-LUNG/P102/4DCBCT/500_CT_4DCBCT__Gated__0.0_A/CT_0000.dcm".into(),
             bytes: 3,
         };
         assert!(!entry.is_present(&dir));
         let p = entry.path_in(&dir);
         assert_eq!(
             p,
-            dir.join("lung_p1_4DCT_phase_000").join("1-001.dcm"),
+            dir.join("TCIA_4D-LUNG")
+                .join("P102")
+                .join("4DCBCT")
+                .join("500_CT_4DCBCT__Gated__0.0_A")
+                .join("CT_0000.dcm"),
             "the relative path is split on '/' into native components"
         );
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -442,23 +501,100 @@ mod tests {
         assert!(!entry.is_present(&dir), "a short file is fetched again");
 
         // Everything present: no network is touched, the summary counts
-        // the kept files and finds the dataset folders.
+        // the kept files and walks down to the study folder.
         std::fs::write(&p, b"abc").unwrap();
         let s = download_entries(std::slice::from_ref(&entry), &dir, &Quiet).unwrap();
         assert_eq!(s.downloaded, 0);
         assert_eq!(s.kept, 1);
-        assert_eq!(s.datasets, vec![dir.join("lung_p1_4DCT_phase_000")]);
+        // One file: the chain of single folders runs all the way down to
+        // the series, and that is what is offered - correct for a tree with
+        // nothing else in it.
+        assert_eq!(
+            s.datasets,
+            vec![dir
+                .join("TCIA_4D-LUNG")
+                .join("P102")
+                .join("4DCBCT")
+                .join("500_CT_4DCBCT__Gated__0.0_A")]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_walk_down_stops_where_the_tree_branches() {
+        let dir = std::env::temp_dir().join(format!("rds-testdata-walk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let patient = dir.join("TCIA_4D-LUNG").join("P102");
+        for study in ["4DCBCT", "4DFBCT+RTS"] {
+            let series = patient.join(study).join("s1");
+            std::fs::create_dir_all(&series).unwrap();
+            std::fs::write(series.join("CT_0000.dcm"), b"x").unwrap();
+        }
+        // Two collection levels are walked through; the two studies are what
+        // is offered, not the one collection folder and not the series.
+        assert_eq!(
+            datasets_in(&dir),
+            vec![patient.join("4DCBCT"), patient.join("4DFBCT+RTS")]
+        );
+
+        // A folder that holds files of its own is where the walk stops, even
+        // when it has exactly one subfolder.
+        std::fs::write(patient.join("README.txt"), b"x").unwrap();
+        assert_eq!(
+            datasets_in(&dir.join("TCIA_4D-LUNG")),
+            vec![patient.clone()]
+        );
+
+        // A flat folder of datasets is untouched by the rule.
+        let flat = dir.join("flat");
+        for d in ["a", "b"] {
+            std::fs::create_dir_all(flat.join(d)).unwrap();
+            std::fs::write(flat.join(d).join("CT_0000.dcm"), b"x").unwrap();
+        }
+        assert_eq!(datasets_in(&flat), vec![flat.join("a"), flat.join("b")]);
+
+        // Nothing there at all: nothing to offer, and no panic.
+        assert!(datasets_in(&dir.join("nope")).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn the_built_in_list_is_the_folder_as_documented() {
         let b = builtin_listing();
-        assert_eq!(b.len(), 268);
-        assert_eq!(b[0].rel, "lung_p1_4DCT_phase_000/1-001.dcm");
-        assert_eq!(b[132].rel, "lung_p1_4DCT_phase_000/1-133.dcm");
-        assert_eq!(b[133].rel, "lung_p1_4DCT_phase_000/1-1.dcm");
-        assert_eq!(b[267].rel, "lung_p1_4DCT_phase_050/1-1.dcm");
+        assert_eq!(b.len(), 10 * 50 + 10 * 133 + 10);
+        assert_eq!(b.len(), 1840);
+        assert_eq!(
+            b[0].rel,
+            "TCIA_4D-LUNG/P102/4DCBCT/500_CT_4DCBCT__Gated__0.0_A/CT_0000.dcm"
+        );
+        assert_eq!(
+            b[49].rel,
+            "TCIA_4D-LUNG/P102/4DCBCT/500_CT_4DCBCT__Gated__0.0_A/CT_0049.dcm"
+        );
+        assert_eq!(
+            b[50].rel,
+            "TCIA_4D-LUNG/P102/4DCBCT/501_CT_4DCBCT__Gated__10.0_A/CT_0000.dcm"
+        );
+        assert_eq!(
+            b[500].rel,
+            "TCIA_4D-LUNG/P102/4DFBCT+RTS/1_CT_4DFBCT__Gated__0.0_A/CT_0000.dcm"
+        );
+        assert_eq!(
+            b[632].rel,
+            "TCIA_4D-LUNG/P102/4DFBCT+RTS/1_CT_4DFBCT__Gated__0.0_A/CT_0132.dcm"
+        );
+        assert_eq!(
+            b[1830].rel,
+            "TCIA_4D-LUNG/P102/4DFBCT+RTS/RS_RTS__0.0_A.dcm"
+        );
+        assert_eq!(
+            b[1839].rel,
+            "TCIA_4D-LUNG/P102/4DFBCT+RTS/RS_RTS__90.0_A.dcm"
+        );
+        let mut sorted: Vec<&str> = b.iter().map(|e| e.rel.as_str()).collect();
+        let listed = sorted.clone();
+        sorted.sort_unstable();
+        assert_eq!(listed, sorted, "the list is in the API's path order");
         assert!(b.iter().all(|e| e.bytes == 0));
 
         // Unknown size: present means non-empty.
@@ -497,12 +633,12 @@ mod tests {
         }
         let dir = std::env::temp_dir().join(format!("rds-testdata-cancel-{}", std::process::id()));
         let entry = RemoteEntry {
-            rel: "lung_p1_4DCT_phase_000/1-001.dcm".into(),
+            rel: "TCIA_4D-LUNG/P102/4DCBCT/500_CT_4DCBCT__Gated__0.0_A/CT_0000.dcm".into(),
             bytes: 1,
         };
         let e = download_entries(&[entry], &dir, &Cancelled).unwrap_err();
         assert!(crate::progress::is_cancellation(&e));
-        assert!(!dir.join("lung_p1_4DCT_phase_000").exists());
+        assert!(!dir.join("TCIA_4D-LUNG").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
