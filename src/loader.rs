@@ -158,7 +158,7 @@ fn suv_factor_of(obj: &InMemDicomObject) -> Option<f64> {
 // Scan results
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct SeriesInfo {
     pub uid: String,
     pub modality: String,
@@ -170,6 +170,9 @@ pub struct SeriesInfo {
     pub study_uid: String,
     pub study_date: String,
     pub study_description: String,
+    /// StudyID (0020,0010): the department's own number for the study, short
+    /// and human-written, unlike the Study Instance UID. Often empty.
+    pub study_id: String,
     /// SeriesNumber (0020,0011), when present.
     pub series_number: Option<i64>,
     /// TemporalPositionIdentifier (0020,0100) of the first slice - enhanced
@@ -209,6 +212,8 @@ pub struct PatientMeta {
     pub patient_id: String,
     pub study_date: String,
     pub study_description: String,
+    /// StudyID (0020,0010), see [`SeriesInfo::study_id`].
+    pub study_id: String,
 }
 
 /// Everything found in a directory, with the primary series volume loaded.
@@ -332,6 +337,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
                 patient_id: str_of(&obj, tags::PATIENT_ID).unwrap_or_default(),
                 study_date: str_of(&obj, tags::STUDY_DATE).unwrap_or_default(),
                 study_description: str_of(&obj, tags::STUDY_DESCRIPTION).unwrap_or_default(),
+                study_id: str_of(&obj, tags::STUDY_ID).unwrap_or_default(),
             };
             Some(Scanned {
                 path: path.clone(),
@@ -442,6 +448,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
                         study_uid: s.study_uid.clone(),
                         study_date: s.meta.study_date.clone(),
                         study_description: s.meta.study_description.clone(),
+                        study_id: s.meta.study_id.clone(),
                         series_number: s.series_number,
                         temporal_id: s.temporal_id,
                         suv_bw: s.suv_bw,

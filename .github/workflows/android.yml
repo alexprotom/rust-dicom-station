@@ -160,7 +160,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          apk=$(ls packaging/android/out/rust-dicom-station-*-arm64-v8a.apk)
+          apk=$(ls packaging/android/out/rust-dicom-station-*-android-arm64.apk)
           tools=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n1)
           "$tools/aapt2" dump badging "$apk" | grep -E "^(package|application-label|sdkVersion|targetSdkVersion|native-code|uses-permission)"
           unzip -l "$apk" | grep -E "lib/arm64-v8a/librust_dicom_station.so|AndroidManifest.xml|mipmap"
@@ -181,5 +181,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: android-apk
-          path: packaging/android/out/rust-dicom-station-*-arm64-v8a.apk
+          path: packaging/android/out/rust-dicom-station-*-android-arm64.apk
           if-no-files-found: error

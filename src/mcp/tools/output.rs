@@ -75,7 +75,7 @@ pub fn export(core: &mut Core, a: ExportArgs, p: &Progress) -> Result<Value> {
     )?;
     let ds = core.session.dataset(&a.dataset)?;
     let study = &ds.study;
-    let mut plan = ExportPlan::build([Some(study), None], ExportParams::for_study(study));
+    let mut plan = ExportPlan::build(export::one_study(study), ExportParams::for_study(study));
     plan.layout = Layout::StudyFolders;
     plan.set_uid_mode(uid_mode);
     plan.set_all_formats(format);
@@ -100,7 +100,7 @@ pub fn export(core: &mut Core, a: ExportArgs, p: &Progress) -> Result<Value> {
     if plan.is_empty() {
         bail!("nothing is selected for export");
     }
-    let summary = export::run(&plan, [Some(study), None], &out, p)?;
+    let summary = export::run(&plan, export::one_study(study), &out, p)?;
     Ok(json!({
         "dataset": a.dataset,
         "folder": out.to_string_lossy(),

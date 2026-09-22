@@ -18,8 +18,8 @@ starts the work; the two below it are the shortcuts.
   up when nothing is loaded at all, so there is nowhere else for it to go;
   the menu entry of the same name asks.
 * **Restore last session** loads again what was open when the program was last
-  closed. The sources of both workspaces are remembered in `session_a` /
-  `session_b` in the settings file as they are loaded, so an unclean exit
+  closed. Each workspace's sources are remembered in `session_a` to
+  `session_d` in the settings file as they are loaded, so an unclean exit
   loses nothing. If the folders it names have since moved or been deleted, it
   says so and forgets the session.
 * **Load data from PACS** opens the local patient archive.
@@ -32,7 +32,8 @@ and the answer to "where has it gone" is on the button itself.
 
 * **Generate test data** writes a synthetic RT study to try the program on.
 * **Anonymize DICOM folder** opens the anonymizer.
-* **Download test data** fetches the bundled real 4DCT study from GitHub
+* **Download test data** fetches the bundled real patient - a ten-phase
+  4DFBCT with structure sets and the matching 4DCBCT - from GitHub
   ([export-and-tools.md](export-and-tools.md#real-test-data-from-github)).
 * **Downloaded models** opens the model manager.
 
@@ -94,7 +95,7 @@ any other, and everything it holds is usable: planar images open in their
 viewers (the *Planar images* section opens itself, since for these workspaces it
 is the content rather than a footnote), structure sets render in the 3D
 window, plans and dose objects show their tables, and any of it can be
-renamed, copied to the other workspace or exported. What is held back is only
+renamed, copied to another workspace or exported. What is held back is only
 what needs voxels: the MPR views say so in place of three black panes, and the
 segmentation tools, the four engines, registration, propagation, combination,
 comparison and the DRR are disabled until there is something to run them on.
@@ -106,12 +107,14 @@ its CT second, and have the contours land on the right images.
 
 ## The rows and their panes
 
-The main area is **one row per workspace** - a second appears in *Comparison
-mode* (View menu) - and each row shows up to **four panes**, chosen under
-*Settings ▸ View layout*: the **axial**, **sagittal** and **coronal** planes,
-and the **3D** surface scene. The two rows are chosen separately, so the
-planning CT can sit above one plane of the repeat scan, or a single large
-axial above the same plane of the other workspace.
+The main area is **one row per open workspace** - up to four, **A** to
+**D** - and each row shows up to **four panes**, chosen under *Settings ▸
+View layout*: the **axial**, **sagittal** and **coronal** planes, and the
+**3D** surface scene. The rows share the height equally and are chosen
+separately, so the planning CT can sit above one plane of the repeat scan,
+or a single large axial above the same plane of another workspace. A
+workspace appears as soon as something is loaded into it and goes when it is
+emptied; *View ▸ Workspaces* puts one aside without unloading it.
 
 The panes of a row split its width evenly, so a row of two is two large
 images rather than two and a gap, and a row of one is one image across the
@@ -124,8 +127,8 @@ order, so it reads left to right the way the row does; a newly ticked pane
 joins at the right. **⟲ Reset** beside a row's heading puts that row back to
 the standard three - axial, sagittal, coronal, in that order - in one click,
 and greys out when the row is already that. The choice is remembered between
-runs (`view_row_a` /
-`view_row_b` in the settings file, which can also be edited by hand). Both
+runs (`view_row_a` to `view_row_d` in the settings file, which can also be
+edited by hand). Both
 that submenu and the **View** menu are sets of switches rather than lists of
 actions, so ticking one leaves the menu open and a whole layout can be put
 together in one visit; they close on a click outside them or on their own
@@ -152,12 +155,12 @@ The hand is one switch for every pane of both workspaces. The toolbar holds a
 global **⟲** (the same reset for every pane of both workspaces), the **⌖**
 crosshair toggle (while hidden,
 left-click navigation is off and slices change only by scrolling), the
-**Sync** toggle beside it (shown whenever two workspaces are loaded - see
+**Sync** toggle beside it (shown whenever two or more workspaces are loaded - see
 below), the **3D A / 3D B** buttons and the segmentation tools.
 
 **The 3D scene** can live in a row or in a window. Ticking **3D** for a row
 draws it there, and the pane is furnished like any other: **3D** (with the
-workspace's letter in comparison mode) in the top-left corner, and the same
+workspace's letter while more than one is open) in the top-left corner, and the same
 corner buttons in the same places - **⛶ / ⊞**, **◀ / ▶** (the same fold,
 the same switch), **⟲** (the camera back to its default angle, fit zoom and
 no offset), **✋** (a left drag moves the
@@ -212,9 +215,19 @@ followed by what the window is - *Viewer* for the main one, then *PACS -
 patient archive*, *Downloaded models*, *DRR - workspace A*, and so on.
 
 **Status bar.** Patient coordinates, voxel indices, HU and dose (Gy and % of
-the reference dose) at the crosshair; in comparison mode both workspaces report
-the full set side by side, each at its own crosshair. Hover the **?** at the
+the reference dose) at the crosshair; with more than one workspace open each
+reports the full set side by side, at its own crosshair. Hover the **?** at the
 right end to read the active tool's mouse bindings.
+
+**View ▸ Workspaces** lists all four letters with a tick each: which of them
+are on screen. A is always shown; a workspace holding data is ticked as soon
+as something is loaded into it, and unticking one puts its row aside without
+unloading anything - the tick brings it straight back. Ticking an empty
+letter opens a row that offers to load into it, and that row carries a
+*Close this workspace* button of its own. Emptying a workspace with *File ▸
+Clear workspace* closes it; the letters of the others never shift, because a
+registration, a propagation and every window title names workspaces by
+letter.
 
 **The two panels.** The left one is the data tree, the right one the modules.
 Each hides and shows from the *View* menu (*Data tree*, *Modules*), from a
@@ -270,7 +283,8 @@ anisotropic in-plane spacing, oblique axes, a missing frame of reference,
 files that are in the series but not in the volume. A regular study says
 *Nothing unusual*.
 
-*Compare* puts the two workspaces side by side and lists only what they
+*Compare* puts this workspace beside another - *against* names which one
+when more than two are open - and lists only what they
 disagree about - the check to make before registering them, contouring
 across them or carrying a dose from one to the other. *Copy* puts the whole
 report on the clipboard; *Read again* re-reads the headers after the files
@@ -300,13 +314,13 @@ breathe with the views, and the Dose estimation module's *Dynamic* log has
 a third ([dvh.md](dvh.md#the-dose-estimation-module)) that walks the
 structures back through the moves they were given.
 
-**With Sync on, both workspaces play.** **▶3D** takes the paired pane through
-its own stack by the same rule the wheel follows - the slice position in
-patient coordinates, through the registration where there is one - so the
-two rows stay on the same anatomy rather than on the same slice number.
-**▶4D** walks the other workspace's group beside this one's, which is why the
-first press reads *both* groups into memory and the budget in the Playback
-module has to cover them. Two groups of the same length step phase for
+**With Sync on, every open workspace plays.** **▶3D** takes the other panes
+through their own stacks by the same rule the wheel follows - the slice
+position in patient coordinates, through the registration where there is
+one - so the rows stay on the same anatomy rather than on the same slice
+number. **▶4D** walks every other workspace's group beside this one's, which
+is why the first press reads *all* of those groups into memory and the budget
+in the Playback module has to cover them. Two groups of the same length step phase for
 phase; groups of different lengths are walked proportionally, so a tenth of
 one breathing cycle meets a tenth of the other. A workspace that is not
 showing a 4D group is simply left where it is.
@@ -397,14 +411,19 @@ are under the status bar's *?*.
 
 ## Workspaces and the patient ▶ study ▶ series tree
 
-The two viewer slots, **workspace A** and **workspace B**, each hold any number of
-patients, studies and series from any number of folders. *File ▶ Add DICOM
-folder* and *Add DICOM file(s)* ask which workspace the data joins and then
-merge it in without unloading what is there; duplicates (by UID) are skipped
-and reported. *File ▶ Clear workspace* asks the same question the other way
-round and empties the one chosen. One entry each rather than one per
-workspace: the entry says what is being done and the small window that
-follows says where.
+The four viewer slots, **workspace A** to **workspace D**, each hold any
+number of patients, studies and series from any number of folders. *File ▶
+Add DICOM folder*, *Add DICOM file(s)* and *🗑 Clear workspace* are each a
+**submenu** whose lines name the workspaces: those on screen plus one new
+letter while there is room, each line saying what that workspace already
+holds (its patient and series count, or *empty*). One click answers the
+question, and the file dialog comes after it, so the destination is settled
+while there is still something to cancel. Data merges in without unloading
+what is there; duplicates (by UID) are skipped and reported.
+
+*Clear workspace* lists only the workspaces that hold something, with **All**
+under them when there is more than one. Emptying a workspace past A also
+takes its row off the screen.
 
 *Tools ▶ 🏥 PACS - patient archive* fills a workspace the same way from the
 application's own store of studies ([pacs.md](pacs.md)) - an archived study
@@ -478,14 +497,17 @@ image series it is drawn on, each dose the plan it was computed for
 (ReferencedStructureSetSequence).
 
 The workspace's own name is a heading rather than a node: the patients sit at
-the same level as it, since a tree that can only hold two workspaces does not
-need a level for choosing between them.
+the same level as it, since a tree of at most four workspaces does not need a
+level for choosing between them.
 
 **Right-clicking** a patient, study or series opens a context menu to
-**rename**, **copy**, **move** or **remove** it. Copy/move transfer the
-selection into the other workspace (A ▶ B or B ▶ A), merging with what is there
-and switching comparison mode on; move and remove then delete it from its
-source. A series carries exactly its DICOM reference chain - the structure
+**rename**, **copy**, **move** or **remove** it. Copy and move offer **the
+workspaces that are open, plus one new letter** - with A alone that is B,
+with A and B it is B and C, and with all four open there is no new letter to
+offer. One entry each while there is a single destination, a submenu of
+letters as soon as there is a choice; the new letter says *(new)*. The
+selection merges with whatever is already there and the destination appears
+on screen; move and remove then delete it from its source. A series carries exactly its DICOM reference chain - the structure
 sets drawn on it, the plans made on those, the doses computed for those
 plans - and study and patient selections also take the RT objects of their
 studies. Right-clicking a workspace header offers *Clear workspace*.
@@ -559,7 +581,11 @@ segmentation series is rasterized onto its lattice (even-odd fill), a segment
 moved into a structure set becomes closed planar contours (marching squares),
 and a segment moved between different lattices is resampled. Anything that
 cannot cross - a contour outside the destination volume, a mask that does not
-overlap it - lands in the workspace's *Warnings* section.
+overlap it - lands in the workspace's *Warnings* section, which carries an
+**Acknowledge** button beside its heading: the warnings describe a load or a
+transfer that has already happened, so once they have been read they are
+noise on every later glance at the tree. Acknowledging drops them and the
+next load reports its own.
 
 ## Renaming
 
@@ -577,42 +603,43 @@ of the remaining objects. Renames are in-memory: they change what the tree,
 the overlays and the 3D view call things and what a DICOM export writes; the
 files a study was loaded from are never modified.
 
-## Comparison mode
+## Comparing workspaces
 
-![comparison mode](screenshot_comparison.png)
+![two workspaces compared](screenshot_comparison.png)
 
 *Two opposite breathing phases of the same 4DCT as workspaces A and B, each with
 its phase-specific structure set; the synced crosshair pins every pane to
 the same patient-space point inside the tumor.*
 
-Load a second workspace (menu, tree copy/move, or two directories on the command
-line) and the window splits into two rows - workspace A on top, workspace B below,
-each showing whatever *Settings ▸ View layout* gives it. Each workspace keeps
-its own structures, dose and plan panels in the sidebar; window/level and dose
-display are shared.
+Load a second workspace (menu, tree copy/move, or two directories on the
+command line) and the window splits into two rows - workspace A on top,
+workspace B below, each showing whatever *Settings ▸ View layout* gives it.
+A third and a fourth stack the same way, up to **four workspaces A - D**.
+Each workspace keeps its own structures, dose and plan panels in the
+sidebar; window/level and dose display are shared.
 
-**Sync** (the toolbar button, or *View ▸ Sync the two workspaces*; both appear
-whenever two workspaces are loaded - it carries far more than the crosshair,
-so it no longer goes away with it) keeps the two rows showing the same
-thing. It carries six things across: the crosshair, through **patient
+**Sync** (the toolbar button, or *View ▸ Sync the workspaces*; both appear
+whenever two or more workspaces are loaded - it carries far more than the
+crosshair, so it no longer goes away with it) keeps every open row showing
+the same thing. It carries six things across: the crosshair, through **patient
 coordinates** - with a registration active, through the recovered transform
 instead, see [registration.md](registration.md) - the slice that follows it,
 a slice **scrolled or scrubbed** in a pane (through the same patient
-coordinates, so the paired pane lands on whatever slice of the other volume
-lies there, and neither crosshair moves), the **zoom** and **pan** of a
-pane onto the other workspace's pane of the same plane, and both **players**
-(see below). Zoom is screen pixels
-per millimetre and pan is millimetres off the image centre, so copying them
-puts the two rows at the same scale and the same offset whatever the two
-matrices are; what cannot be carried across two
-unrelated images is not pretended. Window/level is shared by both workspaces
-either way. Off, each workspace is navigated on its own.
+coordinates, so the other panes land on whatever slice of their own volume
+lies there, and no crosshair moves), the **zoom** and **pan** of a pane onto
+the other workspaces' panes of the same plane, and the **players** (see
+below). Zoom is screen pixels per millimetre and pan is millimetres off the
+image centre, so copying them puts every row at the same scale and the same
+offset whatever their matrices are; what cannot be carried across unrelated
+images is not pretended. Window/level is shared by every workspace either
+way. Off, each workspace is navigated on its own.
 
-With the bundled data: load `data-test/`, and both 4DCT phases appear as
-two series of one study. Right-click *CT 4DCT_phase_050* ▶ *Copy series to
-workspace B* - the phase moves into the lower row with its own phase-specific
-RTSTRUCT and comparison mode switches on. Click the tumor in any pane: every
-pane jumps to that point, and the rows show the respiratory differences.
+With the bundled data: load `data-test/`, and the patient's two studies
+appear with their ten 4DFBCT and ten 4DCBCT phases grouped as two 4D sets.
+Right-click *4DFBCT, Gated, 50.0%A* ▶ *Copy series to workspace B* - the
+phase moves into a second row of its own with its phase-specific RTSTRUCT.
+Click the tumor in any pane: every pane jumps to that point, and the rows
+show the respiratory differences.
 
 ## Planar images (DX / CR / RTIMAGE)
 

@@ -21,7 +21,7 @@ Two commands come with it:
 
 | Command | What it is |
 |---|---|
-| `flatpak run io.github.alexprotom.rust-dicom-station` | The viewer, also in the desktop's application menu. It takes the same arguments as the plain executable: a DICOM folder, and a second one for comparison mode |
+| `flatpak run io.github.alexprotom.rust-dicom-station` | The viewer, also in the desktop's application menu. It takes the same arguments as the plain executable: a DICOM folder, and a second one to compare it with |
 | `flatpak run --command=rds-mcp io.github.alexprotom.rust-dicom-station` | The MCP server ([mcp.md](mcp.md)) |
 
 Updates arrive with `flatpak update`, which desktops run by themselves.

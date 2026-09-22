@@ -121,7 +121,7 @@ carries the overlay: on the fixed image the moving one is warped onto it, on
 the moving image the fixed one comes back through the inverse. The overlay,
 the vector field and the crosshair link appear in whichever workspace displays
 that image, so two series of one workspace show the fusion once the same
-folder is loaded as the other workspace too; propagation works either way.
+folder is loaded as a second workspace too; propagation works either way.
 
 The transform maps **fixed → moving** patient coordinates, as in elastix,
 ITK and plastimatch; the inverse (for the crosshair link and propagation) is
@@ -141,7 +141,8 @@ structure* matches one structure contoured on both workspaces, which is the
 surest start for an organ: the heart on a cardiac CT and on a planning CT.
 A local run always starts from the identity.
 
-On the bundled data (512 × 512 × 133 CT, two breathing phases): elastix
+On the bundled data (two breathing phases of the 4DFBCT, 512 × 512 × 133
+CT each): elastix
 rigid pre-alignment plus three B-spline resolution levels, 1800 iterations
 total, ≈ 20 s on a desktop CPU, driving the mean-squared HU difference from
 ≈ 9700 to ≈ 1800.
@@ -168,6 +169,14 @@ them; untick it and the grid follows again. A deformable result is not a
 matrix - what the grid shows of it is the rigid part it starts from, and
 the section says so, because using it drops the deformation.
 
+A run against a 4D group makes one transform per phase, not one. The row of
+buttons above the grid - **Of 0% · 10% · …** - is which of them the grid is
+showing; ten grids one under the other would be a wall of numbers, one grid
+and a picker is the same information a phase at a time. The active
+registration is the first entry, because that is the one *Apply as the
+registration* acts on. With nothing registered yet the section says so
+rather than showing an identity that means nothing.
+
 *Identity* puts back a matrix that moves nothing; *Invert* replaces it with
 the mapping the other way, and is disabled for a matrix that flattens space,
 because that one has no inverse; *From the result* pulls the run's transform
@@ -177,7 +186,7 @@ reads and writes, so a matrix from elsewhere goes in without retyping
 (commas separate them just as well).
 
 **▶ Apply as the registration** installs it as the active registration of
-the two workspaces without running anything. Everything downstream reads the
+its two workspaces without running anything. Everything downstream reads the
 transform rather than the engine that made it, so the fusion overlay, the
 crosshair link, the vector field, propagation, the analytics and the REG
 export all follow it at once. The result is filed as *Given - a transform

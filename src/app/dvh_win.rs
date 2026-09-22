@@ -113,10 +113,9 @@ impl ViewerApp {
     /// Every dose object of both workspaces, as (reference, label).
     pub(super) fn dvh_dose_candidates(&self) -> Vec<(DoseRef, String)> {
         let mut out = Vec::new();
-        for (slot, name) in SLOT_NAMES.iter().enumerate() {
-            if slot == 1 && !self.comparison {
-                continue;
-            }
+        let comparing = self.comparing();
+        for slot in self.open_slots() {
+            let name = SLOT_NAMES[slot];
             let Some(study) = self.slots[slot].study.as_ref() else {
                 continue;
             };
@@ -128,7 +127,7 @@ impl ViewerApp {
                 };
                 out.push((
                     DoseRef { slot, idx: i },
-                    if self.comparison {
+                    if comparing {
                         format!("{name} · {label}")
                     } else {
                         label
@@ -142,14 +141,13 @@ impl ViewerApp {
     /// Every structure and segment of both workspaces, as (reference, label).
     pub(super) fn dvh_struct_candidates(&self) -> Vec<(StructRef, String)> {
         let mut out = Vec::new();
-        for (slot, name) in SLOT_NAMES.iter().enumerate() {
-            if slot == 1 && !self.comparison {
-                continue;
-            }
+        let comparing = self.comparing();
+        for slot in self.open_slots() {
+            let name = SLOT_NAMES[slot];
             for (item, label) in self.combine_candidates(slot) {
                 out.push((
                     StructRef { slot, item },
-                    if self.comparison {
+                    if comparing {
                         format!("{name} · {label}")
                     } else {
                         label

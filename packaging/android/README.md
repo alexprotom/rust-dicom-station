@@ -16,7 +16,7 @@ rustup target add aarch64-linux-android
 cargo install cargo-ndk
 export ANDROID_HOME=~/Android/Sdk
 export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/<version>
-./build-apk.sh          # -> out/rust-dicom-station-<version>-arm64-v8a.apk
+./build-apk.sh          # -> out/rust-dicom-station-<version>-android-arm64.apk
 ```
 
 `cargo ndk -t arm64-v8a -P 30 check` in this folder is the

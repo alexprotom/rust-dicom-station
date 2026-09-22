@@ -126,7 +126,7 @@ impl ViewerApp {
         let mut beam_pick: Option<(usize, usize)> = None;
 
         // Read-only facts about the workspaces, gathered before the closure.
-        let loaded: [bool; 2] = self.volume_slots();
+        let loaded: [bool; MAX_WORKSPACES] = self.volume_slots();
         let mut d = self.drr_dialog.take().unwrap();
         let beams: Vec<(usize, usize, String)> = self.slots[d.slot]
             .study
@@ -172,8 +172,8 @@ impl ViewerApp {
 
                 ui.horizontal(|ui| {
                     ui.label("Workspace");
-                    for slot in 0..2 {
-                        ui.add_enabled_ui(loaded[slot] && !running, |ui| {
+                    for slot in (0..MAX_WORKSPACES).filter(|s| loaded[*s]) {
+                        ui.add_enabled_ui(!running, |ui| {
                             ui.selectable_value(&mut d.slot, slot, SLOT_NAMES[slot]);
                         });
                     }
@@ -183,105 +183,104 @@ impl ViewerApp {
                     .id_salt("drr_geom")
                     .default_open(true)
                     .show(ui, |ui| {
-                        if !beams.is_empty() {
-                            ui.horizontal(|ui| {
-                                ui.label("From beam");
-                                egui::ComboBox::from_id_salt("drr_beam")
-                                    .selected_text("Choose a plan beam")
-                                    .width(240.0)
-                                    .show_ui(ui, |ui| {
-                                        for (pi, bi, label) in &beams {
-                                            if ui.selectable_label(false, label).clicked() {
-                                                beam_pick = Some((*pi, *bi));
-                                            }
-                                        }
-                                    })
-                                    .response
-                                    .on_hover_text(
-                                        "Take the gantry angle, the couch angle and the \
-                                         isocentre from a beam of the loaded plan - the \
-                                         beam's-eye view it would actually deliver",
-                                    );
-                            });
-                        }
                         let g = &mut d.params.geometry;
-                        ui.horizontal(|ui| {
-                            ui.label("Gantry");
-                            ui.add(
-                                egui::DragValue::new(&mut g.gantry_deg)
-                                    .speed(1.0)
-                                    .range(-360.0..=360.0)
-                                    .suffix("°"),
-                            )
-                            .on_hover_text("IEC: 0° = source above the patient, 90° = left");
-                            ui.label("Couch");
-                            ui.add(
-                                egui::DragValue::new(&mut g.couch_deg)
-                                    .speed(1.0)
-                                    .range(-180.0..=180.0)
-                                    .suffix("°"),
-                            );
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("SAD");
-                            ui.add(
-                                egui::DragValue::new(&mut g.sad)
-                                    .speed(5.0)
-                                    .range(100.0..=3000.0)
-                                    .suffix(" mm"),
-                            );
-                            ui.label("SID");
-                            ui.add(
-                                egui::DragValue::new(&mut g.sid)
-                                    .speed(5.0)
-                                    .range(100.0..=4000.0)
-                                    .suffix(" mm"),
-                            );
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Isocentre");
-                            for v in [&mut g.isocenter.x, &mut g.isocenter.y, &mut g.isocenter.z] {
-                                ui.add(egui::DragValue::new(v).speed(1.0).suffix(" mm"));
+                        form::form(ui, "drr_geom_form", |f| {
+                            if !beams.is_empty() {
+                                f.row_tip(
+                                    "From beam",
+                                    "Take the gantry angle, the couch angle and the \
+                                     isocentre from a beam of the loaded plan - the beam's \
+                                     eye view it would actually deliver",
+                                    |ui| {
+                                        egui::ComboBox::from_id_salt("drr_beam")
+                                            .selected_text("Choose a plan beam")
+                                            .width(240.0)
+                                            .show_ui(ui, |ui| {
+                                                for (pi, bi, label) in &beams {
+                                                    if ui.selectable_label(false, label).clicked() {
+                                                        beam_pick = Some((*pi, *bi));
+                                                    }
+                                                }
+                                            });
+                                    },
+                                );
                             }
-                            if small_tip_button(
-                                ui,
-                                "⌖",
-                                "Take the isocentre from this workspace's crosshair",
-                            ) {
-                                set_iso = true;
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Panel");
-                            ui.add(
-                                egui::DragValue::new(&mut g.panel_mm[0])
-                                    .speed(5.0)
-                                    .range(10.0..=2000.0)
-                                    .suffix(" mm"),
+                            f.row_tip(
+                                "Gantry · couch",
+                                "IEC: 0° = source above the patient, 90° = left",
+                                |ui| {
+                                    ui.add(
+                                        egui::DragValue::new(&mut g.gantry_deg)
+                                            .speed(1.0)
+                                            .range(-360.0..=360.0)
+                                            .suffix("°"),
+                                    );
+                                    ui.add(
+                                        egui::DragValue::new(&mut g.couch_deg)
+                                            .speed(1.0)
+                                            .range(-180.0..=180.0)
+                                            .suffix("°"),
+                                    );
+                                },
                             );
-                            ui.add(
-                                egui::DragValue::new(&mut g.panel_mm[1])
-                                    .speed(5.0)
-                                    .range(10.0..=2000.0)
-                                    .suffix(" mm"),
-                            );
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Pixels");
-                            for v in 0..2 {
-                                let mut n = g.dims[v] as i64;
-                                if ui
-                                    .add(egui::DragValue::new(&mut n).speed(8.0).range(16..=2048))
-                                    .changed()
+                            f.row_tip("SAD · SID", "Source-axis and source-image distance", |ui| {
+                                ui.add(
+                                    egui::DragValue::new(&mut g.sad)
+                                        .speed(5.0)
+                                        .range(100.0..=3000.0)
+                                        .suffix(" mm"),
+                                );
+                                ui.add(
+                                    egui::DragValue::new(&mut g.sid)
+                                        .speed(5.0)
+                                        .range(100.0..=4000.0)
+                                        .suffix(" mm"),
+                                );
+                            });
+                            f.row("Isocentre", |ui| {
+                                for v in
+                                    [&mut g.isocenter.x, &mut g.isocenter.y, &mut g.isocenter.z]
                                 {
-                                    g.dims[v] = n as usize;
+                                    ui.add(egui::DragValue::new(v).speed(1.0).suffix(" mm"));
                                 }
-                            }
-                            let iso = g.pixel_mm_at_isocenter();
-                            ui.weak(format!(
-                                "{:.2} × {:.2} mm/px at the isocentre",
-                                iso[0], iso[1]
-                            ));
+                                if small_tip_button(
+                                    ui,
+                                    "⌖",
+                                    "Take the isocentre from this workspace's crosshair",
+                                ) {
+                                    set_iso = true;
+                                }
+                            });
+                            f.row("Panel", |ui| {
+                                for v in 0..2 {
+                                    ui.add(
+                                        egui::DragValue::new(&mut g.panel_mm[v])
+                                            .speed(5.0)
+                                            .range(10.0..=2000.0)
+                                            .suffix(" mm"),
+                                    );
+                                }
+                            });
+                            f.row("Pixels", |ui| {
+                                for v in 0..2 {
+                                    let mut n = g.dims[v] as i64;
+                                    if ui
+                                        .add(
+                                            egui::DragValue::new(&mut n)
+                                                .speed(8.0)
+                                                .range(16..=2048),
+                                        )
+                                        .changed()
+                                    {
+                                        g.dims[v] = n as usize;
+                                    }
+                                }
+                                let iso = g.pixel_mm_at_isocenter();
+                                ui.weak(format!(
+                                    "{:.2} × {:.2} mm/px at the isocentre",
+                                    iso[0], iso[1]
+                                ));
+                            });
                         });
                     });
 
@@ -307,29 +306,36 @@ impl ViewerApp {
                                 ui.weak(format!("· {}", e.label()));
                             }
                         }
-                        ui.horizontal(|ui| {
-                            ui.label("Values");
-                            for m in HuMode::ALL {
-                                ui.selectable_value(&mut d.params.hu, m, m.label());
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Threshold");
-                            ui.add(
-                                egui::DragValue::new(&mut d.params.threshold_hu)
-                                    .speed(10.0)
-                                    .range(-1024.0..=3000.0)
-                                    .suffix(" HU"),
-                            )
-                            .on_hover_text("Voxels below this contribute nothing - air, couch");
-                            ui.label("Ray step");
-                            ui.add(
-                                egui::DragValue::new(&mut d.params.step_mm)
-                                    .speed(0.05)
-                                    .range(0.05..=5.0)
-                                    .suffix(" mm"),
-                            )
-                            .on_hover_text("Ray-cast sampling step; the exact tracer ignores it");
+                        form::form(ui, "drr_engine_form", |f| {
+                            f.row("Values", |ui| {
+                                for m in HuMode::ALL {
+                                    ui.selectable_value(&mut d.params.hu, m, m.label());
+                                }
+                            });
+                            f.row_tip(
+                                "Threshold",
+                                "Voxels below this contribute nothing - air, couch",
+                                |ui| {
+                                    ui.add(
+                                        egui::DragValue::new(&mut d.params.threshold_hu)
+                                            .speed(10.0)
+                                            .range(-1024.0..=3000.0)
+                                            .suffix(" HU"),
+                                    );
+                                },
+                            );
+                            f.row_tip(
+                                "Ray step",
+                                "Ray-cast sampling step; the exact tracer ignores it",
+                                |ui| {
+                                    ui.add(
+                                        egui::DragValue::new(&mut d.params.step_mm)
+                                            .speed(0.05)
+                                            .range(0.05..=5.0)
+                                            .suffix(" mm"),
+                                    );
+                                },
+                            );
                         });
                     });
 

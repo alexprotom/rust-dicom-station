@@ -16,7 +16,7 @@ impl ViewerApp {
     /// folder are one entry, and the list is written out as it changes: the
     /// program is not always closed politely.
     pub(super) fn remember_source(&mut self, slot: usize, path: &Path) {
-        let slot = slot.min(1);
+        let slot = slot.min(MAX_WORKSPACES - 1);
         // Absolute, because the next run will not have this working
         // directory: a relative path from the command line would restore
         // nothing (or, worse, something else).
@@ -30,10 +30,10 @@ impl ViewerApp {
 
     /// A workspace was emptied: it is no longer part of the session.
     pub(super) fn forget_sources(&mut self, slot: usize) {
-        if self.session[slot.min(1)].is_empty() {
+        if self.session[slot.min(MAX_WORKSPACES - 1)].is_empty() {
             return;
         }
-        self.session[slot.min(1)].clear();
+        self.session[slot.min(MAX_WORKSPACES - 1)].clear();
         self.persist_settings();
     }
 
@@ -183,7 +183,7 @@ impl ViewerApp {
         // Whatever was played from this workspace belongs to the study that
         // is being replaced.
         self.drop_phase_cache(slot);
-        let other_loaded = self.slots[1 - slot].study.is_some();
+        let other_loaded = (0..MAX_WORKSPACES).any(|s| s != slot && self.slots[s].study.is_some());
         // Shared W/L: adopt the study default unless another study is already up.
         if !other_loaded {
             self.window_center = study.default_window.0;
@@ -253,9 +253,7 @@ impl ViewerApp {
         self.rebind_seg_series(slot);
         self.cancel_grow();
         self.paint_last = None;
-        if slot == 1 {
-            self.comparison = true;
-        }
+        self.show_workspace(slot);
         // Any previous registration no longer matches the loaded volumes,
         // and open viewers for this slot reference stale data.
         self.planar_windows.retain(|w| w.slot != slot);
@@ -274,7 +272,7 @@ impl ViewerApp {
         window: (f32, f32),
         idx: usize,
     ) {
-        let other_loaded = self.slots[1 - slot].study.is_some();
+        let other_loaded = (0..MAX_WORKSPACES).any(|s| s != slot && self.slots[s].study.is_some());
         if !other_loaded {
             self.window_center = window.0;
             self.window_width = window.1;
@@ -336,8 +334,11 @@ impl ViewerApp {
         if self.sim_job.is_some() || self.loading.is_some() {
             return;
         }
-        let source = self.sim_source.min(1);
-        let target = 1 - source;
+        let source = self.sim_source.min(MAX_WORKSPACES - 1);
+        let target = self.sim_target.min(MAX_WORKSPACES - 1);
+        if target == source {
+            return;
+        }
         let Some(study) = &self.slots[source].study else {
             self.error = Some(format!(
                 "Load something into workspace {} first",
@@ -390,14 +391,16 @@ impl ViewerApp {
             self.error = Some("Nothing is selected for export".into());
             return;
         }
-        let a = self.slots[0].study.clone();
-        let b = self.slots[1].study.clone();
+        let studies: [Option<LoadedStudy>; MAX_WORKSPACES] =
+            std::array::from_fn(|s| self.slots[s].study.clone());
         let progress = Arc::new(Progress::default());
         progress.set("starting");
         let p2 = progress.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(export::run(&plan, [a.as_ref(), b.as_ref()], &dir, &p2));
+            let refs: [Option<&LoadedStudy>; MAX_WORKSPACES] =
+                std::array::from_fn(|s| studies[s].as_ref());
+            let _ = tx.send(export::run(&plan, refs, &dir, &p2));
         });
         self.export_result = None;
         self.export_warnings.clear();

@@ -59,9 +59,10 @@ pub(super) struct StatRow {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum DiceRef {
     None,
-    /// The structure or segment of the same name in the other workspace -
+    /// The structure or segment of the same name in another workspace -
     /// what a propagation, a phase or a second observer is checked with.
-    SameNameOther,
+    /// Which workspace is part of the choice, because there can be three.
+    SameNameIn(usize),
     /// One structure or segment of either workspace, for every row.
     Item {
         slot: usize,
@@ -189,12 +190,14 @@ fn voxel_cm3(spacing: [f64; 3], voxels: usize) -> f64 {
 
 impl ViewerApp {
     pub(super) fn open_stats_dialog(&mut self, slot: usize) {
-        // With a second workspace loaded the natural reference is the
+        // With another workspace loaded the natural reference is the
         // same-named structure over there; alone, there is none.
-        let dice_ref = if self.slots[1 - slot.min(1)].study.is_some() {
-            DiceRef::SameNameOther
-        } else {
-            DiceRef::None
+        let dice_ref = match self
+            .other_open(slot)
+            .filter(|s| self.slots[*s].study.is_some())
+        {
+            Some(other) => DiceRef::SameNameIn(other),
+            None => DiceRef::None,
         };
         self.stats_dialog = Some(StatsDialog {
             slot,
@@ -218,8 +221,13 @@ impl ViewerApp {
         // The reference of the Dice column: a fixed item is rasterized once
         // per lattice, the same-name reference once per row. Only the
         // studies are reached from the parallel loops, never `self`.
-        let other = 1 - slot.min(1);
-        let other_study = self.slots[other].study.as_ref();
+        let other = match dice_ref {
+            DiceRef::SameNameIn(s) => s,
+            _ => slot,
+        };
+        let other_study = (other != slot)
+            .then(|| self.slots[other].study.as_ref())
+            .flatten();
         let fixed = match dice_ref {
             DiceRef::Item { slot: rs, item } => self.slots[rs]
                 .study
@@ -234,7 +242,7 @@ impl ViewerApp {
         let fixed_display = fixed_on(&grid);
         let dice_of = |mask: &[u8], name: &str, g: &Grid, fixed: &Option<(Vec<u8>, String)>| {
             let reference = match dice_ref {
-                DiceRef::SameNameOther => {
+                DiceRef::SameNameIn(_) => {
                     let st = other_study?;
                     let item = item_named(st, name)?;
                     let (m, mg, n) = reference_mask(st, item, Some(other))?;
@@ -398,11 +406,17 @@ impl ViewerApp {
                 d.stale = false;
             }
         }
-        let has = [self.slots[0].study.is_some(), self.slots[1].study.is_some()];
-        let other_loaded = has[1 - slot.min(1)];
-        // Every structure and segment of both workspaces, as the Dice
+        let has: [bool; MAX_WORKSPACES] =
+            std::array::from_fn(|s| self.is_open(s) && self.slots[s].study.is_some());
+        // The other workspaces that hold something, for the same-name
+        // reference: one entry each, so with three open the table can be
+        // measured against whichever of them is the comparison.
+        let others: Vec<usize> = (0..MAX_WORKSPACES)
+            .filter(|s| *s != slot && has[*s])
+            .collect();
+        // Every structure and segment of every open workspace, as the Dice
         // reference picker lists them.
-        let references: Vec<(DiceRef, String)> = (0..2)
+        let references: Vec<(DiceRef, String)> = (0..MAX_WORKSPACES)
             .filter(|s| has[*s])
             .flat_map(|s| {
                 self.combine_candidates(s)
@@ -442,11 +456,8 @@ impl ViewerApp {
                     ui.label("Dice against:");
                     let text = match d.dice_ref {
                         DiceRef::None => "(nothing)".to_string(),
-                        DiceRef::SameNameOther => {
-                            format!(
-                                "the same name in workspace {}",
-                                SLOT_NAMES[1 - d.slot.min(1)]
-                            )
+                        DiceRef::SameNameIn(other) => {
+                            format!("the same name in workspace {}", SLOT_NAMES[other])
                         }
                         DiceRef::Item { .. } => references
                             .iter()
@@ -460,14 +471,11 @@ impl ViewerApp {
                         .width(260.0)
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut d.dice_ref, DiceRef::None, "(nothing)");
-                            if other_loaded {
+                            for other in &others {
                                 ui.selectable_value(
                                     &mut d.dice_ref,
-                                    DiceRef::SameNameOther,
-                                    format!(
-                                        "the same name in workspace {}",
-                                        SLOT_NAMES[1 - d.slot.min(1)]
-                                    ),
+                                    DiceRef::SameNameIn(*other),
+                                    format!("the same name in workspace {}", SLOT_NAMES[*other]),
                                 );
                             }
                             for (r, label) in &references {
@@ -477,7 +485,7 @@ impl ViewerApp {
                         .response
                         .on_hover_text(
                             "What every row's Dice is measured against: the structure of \
-                             the same name in the other workspace (a propagation or a second \
+                             the same name in another workspace (a propagation or a second \
                              observer), or one structure for all rows (an auto-segmentation \
                              against the manual one). Contours are rasterized onto this \
                              workspace's lattice first.",

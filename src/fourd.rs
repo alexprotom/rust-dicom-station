@@ -102,7 +102,7 @@ impl FourDGroup {
             .or_else(|| phases.first().copied())
     }
 
-    /// `4D CT - Thorax (10 phases + 1)`, the default group name; the `+ 1`
+    /// `4DCT - Thorax (10 phases + 1)`, the default group name; the `+ 1`
     /// counts the AVG / MIP members.
     fn derive_name(modality: &str, stem: &str, n_phases: usize, extras: usize) -> String {
         // Leftover separators around the removed phase number ("4DCT_") are
@@ -110,10 +110,17 @@ impl FourDGroup {
         let stem = stem.trim_matches(|c: char| {
             c.is_whitespace() || matches!(c, '_' | '-' | '—' | ':' | ',' | '.')
         });
-        let what = if stem.is_empty() || stem.eq_ignore_ascii_case(&format!("4D {modality}")) {
-            format!("4D {modality}")
+        // "4DCT", not "4D CT": the modality reads as one word everywhere
+        // else in radiotherapy, and a stem that already says it - in either
+        // spelling - is not repeated.
+        let what = format!("4D{modality}");
+        let what = if stem.is_empty()
+            || stem.eq_ignore_ascii_case(&what)
+            || stem.eq_ignore_ascii_case(&format!("4D {modality}"))
+        {
+            what
         } else {
-            format!("4D {modality} - {stem}")
+            format!("{what} - {stem}")
         };
         if extras > 0 {
             format!("{what} ({n_phases} phases + {extras})")
@@ -475,6 +482,7 @@ mod tests {
             study_uid: study.into(),
             study_date: String::new(),
             study_description: String::new(),
+            study_id: String::new(),
             series_number: None,
             temporal_id: None,
             suv_bw: None,

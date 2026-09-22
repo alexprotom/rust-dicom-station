@@ -107,7 +107,7 @@ impl ViewerApp {
 
     // -- Left panel: the data tree ----------------------------------------
     pub(super) fn side_panel(&mut self, ui: &mut egui::Ui) {
-        if self.slots[0].study.is_none() && self.slots[1].study.is_none() {
+        if !self.slots.iter().any(|s| s.study.is_some()) {
             return;
         }
         self.side_open = Self::edge_panel(
@@ -121,7 +121,7 @@ impl ViewerApp {
             },
             self.side_open,
             |ui| {
-                for slot in 0..2 {
+                for slot in self.open_slots() {
                     if self.slots[slot].study.is_none() {
                         continue;
                     }
@@ -148,7 +148,7 @@ impl ViewerApp {
             ("module_propagate", "propagation"),
             ("Dose estimation", "dose"),
         ];
-        if self.slots[0].study.is_none() && self.slots[1].study.is_none() {
+        if !self.slots.iter().any(|s| s.study.is_some()) {
             return;
         }
         if !self.any_module() {
@@ -334,7 +334,7 @@ impl ViewerApp {
     }
 
     pub(super) fn simulation_section(&mut self, ui: &mut egui::Ui) {
-        if self.slots[0].study.is_none() && self.slots[1].study.is_none() {
+        if !self.slots.iter().any(|s| s.study.is_some()) {
             return;
         }
         let mut do_generate = false;
@@ -351,12 +351,22 @@ impl ViewerApp {
 
                 ui.horizontal(|ui| {
                     ui.label("Source");
-                    ui.selectable_value(&mut self.sim_source, 0, "A");
-                    ui.selectable_value(&mut self.sim_source, 1, "B");
-                    ui.weak(format!(
-                        "▶ generates workspace {}",
-                        SLOT_NAMES[1 - self.sim_source.min(1)]
-                    ));
+                    for slot in self.open_slots() {
+                        ui.selectable_value(&mut self.sim_source, slot, SLOT_NAMES[slot]);
+                    }
+                });
+                // Where the copy lands: another open workspace, or the next
+                // free letter. The default is whatever that rule offers
+                // first, which with two open is the other one.
+                let targets = self.copy_targets(self.sim_source);
+                if !targets.contains(&self.sim_target) {
+                    self.sim_target = targets.first().copied().unwrap_or(self.sim_source);
+                }
+                ui.horizontal(|ui| {
+                    ui.label("▶ generates workspace");
+                    for slot in &targets {
+                        ui.selectable_value(&mut self.sim_target, *slot, SLOT_NAMES[*slot]);
+                    }
                 });
 
                 ui.label("Rigid motion:");
@@ -390,13 +400,13 @@ impl ViewerApp {
                     ui.weak("centered at the crosshair");
                 });
 
-                let src_ok = self.slots[self.sim_source.min(1)].has_volume();
+                let src_ok = self.slots[self.sim_source.min(MAX_WORKSPACES - 1)].has_volume();
                 if ui
                     .add_enabled(
-                        src_ok && self.loading.is_none(),
+                        src_ok && self.sim_target != self.sim_source && self.loading.is_none(),
                         egui::Button::new(format!(
                             "⚙ Generate transformed workspace ▶ {}",
-                            SLOT_NAMES[1 - self.sim_source.min(1)]
+                            SLOT_NAMES[self.sim_target]
                         )),
                     )
                     .clicked()
@@ -484,7 +494,8 @@ impl ViewerApp {
                 patient.title.clone(),
                 |ui| me.patient_body(ui, slot, pi, patient),
             );
-            let other = SLOT_NAMES[1 - slot];
+            let targets = self.copy_targets(slot);
+            let open = self.open_slots();
             let key = patient.key.clone();
             let mut act: Option<TreeAction> = None;
             let mut rename = None;
@@ -497,23 +508,19 @@ impl ViewerApp {
                     ui.close();
                 }
                 ui.separator();
-                for (label, op) in [
-                    (format!("Copy patient to workspace {other}"), TreeOp::Copy),
-                    (format!("Move patient to workspace {other}"), TreeOp::Move),
-                ] {
-                    if ui.button(label).clicked() {
-                        act = Some(TreeAction {
-                            from: slot,
-                            sel: TreeSel::Patient(key.clone()),
-                            op,
-                        });
-                        ui.close();
-                    }
-                }
+                Self::transfer_menu(ui, "patient", &targets, &open, |to, op| {
+                    act = Some(TreeAction {
+                        from: slot,
+                        to,
+                        sel: TreeSel::Patient(key.clone()),
+                        op,
+                    });
+                });
                 ui.separator();
                 if ui.button("🗑 Remove").clicked() {
                     act = Some(TreeAction {
                         from: slot,
+                        to: slot,
                         sel: TreeSel::Patient(key.clone()),
                         op: TreeOp::Remove,
                     });
@@ -529,6 +536,53 @@ impl ViewerApp {
         }
     }
 
+    /// The copy / move pair of a data-tree context menu.
+    ///
+    /// The letters offered are the open workspaces bar this one, plus one
+    /// new letter while there is room: with A alone that is "to B", with A
+    /// and B it is B and C, and with four open there is nothing new to
+    /// offer. One entry each while there is a single place to send it, a
+    /// submenu of letters as soon as there is a choice.
+    fn transfer_menu(
+        ui: &mut egui::Ui,
+        what: &str,
+        targets: &[usize],
+        open: &[usize],
+        mut act: impl FnMut(usize, TreeOp),
+    ) {
+        let name = |t: usize| {
+            if open.contains(&t) {
+                SLOT_NAMES[t].to_string()
+            } else {
+                format!("{} (new)", SLOT_NAMES[t])
+            }
+        };
+        for (verb, op) in [("Copy", TreeOp::Copy), ("Move", TreeOp::Move)] {
+            match targets {
+                [] => {}
+                [only] => {
+                    if ui
+                        .button(format!("{verb} {what} to workspace {}", name(*only)))
+                        .clicked()
+                    {
+                        act(*only, op);
+                        ui.close();
+                    }
+                }
+                many => {
+                    ui.menu_button(format!("{verb} {what} to workspace"), |ui| {
+                        for t in many {
+                            if ui.button(name(*t)).clicked() {
+                                act(*t, op);
+                                ui.close();
+                            }
+                        }
+                    });
+                }
+            }
+        }
+    }
+
     /// The studies of one patient.
     fn patient_body(&mut self, ui: &mut egui::Ui, slot: usize, pi: usize, patient: &PatientNode) {
         for (si, node) in patient.studies.iter().enumerate() {
@@ -540,7 +594,8 @@ impl ViewerApp {
                 node.title.clone(),
                 |ui| me.study_body(ui, slot, pi, si, node),
             );
-            let other = SLOT_NAMES[1 - slot];
+            let targets = self.copy_targets(slot);
+            let open = self.open_slots();
             let uid = node.uid.clone();
             let mut act: Option<TreeAction> = None;
             let mut rename = None;
@@ -553,23 +608,19 @@ impl ViewerApp {
                     ui.close();
                 }
                 ui.separator();
-                for (label, op) in [
-                    (format!("Copy study to workspace {other}"), TreeOp::Copy),
-                    (format!("Move study to workspace {other}"), TreeOp::Move),
-                ] {
-                    if ui.button(label).clicked() {
-                        act = Some(TreeAction {
-                            from: slot,
-                            sel: TreeSel::Study(uid.clone()),
-                            op,
-                        });
-                        ui.close();
-                    }
-                }
+                Self::transfer_menu(ui, "study", &targets, &open, |to, op| {
+                    act = Some(TreeAction {
+                        from: slot,
+                        to,
+                        sel: TreeSel::Study(uid.clone()),
+                        op,
+                    });
+                });
                 ui.separator();
                 if ui.button("🗑 Remove").clicked() {
                     act = Some(TreeAction {
                         from: slot,
+                        to: slot,
                         sel: TreeSel::Study(uid.clone()),
                         op: TreeOp::Remove,
                     });
@@ -631,7 +682,8 @@ impl ViewerApp {
 
     /// The image series of one modality node.
     fn series_rows(&mut self, ui: &mut egui::Ui, slot: usize, idxs: &[usize]) {
-        let other = SLOT_NAMES[1 - slot];
+        let targets = self.copy_targets(slot);
+        let open = self.open_slots();
         let mut switch_to = None;
         let mut act: Option<TreeAction> = None;
         let mut rename = None;
@@ -679,19 +731,14 @@ impl ViewerApp {
                         ui.close();
                     }
                     ui.separator();
-                    for (label, op) in [
-                        (format!("Copy series to workspace {other}"), TreeOp::Copy),
-                        (format!("Move series to workspace {other}"), TreeOp::Move),
-                    ] {
-                        if ui.button(label).clicked() {
-                            act = Some(TreeAction {
-                                from: slot,
-                                sel: TreeSel::Series(i),
-                                op,
-                            });
-                            ui.close();
-                        }
-                    }
+                    Self::transfer_menu(ui, "series", &targets, &open, |to, op| {
+                        act = Some(TreeAction {
+                            from: slot,
+                            to,
+                            sel: TreeSel::Series(i),
+                            op,
+                        });
+                    });
                     ui.separator();
                     ui.menu_button("4D group", |ui| {
                         for (gi, name) in &group_names {
@@ -717,6 +764,7 @@ impl ViewerApp {
                     if ui.button("🗑 Remove").clicked() {
                         act = Some(TreeAction {
                             from: slot,
+                            to: slot,
                             sel: TreeSel::Series(i),
                             op: TreeOp::Remove,
                         });
@@ -724,8 +772,8 @@ impl ViewerApp {
                     }
                 });
                 resp.on_hover_text(format!(
-                    "{} · series UID …{}\nright-click: rename, copy / move to workspace \
-                     {other}, or remove",
+                    "{} · series UID …{}\nright-click: rename, copy / move to another \
+                     workspace, or remove",
                     s.modality,
                     tail(&s.uid)
                 ));
@@ -1035,7 +1083,8 @@ impl ViewerApp {
     /// Right-click menu of a series node: what image series it is drawn on,
     /// where it goes, and whether it stays.
     fn set_context_menu(&self, ui: &mut egui::Ui, here: SetRef, out: &mut Option<SetAction>) {
-        let other = SLOT_NAMES[1 - here.slot];
+        let open = &self.open_slots();
+        let holds: [bool; MAX_WORKSPACES] = std::array::from_fn(|s| self.slots[s].study.is_some());
         if ui.button("✏ Rename").clicked() {
             *out = Some(SetAction::Rename(here));
             ui.close();
@@ -1094,26 +1143,20 @@ impl ViewerApp {
             }
         });
         ui.separator();
-        if ui
-            .button(format!("Copy series to workspace {other}"))
-            .clicked()
-        {
+        // The destination has to hold a study already: a structure set is
+        // drawn on an image series, and an empty workspace has none.
+        let loaded: Vec<usize> = open
+            .iter()
+            .copied()
+            .filter(|s| *s != here.slot && holds[*s])
+            .collect();
+        Self::transfer_menu(ui, "series", &loaded, open, |to, op| {
             *out = Some(SetAction::Transfer {
                 from: here,
-                copy: true,
+                to,
+                copy: op == TreeOp::Copy,
             });
-            ui.close();
-        }
-        if ui
-            .button(format!("Move series to workspace {other}"))
-            .clicked()
-        {
-            *out = Some(SetAction::Transfer {
-                from: here,
-                copy: false,
-            });
-            ui.close();
-        }
+        });
         if here.kind == SetKind::Segmentations {
             ui.separator();
             if tip_button(
@@ -1140,7 +1183,8 @@ impl ViewerApp {
     /// "make me a new one" entries, so a transfer never needs preparing.
     fn destination_menu(&self, ui: &mut egui::Ui, from: SetRef) -> Option<Destination> {
         let mut picked = None;
-        for (slot, slot_name) in SLOT_NAMES.iter().enumerate() {
+        for slot in self.open_slots() {
+            let slot_name = SLOT_NAMES[slot];
             let Some(study) = self.slots[slot].study.as_ref() else {
                 continue;
             };
@@ -2393,10 +2437,10 @@ impl ViewerApp {
     }
 
     /// How dose is drawn - colorwash, isodose lines, opacity, threshold and
-    /// the isodose ladder. Shared by both workspaces, so it is shown once, at
-    /// workspace level, under the first workspace that actually has dose.
+    /// the isodose ladder. Shared by every workspace, so it is shown once, at
+    /// workspace level, under the first one that actually has dose.
     pub(super) fn dose_display_section(&mut self, ui: &mut egui::Ui, slot: usize) {
-        let first = (0..2).find(|&s| {
+        let first = self.open_slots().into_iter().find(|&s| {
             self.slots[s]
                 .study
                 .as_ref()
@@ -2773,24 +2817,44 @@ impl ViewerApp {
         if n == 0 {
             return;
         }
-        let both = self.both_volumes();
-        let mut apply: Option<(registration::RigidTransform, usize)> = None;
-        let mut apply_grid: Option<(usize, usize)> = None;
+        // The workspaces this one can be paired with: a transform read
+        // from a file maps one frame of reference onto another, and both
+        // ends have to be on screen with an image in them.
+        let partners: Vec<usize> = self
+            .volume_slot_list()
+            .into_iter()
+            .filter(|s| *s != slot)
+            .collect();
+
+        // (transform, fixed workspace, moving workspace) - with more than
+        // two open, which pair a file's transform is meant for is a choice.
+        let mut apply: Option<(registration::RigidTransform, usize, usize)> = None;
+        let mut apply_grid: Option<(usize, usize, usize)> = None;
         let mut rename: Option<RenameTarget> = None;
         let mut remove: Option<ObjRef> = None;
         {
             let study = self.slots[slot].study.as_ref().unwrap();
-            // Frame-of-reference UIDs of the loaded volumes for hints.
-            let for_a = self.slots[0]
-                .study
-                .as_ref()
-                .map(|s| s.volume.frame_of_reference_uid.clone())
-                .unwrap_or_default();
-            let for_b = self.slots[1]
-                .study
-                .as_ref()
-                .map(|s| s.volume.frame_of_reference_uid.clone())
-                .unwrap_or_default();
+            // Frame-of-reference UID of every open workspace's volume, so
+            // the hint can name the one a registration actually refers to.
+            let fors: Vec<(usize, String)> = self
+                .open_slots()
+                .into_iter()
+                .filter_map(|s| {
+                    let uid = self.slots[s]
+                        .study
+                        .as_ref()?
+                        .volume
+                        .frame_of_reference_uid
+                        .clone();
+                    (!uid.is_empty()).then_some((s, uid))
+                })
+                .collect();
+            let hint = |uid: &str| -> String {
+                fors.iter()
+                    .find(|(_, f)| f == uid)
+                    .map(|(s, _)| format!(" (= {})", SLOT_NAMES[*s]))
+                    .unwrap_or_default()
+            };
             let mut invert = self.reg_apply_invert;
             egui::CollapsingHeader::new(format!("Spatial registrations ({n})"))
                 .id_salt(("regobj", slot))
@@ -2842,23 +2906,9 @@ impl ViewerApp {
                                     m[r * 4 + 3]
                                 ));
                             }
-                            // FoR hints against loaded studies.
-                            let src_hint = if !for_a.is_empty() && item.for_uid == for_a {
-                                " (= A)"
-                            } else if !for_b.is_empty() && item.for_uid == for_b {
-                                " (= B)"
-                            } else {
-                                ""
-                            };
-                            let dst_hint = if !for_a.is_empty()
-                                && reg.frame_of_reference_uid == for_a
-                            {
-                                " (= A)"
-                            } else if !for_b.is_empty() && reg.frame_of_reference_uid == for_b {
-                                " (= B)"
-                            } else {
-                                ""
-                            };
+                            // FoR hints against the loaded studies.
+                            let src_hint = hint(&item.for_uid);
+                            let dst_hint = hint(&reg.frame_of_reference_uid);
                             ui.weak(format!(
                                 "  maps FoR …{}{} ▶ …{}{}",
                                 tail(&item.for_uid),
@@ -2884,36 +2934,32 @@ impl ViewerApp {
                                             .on_hover_text(
                                                 "Invert the matrix before applying (flip the mapping direction)",
                                             );
-                                        if ui
-                                            .add_enabled(
-                                                both,
-                                                egui::Button::new("Apply as B ▶ A"),
-                                            )
-                                            .on_hover_text(
-                                                "Use this matrix as the transform mapping A (fixed) coordinates into B (moving)",
-                                            )
-                                            .clicked()
-                                        {
-                                            if let Some(r2) =
-                                                extras::matrix_to_rigid(m, invert)
+                                        // This workspace against each of
+                                        // the others, both ways round.
+                                        for other in &partners {
+                                            for (fixed, moving) in
+                                                [(slot, *other), (*other, slot)]
                                             {
-                                                apply = Some((r2, 0));
-                                            }
-                                        }
-                                        if ui
-                                            .add_enabled(
-                                                both,
-                                                egui::Button::new("Apply as A ▶ B"),
-                                            )
-                                            .on_hover_text(
-                                                "Use this matrix as the transform mapping B (fixed) coordinates into A (moving)",
-                                            )
-                                            .clicked()
-                                        {
-                                            if let Some(r2) =
-                                                extras::matrix_to_rigid(m, invert)
-                                            {
-                                                apply = Some((r2, 1));
+                                                let label = format!(
+                                                    "Apply as {} ▶ {}",
+                                                    SLOT_NAMES[moving], SLOT_NAMES[fixed]
+                                                );
+                                                let tip = format!(
+                                                    "Use this matrix as the transform mapping \
+                                                     {} (fixed) coordinates into {} (moving)",
+                                                    SLOT_NAMES[fixed], SLOT_NAMES[moving]
+                                                );
+                                                if ui
+                                                    .add(egui::Button::new(label))
+                                                    .on_hover_text(tip)
+                                                    .clicked()
+                                                {
+                                                    if let Some(r2) =
+                                                        extras::matrix_to_rigid(m, invert)
+                                                    {
+                                                        apply = Some((r2, fixed, moving));
+                                                    }
+                                                }
                                             }
                                         }
                                     });
@@ -2927,21 +2973,18 @@ impl ViewerApp {
                         // lattice applies exactly as a matrix does.
                         if let Some(grid) = &reg.grid {
                             ui.weak(format!("· deformation grid: {}", grid.describe()));
-                            let src_hint = if !for_a.is_empty()
-                                && reg.grid_source_for_uid == for_a
-                            {
-                                Some(0usize)
-                            } else if !for_b.is_empty() && reg.grid_source_for_uid == for_b {
-                                Some(1usize)
-                            } else {
-                                None
-                            };
+                            let src_hint = fors
+                                .iter()
+                                .find(|(_, f)| *f == reg.grid_source_for_uid)
+                                .map(|(s, _)| *s);
                             ui.horizontal(|ui| {
-                                for fixed in 0..2 {
+                                for (fixed, moving) in partners
+                                    .iter()
+                                    .flat_map(|o| [(slot, *o), (*o, slot)])
+                                {
                                     let label = format!(
                                         "Apply grid as {} ▶ {}",
-                                        SLOT_NAMES[1 - fixed],
-                                        SLOT_NAMES[fixed]
+                                        SLOT_NAMES[moving], SLOT_NAMES[fixed]
                                     );
                                     let hint = match src_hint {
                                         Some(s) if s == fixed => {
@@ -2954,13 +2997,8 @@ impl ViewerApp {
                                             "Neither loaded workspace matches the grid's frame of                                              reference - check that this is the right pair"
                                         }
                                     };
-                                    if enabled_tip_button(
-                                        ui,
-                                        both,
-                                        label,
-                                        hint,
-                                    ) {
-                                        apply_grid = Some((ri, fixed));
+                                    if enabled_tip_button(ui, true, label, hint) {
+                                        apply_grid = Some((ri, fixed, moving));
                                     }
                                 }
                             });
@@ -2975,10 +3013,15 @@ impl ViewerApp {
         if rename.is_some() {
             self.rename_request = rename;
         }
-        if let Some((rigid, fixed_slot)) = apply {
-            self.apply_external_rigid(rigid, fixed_slot);
+        if let Some((rigid, fixed_slot, moving_slot)) = apply {
+            self.apply_external_transform_between(
+                Transform3::rigid_only(rigid),
+                registration::RegMethod::ElastixRigid,
+                fixed_slot,
+                moving_slot,
+            );
         }
-        if let Some((ri, fixed_slot)) = apply_grid {
+        if let Some((ri, fixed_slot, moving_slot)) = apply_grid {
             if let Some(field) = self.slots[slot]
                 .study
                 .as_ref()
@@ -2991,10 +3034,11 @@ impl ViewerApp {
                     warp: registration::Warp::Field(Arc::new(field)),
                     manual: None,
                 };
-                self.apply_external_transform(
+                self.apply_external_transform_between(
                     transform,
                     registration::RegMethod::PlastimatchBSpline,
                     fixed_slot,
+                    moving_slot,
                 );
             }
         }
@@ -3116,6 +3160,12 @@ impl ViewerApp {
         }
     }
 
+    /// What the loader had to say about this workspace's files, and the
+    /// button that says it has been read.
+    ///
+    /// A warning is about the load, not about the data: once it has been
+    /// seen it is noise on every later glance at the tree. *Acknowledge*
+    /// drops them, and the next load brings whatever that one has to say.
     pub(super) fn warnings_section(&mut self, ui: &mut egui::Ui, slot: usize) {
         let Some(study) = &self.slots[slot].study else {
             return;
@@ -3123,16 +3173,41 @@ impl ViewerApp {
         if study.warnings.is_empty() {
             return;
         }
-        egui::CollapsingHeader::new(
-            egui::RichText::new(format!("⚠ Warnings ({})", study.warnings.len()))
-                .color(warn_color(ui.visuals())),
-        )
-        .id_salt(("warn", slot))
-        .show(ui, |ui| {
-            for w in &study.warnings {
-                ui.label(egui::RichText::new(w).small());
+        let mut acknowledge = false;
+        // The button belongs on the header's own row - beside the count,
+        // not inside the list - so it is there whether the list is open or
+        // shut. That needs the header drawn by hand.
+        let id = ui.make_persistent_id(("warn", slot));
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
+            .show_header(ui, |ui| {
+                let study = self.slots[slot].study.as_ref().expect("checked above");
+                ui.label(
+                    egui::RichText::new(format!("⚠ Warnings ({})", study.warnings.len()))
+                        .color(warn_color(ui.visuals())),
+                );
+                if ui
+                    .add(egui::Button::new("Acknowledge").small())
+                    .on_hover_text(
+                        "Clear these warnings. They describe a load or a transfer that \
+                         has already happened, so once they have been read they have \
+                         nothing left to say; the next one reports its own.",
+                    )
+                    .clicked()
+                {
+                    acknowledge = true;
+                }
+            })
+            .body(|ui| {
+                let study = self.slots[slot].study.as_ref().expect("checked above");
+                for w in &study.warnings {
+                    ui.label(egui::RichText::new(w).small());
+                }
+            });
+        if acknowledge {
+            if let Some(study) = self.slots[slot].study.as_mut() {
+                study.warnings.clear();
             }
-        });
+        }
     }
 }
 
@@ -3169,6 +3244,47 @@ pub(super) struct PatientNode {
 /// of the image series it references, and failing that under the first study
 /// there is: a structure set that cannot be reached is worse than one shown
 /// a level away from where its header claims it lives.
+/// A study's line in the data tree: what the study is called, then its
+/// StudyID, then its date in parentheses - each only when the header carries
+/// it.
+///
+/// The word "study" is not in it. The node sits under a patient and above
+/// that study's series, which is what says what it is; spending the line on
+/// the word leaves less of it for the description, which is the part that
+/// tells two studies of one patient apart. With neither a description nor a
+/// StudyID there is nothing to say but which study it is, and `#n` says that
+/// without the word.
+pub(super) fn study_title(description: &str, study_id: &str, date: &str, n: usize) -> String {
+    let mut title = String::new();
+    if !description.is_empty() {
+        title.push_str(description);
+    }
+    if !study_id.is_empty() {
+        if !title.is_empty() {
+            title.push_str(" · ");
+        }
+        title.push_str(study_id);
+    }
+    if title.is_empty() {
+        title = format!("#{n}");
+    }
+    if !date.is_empty() {
+        title.push_str(&format!(" ({})", dicom_date(date)));
+    }
+    title
+}
+
+/// `19980325` as `1998-03-25`; anything else as it stands, because a header
+/// that does not hold a DICOM date is better shown than silently dropped.
+fn dicom_date(da: &str) -> String {
+    let da = da.trim();
+    if da.len() == 8 && da.bytes().all(|b| b.is_ascii_digit()) {
+        format!("{}-{}-{}", &da[..4], &da[4..6], &da[6..])
+    } else {
+        da.to_string()
+    }
+}
+
 pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
     // Series filed under a 4D group render inside that node, not under
     // their modality - one series, one place in the tree.
@@ -3209,19 +3325,7 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
             Some(i) => &mut p.studies[i],
             None => {
                 let n = p.studies.len() + 1;
-                let title = format!(
-                    "Study {}{}",
-                    if se.study_date.is_empty() {
-                        n.to_string()
-                    } else {
-                        se.study_date.clone()
-                    },
-                    if se.study_description.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" - {}", se.study_description)
-                    }
-                );
+                let title = study_title(&se.study_description, &se.study_id, &se.study_date, n);
                 p.studies.push(StudyNode {
                     uid: se.study_uid.clone(),
                     title,
@@ -3345,19 +3449,7 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
             };
             for uid in missing {
                 let n = patients[pi].studies.len() + 1;
-                let title = format!(
-                    "Study {}{}",
-                    if m.study_date.is_empty() {
-                        n.to_string()
-                    } else {
-                        m.study_date.clone()
-                    },
-                    if m.study_description.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" - {}", m.study_description)
-                    }
-                );
+                let title = study_title(&m.study_description, &m.study_id, &m.study_date, n);
                 patients[pi].studies.push(StudyNode {
                     uid,
                     title,
@@ -3495,6 +3587,40 @@ mod layout_tests {
     use crate::geometry::Vec3;
     use crate::rtstruct::StructureSet;
 
+    #[test]
+    fn a_study_line_is_its_name_its_id_and_its_date_and_never_the_word() {
+        // Everything present.
+        assert_eq!(
+            study_title("4DFBCT+RTS", "1", "19980325", 1),
+            "4DFBCT+RTS · 1 (1998-03-25)"
+        );
+        // The bundled data: a description and a StudyID, no date.
+        assert_eq!(study_title("4DCBCT", "1", "", 2), "4DCBCT · 1");
+        // Description alone, which is the common case.
+        assert_eq!(
+            study_title("Planning CT", "", "20240115", 1),
+            "Planning CT (2024-01-15)"
+        );
+        assert_eq!(study_title("Planning CT", "", "", 1), "Planning CT");
+        // No description: the StudyID carries the line on its own.
+        assert_eq!(study_title("", "4711", "20240115", 3), "4711 (2024-01-15)");
+        // Neither: which study it is, and still not the word "study".
+        assert_eq!(study_title("", "", "", 2), "#2");
+        assert_eq!(study_title("", "", "20240115", 2), "#2 (2024-01-15)");
+        for t in [
+            study_title("", "", "", 1),
+            study_title("Planning CT", "1", "20240115", 1),
+        ] {
+            assert!(
+                !t.to_ascii_lowercase().contains("study"),
+                "the node is under a patient and above its series: {t}"
+            );
+        }
+        // A header with something other than a DICOM date in it is shown as
+        // it stands rather than sliced into nonsense.
+        assert_eq!(study_title("CT", "", "1998", 1), "CT (1998)");
+    }
+
     fn series(uid: &str, modality: &str, patient: &str, study: &str) -> loader::SeriesInfo {
         loader::SeriesInfo {
             uid: uid.into(),
@@ -3505,6 +3631,7 @@ mod layout_tests {
             study_uid: study.into(),
             study_date: "20260827".into(),
             study_description: String::new(),
+            study_id: String::new(),
             series_number: None,
             temporal_id: None,
             suv_bw: None,
@@ -3633,6 +3760,7 @@ mod layout_tests {
             patient_id: "P9".into(),
             study_date: "20260901".into(),
             study_description: "Portal images".into(),
+            study_id: String::new(),
         };
         let layout = tree_layout(&st);
         assert_eq!(
@@ -3653,8 +3781,8 @@ mod layout_tests {
             layout[0]
                 .studies
                 .iter()
-                .any(|s| s.title.contains("20260901")),
-            "the study is dated from the workspace's metadata"
+                .any(|s| s.title.contains("2026-09-01")),
+            "the study is dated from the workspace's metadata, readably"
         );
         let total: usize = layout[0].studies.iter().map(|s| s.structs.len()).sum();
         assert_eq!(total, 3, "every structure set is still reachable");

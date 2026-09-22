@@ -123,7 +123,7 @@ What that buys:
   the recipe claim something that is no longer true.
 
 Operands are stored **by name**, because that is what survives an export, a
-reload, a reordering or a copy to the other workspace. A recipe naming a
+reload, a reordering or a copy to another workspace. A recipe naming a
 structure that has been renamed or deleted is not evaluated on whatever is
 left: it says so and stops.
 

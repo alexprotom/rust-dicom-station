@@ -16,7 +16,7 @@ no node for the acquisition they form, so the viewer reconstructs one:
   Ex`) or `phase` + number (`4DCT_phase_000`, `Phase 3`) is a **phase**;
   the description minus the number (the *template*) tells two 4D sets in
   one study apart - thin- and thick-slice reconstructions become two
-  groups - and is the group's name stem (`4D CT - Thorax 4D (10 phases)`).
+  groups - and is the group's name stem (`4DCT - Thorax 4D (10 phases)`).
 - Series with a `TemporalPositionIdentifier` but no percent group by
   identical description and order by that identifier (`t1`, `t2`, …).
 - `AVG`/`average`/`mean`, `MIP` and `MinIP` in the description mark the
@@ -205,6 +205,10 @@ difference at all.
 separation instead of a Dice score, which is the target registration error
 when the two are meant to be the same landmark.
 
+Everything the window measures is shown as a two-column table - quantity and
+value, the same rows *Save CSV* writes - with only the warnings and the "why
+there is nothing to compare" messages left as sentences.
+
 ## Structure details (`src/app/stats_win.rs`)
 
 *Tools ▸ 📋 Structure details* is the other half: one row per structure of
@@ -217,9 +221,11 @@ derived structure still matches its recipe. Points of interest show their
 coordinates instead of a volume.
 
 The **Dice** column measures every row against a reference chosen above the
-table: the structure or segment of *the same name in the other workspace* (the
-default with two workspaces loaded - what a propagation, a phase or a second
-observer is checked with), or one structure or segment of either workspace for
+table: the structure or segment of *the same name in another workspace* -
+one entry per open workspace, so with three of them the table can be measured
+against whichever is the comparison; it is the default as soon as a second
+one is loaded, and it is what a propagation, a phase or a second observer is
+checked with - or one structure or segment of any workspace for
 all rows (an auto-segmentation against the manual one). Contours are
 rasterized onto the row's own lattice, a reference on another lattice is
 resampled onto it, and a row with no counterpart shows `-`; the tooltip

@@ -991,7 +991,12 @@ impl ViewerApp {
             .iter()
             .map(|s| (s.visible, s.color))
             .collect();
-        let other_visible: Vec<bool> = self.slots[1 - slot].roi_visible.clone();
+        // The structures of the workspace this one is paired with, drawn
+        // faintly beside its own.
+        let other_visible: Vec<bool> = self
+            .other_open(slot)
+            .map(|o| self.slots[o].roi_visible.clone())
+            .unwrap_or_default();
         let reg_here = self
             .registration
             .as_ref()
@@ -1169,7 +1174,7 @@ impl ViewerApp {
         let mut acts = D3PaneActions::default();
         let slot = w.slot;
         if self.show_labels {
-            let title = if self.comparison {
+            let title = if self.comparing() {
                 format!("3D · {}", SLOT_NAMES[slot])
             } else {
                 "3D".to_string()

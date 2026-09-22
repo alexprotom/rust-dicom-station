@@ -41,7 +41,7 @@ OPTIONS:
     --no-mcp           leave the MCP server out even when it was built
     --setup <FILE>     setup binary to wrap (default: target/release/rds-setup.exe)
     --out <FILE>       installer to write (default: dist/rust-dicom-station-setup.exe)
-    --test-data        also ship data-test/ (~137 MB before compression)
+    --test-data        also ship data-test/ (~980 MB before compression)
     --no-docs          leave the docs/ folder out
     --winget <DIR>     also write the winget manifests for this installer into DIR
     --url <URL>        download URL recorded in them (default: the installer

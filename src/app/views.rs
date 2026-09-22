@@ -50,40 +50,41 @@ impl ViewerApp {
             .show(ui, |ui| {
                 // Last pass's rectangles say nothing about this one: a row
                 // that is no longer drawn must not be saved from memory.
-                self.row_rects = [None, None];
-                if self.slots[0].study.is_none() && self.slots[1].study.is_none() {
+                self.row_rects = [None; MAX_WORKSPACES];
+                if !self.slots.iter().any(|s| s.study.is_some()) {
                     self.empty_state(ui);
                     return;
                 }
                 // Maximized single-pane layout: one pane fills the window.
                 if let Some((mslot, kind)) = self.maximized {
-                    if self.slots[mslot.min(1)].study.is_some() {
+                    if self.is_open(mslot) && self.slots[mslot].study.is_some() {
                         let full = ui.available_rect_before_wrap();
-                        self.note_row_rect(mslot.min(1), full);
-                        self.pane(ui, mslot.min(1), kind, full, true);
+                        self.note_row_rect(mslot, full);
+                        self.pane(ui, mslot, kind, full, true);
                         return;
                     }
                     self.maximized = None;
                 }
                 let full = ui.available_rect_before_wrap();
+                // One row per open workspace, sharing the height equally.
                 // The panes tile the central area edge to edge: every pixel
                 // spent on a gap is a pixel of image not shown, and each pane
                 // names itself in its own corner.
-                let n_rows = if self.comparison { 2 } else { 1 };
-                let row_h = full.height() / n_rows as f32;
+                let rows = self.open_slots();
+                let row_h = full.height() / rows.len() as f32;
 
-                for row in 0..n_rows {
-                    let y0 = full.top() + row as f32 * row_h;
+                for (i, slot) in rows.into_iter().enumerate() {
+                    let y0 = full.top() + i as f32 * row_h;
                     let row_rect = Rect::from_min_size(
                         Pos2::new(full.left(), y0),
                         Vec2::new(full.width(), row_h),
                     );
                     // Where it landed, for File ▸ Save image.
-                    self.note_row_rect(row, row_rect);
-                    if self.slots[row].study.is_some() {
-                        self.study_row(ui, row, row_rect);
+                    self.note_row_rect(slot, row_rect);
+                    if self.slots[slot].study.is_some() {
+                        self.study_row(ui, slot, row_rect);
                     } else {
-                        self.empty_row(ui, row, row_rect);
+                        self.empty_row(ui, slot, row_rect);
                     }
                 }
             });
@@ -95,7 +96,7 @@ impl ViewerApp {
     /// today, so a row left empty falls back to the three planes rather than
     /// to a blank strip of window.
     pub(super) fn row_panes(&self, slot: usize) -> Vec<PaneKind> {
-        let mut panes = self.view_rows[slot.min(1)].clone();
+        let mut panes = self.view_rows[slot.min(MAX_WORKSPACES - 1)].clone();
         panes.truncate(crate::settings::MAX_PANES);
         if panes.is_empty() {
             panes = crate::settings::default_view_row();
@@ -106,7 +107,7 @@ impl ViewerApp {
     /// Does this row show the surface scene? The toolbar's *3D* button for
     /// that workspace steps aside when it does.
     pub(super) fn row_shows_scene(&self, slot: usize) -> bool {
-        (slot == 0 || self.comparison) && self.row_panes(slot).contains(&PaneKind::Scene3d)
+        self.is_open(slot) && self.row_panes(slot).contains(&PaneKind::Scene3d)
     }
 
     pub(super) fn study_row(&mut self, ui: &mut egui::Ui, slot: usize, row_rect: Rect) {
@@ -146,15 +147,19 @@ impl ViewerApp {
         if !self.link_studies || !self.both_volumes() {
             return;
         }
-        let other = 1 - slot;
-        let Some(v) = self.slots[other].views.get_mut(idx) else {
-            return;
-        };
-        if let Some(z) = zoom {
-            v.zoom = z;
-        }
-        if let Some(p) = pan {
-            v.pan = p;
+        for other in self.open_slots() {
+            if other == slot {
+                continue;
+            }
+            let Some(v) = self.slots[other].views.get_mut(idx) else {
+                continue;
+            };
+            if let Some(z) = zoom {
+                v.zoom = z;
+            }
+            if let Some(p) = pan {
+                v.pan = p;
+            }
         }
     }
 
@@ -171,7 +176,6 @@ impl ViewerApp {
         if !self.link_studies || !self.both_volumes() {
             return;
         }
-        let other = 1 - slot;
         let Some(view) = self.slots[slot].views.get(idx) else {
             return;
         };
@@ -193,27 +197,34 @@ impl ViewerApp {
             Some(reg) if reg.shows_moving(slot, &self.slots) => reg.result.transform.unmap(patient),
             _ => patient,
         };
-        let new_slice = {
-            let Some(ostudy) = &self.slots[other].study else {
-                return;
-            };
-            if !ostudy.has_volume() {
-                return;
+        // Every other open workspace lands on whatever slice of its own
+        // holds that patient point.
+        for other in self.open_slots() {
+            if other == slot {
+                continue;
             }
-            let Some(oview) = self.slots[other].views.get(idx) else {
-                return;
+            let new_slice = {
+                let Some(ostudy) = &self.slots[other].study else {
+                    continue;
+                };
+                if !ostudy.has_volume() {
+                    continue;
+                }
+                let Some(oview) = self.slots[other].views.get(idx) else {
+                    continue;
+                };
+                let opl = oview.plane;
+                let oc = ostudy.volume.patient_to_voxel(target);
+                let sc = match opl {
+                    ViewPlane::Axial => oc[2],
+                    ViewPlane::Sagittal => oc[0],
+                    ViewPlane::Coronal => oc[1],
+                };
+                let max = ostudy.volume.plane_slice_count(opl).saturating_sub(1);
+                (sc.round().max(0.0) as usize).min(max)
             };
-            let opl = oview.plane;
-            let oc = ostudy.volume.patient_to_voxel(target);
-            let sc = match opl {
-                ViewPlane::Axial => oc[2],
-                ViewPlane::Sagittal => oc[0],
-                ViewPlane::Coronal => oc[1],
-            };
-            let max = ostudy.volume.plane_slice_count(opl).saturating_sub(1);
-            (sc.round().max(0.0) as usize).min(max)
-        };
-        self.slots[other].views[idx].slice = new_slice;
+            self.slots[other].views[idx].slice = new_slice;
+        }
     }
 
     /// The *Settings ▸ View layout* tick boxes: what each row shows.
@@ -230,7 +241,10 @@ impl ViewerApp {
         let mut shift: Option<(usize, usize, bool)> = None;
         let mut reset: Option<usize> = None;
         let standard = crate::settings::default_view_row();
-        for (slot, name) in SLOT_NAMES.iter().enumerate() {
+        // A row per open workspace: the layout of a workspace that is not on
+        // screen is remembered, not configured here.
+        for slot in self.open_slots() {
+            let name = SLOT_NAMES[slot];
             let row = self.row_panes(slot);
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(format!("Row {name}")).strong());
@@ -351,7 +365,7 @@ impl ViewerApp {
             // A pane that has just gone from the layout must not leave a
             // maximized pane pointing at nothing.
             if let Some((slot, kind)) = self.maximized {
-                if !self.row_panes(slot.min(1)).contains(&kind) {
+                if !self.row_panes(slot.min(MAX_WORKSPACES - 1)).contains(&kind) {
                     self.maximized = None;
                 }
             }
@@ -449,6 +463,25 @@ impl ViewerApp {
                 ),
                 move |app, dir| app.start_load(slot, dir),
             );
+        }
+        // An empty row past the first was opened on purpose and can be
+        // closed the same way, without going to the menu for it.
+        if slot > 0 {
+            let close_rect = Rect::from_center_size(
+                rect.center() + Vec2::new(0.0, 44.0),
+                Vec2::new(220.0, 24.0),
+            );
+            if ui
+                .put(
+                    close_rect,
+                    egui::Button::new("Close this workspace").small(),
+                )
+                .on_hover_text("Take the row off the screen again")
+                .clicked()
+            {
+                self.close_workspace(slot);
+                return;
+            }
         }
         if self.loading.is_some() {
             if let Some(job) = &self.loading {
@@ -1055,7 +1088,7 @@ impl ViewerApp {
         // Annotations.
         if self.show_labels {
             let n_slices = vol.plane_slice_count(plane);
-            let both = self.comparison;
+            let both = self.comparing();
             let title = if both {
                 format!("{} · {}", plane.title(), SLOT_NAMES[slot])
             } else {
@@ -1810,10 +1843,17 @@ impl ViewerApp {
         self.slots[slot].cursor = clamped;
         self.sync_views_to_cursor(slot, Some(source_view));
 
-        if self.link_studies {
-            let other = 1 - slot;
+        if !self.link_studies {
+            return;
+        }
+        // Every other open workspace follows, each through its own answer
+        // to "where is this point on your image".
+        for other in self.open_slots() {
+            if other == slot {
+                continue;
+            }
             let Some(ostudy) = &self.slots[other].study else {
-                return;
+                continue;
             };
             // Map through the registration transform when one exists.
             // The transform maps fixed-slot patient coordinates into the
@@ -1828,7 +1868,7 @@ impl ViewerApp {
                 _ => patient,
             };
             if !ostudy.has_volume() {
-                return;
+                continue;
             }
             let odims = ostudy.volume.dims;
             let oc = ostudy.volume.patient_to_voxel(target);

@@ -25,7 +25,7 @@ For every (structure, dose object) pair:
 * the statistics: minimum, mean and maximum;
 * whatever metrics the table is asked for.
 
-Structures may come from either workspace and either kind - RT structure or
+Structures may come from any open workspace and either kind - RT structure or
 segmentation - and any number of dose objects may be overlaid. Structures keep
 their own colour and the dose object picks the line style, so two plans over
 the same organs read as one colour in two dashes.

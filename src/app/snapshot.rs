@@ -32,7 +32,7 @@ use super::*;
 pub(super) enum ImgWhat {
     /// One workspace: its row of the central area.
     Row(usize),
-    /// Both rows, as they sit one above the other.
+    /// Every row on screen, as they sit one above the other.
     Both,
 }
 
@@ -206,7 +206,7 @@ impl ViewerApp {
     /// Remember where a workspace's row was drawn, so *Save image* knows what
     /// part of the window to cut out.
     pub(super) fn note_row_rect(&mut self, slot: usize, rect: Rect) {
-        if slot < 2 {
+        if slot < MAX_WORKSPACES {
             self.row_rects[slot] = Some(rect);
         }
     }
@@ -214,11 +214,13 @@ impl ViewerApp {
     /// The rectangle a choice asks for, in points.
     fn snap_rect(&self, what: ImgWhat) -> Option<Rect> {
         match what {
-            ImgWhat::Row(s) => self.row_rects[s.min(1)],
-            ImgWhat::Both => match (self.row_rects[0], self.row_rects[1]) {
-                (Some(a), Some(b)) => Some(a.union(b)),
-                (a, b) => a.or(b),
-            },
+            ImgWhat::Row(s) => self.row_rects[s.min(MAX_WORKSPACES - 1)],
+            ImgWhat::Both => self
+                .row_rects
+                .iter()
+                .flatten()
+                .copied()
+                .reduce(|a, b| a.union(b)),
         }
     }
 
@@ -227,9 +229,14 @@ impl ViewerApp {
         let Some(mut d) = self.save_img.take() else {
             return;
         };
-        let both = self.comparison && self.slots[1].study.is_some();
-        if !both && d.what != ImgWhat::Row(0) {
-            d.what = ImgWhat::Row(0);
+        let rows = self.open_slots();
+        let both = rows.len() > 1;
+        // A row that is no longer on screen cannot be saved.
+        if !matches!(d.what, ImgWhat::Row(s) if rows.contains(&s)) && d.what != ImgWhat::Both {
+            d.what = ImgWhat::Row(rows[0]);
+        }
+        if !both && d.what == ImgWhat::Both {
+            d.what = ImgWhat::Row(rows[0]);
         }
         let ppp = ctx.pixels_per_point();
         let scale = scale_for(d.dpi, ppp);
@@ -259,16 +266,20 @@ impl ViewerApp {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     ui.label("Rows");
-                    ui.selectable_value(&mut d.what, ImgWhat::Row(0), "Workspace A")
-                        .on_hover_text("The upper row on its own");
+                    for slot in &rows {
+                        ui.selectable_value(
+                            &mut d.what,
+                            ImgWhat::Row(*slot),
+                            format!("Workspace {}", SLOT_NAMES[*slot]),
+                        )
+                        .on_hover_text("That row on its own");
+                    }
                     ui.add_enabled_ui(both, |ui| {
-                        ui.selectable_value(&mut d.what, ImgWhat::Row(1), "Workspace B")
-                            .on_hover_text("The lower row on its own");
-                        ui.selectable_value(&mut d.what, ImgWhat::Both, "Both")
-                            .on_hover_text("The two rows together, one above the other");
+                        ui.selectable_value(&mut d.what, ImgWhat::Both, "All")
+                            .on_hover_text("Every row together, one above the other");
                     });
                     if !both {
-                        ui.weak("one workspace loaded");
+                        ui.weak("one workspace on screen");
                     }
                 });
                 ui.horizontal_wrapped(|ui| {
@@ -370,8 +381,19 @@ impl ViewerApp {
             .snap_rect(d.what)
             .context("that row is not on screen")?;
         let name = match d.what {
-            ImgWhat::Row(s) => format!("view_{}.{}", SLOT_NAMES[s.min(1)], d.format.ext()),
-            ImgWhat::Both => format!("view_AB.{}", d.format.ext()),
+            ImgWhat::Row(s) => format!(
+                "view_{}.{}",
+                SLOT_NAMES[s.min(MAX_WORKSPACES - 1)],
+                d.format.ext()
+            ),
+            ImgWhat::Both => format!(
+                "view_{}.{}",
+                self.open_slots()
+                    .into_iter()
+                    .map(|s| SLOT_NAMES[s])
+                    .collect::<String>(),
+                d.format.ext()
+            ),
         };
         let crop = [
             (rect.left() * ppp).round().max(0.0) as usize,

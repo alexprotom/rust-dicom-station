@@ -1114,7 +1114,43 @@ pub struct RegistrationResult {
     pub analysis: RegAnalysis,
 }
 
+/// What a registration cost and what it achieved, as numbers.
+///
+/// [`RegistrationResult::metric_line`] is this written out; a table wants
+/// the values themselves, so both exist and say the same thing.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RunMetrics {
+    /// Name of the metric these numbers are of (`MSD`, `MI`).
+    pub tag: &'static str,
+    pub initial: f64,
+    pub final_value: f64,
+    pub iterations: usize,
+    pub secs: f64,
+}
+
+impl RunMetrics {
+    /// How much of the starting metric the run removed, as a fraction. A
+    /// run that halved it returns 0.5; one that made it worse, a negative.
+    pub fn improvement(&self) -> f64 {
+        if self.initial.abs() < 1e-12 {
+            return 0.0;
+        }
+        (self.initial - self.final_value) / self.initial
+    }
+}
+
 impl RegistrationResult {
+    /// The same numbers [`Self::metric_line`] prints, for a table.
+    pub fn metrics(&self) -> RunMetrics {
+        RunMetrics {
+            tag: self.metric.tag(),
+            initial: self.initial_metric,
+            final_value: self.final_metric,
+            iterations: self.iterations_run,
+            secs: self.elapsed_secs,
+        }
+    }
+
     /// `MSD 9700 ▶ 1800  (900 iters, 20.1 s)`.
     pub fn metric_line(&self) -> String {
         format!(

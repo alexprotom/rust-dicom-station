@@ -98,7 +98,7 @@ impl ToolInfo {
 pub(super) fn workspace_row(
     ui: &mut egui::Ui,
     slot: usize,
-    has: [bool; 2],
+    has: [bool; MAX_WORKSPACES],
     enabled: bool,
 ) -> Option<usize> {
     if has.iter().filter(|h| **h).count() < 2 {
@@ -107,7 +107,13 @@ pub(super) fn workspace_row(
     let mut picked = slot;
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Workspace").strong());
+        // Only the workspaces there is something to run on, plus the one
+        // the tool is on now: four letters with two of them dead would be a
+        // row about what is missing rather than about what to pick.
         for (i, name) in SLOT_NAMES.iter().enumerate() {
+            if !has[i] && i != slot {
+                continue;
+            }
             let r = ui.add_enabled(
                 enabled && has[i],
                 egui::RadioButton::new(picked == i, *name),

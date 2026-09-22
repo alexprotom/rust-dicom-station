@@ -23,7 +23,7 @@ Step 3 appends the payload to the setup binary. Useful flags:
 
 | flag | effect |
 |---|---|
-| `--example-data` | ship `data-test/` too (~137 MB before compression) |
+| `--example-data` | ship `data-test/` too (~980 MB before compression) |
 | `--no-docs` | leave `docs/` out |
 | `--app <FILE>` | use a different viewer executable |
 | `--mcp <FILE>` / `--no-mcp` | the MCP server `rds-mcp.exe` rides along when `target/release/rds-mcp.exe` exists (build it with `cargo build --release --features mcp`); these override that |

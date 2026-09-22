@@ -1055,10 +1055,11 @@ pub fn export_study(
     params: &ExportParams,
     progress: &Progress,
 ) -> Result<usize> {
-    let mut plan = crate::export::ExportPlan::build([Some(study), None], params.clone());
+    let mut plan =
+        crate::export::ExportPlan::build(crate::export::one_study(study), params.clone());
     plan.layout = crate::export::Layout::Flat;
     plan.adopt_params_identity();
-    Ok(crate::export::run(&plan, [Some(study), None], dir, progress)?.files)
+    Ok(crate::export::run(&plan, crate::export::one_study(study), dir, progress)?.files)
 }
 
 fn truncate(s: &str, max: usize) -> String {

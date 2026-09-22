@@ -26,7 +26,7 @@ packaging/
 | Linux snap | snap.yml (called by release.yml) | Snap Store `rust-dicom-station` | [docs/snap.md](../docs/snap.md) |
 | Linux Flatpak | flatpak.yml (test builds); Flathub builds the release | Flathub `io.github.alexprotom.rust-dicom-station` | [docs/flatpak.md](../docs/flatpak.md) |
 | macOS | macos.yml (called by release.yml), `build-app.sh` | `rust-dicom-station-X.Y.Z-macos-{arm64,x86_64}.dmg`, Homebrew cask | [macos/README.md](macos/README.md), [docs/macos.md](../docs/macos.md) |
-| Android | android.yml (called by release.yml), `build-apk.sh` | `rust-dicom-station-X.Y.Z-arm64-v8a.apk` | [android/README.md](android/README.md), [docs/android.md](../docs/android.md) |
+| Android | android.yml (called by release.yml), `build-apk.sh` | `rust-dicom-station-X.Y.Z-android-arm64.apk` | [android/README.md](android/README.md), [docs/android.md](../docs/android.md) |
 
 Every script finds the repository root from its own location, so all of
 them run from any working directory. The two crates reach the viewer

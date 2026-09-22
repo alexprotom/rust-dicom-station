@@ -28,7 +28,6 @@ impl ViewerApp {
     // -- Modals -----------------------------------------------------------
     pub(super) fn modals(&mut self, ctx: &egui::Context) {
         self.generator_window(ctx);
-        self.workspace_pick_window(ctx);
         self.testdata_window(ctx);
         self.save_image_window(ctx);
         self.anonymize_window(ctx);
@@ -199,13 +198,18 @@ impl ViewerApp {
             &mut open,
             detach::WinOpts::default(),
             |ui| {
-                ui.label(format!(
-                    "{} structures found on workspace {} - {} · {:.0} s",
-                    p.result.organs.len(),
-                    SLOT_NAMES[p.slot],
-                    p.result.device,
-                    p.result.elapsed_secs,
-                ));
+                // What the run was, as a table like every other block that
+                // reports one.
+                run_report::facts(
+                    ui,
+                    "autoseg_facts",
+                    &[
+                        ("Workspace", SLOT_NAMES[p.slot].to_string()),
+                        ("Structures", p.result.organs.len().to_string()),
+                        ("Device", p.result.device.to_string()),
+                        ("t, s", format!("{:.0}", p.result.elapsed_secs)),
+                    ],
+                );
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     if ui.small_button("All").clicked() {
@@ -224,24 +228,41 @@ impl ViewerApp {
                 egui::ScrollArea::vertical()
                     .max_height(320.0)
                     .show(ui, |ui| {
-                        for (organ, sel) in p.result.organs.iter().zip(p.selected.iter_mut()) {
-                            ui.horizontal(|ui| {
-                                ui.checkbox(sel, "");
-                                let (rect, _) =
-                                    ui.allocate_exact_size(egui::vec2(12.0, 12.0), Sense::hover());
-                                ui.painter().rect_filled(
-                                    rect,
-                                    2.0,
-                                    Color32::from_rgb(
-                                        organ.color[0],
-                                        organ.color[1],
-                                        organ.color[2],
-                                    ),
-                                );
-                                ui.label(organ.name);
-                                ui.weak(format!("{:.1} cm³", organ.cm3));
+                        // A grid, so the volumes line up in a column and the
+                        // large and the suspiciously small are found by
+                        // scanning rather than by reading.
+                        egui::Grid::new("autoseg_organs")
+                            .num_columns(4)
+                            .striped(true)
+                            .spacing([8.0, 2.0])
+                            .show(ui, |ui| {
+                                run_report::head(ui, "");
+                                run_report::head(ui, "");
+                                run_report::head(ui, "Structure");
+                                run_report::head(ui, "Volume");
+                                ui.end_row();
+                                for (organ, sel) in
+                                    p.result.organs.iter().zip(p.selected.iter_mut())
+                                {
+                                    ui.checkbox(sel, "");
+                                    let (rect, _) = ui.allocate_exact_size(
+                                        egui::vec2(12.0, 12.0),
+                                        Sense::hover(),
+                                    );
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        2.0,
+                                        Color32::from_rgb(
+                                            organ.color[0],
+                                            organ.color[1],
+                                            organ.color[2],
+                                        ),
+                                    );
+                                    ui.label(organ.name);
+                                    ui.monospace(format!("{:.1} cm³", organ.cm3));
+                                    ui.end_row();
+                                }
                             });
-                        }
                     });
                 ui.add_space(4.0);
                 ui.checkbox(&mut p.also_rs, "Also convert to RTSTRUCT contours (→RS)")

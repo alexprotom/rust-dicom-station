@@ -218,7 +218,11 @@ impl ViewerApp {
         let mut commit_dir = false;
 
         let busy = self.pacs_job.is_some();
-        let loaded: [bool; 2] = [self.slots[0].study.is_some(), self.slots[1].study.is_some()];
+        let loaded: [bool; MAX_WORKSPACES] = std::array::from_fn(|s| self.slots[s].study.is_some());
+        // Which workspaces a study can be read into: the open ones and one
+        // new letter, so the row grows with the work rather than showing
+        // four buttons on the first run.
+        let targets = self.open_plus_new();
         let mut w = self.pacs.take().expect("checked above");
 
         detach::tool_window(
@@ -265,10 +269,11 @@ impl ViewerApp {
                     ) {
                         import = true;
                     }
-                    for (slot, name) in SLOT_NAMES.iter().enumerate() {
+                    for slot in (0..MAX_WORKSPACES).filter(|s| loaded[*s]) {
+                        let name = SLOT_NAMES[slot];
                         if ui
                             .add_enabled(
-                                !busy && loaded[slot],
+                                !busy,
                                 egui::Button::new(format!("📤 Send workspace {name}")),
                             )
                             .on_hover_text(
@@ -374,7 +379,8 @@ impl ViewerApp {
                     })
                 });
                 ui.horizontal(|ui| {
-                    for (slot, name) in SLOT_NAMES.iter().enumerate() {
+                    for slot in targets.iter().copied() {
+                        let name = SLOT_NAMES[slot];
                         if ui
                             .add_enabled(
                                 !busy && picked.is_some(),

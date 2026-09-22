@@ -30,7 +30,7 @@ impl ViewerApp {
     /// walked back by one - which is the whole reason this lives here rather
     /// than in the panel that drew the button.
     pub(super) fn remove_object(&mut self, r: ObjRef) {
-        let slot = r.slot.min(1);
+        let slot = r.slot.min(MAX_WORKSPACES - 1);
         let planar_gone = |windows: &mut Vec<PlanarWindow>, idx: usize| {
             windows.retain(|w| !(w.slot == slot && w.idx == idx));
             for w in windows.iter_mut().filter(|w| w.slot == slot && w.idx > idx) {
@@ -99,7 +99,7 @@ impl ViewerApp {
 
     // -- Data tree copy / move / remove actions ----------------------------
     pub(super) fn apply_tree_action(&mut self, action: TreeAction) {
-        self.tree_transfer(action.from, &action.sel, action.op);
+        self.tree_transfer(action.from, action.to, &action.sel, action.op);
     }
 
     /// Series selection mask for a tree selection.
@@ -268,6 +268,7 @@ impl ViewerApp {
                 || study.meta.study_description.clone(),
                 |s| s.study_description.clone(),
             ),
+            study_id: se.map_or_else(|| study.meta.study_id.clone(), |s| s.study_id.clone()),
         };
         LoadedStudy {
             meta,
@@ -319,7 +320,7 @@ impl ViewerApp {
     /// Copy / move / remove a tree selection. Copy and move merge the
     /// selection (plus its linked RT objects) into the other workspace slot;
     /// move and remove then delete it from the source.
-    pub(super) fn tree_transfer(&mut self, from: usize, sel: &TreeSel, op: TreeOp) {
+    pub(super) fn tree_transfer(&mut self, from: usize, to: usize, sel: &TreeSel, op: TreeOp) {
         let Some(study) = self.slots[from].study.as_ref() else {
             return;
         };
@@ -380,7 +381,8 @@ impl ViewerApp {
                     None => {
                         self.error = Some(
                             "The selected series exist only in memory (no source files) - \
-                             they cannot be loaded as the displayed volume of the other slot"
+                             they cannot be loaded as the displayed volume of another \
+                             workspace"
                                 .into(),
                         );
                         return;
@@ -391,7 +393,7 @@ impl ViewerApp {
             let direct =
                 (activate == Some(active)).then(|| (study.volume.clone(), study.default_window));
             let uid = activate.map_or_else(String::new, |a| study.series[a].uid.clone());
-            self.tree_insert(1 - from, sub, &uid, direct);
+            self.tree_insert(to, sub, &uid, direct);
         }
         if op != TreeOp::Copy {
             if all_selected {
@@ -412,7 +414,7 @@ impl ViewerApp {
         activate_uid: &str,
         direct: Option<(Arc<Volume>, (f32, f32))>,
     ) {
-        self.comparison = true;
+        self.show_workspace(to);
         if self.slots[to].study.is_none() {
             let need_switch = direct.is_none();
             let idx = sub.active_series;
@@ -584,6 +586,7 @@ mod tree_tests {
             study_uid: study.into(),
             study_date: "20260818".into(),
             study_description: String::new(),
+            study_id: String::new(),
             series_number: None,
             temporal_id: None,
             suv_bw: None,

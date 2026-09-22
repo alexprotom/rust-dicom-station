@@ -221,7 +221,8 @@ impl ViewerApp {
     /// Every image series either workspace offers.
     pub(super) fn reg_choices(&self) -> Vec<RegChoice> {
         let mut out = Vec::new();
-        for (slot, name) in SLOT_NAMES.iter().enumerate() {
+        for slot in self.open_slots() {
+            let name = SLOT_NAMES[slot];
             let Some(st) = self.slots[slot].study.as_ref() else {
                 continue;
             };
@@ -241,26 +242,32 @@ impl ViewerApp {
     /// workspace went, or whose series is gone, falls back to the displayed
     /// series of its slot, and the moving image to the other workspace's.
     fn settle_reg_picks(&mut self) {
-        let displayed = |slot: usize, slots: &[StudySlot; 2]| -> Option<RegPick> {
+        let displayed = |slot: usize, slots: &[StudySlot; MAX_WORKSPACES]| -> Option<RegPick> {
             let st = slots[slot].study.as_ref()?;
             (!st.series.is_empty()).then(|| RegPick {
                 slot,
                 series: st.active_series.min(st.series.len() - 1),
             })
         };
-        let valid = |p: RegPick, slots: &[StudySlot; 2]| {
+        let valid = |p: RegPick, slots: &[StudySlot; MAX_WORKSPACES]| {
             slots[p.slot]
                 .study
                 .as_ref()
                 .is_some_and(|st| p.series < st.series.len())
         };
         if !valid(self.reg_fixed, &self.slots) {
-            if let Some(p) = displayed(0, &self.slots).or_else(|| displayed(1, &self.slots)) {
+            if let Some(p) = self
+                .open_slots()
+                .into_iter()
+                .find_map(|s| displayed(s, &self.slots))
+            {
                 self.reg_fixed = p;
             }
         }
         if !valid(self.reg_moving, &self.slots) || self.reg_moving == self.reg_fixed {
-            let other = 1 - self.reg_fixed.slot;
+            let other = self
+                .other_open(self.reg_fixed.slot)
+                .unwrap_or(self.reg_fixed.slot);
             let fallback = displayed(other, &self.slots).or_else(|| {
                 // One workspace: the next series of the same one, when it has
                 // more than one - a cardiac CT beside its 4DCT.
@@ -545,21 +552,9 @@ impl ViewerApp {
         }));
     }
 
-    /// Install a rigid transform (e.g. from a DICOM REG object) as the
-    /// active registration, exactly as if it had been computed.
-    pub(super) fn apply_external_rigid(
-        &mut self,
-        rigid: registration::RigidTransform,
-        fixed_slot: usize,
-    ) {
-        self.apply_external_transform(
-            Transform3::rigid_only(rigid),
-            RegMethod::ElastixRigid,
-            fixed_slot,
-        );
-    }
-
-    /// Install any transform read from a file as the active registration.
+    /// Install any transform read from a file (a DICOM REG object, a
+    /// deformation grid) as the active registration, exactly as if it had
+    /// been computed.
     ///
     /// A Deformable Spatial Registration's grid arrives here exactly as a
     /// REG matrix does, so everything downstream - fusion, the crosshair
@@ -571,15 +566,30 @@ impl ViewerApp {
         method: RegMethod,
         fixed_slot: usize,
     ) {
+        let Some(moving_slot) = self.other_open(fixed_slot) else {
+            self.error = Some("A transform pairs two workspaces; open another one first.".into());
+            return;
+        };
+        self.apply_external_transform_between(transform, method, fixed_slot, moving_slot);
+    }
+
+    /// The same, with both sides named: a transform read from a file says
+    /// which frames of reference it maps, and with more than two workspaces
+    /// open only the caller knows which pair it meant.
+    pub(super) fn apply_external_transform_between(
+        &mut self,
+        transform: Transform3,
+        method: RegMethod,
+        fixed_slot: usize,
+        moving_slot: usize,
+    ) {
         let transform = Arc::new(transform);
-        let moving_slot = 1 - fixed_slot;
         let (Some(fstudy), Some(mstudy)) = (
             &self.slots[fixed_slot].study,
             &self.slots[moving_slot].study,
         ) else {
-            self.error = Some(
-                "A transform from a file pairs the two displayed workspaces; load both.".into(),
-            );
+            self.error =
+                Some("A transform from a file pairs two loaded workspaces; load them both.".into());
             return;
         };
         if !fstudy.has_volume() || !mstudy.has_volume() {
@@ -690,13 +700,43 @@ impl ViewerApp {
 
     // -- the panel section -------------------------------------------------
 
+    /// Every transform this module has to show, and whether any is
+    /// deformable.
+    ///
+    /// The active registration first - it is the one *Apply as the
+    /// registration* acts on - then, after a group run, each phase's own
+    /// transform. Ten grids one under the other would be a wall of numbers;
+    /// one grid with a picker over it is the same information a phase at a
+    /// time.
+    pub(super) fn reg_matrix_choices(&self) -> (Vec<matrix_edit::MatrixChoice>, bool) {
+        let mut out = Vec::new();
+        let mut deformable = false;
+        if let Some(r) = self.registration.as_ref() {
+            deformable |= r.result.method.is_deformable();
+            out.push(matrix_edit::MatrixChoice {
+                label: r.result.method.label().to_string(),
+                m: r.result.transform.as_matrix(),
+            });
+        }
+        if let Some(gr) = self.group_registration.as_ref() {
+            for ph in &gr.phases {
+                deformable |= !ph.transform.warp.is_none();
+                out.push(matrix_edit::MatrixChoice {
+                    label: ph.label.clone(),
+                    m: ph.transform.as_matrix(),
+                });
+            }
+        }
+        (out, deformable)
+    }
+
     pub(super) fn registration_section(&mut self, ui: &mut egui::Ui) {
         let both = self.both_volumes();
         // The section is worth showing while two workspaces are loaded, while a
         // result is on display, while a run is in flight (that is where its
         // progress and its Cancel button live), and while one workspace holds a
         // 4D group, which can be registered against a volume of its own.
-        let any_group = (0..2).any(|slot| {
+        let any_group = self.open_slots().into_iter().any(|slot| {
             self.slots[slot]
                 .study
                 .as_ref()
@@ -786,172 +826,182 @@ impl ViewerApp {
                         .map(|c| c.label.clone())
                         .unwrap_or_else(|| "(none)".into())
                 };
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Fixed image");
-                    let current = match self.reg_group {
-                        None => label_of(self.reg_fixed),
-                        Some(k) => group_choices
-                            .iter()
-                            .find(|(g, _)| *g == k)
-                            .map(|(_, l)| l.clone())
-                            .unwrap_or_default(),
-                    };
-                    egui::ComboBox::from_id_salt("reg_fixed_image")
-                        .selected_text(current)
-                        .width(230.0)
-                        .show_ui(ui, |ui| {
-                            for c in &choices {
-                                let mark = if c.displayed { " (displayed)" } else { "" };
-                                if ui
-                                    .selectable_label(
-                                        self.reg_group.is_none() && self.reg_fixed == c.pick,
-                                        format!("{}{mark}", c.label),
-                                    )
-                                    .clicked()
-                                {
-                                    self.reg_fixed = c.pick;
-                                    self.reg_group = None;
-                                }
-                            }
-                            if !group_choices.is_empty() {
-                                ui.separator();
-                                for (key, label) in &group_choices {
-                                    ui.selectable_value(
-                                        &mut self.reg_group,
-                                        Some(*key),
-                                        format!("every phase of {label}"),
-                                    );
-                                }
-                            }
-                        })
-                        .response
-                        .on_hover_text(
-                            "The image the other is aligned onto; the transform maps its \
-                             coordinates into the moving image's. A series that is not on \
-                             display is loaded for the run.",
-                        );
-                });
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Moving image");
-                    egui::ComboBox::from_id_salt("reg_moving_image")
-                        .selected_text(label_of(self.reg_moving))
-                        .width(230.0)
-                        .show_ui(ui, |ui| {
-                            for c in &choices {
-                                let mark = if c.displayed { " (displayed)" } else { "" };
-                                ui.selectable_value(
-                                    &mut self.reg_moving,
-                                    c.pick,
-                                    format!("{}{mark}", c.label),
-                                );
-                            }
-                        })
-                        .response
-                        .on_hover_text("The image that is moved and deformed onto the fixed one");
-                });
-                if self.reg_group.is_some() {
-                    ui.weak(
-                        "Every phase is registered on its own against the moving image. The \
-                         transforms are kept, so sending structures to the same group \
-                         afterwards costs no registration at all.",
+                // Everything the run is made of, one form: the two
+                // images, the method, the region and where the search
+                // starts.
+                form::form(ui, "reg_setup", |f| {
+                    f.row_tip(
+                        "Fixed image",
+                        "The image the other is aligned onto; the transform maps its \
+                         coordinates into the moving image's. A series that is not on \
+                         display is loaded for the run.",
+                        |ui| {
+                            let current = match self.reg_group {
+                                None => label_of(self.reg_fixed),
+                                Some(k) => group_choices
+                                    .iter()
+                                    .find(|(g, _)| *g == k)
+                                    .map(|(_, l)| l.clone())
+                                    .unwrap_or_default(),
+                            };
+                            egui::ComboBox::from_id_salt("reg_fixed_image")
+                                .selected_text(current)
+                                .width(230.0)
+                                .show_ui(ui, |ui| {
+                                    for c in &choices {
+                                        let mark = if c.displayed { " (displayed)" } else { "" };
+                                        if ui
+                                            .selectable_label(
+                                                self.reg_group.is_none()
+                                                    && self.reg_fixed == c.pick,
+                                                format!("{}{mark}", c.label),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.reg_fixed = c.pick;
+                                            self.reg_group = None;
+                                        }
+                                    }
+                                    if !group_choices.is_empty() {
+                                        ui.separator();
+                                        for (key, label) in &group_choices {
+                                            ui.selectable_value(
+                                                &mut self.reg_group,
+                                                Some(*key),
+                                                format!("every phase of {label}"),
+                                            );
+                                        }
+                                    }
+                                });
+                        },
                     );
-                } else if self.reg_fixed.slot == self.reg_moving.slot {
-                    ui.weak(
-                        "Two series of one workspace. The fusion overlay needs each on display \
-                         in its own workspace: load the same folder as the other workspace to \
-                         see it; propagation works either way.",
+                    f.row_tip(
+                        "Moving image",
+                        "The image that is moved and deformed onto the fixed one",
+                        |ui| {
+                            egui::ComboBox::from_id_salt("reg_moving_image")
+                                .selected_text(label_of(self.reg_moving))
+                                .width(230.0)
+                                .show_ui(ui, |ui| {
+                                    for c in &choices {
+                                        let mark = if c.displayed { " (displayed)" } else { "" };
+                                        ui.selectable_value(
+                                            &mut self.reg_moving,
+                                            c.pick,
+                                            format!("{}{mark}", c.label),
+                                        );
+                                    }
+                                });
+                        },
                     );
-                }
-
-                // ---- method ----
-                ui.horizontal(|ui| {
-                    ui.label("Method");
-                    egui::ComboBox::from_id_salt("reg_method")
-                        .selected_text(self.reg_method.short())
-                        .width(190.0)
-                        .show_ui(ui, |ui| {
-                            for m in RegMethod::ALL {
-                                ui.selectable_value(&mut self.reg_method, m, m.short())
-                                    .on_hover_text(m.hint());
-                            }
+                    if self.reg_group.is_some() {
+                        f.wide(|ui| {
+                            ui.weak(
+                                "Every phase is registered on its own against the moving \
+                                 image. The transforms are kept, so sending structures to \
+                                 the same group afterwards costs no registration at all.",
+                            );
                         });
-                });
-                ui.weak(self.reg_method.hint());
+                    } else if self.reg_fixed.slot == self.reg_moving.slot {
+                        f.wide(|ui| {
+                            ui.weak(
+                                "Two series of one workspace. The fusion overlay needs each \
+                                 on display in its own workspace: load the same folder as \
+                                 the other workspace to see it; propagation works either \
+                                 way.",
+                            );
+                        });
+                    }
 
-                // ---- region ----
-                let choices = self.region_choices_for(fixed_slot);
-                if self.region_label(fixed_slot).is_none() {
-                    self.reg_roi = RegRoi::Whole;
-                }
-                ui.horizontal(|ui| {
-                    ui.label("Region");
-                    let current = self
-                        .region_label(fixed_slot)
-                        .unwrap_or_else(|| "Whole image".into());
-                    egui::ComboBox::from_id_salt("reg_roi")
-                        .selected_text(current)
-                        .width(190.0)
-                        .show_ui(ui, |ui| {
-                            for (choice, label) in &choices {
-                                ui.selectable_value(&mut self.reg_roi, *choice, label);
-                            }
-                        })
-                        .response
-                        .on_hover_text(
-                            "Restrict the registration to one structure of the fixed \
-                             workspace. Samples come from inside it only and the B-spline \
-                             lattice covers it alone, so a small structure can be aligned \
-                             at a fine grid - and, when it refines an existing result, \
-                             the rest of the patient keeps that result untouched.",
-                        );
-                });
-                if self.reg_roi != RegRoi::Whole {
-                    ui.horizontal(|ui| {
-                        ui.label("Margin");
-                        ui.add(
-                            egui::DragValue::new(&mut self.reg_margin_mm)
-                                .speed(1.0)
-                                .range(0.0..=60.0)
-                                .suffix(" mm"),
-                        )
-                        .on_hover_text(
-                            "The structure is grown by this much before sampling. Without \
-                             a margin nothing outside the structure constrains its \
-                             boundary, and the boundary is what you are aligning.",
-                        );
+                    // ---- method ----
+                    f.row("Method", |ui| {
+                        egui::ComboBox::from_id_salt("reg_method")
+                            .selected_text(self.reg_method.short())
+                            .width(190.0)
+                            .show_ui(ui, |ui| {
+                                for m in RegMethod::ALL {
+                                    ui.selectable_value(&mut self.reg_method, m, m.short())
+                                        .on_hover_text(m.hint());
+                                }
+                            });
                     });
-                }
+                    f.wide(|ui| {
+                        ui.weak(self.reg_method.hint());
+                    });
 
-                // ---- initialisation ----
-                let init_choices = self.init_choices_for(fixed_slot);
-                if !init_choices.iter().any(|(c, _)| *c == self.reg_init) {
-                    self.reg_init = RegInit::Auto;
-                }
-                ui.horizontal(|ui| {
-                    ui.label("Start from");
-                    let current = init_choices
-                        .iter()
-                        .find(|(c, _)| *c == self.reg_init)
-                        .map(|(_, l)| l.clone())
-                        .unwrap_or_default();
-                    egui::ComboBox::from_id_salt("reg_init")
-                        .selected_text(current)
-                        .width(190.0)
-                        .show_ui(ui, |ui| {
-                            for (choice, label) in &init_choices {
-                                ui.selectable_value(&mut self.reg_init, *choice, label);
-                            }
-                        })
-                        .response
-                        .on_hover_text(
-                            "Where the search begins. The engines take steps of a few \
-                             millimetres, so two images that do not overlap at the identity \
-                             (different frames of reference: a cardiac CT and a 4DCT) never \
-                             find each other. Automatic keeps the identity when they overlap \
-                             and matches the centres of gravity when they do not; a \
-                             structure contoured on both workspaces matches its centroids, \
-                             which is the surest start for an organ.",
+                    // ---- region ----
+                    let region_choices = self.region_choices_for(fixed_slot);
+                    if self.region_label(fixed_slot).is_none() {
+                        self.reg_roi = RegRoi::Whole;
+                    }
+                    f.row_tip(
+                        "Region",
+                        "Restrict the registration to one structure of the fixed \
+                         workspace. Samples come from inside it only and the B-spline \
+                         lattice covers it alone, so a small structure can be aligned at a \
+                         fine grid - and, when it refines an existing result, the rest of \
+                         the patient keeps that result untouched.",
+                        |ui| {
+                            let current = self
+                                .region_label(fixed_slot)
+                                .unwrap_or_else(|| "Whole image".into());
+                            egui::ComboBox::from_id_salt("reg_roi")
+                                .selected_text(current)
+                                .width(190.0)
+                                .show_ui(ui, |ui| {
+                                    for (choice, label) in &region_choices {
+                                        ui.selectable_value(&mut self.reg_roi, *choice, label);
+                                    }
+                                });
+                        },
+                    );
+                    if self.reg_roi != RegRoi::Whole {
+                        f.row_tip(
+                            "Margin",
+                            "The structure is grown by this much before sampling. Without a \
+                             margin nothing outside the structure constrains its boundary, \
+                             and the boundary is what you are aligning.",
+                            |ui| {
+                                ui.add(
+                                    egui::DragValue::new(&mut self.reg_margin_mm)
+                                        .speed(1.0)
+                                        .range(0.0..=60.0)
+                                        .suffix(" mm"),
+                                );
+                            },
                         );
+                    }
+
+                    // ---- initialisation ----
+                    let init_choices = self.init_choices_for(fixed_slot);
+                    if !init_choices.iter().any(|(c, _)| *c == self.reg_init) {
+                        self.reg_init = RegInit::Auto;
+                    }
+                    f.row_tip(
+                        "Start from",
+                        "Where the search begins. The engines take steps of a few \
+                         millimetres, so two images that do not overlap at the identity \
+                         (different frames of reference: a cardiac CT and a 4DCT) never \
+                         find each other. Automatic keeps the identity when they overlap \
+                         and matches the centres of gravity when they do not; a structure \
+                         contoured on both workspaces matches its centroids, which is the \
+                         surest start for an organ.",
+                        |ui| {
+                            let current = init_choices
+                                .iter()
+                                .find(|(c, _)| *c == self.reg_init)
+                                .map(|(_, l)| l.clone())
+                                .unwrap_or_default();
+                            egui::ComboBox::from_id_salt("reg_init")
+                                .selected_text(current)
+                                .width(190.0)
+                                .show_ui(ui, |ui| {
+                                    for (choice, label) in &init_choices {
+                                        ui.selectable_value(&mut self.reg_init, *choice, label);
+                                    }
+                                });
+                        },
+                    );
                 });
 
                 // ---- parameters ----
@@ -1084,23 +1134,31 @@ impl ViewerApp {
                     egui::CollapsingHeader::new("Transform matrix")
                         .default_open(false)
                         .show(ui, |ui| {
-                            let computed = self
-                                .registration
-                                .as_ref()
-                                .map(|r| r.result.transform.as_matrix());
+                            // Every transform this module has produced: the
+                            // active registration, and - after a group run -
+                            // each phase's own. One grid, a picker above it.
+                            let (choices, deformable) = self.reg_matrix_choices();
+                            if choices.is_empty() {
+                                ui.weak(
+                                    "Nothing has been registered yet, so there is no \
+                                     transform to show. Type one in and tick *Use this \
+                                     matrix* to hand it over.",
+                                );
+                            }
+                            matrix_edit::matrix_editor_multi(
+                                ui,
+                                &mut self.reg_matrix,
+                                &mut self.reg_matrix_pick,
+                                &choices,
+                            );
                             // A B-spline or a landmark warp is not a matrix;
                             // what the grid can show of it is the rigid part
                             // it starts from, and taking that over drops the
                             // deformation. Better said than discovered.
-                            let deformable = self
-                                .registration
-                                .as_ref()
-                                .is_some_and(|r| r.result.method.is_deformable());
-                            matrix_edit::matrix_editor(ui, &mut self.reg_matrix, computed);
                             if deformable {
                                 ui.weak(
-                                    "the active registration is deformable: this is its \
-                                     rigid part, and using it drops the deformation",
+                                    "the transform is deformable: this is its rigid part, \
+                                     and using it drops the deformation",
                                 );
                             }
                             if tip_widget(
@@ -1122,13 +1180,59 @@ impl ViewerApp {
                     ui.label(
                         egui::RichText::new(format!("✔ {} phase by phase", gr.group_name)).strong(),
                     );
-                    ui.weak(format!(
-                        "moving image: workspace {}",
-                        SLOT_NAMES[gr.moving_slot]
-                    ));
-                    for ph in &gr.phases {
-                        ui.monospace(format!("{}: {}", ph.label, ph.metric_line));
-                    }
+                    run_report::facts(
+                        ui,
+                        "reg_group_facts",
+                        &[
+                            ("Group", gr.group_name.clone()),
+                            (
+                                "Moving image",
+                                format!("workspace {}", SLOT_NAMES[gr.moving_slot]),
+                            ),
+                            ("Phases", gr.phases.len().to_string()),
+                        ],
+                    );
+                    ui.add_space(4.0);
+                    // One row per phase, the numbers in columns: the phase
+                    // whose metric barely moved is found by scanning down a
+                    // column, not by reading ten sentences.
+                    egui::ScrollArea::horizontal()
+                        .id_salt("reg_group_rows")
+                        .show(ui, |ui| {
+                            egui::Grid::new("reg_group_grid")
+                                .striped(true)
+                                .spacing([10.0, 2.0])
+                                .show(ui, |ui| {
+                                    run_report::head(ui, "Phase");
+                                    run_report::head(ui, "Metric ▶");
+                                    run_report::head(ui, "Iters");
+                                    run_report::head(ui, "t, s");
+                                    ui.end_row();
+                                    for ph in &gr.phases {
+                                        ui.label(&ph.label);
+                                        match &ph.metrics {
+                                            Some(m) => {
+                                                ui.monospace(format!(
+                                                    "{} {:.0} ▶ {:.0}",
+                                                    m.tag, m.initial, m.final_value
+                                                ))
+                                                .on_hover_text(&ph.metric_line);
+                                                ui.monospace(format!("{}", m.iterations));
+                                                ui.monospace(format!("{:.1}", m.secs));
+                                            }
+                                            None => {
+                                                // A reused transform has no
+                                                // measurement of its own.
+                                                ui.weak(&ph.metric_line);
+                                                ui.weak("-");
+                                                ui.weak("-");
+                                            }
+                                        }
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+                    ui.add_space(4.0);
                     if tip_button(
                         ui,
                         "Clear group registration",
@@ -1150,19 +1254,39 @@ impl ViewerApp {
                         ))
                         .strong(),
                     );
-                    ui.weak(format!("fixed {fixed}, moving {moving}"));
-                    if let Some(r) = &res.region {
-                        ui.weak(format!("restricted to {r}"));
-                    }
                     // A matrix that was handed over was not optimized, so
                     // "MSD 0.0 ▶ 0.0 (0 iters)" would be a row of zeros
-                    // pretending to be a measurement. The analysis below is
+                    // pretending to be a measurement; those rows are left
+                    // empty and `facts` drops them. The analysis below is
                     // computed from the transform itself and does mean
                     // something, so that stays.
-                    if res.method != RegMethod::Given {
-                        ui.weak(res.metric_line());
-                    }
-                    ui.weak(res.transform.warp.describe());
+                    let m = (res.method != RegMethod::Given).then(|| res.metrics());
+                    run_report::facts(
+                        ui,
+                        "reg_result_facts",
+                        &[
+                            ("Method", res.method.label().to_string()),
+                            ("Fixed", fixed.clone()),
+                            ("Moving", moving.clone()),
+                            ("Region", res.region.clone().unwrap_or_default()),
+                            (
+                                "Metric ▶",
+                                m.map(|m| {
+                                    format!("{} {:.0} ▶ {:.0}", m.tag, m.initial, m.final_value)
+                                })
+                                .unwrap_or_default(),
+                            ),
+                            (
+                                "Iters",
+                                m.map(|m| m.iterations.to_string()).unwrap_or_default(),
+                            ),
+                            (
+                                "t, s",
+                                m.map(|m| format!("{:.1}", m.secs)).unwrap_or_default(),
+                            ),
+                            ("Transform", res.transform.warp.describe()),
+                        ],
+                    );
 
                     egui::CollapsingHeader::new("Analysis")
                         .id_salt("reg_analysis")
@@ -1299,6 +1423,9 @@ impl ViewerApp {
                 moving,
                 gslot,
                 group,
+                // The registration module registers the whole group; one
+                // phase on its own is a propagation question, not this one.
+                None,
                 Vec::new(),
                 crate::propagate::Finish::default(),
             );
@@ -1346,8 +1473,8 @@ impl ViewerApp {
         let Some(reg) = &self.registration else {
             return;
         };
-        let fixed = reg.fixed_slot;
-        if self.slots[fixed].study.is_none() || self.slots[1 - fixed].study.is_none() {
+        let (fixed, moving) = (reg.fixed_slot, reg.moving_slot);
+        if self.slots[fixed].study.is_none() || self.slots[moving].study.is_none() {
             return;
         }
         self.ask_save(
@@ -1364,8 +1491,8 @@ impl ViewerApp {
         let Some(reg) = &self.registration else {
             return;
         };
-        let fixed = reg.fixed_slot;
-        let (Some(f), Some(m)) = (&self.slots[fixed].study, &self.slots[1 - fixed].study) else {
+        let (fixed, moving) = (reg.fixed_slot, reg.moving_slot);
+        let (Some(f), Some(m)) = (&self.slots[fixed].study, &self.slots[moving].study) else {
             return;
         };
         // The registration belongs in the fixed workspace's study when there
@@ -1399,136 +1526,143 @@ impl ViewerApp {
     /// The per-method parameter rows.
     fn parameter_rows(&mut self, ui: &mut egui::Ui) {
         let method = self.reg_method;
-        if method.is_intensity_based() {
-            ui.horizontal(|ui| {
-                ui.label("Resolutions");
-                ui.add(
-                    egui::DragValue::new(&mut self.reg_levels)
-                        .speed(0.1)
-                        .range(1..=5),
-                )
-                .on_hover_text("Pyramid levels, coarse to fine (elastix NumberOfResolutions)");
-            });
-            ui.horizontal(|ui| {
-                ui.label("Iterations/level");
-                ui.add(
-                    egui::DragValue::new(&mut self.reg_iterations)
-                        .speed(10)
-                        .range(10..=5000),
-                )
-                .on_hover_text(
+        // One form for the whole section, whichever method is picked: the
+        // rows that apply change, the left edge does not.
+        form::form(ui, "reg_params_form", |f| {
+            if method.is_intensity_based() {
+                f.row_tip(
+                    "Resolutions",
+                    "Pyramid levels, coarse to fine (elastix NumberOfResolutions)",
+                    |ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut self.reg_levels)
+                                .speed(0.1)
+                                .range(1..=5),
+                        );
+                    },
+                );
+                f.row_tip(
+                    "Iterations/level",
                     "The stochastic engine wants hundreds of cheap iterations; the dense \
                      one converges in tens of expensive ones",
+                    |ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut self.reg_iterations)
+                                .speed(10)
+                                .range(10..=5000),
+                        );
+                    },
                 );
-            });
-            ui.horizontal(|ui| {
-                ui.label("Body threshold");
-                ui.add(
-                    egui::DragValue::new(&mut self.reg_threshold)
-                        .speed(10.0)
-                        .range(-2000.0..=2000.0)
-                        .suffix(" HU"),
-                )
-                .on_hover_text(
+                f.row_tip(
+                    "Body threshold",
                     "Only fixed-image voxels above this drive the metric - a crude body \
                      mask that keeps air out of the cost",
+                    |ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut self.reg_threshold)
+                                .speed(10.0)
+                                .range(-2000.0..=2000.0)
+                                .suffix(" HU"),
+                        );
+                    },
                 );
-            });
-        }
-        match method {
-            // Nothing to tune: a given matrix is not optimized.
-            RegMethod::Given => {}
-            RegMethod::ElastixRigid | RegMethod::ElastixBSpline => {
-                ui.horizontal(|ui| {
-                    ui.label("Samples/iter");
-                    ui.add(
-                        egui::DragValue::new(&mut self.reg_samples)
-                            .speed(100)
-                            .range(500..=50000),
-                    )
-                    .on_hover_text("elastix NumberOfSpatialSamples, redrawn every iteration");
-                });
             }
-            RegMethod::PlastimatchBSpline => {
-                ui.horizontal(|ui| {
-                    ui.label("Metric");
-                    for m in Metric::ALL {
-                        ui.selectable_value(&mut self.reg_metric, m, m.label())
-                            .on_hover_text(m.hint());
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Regularization");
-                    ui.add(
-                        egui::DragValue::new(&mut self.reg_regularization)
-                            .speed(0.005)
-                            .range(0.0..=2.0),
-                    )
-                    .on_hover_text(
+            match method {
+                // Nothing to tune: a given matrix is not optimized.
+                RegMethod::Given => {}
+                RegMethod::ElastixRigid | RegMethod::ElastixBSpline => {
+                    f.row_tip(
+                        "Samples/iter",
+                        "elastix NumberOfSpatialSamples, redrawn every iteration",
+                        |ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut self.reg_samples)
+                                    .speed(100)
+                                    .range(500..=50000),
+                            );
+                        },
+                    );
+                }
+                RegMethod::PlastimatchBSpline => {
+                    f.row("Metric", |ui| {
+                        for m in Metric::ALL {
+                            ui.selectable_value(&mut self.reg_metric, m, m.label())
+                                .on_hover_text(m.hint());
+                        }
+                    });
+                    f.row_tip(
+                        "Regularization",
                         "plastimatch young_modulus: the weight of the bending-energy \
                          penalty on the control lattice. Higher is smoother and less \
                          likely to fold; 0 turns it off.",
+                        |ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut self.reg_regularization)
+                                    .speed(0.005)
+                                    .range(0.0..=2.0),
+                            );
+                        },
                     );
-                });
+                }
+                RegMethod::PlastimatchLandmark => {}
             }
-            RegMethod::PlastimatchLandmark => {}
-        }
-        if matches!(
-            method,
-            RegMethod::ElastixBSpline | RegMethod::PlastimatchBSpline
-        ) {
-            ui.horizontal(|ui| {
-                ui.label("B-spline grid");
-                ui.add(
-                    egui::DragValue::new(&mut self.reg_grid_mm)
-                        .speed(1.0)
-                        .range(4.0..=128.0)
-                        .suffix(" mm"),
-                )
-                .on_hover_text(
+            if matches!(
+                method,
+                RegMethod::ElastixBSpline | RegMethod::PlastimatchBSpline
+            ) {
+                f.row_tip(
+                    "B-spline grid",
                     "Control-point spacing (elastix FinalGridSpacingInPhysicalUnits, \
                      plastimatch grid_spacing). Finer resolves more detail and costs more.",
+                    |ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut self.reg_grid_mm)
+                                .speed(1.0)
+                                .range(4.0..=128.0)
+                                .suffix(" mm"),
+                        );
+                    },
                 );
-            });
-        }
-        if method == RegMethod::PlastimatchLandmark {
-            ui.horizontal(|ui| {
-                ui.label("Kernel");
-                egui::ComboBox::from_id_salt("reg_kernel")
-                    .selected_text(self.reg_landmark.kernel.label())
-                    .width(170.0)
-                    .show_ui(ui, |ui| {
-                        for k in LandmarkKernel::ALL {
-                            ui.selectable_value(&mut self.reg_landmark.kernel, k, k.label())
-                                .on_hover_text(k.hint());
-                        }
-                    });
-            });
-            ui.weak(self.reg_landmark.kernel.hint());
-            if self.reg_landmark.kernel.uses_radius() {
-                ui.horizontal(|ui| {
-                    ui.label("Reach");
-                    ui.add(
-                        egui::DragValue::new(&mut self.reg_landmark.radius_mm)
-                            .speed(1.0)
-                            .range(2.0..=400.0)
-                            .suffix(" mm"),
-                    );
-                });
             }
-            ui.horizontal(|ui| {
-                ui.label("Stiffness");
-                ui.add(
-                    egui::DragValue::new(&mut self.reg_landmark.stiffness)
-                        .speed(0.01)
-                        .range(0.0..=100.0),
-                )
-                .on_hover_text(
+            if method == RegMethod::PlastimatchLandmark {
+                f.row("Kernel", |ui| {
+                    egui::ComboBox::from_id_salt("reg_kernel")
+                        .selected_text(self.reg_landmark.kernel.label())
+                        .width(170.0)
+                        .show_ui(ui, |ui| {
+                            for k in LandmarkKernel::ALL {
+                                ui.selectable_value(&mut self.reg_landmark.kernel, k, k.label())
+                                    .on_hover_text(k.hint());
+                            }
+                        });
+                });
+                f.wide(|ui| {
+                    ui.weak(self.reg_landmark.kernel.hint());
+                });
+                if self.reg_landmark.kernel.uses_radius() {
+                    f.row("Reach", |ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut self.reg_landmark.radius_mm)
+                                .speed(1.0)
+                                .range(2.0..=400.0)
+                                .suffix(" mm"),
+                        );
+                    });
+                }
+                f.row_tip(
+                    "Stiffness",
                     "0 passes exactly through every landmark. Larger values smooth the \
                      field instead - which is what inconsistent pairs need.",
+                    |ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut self.reg_landmark.stiffness)
+                                .speed(0.01)
+                                .range(0.0..=100.0),
+                        );
+                    },
                 );
-            });
-        }
+            }
+        });
     }
 }
 
@@ -1610,34 +1744,46 @@ fn analysis_rows(
         .show(ui, |ui| {
             if let Some(ss) = structures {
                 let mut any = false;
-                for roi in &ss.rois {
-                    let pts: Vec<Vec3> = roi
-                        .contours
-                        .iter()
-                        .flat_map(|c| c.points.iter().copied())
-                        .step_by(7)
-                        .collect();
-                    if pts.len() < 4 {
-                        continue;
-                    }
-                    any = true;
-                    let (stats, mean) = analysis::stats_over_points(transform, &pts);
-                    ui.horizontal(|ui| {
-                        ui.colored_label(theme::rgb(roi.color), "◼");
-                        ui.label(&roi.name);
-                        ui.weak(format!("{:.2} mm", stats.mean));
-                    })
-                    .response
-                    .on_hover_text(format!(
-                        "{}\nmean ({:.2}, {:.2}, {:.2}) mm\nmax {:.2} mm over {} contour points",
-                        stats.line(),
-                        mean.x,
-                        mean.y,
-                        mean.z,
-                        stats.max,
-                        pts.len()
-                    ));
-                }
+                // A column each: the eye runs down "max" looking for the
+                // structure the transform pulled hardest on, which a list of
+                // sentences does not let it do.
+                egui::Grid::new("reg_struct_disp")
+                    .striped(true)
+                    .num_columns(4)
+                    .spacing([10.0, 2.0])
+                    .show(ui, |ui| {
+                        ui.label("");
+                        ui.label(egui::RichText::new("Structure").strong().small());
+                        ui.label(egui::RichText::new("Mean mm").strong().small());
+                        ui.label(egui::RichText::new("Max mm").strong().small());
+                        ui.end_row();
+                        for roi in &ss.rois {
+                            let pts: Vec<Vec3> = roi
+                                .contours
+                                .iter()
+                                .flat_map(|c| c.points.iter().copied())
+                                .step_by(7)
+                                .collect();
+                            if pts.len() < 4 {
+                                continue;
+                            }
+                            any = true;
+                            let (stats, mean) = analysis::stats_over_points(transform, &pts);
+                            ui.colored_label(theme::rgb(roi.color), "◼");
+                            ui.label(&roi.name);
+                            ui.monospace(format!("{:.2}", stats.mean));
+                            ui.monospace(format!("{:.2}", stats.max))
+                                .on_hover_text(format!(
+                                    "{}\nmean ({:.2}, {:.2}, {:.2}) mm over {} contour points",
+                                    stats.line(),
+                                    mean.x,
+                                    mean.y,
+                                    mean.z,
+                                    pts.len()
+                                ));
+                            ui.end_row();
+                        }
+                    });
                 if !any {
                     ui.weak("No contoured structure on this workspace.");
                 }
@@ -1670,27 +1816,33 @@ fn analysis_rows(
                     }
                 }
                 Some(rows) => {
-                    for d in rows {
-                        ui.horizontal(|ui| {
-                            ui.colored_label(theme::rgb(d.color), "◼");
-                            ui.label(&d.name);
-                            ui.monospace(
-                                egui::RichText::new(format!("{:.3}", d.after))
-                                    .color(theme::dice_color(ui.visuals(), d.after)),
-                            );
-                            ui.weak(format!("was {:.3}", d.before));
-                        })
-                        .response
-                        .on_hover_text(format!(
-                            "Dice {:.3} after the registration, {:.3} before it \
-                             ({:+.3}).\nfixed {:.1} cm³, warped moving {:.1} cm³",
-                            d.after,
-                            d.before,
-                            d.after - d.before,
-                            d.fixed_cm3,
-                            d.moving_cm3
-                        ));
-                    }
+                    egui::Grid::new("reg_struct_dice")
+                        .striped(true)
+                        .num_columns(5)
+                        .spacing([10.0, 2.0])
+                        .show(ui, |ui| {
+                            ui.label("");
+                            ui.label(egui::RichText::new("Structure").strong().small());
+                            ui.label(egui::RichText::new("Dice").strong().small());
+                            ui.label(egui::RichText::new("Was").strong().small());
+                            ui.label(egui::RichText::new("Gain").strong().small());
+                            ui.end_row();
+                            for d in rows {
+                                ui.colored_label(theme::rgb(d.color), "◼");
+                                ui.label(&d.name);
+                                ui.monospace(
+                                    egui::RichText::new(format!("{:.3}", d.after))
+                                        .color(theme::dice_color(ui.visuals(), d.after)),
+                                );
+                                ui.weak(format!("{:.3}", d.before));
+                                ui.monospace(format!("{:+.3}", d.after - d.before))
+                                    .on_hover_text(format!(
+                                        "fixed {:.1} cm³, warped moving {:.1} cm³",
+                                        d.fixed_cm3, d.moving_cm3
+                                    ));
+                                ui.end_row();
+                            }
+                        });
                     if tip_button(
                         ui,
                         "Score again",

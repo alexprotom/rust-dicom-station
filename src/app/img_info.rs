@@ -15,9 +15,12 @@ pub(super) struct InfoState {
     pub(super) slot: usize,
     /// One cached report per workspace, with the series UID it describes, so
     /// switching between A and B does not read every header again.
-    cache: [Option<(String, ImageInfo)>; 2],
-    /// Show what the two workspaces disagree about.
+    cache: [Option<(String, ImageInfo)>; MAX_WORKSPACES],
+    /// Show what this workspace and another disagree about.
     compare: bool,
+    /// Which workspace to hold it against. None means "the next open one",
+    /// which is the answer whenever there are only two.
+    against: Option<usize>,
 }
 
 /// The rows worth putting side by side when two workspaces are compared: the
@@ -73,7 +76,12 @@ impl ViewerApp {
             self.info.slot = s;
         }
         let slot = self.info.slot;
-        let both = self.volume_slots() == [true, true];
+        let others: Vec<usize> = self
+            .volume_slot_list()
+            .into_iter()
+            .filter(|s| *s != slot)
+            .collect();
+        let both = !others.is_empty();
 
         let mut refresh = false;
         let mut copy = false;
@@ -90,7 +98,25 @@ impl ViewerApp {
             }
             if both {
                 ui.checkbox(&mut self.info.compare, "Compare")
-                    .on_hover_text("Show what the two workspaces disagree about");
+                    .on_hover_text("Show what this workspace and another disagree about");
+                // Which one to hold it against. With one other workspace
+                // there is nothing to choose and the row stays quiet.
+                if self.info.compare && others.len() > 1 {
+                    let current = self
+                        .info
+                        .against
+                        .filter(|s| others.contains(s))
+                        .unwrap_or(others[0]);
+                    ui.label("against");
+                    for o in &others {
+                        if ui
+                            .add(egui::Button::selectable(current == *o, SLOT_NAMES[*o]).small())
+                            .clicked()
+                        {
+                            self.info.against = Some(*o);
+                        }
+                    }
+                }
             }
         });
         if refresh {
@@ -148,7 +174,11 @@ impl ViewerApp {
         }
 
         if both && self.info.compare {
-            let other = 1 - slot;
+            let other = self
+                .info
+                .against
+                .filter(|s| others.contains(s))
+                .unwrap_or(others[0]);
             let Some(theirs) = self.info_report(other).cloned() else {
                 return;
             };

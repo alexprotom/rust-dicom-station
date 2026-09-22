@@ -185,7 +185,7 @@ impl ViewerApp {
             detach::tool_window(
                 ctx,
                 "motion_results",
-                MOTION.titled("results", self.motion_slot.min(1)),
+                MOTION.titled("results", self.motion_slot.min(MAX_WORKSPACES - 1)),
                 &mut open,
                 detach::WinOpts::width(560.0),
                 |ui| {

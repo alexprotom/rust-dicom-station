@@ -56,6 +56,7 @@ mod dose_est;
 mod drr_win;
 mod dvh_win;
 mod export_win;
+mod form;
 mod glyphs;
 mod home;
 mod img_info;
@@ -76,6 +77,7 @@ mod propagate_win;
 mod record;
 mod reg_panel;
 mod rename;
+mod run_report;
 mod seg;
 mod seg_edit;
 mod seg_engines;
@@ -100,7 +102,16 @@ use seg_engines::*;
 use theme::*;
 use widgets::*;
 
-const SLOT_NAMES: [&str; 2] = ["A", "B"];
+/// How many workspaces the program will hold at once, from
+/// [`crate::settings::MAX_WORKSPACES`].
+///
+/// Four is the number a comparison ever really needs - a plan, a repeat, a
+/// phase and the thing being checked against - and it is also where the
+/// screen runs out: each open workspace takes a row of the central area,
+/// and a fifth row would be a strip of pixels rather than an image.
+use crate::settings::MAX_WORKSPACES;
+
+const SLOT_NAMES: [&str; MAX_WORKSPACES] = ["A", "B", "C", "D"];
 
 /// A 4D-group edit requested from the data tree's context menus, applied
 /// after the frame's borrows are released (the tree renders behind a shared
@@ -852,6 +863,9 @@ enum TreeOp {
 #[derive(Clone)]
 struct TreeAction {
     from: usize,
+    /// Where it goes. For a removal it is the workspace it came from, since
+    /// nothing goes anywhere.
+    to: usize,
     sel: TreeSel,
     op: TreeOp,
 }
@@ -930,9 +944,10 @@ enum SetAction {
     Rename(SetRef),
     /// Re-point the series at the image series with this Series Instance UID.
     Connect(SetRef, String),
-    /// Copy (`copy`) or move the whole series to the other workspace.
+    /// Copy (`copy`) or move the whole series to another workspace.
     Transfer {
         from: SetRef,
+        to: usize,
         copy: bool,
     },
     /// Write a segmentation series as a standalone DICOM SEG file. An empty
@@ -1134,19 +1149,24 @@ struct StructDice {
 
 impl ActiveRegistration {
     /// Whether `slot` currently displays the fixed image.
-    fn shows_fixed(&self, slot: usize, slots: &[StudySlot; 2]) -> bool {
+    fn shows_fixed(&self, slot: usize, slots: &[StudySlot; MAX_WORKSPACES]) -> bool {
         slot == self.fixed_slot && slots[slot].displayed_uid() == Some(self.fixed_uid.as_str())
     }
 
     /// Whether `slot` currently displays the moving image.
-    fn shows_moving(&self, slot: usize, slots: &[StudySlot; 2]) -> bool {
+    fn shows_moving(&self, slot: usize, slots: &[StudySlot; MAX_WORKSPACES]) -> bool {
         slot == self.moving_slot && slots[slot].displayed_uid() == Some(self.moving_uid.as_str())
     }
 
     /// Whether the fusion overlay belongs on `slot` for the chosen side:
     /// on the fixed image, the moving one is warped onto it; on the moving
     /// image, the fixed one comes the other way.
-    fn fusion_on_slot(&self, slot: usize, side: FusionSide, slots: &[StudySlot; 2]) -> bool {
+    fn fusion_on_slot(
+        &self,
+        slot: usize,
+        side: FusionSide,
+        slots: &[StudySlot; MAX_WORKSPACES],
+    ) -> bool {
         match side {
             FusionSide::Fixed => self.shows_fixed(slot, slots),
             FusionSide::Moving => self.shows_moving(slot, slots),
@@ -1154,7 +1174,7 @@ impl ActiveRegistration {
     }
 
     /// `A · 3 CCT ...` for the two images.
-    fn describe(&self, slots: &[StudySlot; 2]) -> (String, String) {
+    fn describe(&self, slots: &[StudySlot; MAX_WORKSPACES]) -> (String, String) {
         let name = |slot: usize, uid: &str| {
             let series = slots[slot]
                 .study
@@ -1189,13 +1209,18 @@ pub(crate) struct RegPick {
 // Application
 
 pub struct ViewerApp {
-    slots: [StudySlot; 2],
-    /// Comparison mode: study B shown in a second row.
-    comparison: bool,
+    slots: [StudySlot; MAX_WORKSPACES],
+    /// Which workspaces are on screen, A first.
+    ///
+    /// A workspace holding data is always shown; the flag is what lets one
+    /// be opened before anything is loaded into it (the row says so and
+    /// offers to load), and what *View ▸ Workspaces* switches to put one
+    /// aside without emptying it.
+    shown: [bool; MAX_WORKSPACES],
     /// What each row shows, left to right - up to four panes, chosen under
     /// *Settings ▸ View layout* and remembered between runs. The panes of a
     /// row split its width evenly, so a row of one is one large image.
-    view_rows: [Vec<PaneKind>; 2],
+    view_rows: [Vec<PaneKind>; MAX_WORKSPACES],
     /// Propagate the crosshair between studies via patient coordinates.
     link_studies: bool,
     /// Slot whose readout is expanded in the status bar.
@@ -1214,18 +1239,23 @@ pub struct ViewerApp {
     rec_status: Option<String>,
     /// Where each workspace's row of the central area was drawn this pass,
     /// which is what *File ▸ Save image* cuts out of the window.
-    row_rects: [Option<Rect>; 2],
+    row_rects: [Option<Rect>; MAX_WORKSPACES],
     /// The hand-edited transform matrix of the registration panel, and
     /// whether it is the one to use.
     reg_matrix: matrix_edit::ManualMatrix,
+    /// Which of the module's transforms its matrix grid is showing - the
+    /// active registration, or one phase of a group run.
+    reg_matrix_pick: usize,
+    /// What the propagation in flight was asked to do to the landed masks,
+    /// recorded when it started so its table reports the run rather than
+    /// whatever the ticks say by the time it finishes.
+    propagate_finish: crate::propagate::Finish,
     /// The same, for structure propagation and for transfer by relationship.
     prop_matrix: matrix_edit::ManualMatrix,
     transfer_matrix: matrix_edit::ManualMatrix,
     /// The buttons on every pane are folded away behind the ◀ on its bar.
     /// One switch for all of them, remembered between runs.
     pane_buttons_hidden: bool,
-    /// The open "which workspace?" question, if one is being asked.
-    ws_pick: Option<workspace_pick::WsPick>,
     /// The *Save image* dialog, and the picture it has asked for.
     save_img: Option<snapshot::SaveImgDialog>,
     snap: Option<snapshot::PendingShot>,
@@ -1241,13 +1271,13 @@ pub struct ViewerApp {
     /// What each workspace has been loaded from this run, in order: the
     /// *Restore the last session* button on the start screen replays it, and
     /// it is written to the settings file as it changes.
-    session: [Vec<PathBuf>; 2],
+    session: [Vec<PathBuf>; MAX_WORKSPACES],
     /// Sources still to load for a restore, drained one at a time as each
     /// load finishes (the loader takes one folder at a time).
     restore_queue: Vec<(usize, PathBuf)>,
     /// The session the previous run ended with, as read from the settings
     /// file. Emptied when it turns out its data is gone.
-    last_session: [Vec<PathBuf>; 2],
+    last_session: [Vec<PathBuf>; MAX_WORKSPACES],
     /// Whether the archive holds anything, and when that was last looked at:
     /// the start screen offers *Load data from PACS* only when it does, and
     /// asking the file system every frame would be silly.
@@ -1331,6 +1361,8 @@ pub struct ViewerApp {
 
     // Study transform simulator (registration QA).
     sim_source: usize,
+    /// Where *Image simulation* writes its transformed copy.
+    sim_target: usize,
     sim_params: SimParams,
     sim_job: Option<Job<(usize, LoadedStudy)>>,
     last_sim: Option<String>,
@@ -1367,7 +1399,7 @@ pub struct ViewerApp {
     testdata_dir: String,
     testdata_job: Option<Job<anyhow::Result<testdata::Summary>>>,
     testdata_result: Option<String>,
-    /// Load the first workspace into slot A once everything is there.
+    /// Load the first study into workspace A once everything is there.
     testdata_load_after: bool,
 
     // Tools ▶ Anonymize DICOM folder.
@@ -1535,7 +1567,7 @@ pub struct ViewerApp {
     /// Derived structures still waiting for their turn (set, ROI).
     derived_queue: Vec<(usize, usize)>,
     /// Per slot: the derived statuses of the active structure set.
-    derived: [derived_app::DerivedCache; 2],
+    derived: [derived_app::DerivedCache; MAX_WORKSPACES],
     combine_slot: usize,
     combine_dialog: Option<combine::CombineDialog>,
 
@@ -1667,17 +1699,16 @@ fn tail(uid: &str) -> String {
 }
 
 impl ViewerApp {
-    /// The first workspace that shows an image volume: A, or B when A shows
-    /// none. Where a tool has to start somewhere and nobody pointed at a
-    /// workspace.
+    /// The first open workspace that shows an image volume. Where a tool has
+    /// to start somewhere and nobody pointed at a workspace.
     pub(super) fn first_volume_slot(&self) -> usize {
-        usize::from(!self.slots[0].has_volume())
+        self.volume_slot_list().first().copied().unwrap_or(0)
     }
 
     /// The workspace under the pointer when it shows a volume, else
     /// [`Self::first_volume_slot`] - what the toolbar and the keyboard act on.
     pub(super) fn preferred_volume_slot(&self) -> usize {
-        let hovered = self.hovered_slot.min(1);
+        let hovered = self.hovered_slot.min(MAX_WORKSPACES - 1);
         if self.slots[hovered].has_volume() {
             hovered
         } else {
@@ -1699,18 +1730,26 @@ impl ViewerApp {
 
     /// Both workspaces show an image volume.
     pub(super) fn both_volumes(&self) -> bool {
-        self.slots[0].has_volume() && self.slots[1].has_volume()
+        self.volume_slot_list().len() > 1
+    }
+
+    /// The open workspaces that show an image volume.
+    pub(super) fn volume_slot_list(&self) -> Vec<usize> {
+        self.open_slots()
+            .into_iter()
+            .filter(|s| self.slots[*s].has_volume())
+            .collect()
     }
 
     /// At least one workspace shows an image volume.
     pub(super) fn any_volume(&self) -> bool {
-        self.slots[0].has_volume() || self.slots[1].has_volume()
+        !self.volume_slot_list().is_empty()
     }
 
     /// Which workspaces show an image volume, in the form the tool windows'
-    /// workspace row takes.
-    pub(super) fn volume_slots(&self) -> [bool; 2] {
-        [self.slots[0].has_volume(), self.slots[1].has_volume()]
+    /// workspace row takes: one flag per workspace, open or not.
+    pub(super) fn volume_slots(&self) -> [bool; MAX_WORKSPACES] {
+        std::array::from_fn(|s| self.is_open(s) && self.slots[s].has_volume())
     }
 }
 
@@ -1746,8 +1785,8 @@ impl ViewerApp {
             );
         }
         let mut app = ViewerApp {
-            slots: [StudySlot::empty(), StudySlot::empty()],
-            comparison: initial_b.is_some(),
+            slots: std::array::from_fn(|_| StudySlot::empty()),
+            shown: std::array::from_fn(|s| s == 0 || (s == 1 && initial_b.is_some())),
             view_rows: prefs.view_rows.clone(),
             link_studies: true,
             hovered_slot: 0,
@@ -1756,8 +1795,7 @@ impl ViewerApp {
             rec_format: record::RecFormat::default(),
             rec_max: 600,
             rec_status: None,
-            row_rects: [None, None],
-            ws_pick: None,
+            row_rects: [None; MAX_WORKSPACES],
             save_img: None,
             snap: None,
             snap_status: None,
@@ -1767,7 +1805,7 @@ impl ViewerApp {
             // What the last run ended with, ready for the start screen's
             // *Restore the last session*; it becomes this run's session as
             // soon as anything is loaded.
-            session: [Vec::new(), Vec::new()],
+            session: std::array::from_fn(|_| Vec::new()),
             last_session: prefs.session.clone(),
             restore_queue: Vec::new(),
             archive_has_data: false,
@@ -1811,6 +1849,7 @@ impl ViewerApp {
             group_registration: None,
             reg_group: None,
             sim_source: 0,
+            sim_target: 1,
             sim_params: SimParams::default(),
             sim_job: None,
             last_sim: None,
@@ -1947,6 +1986,8 @@ impl ViewerApp {
             module_play: prefs.module_play,
             pane_buttons_hidden: prefs.pane_buttons_hidden,
             reg_matrix: matrix_edit::ManualMatrix::default(),
+            reg_matrix_pick: 0,
+            propagate_finish: crate::propagate::Finish::default(),
             prop_matrix: matrix_edit::ManualMatrix::default(),
             transfer_matrix: matrix_edit::ManualMatrix::default(),
             modules_open: prefs.modules_open.clone(),
@@ -2089,13 +2130,15 @@ impl ViewerApp {
                  disk:\n{}",
                 missing.join("\n")
             ));
-            self.last_session = [Vec::new(), Vec::new()];
-            self.session = [Vec::new(), Vec::new()];
+            self.last_session = std::array::from_fn(|_| Vec::new());
+            self.session = std::array::from_fn(|_| Vec::new());
             self.persist_settings();
             return;
         }
-        if !self.last_session[1].is_empty() {
-            self.comparison = true;
+        for slot in 1..MAX_WORKSPACES {
+            if !self.last_session[slot].is_empty() {
+                self.shown[slot] = true;
+            }
         }
         self.apply_modules_open = true;
         for (slot, paths) in self.last_session.clone().iter().enumerate() {
@@ -2105,17 +2148,95 @@ impl ViewerApp {
         }
     }
 
-    pub(super) fn close_comparison(&mut self) {
-        self.slots[1] = StudySlot::empty();
-        self.forget_sources(1);
-        self.comparison = false;
-        self.hovered_slot = 0;
-        self.planar_windows.retain(|w| w.slot != 1);
-        self.d3_windows.retain(|w| w.slot != 1);
-        if self.maximized.map(|(s, _)| s == 1).unwrap_or(false) {
+    /// Empty a workspace past the first and take it off the screen.
+    ///
+    /// The letters do not shift up: closing B leaves C where it is, because
+    /// everything on screen - a registration, a propagation, a window
+    /// title - names workspaces by letter, and renaming them under the user
+    /// would be worse than a gap.
+    pub(super) fn close_workspace(&mut self, slot: usize) {
+        if slot == 0 || slot >= MAX_WORKSPACES {
+            return;
+        }
+        self.slots[slot] = StudySlot::empty();
+        self.forget_sources(slot);
+        self.shown[slot] = false;
+        if self.hovered_slot == slot {
+            self.hovered_slot = 0;
+        }
+        self.planar_windows.retain(|w| w.slot != slot);
+        self.d3_windows.retain(|w| w.slot != slot);
+        if self.maximized.map(|(s, _)| s == slot).unwrap_or(false) {
             self.maximized = None;
         }
-        self.clear_registration();
+        // A registration is between two images of two workspaces; one of
+        // them has just gone.
+        if self
+            .registration
+            .as_ref()
+            .is_some_and(|r| r.fixed_slot == slot || r.moving_slot == slot)
+        {
+            self.clear_registration();
+        }
+    }
+
+    /// The workspaces on screen, in order.
+    pub(super) fn open_slots(&self) -> Vec<usize> {
+        (0..MAX_WORKSPACES).filter(|s| self.is_open(*s)).collect()
+    }
+
+    /// Is this workspace on screen?
+    ///
+    /// A is always. The others are the ones something has been loaded into
+    /// (loading switches this on) or that were opened to load into, minus
+    /// any the user has put aside under *View ▸ Workspaces*.
+    pub(super) fn is_open(&self, slot: usize) -> bool {
+        slot == 0 || (slot < MAX_WORKSPACES && self.shown[slot])
+    }
+
+    /// How many workspaces are on screen. One is the ordinary case; more
+    /// than one is what used to be called comparison mode.
+    pub(super) fn open_count(&self) -> usize {
+        self.open_slots().len()
+    }
+
+    /// More than one workspace on screen: the toolbar's Sync, the status
+    /// bar's side-by-side readout, the letters in window titles.
+    pub(super) fn comparing(&self) -> bool {
+        self.open_count() > 1
+    }
+
+    /// The workspace a two-sided tool should pair `slot` with by default:
+    /// the next one round the ring that is open, so the answer with two
+    /// workspaces is the same one the program always gave.
+    pub(super) fn other_open(&self, slot: usize) -> Option<usize> {
+        (1..MAX_WORKSPACES)
+            .map(|d| (slot + d) % MAX_WORKSPACES)
+            .find(|s| self.is_open(*s))
+    }
+
+    /// Where a copy, a move or a generated study may go from `from`: every
+    /// other open workspace, and one new letter if there is room.
+    ///
+    /// This is the rule the whole program follows for offering workspaces:
+    /// the ones that exist, plus one more - never four letters when only A
+    /// is open, and never a fifth.
+    pub(super) fn copy_targets(&self, from: usize) -> Vec<usize> {
+        workspace_pick::transfer_targets(&std::array::from_fn(|s| self.is_open(s)), from)
+    }
+
+    /// Where data can be loaded: every open workspace, plus one new letter
+    /// while there is room. The same rule as [`Self::copy_targets`], with
+    /// nothing to exclude.
+    pub(super) fn open_plus_new(&self) -> Vec<usize> {
+        self.copy_targets(usize::MAX)
+    }
+
+    /// Put a workspace on screen, loaded or not.
+    pub(super) fn show_workspace(&mut self, slot: usize) {
+        if slot < MAX_WORKSPACES {
+            self.shown[slot] = true;
+        }
     }
 }
 
@@ -2170,7 +2291,7 @@ impl eframe::App for ViewerApp {
             poll_job(&mut self.sim_job, &ctx, "Simulation", &mut self.error)
         {
             self.on_study_loaded(target, study);
-            self.comparison = true;
+            self.show_workspace(target);
         }
 
         // Poll background export.

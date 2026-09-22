@@ -31,7 +31,7 @@ fn phantom(tag: &str) -> (LoadedStudy, std::path::PathBuf) {
 }
 
 fn plan_for(study: &LoadedStudy) -> ExportPlan {
-    ExportPlan::build([Some(study), None], ExportParams::for_study(study))
+    ExportPlan::build(export::one_study(study), ExportParams::for_study(study))
 }
 
 /// Every file under `dir` whose name starts with `prefix`.
@@ -82,7 +82,7 @@ fn the_structure_set_still_names_the_ct_it_was_drawn_on() {
     let (study, _) = phantom("test_exp_links");
     let out = target("test_exp_links_out");
     let plan = plan_for(&study);
-    let sum = export::run(&plan, [Some(&study), None], &out, &Progress::default())
+    let sum = export::run(&plan, export::one_study(&study), &out, &Progress::default())
         .expect("the export runs");
     assert!(sum.files > study.volume.dims[2], "CT plus the RT objects");
 
@@ -164,7 +164,7 @@ fn keeping_the_uids_means_keeping_them() {
     let out = target("test_exp_keep_out");
     let plan = plan_for(&study);
     assert_eq!(plan.uid_mode, UidMode::Keep, "the default is a true copy");
-    export::run(&plan, [Some(&study), None], &out, &Progress::default()).expect("runs");
+    export::run(&plan, export::one_study(&study), &out, &Progress::default()).expect("runs");
 
     let re = loader::load_directory(&out, &Progress::default()).expect("the export reloads");
     assert_eq!(
@@ -195,7 +195,7 @@ fn new_uids_are_new_everywhere_and_still_agree_with_each_other() {
     let out = target("test_exp_new_out");
     let mut plan = plan_for(&study);
     plan.set_uid_mode(UidMode::New);
-    export::run(&plan, [Some(&study), None], &out, &Progress::default()).expect("runs");
+    export::run(&plan, export::one_study(&study), &out, &Progress::default()).expect("runs");
 
     let re = loader::load_directory(&out, &Progress::default()).expect("the export reloads");
     let a = &re.series[re.active_series];
@@ -231,7 +231,8 @@ fn a_structure_set_can_go_out_as_seg_and_come_back_as_masks() {
     let out = target("test_exp_seg_out");
     let mut plan = plan_for(&study);
     plan.set_all_formats(StructFormat::Seg);
-    let sum = export::run(&plan, [Some(&study), None], &out, &Progress::default()).expect("runs");
+    let sum =
+        export::run(&plan, export::one_study(&study), &out, &Progress::default()).expect("runs");
     assert!(files(&out, "RS_").is_empty(), "no RTSTRUCT was written");
     assert_eq!(files(&out, "SEG_").len(), 1, "one SEG instead");
 
@@ -284,7 +285,7 @@ fn a_segmentation_series_can_go_out_as_rtstruct() {
     let out = target("test_exp_rs_out");
     let mut plan = plan_for(&study);
     plan.set_all_formats(StructFormat::RtStruct);
-    export::run(&plan, [Some(&study), None], &out, &Progress::default()).expect("runs");
+    export::run(&plan, export::one_study(&study), &out, &Progress::default()).expect("runs");
     assert_eq!(files(&out, "RS_").len(), 1, "written as a structure set");
     assert!(files(&out, "SEG_").is_empty());
 
@@ -352,7 +353,7 @@ fn keeping_the_uids_keeps_the_series_of_the_rt_objects_too() {
     let want = study.structure_sets[0].series_instance_uid.clone();
     assert!(!want.is_empty(), "the loader read it");
     let plan = plan_for(&study);
-    export::run(&plan, [Some(&study), None], &out, &Progress::default()).expect("runs");
+    export::run(&plan, export::one_study(&study), &out, &Progress::default()).expect("runs");
 
     let rs = files(&out, "RS_");
     let o = dicomfile::open_full(&rs[0]).expect("reopens").into_inner();
@@ -373,7 +374,8 @@ fn structures_exported_without_their_images_say_so() {
             s.selected = false;
         }
     }
-    let sum = export::run(&plan, [Some(&study), None], &out, &Progress::default()).expect("runs");
+    let sum =
+        export::run(&plan, export::one_study(&study), &out, &Progress::default()).expect("runs");
     assert!(files(&out, "CT_").is_empty(), "no images were written");
     assert!(
         sum.warnings
@@ -390,7 +392,7 @@ fn the_folder_layout_separates_patients_studies_and_series() {
     let out = target("test_exp_tree_out");
     let plan = plan_for(&study);
     assert_eq!(plan.layout, Layout::Tree);
-    export::run(&plan, [Some(&study), None], &out, &Progress::default()).expect("runs");
+    export::run(&plan, export::one_study(&study), &out, &Progress::default()).expect("runs");
 
     let ct = files(&out, "CT_");
     assert!(!ct.is_empty());
@@ -452,7 +454,7 @@ fn a_derived_recipe_survives_the_export() {
 
     let out = target("test_exp_derived_out");
     let plan = plan_for(&study);
-    export::run(&plan, [Some(&study), None], &out, &Progress::default()).expect("runs");
+    export::run(&plan, export::one_study(&study), &out, &Progress::default()).expect("runs");
     let re = loader::load_directory(&out, &Progress::default()).expect("the export reloads");
 
     let back = rust_dicom_station::derived::of_roi(&re.structure_sets[0].rois[0])

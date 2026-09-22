@@ -346,6 +346,7 @@ mod rename_tests {
             study_uid: study.into(),
             study_date: "20260826".into(),
             study_description: "before".into(),
+            study_id: String::new(),
             series_number: None,
             temporal_id: None,
             suv_bw: None,
@@ -375,6 +376,7 @@ mod rename_tests {
                 patient_id: "P1".into(),
                 study_date: "20260826".into(),
                 study_description: "before".into(),
+                study_id: String::new(),
             },
             series: vec![
                 series("se1", "P1", "st1"),

@@ -5,9 +5,12 @@ segmentation across a registration and lands it as an ordinary, editable
 segmentation, convertible back to RTSTRUCT and exportable as DICOM. It is a
 section of the right panel, next to the image registration that drives it.
 
-The destination is either **the other workspace**, through the registration
-that is already active, or **every phase of a 4D group** of either workspace,
-which the module registers as it goes.
+The destination is either **the other image of the active registration** -
+whichever workspace it is in, which is what pairs the two - or a **4D group**
+of any open workspace, which the module registers as it goes: the whole group,
+or any **single phase** of it, each listed under its group in the *To* list.
+One phase is the same run with everything else left out - end-exhale alone is
+often all that is wanted, and it costs one registration rather than ten.
 
 ## What it does
 
@@ -90,8 +93,12 @@ through that phase's own transform.
 
 The results arrive as one segmentation series per phase, each bound to that
 phase's image series, so the tree files them under the right member and the
-views show them when that phase is displayed. Every phase reports its own
-metric line beside its structures' volume changes.
+views show them when that phase is displayed. Every phase gets its own row in
+the run's report.
+
+Picking one phase instead of the group narrows the same machinery to that
+phase: one registration, one segmentation series, one row in the report -
+including for an anchored run.
 
 The transforms are kept. Registering a group in the registration module
 (*Fixed image ▶ the group*) and then propagating onto it costs no
@@ -148,7 +155,7 @@ reuses them. From the MCP server the same run is `propagate_to_group` with
    against the same moving image, on display or not.
 2. *Modules ▶ Structure propagation*, or **⇄ Propagate structures** in the
    registration module once it has a result.
-3. Choose the source image (any series of either workspace; through a
+3. Choose the source image (any series of any open workspace; through a
    registration, one of its two images), the structure set or segmentation
    series to take the structures from (the one drawn on that image is
    preselected), and the destination (through a registration, the other of
@@ -180,8 +187,10 @@ anchored on a structure.
 **Transform matrix** (foldable, under the run) is the same 4 × 4 the
 registration module carries
 ([registration.md](registration.md#the-matrix-typed-in-by-hand)), and it
-shows the active registration's own transform until it is taken over, so
-what is on screen is what the next run will do. With **Use this matrix**
+shows the transform the destination's own last run produced until it is
+taken over, so what is on screen is what the next run will do. Against a 4D
+group that is one transform per phase, and the picker above the grid says
+which phase it is showing; against one phase it is that phase's alone. With **Use this matrix**
 ticked the run carries the structures through those numbers instead of the
 registration's transform: the pairing of images is still the
 active registration's, the numbers are yours. That is how a known couch
@@ -190,6 +199,26 @@ how a propagation is checked against a shift whose answer is known in
 advance. To do it with no registration run at all, type the matrix into the
 registration module and press *Apply as the registration* first - the
 pairing is then the two images you chose there.
+
+## What the run reports
+
+*Last run* is two tables rather than a paragraph, because ten phases of four
+facts each is forty sentences nobody reads to the end.
+
+The first has a row per destination: the **phase**, what the registration did
+to the **metric** (its value before and after, with the stages on the row's
+tooltip), the **iterations** and the time (**t, s**) it took, the anchor's
+**Dice** where the run was anchored on a structure, and what the results were
+**filed as**. The second has a row per structure per destination: its volume
+at the **source**, as the transform **deformed** it, and - only when closing
+or filling was asked for - as it was **filed** afterwards; without either of
+those the filed volume is the deformed one to the last decimal, so the column
+is left out rather than repeating its neighbour. The last column is the
+**change** between the source and the result, in the warning colour past ten
+per cent, which is where a propagated volume stops being the same organ.
+
+**📋 Copy** puts both tables on the clipboard tab separated, which a
+spreadsheet opens as a table without being asked twice.
 
 ## Verification
 

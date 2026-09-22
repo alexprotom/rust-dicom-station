@@ -32,7 +32,7 @@ along, with no inversion. Ten phases, ten transforms, one CCT.
    the 4DCT shows as one 4D group with its ten phases and that every phase
    has its `RTSTRUCT` with `heart_total`.
 2. **Open the module.** *Modules ▶ Structure propagation* (right panel, F10).
-3. **From image** = the CCT series (any series of either workspace is listed;
+3. **From image** = the CCT series (any series of any open workspace is listed;
    one that is not on display is loaded for the run). **Structures of** =
    `CCT RTSTRUCT`; the set drawn on the chosen image is preselected. **To**
    = the 4D group (the entry `… (10 phases)`).

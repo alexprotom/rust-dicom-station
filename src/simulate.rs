@@ -342,6 +342,7 @@ pub fn generate_transformed_study(
                 .map(|s| s.study_date.clone())
                 .unwrap_or_default(),
             study_description: "Simulated".into(),
+            study_id: String::new(),
             series_number: None,
             temporal_id: None,
             suv_bw: None,
