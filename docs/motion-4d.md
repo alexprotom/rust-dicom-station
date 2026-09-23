@@ -228,9 +228,11 @@ there is nothing to compare" messages left as sentences.
 
 *Tools ▸ 📋 Structure details* is the other half: one row per structure of
 one workspace rather than two structures against each other. Volume twice over
-- by planimetry on the contours and by counting the voxels they fill, which
-disagree by a few per cent on a coarse series and neither of which is wrong
-- the grey levels inside the structure (which is how a mis-drawn organ gives
+- inside the closed surface 3D Slicer builds from the contours (the figure
+its *Segment Statistics* reports, computed here by the same algorithm; see
+[propagation.md](propagation.md)) and by counting the voxels they fill, which
+disagree by a few per cent on a coarse series, more on a small structure,
+and neither of which is wrong - the grey levels inside the structure (which is how a mis-drawn organ gives
 itself away), what the geometry costs in slices and points, and whether a
 derived structure still matches its recipe. Points of interest show their
 coordinates instead of a volume.

@@ -56,18 +56,22 @@ pub(super) struct RunItem {
     /// destination lattice.
     pub(super) mapped_cm3: f64,
     pub(super) result_cm3: f64,
-    /// The source's planimetry, when it was drawn as contours.
-    pub(super) source_planimetry_cm3: Option<f64>,
+    /// The source's surface volume, when it was drawn as contours.
+    pub(super) source_surface_cm3: Option<f64>,
+    /// Carried as a rigid body: the deformation that left out, RMS mm.
+    pub(super) rigid_residual_mm: Option<f64>,
     /// The ROI it became, when it was filed as contours.
     pub(super) filed: Option<Filed>,
 }
 
 /// A propagated structure filed as contours, measured both ways Structure
-/// details measures a contour: planimetry (contour area times slice
-/// spacing) and voxels (the contours rasterized on the destination).
+/// details measures a contour: the surface volume (the volume inside the
+/// closed surface 3D Slicer builds from the contours, see
+/// [`crate::rt_surface`]) and voxels (the contours rasterized on the
+/// destination).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Filed {
-    pub(super) planimetry_cm3: f64,
+    pub(super) surface_cm3: f64,
     pub(super) voxel_cm3: f64,
 }
 
@@ -76,12 +80,12 @@ impl Filed {
     /// two calls Structure details makes, so the figures are the ones it
     /// shows for that ROI.
     pub(super) fn measure(roi: &crate::rtstruct::Roi, grid: &Grid) -> Filed {
-        let planimetry_cm3 = crate::contours::Stack::from_roi(roi, grid).volume_cm3(grid.spacing);
+        let surface_cm3 = crate::rt_surface::slicer_volume_cm3(roi, grid.spacing[2]).unwrap_or(0.0);
         let voxels = crate::segmentation::rasterize_roi(grid, roi)
             .map(|m| crate::morphology::count_set(&m))
             .unwrap_or(0);
         Filed {
-            planimetry_cm3,
+            surface_cm3,
             voxel_cm3: voxels as f64 * grid.voxel_cm3(),
         }
     }
@@ -102,10 +106,10 @@ impl RunItem {
         pct(self.source_cm3, self.result_cm3)
     }
 
-    /// Filed contours against the source's, both by planimetry: `None`
+    /// Filed contours against the source's, both by surface: `None`
     /// unless both sides were contours.
-    fn planimetry_change_pct(&self) -> Option<f64> {
-        Some(pct(self.source_planimetry_cm3?, self.filed?.planimetry_cm3))
+    fn surface_change_pct(&self) -> Option<f64> {
+        Some(pct(self.source_surface_cm3?, self.filed?.surface_cm3))
     }
 
     /// Filed contours against the source, both counted in voxels.
@@ -154,7 +158,7 @@ impl RunReport {
     }
 
     /// Did the structures land as contours? Then the volume table is the
-    /// one Structure details would give for source and result: planimetry
+    /// one Structure details would give for source and result: surface
     /// and voxels on each side, and the change by each.
     fn as_contours(&self) -> bool {
         self.blocks
@@ -227,17 +231,17 @@ impl RunReport {
         out
     }
 
-    /// The volume table of a run filed as contours: by planimetry first,
-    /// then by voxels, each as the source, the ROI that was filed, and the
+    /// The volume table of a run filed as contours: by surface first, then
+    /// by voxels, each as the source, the ROI that was filed, and the
     /// change between them - so either measure reads across on its own. A
-    /// side with nothing to show (a segment has no planimetry, a structure
+    /// side with nothing to show (a segment has no surface, a structure
     /// that did not land has no result) leaves its cells empty.
     fn contour_volumes_tsv(&self, out: &mut String) {
         let num = |v: Option<f64>| v.map(|v| format!("{v:.2}")).unwrap_or_default();
         let signed = |v: Option<f64>| v.map(|v| format!("{v:+.2}")).unwrap_or_default();
         out.push_str(
             "phase\tstructure\t\
-             source_planimetry_cm3\tdeformed_planimetry_cm3\tchange_planimetry_pct\t\
+             source_surface_cm3\tdeformed_surface_cm3\tchange_surface_pct\t\
              source_voxel_cm3\tdeformed_voxel_cm3\tchange_voxel_pct\n",
         );
         for b in &self.blocks {
@@ -246,9 +250,9 @@ impl RunReport {
                     "{}\t{}\t{}\t{}\t{}\t{:.2}\t{}\t{}\n",
                     b.label,
                     it.name,
-                    num(it.source_planimetry_cm3),
-                    num(it.filed.map(|f| f.planimetry_cm3)),
-                    signed(it.planimetry_change_pct()),
+                    num(it.source_surface_cm3),
+                    num(it.filed.map(|f| f.surface_cm3)),
+                    signed(it.surface_change_pct()),
                     it.source_cm3,
                     num(it.filed.map(|f| f.voxel_cm3)),
                     signed(it.voxel_change_pct()),
@@ -265,73 +269,71 @@ impl RunReport {
         }
         let phased = self.phased();
         if self.any_metrics() {
-            egui::ScrollArea::horizontal()
-                .id_salt((id, "runs"))
-                .show(ui, |ui| {
-                    egui::Grid::new((id, "runs_grid"))
-                        .striped(true)
-                        .spacing([10.0, 2.0])
-                        .show(ui, |ui| {
+            table_scroll(ui, (id, "runs"), |ui| {
+                egui::Grid::new((id, "runs_grid"))
+                    .striped(true)
+                    .spacing([10.0, 2.0])
+                    .show(ui, |ui| {
+                        if phased {
+                            head(ui, "Phase");
+                        }
+                        head(ui, "Metric ▶");
+                        head(ui, "Iters");
+                        head(ui, "t, s");
+                        head(ui, "Dice");
+                        head(ui, "Filed as");
+                        ui.end_row();
+                        for b in &self.blocks {
                             if phased {
-                                head(ui, "Phase");
+                                ui.label(&b.label);
                             }
-                            head(ui, "Metric ▶");
-                            head(ui, "Iters");
-                            head(ui, "t, s");
-                            head(ui, "Dice");
-                            head(ui, "Filed as");
+                            match &b.metrics {
+                                Some(m) => {
+                                    ui.monospace(format!(
+                                        "{} {:.0} ▶ {:.0}",
+                                        m.tag, m.initial, m.final_value
+                                    ))
+                                    .on_hover_text(&b.detail);
+                                    ui.monospace(format!("{}", m.iterations));
+                                    ui.monospace(format!("{:.1}", m.secs));
+                                }
+                                None => {
+                                    ui.weak(if b.detail.is_empty() {
+                                        "-".to_string()
+                                    } else {
+                                        b.detail.clone()
+                                    });
+                                    ui.weak("-");
+                                    ui.weak("-");
+                                }
+                            }
+                            match &b.check {
+                                Some(c) => {
+                                    let text = match c.dice {
+                                        Some(d) => format!("{d:.2} {}", c.verdict),
+                                        None => "did not land".to_string(),
+                                    };
+                                    ui.monospace(text).on_hover_text(format!(
+                                        "{}: HD95 {:.1} mm, centroids {:.1} mm apart",
+                                        c.name, c.hd95_mm, c.centroid_mm
+                                    ));
+                                }
+                                None => {
+                                    ui.weak("-");
+                                }
+                            }
+                            match &b.landed {
+                                Some(l) => {
+                                    ui.label(ellipsis(l, 28)).on_hover_text(l);
+                                }
+                                None => {
+                                    ui.weak("-");
+                                }
+                            }
                             ui.end_row();
-                            for b in &self.blocks {
-                                if phased {
-                                    ui.label(&b.label);
-                                }
-                                match &b.metrics {
-                                    Some(m) => {
-                                        ui.monospace(format!(
-                                            "{} {:.0} ▶ {:.0}",
-                                            m.tag, m.initial, m.final_value
-                                        ))
-                                        .on_hover_text(&b.detail);
-                                        ui.monospace(format!("{}", m.iterations));
-                                        ui.monospace(format!("{:.1}", m.secs));
-                                    }
-                                    None => {
-                                        ui.weak(if b.detail.is_empty() {
-                                            "-".to_string()
-                                        } else {
-                                            b.detail.clone()
-                                        });
-                                        ui.weak("-");
-                                        ui.weak("-");
-                                    }
-                                }
-                                match &b.check {
-                                    Some(c) => {
-                                        let text = match c.dice {
-                                            Some(d) => format!("{d:.2} {}", c.verdict),
-                                            None => "did not land".to_string(),
-                                        };
-                                        ui.monospace(text).on_hover_text(format!(
-                                            "{}: HD95 {:.1} mm, centroids {:.1} mm apart",
-                                            c.name, c.hd95_mm, c.centroid_mm
-                                        ));
-                                    }
-                                    None => {
-                                        ui.weak("-");
-                                    }
-                                }
-                                match &b.landed {
-                                    Some(l) => {
-                                        ui.label(ellipsis(l, 28)).on_hover_text(l);
-                                    }
-                                    None => {
-                                        ui.weak("-");
-                                    }
-                                }
-                                ui.end_row();
-                            }
-                        });
-                });
+                        }
+                    });
+            });
             ui.add_space(4.0);
         }
         if self.blocks.iter().all(|b| b.items.is_empty()) {
@@ -342,50 +344,48 @@ impl RunReport {
             return;
         }
         let filed = self.filed_column();
-        egui::ScrollArea::horizontal()
-            .id_salt((id, "vols"))
-            .show(ui, |ui| {
-                egui::Grid::new((id, "vols_grid"))
-                    .striped(true)
-                    .spacing([10.0, 2.0])
-                    .show(ui, |ui| {
-                        if phased {
-                            head(ui, "Phase");
-                        }
-                        head(ui, "Structure");
-                        head(ui, "Source cm³");
-                        head(ui, "Deformed cm³");
-                        if filed {
-                            head(ui, "Filed cm³");
-                        }
-                        head(ui, "Δ");
-                        ui.end_row();
-                        for b in &self.blocks {
-                            for it in &b.items {
-                                if phased {
-                                    ui.label(&b.label);
-                                }
-                                ui.label(ellipsis(&it.name, 24)).on_hover_text(&it.name);
-                                ui.monospace(format!("{:.2}", it.source_cm3));
-                                ui.monospace(format!("{:.2}", it.mapped_cm3));
-                                if filed {
-                                    ui.monospace(format!("{:.2}", it.result_cm3));
-                                }
-                                let d = it.change_pct();
-                                // A volume that moved by more than a tenth
-                                // is the one to look at first, so it says so
-                                // in colour rather than in a footnote.
-                                let text = egui::RichText::new(format!("{d:+.2} %"));
-                                ui.monospace(if d.abs() > 10.0 {
-                                    text.color(theme::warn_color(ui.visuals()))
-                                } else {
-                                    text
-                                });
-                                ui.end_row();
+        table_scroll(ui, (id, "vols"), |ui| {
+            egui::Grid::new((id, "vols_grid"))
+                .striped(true)
+                .spacing([10.0, 2.0])
+                .show(ui, |ui| {
+                    if phased {
+                        head(ui, "Phase");
+                    }
+                    head(ui, "Structure");
+                    head(ui, "Source cm³");
+                    head(ui, "Deformed cm³");
+                    if filed {
+                        head(ui, "Filed cm³");
+                    }
+                    head(ui, "Δ");
+                    ui.end_row();
+                    for b in &self.blocks {
+                        for it in &b.items {
+                            if phased {
+                                ui.label(&b.label);
                             }
+                            name_cell(ui, it);
+                            ui.monospace(format!("{:.2}", it.source_cm3));
+                            ui.monospace(format!("{:.2}", it.mapped_cm3));
+                            if filed {
+                                ui.monospace(format!("{:.2}", it.result_cm3));
+                            }
+                            let d = it.change_pct();
+                            // A volume that moved by more than a tenth
+                            // is the one to look at first, so it says so
+                            // in colour rather than in a footnote.
+                            let text = egui::RichText::new(format!("{d:+.2} %"));
+                            ui.monospace(if d.abs() > 10.0 {
+                                text.color(theme::warn_color(ui.visuals()))
+                            } else {
+                                text
+                            });
+                            ui.end_row();
                         }
-                    });
-            });
+                    }
+                });
+        });
     }
 }
 
@@ -394,83 +394,123 @@ impl RunReport {
     /// [`RunReport::contour_volumes_tsv`]. Two heading rows: which side
     /// over each pair of columns, then how each column measures.
     fn contour_volumes_ui(&self, ui: &mut egui::Ui, id: &str, phased: bool) {
-        const PLANIMETRY: &str = "Planimetry: each slice's contour area times the slice spacing.";
+        const SURFACE: &str = "Surface: the volume inside the closed surface 3D Slicer \
+             builds from the contours (SlicerRT's planar-contour conversion, smooth \
+             end caps) - the number Slicer's Segment Statistics reports.";
         const VOXELS: &str = "Voxels: the contours rasterized on the image's lattice, counted \
              and multiplied by the voxel volume - the figure every tool that \
              works on a mask uses.";
+        table_scroll(ui, (id, "vols"), |ui| {
+            egui::Grid::new((id, "vols_contours"))
+                .striped(true)
+                .spacing([10.0, 2.0])
+                .show(ui, |ui| {
+                    // Two heading rows: the measure over each group
+                    // of three columns, then what each column is.
+                    if phased {
+                        ui.label("");
+                    }
+                    ui.label("");
+                    ui.label(egui::RichText::new("Surface, cm³").strong())
+                        .on_hover_text(SURFACE);
+                    ui.label("");
+                    ui.label("");
+                    ui.label(egui::RichText::new("Voxels, cm³").strong())
+                        .on_hover_text(VOXELS);
+                    ui.label("");
+                    ui.label("");
+                    ui.end_row();
+                    if phased {
+                        head(ui, "Phase");
+                    }
+                    head(ui, "Structure");
+                    for _ in 0..2 {
+                        head(ui, "Source");
+                        head(ui, "Deformed");
+                        head(ui, "Δ %");
+                    }
+                    ui.end_row();
+                    let warn = theme::warn_color(ui.visuals());
+                    let volume = |ui: &mut egui::Ui, v: Option<f64>| match v {
+                        Some(v) => {
+                            ui.monospace(format!("{v:.2}"));
+                        }
+                        None => {
+                            ui.weak("-");
+                        }
+                    };
+                    // A volume that moved by more than a tenth is the
+                    // one to look at first, so it says so in colour.
+                    let change = |ui: &mut egui::Ui, d: Option<f64>| match d {
+                        Some(d) => {
+                            let text = egui::RichText::new(format!("{d:+.2}"));
+                            ui.monospace(if d.abs() > 10.0 {
+                                text.color(warn)
+                            } else {
+                                text
+                            });
+                        }
+                        None => {
+                            ui.weak("-");
+                        }
+                    };
+                    for b in &self.blocks {
+                        for it in &b.items {
+                            if phased {
+                                ui.label(&b.label);
+                            }
+                            name_cell(ui, it);
+                            volume(ui, it.source_surface_cm3);
+                            volume(ui, it.filed.map(|f| f.surface_cm3));
+                            change(ui, it.surface_change_pct());
+                            volume(ui, Some(it.source_cm3));
+                            volume(ui, it.filed.map(|f| f.voxel_cm3));
+                            change(ui, it.voxel_change_pct());
+                            ui.end_row();
+                        }
+                    }
+                });
+        });
+    }
+}
+
+/// A horizontal scroll area for a table, with its bar below the table
+/// rather than floating over the last row, which it would hide.
+fn table_scroll<R>(
+    ui: &mut egui::Ui,
+    id: impl egui::AsIdSalt,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    ui.scope(|ui| {
+        ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
         egui::ScrollArea::horizontal()
-            .id_salt((id, "vols"))
-            .show(ui, |ui| {
-                egui::Grid::new((id, "vols_contours"))
-                    .striped(true)
-                    .spacing([10.0, 2.0])
-                    .show(ui, |ui| {
-                        // Two heading rows: the measure over each group
-                        // of three columns, then what each column is.
-                        if phased {
-                            ui.label("");
-                        }
-                        ui.label("");
-                        ui.label(egui::RichText::new("Planimetry, cm³").strong())
-                            .on_hover_text(PLANIMETRY);
-                        ui.label("");
-                        ui.label("");
-                        ui.label(egui::RichText::new("Voxels, cm³").strong())
-                            .on_hover_text(VOXELS);
-                        ui.label("");
-                        ui.label("");
-                        ui.end_row();
-                        if phased {
-                            head(ui, "Phase");
-                        }
-                        head(ui, "Structure");
-                        for _ in 0..2 {
-                            head(ui, "Source");
-                            head(ui, "Deformed");
-                            head(ui, "Δ %");
-                        }
-                        ui.end_row();
-                        let warn = theme::warn_color(ui.visuals());
-                        let volume = |ui: &mut egui::Ui, v: Option<f64>| match v {
-                            Some(v) => {
-                                ui.monospace(format!("{v:.2}"));
-                            }
-                            None => {
-                                ui.weak("-");
-                            }
-                        };
-                        // A volume that moved by more than a tenth is the
-                        // one to look at first, so it says so in colour.
-                        let change = |ui: &mut egui::Ui, d: Option<f64>| match d {
-                            Some(d) => {
-                                let text = egui::RichText::new(format!("{d:+.2}"));
-                                ui.monospace(if d.abs() > 10.0 {
-                                    text.color(warn)
-                                } else {
-                                    text
-                                });
-                            }
-                            None => {
-                                ui.weak("-");
-                            }
-                        };
-                        for b in &self.blocks {
-                            for it in &b.items {
-                                if phased {
-                                    ui.label(&b.label);
-                                }
-                                ui.label(ellipsis(&it.name, 24)).on_hover_text(&it.name);
-                                volume(ui, it.source_planimetry_cm3);
-                                volume(ui, it.filed.map(|f| f.planimetry_cm3));
-                                change(ui, it.planimetry_change_pct());
-                                volume(ui, Some(it.source_cm3));
-                                volume(ui, it.filed.map(|f| f.voxel_cm3));
-                                change(ui, it.voxel_change_pct());
-                                ui.end_row();
-                            }
-                        }
-                    });
-            });
+            .id_salt(id)
+            .show(ui, add)
+            .inner
+    })
+    .inner
+}
+
+/// A structure's name in a table row, marked when it was carried rigidly,
+/// with the whole name and what the rigid carry left out on its tooltip.
+fn name_cell(ui: &mut egui::Ui, it: &RunItem) {
+    match it.rigid_residual_mm {
+        Some(res) => {
+            ui.horizontal(|ui| {
+                ui.label(ellipsis(&it.name, 20));
+                ui.weak("rigid");
+            })
+            .response
+            .on_hover_text(format!(
+                "{}\n\nCarried as a rigid body: shape and volume kept. The \
+                 deformation departs from that rigid body by {res:.1} mm RMS over \
+                 the structure.",
+                it.name
+            ));
+        }
+        None => {
+            ui.label(ellipsis(&it.name, 24)).on_hover_text(&it.name);
+        }
     }
 }
 
@@ -524,7 +564,8 @@ mod tests {
             source_cm3: from,
             mapped_cm3: to,
             result_cm3: to,
-            source_planimetry_cm3: None,
+            source_surface_cm3: None,
+            rigid_residual_mm: None,
             filed: None,
         }
     }
@@ -649,18 +690,18 @@ mod tests {
     }
 
     #[test]
-    fn contours_filed_are_reported_by_planimetry_and_by_voxels_on_both_sides() {
+    fn contours_filed_are_reported_by_surface_and_by_voxels_on_both_sides() {
         let mut heart = item("heart", 947.0, 800.0);
-        heart.source_planimetry_cm3 = Some(940.0);
+        heart.source_surface_cm3 = Some(940.0);
         heart.filed = Some(Filed {
-            planimetry_cm3: 789.6,
+            surface_cm3: 789.6,
             voxel_cm3: 795.5,
         });
-        // A segment has no contours on the source side: its planimetry and
+        // A segment has no contours on the source side: its surface and
         // the change by it are left empty, not reported as zero.
         let mut seg = item("from a segment", 10.0, 9.0);
         seg.filed = Some(Filed {
-            planimetry_cm3: 8.8,
+            surface_cm3: 8.8,
             voxel_cm3: 9.1,
         });
         let report = RunReport {
@@ -672,16 +713,16 @@ mod tests {
             finished: false,
         };
         assert!(report.as_contours());
-        assert!((heart.planimetry_change_pct().unwrap() + 16.0).abs() < 1e-9);
+        assert!((heart.surface_change_pct().unwrap() + 16.0).abs() < 1e-9);
         assert!((heart.voxel_change_pct().unwrap() - 100.0 * (795.5 - 947.0) / 947.0).abs() < 1e-9);
         let tsv = report.to_tsv();
         let lines: Vec<&str> = tsv.lines().collect();
         assert_eq!(
             lines[0],
             "phase\tstructure\t\
-             source_planimetry_cm3\tdeformed_planimetry_cm3\tchange_planimetry_pct\t\
+             source_surface_cm3\tdeformed_surface_cm3\tchange_surface_pct\t\
              source_voxel_cm3\tdeformed_voxel_cm3\tchange_voxel_pct",
-            "planimetry first, then voxels, each read across on its own"
+            "surface first, then voxels, each read across on its own"
         );
         assert_eq!(
             lines[1],

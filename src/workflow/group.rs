@@ -252,7 +252,9 @@ pub struct GroupOutcome {
 
 /// Register the source volume onto every phase of the group and carry the
 /// structures across, on the calling thread.
-pub fn run(req: GroupRequest, p: &Progress) -> Result<GroupOutcome> {
+pub fn run(mut req: GroupRequest, p: &Progress) -> Result<GroupOutcome> {
+    let finish = req.finish;
+    finish.carry(&mut req.subjects);
     let n = req.phases.len().max(1);
     let mut phases = Vec::with_capacity(req.phases.len());
     for (i, (label, series)) in req.phases.iter().enumerate() {

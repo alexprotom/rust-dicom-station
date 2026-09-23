@@ -68,6 +68,38 @@ usual half threshold; for one smaller, every piece lands in the voxel that
 holds most of it. The report lists three volumes: the source's, the mapped
 one (what the deformation made of it) and the filed one (the mask).
 
+## Deformed, or keeping its shape
+
+**Carry: deformed / keep shape** says how each structure goes through the
+transform. *Deformed* (the default) carries it point by point, so its shape
+and volume change the way the deformation changes where it lies. *Keep
+shape* carries it as a rigid body instead: the transform's best rigid fit
+over the structure's own voxels (orthogonal Procrustes). It lands where the
+transform takes it and turns as the tissue around it turns, and keeps its
+own shape and volume.
+
+This matters most for a small target inside an organ whose outline was
+what the registration matched, such as a cardiac target anchored on the
+heart's contours. The transform knows where the heart's surface goes and
+only interpolates inside it, so a target a few millimetres under that
+surface is squeezed by whatever the interpolation does at that spot. In
+one test pair (the cardiac CT of one patient onto the 4DCT of another, the
+two hearts contoured at 947 and 794 cm³), the heart as a whole lost 16 %
+but the deformation compressed the tissue at the target by a third (a mean
+Jacobian of 0.65 over it): 2.90 cm³ became 1.89. Carried with its shape
+kept, it lands at 2.89 cm³.
+
+What the rigid carry leaves out is reported: the RMS distance between the
+rigid body and the transform over the structure, marked *rigid* on the
+structure's row, with the number on its tooltip (and `rigid_residual_mm`
+from the MCP server). A few millimetres over a compact target means the
+deformation there was mostly a squeeze; a large figure over a spread-out
+one means the transform bends it, and a single rigid body is a
+simplification you have chosen to make. An anchor always follows the
+transform, whichever is chosen: it is the run's check on the transform.
+From the MCP server this is `keep_shape` on `propagate` and
+`propagate_to_group`.
+
 ## After landing: close, fill
 
 **Then: close gaps / fill** works on each landed mask, for a structure that
@@ -250,17 +282,57 @@ per cent, which is where a propagated volume stops being the same organ.
 
 When the structures land as a **structure set**, what arrives is contours,
 and a contour has two volumes - the two *Structure details* shows. So the
-second table measures both sides both ways, **Planimetry** first (each
-slice's contour area times the slice spacing), then **Voxels** (the contours
-rasterized on the image's lattice): under each, the **Source**, the
-**Deformed** ROI that was filed, and the **Δ %** between them, so either
-measure reads across on its own. The deformed
-figures are read off the filed ROI with the very calls *Structure details*
-makes, so the two windows agree to the last digit. A structure that came
-from a segment has no contours on the source side; its planimetry and the
-change by it are left as a dash rather than reported as nought. Every
-volume in the program - these tables, the details, the tools' own
-confirmations - is given to two decimals.
+second table measures both sides both ways, **Surface** first, then
+**Voxels** (the contours rasterized on the image's lattice): under each, the
+**Source**, the **Deformed** ROI that was filed, and the **Δ %** between
+them, so either measure reads across on its own. The deformed figures are
+read off the filed ROI with the very calls *Structure details* makes, so the
+two windows agree to the last digit.
+
+**Surface** is the volume 3D Slicer's *Segment Statistics* reports for a
+structure imported from RTSTRUCT, computed by the same algorithm
+(`src/rt_surface.rs`, a port of SlicerRT's planar-contour-to-closed-surface
+conversion and of the VTK filters it uses). Slicer does not measure the
+contours; it joins them into a closed surface and reports the volume inside:
+
+- each contour is joined by a ribbon of triangles to every contour on the
+  next slice whose bounding box overlaps it;
+- a contour with nothing joined above or below gets a *smooth end cap*
+  (SlicerRT's default): the contour rasterized, eroded until at most half of
+  it is left, traced again and set half a slice away, then joined to the
+  contour with another ribbon;
+- before any of that, a path that comes back to one of its own points is cut
+  into separate lines by SlicerRT's *keyhole* rule, which keeps a pair of
+  voxels chained through a corner as two triangles of half a voxel each;
+- the volume is `vtkMassProperties`' divergence sum over the triangles.
+
+On an organ the surface and the voxels agree to within half a per cent: the
+end caps are a sliver of the whole. On a target exported voxel by voxel as a
+thin sheet they part by tens of per cent, because such a structure is mostly
+open ends. The STAR target (1031 squares of 1 mm on 0.6 mm slices) is
+0.619 cm³ of voxels and 0.534 cm³ of surface; the UPSTAR target, with 450
+corner-chained pairs among its cells, is 2.90 cm³ of voxels and 1.95 of
+surface. Neither is wrong; they measure different things. A filed ROI's
+contours run along the edges of the voxels it was made from (see *Mask →
+RTSTRUCT* in [segmentation.md](segmentation.md)), so its voxel volume is its
+contour area times the slice spacing exactly, and its surface is smaller by
+its end caps. So a small structure's two **Δ %** columns can disagree, and
+it is the voxel one that says how much the transform itself changed.
+
+Checked against Slicer 5.10 on four structures of two test patients, the
+surface volume here and Slicer's agree to every digit Slicer shows: the STAR
+target 0.533518 cm³ and heart 910.498, the UPSTAR target 1.95196 and heart
+949.369. Slicer's *End capping* parameter set to 2 (straight caps: a copy of
+the end contour itself half a slice away) gives 0.599 and 2.267 cm³ for the
+two targets, not the voxel volume: SlicerRT copies a straight cap's closing
+point as a point of its own, its ribbon matcher then takes the cap for an
+open line, and at a top end the ribbon folds a sliver in. An earlier version
+of this page predicted 0.619 and 2.45 there; those were wrong.
+
+A structure that came from a segment has no contours on the source side;
+its surface and the change by it are left as a dash rather than reported as
+nought. Every volume in the program - these tables, the details, the tools'
+own confirmations - is given to two decimals.
 
 **📋 Copy** puts both tables on the clipboard tab separated, which a
 spreadsheet opens as a table without being asked twice.
@@ -269,6 +341,9 @@ spreadsheet opens as a table without being asked twice.
 
 `src/propagate.rs`'s unit tests assert that a translation carries a ball
 by exactly that much (centroid within 0.5 mm, volume preserved to 6 %),
+that a ball carried with its shape kept through a transform that halves its
+volume keeps its volume to 3 % and lands within a voxel of where the
+transform put it,
 that the direction flag really reverses the mapping, that a structure
 mapped outside the destination comes back *empty*, and that a structure
 crosses between a 2 mm and a 3 mm grid with its volume intact to 10 %.

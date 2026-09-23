@@ -112,9 +112,16 @@ section the editor shows for a structure, with the mask's own verbs in it:
 
 ## Mask → RTSTRUCT (→RS)
 
-The **→RS** button converts a mask to RTSTRUCT closed planar contours:
-marching squares per axial slice, loops stitched and decimated, points mapped
-to patient coordinates. The new ROI joins the active structure set - or a new
+The **→RS** button converts a mask to RTSTRUCT closed planar contours: per
+axial slice, the outline of the voxels themselves, traced along their edges,
+with collinear points merged and the points mapped to patient coordinates.
+The outline encloses exactly the voxels, so the ROI's planimetric volume is
+the mask's voxel volume, and rasterizing it gives the same mask back. This
+replaced a marching-squares outline, which looks smoother but cuts every
+corner. That costs an eighth of a voxel per outer corner and half of a lone
+voxel. A large organ does not notice, but a target carried onto a 1.2 mm
+lattice as a cloud of single voxels lost a tenth of its planimetric volume
+that way. Voxels that touch only at a corner come out as separate contours. The new ROI joins the active structure set - or a new
 in-memory set ("Segmentations") when the study has no RTSTRUCT - and renders
 like any ROI, participates in the 3D view, and rides the existing DICOM export
 ([export-and-tools.md](export-and-tools.md)).

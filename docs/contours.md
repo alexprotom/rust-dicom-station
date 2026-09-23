@@ -345,9 +345,14 @@ Two paths, and the fast one is exact:
   draws. It cannot fail, has no degenerate cases, and handles holes, multiple
   components and self-intersecting freehand strokes alike.
 
-Volumes are reported by planimetry on the contours themselves - the area of
-every slice times the slice thickness - which is what a planning system does
-and is finer than counting voxels.
+While you draw, the volume under the structure's name is planimetry on the
+contours themselves - the area of every slice times the slice thickness -
+which is cheap enough to recompute every frame and finer than counting
+voxels. *Structure details* and the propagation report give instead the
+volume 3D Slicer's *Segment Statistics* reports, inside the closed surface
+Slicer builds from the contours, computed by the same algorithm (see
+[propagation.md](propagation.md)). On an organ the two agree to within half
+a per cent; a small structure reads smaller as a surface, by its end caps.
 
 ## What is deliberately not built
 

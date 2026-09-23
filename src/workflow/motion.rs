@@ -325,7 +325,8 @@ pub fn run(req: MotionRequest, p: &Progress) -> Result<MotionOutcome> {
                             source_cm3: cm3,
                             result_cm3: cm3,
                             mapped_cm3: cm3,
-                            source_planimetry_cm3: subject.planimetry_cm3,
+                            source_surface_cm3: subject.surface_cm3,
+                            rigid_residual_mm: None,
                         });
                     }
                     out

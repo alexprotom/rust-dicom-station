@@ -793,15 +793,25 @@ pub fn fill_holes_slicewise(voxels: &mut Vec<u32>, dims: [usize; 3]) {
 /// since RTSTRUCT expresses a hole as a second contour inside the first.
 /// Returns `None` when the ROI has no planar contour inside the volume.
 ///
-/// A contour that encloses no area is dropped before any of that. Auto
-/// segmentation leaves these behind in quantity - zero-width slivers, loops
-/// that cross themselves - and they are not points: their outlines still
-/// sweep across voxel centres, so an even-odd fill paints several voxels for
-/// each one out of geometry that describes nothing. One real structure came
-/// with 450 of them and they added a third to its volume. The contour
+/// A contour that encloses no area is dropped before any of that: a
+/// zero-width sliver, a loop that crosses itself. These are not points -
+/// their outlines still sweep across voxel centres, so an even-odd fill
+/// would paint voxels out of geometry that describes nothing. The contour
 /// machinery drops them under the same rule
 /// ([`crate::contours::Region::normalize`]), and a mask has to agree with
 /// the geometry it was made from.
+///
+/// A path that passes through one of its own vertices again is first cut
+/// into the loops it is made of ([`crate::contours::simple_loops`]), and
+/// the rule applies to each. Some exporters chain the voxels of a target
+/// that touch at a corner into one path through that corner; a pair one
+/// above the other comes out with the second square drawn the opposite way
+/// round, and the pair's shoelace area as a whole is zero. The structure
+/// that first brought zero-area contours here had 450 of them, and they
+/// were taken for debris and dropped - when they were 900 of its 2899
+/// voxels. Cut at the shared corner they are two squares and count. A
+/// sliver that runs out and back along itself still comes apart into
+/// nothing.
 /// Below this, in voxel units, a contour encloses nothing and is debris.
 /// The same threshold [`crate::contours`] drops its rings at, so the mask
 /// and the contours agree on what is there.
@@ -830,16 +840,20 @@ pub fn rasterize_roi(grid: &Grid, roi: &Roi) -> Option<Vec<u8>> {
             continue;
         }
         let idx: Vec<[f64; 3]> = c.points.iter().map(|p| grid.patient_to_voxel(*p)).collect();
-        if enclosed_area(&idx) <= MIN_CONTOUR_AREA {
-            continue;
-        }
         // A planar contour lies in one slice; take the nearest one.
         let mean_k = idx.iter().map(|v| v[2]).sum::<f64>() / idx.len() as f64;
         let k = mean_k.round();
         if k < 0.0 || k >= nz as f64 {
             continue;
         }
-        by_slice[k as usize].push(idx.iter().map(|v| [v[0], v[1]]).collect());
+        // One path may be several loops through a shared vertex; each is
+        // judged, and filled, on its own.
+        for ring in crate::contours::simple_loops(&idx) {
+            if enclosed_area(&ring) <= MIN_CONTOUR_AREA {
+                continue;
+            }
+            by_slice[k as usize].push(ring.iter().map(|v| [v[0], v[1]]).collect());
+        }
     }
     if by_slice.iter().all(|s| s.is_empty()) {
         return None;
@@ -907,9 +921,17 @@ pub fn rasterize_roi(grid: &Grid, roi: &Roi) -> Option<Vec<u8>> {
 // Mask → RTSTRUCT contours
 // ---------------------------------------------------------------------------
 
-/// Convert a segmentation mask into an RTSTRUCT ROI: marching squares on
-/// every axial slice (padded so border voxels close), stitched into closed
-/// loops, collinear points merged, mapped to patient coordinates.
+/// Convert a segmentation mask into an RTSTRUCT ROI: on every axial slice
+/// the outline of the voxels themselves, along their edges (padded so
+/// border voxels close), collinear points merged, mapped to patient
+/// coordinates.
+///
+/// The outline encloses exactly the voxels, so the ROI's planimetric volume
+/// is the mask's voxel volume and [`rasterize_roi`] gives the mask back. A
+/// marching-squares outline would look smoother and cut every corner, which
+/// a large organ does not notice and a small or scattered structure does: a
+/// target carried onto a 1.2 mm lattice as a cloud of single voxels lost a
+/// tenth of its planimetric volume that way.
 pub fn mask_to_roi(seg: &Segmentation, grid: &Grid, number: i32) -> Roi {
     let [nx, ny, _] = seg.dims;
     let mut contours = Vec::new();
@@ -925,7 +947,7 @@ pub fn mask_to_roi(seg: &Segmentation, grid: &Grid, number: i32) -> Roi {
                     }
                 }
             }
-            for pts in field.trace() {
+            for pts in field.trace_voxels() {
                 let points: Vec<Vec3> = pts
                     .iter()
                     .map(|p| grid.voxel_to_patient(p[0] as f64, p[1] as f64, k as f64))
@@ -988,9 +1010,62 @@ mod raster_tests {
             .unwrap_or(0)
     }
 
+    /// Two voxels written as one path through the corner they share - the
+    /// first square, then the second the other way round - are two voxels,
+    /// not a zero-area contour to drop.
+    #[test]
+    fn a_path_of_two_squares_through_a_shared_corner_paints_both() {
+        let p = |x: f64, y: f64| Vec3::new(x, y, 1.0);
+        let figure_eight = closed(vec![
+            p(4.5, 5.5),
+            p(4.5, 4.5),
+            p(5.5, 4.5),
+            p(5.5, 5.5),
+            p(4.5, 5.5),
+            p(4.5, 6.5),
+            p(5.5, 6.5),
+            p(5.5, 5.5),
+            p(4.5, 5.5),
+        ]);
+        let r = roi(vec![figure_eight]);
+        assert_eq!(filled(&r), 2);
+        let plan = crate::contours::Stack::from_roi(&r, &grid()).volume_cm3(grid().spacing);
+        assert!((plan - 0.002).abs() < 1e-12, "{plan}");
+    }
+
+    /// A mask made contours has the planimetric volume of its voxels and
+    /// rasterizes back to the same voxels - here a scattered cloud of single
+    /// voxels and small clumps, which is where cutting corners cost a tenth
+    /// of a propagated target's volume.
+    #[test]
+    fn a_mask_made_contours_keeps_its_voxels_exactly() {
+        let g = grid();
+        let [nx, ny, nz] = g.dims;
+        let mut mask = vec![0u8; nx * ny * nz];
+        for k in 0..nz {
+            for j in 4..28 {
+                for i in 4..28 {
+                    if (i * 7 + j * 13 + k * 5) % 5 == 0 || (i / 4 + j / 3) % 4 == 0 {
+                        mask[k * nx * ny + j * nx + i] = 1;
+                    }
+                }
+            }
+        }
+        let n = mask.iter().filter(|v| **v != 0).count();
+        let seg = Segmentation::from_label_map("cloud".into(), [1, 2, 3], g.dims, &mask, 1);
+        let roi = mask_to_roi(&seg, &g, 1);
+        let back = rasterize_roi(&g, &roi).expect("it rasterizes");
+        assert_eq!(back, mask, "the same voxels come back");
+        let plan = crate::contours::Stack::from_roi(&roi, &g).volume_cm3(g.spacing);
+        let vox = n as f64 * g.spacing.iter().product::<f64>() / 1000.0;
+        assert!(
+            (plan - vox).abs() < 1e-9,
+            "planimetry {plan} against voxels {vox}"
+        );
+    }
+
     /// A contour that encloses nothing paints nothing - even though its
-    /// outline crosses voxel centres, which is how a few hundred of them
-    /// added a third to one structure's volume.
+    /// outline crosses voxel centres, which an even-odd fill would count.
     #[test]
     fn a_contour_enclosing_no_area_paints_no_voxels() {
         let z = 1.0;

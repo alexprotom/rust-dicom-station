@@ -641,8 +641,8 @@ the ticked group:
 
 Crossing between the two kinds converts on transfer: a structure moved into a
 segmentation series is rasterized onto its lattice (even-odd fill), a segment
-moved into a structure set becomes closed planar contours (marching squares),
-and a segment moved between different lattices is resampled. Anything that
+moved into a structure set becomes closed planar contours (the outline of its
+voxels), and a segment moved between different lattices is resampled. Anything that
 cannot cross - a contour outside the destination volume, a mask that does not
 overlap it - lands in the workspace's *Warnings* section, which carries an
 **Acknowledge** button beside its heading: the warnings describe a load or a

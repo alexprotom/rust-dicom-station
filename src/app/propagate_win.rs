@@ -847,7 +847,7 @@ impl ViewerApp {
             };
             let grid = src_vol.grid();
             let subjects: Vec<Subject> =
-                match structures.iter().map(|s| s.subject_on(&grid)).collect() {
+                match crate::workflow::select::subjects_on(&structures, &grid) {
                     Ok(v) => v,
                     Err(e) => return (slot, Err(e)),
                 };
@@ -960,7 +960,7 @@ impl ViewerApp {
             };
             let grid = src_vol.grid();
             let subjects: Vec<Subject> =
-                match structures.iter().map(|s| s.subject_on(&grid)).collect() {
+                match crate::workflow::select::subjects_on(&structures, &grid) {
                     Ok(v) => v,
                     Err(e) => return (slot, Err(e)),
                 };
@@ -1124,14 +1124,15 @@ impl ViewerApp {
             }
         };
         let src_grid = src_vol.grid();
-        let subjects: Vec<Subject> =
-            match structures.iter().map(|s| s.subject_on(&src_grid)).collect() {
+        let mut subjects: Vec<Subject> =
+            match crate::workflow::select::subjects_on(&structures, &src_grid) {
                 Ok(v) => v,
                 Err(e) => {
                     self.error = Some(format!("Propagation: {e:#}"));
                     return;
                 }
             };
+        finish.carry(&mut subjects);
         let Some(d) = &self.propagate_dialog else {
             return;
         };
@@ -1450,8 +1451,10 @@ impl ViewerApp {
             .iter()
             .rfind(|ss| ss.referenced_series_uid == series_uid)
             .map(|ss| {
+                // In parallel: the surface of a large organ drawn as
+                // voxel outlines is a fair fraction of a second.
                 names
-                    .iter()
+                    .par_iter()
                     .map(|name| {
                         let roi = ss.rois.iter().rfind(|r| Some(&r.name) == name.as_ref())?;
                         Some(run_report::Filed::measure(roi, grid))
@@ -1960,9 +1963,27 @@ impl ViewerApp {
                     });
 
                 ui.separator();
-                // What becomes of the results: where they are filed, and
-                // what is done to each mask once it is there.
+                // What becomes of the results: how they travel, where they
+                // are filed, and what is done to each mask once it is there.
                 form::form(ui, "prop_landing", |f| {
+                    f.row("Carry", |ui| {
+                        ui.selectable_value(&mut d.finish.keep_shape, false, "deformed")
+                            .on_hover_text(
+                                "Each structure goes through the transform point by point: \
+                                 its shape and volume change as the deformation does where \
+                                 it lies.",
+                            );
+                        ui.selectable_value(&mut d.finish.keep_shape, true, "keep shape")
+                            .on_hover_text(
+                                "Each structure goes as a rigid body - the transform's best \
+                                 rigid fit over the structure itself: where the deformation \
+                                 takes it, turned as the tissue around it turns, with its \
+                                 own shape and volume. For a small target inside an organ \
+                                 whose outline the registration matched: inside, the \
+                                 deformation is not measured, only interpolated. An anchor \
+                                 still follows the transform - it is the run's check.",
+                            );
+                    });
                     f.row("Land as", |ui| {
                         ui.selectable_value(
                             &mut d.landing,
@@ -2338,14 +2359,15 @@ struct RegImageRef {
 /// filed after closing and filling - which together tell a propagation that
 /// went wrong from one that merely moved something. Filed as contours, the
 /// ROI it became is measured afterwards ([`run_report::RunBlock::file_volumes`]),
-/// and the table gives both sides by planimetry and by voxels instead.
+/// and the table gives both sides by surface and by voxels instead.
 fn item_row(it: &Propagated) -> run_report::RunItem {
     run_report::RunItem {
         name: it.name.clone(),
         source_cm3: it.source_cm3,
         mapped_cm3: it.mapped_cm3,
         result_cm3: it.result_cm3,
-        source_planimetry_cm3: it.source_planimetry_cm3,
+        source_surface_cm3: it.source_surface_cm3,
+        rigid_residual_mm: it.rigid_residual_mm,
         // Known once it has been filed as contours, if it is.
         filed: None,
     }

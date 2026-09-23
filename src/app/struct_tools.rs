@@ -863,6 +863,12 @@ impl ViewerApp {
                 axis_name(axis)
             ))
             .weak(),
+        )
+        .on_hover_text(
+            "The volume while you draw: each slice's contour area times the slice \
+             spacing, recomputed every frame. Structure details gives the volume \
+             3D Slicer reports, inside the surface it builds from the contours - \
+             the same on an organ, smaller on a small structure by its end caps.",
         );
         ui.horizontal_wrapped(|ui| {
             ui.label("Type:");

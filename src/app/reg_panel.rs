@@ -369,7 +369,8 @@ impl ViewerApp {
                 name: name.clone(),
                 color,
                 mask: moving_on_its_own_grid,
-                planimetry_cm3: None,
+                surface_cm3: None,
+                keep_shape: false,
             };
             // Both numbers are measured the same way - the mask carried onto
             // the fixed lattice by the same code - so that the pair of them

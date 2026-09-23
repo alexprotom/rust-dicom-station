@@ -369,6 +369,9 @@ src/
                     extruded-equipment test, box-blur smoothing; the mask
                     helpers everything shares (count, extent, surface walk)     Core
   rtstruct.rs       RT Structure Set parsing                                     DICOM
+  rt_surface.rs     the volume 3D Slicer reports for an RT structure: SlicerRT's
+                    planar-contour-to-closed-surface conversion (keyholes,
+                    ribbons, smooth end caps) and vtkMassProperties, ported      DICOM
   dicomseg.rs       DICOM Segmentation: the segmentation-series model, SEG
                     reading, resampling between lattices, the SEG writer         DICOM
   rtdose.rs         RT Dose parsing + trilinear patient-space sampling           DICOM

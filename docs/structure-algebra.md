@@ -33,8 +33,8 @@ onto the displayed series' lattice on the way in - a contour through
 out as whichever kind you ask for.
 
 The answer is thus a **voxel** answer on the displayed series' grid; *an RT
-structure* output is converted back with the usual marching-squares walk - the
-outline of the voxels, not a polygon operation on the input polygons. On a 1
+structure* output is converted back by tracing the outline of the voxels
+along their edges, not by a polygon operation on the input polygons. On a 1
 mm CT the difference is invisible; on a 5 mm one it is a staircase, which the
 smoothing option is for.
 

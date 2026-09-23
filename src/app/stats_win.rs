@@ -1,27 +1,31 @@
 //! *Tools ▶ Structure details*: one row per structure, with the numbers a
 //! planner reads off a list rather than off a picture.
 //!
-//! Volume twice over - by planimetry on the contours and by counting the
-//! voxels they fill - because the two answer different questions and the
-//! difference is worth seeing; the grey levels inside the structure, which
-//! is how a mis-drawn organ gives itself away; how many slices and points
-//! the geometry costs; and whether the structure still matches the recipe
-//! it was derived from.
+//! Volume twice over - by the surface 3D Slicer builds from the contours
+//! and by counting the voxels they fill - because the two answer different
+//! questions and the difference is worth seeing; the grey levels inside the
+//! structure, which is how a mis-drawn organ gives itself away; how many
+//! slices and points the geometry costs; and whether the structure still
+//! matches the recipe it was derived from.
 //!
-//! Planimetry is the volume the geometry describes and owes nothing to any
-//! lattice. The voxel figure is what the structure becomes once drawn onto
-//! this image, which is what every tool that carries voxels then works
-//! with. They part company at both ends of the scale: a structure of many
-//! fragments reads larger as voxels, because each fragment rounds up to a
-//! whole voxel, and one thinner than a voxel reads smaller, because it can
-//! fall between the centres. On a compact organ they agree to a fraction of
-//! a per cent. Both are rasterized through `segmentation::rasterize_roi`,
-//! the one path the rest of the program uses, so the number here is the
-//! number propagation and DVH see.
+//! The surface volume is the one Slicer's Segment Statistics reports for an
+//! RT structure: the contours joined into a closed surface by SlicerRT's
+//! conversion, smooth end caps half a slice beyond the first and last, and
+//! the volume inside it - computed here by the same algorithm
+//! ([`crate::rt_surface`]), so the two programs can be read against each
+//! other. It owes nothing to this image's lattice. The
+//! voxel figure is what the structure becomes once drawn onto this image,
+//! which is what every tool that carries voxels then works with, through
+//! `segmentation::rasterize_roi`, the one path the rest of the program
+//! uses, so the number here is the number propagation and DVH see. On a
+//! compact organ the two agree to a fraction of a per cent; on a small
+//! structure or one drawn as voxel outlines they part by tens of per cent,
+//! mostly at the ends, where the surface puts a cap and the voxels a
+//! whole slice.
 //!
 //! The table is computed on demand, not every frame: rasterizing a hundred
-//! structures is a second of work, and nothing here changes unless the
-//! geometry does.
+//! structures and building their surfaces is a second or two of work, and
+//! nothing here changes unless the geometry does.
 
 use crate::contours::Stack;
 use crate::derived::Status;
@@ -45,9 +49,10 @@ pub(super) struct StatRow {
     pub roi_type: String,
     /// "contours" or "voxels" - the representation the geometry is kept in.
     pub repr: &'static str,
-    /// Planimetry on the contours: the area of every slice times the slice
-    /// spacing. Empty for a segmentation, which has no contours to measure.
-    pub planimetry_cm3: Option<f64>,
+    /// The volume inside the closed surface Slicer builds from the contours
+    /// ([`crate::rt_surface`]). Empty for a segmentation, which has no
+    /// contours to build it from.
+    pub surface_cm3: Option<f64>,
     /// The voxels the geometry fills on the lattice it is measured on.
     pub voxel_cm3: f64,
     pub voxels: usize,
@@ -279,7 +284,7 @@ impl ViewerApp {
                             color: roi.color,
                             roi_type: roi.roi_type.clone(),
                             repr: "point",
-                            planimetry_cm3: None,
+                            surface_cm3: None,
                             voxel_cm3: 0.0,
                             voxels: 0,
                             slices: 0,
@@ -295,16 +300,9 @@ impl ViewerApp {
                     // *user* of a mask goes through - propagation, the
                     // registration regions, DVH - so the number here is the
                     // number those tools work with rather than a second
-                    // opinion. The stack is still what the planimetry, the
-                    // slice count and the point count are read from, because
-                    // those are properties of the contours.
-                    //
-                    // They can differ. Building a stack normalises each
-                    // slice's rings and drops the degenerate ones - contours
-                    // whose shoelace area is nil, which auto-segmentation
-                    // leaves behind in quantity - and a structure made of
-                    // hundreds of fragments then measures smaller here than
-                    // it does as a mask.
+                    // opinion. The slice count is read from the stack, the
+                    // surface volume from the contours as they are filed,
+                    // the way Slicer reads them.
                     let mask = crate::segmentation::rasterize_roi(&grid, roi)
                         .unwrap_or_else(|| vec![0u8; grid.dims[0] * grid.dims[1] * grid.dims[2]]);
                     let (voxels, grey) = measure(&mask, grid.dims, Some(vol));
@@ -314,7 +312,7 @@ impl ViewerApp {
                         color: roi.color,
                         roi_type: roi.roi_type.clone(),
                         repr: "contours",
-                        planimetry_cm3: Some(st.volume_cm3(grid.spacing)),
+                        surface_cm3: crate::rt_surface::slicer_volume_cm3(roi, grid.spacing[2]),
                         voxel_cm3: voxel_cm3(grid.spacing, voxels),
                         voxels,
                         slices: st.occupied(),
@@ -355,7 +353,7 @@ impl ViewerApp {
                         color: seg.color,
                         roi_type: String::new(),
                         repr: "voxels",
-                        planimetry_cm3: None,
+                        surface_cm3: None,
                         voxel_cm3: voxel_cm3(ser.grid.spacing, voxels),
                         voxels,
                         slices: 0,
@@ -374,7 +372,7 @@ impl ViewerApp {
 
     fn stats_csv(rows: &[StatRow]) -> String {
         let mut s = String::from(
-            "name,type,representation,planimetry_cm3,voxel_cm3,voxels,slices,points,\
+            "name,type,representation,surface_cm3,voxel_cm3,voxels,slices,points,\
              grey_min,grey_mean,grey_max,dice,dice_reference,derived,point_mm\n",
         );
         for r in rows {
@@ -395,7 +393,7 @@ impl ViewerApp {
                 r.name.replace('"', "'"),
                 r.roi_type,
                 r.repr,
-                match r.planimetry_cm3 {
+                match r.surface_cm3 {
                     Some(v) => format!("{v:.2}"),
                     None => String::new(),
                 },
@@ -472,9 +470,10 @@ impl ViewerApp {
                 switch = seg_engines::workspace_row(ui, d.slot, has, true);
                 ui.label(
                     egui::RichText::new(
-                        "Volume twice over - the area of the contours times the slice \
-                         spacing, and the voxels they fill. They disagree by a few per \
-                         cent on a coarse series, and neither number is wrong.",
+                        "Volume twice over - inside the surface 3D Slicer builds from the \
+                         contours (its Segment Statistics figure), and the voxels they \
+                         fill. They disagree by a few per cent on a coarse series, more \
+                         on a small structure, and neither number is wrong.",
                     )
                     .weak(),
                 );
@@ -543,13 +542,15 @@ impl ViewerApp {
                                 ("Type", ""),
                                 ("Kept as", ""),
                                 (
-                                    "Planimetry / place",
-                                    "The volume the contours describe: the area enclosed on \
-                                     each slice, times the slice spacing. It is computed from \
-                                     the geometry alone, so no lattice can flatter or flatten \
-                                     it, and it is what a planning system reports. Nested \
-                                     contours count as holes. For a point of interest this is \
-                                     its position instead.",
+                                    "Surface / place",
+                                    "The volume 3D Slicer's Segment Statistics reports for the \
+                                     structure: the contours joined slice to slice into a closed \
+                                     surface, capped half a slice beyond the first and last with \
+                                     a shrunken copy of the end contour (SlicerRT's conversion, \
+                                     smooth end caps), and the volume inside it. Computed here by \
+                                     the same algorithm, so it is the number Slicer shows for the \
+                                     same contours; it owes nothing to this image's lattice. For a \
+                                     point of interest this is its position instead.",
                                 ),
                                 (
                                     "Voxels",
@@ -559,9 +560,10 @@ impl ViewerApp {
                                      every tool that works on voxels actually carries - \
                                      propagation, DVH, the registration regions - so it is the \
                                      figure those agree with.\n\nIt reads larger than the \
-                                     planimetry for a structure made of many small pieces, \
-                                     because each piece rounds up to at least one whole voxel, \
-                                     and smaller for one thinner than a voxel, which can fall \
+                                     surface for a small structure, because the voxels run a \
+                                     full half slice past the end contours where the surface \
+                                     tapers to a cap, and for one made of many small pieces; \
+                                     smaller for one thinner than a voxel, which can fall \
                                      between the centres entirely. On a compact organ the two \
                                      agree to a fraction of a per cent.",
                                 ),
@@ -585,7 +587,7 @@ impl ViewerApp {
                                 });
                                 ui.label(r.roi_type.clone());
                                 ui.label(r.repr);
-                                match (r.planimetry_cm3, r.point) {
+                                match (r.surface_cm3, r.point) {
                                     (_, Some(p)) => {
                                         ui.label(format!("{:.1}, {:.1}, {:.1} mm", p.x, p.y, p.z));
                                     }

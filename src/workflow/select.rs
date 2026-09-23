@@ -74,15 +74,15 @@ impl Structure {
         Ok(mask)
     }
 
-    /// The structure's planimetric volume on `grid`, cm³: each slice's
-    /// contour area times the slice spacing, holes taken out - the figure
-    /// Structure details shows in its planimetry column. `None` for a
-    /// segment, which has no contours to measure.
-    pub fn planimetry_on(&self, grid: &Grid) -> Option<f64> {
+    /// The structure's surface volume, cm³: the volume inside the closed
+    /// surface 3D Slicer builds from the contours, as its Segment Statistics
+    /// reports it (see [`crate::rt_surface`]), with `grid`'s slice spacing
+    /// standing in where the contours give none - the figure Structure
+    /// details shows in its Surface column. `None` for a segment, which has
+    /// no contours to build a surface from.
+    pub fn surface_on(&self, grid: &Grid) -> Option<f64> {
         match &self.source {
-            Source::Contours(roi) => {
-                Some(crate::contours::Stack::from_roi(roi, grid).volume_cm3(grid.spacing))
-            }
+            Source::Contours(roi) => crate::rt_surface::slicer_volume_cm3(roi, grid.spacing[2]),
             Source::Mask { .. } => None,
         }
     }
@@ -93,9 +93,19 @@ impl Structure {
             name: self.name.clone(),
             color: self.color,
             mask: self.mask_on(grid)?,
-            planimetry_cm3: self.planimetry_on(grid),
+            surface_cm3: self.surface_on(grid),
+            keep_shape: false,
         })
     }
+}
+
+/// Every structure as something `propagate` carries, on `grid`, measured in
+/// parallel - building the surface of a large contoured organ is a fair
+/// fraction of a second - and kept in their order. A structure that fails
+/// fails the lot.
+pub fn subjects_on(structures: &[Structure], grid: &Grid) -> Result<Vec<Subject>> {
+    use rayon::prelude::*;
+    structures.par_iter().map(|s| s.subject_on(grid)).collect()
 }
 
 /// What kind of object a named structure is.

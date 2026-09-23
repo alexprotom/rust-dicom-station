@@ -76,8 +76,9 @@ link.
 ### Structures as RTSTRUCT or SEG
 
 Each set of structures carries its own radio. Contours are rasterised onto
-the image lattice for SEG, masks are contoured (marching squares, exactly as
-the viewer draws them) for RTSTRUCT, so anything can go out as either;
+the image lattice for SEG, masks are contoured for RTSTRUCT (along the voxel
+edges, so the contours enclose exactly the voxels; see
+[segmentation.md](segmentation.md)), so anything can go out as either;
 *Structures ▸ all RTSTRUCT / all SEG* sets the whole run at once. An ROI with
 no contour inside the image volume is reported rather than written empty.
 
