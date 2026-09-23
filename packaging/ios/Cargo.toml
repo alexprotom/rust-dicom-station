@@ -41,6 +41,9 @@ path = "src/main.rs"
 [dependencies]
 egui = "0.36"
 log = "0.4"
+# The limits the window's device is asked for (src/gpu.rs). The version is
+# the one egui-wgpu's wgpu uses, so `eframe::wgpu::Limits` is this type.
+wgpu-types = "30"
 
 [target.'cfg(target_os = "ios")'.dependencies]
 # The viewer itself. Its default features (`gpu`) stay on: the wgpu backend

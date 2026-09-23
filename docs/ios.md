@@ -175,6 +175,13 @@ it, and the desktop build graph does not change. It holds:
   `egui-winit` leaves in UIKit's; without that the strips come out too
   narrow at any zoom below 1. No UIKit call; tested on the host with a
   simulated 6.1-inch iPhone and iPad.
+* **`src/gpu.rs`.** The limits the window's graphics device is asked for:
+  `egui-wgpu`'s request (the WebGPU defaults) lowered to what the adapter
+  offers. Every iOS GPU, and the simulator, has 15 inter-stage shader
+  variables where the WebGPU default asks for 16, and without this the
+  program stops before its first frame. Tested on the host.
+* **`build.rs`.** Hands the viewer's version (from its `Cargo.toml`) to the
+  log line and the panic file; the crate's own version is the front end's.
 * **`src/safe_area.rs`.** The strips iOS lays over the window. `egui-winit`
   reads the window's safe-area insets on iOS and egui's `content_rect` is
   the safe part, but an `eframe` app's root `Ui` spans the whole screen; so

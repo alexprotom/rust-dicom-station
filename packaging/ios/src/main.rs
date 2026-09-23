@@ -31,6 +31,9 @@
 //!   go to standard error, which Xcode's console, `xcrun devicectl ...
 //!   --console` and the simulator show.
 //!
+//! The graphics device is asked for no more than an iOS GPU has ([`gpu`]):
+//! egui-wgpu's default request is one inter-stage variable over it.
+//!
 //! There is no fallback loop over graphics backends as on the desktop:
 //! `winit` allows one event loop per process on iOS, and that loop never
 //! returns, so the choice is made once. Metal is the only backend Apple
@@ -39,6 +42,7 @@
 #![cfg_attr(not(target_os = "ios"), allow(dead_code))]
 
 mod fit;
+mod gpu;
 #[cfg(target_os = "ios")]
 mod places;
 mod safe_area;
@@ -65,7 +69,7 @@ fn main() {
     places::exclude_from_backup(&data);
     log::info!(
         "rust-dicom-station {} starting; settings in {}, data in {}",
-        env!("CARGO_PKG_VERSION"),
+        env!("RDS_VERSION"),
         config.display(),
         data.display()
     );
@@ -87,6 +91,15 @@ fn main() {
     let mut wgpu_options = eframe::WgpuConfiguration::default();
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
         setup.instance_descriptor.backends = backend.bits();
+        // egui-wgpu's own request, lowered to what an iOS GPU has (gpu.rs).
+        setup.device_descriptor =
+            std::sync::Arc::new(
+                |adapter: &eframe::wgpu::Adapter| eframe::wgpu::DeviceDescriptor {
+                    label: Some("egui wgpu device"),
+                    required_limits: gpu::device_limits(&adapter.limits()),
+                    ..Default::default()
+                },
+            );
     }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_title("Rust DICOM Station: Viewer"),
@@ -184,7 +197,7 @@ fn install_panic_hook(file: std::path::PathBuf) {
     std::panic::set_hook(Box::new(move |info| {
         let text = format!(
             "rust-dicom-station {} panicked: {info}\n{}",
-            env!("CARGO_PKG_VERSION"),
+            env!("RDS_VERSION"),
             std::backtrace::Backtrace::force_capture()
         );
         log::error!("{text}");

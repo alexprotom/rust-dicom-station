@@ -6239,6 +6239,7 @@ dependencies = [
  "objc2-ui-kit 0.3.2",
  "objc2-uniform-type-identifiers 0.3.2",
  "rust-dicom-station",
+ "wgpu-types 30.0.0",
 ]
 
 [[package]]

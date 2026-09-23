@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Build the iOS / iPadOS package: the viewer for arm64 iPads and iPhones
-# (one binary for both), wrapped in an .app bundle and handed out as an .ipa. No Xcode project and no third-party
-# packaging tool - the bundle is a folder with a plist in it, actool
-# compiles the icon, codesign signs, and an .ipa is a zip of Payload/.
+# (one binary for both), wrapped in an .app bundle and handed out as an .ipa.
+# No Xcode project and no third-party packaging tool - the bundle is a folder
+# with a plist in it, actool compiles the icon, codesign signs, and an .ipa
+# is a zip of Payload/.
 #
 #   ./build-ipa.sh                 # device build, release, -> out/*.ipa
 #   ./build-ipa.sh --simulator     # Apple Silicon simulator build, -> out/*-simulator.zip

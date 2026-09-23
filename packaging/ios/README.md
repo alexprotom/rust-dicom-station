@@ -29,7 +29,9 @@ on pull requests; `cargo test` runs the crate's unit tests on any host.
 |---|---|
 | `src/main.rs` | The entry point and the `Shell` around the viewer |
 | `src/fit.rs` | The zoom that fits the desktop layout into a smaller screen (every iPhone, an iPad in portrait or Split View), and the insets rescaled to it (no UIKit; tested on the host) |
+| `src/gpu.rs` | The graphics device request, lowered to what an iOS GPU has (tested on the host) |
 | `src/safe_area.rs` | Keeps the status bar and home indicator strips free (no UIKit; tested on the host) |
+| `build.rs` | The viewer's version for the log and the panic file |
 | `src/places.rs` | The folder picker, security-scoped access, bookmarks, backup exclusion |
 | `Info.plist.in` | The bundle's plist; the comment at its top explains each entry |
 | `PrivacyInfo.xcprivacy` | The privacy manifest App Store Connect requires: which "required reason" APIs the executable calls, and why |
