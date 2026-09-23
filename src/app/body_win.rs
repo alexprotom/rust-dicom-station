@@ -221,7 +221,7 @@ impl ViewerApp {
                 result
                     .pieces
                     .iter()
-                    .map(|p| format!("{:.0}", p.cm3))
+                    .map(|p| format!("{:.2}", p.cm3))
                     .collect::<Vec<_>>()
                     .join(" + ")
                     + " cm³"
@@ -234,14 +234,14 @@ impl ViewerApp {
         };
         if let Some(d) = &mut self.body_dialog {
             d.status = Some(format!(
-                "✔ {}: {:.0} cm³{pieces} in {:.1} s{device} - {:.0} cm³ of couch, chair, \
+                "✔ {}: {:.2} cm³{pieces} in {:.1} s{device} - {:.2} cm³ of couch, chair, \
                  immobilisation and stray objects left out{}",
                 result.name,
                 result.cm3,
                 result.elapsed_secs,
                 removed_cm3,
                 if result.recovered_voxels > 0 {
-                    format!(", {recovered_cm3:.0} cm³ of thin anatomy kept")
+                    format!(", {recovered_cm3:.2} cm³ of thin anatomy kept")
                 } else {
                     String::new()
                 }

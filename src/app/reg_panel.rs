@@ -369,6 +369,7 @@ impl ViewerApp {
                 name: name.clone(),
                 color,
                 mask: moving_on_its_own_grid,
+                planimetry_cm3: None,
             };
             // Both numbers are measured the same way - the mask carried onto
             // the fixed lattice by the same code - so that the pair of them
@@ -1837,7 +1838,7 @@ fn analysis_rows(
                                 ui.weak(format!("{:.3}", d.before));
                                 ui.monospace(format!("{:+.3}", d.after - d.before))
                                     .on_hover_text(format!(
-                                        "fixed {:.1} cm³, warped moving {:.1} cm³",
+                                        "fixed {:.2} cm³, warped moving {:.2} cm³",
                                         d.fixed_cm3, d.moving_cm3
                                     ));
                                 ui.end_row();

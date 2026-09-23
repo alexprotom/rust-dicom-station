@@ -392,7 +392,7 @@ impl ViewerApp {
         };
         if let Some(d) = &mut self.combine_dialog {
             d.status = Some(format!(
-                "✔ {} → {}: {:.1} cm³{pieces} in {:.1} s",
+                "✔ {} → {}: {:.2} cm³{pieces} in {:.1} s",
                 result.name,
                 result.output.label(),
                 result.combined.cm3,

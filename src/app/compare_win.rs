@@ -178,8 +178,8 @@ impl ViewerApp {
             Some(o) => {
                 rows.push(("structure A".into(), la.clone()));
                 rows.push(("structure B".into(), lb.clone()));
-                rows.push(("volume A (cm3)".into(), format!("{:.4}", o.vol_a_cm3)));
-                rows.push(("volume B (cm3)".into(), format!("{:.4}", o.vol_b_cm3)));
+                rows.push(("volume A (cm3)".into(), format!("{:.2}", o.vol_a_cm3)));
+                rows.push(("volume B (cm3)".into(), format!("{:.2}", o.vol_b_cm3)));
                 if let (Some(a), Some(b)) = (o.centroid_a, o.centroid_b) {
                     for (tag, c) in [("A", a), ("B", b)] {
                         rows.push((

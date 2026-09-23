@@ -19,6 +19,17 @@ in the list only while there is a registration. With none, the entry is not
 offered at all and the destination falls to the first 4D group, because an
 entry that cannot be chosen is worse than a shorter list.
 
+**Without a registration, every loaded image series is a destination.** They
+are listed under a rule of their own, below the groups and their phases, and
+the run registers the source onto the one picked before carrying the
+structures - exactly what the group path already does for each phase, done
+once. So structures go from anything to anything: a planning CT onto a
+diagnostic one, a cardiac CT onto a cone-beam scan, either direction. A
+series that is already a phase of a 4D group is not listed twice; it is
+reached as that group's phase. With a registration active the list is
+unchanged, because then the two images it pairs are what "the other image"
+means.
+
 ## What it does
 
 * **Pull, never push.** Every voxel of the *destination* is asked where it
@@ -106,6 +117,13 @@ the run's report.
 Picking one phase instead of the group narrows the same machinery to that
 phase: one registration, one segmentation series, one row in the report -
 including for an anchored run.
+
+**Refine locally first** applies only to a run that goes through the active
+registration: it is a second pass over that one pair of images. A
+destination that makes its own transform - a 4D group, a lone series - has
+nothing standing there to refine, and the section now says so with its
+controls greyed rather than refusing to open, which is how it came to look
+broken once a 4D group became the usual destination.
 
 The transforms are kept. Registering a group in the registration module
 (*Fixed image ▶ the group*) and then propagating onto it costs no
@@ -217,7 +235,8 @@ pairing is then the two images you chose there.
 *Last run* is two tables rather than a paragraph, because ten phases of four
 facts each is forty sentences nobody reads to the end.
 
-The first has a row per destination: the **phase**, what the registration did
+The first has a row per destination: the **phase** (on screen only when
+there is more than one destination to tell apart), what the registration did
 to the **metric** (its value before and after, with the stages on the row's
 tooltip), the **iterations** and the time (**t, s**) it took, the anchor's
 **Dice** where the run was anchored on a structure, and what the results were
@@ -228,6 +247,20 @@ those the filed volume is the deformed one to the last decimal, so the column
 is left out rather than repeating its neighbour. The last column is the
 **change** between the source and the result, in the warning colour past ten
 per cent, which is where a propagated volume stops being the same organ.
+
+When the structures land as a **structure set**, what arrives is contours,
+and a contour has two volumes - the two *Structure details* shows. So the
+second table measures both sides both ways, **Planimetry** first (each
+slice's contour area times the slice spacing), then **Voxels** (the contours
+rasterized on the image's lattice): under each, the **Source**, the
+**Deformed** ROI that was filed, and the **Δ %** between them, so either
+measure reads across on its own. The deformed
+figures are read off the filed ROI with the very calls *Structure details*
+makes, so the two windows agree to the last digit. A structure that came
+from a segment has no contours on the source side; its planimetry and the
+change by it are left as a dash rather than reported as nought. Every
+volume in the program - these tables, the details, the tools' own
+confirmations - is given to two decimals.
 
 **📋 Copy** puts both tables on the clipboard tab separated, which a
 spreadsheet opens as a table without being asked twice.

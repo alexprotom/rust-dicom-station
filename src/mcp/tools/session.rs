@@ -258,7 +258,7 @@ pub fn list_structures(core: &mut Core, a: DatasetArgs, _p: &Progress) -> Result
                 if let Some(seg) = ds.study.seg_series[e.set].segs.get(e.idx) {
                     let ser = &ds.study.seg_series[e.set];
                     let sp = if ser.grid.dims == ds.study.volume.dims { spacing } else { ser.grid.spacing };
-                    v["volume_cm3"] = json!(round1(seg.volume_cm3(sp)));
+                    v["volume_cm3"] = json!(round2(seg.volume_cm3(sp)));
                 }
             } else if let Some(roi) = ds
                 .study

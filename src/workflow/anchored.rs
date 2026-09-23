@@ -209,6 +209,7 @@ pub fn run(req: AnchoredRequest, p: &Progress) -> Result<AnchoredOutcome> {
         name: landed_name,
         color: req.anchor_landed_color.unwrap_or(req.src_anchor.color),
         mask: src_anchor_mask,
+        planimetry_cm3: req.src_anchor.planimetry_on(&src_grid),
     });
     let anchor_idx = subjects.len() - 1;
 

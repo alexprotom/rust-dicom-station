@@ -13,9 +13,11 @@ use crate::imginfo::{describe, ImageInfo, Row};
 #[derive(Default)]
 pub(super) struct InfoState {
     pub(super) slot: usize,
-    /// One cached report per workspace, with the series UID it describes, so
-    /// switching between A and B does not read every header again.
-    cache: [Option<(String, ImageInfo)>; MAX_WORKSPACES],
+    /// One cached report per workspace, with the series UID and the volume
+    /// it describes, so switching between A and B does not read every header
+    /// again - and a volume that replaced another under the same series is
+    /// described afresh rather than reported with the last one's lattice.
+    cache: [Option<(String, usize, ImageInfo)>; MAX_WORKSPACES],
     /// Show what this workspace and another disagree about.
     compare: bool,
     /// Which workspace to hold it against. None means "the next open one",
@@ -54,14 +56,15 @@ impl ViewerApp {
     /// different series.
     fn info_report(&mut self, slot: usize) -> Option<&ImageInfo> {
         let uid = self.slots[slot].displayed_uid()?.to_string();
-        let stale = !matches!(&self.info.cache[slot], Some((u, _)) if *u == uid);
+        let study = self.slots[slot].study.as_ref()?;
+        let vol = Arc::as_ptr(&study.volume) as usize;
+        let stale = !matches!(&self.info.cache[slot], Some((u, v, _)) if *u == uid && *v == vol);
         if stale {
-            let study = self.slots[slot].study.as_ref()?;
             let series = study.series.get(study.active_series)?;
             let report = describe(series, &study.volume);
-            self.info.cache[slot] = Some((uid, report));
+            self.info.cache[slot] = Some((uid, vol, report));
         }
-        self.info.cache[slot].as_ref().map(|(_, r)| r)
+        self.info.cache[slot].as_ref().map(|(_, _, r)| r)
     }
 
     fn image_info_body(&mut self, ui: &mut egui::Ui) {
@@ -170,7 +173,7 @@ impl ViewerApp {
             egui::CollapsingHeader::new(name)
                 .id_salt(("img_info", name))
                 .default_open(name == "Sampling")
-                .show(ui, |ui| info_rows(ui, rows));
+                .show(ui, |ui| info_table(ui, name, rows));
         }
 
         if both && self.info.compare {
@@ -191,73 +194,155 @@ impl ViewerApp {
             .show(ui, |ui| {
                 let mine = flatten(&report);
                 let yours = flatten(&theirs);
-                let mut differ = 0;
-                for label in COMPARED {
-                    let (Some(a), Some(b)) = (find(&mine, label), find(&yours, label)) else {
-                        continue;
-                    };
-                    if a == b {
-                        continue;
-                    }
-                    differ += 1;
-                    ui.label(label);
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        ui.add_space(10.0);
-                        ui.weak(format!("{}:", SLOT_NAMES[slot]));
-                        ui.monospace(short(a));
-                    });
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        ui.add_space(10.0);
-                        ui.weak(format!("{}:", SLOT_NAMES[other]));
-                        ui.monospace(short(b));
-                    });
-                }
-                if differ == 0 {
+                // Only what differs: the rows they agree on are the ones
+                // nobody opened the comparison for.
+                let differ: Vec<(&str, &str, &str)> = COMPARED
+                    .iter()
+                    .filter_map(|label| {
+                        let (a, b) = (find(&mine, label)?, find(&yours, label)?);
+                        (a != b).then_some((*label, a, b))
+                    })
+                    .collect();
+                if differ.is_empty() {
                     ui.colored_label(
                         theme::good_color(ui.visuals()),
                         "The two workspaces agree on all of it",
                     );
-                } else if find(&mine, "Frame of reference") != find(&yours, "Frame of reference") {
-                    ui.add_space(2.0);
-                    ui.weak(
-                        "Different frames of reference: nothing but a registration relates \
-                         the two, and a structure set of one does not belong to the other.",
+                } else {
+                    let room = value_room(
+                        ui,
+                        differ
+                            .iter()
+                            .map(|d| d.0)
+                            .chain(std::iter::once("Property")),
+                        2,
                     );
+                    egui::ScrollArea::horizontal()
+                        .id_salt("img_info_cmp_scroll")
+                        .show(ui, |ui| {
+                            egui::Grid::new("img_info_cmp_grid")
+                                .num_columns(3)
+                                .striped(true)
+                                .spacing([10.0, 2.0])
+                                .show(ui, |ui| {
+                                    run_report::head(ui, "Property");
+                                    run_report::head(ui, SLOT_NAMES[slot]);
+                                    run_report::head(ui, SLOT_NAMES[other]);
+                                    ui.end_row();
+                                    for (label, a, b) in &differ {
+                                        ui.label(*label);
+                                        value_cell(ui, a, None, room).on_hover_text(*a);
+                                        value_cell(ui, b, None, room).on_hover_text(*b);
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+                    if find(&mine, "Frame of reference") != find(&yours, "Frame of reference") {
+                        ui.add_space(2.0);
+                        ui.weak(
+                            "Different frames of reference: nothing but a registration relates \
+                             the two, and a structure set of one does not belong to the other.",
+                        );
+                    }
                 }
             });
         }
     }
 }
 
-fn info_rows(ui: &mut egui::Ui, rows: &[Row]) {
-    for r in rows {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            ui.weak(format!("{}:", r.label));
-            let text = egui::RichText::new(short(&r.value)).monospace();
-            match &r.note {
-                Some(_) => ui.colored_label(theme::warn_color(ui.visuals()), text),
-                None => ui.label(text),
-            };
-        })
-        .response
-        .on_hover_text(match &r.note {
-            Some(n) => format!("{}\n\n{}", r.value, n),
-            None => r.value.clone(),
+/// One section of the report as a two-column table of property and value,
+/// the way every other module lays out a list of facts. A value to look
+/// twice at is in the warning colour, with the reason on its tooltip.
+fn info_table(ui: &mut egui::Ui, section: &str, rows: &[Row]) {
+    let room = value_room(ui, rows.iter().map(|r| r.label.as_str()), 1);
+    let warn = theme::warn_color(ui.visuals());
+    egui::ScrollArea::horizontal()
+        .id_salt(("img_info_scroll", section))
+        .show(ui, |ui| {
+            egui::Grid::new(("img_info_grid", section))
+                .num_columns(2)
+                .striped(true)
+                .spacing([10.0, 2.0])
+                .show(ui, |ui| {
+                    for r in rows {
+                        ui.label(&r.label);
+                        let color = r.note.as_ref().map(|_| warn);
+                        value_cell(ui, &r.value, color, room).on_hover_text(match &r.note {
+                            Some(n) => format!("{}\n\n{}", r.value, n),
+                            None => r.value.clone(),
+                        });
+                        ui.end_row();
+                    }
+                });
         });
-    }
 }
 
-/// A long value (a UID, a path) shortened for the 320 px panel; the hover
-/// text always carries the whole thing.
-fn short(v: &str) -> String {
-    const MAX: usize = 34;
-    if v.chars().count() <= MAX {
+/// How much width a value has, in points, to fit the panel beside its
+/// property's name, with `columns` values to a row sharing what is left. A
+/// table wider than the panel would hide its values' ends behind a scroll
+/// bar.
+fn value_room<'a>(ui: &egui::Ui, labels: impl Iterator<Item = &'a str>, columns: usize) -> f32 {
+    let color = ui.visuals().text_color();
+    let body = egui::TextStyle::Body.resolve(ui.style());
+    let painter = ui.painter();
+    let label_w = labels
+        .map(|l| {
+            painter
+                .layout_no_wrap(l.to_string(), body.clone(), color)
+                .size()
+                .x
+        })
+        .fold(0.0f32, f32::max);
+    // The grid's spacing between columns, and a little for the stripe's
+    // own margin and the scroll area's.
+    let gaps = 10.0 * columns as f32 + 24.0;
+    ((ui.available_width() - label_w - gaps) / columns.max(1) as f32).max(40.0)
+}
+
+/// One value of a table, in `room` points: a value of several words (a
+/// vector, a size with its unit) wraps onto a second line rather than lose
+/// a component; a single long token (a UID) is cut from the front instead,
+/// keeping the tail it is told apart by. The whole value belongs on the
+/// caller's tooltip either way.
+fn value_cell(
+    ui: &mut egui::Ui,
+    value: &str,
+    color: Option<egui::Color32>,
+    room: f32,
+) -> egui::Response {
+    let mono = egui::TextStyle::Monospace.resolve(ui.style());
+    let char_w = ui
+        .painter()
+        .layout_no_wrap("0".into(), mono, ui.visuals().text_color())
+        .size()
+        .x
+        .max(1.0);
+    let text = if value.contains(char::is_whitespace) {
+        value.to_string()
+    } else {
+        short_to(value, ((room / char_w).floor() as usize).max(6))
+    };
+    let mut text = egui::RichText::new(text).monospace();
+    if let Some(c) = color {
+        text = text.color(c);
+    }
+    // A vertical scope of bounded width is what lets a label wrap inside a
+    // grid cell without spilling into the next row.
+    ui.vertical(|ui| {
+        ui.set_max_width(room);
+        ui.add(egui::Label::new(text).wrap())
+    })
+    .inner
+}
+
+/// A long value (a UID, a path) shortened to `max` characters for the
+/// panel, from the front; the hover text always carries the whole thing.
+fn short_to(v: &str, max: usize) -> String {
+    let n = v.chars().count();
+    if n <= max {
         return v.to_string();
     }
-    let tail: String = v.chars().skip(v.chars().count() - (MAX - 1)).collect();
+    let tail: String = v.chars().skip(n - (max - 1)).collect();
     format!("\u{2026}{tail}")
 }
 
@@ -275,19 +360,21 @@ fn find<'a>(rows: &[(&'a str, &'a str)], label: &str) -> Option<&'a str> {
 
 #[cfg(test)]
 mod tests {
-    use super::short;
+    use super::short_to;
 
     #[test]
     fn a_long_value_is_shortened_from_the_front() {
         // A UID is only ever recognised by its tail; the head is the same
         // organisation root on every one of them.
         let uid = "1.2.826.0.1.3680043.8.498.12345678901234567890123456789012";
-        let s = short(uid);
-        assert!(s.chars().count() <= 34, "{s}");
-        assert!(s.starts_with('\u{2026}'));
-        assert!(uid.ends_with(s.trim_start_matches('\u{2026}')));
+        for max in [12, 22, 34] {
+            let s = short_to(uid, max);
+            assert_eq!(s.chars().count(), max, "{s}");
+            assert!(s.starts_with('\u{2026}'));
+            assert!(uid.ends_with(s.trim_start_matches('\u{2026}')));
+        }
         // Anything that fits is left exactly as it is.
-        assert_eq!(short("2 x 2 x 2 mm"), "2 x 2 x 2 mm");
-        assert_eq!(short(""), "");
+        assert_eq!(short_to("2 x 2 x 2 mm", 12), "2 x 2 x 2 mm");
+        assert_eq!(short_to("", 12), "");
     }
 }

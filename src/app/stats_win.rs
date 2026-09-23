@@ -2,11 +2,22 @@
 //! planner reads off a list rather than off a picture.
 //!
 //! Volume twice over - by planimetry on the contours and by counting the
-//! voxels they fill - because the two disagree on a coarse series and the
+//! voxels they fill - because the two answer different questions and the
 //! difference is worth seeing; the grey levels inside the structure, which
 //! is how a mis-drawn organ gives itself away; how many slices and points
 //! the geometry costs; and whether the structure still matches the recipe
 //! it was derived from.
+//!
+//! Planimetry is the volume the geometry describes and owes nothing to any
+//! lattice. The voxel figure is what the structure becomes once drawn onto
+//! this image, which is what every tool that carries voxels then works
+//! with. They part company at both ends of the scale: a structure of many
+//! fragments reads larger as voxels, because each fragment rounds up to a
+//! whole voxel, and one thinner than a voxel reads smaller, because it can
+//! fall between the centres. On a compact organ they agree to a fraction of
+//! a per cent. Both are rasterized through `segmentation::rasterize_roi`,
+//! the one path the rest of the program uses, so the number here is the
+//! number propagation and DVH see.
 //!
 //! The table is computed on demand, not every frame: rasterizing a hundred
 //! structures is a second of work, and nothing here changes unless the
@@ -280,7 +291,22 @@ impl ViewerApp {
                         };
                     }
                     let st = Stack::from_roi(roi, &grid);
-                    let mask = st.rasterize(grid.dims);
+                    // The voxel figure comes from the rasteriser every
+                    // *user* of a mask goes through - propagation, the
+                    // registration regions, DVH - so the number here is the
+                    // number those tools work with rather than a second
+                    // opinion. The stack is still what the planimetry, the
+                    // slice count and the point count are read from, because
+                    // those are properties of the contours.
+                    //
+                    // They can differ. Building a stack normalises each
+                    // slice's rings and drops the degenerate ones - contours
+                    // whose shoelace area is nil, which auto-segmentation
+                    // leaves behind in quantity - and a structure made of
+                    // hundreds of fragments then measures smaller here than
+                    // it does as a mask.
+                    let mask = crate::segmentation::rasterize_roi(&grid, roi)
+                        .unwrap_or_else(|| vec![0u8; grid.dims[0] * grid.dims[1] * grid.dims[2]]);
                     let (voxels, grey) = measure(&mask, grid.dims, Some(vol));
                     let dice = dice_of(&mask, &roi.name, &grid, &fixed_display);
                     StatRow {
@@ -365,12 +391,12 @@ impl ViewerApp {
                 None => (String::new(), String::new()),
             };
             s.push_str(&format!(
-                "\"{}\",{},{},{},{:.3},{},{},{},{},{},{},{},{},{},{}\n",
+                "\"{}\",{},{},{},{:.2},{},{},{},{},{},{},{},{},{},{}\n",
                 r.name.replace('"', "'"),
                 r.roi_type,
                 r.repr,
                 match r.planimetry_cm3 {
-                    Some(v) => format!("{v:.3}"),
+                    Some(v) => format!("{v:.2}"),
                     None => String::new(),
                 },
                 r.voxel_cm3,
@@ -508,19 +534,47 @@ impl ViewerApp {
                         .striped(true)
                         .num_columns(10)
                         .show(ui, |ui| {
-                            for h in [
-                                "Structure",
-                                "Type",
-                                "Kept as",
-                                "Planimetry / place",
-                                "Voxels",
-                                "Slices",
-                                "Points",
-                                "Grey (min / mean / max)",
-                                "Dice",
-                                "Derived",
+                            // The two volumes are two different questions,
+                            // and the headings say which is which on hover
+                            // rather than leaving a reader to guess why one
+                            // structure has two numbers that disagree.
+                            for (h, tip) in [
+                                ("Structure", ""),
+                                ("Type", ""),
+                                ("Kept as", ""),
+                                (
+                                    "Planimetry / place",
+                                    "The volume the contours describe: the area enclosed on \
+                                     each slice, times the slice spacing. It is computed from \
+                                     the geometry alone, so no lattice can flatter or flatten \
+                                     it, and it is what a planning system reports. Nested \
+                                     contours count as holes. For a point of interest this is \
+                                     its position instead.",
+                                ),
+                                (
+                                    "Voxels",
+                                    "The volume of the mask, once the contours are drawn onto \
+                                     this image's own lattice: the number of voxels whose \
+                                     centre falls inside, times the voxel volume. This is what \
+                                     every tool that works on voxels actually carries - \
+                                     propagation, DVH, the registration regions - so it is the \
+                                     figure those agree with.\n\nIt reads larger than the \
+                                     planimetry for a structure made of many small pieces, \
+                                     because each piece rounds up to at least one whole voxel, \
+                                     and smaller for one thinner than a voxel, which can fall \
+                                     between the centres entirely. On a compact organ the two \
+                                     agree to a fraction of a per cent.",
+                                ),
+                                ("Slices", "How many slices carry contours."),
+                                ("Points", "Contour points in the whole structure."),
+                                ("Grey (min / mean / max)", ""),
+                                ("Dice", ""),
+                                ("Derived", ""),
                             ] {
-                                ui.label(egui::RichText::new(h).strong());
+                                let r = ui.label(egui::RichText::new(h).strong());
+                                if !tip.is_empty() {
+                                    r.on_hover_text(tip);
+                                }
                             }
                             ui.end_row();
                             for r in &d.rows {

@@ -375,10 +375,15 @@ impl ViewerApp {
             series,
             active_series: sub_active,
             // No series taken means no volume taken: the destination gets the
-            // objects and nothing to display them on.
+            // objects and nothing to display them on. And the volume on
+            // display here goes along only when it is the series the
+            // destination will show: any other would be displayed under that
+            // series' name - its lattice reported as the series', its voxels
+            // registered and measured as the series' - until the read that
+            // replaces it lands, and for good if that read never ran.
             volume: match activate {
-                Some(_) => study.volume.clone(),
-                None => Arc::new(Volume::empty()),
+                Some(a) if a == study.active_series => study.volume.clone(),
+                _ => Arc::new(Volume::empty()),
             },
             structure_sets: pick(&masks.structs, study.structure_sets.len())
                 .iter()

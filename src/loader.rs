@@ -258,7 +258,7 @@ impl LoadedStudy {
     }
 }
 
-const IMAGE_MODALITIES: &[&str] = &["CT", "MR", "PT", "NM", "US", "OT"];
+pub const IMAGE_MODALITIES: &[&str] = &["CT", "MR", "PT", "NM", "US", "OT"];
 /// Modalities treated as 2D projection images (no volume reconstruction).
 const PLANAR_MODALITIES: &[&str] = &["DX", "CR", "RTIMAGE", "MG", "XA", "RF", "PX"];
 const SOP_RTIMAGE: &str = "1.2.840.10008.5.1.4.1.1.481.1";

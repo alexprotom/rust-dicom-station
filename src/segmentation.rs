@@ -792,6 +792,35 @@ pub fn fill_holes_slicewise(voxels: &mut Vec<u32>, dims: [usize; 3]) {
 /// together - which is what makes a doughnut a doughnut rather than a disc,
 /// since RTSTRUCT expresses a hole as a second contour inside the first.
 /// Returns `None` when the ROI has no planar contour inside the volume.
+///
+/// A contour that encloses no area is dropped before any of that. Auto
+/// segmentation leaves these behind in quantity - zero-width slivers, loops
+/// that cross themselves - and they are not points: their outlines still
+/// sweep across voxel centres, so an even-odd fill paints several voxels for
+/// each one out of geometry that describes nothing. One real structure came
+/// with 450 of them and they added a third to its volume. The contour
+/// machinery drops them under the same rule
+/// ([`crate::contours::Region::normalize`]), and a mask has to agree with
+/// the geometry it was made from.
+/// Below this, in voxel units, a contour encloses nothing and is debris.
+/// The same threshold [`crate::contours`] drops its rings at, so the mask
+/// and the contours agree on what is there.
+const MIN_CONTOUR_AREA: f64 = 1e-6;
+
+/// The area a closed contour encloses, in voxel units, by the shoelace
+/// formula on its (i, j) coordinates. Unsigned: which way round it was
+/// drawn is not the question here.
+fn enclosed_area(idx: &[[f64; 3]]) -> f64 {
+    let n = idx.len();
+    let mut s = 0.0;
+    for a in 0..n {
+        let p = idx[a];
+        let q = idx[(a + 1) % n];
+        s += p[0] * q[1] - q[0] * p[1];
+    }
+    (s * 0.5).abs()
+}
+
 pub fn rasterize_roi(grid: &Grid, roi: &Roi) -> Option<Vec<u8>> {
     let [nx, ny, nz] = grid.dims;
     // Slice index → the contours drawn on it, in voxel (i, j) coordinates.
@@ -801,6 +830,9 @@ pub fn rasterize_roi(grid: &Grid, roi: &Roi) -> Option<Vec<u8>> {
             continue;
         }
         let idx: Vec<[f64; 3]> = c.points.iter().map(|p| grid.patient_to_voxel(*p)).collect();
+        if enclosed_area(&idx) <= MIN_CONTOUR_AREA {
+            continue;
+        }
         // A planar contour lies in one slice; take the nearest one.
         let mean_k = idx.iter().map(|v| v[2]).sum::<f64>() / idx.len() as f64;
         let k = mean_k.round();
@@ -912,5 +944,93 @@ pub fn mask_to_roi(seg: &Segmentation, grid: &Grid, number: i32) -> Roi {
         roi_type: "ORGAN".into(),
         description: String::new(),
         contours,
+    }
+}
+
+#[cfg(test)]
+mod raster_tests {
+    use super::*;
+    use crate::geometry::Vec3;
+
+    fn grid() -> Grid {
+        Grid {
+            dims: [32, 32, 3],
+            spacing: [1.0, 1.0, 1.0],
+            origin: Vec3::new(0.0, 0.0, 0.0),
+            row_dir: Vec3::new(1.0, 0.0, 0.0),
+            col_dir: Vec3::new(0.0, 1.0, 0.0),
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            frame_of_reference_uid: String::new(),
+        }
+    }
+
+    fn roi(contours: Vec<Contour>) -> Roi {
+        Roi {
+            number: 1,
+            name: "probe".into(),
+            color: [255, 0, 0],
+            roi_type: "GTV".into(),
+            description: String::new(),
+            contours,
+        }
+    }
+
+    fn closed(points: Vec<Vec3>) -> Contour {
+        Contour {
+            points,
+            geometric_type: "CLOSED_PLANAR".into(),
+        }
+    }
+
+    fn filled(roi: &Roi) -> usize {
+        rasterize_roi(&grid(), roi)
+            .map(|m| m.iter().filter(|v| **v != 0).count())
+            .unwrap_or(0)
+    }
+
+    /// A contour that encloses nothing paints nothing - even though its
+    /// outline crosses voxel centres, which is how a few hundred of them
+    /// added a third to one structure's volume.
+    #[test]
+    fn a_contour_enclosing_no_area_paints_no_voxels() {
+        let z = 1.0;
+        let square = roi(vec![closed(vec![
+            Vec3::new(10.0, 10.0, z),
+            Vec3::new(14.0, 10.0, z),
+            Vec3::new(14.0, 14.0, z),
+            Vec3::new(10.0, 14.0, z),
+        ])]);
+        let n = filled(&square);
+        assert!(n > 0, "a real square fills voxels");
+
+        // A zero-width sliver: out and back along the same line.
+        let sliver = roi(vec![closed(vec![
+            Vec3::new(4.0, 20.0, z),
+            Vec3::new(9.0, 20.0, z),
+            Vec3::new(4.0, 20.0, z),
+        ])]);
+        assert_eq!(filled(&sliver), 0, "a sliver encloses nothing");
+
+        // A figure of eight: the two lobes cancel to nil signed area, and
+        // the outline still sweeps several voxels.
+        let eight = roi(vec![closed(vec![
+            Vec3::new(20.0, 4.0, z),
+            Vec3::new(24.0, 4.0, z),
+            Vec3::new(20.0, 8.0, z),
+            Vec3::new(24.0, 8.0, z),
+        ])]);
+        assert_eq!(filled(&eight), 0, "a self-crossing loop encloses nothing");
+
+        // And the debris does not inflate a sound structure it travels with.
+        let together = roi(vec![
+            square.contours[0].clone(),
+            sliver.contours[0].clone(),
+            eight.contours[0].clone(),
+        ]);
+        assert_eq!(
+            filled(&together),
+            n,
+            "the sound contour measures the same with debris beside it"
+        );
     }
 }

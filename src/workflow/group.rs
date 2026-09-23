@@ -151,19 +151,46 @@ pub fn land_in_structure_set_as(
     new_set_label: &str,
     roi_type: &str,
 ) -> Option<(String, Vec<String>)> {
-    let rois: Vec<Roi> = items
+    land_items_as(
+        study,
+        series_uid,
+        study_uid,
+        grid,
+        items,
+        new_set_label,
+        roi_type,
+    )
+    .map(|(label, filed)| (label, filed.into_iter().flatten().collect()))
+}
+
+/// [`land_in_structure_set_as`], answering item by item: the names come
+/// back in the order of `items`, `None` where an item filed nothing (it was
+/// empty, or traced to no contour). That is what a caller needs to find the
+/// ROI a given item became - to measure it, say - when the name it was
+/// filed under carries a counter.
+pub fn land_items_as(
+    study: &mut LoadedStudy,
+    series_uid: &str,
+    study_uid: &str,
+    grid: &Grid,
+    items: &[Propagated],
+    new_set_label: &str,
+    roi_type: &str,
+) -> Option<(String, Vec<Option<String>>)> {
+    let rois: Vec<Option<Roi>> = items
         .iter()
-        .filter(|it| it.voxels > 0)
         .map(|it| {
+            if it.voxels == 0 {
+                return None;
+            }
             let seg =
                 Segmentation::from_label_map(it.name.clone(), it.color, grid.dims, &it.mask, 1);
             let mut roi = segmentation::mask_to_roi(&seg, grid, 0);
             roi.roi_type = roi_type.to_string();
-            roi
+            (!roi.contours.is_empty()).then_some(roi)
         })
-        .filter(|r| !r.contours.is_empty())
         .collect();
-    if rois.is_empty() {
+    if rois.iter().all(Option::is_none) {
         return None;
     }
     let set = match study
@@ -192,8 +219,12 @@ pub fn land_in_structure_set_as(
         }
     };
     let ss = &mut study.structure_sets[set];
-    let mut names = Vec::new();
-    for mut roi in rois {
+    let mut names = Vec::with_capacity(rois.len());
+    for roi in rois {
+        let Some(mut roi) = roi else {
+            names.push(None);
+            continue;
+        };
         roi.number = ss.rois.iter().map(|r| r.number).max().unwrap_or(0) + 1;
         if ss.rois.iter().any(|r| r.name == roi.name) {
             let base = roi.name.clone();
@@ -203,7 +234,7 @@ pub fn land_in_structure_set_as(
             }
             roi.name = format!("{base} ({n})");
         }
-        names.push(roi.name.clone());
+        names.push(Some(roi.name.clone()));
         ss.rois.push(roi);
     }
     Some((ss.label.clone(), names))

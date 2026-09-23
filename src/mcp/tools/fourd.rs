@@ -559,7 +559,7 @@ pub fn report_json(r: &MotionReport) -> Value {
             "phases": t.samples.iter().map(|s| json!({
                 "phase": clean_text(&s.phase),
                 "centroid_mm": vec3(s.centroid),
-                "volume_cm3": round1(s.volume_cm3),
+                "volume_cm3": round2(s.volume_cm3),
             })).collect::<Vec<_>>(),
             "displacements_mm": t.displacements().into_iter().map(vec3).collect::<Vec<_>>(),
         })
@@ -598,7 +598,7 @@ pub fn report_json(r: &MotionReport) -> Value {
             "target": clean_text(&i.target),
             "model": i.model.label(),
             "margin_mm": i.margin_mm,
-            "volume_cm3": round1(i.volume_cm3),
+            "volume_cm3": round2(i.volume_cm3),
             "structure": clean_text(&i.seg_name),
         })).collect::<Vec<_>>(),
     })

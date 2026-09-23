@@ -2638,7 +2638,7 @@ impl ViewerApp {
                                         &mut item_act,
                                     )
                                 });
-                                ui.weak(format!("{:.1} cm³", row.3));
+                                ui.weak(format!("{:.2} cm³", row.3));
                             });
                         }
                         for (row, on) in rows.iter_mut().zip(ticks) {

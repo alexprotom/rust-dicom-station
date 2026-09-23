@@ -74,12 +74,26 @@ impl Structure {
         Ok(mask)
     }
 
+    /// The structure's planimetric volume on `grid`, cm³: each slice's
+    /// contour area times the slice spacing, holes taken out - the figure
+    /// Structure details shows in its planimetry column. `None` for a
+    /// segment, which has no contours to measure.
+    pub fn planimetry_on(&self, grid: &Grid) -> Option<f64> {
+        match &self.source {
+            Source::Contours(roi) => {
+                Some(crate::contours::Stack::from_roi(roi, grid).volume_cm3(grid.spacing))
+            }
+            Source::Mask { .. } => None,
+        }
+    }
+
     /// The structure as something `propagate` carries, on `grid`.
     pub fn subject_on(&self, grid: &Grid) -> Result<Subject> {
         Ok(Subject {
             name: self.name.clone(),
             color: self.color,
             mask: self.mask_on(grid)?,
+            planimetry_cm3: self.planimetry_on(grid),
         })
     }
 }

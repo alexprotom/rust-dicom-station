@@ -58,6 +58,11 @@ pub struct Subject {
     pub color: [u8; 3],
     /// One byte per source voxel, 1 inside.
     pub mask: Vec<u8>,
+    /// The structure's planimetric volume, cm³ - contour area times slice
+    /// spacing - when it was drawn as contours; `None` for a segment, which
+    /// has no contours to measure. Carried through untouched so the report
+    /// can set it beside the planimetry of what lands.
+    pub planimetry_cm3: Option<f64>,
 }
 
 /// What arrived on the other side.
@@ -77,6 +82,9 @@ pub struct Propagated {
     /// filed on the destination lattice: the sum of the occupancies. The
     /// mask holds this to within one voxel.
     pub mapped_cm3: f64,
+    /// The source structure's planimetric volume, cm³, when it was contours
+    /// (see [`Subject::planimetry_cm3`]).
+    pub source_planimetry_cm3: Option<f64>,
 }
 
 impl Propagated {
@@ -88,7 +96,7 @@ impl Propagated {
             0.0
         };
         format!(
-            "{}: {:.3} cm³ ▶ {:.3} cm³ ({:+.3} %)",
+            "{}: {:.2} cm³ ▶ {:.2} cm³ ({:+.2} %)",
             self.name, self.source_cm3, self.result_cm3, change
         )
     }
@@ -281,6 +289,7 @@ pub fn propagate(
                 source_cm3: source_voxels as f64 * src_vox_cm3,
                 result_cm3: 0.0,
                 mapped_cm3: 0.0,
+                source_planimetry_cm3: s.planimetry_cm3,
             });
             continue;
         }
@@ -336,6 +345,7 @@ pub fn propagate(
             source_cm3: source_voxels as f64 * src_vox_cm3,
             result_cm3: voxels as f64 * dst_vox_cm3,
             mapped_cm3: mapped_voxels * dst_vox_cm3,
+            source_planimetry_cm3: s.planimetry_cm3,
         });
     }
     sink.report(1.0, "done");
@@ -504,6 +514,7 @@ mod tests {
                 name: "ball".into(),
                 color: [255, 0, 0],
                 mask,
+                planimetry_cm3: None,
             }],
             &Quiet,
         )
@@ -592,6 +603,7 @@ mod tests {
                 name: "cloud".into(),
                 color: [255, 0, 0],
                 mask,
+                planimetry_cm3: None,
             }],
             &Quiet,
         )
@@ -641,6 +653,7 @@ mod tests {
             source_cm3: 0.0,
             result_cm3: 0.0,
             mapped_cm3: 0.0,
+            source_planimetry_cm3: None,
         };
         let pieces = crate::morphology::components(&item.mask, dst.dims).len();
         assert!(pieces > 50, "a cloud to begin with: {pieces} pieces");
@@ -653,6 +666,7 @@ mod tests {
             source_cm3: 0.0,
             result_cm3: 0.0,
             mapped_cm3: 0.0,
+            source_planimetry_cm3: None,
         };
         Finish {
             close_mm: 3.0,
@@ -698,6 +712,7 @@ mod tests {
                 name: "ball".into(),
                 color: [0, 255, 0],
                 mask: mask.clone(),
+                planimetry_cm3: None,
             }]
         };
         let centroid = |m: &[u8]| {
@@ -741,6 +756,7 @@ mod tests {
                 name: "gone".into(),
                 color: [1, 2, 3],
                 mask,
+                planimetry_cm3: None,
             }],
             &Quiet,
         )
@@ -769,6 +785,7 @@ mod tests {
                 name: "ball".into(),
                 color: [9, 9, 9],
                 mask,
+                planimetry_cm3: None,
             }],
             &Quiet,
         )

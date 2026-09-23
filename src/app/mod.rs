@@ -757,8 +757,14 @@ struct D3Window {
     radius: f32,
     /// Identity of the structure set the meshes were built from.
     key: u64,
-    /// Fit the camera to the meshes when they land: the first time only,
-    /// a rebuild after an edit keeps the view where it was.
+    /// Identity of the image the scene stands on ([`ViewerApp::d3_scene_id`]).
+    /// When it changes the camera starts over - turned, zoomed and centred
+    /// for the new anatomy - since a view kept from another image orbits a
+    /// point that is not in this one.
+    scene: u64,
+    /// Fit the camera to the meshes when they land: the first time, and
+    /// after the image changed; a rebuild after an edit keeps the view where
+    /// it was.
     refit: bool,
     /// Counts every set of meshes that landed; the frame cache is keyed on
     /// it. Only [`super::d3::set_meshes`] may change `meshes`, because a
@@ -1311,6 +1317,10 @@ pub struct ViewerApp {
     pending_load: Option<(usize, PathBuf)>,
     /// The same, for an explicit file selection (slot, files).
     pending_load_files: Option<(usize, Vec<PathBuf>)>,
+    /// A series to put on display once the current read finishes (slot,
+    /// series UID): asked for while something else was loading. By UID,
+    /// not index, since the study may gain series in between.
+    pending_switch: Option<(usize, String)>,
     error: Option<String>,
     /// A one-line confirmation shown in a small modal (e.g. a written file).
     notice: Option<String>,
@@ -1847,6 +1857,7 @@ impl ViewerApp {
             archive_checked_at: f64::NEG_INFINITY,
             pending_load: None,
             pending_load_files: None,
+            pending_switch: None,
             error: None,
             notice: None,
             registration: None,
@@ -2308,7 +2319,15 @@ impl eframe::App for ViewerApp {
         }
         // Kick a queued load once the current one finished.
         if self.loading.is_none() {
-            if let Some((slot, path)) = self.pending_load.take() {
+            if let Some((slot, uid)) = self.pending_switch.take() {
+                let idx = self.slots[slot]
+                    .study
+                    .as_ref()
+                    .and_then(|st| st.series.iter().position(|se| se.uid == uid));
+                if let Some(idx) = idx {
+                    self.start_series_switch(slot, idx);
+                }
+            } else if let Some((slot, path)) = self.pending_load.take() {
                 self.start_load(slot, path);
             } else if let Some((slot, paths)) = self.pending_load_files.take() {
                 self.start_load_files(slot, paths);
