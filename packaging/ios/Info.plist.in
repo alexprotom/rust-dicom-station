@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The app's description of itself. build-ipa.sh substitutes @VERSION@,
+  @BUILD@, @MIN_IOS@, @BUNDLE_ID@ and @PLATFORM@, then adds what Xcode would
+  have added (the DT* keys naming the SDK and Xcode it was built with, and
+  the icon entries actool writes) and saves the result as
+  RustDICOMStation.app/Info.plist. Nothing else is generated, so this is the
+  place to change what the home screen, Settings and the App Store say about
+  the program.
+
+  The entries that carry weight:
+
+  * UIDeviceFamily 1 and 2 = iPhone and iPad, one binary for both. The
+    layout is the desktop's everywhere; on a screen smaller than the desktop
+    window's minimum (every iPhone) src/fit.rs draws it at a smaller zoom.
+  * UISupportedInterfaceOrientations (the iPhone's) is landscape only: in
+    portrait a phone is 390-odd points wide, far below the 900 the layout
+    needs, and no zoom that keeps text readable closes that gap. The iPad
+    (~ipad) takes all four.
+  * MinimumOSVersion must agree with IPHONEOS_DEPLOYMENT_TARGET, which the
+    executable is compiled with; build-ipa.sh reads it back out of the
+    linked binary and refuses a mismatch.
+  * UIFileSharingEnabled and LSSupportsOpeningDocumentsInPlace make the
+    app's Documents folder visible in the Files app (On My iPad / On My
+    iPhone > Rust DICOM Station) and in Finder when the device is connected
+    to a Mac. That folder
+    is the program's data folder: DICOM studies are copied in there, models
+    and the archive live there, exports can be saved there.
+  * UILaunchScreen (an empty dictionary) is the launch screen without a
+    storyboard: a blank screen in the system background colour, and the
+    signal that the app knows every screen size, so iPadOS gives it the
+    whole screen and Split View instead of a letterboxed compatibility mode.
+  * No UIApplicationSceneManifest: winit 0.30 drives the app through the
+    application delegate and one window. iPadOS still wraps that window in
+    a scene of its own, which is where egui-winit and places.rs look for it.
+  * NSLocalNetworkUsageDescription: the text of the question iOS asks
+    the first time the PACS module connects to a server on the local
+    network. Without it the connection is refused silently.
+  * ITSAppUsesNonExemptEncryption false: the only encryption is the TLS of
+    the model download, which is exempt; TestFlight then asks no export
+    compliance question per build.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleName</key>
+    <string>Rust DICOM Station</string>
+    <key>CFBundleDisplayName</key>
+    <string>Rust DICOM Station</string>
+    <key>CFBundleIdentifier</key>
+    <string>@BUNDLE_ID@</string>
+    <key>CFBundleExecutable</key>
+    <string>rust-dicom-station</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@VERSION@</string>
+    <key>CFBundleVersion</key>
+    <string>@BUILD@</string>
+    <key>CFBundleSupportedPlatforms</key>
+    <array>
+        <string>@PLATFORM@</string>
+    </array>
+    <key>MinimumOSVersion</key>
+    <string>@MIN_IOS@</string>
+    <key>LSRequiresIPhoneOS</key>
+    <true/>
+    <key>UIDeviceFamily</key>
+    <array>
+        <integer>1</integer>
+        <integer>2</integer>
+    </array>
+    <key>UIRequiredDeviceCapabilities</key>
+    <array>
+        <string>arm64</string>
+        <string>metal</string>
+    </array>
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    <key>UISupportedInterfaceOrientations~ipad</key>
+    <array>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationPortraitUpsideDown</string>
+    </array>
+    <key>UILaunchScreen</key>
+    <dict/>
+    <key>UIFileSharingEnabled</key>
+    <true/>
+    <key>LSSupportsOpeningDocumentsInPlace</key>
+    <true/>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Rust DICOM Station connects to a PACS on your network to query and retrieve studies.</string>
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
+    <key>NSHumanReadableCopyright</key>
+    <string>MIT licensed. See LICENSE.txt in the repository.</string>
+</dict>
+</plist>
