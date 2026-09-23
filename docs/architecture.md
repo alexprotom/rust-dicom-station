@@ -166,8 +166,8 @@ rust-dicom-station
 │   in-place update of an existing installation, update to the newest release, winget)
 └── CI: fmt, clippy -D warnings, tests on Linux + Windows + macOS, CPU-only build; every
     push to main builds the Windows installer and its winget manifests, the Linux
-    AppImage and snap, the two macOS disk images and the Android APK (packaging/)
-    into a GitHub release, and submits the version to winget
+    AppImage and snap, the two macOS disk images, the Android APK and the iOS
+    .ipa (packaging/) into a GitHub release, and submits the version to winget
 ```
 
 ### Sources of the algorithms
@@ -232,8 +232,8 @@ src/
     detach.rs         every tool window as a window of the operating system
                       (immediate viewport), titled and placed alike
     pick.rs           the one door to a file dialog: the system dialog on the
-                      desktop, an egui folder browser on Android, and the
-                      answer handed to a continuation either way
+                      desktop, an egui folder browser on Android and iOS, and
+                      the answer handed to a continuation either way
     workspace_pick.rs which workspace an action is for, and the rule every
                       such question follows (the open ones plus one new
                       letter): File > Add DICOM folder / Add DICOM file(s) /
@@ -556,6 +556,13 @@ packaging/         everything that turns the viewer into an installable package,
                    over the same ViewerApp, the manifest, the icons and the
                    packaging script (docs/android.md); built by the release
                    workflow
+  ios/             the iOS / iPadOS front end (iPad and iPhone), its own
+                   workspace: a main that hands the same ViewerApp to
+                   UIKit, the zoom that fits the desktop layout into a
+                   small screen, the safe-area strips, the system's folder picker (security-scoped
+                   bookmarks, registered as settings::ios::Places), the
+                   plist, the icon, build-ipa.sh and the simulator smoke
+                   test (docs/ios.md); built by the release workflow
 ```
 
 ## UI architecture
@@ -618,19 +625,23 @@ one it stored and would otherwise command a dragged window back every frame,
 which reads as shaking), and every title goes through `window_title` so the
 whole program reads as `Rust DICOM Station: <what this window is>`. The
 transient confirmations - *Error*, *Done*, *Rename* - stay inside the main
-window, being answers to the last click rather than tools. On Android,
-which allows one window per process, egui draws every viewport as a window
-inside the main one and nothing in `detach.rs` has to know.
+window, being answers to the last click rather than tools. On Android and
+iOS, which allow one window per process, egui draws every viewport as a
+window inside the main one and nothing in `detach.rs` has to know.
 
 File and folder dialogs go through `app/pick.rs`. A request names what is
 wanted (a folder, files, a file, a file to save as) and carries the
 continuation - what to do with the path - as a closure. On the desktop the
 operating system's dialog (`rfd`) blocks and the closure runs before the
 call returns, which is exactly the `if let Some(path) = dialog()` it
-replaced; on Android, where `rfd` has no backend, the same call opens a
-folder browser drawn in egui and the closure runs from the frame in which
-the user answers. The browser's model (roots, listing, sorting) is compiled
-and unit-tested on every platform.
+replaced; on Android and iOS, where `rfd` has no backend, the same call
+opens a folder browser drawn in egui and the closure runs from the frame in
+which the user answers. The browser's model (roots, listing, sorting) is
+compiled and unit-tested on every platform. On iOS its roots are the app's
+own `Documents` plus the folders the user granted in the system's folder
+picker, which lives in the iOS front end and reaches the browser through
+`settings::ios::Places`; the browser adds a *+ Folder from Files* button
+that asks for one more.
 
 The engine-type tools - body contour, auto-segmentation, prompt
 segmentation, slice propagation - are different conversations but the
@@ -774,7 +785,7 @@ All pure Rust: `dicom-rs` (DICOM, with `dicom-pixeldata` for decoding),
 `egui` / `eframe` (UI over wgpu), `rayon`, `rfd` (file dialogs; desktop
 only), `walkdir`, `anyhow`; for the engines `gemm` (SIMD matrix kernels),
 `serde_json`, `zip`, `ureq` (rustls + OS trust store; the bundled Mozilla
-roots on Android), `safetensors`, and `burn` - always with
+roots on Android and iOS), `safetensors`, and `burn` - always with
 its `ndarray` CPU backend, with the wgpu backend added by the cargo feature
 `gpu` (default on). The cargo feature `mcp` (off by default) adds `rmcp`
 (the official MCP SDK), `tokio`, `serde`, `schemars` and `toml` for the

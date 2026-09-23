@@ -319,6 +319,23 @@ jobs:
     secrets: inherit
 
   # ==========================================================================
+  # iOS / iPadOS
+  # ==========================================================================
+  # ios.yml builds the .ipa (iPad and iPhone) and returns it as `ios-ipa`,
+  # signed for installation when the IOS_* secrets are set and ad hoc
+  # otherwise, and uploads it to TestFlight when the App Store Connect
+  # secrets are set too (docs/ios.md). It also starts the app on a simulated
+  # iPad and iPhone; that part never holds the release up. The GitHub
+  # Release waits for the .ipa, like for the other platforms.
+  ios:
+    name: iOS
+    needs: version
+    uses: ./.github/workflows/ios.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+    secrets: inherit
+
+  # ==========================================================================
   # Create GitHub Release
   # ==========================================================================
   release:
@@ -329,6 +346,7 @@ jobs:
       - linux
       - android
       - macos
+      - ios
 
     runs-on: ubuntu-latest
 
@@ -363,6 +381,12 @@ jobs:
           merge-multiple: true
           path: release
 
+      - name: Download iOS artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: ios-ipa
+          path: release
+
       - name: Download winget manifests
         uses: actions/download-artifact@v5
         with:
@@ -394,6 +418,7 @@ jobs:
             rust-dicom-station-*.AppImage \
             rust-dicom-station-*.apk \
             rust-dicom-station-*.dmg \
+            rust-dicom-station-*.ipa \
             > SHA256SUMS
 
           cat SHA256SUMS
