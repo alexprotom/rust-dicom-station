@@ -54,7 +54,9 @@ The scan:
    become warnings, never errors.
 2. **Series grouping.** Image files are grouped by SeriesInstanceUID into the
    workspace tree; the largest series is reconstructed first (click another to
-   switch).
+   switch). Series of equal length - the phases of a 4DCT - follow in series
+   number order, so a folder numbers its series the same way on every
+   machine, whatever order the disk lists the files in.
 3. **Volume reconstruction.** Slices are decoded in parallel (`rayon`) -
    compressed transfer syntaxes (JPEG lossless, RLE, …) via `dicom-rs`'s
    pure-Rust decoders - sorted by projection onto the true slice normal (cross

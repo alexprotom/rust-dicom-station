@@ -303,6 +303,15 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
     }
     progress.set(format!("Reading headers of {} files", files.len()));
 
+    // Everything below keeps the order files arrive in - which series is
+    // met first, which structure set, which dose. A folder's listing comes
+    // in whatever order the file system keeps (on ext4 that is a hash of
+    // the name, seeded per disk), so the same folder could load its series
+    // in a different order on another machine. Sorted, it cannot.
+    let mut files = files.to_vec();
+    files.sort();
+    let files = &files[..];
+
     // Parallel header-only scan.
     struct Scanned {
         path: PathBuf,
@@ -460,7 +469,20 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
     }
 
     // Default to the series with the most slices (typically the planning CT).
-    image_series.sort_by_key(|s| std::cmp::Reverse(s.files.len()));
+    // Series of equal length - the phases of a 4DCT, say - go by series
+    // number, as the scanner numbered them, then by UID, so the order never
+    // depends on which file happened to be read first.
+    image_series.sort_by(|a, b| {
+        b.files
+            .len()
+            .cmp(&a.files.len())
+            .then_with(|| {
+                a.series_number
+                    .unwrap_or(i64::MAX)
+                    .cmp(&b.series_number.unwrap_or(i64::MAX))
+            })
+            .then_with(|| a.uid.cmp(&b.uid))
+    });
     let active_series = 0;
 
     // No image series is not an error. RT images, a structure set, a plan or
