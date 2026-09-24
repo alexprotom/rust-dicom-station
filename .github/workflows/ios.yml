@@ -147,8 +147,10 @@ jobs:
           BASE: ${{ github.base_ref }}
         run: |
           set -euo pipefail
-          if git diff --name-only "origin/$BASE...HEAD" \
-              | grep -qE '^(packaging/ios/|\.github/workflows/ios\.yml$)'; then
+          # The list first, then grep: piped into `grep -q`, git can die of
+          # SIGPIPE after the match and pipefail would read that as "no".
+          changed="$(git diff --name-only "origin/$BASE...HEAD")"
+          if grep -qE '^(packaging/ios/|\.github/workflows/ios\.yml$)' <<< "$changed"; then
             echo "package=true" >> "$GITHUB_OUTPUT"
             echo "packaging/ios or ios.yml changed - building the app"
           else

@@ -15,7 +15,8 @@
 #     standard output and error into OUT_DIR;
 #   * fails if the program wrote last_panic.txt into its Documents folder
 #     (src/main.rs does that on any panic), and prints it;
-#   * fails if the program is no longer running.
+#   * fails if the program is no longer running (launchd's list of the
+#     simulator's jobs, saved as launchctl.txt, has no PID for it).
 #
 # The simulator is deleted again at the end, pass or fail.
 set -euo pipefail
@@ -92,9 +93,18 @@ if [ -f "$data/Documents/last_panic.txt" ]; then
     exit 1
 fi
 
-if xcrun simctl spawn "$udid" launchctl list | grep -q "UIKitApplication:$bundle_id"; then
+# Into a file first, not piped into `grep -q`: grep stops reading at the
+# match, `simctl spawn` then dies of SIGPIPE writing the rest ("Child process
+# terminated with signal 13: Broken pipe"), and under pipefail that turned a
+# running program into a "not running" one. A line counts only with a PID in
+# its first column; an app that has exited can keep its line, with "-" there.
+xcrun simctl spawn "$udid" launchctl list > "$out/launchctl.txt" 2>&1 || true
+if awk -v job="UIKitApplication:$bundle_id" \
+        'index($3, job) == 1 && $1 ~ /^[0-9]+$/ { up = 1; print } END { exit !up }' \
+        "$out/launchctl.txt"; then
     echo "the program is running ${wait_s}s after launch"
 else
+    grep -F "UIKitApplication:$bundle_id" "$out/launchctl.txt" || true
     echo "::error::the program is not running ${wait_s}s after launch; its standard error:"
     tail -n 60 "$out/stderr.log" || true
     exit 1
