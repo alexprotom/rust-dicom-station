@@ -77,13 +77,16 @@ impl Backend {
     /// reaches GL on macOS only through ANGLE, which this program does not
     /// link, so `Backends::GL` there finds no adapter at all - a menu entry
     /// and a fallback step that can only ever fail.
+    ///
+    /// iOS and iPadOS are Apple in the same way: Metal or nothing.
     pub fn available_here(self) -> bool {
+        let apple = cfg!(any(target_os = "macos", target_os = "ios"));
         match self {
             Backend::Auto => true,
-            Backend::OpenGl => !cfg!(target_os = "macos"),
-            Backend::Vulkan => !cfg!(target_os = "macos"),
+            Backend::OpenGl => !apple,
+            Backend::Vulkan => !apple,
             Backend::Dx12 => cfg!(target_os = "windows"),
-            Backend::Metal => cfg!(target_os = "macos"),
+            Backend::Metal => apple,
         }
     }
 

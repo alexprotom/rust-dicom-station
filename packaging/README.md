@@ -2,7 +2,7 @@
 
 Everything that turns the viewer into something a user installs, one
 folder per platform. Nothing here is part of `cargo build` in the
-repository root: the two crates are workspaces of their own, and the rest
+repository root: the three crates are workspaces of their own, and the rest
 is scripts and recipes that the workflows in `.github/workflows/` run.
 
 ```text
@@ -17,6 +17,7 @@ packaging/
     snap/          snapcraft.yaml and the desktop entry, plus build-snap.sh
   macos/           build-app.sh (.app and .dmg for arm64 or x86_64), the plist, the cask script
   android/         the Android front end (a cdylib crate of its own) and build-apk.sh
+  ios/             the iOS / iPadOS front end (a crate of its own), build-ipa.sh and the simulator smoke test
 ```
 
 | Platform | Built by | Result | Docs |
@@ -27,11 +28,13 @@ packaging/
 | Linux Flatpak | flatpak.yml (test builds); Flathub builds the release | Flathub `io.github.alexprotom.rust-dicom-station` | [docs/flatpak.md](../docs/flatpak.md) |
 | macOS | macos.yml (called by release.yml), `build-app.sh` | `rust-dicom-station-X.Y.Z-macos-{arm64,x86_64}.dmg`, Homebrew cask | [macos/README.md](macos/README.md), [docs/macos.md](../docs/macos.md) |
 | Android | android.yml (called by release.yml), `build-apk.sh` | `rust-dicom-station-X.Y.Z-android-arm64.apk` | [android/README.md](android/README.md), [docs/android.md](../docs/android.md) |
+| iOS / iPadOS | ios.yml (called by release.yml), `build-ipa.sh` | `rust-dicom-station-X.Y.Z-ios.ipa`, TestFlight when configured | [ios/README.md](ios/README.md), [docs/ios.md](../docs/ios.md) |
 
 Every script finds the repository root from its own location, so all of
-them run from any working directory. The two crates reach the viewer
+them run from any working directory. The three crates reach the viewer
 through a path dependency in their `Cargo.toml` (`../..` from
-`packaging/android`, `../../..` from `packaging/windows/installer`).
+`packaging/android` and `packaging/ios`, `../../..` from
+`packaging/windows/installer`).
 
 The macOS folder has no per-architecture subfolders on purpose: one script
 builds either architecture (`--arch arm64` / `--arch x86_64`) from the same

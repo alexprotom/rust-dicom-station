@@ -31,4 +31,5 @@ Each page here covers one area.
 | [flatpak.md](flatpak.md) | The Flatpak: installing, what the sandbox allows, where the files are, graphics, the MCP server, building and the Flathub submission |
 | [macos.md](macos.md) | The macOS package: the two disk images, the first launch, where the files are, Metal, the MCP server in the bundle, building, signing, notarisation and Homebrew |
 | [android.md](android.md) | The Android package: installing, all files access, what differs on a tablet, where the files are, the `packaging/android/` crate, building, signing and releasing |
+| [ios.md](ios.md) | The iOS package for iPad and iPhone: installing (TestFlight, ad hoc, sideloading), getting studies onto the device, the folder picker, what differs on a tablet and a phone, the zoom that fits a phone, where the files are, the `packaging/ios/` crate, building, signing and releasing |
 | [example-data.md](example-data.md) | The bundled example patient: contents, source, citations, license |

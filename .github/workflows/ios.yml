@@ -1,0 +1,463 @@
+name: iOS
+
+# The iOS / iPadOS package: the viewer as an arm64 executable in an .app
+# bundle, handed out as an .ipa that installs on iPads and iPhones
+# (packaging/ios/build-ipa.sh, docs/ios.md).
+#
+# Four jobs, three ways in:
+#   * check - every pull request that touches the viewer's sources or
+#     packaging/ios/: rustfmt and clippy of the iOS crate for
+#     aarch64-apple-ios (which compiles the whole viewer for iOS - the
+#     cross-compilation proof) and the crate's own unit tests on the host.
+#     A job of its own rather than a step of ci.yml because it is another
+#     dependency graph, and one graph per job is what keeps CI fast.
+#   * ipa and simulator - a pull request that changes packaging/ios/ or this
+#     workflow, Actions > iOS > Run workflow, and the release workflow,
+#     which calls this one on every push to main with the release's
+#     version. `ipa` builds, signs (see below) and inspects the device
+#     package and attaches it to the run as `ios-ipa`; `simulator` builds
+#     the same app for the simulator, starts it on a simulated iPad and a
+#     simulated iPhone, and attaches the screenshots and the program's logs
+#     as `ios-simulator`.
+#     A pull request from feature/ios-port therefore builds the app itself,
+#     which matters because *Run workflow* only exists for a workflow that
+#     is already on the default branch.
+#
+# Signing. iOS runs nothing that no Apple certificate has signed, so what
+# the .ipa is good for depends on the secrets:
+#
+#   IOS_CERTIFICATE_BASE64          the signing certificate with its key, a
+#                                   .p12, base64 ("Apple Distribution" for
+#                                   ad hoc / App Store, "Apple Development"
+#                                   for development profiles)
+#   IOS_CERTIFICATE_PASSWORD        its password
+#   IOS_PROVISIONING_PROFILE_BASE64 the .mobileprovision that goes with it,
+#                                   base64 (ad hoc: installs on the devices
+#                                   registered in it; App Store: TestFlight)
+#
+# With them the .ipa is signed for the devices (or the store) the profile
+# covers and installs directly. Without them it is signed ad hoc: complete,
+# but it has to be installed through a tool that re-signs it with an Apple
+# ID (AltStore, Sideloadly). The repository variable IOS_BUNDLE_ID sets the
+# bundle identifier when the profile is a wildcard one.
+#
+# TestFlight: with an App Store profile and APP_STORE_CONNECT_KEY_ID,
+# APP_STORE_CONNECT_ISSUER_ID and APP_STORE_CONNECT_KEY_BASE64 (an App Store
+# Connect API key, the .p8 base64-encoded), a release uploads the .ipa to
+# App Store Connect, where it appears in TestFlight after Apple's
+# processing. *Run workflow* uploads only when asked to.
+
+on:
+  # Pull requests only, for the same reason as ci.yml: the merge ref is what
+  # lands, and branch protection sees to it that nothing lands unchecked.
+  pull_request:
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - "assets/**"
+      - "packaging/ios/**"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+    inputs:
+      testflight:
+        description: Upload the signed .ipa to TestFlight (needs the App Store Connect secrets)
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      version:
+        description: The version the .ipa must carry (from Cargo.toml)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  # iOS / iPadOS 15. build-ipa.sh exports this for cargo, writes it into
+  # MinimumOSVersion and then reads it back out of the linked binary, so the
+  # three cannot drift apart.
+  IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+
+jobs:
+  # ==========================================================================
+  # Cross-compilation check
+  # ==========================================================================
+  check:
+    name: clippy (aarch64-apple-ios)
+    if: github.event_name == 'pull_request'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packaging/ios
+          key: aarch64-apple-ios
+
+      # The root `cargo fmt --all` does not reach this crate: it is a
+      # workspace of its own.
+      - name: rustfmt
+        working-directory: packaging/ios
+        run: cargo fmt --check
+
+      - name: clippy for iOS
+        working-directory: packaging/ios
+        run: cargo clippy --target aarch64-apple-ios -- -D warnings
+
+      # On the host the crate is only its stub `main` and the safe-area
+      # arithmetic, so this takes seconds and builds no viewer.
+      - name: unit tests (host)
+        working-directory: packaging/ios
+        run: cargo test
+
+  # ==========================================================================
+  # Does this pull request change the package itself?
+  # ==========================================================================
+  scope:
+    name: package changed?
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    outputs:
+      package: ${{ steps.diff.outputs.package }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Compare with the base branch
+        id: diff
+        shell: bash
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          # The list first, then grep: piped into `grep -q`, git can die of
+          # SIGPIPE after the match and pipefail would read that as "no".
+          changed="$(git diff --name-only "origin/$BASE...HEAD")"
+          if grep -qE '^(packaging/ios/|\.github/workflows/ios\.yml$)' <<< "$changed"; then
+            echo "package=true" >> "$GITHUB_OUTPUT"
+            echo "packaging/ios or ios.yml changed - building the app"
+          else
+            echo "package=false" >> "$GITHUB_OUTPUT"
+            echo "only the viewer changed - the check job covers it"
+          fi
+
+  # ==========================================================================
+  # The .ipa
+  # ==========================================================================
+  # `github.event_name` is the caller's event when this workflow is called,
+  # so the release is recognised by the version it passes.
+  ipa:
+    name: iOS .ipa
+    needs: scope
+    if: >-
+      !cancelled() && (
+        github.event_name == 'workflow_dispatch' ||
+        inputs.version != '' ||
+        needs.scope.outputs.package == 'true')
+    runs-on: macos-15
+
+    # Job-level, because a step's `if:` can read `env` but not `secrets`.
+    env:
+      IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+      IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+      APP_STORE_CONNECT_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_KEY_BASE64 }}
+      RDS_IOS_BUNDLE_ID: ${{ vars.IOS_BUNDLE_ID }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packaging/ios
+          key: aarch64-apple-ios-release
+
+      # The newest Xcode on the image: App Store Connect accepts only builds
+      # made with a recent SDK, and the simulator runtimes follow Xcode.
+      - name: Select Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcode=$(printf '%s\n' /Applications/Xcode_*.app | grep -v -i -E 'beta|_rc' | sort -V | tail -n 1)
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Check the version
+        if: inputs.version != ''
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          have=$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -n 1)
+          if [ "$have" != "$VERSION" ]; then
+            echo "::error::Cargo.toml carries $have, the release expects $VERSION"
+            exit 1
+          fi
+
+      # ----------------------------------------------------------------------
+      # The signing certificate and the profile
+      #
+      # A keychain of its own in the runner's temporary folder, deleted with
+      # the runner. `set-key-partition-list` is the step that is easy to miss:
+      # without it macOS asks for permission the first time codesign wants
+      # the key, and a job has nobody to ask, so it hangs until it is
+      # cancelled.
+      # ----------------------------------------------------------------------
+      - name: Import the certificate and the profile
+        if: env.IOS_CERTIFICATE_BASE64 != '' && env.IOS_PROVISIONING_PROFILE_BASE64 != ''
+        shell: bash
+        env:
+          CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/rds-ios.keychain-db"
+          password="$(uuidgen)"
+
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+
+          echo "$IOS_CERTIFICATE_BASE64" | base64 --decode > "$RUNNER_TEMP/ios.p12"
+          security import "$RUNNER_TEMP/ios.p12" \
+            -k "$keychain" -P "$CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/ios.p12"
+
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$password" "$keychain" >/dev/null
+          security list-keychain -d user -s "$keychain" login.keychain-db
+
+          # The identity by its SHA-1: codesign takes that as readily as the
+          # name, and there is then no second secret to keep in step.
+          identity=$(security find-identity -v -p codesigning "$keychain" \
+            | awk '/[0-9]+\) [0-9A-F]{40} / {print $2; exit}')
+          if [ -z "$identity" ]; then
+            echo "::error::IOS_CERTIFICATE_BASE64 holds no usable signing identity"
+            security find-identity -v -p codesigning "$keychain"
+            exit 1
+          fi
+          security find-identity -v -p codesigning "$keychain"
+
+          echo "$IOS_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/rds.mobileprovision"
+          # What kind of profile it is decides whether TestFlight can take
+          # the result: only an App Store profile lists no devices and does
+          # not provision all of them (that is an enterprise one).
+          security cms -D -i "$RUNNER_TEMP/rds.mobileprovision" > "$RUNNER_TEMP/profile.plist"
+          pb=/usr/libexec/PlistBuddy
+          if $pb -c 'Print :ProvisionedDevices' "$RUNNER_TEMP/profile.plist" >/dev/null 2>&1; then
+            if [ "$($pb -c 'Print :Entitlements:get-task-allow' "$RUNNER_TEMP/profile.plist" 2>/dev/null)" = true ]; then
+              kind=development
+            else
+              kind=ad-hoc
+            fi
+          elif [ "$($pb -c 'Print :ProvisionsAllDevices' "$RUNNER_TEMP/profile.plist" 2>/dev/null)" = true ]; then
+            kind=enterprise
+          else
+            kind=app-store
+          fi
+          echo "profile: $($pb -c 'Print :Name' "$RUNNER_TEMP/profile.plist") ($kind)"
+          {
+            echo "RDS_IOS_SIGN_IDENTITY=$identity"
+            echo "RDS_IOS_PROFILE=$RUNNER_TEMP/rds.mobileprovision"
+            echo "RDS_IOS_PROFILE_KIND=$kind"
+          } >> "$GITHUB_ENV"
+
+      - name: Not signed for installation
+        if: env.IOS_CERTIFICATE_BASE64 == '' || env.IOS_PROVISIONING_PROFILE_BASE64 == ''
+        run: |
+          echo "::notice::IOS_CERTIFICATE_BASE64 / IOS_PROVISIONING_PROFILE_BASE64 are not set - the .ipa is signed ad hoc and installs through a re-signing tool (docs/ios.md#installing)."
+
+      - name: Build the .ipa
+        shell: bash
+        # Through bash, so a checkout that lost the executable bit (a commit
+        # made on Windows) still works.
+        run: bash packaging/ios/build-ipa.sh
+
+      # ----------------------------------------------------------------------
+      # What the package actually contains
+      #
+      # build-ipa.sh already refuses to finish on the wrong platform or a
+      # deployment target that does not match the plist. This opens the
+      # finished .ipa and looks again, because what is checked above is the
+      # bundle in the build folder and what a user gets is this file.
+      # ----------------------------------------------------------------------
+      - name: Inspect the .ipa
+        shell: bash
+        run: |
+          set -euo pipefail
+          ipa=$(ls packaging/ios/out/rust-dicom-station-*-ios.ipa)
+          echo "$ipa"
+          x="$RUNNER_TEMP/ipa"
+          rm -rf "$x"
+          mkdir -p "$x"
+          unzip -q "$ipa" -d "$x"
+          app="$x/Payload/RustDICOMStation.app"
+          test -x "$app/rust-dicom-station"
+          test -f "$app/Assets.car"
+          test -f "$app/PrivacyInfo.xcprivacy"
+          plist="$app/Info.plist"
+          for key in CFBundleIdentifier CFBundleShortVersionString CFBundleVersion \
+                     MinimumOSVersion DTPlatformName DTSDKName DTXcode; do
+            printf '%-28s %s\n' "$key" "$(/usr/libexec/PlistBuddy -c "Print :$key" "$plist")"
+          done
+          /usr/libexec/PlistBuddy -c 'Print :UIDeviceFamily' "$plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons' "$plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons~ipad' "$plist"
+          min=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$plist")
+          if [ "$min" != "$IPHONEOS_DEPLOYMENT_TARGET" ]; then
+            echo "::error::the bundle claims iOS $min, the build targets $IPHONEOS_DEPLOYMENT_TARGET"
+            exit 1
+          fi
+          got=$(lipo -archs "$app/rust-dicom-station")
+          if [ "$got" != "arm64" ]; then
+            echo "::error::the executable is $got, not arm64"
+            exit 1
+          fi
+          otool -l "$app/rust-dicom-station" | grep -A4 LC_BUILD_VERSION || true
+          codesign --verify --strict --verbose=2 "$app"
+          codesign --display --verbose=2 "$app" 2>&1 | grep -E 'Identifier|Authority|TeamIdentifier|Signature' || true
+          if [ -f "$app/embedded.mobileprovision" ]; then
+            security cms -D -i "$app/embedded.mobileprovision" > "$RUNNER_TEMP/embedded.plist"
+            /usr/libexec/PlistBuddy -c 'Print :Name' "$RUNNER_TEMP/embedded.plist"
+            /usr/libexec/PlistBuddy -c 'Print :ExpirationDate' "$RUNNER_TEMP/embedded.plist"
+            if devices=$(/usr/libexec/PlistBuddy -c 'Print :ProvisionedDevices' "$RUNNER_TEMP/embedded.plist" 2>/dev/null); then
+              echo "$(echo "$devices" | grep -c -v -E '^(Array \{|\})$') device(s) in the profile"
+            else
+              echo "no device list: an App Store profile"
+            fi
+          fi
+          ls -lh "$ipa"
+
+      - name: Upload the .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa
+          path: packaging/ios/out/rust-dicom-station-*-ios.ipa
+          if-no-files-found: error
+
+      # ----------------------------------------------------------------------
+      # TestFlight
+      #
+      # Only a package signed with an App Store profile is accepted; App
+      # Store Connect answers anything else with an error that names the
+      # profile. altool reads the API key from ~/.appstoreconnect/private_keys.
+      # ----------------------------------------------------------------------
+      - name: Not for TestFlight
+        if: >-
+          env.APP_STORE_CONNECT_KEY_BASE64 != '' &&
+          env.RDS_IOS_PROFILE_KIND != 'app-store' &&
+          (inputs.version != '' || inputs.testflight)
+        run: |
+          echo "::notice::the App Store Connect key is set, but the .ipa is signed with a ${RDS_IOS_PROFILE_KIND:-no} profile; TestFlight takes only an App Store one - not uploaded."
+
+      - name: Upload to TestFlight
+        if: >-
+          env.APP_STORE_CONNECT_KEY_BASE64 != '' &&
+          env.RDS_IOS_PROFILE_KIND == 'app-store' &&
+          (inputs.version != '' || inputs.testflight)
+        shell: bash
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "$APP_STORE_CONNECT_KEY_BASE64" | base64 --decode \
+            > ~/.appstoreconnect/private_keys/AuthKey_"$KEY_ID".p8
+          ipa=$(ls packaging/ios/out/rust-dicom-station-*-ios.ipa)
+          xcrun altool --upload-app --type ios --file "$ipa" \
+            --apiKey "$KEY_ID" --apiIssuer "$ISSUER_ID"
+
+  # ==========================================================================
+  # The same app on a simulated iPad and iPhone
+  # ==========================================================================
+  # Nothing on a hosted runner can run the device build, but the simulator
+  # runs the same program compiled for it, on the runner's (paravirtual)
+  # Metal device: this is where "it starts, draws its window and stays up"
+  # is shown rather than assumed, once on an iPad and once on an iPhone
+  # (landscape, fitted by src/fit.rs). The screenshots are attached to the
+  # run.
+  #
+  # For a release it does not hold the release up (continue-on-error): the
+  # .ipa is what ships, and a simulator that fails to boot is the runner's
+  # problem, not the program's. For a pull request and *Run workflow* it is
+  # a gate.
+  simulator:
+    name: iPad and iPhone simulators
+    needs: scope
+    if: >-
+      !cancelled() && (
+        github.event_name == 'workflow_dispatch' ||
+        inputs.version != '' ||
+        needs.scope.outputs.package == 'true')
+    continue-on-error: ${{ inputs.version != '' }}
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packaging/ios
+          key: aarch64-apple-ios-sim
+
+      - name: Select Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcode=$(printf '%s\n' /Applications/Xcode_*.app | grep -v -i -E 'beta|_rc' | sort -V | tail -n 1)
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      # The release profile, as shipped: an iOS app's main thread - where
+      # UIKit runs the event loop and egui draws - has a 1 MB stack, and a
+      # dev build's larger frames would test something that never ships.
+      - name: Build the simulator app
+        shell: bash
+        run: bash packaging/ios/build-ipa.sh --simulator
+
+      - name: Start it on a simulated iPad
+        shell: bash
+        run: bash packaging/ios/simulator-smoke.sh ipad "$RUNNER_TEMP/smoke/ipad"
+
+      # Landscape only on a phone, at the zoom src/fit.rs chooses for it.
+      - name: Start it on a simulated iPhone
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: bash packaging/ios/simulator-smoke.sh iphone "$RUNNER_TEMP/smoke/iphone"
+
+      - name: Upload the screenshot and the log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-simulator
+          path: |
+            ${{ runner.temp }}/smoke/
+            packaging/ios/out/rust-dicom-station-*-ios-simulator.zip
+          if-no-files-found: warn

@@ -1,6 +1,6 @@
 [package]
 name = "rust-dicom-station"
-version = "0.9.10"
+version = "0.10.0"
 edition = "2021"
 description = "Fast, robust DICOM / RT DICOM viewer in pure Rust (CT/MR volumes, RTSTRUCT, RTDOSE, RTPLAN) with a three-view MPR layout"
 license = "MIT"
@@ -53,7 +53,9 @@ toml = { version = "1", optional = true, default-features = false, features = ["
 # (`rfd` has no Android backend; `app/pick.rs` draws one in egui there), and
 # the TLS trust store for the weight download (Android has no store that
 # `rustls-native-certs` can read, so the bundled Mozilla roots are used).
-[target.'cfg(not(target_os = "android"))'.dependencies]
+# The iOS / iPadOS build (see `packaging/ios/`) differs in the same three
+# places and gets a table of its own below; the desktop table leaves it out.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "links", "wgpu", "wayland", "x11"] }
 rfd = "0.17"
 # weight download - rustls (pure Rust TLS) with the OS trust store, so
@@ -65,6 +67,16 @@ ureq = { version = "2", features = ["native-certs"] }
 # so the package needs no Java or Kotlin. `accesskit` is only offered with
 # the GameActivity glue and is left out here.
 eframe = { version = "0.36", default-features = false, features = ["default_fonts", "links", "wgpu", "android-native-activity"] }
+ureq = { version = "2" }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+# UIKit needs no activity glue: `winit` starts the application itself. No
+# `x11` / `wayland` (nothing to build them for) and no `accesskit` (it has
+# no iOS adapter; `accesskit_winit` would compile to a stub). No `rfd`
+# either - it has no iOS backend, so `app/pick.rs` draws the same egui
+# browser as on Android. And the bundled Mozilla roots for TLS: iOS keeps
+# its trust store where `rustls-native-certs` cannot read it.
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "links", "wgpu"] }
 ureq = { version = "2" }
 
 # The Windows executable's icon resource (see `build.rs`). Host-gated: on a

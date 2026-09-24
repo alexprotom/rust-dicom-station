@@ -256,7 +256,7 @@ fn the_heart_sequence_runs_on_the_phantom() {
         "the local rigid fit of the target is reported: {qa:?}"
     );
     let rep = call(c, "motion_report", json!({"run": "run1"}));
-    assert!(rep["csv"].as_str().unwrap().contains("table"));
+    assert!(rep["csv"].as_str().unwrap().contains("Per-phase values"));
     assert!(
         !rep.to_string().contains("PHANTOM"),
         "the header carries the handle, not the name"

@@ -222,11 +222,13 @@ pub fn run(req: MotionRequest, p: &Progress) -> Result<MotionOutcome> {
             qa.push(RegQa {
                 phase: label.clone(),
                 model: MotionModel::Rigid,
+                region: None,
                 metric_line: if req.local_rigid_margin_mm.is_some() {
                     format!("global: {}", rigid.metric_line())
                 } else {
                     rigid.metric_line()
                 },
+                metrics: Some(rigid.metrics()),
                 folding_pct: 100.0 * rigid.analysis.jacobian.folded,
                 disp_p95_mm: rigid.analysis.displacement.p95,
                 image_dice: rigid.analysis.overlap.map(|o| (o.after, o.before)),
@@ -266,7 +268,9 @@ pub fn run(req: MotionRequest, p: &Progress) -> Result<MotionOutcome> {
                 qa.push(RegQa {
                     phase: label.clone(),
                     model: MotionModel::Rigid,
+                    region: Some(subject.name.clone()),
                     metric_line: format!("{}: {}", subject.name, r.metric_line()),
+                    metrics: Some(r.metrics()),
                     folding_pct: 0.0,
                     disp_p95_mm: r.analysis.displacement.p95,
                     image_dice: r.analysis.overlap.map(|o| (o.after, o.before)),
@@ -287,7 +291,9 @@ pub fn run(req: MotionRequest, p: &Progress) -> Result<MotionOutcome> {
             qa.push(RegQa {
                 phase: label.clone(),
                 model: MotionModel::Deformable,
+                region: None,
                 metric_line: def.metric_line(),
+                metrics: Some(def.metrics()),
                 folding_pct: 100.0 * def.analysis.jacobian.folded,
                 disp_p95_mm: def.analysis.displacement.p95,
                 image_dice: def.analysis.overlap.map(|o| (o.after, o.before)),

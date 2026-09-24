@@ -18,6 +18,7 @@ use rayon::prelude::*;
 
 use crate::geometry::Vec3;
 use crate::morphology;
+pub use crate::registration::RunMetrics;
 use crate::volume::Grid;
 
 /// The anatomical direction names of the patient axes, in x/y/z order.
@@ -605,8 +606,13 @@ impl AxisCorrelation {
 pub struct RegQa {
     pub phase: String,
     pub model: MotionModel,
+    /// What the fit looked at: `None` for the whole image, or the name of
+    /// the structure whose neighbourhood a local rigid fit was confined to.
+    pub region: Option<String>,
     /// The engine's own `MSD 9700 ▶ 1800 (900 iters, 20.1 s)` line.
     pub metric_line: String,
+    /// The numbers of `metric_line`, for a table.
+    pub metrics: Option<RunMetrics>,
     /// Fraction of sampled voxels with a non-positive Jacobian, percent.
     pub folding_pct: f64,
     /// 95th-percentile displacement magnitude of the deformation, mm.
@@ -675,118 +681,526 @@ impl MotionReport {
         self.reference_tracks.iter().find(|t| t.model == model)
     }
 
-    /// Long-format CSV of the whole report: one `table` column tells the
-    /// sections apart so the file loads into any tool as a single sheet.
+    /// The report as a CSV a spreadsheet opens as it is: a short header
+    /// block, then sections with the **phases as columns** and **one row per
+    /// method** (rigid, deformable, as contoured) under every quantity, so
+    /// the methods sit on consecutive rows and read against each other
+    /// phase by phase. Sections are separated by a blank line:
+    ///
+    /// * *Per-phase values* - centroid position, displacement from the
+    ///   reference phase (per axis and |d|), volume, grey levels and the
+    ///   offset to the reference structure, per structure;
+    /// * *Summary* - one row per structure and method: peak-to-peak
+    ///   amplitude, largest |d|, target-reference drift, correlation with
+    ///   the reference structure, ITV;
+    /// * *Registration quality* - per phase: image Dice after and before,
+    ///   structure Dice against the phase's own contour, the metric, the
+    ///   95th-percentile displacement and the folding rate.
+    ///
+    /// Text is plain ASCII where the UI uses typographic symbols (see
+    /// [`plain_text`]); write it with [`csv_file_bytes`].
     pub fn csv(&self) -> String {
-        let mut s = String::new();
-        s.push_str("table,run,target,model,phase,axis,value1,value2,value3,value4\n");
-        let esc = |v: &str| {
-            if v.contains(',') || v.contains('"') {
-                format!("\"{}\"", v.replace('"', "\"\""))
-            } else {
-                v.to_string()
-            }
-        };
-        let run = esc(&self.run_name);
-        let mut track_rows = |t: &Track, kind: &str| {
-            let disp = t.displacements();
-            for (s_i, d) in t.samples.iter().zip(&disp) {
-                s.push_str(&format!(
-                    "{kind},{run},{},{},{},centroid,{:.3},{:.3},{:.3},{:.4}\n",
-                    esc(&t.target),
-                    t.model.label(),
-                    esc(&s_i.phase),
-                    s_i.centroid.x,
-                    s_i.centroid.y,
-                    s_i.centroid.z,
-                    s_i.volume_cm3
-                ));
-                if let Some(g) = s_i.grey {
-                    s.push_str(&format!(
-                        "{kind},{run},{},{},{},grey,{:.2},{:.2},{:.2},\n",
-                        esc(&t.target),
-                        t.model.label(),
-                        esc(&s_i.phase),
-                        g[0],
-                        g[1],
-                        g[2]
-                    ));
-                }
-                s.push_str(&format!(
-                    "{kind},{run},{},{},{},displacement,{:.3},{:.3},{:.3},{:.3}\n",
-                    esc(&t.target),
-                    t.model.label(),
-                    esc(&s_i.phase),
-                    d.x,
-                    d.y,
-                    d.z,
-                    d.length()
-                ));
-            }
-            s.push_str(&format!(
-                "peak_to_peak,{run},{},{},,,{:.3},,,\n",
-                esc(&t.target),
-                t.model.label(),
-                t.peak_to_peak()
-            ));
-        };
+        let mut w = Csv::default();
+        w.row(["Motion report", &self.run_name]);
+        w.row(["Workspace", &self.slot_name]);
+        w.row(["Reference phase", &self.reference]);
+        if let Some(s) = &self.reference_structure {
+            w.row(["Reference structure", s]);
+        }
+        w.row([
+            "Coordinates",
+            "patient LPS in mm: RL = x (right to left), AP = y (anterior to posterior), \
+             SI = z (inferior to superior)",
+        ]);
+        w.row([
+            "Displacement",
+            "centroid on the phase minus centroid on the reference phase",
+        ]);
+        w.blank();
+        self.csv_phase_values(&mut w);
+        w.blank();
+        self.csv_summary(&mut w);
+        if !self.qa.is_empty() {
+            w.blank();
+            self.csv_registration_quality(&mut w);
+        }
+        w.text
+    }
+
+    /// Distinct target names in the order the run lists them.
+    fn target_names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = Vec::new();
         for t in &self.tracks {
-            track_rows(t, "track");
-        }
-        for t in &self.reference_tracks {
-            track_rows(t, "reference");
-        }
-        for (target, model, axes) in &self.correlations {
-            for c in axes {
-                s.push_str(&format!(
-                    "correlation,{run},{},{},,{},{:.4},{:.6},,\n",
-                    esc(target),
-                    model.label(),
-                    c.axis,
-                    c.r,
-                    c.p
-                ));
+            if !names.contains(&t.target.as_str()) {
+                names.push(&t.target);
             }
         }
+        names
+    }
+
+    /// The per-phase section: per structure and quantity, one row per
+    /// method, one column per phase.
+    fn csv_phase_values(&self, w: &mut Csv) {
+        w.row(["Per-phase values"]);
+        w.phase_header(["Structure", "Quantity", "Unit", "Method"], &self.phases);
+        let mut groups: Vec<(String, Vec<&Track>, bool)> = self
+            .target_names()
+            .into_iter()
+            .map(|n| {
+                let tracks = self.tracks.iter().filter(|t| t.target == n).collect();
+                (n.to_string(), tracks, true)
+            })
+            .collect();
+        if !self.reference_tracks.is_empty() {
+            let name = self
+                .reference_structure
+                .clone()
+                .unwrap_or_else(|| self.reference_tracks[0].target.clone());
+            groups.push((
+                format!("{name} (reference)"),
+                self.reference_tracks.iter().collect(),
+                false,
+            ));
+        }
+        type Value = fn(&PhaseSample, Vec3) -> Option<f64>;
+        let quantities: [(&str, &str, usize, Value); 11] = [
+            ("Centroid RL (x)", "mm", 3, |s, _| Some(s.centroid.x)),
+            ("Centroid AP (y)", "mm", 3, |s, _| Some(s.centroid.y)),
+            ("Centroid SI (z)", "mm", 3, |s, _| Some(s.centroid.z)),
+            ("Displacement RL", "mm", 3, |_, d| Some(d.x)),
+            ("Displacement AP", "mm", 3, |_, d| Some(d.y)),
+            ("Displacement SI", "mm", 3, |_, d| Some(d.z)),
+            ("Displacement |d|", "mm", 3, |_, d| Some(d.length())),
+            ("Volume", "cm3", 3, |s, _| Some(s.volume_cm3)),
+            ("Grey level min", "image value", 1, |s, _| {
+                s.grey.map(|g| g[0])
+            }),
+            ("Grey level mean", "image value", 1, |s, _| {
+                s.grey.map(|g| g[1])
+            }),
+            ("Grey level max", "image value", 1, |s, _| {
+                s.grey.map(|g| g[2])
+            }),
+        ];
+        for (name, tracks, is_target) in &groups {
+            let has_grey = tracks
+                .iter()
+                .any(|t| t.samples.iter().any(|s| s.grey.is_some()));
+            for (quantity, unit, decimals, value) in quantities {
+                if quantity.starts_with("Grey") && !has_grey {
+                    continue;
+                }
+                for t in tracks {
+                    let disp = t.displacements();
+                    let cells = self.phases.iter().map(|ph| {
+                        t.samples
+                            .iter()
+                            .position(|s| &s.phase == ph)
+                            .and_then(|i| value(&t.samples[i], disp[i]))
+                            .map(|v| num(v, decimals))
+                    });
+                    w.phase_row([name.as_str(), quantity, unit, t.model.label()], cells);
+                }
+            }
+            // Where the target sits against the reference structure.
+            if !is_target {
+                continue;
+            }
+            let reference = self.reference_structure.as_deref().unwrap_or("reference");
+            for (ai, axis) in AXES.iter().enumerate() {
+                let quantity = format!("Offset to {reference} {axis}");
+                for t in tracks {
+                    let Some(drift) = self
+                        .reference_track(t.model)
+                        .and_then(|rt| t.drift_against(rt).map(|d| (rt, d)))
+                    else {
+                        continue;
+                    };
+                    let (rt, drift) = drift;
+                    let cells = self.phases.iter().map(|ph| {
+                        let a = t.samples.iter().position(|s| &s.phase == ph)?;
+                        // The drift pairs samples by index; only report it
+                        // where both tracks are at the same phase.
+                        let d = drift[a];
+                        (rt.samples.get(a).map(|s| &s.phase) == Some(ph))
+                            .then(|| num([d.x, d.y, d.z][ai], 3))
+                    });
+                    w.phase_row([name.as_str(), &quantity, "mm", t.model.label()], cells);
+                }
+            }
+        }
+    }
+
+    /// One row per structure and method: the numbers that do not depend on
+    /// the phase.
+    fn csv_summary(&self, w: &mut Csv) {
+        w.row(["Summary"]);
+        let mut header = vec![
+            "Structure".to_string(),
+            "Method".into(),
+            "Peak-to-peak (mm)".into(),
+            "Largest |d| (mm)".into(),
+        ];
+        let has_ref = !self.reference_tracks.is_empty();
+        if has_ref {
+            header.push("Target-reference drift peak-to-peak (mm)".into());
+            for axis in AXES {
+                header.push(format!("Correlation r {axis}"));
+                header.push(format!("Correlation p {axis}"));
+            }
+        }
+        if !self.itvs.is_empty() {
+            header.extend([
+                "ITV volume (cm3)".to_string(),
+                "ITV margin (mm)".into(),
+                "ITV structure".into(),
+            ]);
+        }
+        w.row(header.iter().map(String::as_str));
+        let largest = |t: &Track| t.magnitudes().into_iter().fold(0.0, f64::max);
+        for name in self.target_names() {
+            for t in self.tracks.iter().filter(|t| t.target == name) {
+                let mut cells = vec![
+                    t.target.clone(),
+                    t.model.label().to_string(),
+                    num(t.peak_to_peak(), 3),
+                    num(largest(t), 3),
+                ];
+                if has_ref {
+                    cells.push(
+                        self.reference_track(t.model)
+                            .and_then(|rt| t.drift_against(rt))
+                            .map(|d| num(peak_to_peak(&d), 3))
+                            .unwrap_or_default(),
+                    );
+                    let corr = self
+                        .correlations
+                        .iter()
+                        .find(|(n, m, _)| n == name && *m == t.model)
+                        .map(|c| &c.2);
+                    for axis in AXES {
+                        let c = corr.and_then(|c| c.iter().find(|c| c.axis == axis));
+                        cells.push(c.map(|c| num(c.r, 4)).unwrap_or_default());
+                        cells.push(c.map(|c| p_value(c.p)).unwrap_or_default());
+                    }
+                }
+                if !self.itvs.is_empty() {
+                    match self
+                        .itvs
+                        .iter()
+                        .find(|i| i.target == name && i.model == t.model)
+                    {
+                        Some(i) => cells.extend([
+                            num(i.volume_cm3, 3),
+                            num(i.margin_mm, 1),
+                            i.seg_name.clone(),
+                        ]),
+                        None => cells.extend([String::new(), String::new(), String::new()]),
+                    }
+                }
+                w.row(cells.iter().map(String::as_str));
+            }
+        }
+        if let Some(t0) = self.reference_tracks.first() {
+            let name = self.reference_structure.as_deref().unwrap_or(&t0.target);
+            for t in &self.reference_tracks {
+                let label = format!("{name} (reference)");
+                w.row([
+                    label.as_str(),
+                    t.model.label(),
+                    &num(t.peak_to_peak(), 3),
+                    &num(largest(t), 3),
+                ]);
+            }
+        }
+    }
+
+    /// Registration quality per phase: per quantity, one row per method
+    /// (and, for a local rigid fit, per structure it was fitted on).
+    fn csv_registration_quality(&self, w: &mut Csv) {
+        w.row(["Registration quality"]);
+        w.phase_header(["Quantity", "Unit", "Method", "Fit"], &self.phases);
+        // The fits, in the order the run made them.
+        let mut fits: Vec<(MotionModel, Option<&str>)> = Vec::new();
         for q in &self.qa {
-            s.push_str(&format!(
-                "registration_qa,{run},,{},{},,{:.3},{:.3},,{}\n",
-                q.model.label(),
-                esc(&q.phase),
-                q.folding_pct,
-                q.disp_p95_mm,
-                esc(&q.metric_line)
-            ));
-            if let Some((after, before)) = q.image_dice {
-                s.push_str(&format!(
-                    "registration_dice,{run},,{},{},image,{:.4},{:.4},,\n",
-                    q.model.label(),
-                    esc(&q.phase),
-                    after,
-                    before
-                ));
-            }
-            for (name, d) in &q.struct_dice {
-                s.push_str(&format!(
-                    "registration_dice,{run},{},{},{},structure,{:.4},,,\n",
-                    esc(name),
-                    q.model.label(),
-                    esc(&q.phase),
-                    d
-                ));
+            let key = (q.model, q.region.as_deref());
+            if !fits.contains(&key) {
+                fits.push(key);
             }
         }
-        for itv in &self.itvs {
-            s.push_str(&format!(
-                "itv,{run},{},{},,,{:.3},{:.2},,{}\n",
-                esc(&itv.target),
-                itv.model.label(),
-                itv.volume_cm3,
-                itv.margin_mm,
-                esc(&itv.seg_name)
-            ));
+        let fit_label = |r: Option<&str>| match r {
+            None => "whole image".to_string(),
+            Some(n) => format!("{n} neighbourhood"),
+        };
+        let tag = self
+            .qa
+            .iter()
+            .find_map(|q| q.metrics.map(|m| m.tag))
+            .unwrap_or("metric");
+        type Value = fn(&RegQa) -> Option<String>;
+        let quantities: [(&str, &str, Value); 8] = [
+            ("Image Dice after", "", |q| {
+                q.image_dice.map(|d| num(d.0, 4))
+            }),
+            ("Image Dice before", "", |q| {
+                q.image_dice.map(|d| num(d.1, 4))
+            }),
+            ("Metric at start", "metric", |q| {
+                q.metrics.map(|m| metric(m.initial))
+            }),
+            ("Metric at end", "metric", |q| {
+                q.metrics.map(|m| metric(m.final_value))
+            }),
+            ("Iterations", "", |q| {
+                q.metrics.map(|m| m.iterations.to_string())
+            }),
+            ("Time", "s", |q| q.metrics.map(|m| num(m.secs, 1))),
+            ("Displacement p95", "mm", |q| Some(num(q.disp_p95_mm, 3))),
+            ("Folding", "%", |q| Some(num(q.folding_pct, 3))),
+        ];
+        let cell =
+            |fit: (MotionModel, Option<&str>), ph: &str, v: &dyn Fn(&RegQa) -> Option<String>| {
+                self.qa
+                    .iter()
+                    .find(|q| q.phase == ph && q.model == fit.0 && q.region.as_deref() == fit.1)
+                    .and_then(v)
+            };
+        for (quantity, unit, value) in quantities {
+            let unit = if unit == "metric" { tag } else { unit };
+            for &fit in &fits {
+                let cells: Vec<Option<String>> =
+                    self.phases.iter().map(|ph| cell(fit, ph, &value)).collect();
+                if cells.iter().all(Option::is_none) {
+                    continue;
+                }
+                w.phase_row([quantity, unit, fit.0.label(), &fit_label(fit.1)], cells);
+            }
         }
+        // The propagated structure against the phase's own contour of it.
+        let mut scored: Vec<&str> = Vec::new();
+        for q in &self.qa {
+            for (n, _) in &q.struct_dice {
+                if !scored.contains(&n.as_str()) {
+                    scored.push(n);
+                }
+            }
+        }
+        for name in scored {
+            let quantity = format!("Dice {name} vs contoured");
+            for &fit in &fits {
+                let v = |q: &RegQa| {
+                    q.struct_dice
+                        .iter()
+                        .find(|(n, _)| n == name)
+                        .map(|(_, d)| num(*d, 4))
+                };
+                let cells: Vec<Option<String>> =
+                    self.phases.iter().map(|ph| cell(fit, ph, &v)).collect();
+                if cells.iter().all(Option::is_none) {
+                    continue;
+                }
+                w.phase_row([&quantity, "", fit.0.label(), &fit_label(fit.1)], cells);
+            }
+        }
+    }
+}
+
+/// Two runs side by side, one row per structure and method: the matched
+/// peak-to-peak amplitudes and ITVs of [`MotionReport::csv`], with the
+/// change from the first run to the second. Structures and methods are
+/// matched by name, as the results window matches them.
+pub fn comparison_csv(a: &MotionReport, b: &MotionReport) -> String {
+    let mut w = Csv::default();
+    w.row(["Comparison"]);
+    w.row(["First run", &a.run_name]);
+    w.row(["Second run", &b.run_name]);
+    w.row([
+        "Structure",
+        "Method",
+        "Peak-to-peak first (mm)",
+        "Peak-to-peak second (mm)",
+        "Peak-to-peak change (mm)",
+        "ITV first (cm3)",
+        "ITV second (cm3)",
+        "ITV change (%)",
+    ]);
+    let mut keys: Vec<(&str, MotionModel)> = Vec::new();
+    for t in a.tracks.iter().chain(&b.tracks) {
+        let k = (t.target.as_str(), t.model);
+        if !keys.contains(&k) {
+            keys.push(k);
+        }
+    }
+    let track = |r: &'_ MotionReport, (n, m): (&str, MotionModel)| {
+        r.tracks
+            .iter()
+            .find(|t| t.target == n && t.model == m)
+            .map(Track::peak_to_peak)
+    };
+    let itv = |r: &'_ MotionReport, (n, m): (&str, MotionModel)| {
+        r.itvs
+            .iter()
+            .find(|i| i.target == n && i.model == m)
+            .map(|i| i.volume_cm3)
+    };
+    let opt = |v: Option<f64>, d: usize| v.map(|v| num(v, d)).unwrap_or_default();
+    for k in keys {
+        let (pa, pb) = (track(a, k), track(b, k));
+        let (ia, ib) = (itv(a, k), itv(b, k));
+        let pp_change = pa.zip(pb).map(|(a, b)| b - a);
+        let itv_change = ia
+            .zip(ib)
+            .filter(|(a, _)| *a > 1e-9)
+            .map(|(a, b)| 100.0 * (b - a) / a);
+        w.row([
+            k.0,
+            k.1.label(),
+            &opt(pa, 3),
+            &opt(pb, 3),
+            &opt(pp_change, 3),
+            &opt(ia, 3),
+            &opt(ib, 3),
+            &opt(itv_change, 1),
+        ]);
+    }
+    w.text
+}
+
+/// Plain-ASCII spelling of the typographic symbols the program uses on
+/// screen (`·`, `▶`, `→`, `³`, `–`, ...), so a CSV reads the same in any
+/// program - a spreadsheet that takes a file for Latin-1 would otherwise
+/// show `Â·` for a `·`. Line breaks and other control characters become
+/// spaces, so a name can never break a row. Letters outside ASCII (a
+/// structure named in Cyrillic, say) are kept; [`csv_file_bytes`] then
+/// marks the file as UTF-8.
+pub fn plain_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        // Written as escapes: the glyph check reads this file, and several
+        // of these are the very characters it keeps off the screen.
+        let plain = match c {
+            // Middle dot, bullet, en dash, em dash, minus sign.
+            '\u{b7}' | '\u{2022}' | '\u{2013}' | '\u{2014}' | '\u{2212}' => "-",
+            // Right-pointing triangle and arrows; the leftwards arrow.
+            '\u{25b6}' | '\u{2192}' | '\u{27f6}' | '\u{279c}' => "->",
+            '\u{2190}' => "<-",
+            // Ellipsis; superscript three and two.
+            '\u{2026}' => "...",
+            '\u{b3}' => "3",
+            '\u{b2}' => "2",
+            // Micro sign and Greek mu; plus-minus; multiplication sign.
+            '\u{b5}' | '\u{3bc}' => "u",
+            '\u{b1}' => "+/-",
+            '\u{d7}' => "x",
+            // Almost equal, less-or-equal, greater-or-equal.
+            '\u{2248}' => "~",
+            '\u{2264}' => "<=",
+            '\u{2265}' => ">=",
+            // Curly quotes; no-break space.
+            '\u{2018}' | '\u{2019}' => "'",
+            '\u{201c}' | '\u{201d}' => "\"",
+            '\u{a0}' => " ",
+            c if c.is_control() => " ",
+            c => {
+                out.push(c);
+                continue;
+            }
+        };
+        out.push_str(plain);
+    }
+    out
+}
+
+/// The bytes of a CSV file: the text as it is when it is plain ASCII, and
+/// behind a UTF-8 byte-order mark when it is not, which is what makes
+/// Excel read the file as UTF-8 instead of the system code page.
+pub fn csv_file_bytes(text: &str) -> Vec<u8> {
+    if text.is_ascii() {
+        return text.as_bytes().to_vec();
+    }
+    let mut out = Vec::with_capacity(text.len() + 3);
+    out.extend_from_slice(b"\xEF\xBB\xBF");
+    out.extend_from_slice(text.as_bytes());
+    out
+}
+
+/// A number with a fixed count of decimals, never `-0.000`.
+fn num(v: f64, decimals: usize) -> String {
+    if !v.is_finite() {
+        return String::new();
+    }
+    let s = format!("{v:.decimals$}");
+    if s.starts_with('-') && s[1..].chars().all(|c| c == '0' || c == '.') {
+        s[1..].to_string()
+    } else {
         s
+    }
+}
+
+/// A registration metric: enough digits for an MSD in the thousands and a
+/// mutual information below one alike.
+fn metric(v: f64) -> String {
+    let decimals = match v.abs() {
+        a if a >= 100.0 => 1,
+        a if a >= 10.0 => 2,
+        _ => 4,
+    };
+    num(v, decimals)
+}
+
+/// A p-value: four decimals, or scientific notation below 0.0001, which a
+/// spreadsheet reads as a number either way.
+fn p_value(p: f64) -> String {
+    if p > 0.0 && p < 1e-4 {
+        format!("{p:.2e}")
+    } else {
+        num(p, 4)
+    }
+}
+
+/// CSV text being built: cells made plain (see [`plain_text`]) and quoted
+/// where they need it.
+#[derive(Default)]
+struct Csv {
+    text: String,
+}
+
+impl Csv {
+    fn cell(&mut self, v: &str) {
+        let v = plain_text(v);
+        if v.contains([',', '"']) || v.starts_with(' ') || v.ends_with(' ') {
+            self.text.push('"');
+            self.text.push_str(&v.replace('"', "\"\""));
+            self.text.push('"');
+        } else {
+            self.text.push_str(&v);
+        }
+    }
+
+    fn row<'a>(&mut self, cells: impl IntoIterator<Item = &'a str>) {
+        for (i, c) in cells.into_iter().enumerate() {
+            if i > 0 {
+                self.text.push(',');
+            }
+            self.cell(c);
+        }
+        self.text.push('\n');
+    }
+
+    fn blank(&mut self) {
+        self.text.push('\n');
+    }
+
+    /// The label columns, then one column per phase.
+    fn phase_header(&mut self, labels: [&str; 4], phases: &[String]) {
+        self.row(labels.into_iter().chain(phases.iter().map(String::as_str)));
+    }
+
+    /// The label cells, then one cell per phase (empty where there is no
+    /// value).
+    fn phase_row(&mut self, labels: [&str; 4], cells: impl IntoIterator<Item = Option<String>>) {
+        let cells: Vec<String> = cells.into_iter().map(Option::unwrap_or_default).collect();
+        self.row(labels.into_iter().chain(cells.iter().map(String::as_str)));
     }
 }
 
@@ -1002,119 +1416,294 @@ mod tests {
         assert!((pp_drift - 4.0).abs() < 1e-12);
     }
 
-    #[test]
-    fn csv_has_one_row_per_sample_and_section() {
-        let t = Track {
-            target: "TV,1".into(),
-            model: MotionModel::Deformable,
-            samples: vec![
-                PhaseSample {
-                    phase: "0%".into(),
-                    centroid: Vec3::ZERO,
+    /// A track of `target` under `model` over the given phases, moving
+    /// along x by `xs`.
+    fn track(target: &str, model: MotionModel, phases: &[&str], xs: &[f64]) -> Track {
+        Track {
+            target: target.into(),
+            model,
+            samples: phases
+                .iter()
+                .zip(xs)
+                .map(|(p, &x)| PhaseSample {
+                    phase: (*p).into(),
+                    centroid: Vec3::new(x, 10.0, -20.0),
                     volume_cm3: 2.0,
                     grey: Some([-980.0, -120.5, 340.0]),
-                },
-                PhaseSample {
-                    phase: "50%".into(),
-                    centroid: Vec3::new(1.0, 0.0, 0.0),
-                    volume_cm3: 2.1,
-                    grey: None,
-                },
-            ],
+                })
+                .collect(),
             reference: 0,
-        };
-        let rep = MotionReport {
-            run_name: "A · test".into(),
+        }
+    }
+
+    fn report(tracks: Vec<Track>, qa: Vec<RegQa>) -> MotionReport {
+        MotionReport {
+            run_name: "#1 A · 4DCT (3 phases) · ref 0%".into(),
             slot_name: "A".into(),
             patient: "P".into(),
-            phases: vec!["0%".into(), "50%".into()],
+            phases: vec!["0%".into(), "50%".into(), "80%".into()],
             reference: "0%".into(),
-            tracks: vec![t],
+            tracks,
             reference_tracks: Vec::new(),
             reference_structure: None,
-            correlations: vec![(
-                "TV,1".into(),
-                MotionModel::Deformable,
-                vec![AxisCorrelation {
-                    axis: "SI",
-                    r: 0.9,
-                    p: 0.01,
-                }],
-            )],
-            qa: Vec::new(),
-            itvs: vec![ItvResult {
-                target: "TV,1".into(),
-                model: MotionModel::Deformable,
-                margin_mm: 0.0,
-                volume_cm3: 12.5,
-                seg_name: "ITV TV,1".into(),
+            correlations: Vec::new(),
+            qa,
+            itvs: Vec::new(),
+        }
+    }
+
+    /// The cells of the first row whose leading cells are `lead`.
+    fn row<'a>(csv: &'a str, lead: &[&str]) -> Vec<&'a str> {
+        csv.lines()
+            .map(|l| l.split(',').collect::<Vec<_>>())
+            .find(|cells| cells.len() >= lead.len() && cells[..lead.len()] == *lead)
+            .unwrap_or_else(|| panic!("no row {lead:?} in\n{csv}"))
+    }
+
+    #[test]
+    fn the_csv_has_the_phases_as_columns_and_a_row_per_method() {
+        let phases = ["0%", "50%", "80%"];
+        let mut rep = report(
+            vec![
+                track("GTV", MotionModel::Rigid, &phases, &[0.0, 1.0, 0.5]),
+                track("GTV", MotionModel::Deformable, &phases, &[0.0, 2.0, 1.0]),
+                track("GTV", MotionModel::Contoured, &phases, &[0.0, 3.0, 1.5]),
+            ],
+            Vec::new(),
+        );
+        rep.reference_tracks = vec![track(
+            "Heart",
+            MotionModel::Deformable,
+            &phases,
+            &[0.0, 0.5, 0.25],
+        )];
+        rep.reference_structure = Some("Heart".into());
+        rep.correlations = vec![(
+            "GTV".into(),
+            MotionModel::Deformable,
+            vec![AxisCorrelation {
+                axis: "RL",
+                r: 0.9,
+                p: 0.00001,
             }],
-        };
+        )];
+        rep.itvs = vec![ItvResult {
+            target: "GTV".into(),
+            model: MotionModel::Deformable,
+            margin_mm: 0.0,
+            volume_cm3: 12.5,
+            seg_name: "ITV GTV".into(),
+        }];
         let csv = rep.csv();
-        // Header, two rows per sample, the grey-level row of the one
-        // sample that carries them, peak-to-peak, the correlation and the
-        // ITV.
-        assert_eq!(csv.lines().count(), 1 + 2 * 2 + 1 + 1 + 1 + 1);
-        assert!(csv.contains(",grey,-980.00,-120.50,340.00"));
-        assert!(csv.contains("\"TV,1\""), "comma-escaped target name");
-        assert!(csv
-            .lines()
-            .all(|l| l.split(',').count() >= 10 || l.contains('"')));
+
+        // The phases head the columns after the four label columns.
+        assert_eq!(
+            row(&csv, &["Structure", "Quantity"]),
+            [
+                "Structure",
+                "Quantity",
+                "Unit",
+                "Method",
+                "0%",
+                "50%",
+                "80%"
+            ]
+        );
+        // One row per method under each quantity, next to each other.
+        let lines: Vec<&str> = csv.lines().collect();
+        let at = |lead: &str| lines.iter().position(|l| l.starts_with(lead)).unwrap();
+        let rigid = at("GTV,Centroid RL (x),mm,rigid,");
+        assert!(lines[rigid + 1].starts_with("GTV,Centroid RL (x),mm,deformable,"));
+        assert!(lines[rigid + 2].starts_with("GTV,Centroid RL (x),mm,as contoured,"));
+        assert_eq!(
+            row(&csv, &["GTV", "Centroid RL (x)", "mm", "as contoured"])[4..],
+            ["0.000", "3.000", "1.500"]
+        );
+        assert_eq!(
+            row(&csv, &["GTV", "Displacement |d|", "mm", "deformable"])[4..],
+            ["0.000", "2.000", "1.000"]
+        );
+        assert_eq!(
+            row(&csv, &["GTV", "Grey level mean", "image value", "rigid"])[4..],
+            ["-120.5", "-120.5", "-120.5"]
+        );
+        // The target against the reference structure, where the model has one.
+        assert_eq!(
+            row(&csv, &["GTV", "Offset to Heart RL", "mm", "deformable"])[4..],
+            ["0.000", "1.500", "0.750"]
+        );
+        assert!(!csv.contains("Offset to Heart RL,mm,rigid"));
+        assert!(csv.contains("Heart (reference),Displacement |d|,mm,deformable,0.000,0.500,0.250"));
+
+        // The summary: one row per method.
+        let summary = row(&csv, &["GTV", "deformable"]);
+        assert_eq!(summary[2], "2.000", "peak-to-peak");
+        assert_eq!(summary[3], "2.000", "largest |d|");
+        assert_eq!(summary[4], "1.500", "drift peak-to-peak");
+        assert_eq!(summary[5], "0.9000", "r RL");
+        assert_eq!(summary[6], "1.00e-5", "p RL");
+        assert_eq!(summary[summary.len() - 3..], ["12.500", "0.0", "ITV GTV"]);
+        assert_eq!(row(&csv, &["GTV", "rigid"])[2], "1.000");
+
+        // Readable anywhere: our symbols spelled in ASCII, so no byte-order
+        // mark is needed.
+        assert!(csv.is_ascii(), "{csv}");
+        assert!(csv.starts_with("Motion report,#1 A - 4DCT (3 phases) - ref 0%\n"));
+        assert_eq!(csv_file_bytes(&csv), csv.as_bytes());
+    }
+
+    #[test]
+    fn names_outside_ascii_are_kept_and_the_file_says_it_is_utf8() {
+        let phases = ["0%", "50%", "80%"];
+        // A name with a letter outside ASCII (an a-umlaut) and a comma.
+        let name = "L\u{e4}sion, links";
+        let rep = report(
+            vec![track(name, MotionModel::Rigid, &phases, &[0.0, 1.0, 2.0])],
+            Vec::new(),
+        );
+        let csv = rep.csv();
+        assert!(
+            csv.contains(&format!("\"{name}\",Volume,cm3,rigid,2.000,2.000,2.000")),
+            "quoted, not mangled: {csv}"
+        );
+        let bytes = csv_file_bytes(&csv);
+        assert_eq!(&bytes[..3], b"\xEF\xBB\xBF");
+        assert_eq!(&bytes[3..], csv.as_bytes());
+        assert_eq!(
+            plain_text("MSD 9.7 ▶ 1.8 · 3 cm³\nnext"),
+            "MSD 9.7 -> 1.8 - 3 cm3 next"
+        );
     }
 
     #[test]
     fn the_registration_quality_rows_carry_the_dice() {
+        let metrics = |initial, final_value| {
+            Some(RunMetrics {
+                tag: "MSD",
+                initial,
+                final_value,
+                iterations: 900,
+                secs: 20.1,
+            })
+        };
         let qa = vec![
             RegQa {
                 phase: "50%".into(),
+                model: MotionModel::Rigid,
+                region: None,
+                metric_line: "global: MSD 9700.0 ▶ 4100.0  (900 iters, 20.1 s)".into(),
+                metrics: metrics(9700.0, 4100.0),
+                folding_pct: 0.0,
+                disp_p95_mm: 3.1,
+                image_dice: Some((0.85, 0.604)),
+                struct_dice: Vec::new(),
+            },
+            RegQa {
+                phase: "50%".into(),
+                model: MotionModel::Rigid,
+                region: Some("GTV".into()),
+                metric_line: "GTV: MSD 9700.0 ▶ 3900.0  (900 iters, 20.1 s)".into(),
+                metrics: metrics(9700.0, 3900.0),
+                folding_pct: 0.0,
+                disp_p95_mm: 3.3,
+                image_dice: Some((0.86, 0.604)),
+                struct_dice: vec![("GTV".into(), 0.801)],
+            },
+            RegQa {
+                phase: "50%".into(),
                 model: MotionModel::Deformable,
-                metric_line: "MSD 9700 to 1800".into(),
+                region: None,
+                metric_line: "MSD 9700.0 ▶ 1800.0  (900 iters, 20.1 s)".into(),
+                metrics: metrics(9700.0, 1800.0),
                 folding_pct: 0.02,
                 disp_p95_mm: 6.4,
                 image_dice: Some((0.912, 0.604)),
                 struct_dice: vec![("GTV".into(), 0.845)],
             },
             RegQa {
-                phase: "60%".into(),
-                model: MotionModel::Rigid,
-                metric_line: "MSD 9700 to 4100".into(),
+                phase: "80%".into(),
+                model: MotionModel::Deformable,
+                region: None,
+                metric_line: "MSD 9700.0 ▶ 2000.0  (900 iters, 20.1 s)".into(),
+                metrics: metrics(9700.0, 2000.0),
                 folding_pct: 0.0,
                 disp_p95_mm: 3.1,
                 image_dice: None,
                 struct_dice: Vec::new(),
             },
         ];
-        assert_eq!(qa[0].dice_line().as_deref(), Some("Dice 0.912 (was 0.604)"));
-        assert_eq!(qa[1].dice_line(), None);
+        assert_eq!(qa[2].dice_line().as_deref(), Some("Dice 0.912 (was 0.604)"));
+        assert_eq!(qa[3].dice_line(), None);
 
-        let mut rep = MotionReport {
-            run_name: "A · test".into(),
-            slot_name: "A".into(),
-            patient: "P".into(),
-            phases: vec!["50%".into(), "60%".into()],
-            reference: "0%".into(),
-            tracks: Vec::new(),
-            reference_tracks: Vec::new(),
-            reference_structure: None,
-            correlations: Vec::new(),
-            qa,
-            itvs: Vec::new(),
-        };
-        let csv = rep.csv();
-        // Header, two quality rows, one image Dice, one structure Dice.
-        assert_eq!(csv.lines().count(), 5, "{csv}");
-        assert!(
-            csv.contains("registration_dice,A · test,,deformable,50%,image,0.9120,0.6040,,"),
-            "{csv}"
+        let csv = report(Vec::new(), qa).csv();
+        assert_eq!(
+            row(&csv, &["Quantity", "Unit"]),
+            ["Quantity", "Unit", "Method", "Fit", "0%", "50%", "80%"]
         );
-        assert!(
-            csv.contains("registration_dice,A · test,GTV,deformable,50%,structure,0.8450,,,"),
-            "{csv}"
+        // The reference phase is not registered, and the phase that could
+        // not be measured leaves its cell empty.
+        assert_eq!(
+            row(&csv, &["Image Dice after", "", "deformable", "whole image"])[4..],
+            ["", "0.9120", ""]
         );
-        // The phase that could not be measured adds no Dice row at all.
-        rep.qa.truncate(1);
-        rep.qa[0].image_dice = None;
-        rep.qa[0].struct_dice.clear();
-        assert_eq!(rep.csv().lines().count(), 2);
+        assert_eq!(
+            row(
+                &csv,
+                &["Image Dice after", "", "rigid", "GTV neighbourhood"]
+            )[4..],
+            ["", "0.8600", ""]
+        );
+        assert_eq!(
+            row(&csv, &["Metric at end", "MSD", "deformable", "whole image"])[4..],
+            ["", "1800.0", "2000.0"]
+        );
+        assert_eq!(
+            row(
+                &csv,
+                &["Dice GTV vs contoured", "", "deformable", "whole image"]
+            )[4..],
+            ["", "0.8450", ""]
+        );
+        // The methods of one quantity sit on consecutive rows.
+        let lines: Vec<&str> = csv.lines().collect();
+        let first = lines
+            .iter()
+            .position(|l| l.starts_with("Image Dice after,"))
+            .unwrap();
+        assert!(lines[first..first + 3]
+            .iter()
+            .all(|l| l.starts_with("Image Dice after,")));
+        assert!(csv.is_ascii(), "{csv}");
+    }
+
+    #[test]
+    fn a_comparison_matches_structures_and_methods_by_name() {
+        let phases = ["0%", "50%", "80%"];
+        let mut a = report(
+            vec![track(
+                "GTV",
+                MotionModel::Deformable,
+                &phases,
+                &[0.0, 4.0, 2.0],
+            )],
+            Vec::new(),
+        );
+        let mut b = a.clone();
+        b.run_name = "#2 B".into();
+        b.tracks[0] = track("GTV", MotionModel::Deformable, &phases, &[0.0, 6.0, 3.0]);
+        for (r, v) in [(&mut a, 10.0), (&mut b, 12.5)] {
+            r.itvs.push(ItvResult {
+                target: "GTV".into(),
+                model: MotionModel::Deformable,
+                margin_mm: 0.0,
+                volume_cm3: v,
+                seg_name: "ITV GTV".into(),
+            });
+        }
+        let csv = comparison_csv(&a, &b);
+        assert_eq!(
+            row(&csv, &["GTV", "deformable"])[2..],
+            ["4.000", "6.000", "2.000", "10.000", "12.500", "25.0"]
+        );
     }
 }

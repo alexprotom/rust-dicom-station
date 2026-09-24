@@ -111,14 +111,20 @@ fn the_motion_pipeline_recovers_the_phantoms_target_motion() {
         // nothing to score the propagation against.
         assert!(q.struct_dice.is_empty());
     }
+    // The CSV has the phases as columns and a row per method: one image
+    // Dice per registration, spread over the two methods' rows.
     let csv = r.csv();
-    assert_eq!(
-        csv.lines()
-            .filter(|l| l.starts_with("registration_dice,"))
-            .count(),
-        4,
-        "one image Dice row per registration"
-    );
+    let dice_rows: Vec<&str> = csv
+        .lines()
+        .filter(|l| l.starts_with("Image Dice after,"))
+        .collect();
+    assert_eq!(dice_rows.len(), 2, "one row per method: {csv}");
+    let measured: usize = dice_rows
+        .iter()
+        .map(|l| l.split(',').skip(4).filter(|c| !c.is_empty()).count())
+        .sum();
+    assert_eq!(measured, 4, "one image Dice per registration: {csv}");
+    assert!(csv.is_ascii(), "readable in any program: {csv}");
 
     // The ITV: one per model, larger than the target and made of it.
     let itv = out.itv_series.expect("ITVs were built");
@@ -672,10 +678,13 @@ fn a_target_every_phase_carries_is_read_as_contoured_and_the_local_rigid_fit_fol
     // Both kinds of Dice reach the CSV.
     let csv = r.csv();
     assert!(
-        csv.contains(",structure,"),
-        "a structure Dice row is written"
+        csv.contains("\nDice TARGET vs contoured,,rigid,TARGET neighbourhood,"),
+        "a structure Dice row is written: {csv}"
     );
-    assert!(csv.contains(",image,"), "an image Dice row is written");
+    assert!(
+        csv.contains("\nImage Dice after,,rigid,"),
+        "an image Dice row is written: {csv}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

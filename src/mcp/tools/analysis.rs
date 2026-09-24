@@ -234,7 +234,7 @@ pub fn compute_dvh(core: &mut Core, a: DvhArgs, p: &Progress) -> Result<Value> {
 pub struct RunArgs {
     /// A motion run handle such as `run1`.
     pub run: String,
-    /// Include the long-format CSV of the report.
+    /// Include the CSV of the report: phases as columns, one row per method.
     #[serde(default = "yes")]
     pub include_csv: bool,
 }
