@@ -12,6 +12,16 @@
 //! The browser model - roots, listing, sorting, selection - has no platform
 //! code in it and is compiled and tested everywhere; only the choice of
 //! roots (`/storage/...`) is Android's.
+//!
+//! iOS and iPadOS use the same browser. There the app lives in a sandbox:
+//! its own folder (`Documents`, which the Files app shows as *On My iPad*
+//! or *On My iPhone* *> Rust DICOM Station*) is an ordinary path, and a
+//! folder anywhere else
+//! becomes one only after the user has picked it in the system's folder
+//! picker. That picker is UIKit and belongs to the iOS front end, which
+//! registers it as [`crate::settings::ios::Places`]; the browser offers
+//! every folder granted so far as a root, and a button that asks for one
+//! more.
 
 use std::path::{Path, PathBuf};
 
@@ -99,8 +109,9 @@ impl ViewerApp {
     ///
     /// Desktop: the system dialog blocks, and `then` runs before this
     /// returns - exactly the `if let Some(path) = dialog()` it replaces.
-    /// Android: the browser opens and `then` runs from a later frame, when
-    /// the user has chosen; a second `ask` while one is open replaces it.
+    /// Android and iOS: the browser opens and `then` runs from a later
+    /// frame, when the user has chosen; a second `ask` while one is open
+    /// replaces it.
     /// An empty `title` leaves the dialog's default title alone.
     pub(super) fn ask(
         &mut self,
@@ -108,26 +119,24 @@ impl ViewerApp {
         ask: Ask,
         then: impl FnOnce(&mut ViewerApp, Vec<PathBuf>) + 'static,
     ) {
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         {
             if let Some(paths) = desktop_dialog(title, &ask) {
                 then(self, paths);
             }
         }
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         {
             let start = ask
                 .start_dir()
                 .filter(|d| d.is_dir())
                 .map(Path::to_path_buf)
                 .or_else(|| self.picker.last_dir.clone());
-            self.picker.open = Some(Browser::new(
-                title,
-                ask,
-                Box::new(then),
-                android_roots(),
-                start,
-            ));
+            #[cfg(target_os = "android")]
+            let roots = android_roots();
+            #[cfg(target_os = "ios")]
+            let roots = ios_roots();
+            self.picker.open = Some(Browser::new(title, ask, Box::new(then), roots, start));
         }
     }
 
@@ -212,7 +221,7 @@ impl ViewerApp {
 }
 
 /// The system dialog for one request.
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn desktop_dialog(title: &str, ask: &Ask) -> Option<Vec<PathBuf>> {
     let mut d = rfd::FileDialog::new();
     if !title.is_empty() {
@@ -275,12 +284,16 @@ pub(super) struct Browser {
     name: String,
     /// Set after the first *Save* over an existing file: the second replaces it.
     confirm_replace: bool,
+    /// The system's folder picker was asked for a folder, and the browser
+    /// goes into it as soon as it is granted (iOS).
+    #[cfg(target_os = "ios")]
+    awaiting_place: bool,
 }
 
 impl Browser {
-    /// Only the Android `ask` opens one; the desktop compiles it for the
-    /// tests below.
-    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    /// Only the Android and iOS `ask` opens one; the desktop compiles it
+    /// for the tests below.
+    #[cfg_attr(not(any(target_os = "android", target_os = "ios")), allow(dead_code))]
     pub(super) fn new(
         title: &str,
         ask: Ask,
@@ -319,6 +332,8 @@ impl Browser {
             selected: Vec::new(),
             name,
             confirm_replace: false,
+            #[cfg(target_os = "ios")]
+            awaiting_place: false,
         };
         b.refresh();
         b
@@ -375,6 +390,16 @@ impl Browser {
         );
         let mut outcome = Outcome::Pending;
         let mut go: Option<PathBuf> = None;
+        #[cfg(target_os = "ios")]
+        {
+            self.sync_places(&mut go);
+            // The picker is UIKit's, over egui: nothing egui sees happens
+            // while it is up, so the answer is looked for a few times a
+            // second rather than on the next touch.
+            if self.awaiting_place {
+                ctx.request_repaint_after(std::time::Duration::from_millis(250));
+            }
+        }
         egui::Window::new(&self.title)
             .id(egui::Id::new("file_browser"))
             .collapsible(false)
@@ -386,10 +411,15 @@ impl Browser {
                 ui.horizontal_wrapped(|ui| {
                     for r in &self.roots {
                         let here = self.dir.starts_with(&r.path);
-                        if ui.selectable_label(here, &r.label).clicked() {
+                        let resp = ui.selectable_label(here, &r.label);
+                        #[cfg(target_os = "ios")]
+                        let resp = self.place_menu(resp, r);
+                        if resp.clicked() {
                             go = Some(r.path.clone());
                         }
                     }
+                    #[cfg(target_os = "ios")]
+                    self.place_button(ui);
                 });
                 ui.horizontal_wrapped(|ui| {
                     if ui
@@ -432,12 +462,8 @@ impl Browser {
                         Err(e) => {
                             ui.add_space(8.0);
                             ui.colored_label(ui.visuals().warn_fg_color, e);
-                            if e.contains("denied") {
-                                ui.label(
-                                    "The program can only browse here once it has been allowed \
-                                     to manage all files: Android Settings > Apps > Rust DICOM \
-                                     Station > All files access.",
-                                );
+                            if let Some(hint) = access_hint(e) {
+                                ui.label(hint);
                             }
                         }
                         Ok(entries) if entries.is_empty() => {
@@ -549,6 +575,28 @@ impl Browser {
         }
         outcome
     }
+}
+
+/// What to add under a listing that failed for want of permission.
+#[cfg(not(target_os = "ios"))]
+fn access_hint(e: &str) -> Option<&'static str> {
+    e.contains("denied").then_some(
+        "The program can only browse here once it has been allowed \
+         to manage all files: Android Settings > Apps > Rust DICOM \
+         Station > All files access.",
+    )
+}
+
+/// What to add under a listing that failed for want of permission. The
+/// sandbox answers "Operation not permitted" as often as "Permission
+/// denied".
+#[cfg(target_os = "ios")]
+fn access_hint(e: &str) -> Option<&'static str> {
+    (e.contains("denied") || e.contains("not permitted")).then_some(
+        "iOS lets the program read its own folder (the first place above) \
+         and the folders added with \"+ Folder from Files\". Add this one \
+         there, or copy it into the program's folder with the Files app.",
+    )
 }
 
 /// The name a save gets: what was typed, plus the filter's first extension
@@ -680,6 +728,118 @@ fn android_roots() -> Vec<Root> {
     roots_from(Path::new("/storage"), &crate::settings::data_dir())
 }
 
+/// The roots on iOS: the app's own folder, labelled as the Files app
+/// labels it (`home`: *On My iPad* or *On My iPhone*) and which is also
+/// [`crate::settings::data_dir`], then every folder the user has granted
+/// through the system's folder picker, oldest first, each under its own
+/// name. A granted folder whose name another root already has is told
+/// apart by its parent's name.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+pub(super) fn ios_roots_from(documents: &Path, home: &str, granted: &[PathBuf]) -> Vec<Root> {
+    let mut roots = vec![Root {
+        label: home.to_owned(),
+        path: documents.to_path_buf(),
+    }];
+    let name_of = |p: &Path| {
+        p.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| p.display().to_string())
+    };
+    for g in granted {
+        if roots.iter().any(|r| &r.path == g) {
+            continue;
+        }
+        let mut label = name_of(g);
+        if roots.iter().any(|r| r.label == label) {
+            if let Some(parent) = g.parent() {
+                label = format!("{label} ({})", name_of(parent));
+            }
+        }
+        roots.push(Root {
+            label,
+            path: g.clone(),
+        });
+    }
+    roots
+}
+
+#[cfg(target_os = "ios")]
+fn ios_roots() -> Vec<Root> {
+    let places = crate::settings::ios::places();
+    let granted = places.map(|p| p.granted()).unwrap_or_default();
+    let home = places.map_or("On My iPad", |p| p.home_label());
+    ios_roots_from(&crate::settings::data_dir(), home, &granted)
+}
+
+/// The iOS additions to the browser: the button that opens the system's
+/// folder picker, the menu that forgets a granted folder, and picking up
+/// what the picker granted.
+#[cfg(target_os = "ios")]
+impl Browser {
+    /// Bring the roots up to date with the folders granted so far. A
+    /// folder granted since the picker was asked for is entered; when the
+    /// folder shown was forgotten, the browser goes back to the first root.
+    fn sync_places(&mut self, go: &mut Option<PathBuf>) {
+        let roots = ios_roots();
+        if roots == self.roots {
+            return;
+        }
+        let fresh = roots
+            .iter()
+            .find(|r| !self.roots.contains(r))
+            .map(|r| r.path.clone());
+        self.roots = roots;
+        if self.awaiting_place {
+            if let Some(p) = fresh {
+                self.awaiting_place = false;
+                *go = Some(p);
+                return;
+            }
+        }
+        if !self.roots.iter().any(|r| self.dir.starts_with(&r.path)) {
+            *go = self.roots.first().map(|r| r.path.clone());
+        }
+    }
+
+    /// *+ Folder from Files*: the system's folder picker, which reaches
+    /// iCloud Drive, other apps' folders, USB drives and file servers.
+    fn place_button(&mut self, ui: &mut egui::Ui) {
+        let Some(places) = crate::settings::ios::places() else {
+            return;
+        };
+        if ui
+            .button("+ Folder from Files")
+            .on_hover_text(
+                "Pick a folder in the Files app (iCloud Drive, a USB drive, a file \
+                 server) and add it here. iPadOS remembers the choice.",
+            )
+            .clicked()
+        {
+            self.awaiting_place = true;
+            places.request();
+        }
+    }
+
+    /// A long press on a granted folder offers to forget it. The app's own
+    /// folder is always there and has no menu.
+    fn place_menu(&self, resp: egui::Response, root: &Root) -> egui::Response {
+        let Some(places) = crate::settings::ios::places() else {
+            return resp;
+        };
+        if self.roots.first().map(|r| &r.path) == Some(&root.path) {
+            return resp;
+        }
+        resp.context_menu(|ui| {
+            ui.weak(root.path.display().to_string());
+            if ui.button("Remove from this list").clicked() {
+                places.forget(&root.path);
+                ui.close();
+            }
+        });
+        resp
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -760,6 +920,37 @@ mod tests {
         // Nothing there at all: nothing offered, and no panic.
         assert!(roots_from(&d.join("nope"), &d.join("nope")).is_empty());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn ios_roots_are_the_app_folder_then_each_granted_folder_once() {
+        let docs = PathBuf::from("/var/mobile/Containers/Data/Application/X/Documents");
+        assert_eq!(
+            ios_roots_from(&docs, "On My iPhone", &[]),
+            vec![Root {
+                label: "On My iPhone".into(),
+                path: docs.clone()
+            }]
+        );
+        let granted = vec![
+            PathBuf::from("/private/var/mobile/Library/Mobile Documents/com~apple~CloudDocs/CT"),
+            PathBuf::from(
+                "/private/var/mobile/Library/LiveFiles/com.apple.filesystems.userfsd/USB/CT",
+            ),
+            PathBuf::from(
+                "/private/var/mobile/Library/LiveFiles/com.apple.filesystems.userfsd/USB/MR",
+            ),
+            // Granted twice, offered once; the app's own folder is not repeated.
+            PathBuf::from(
+                "/private/var/mobile/Library/LiveFiles/com.apple.filesystems.userfsd/USB/MR",
+            ),
+            docs.clone(),
+        ];
+        let roots = ios_roots_from(&docs, "On My iPad", &granted);
+        let labels: Vec<&str> = roots.iter().map(|r| r.label.as_str()).collect();
+        // Two folders called CT: the second is told apart by its parent.
+        assert_eq!(labels, ["On My iPad", "CT", "CT (USB)", "MR"]);
+        assert_eq!(roots[2].path, granted[1]);
     }
 
     #[test]

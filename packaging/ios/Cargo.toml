@@ -1,0 +1,102 @@
+# iOS / iPadOS front end for rust-dicom-station (iPad and iPhone).
+#
+# This crate is its own workspace root (the empty `[workspace]` table below),
+# exactly like `packaging/android/` and `packaging/windows/installer/`:
+# `cargo build` in the repository root never compiles it, and building it
+# never touches the viewer's `target/`.
+#
+# It is the same viewer. The library in `../..` holds every module, window and
+# algorithm; what this crate adds is the iOS side of the start-up (the panic
+# file, the backup exclusion, the graphics choice), the strips the system
+# draws over (status bar, home indicator) kept free, and the one piece of
+# UIKit the viewer cannot do without: the system's folder picker, through
+# which a folder outside the app's sandbox (iCloud Drive, a USB drive, a file
+# server) is granted. The result is one executable that `build-ipa.sh`
+# wraps in an .app bundle and an .ipa.
+#
+#   cargo build --release --target aarch64-apple-ios       # the executable
+#   ./build-ipa.sh                                          # the .ipa
+#
+# See docs/ios.md.
+#
+# On any other target the crate compiles to a stub `main` and its unit tests
+# (the safe-area and zoom arithmetic), so `cargo test` here runs on a Linux or macOS
+# host in seconds without building the viewer.
+
+[package]
+name = "rds-ios"
+version = "0.1.0"
+edition = "2021"
+description = "iOS / iPadOS front end for the rust-dicom-station DICOM / RT viewer"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[[bin]]
+# CFBundleExecutable in Info.plist.in is this name.
+name = "rust-dicom-station"
+path = "src/main.rs"
+
+[dependencies]
+egui = "0.36"
+log = "0.4"
+# The limits the window's device is asked for (src/gpu.rs). The version is
+# the one egui-wgpu's wgpu uses, so `eframe::wgpu::Limits` is this type.
+wgpu-types = "30"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+# The viewer itself. Its default features (`gpu`) stay on: the wgpu backend
+# of the inference engines is Metal here, and whether a given iPad is worth
+# using for an engine is decided at run time, per engine, as on the desktop.
+rust-dicom-station = { path = "../.." }
+# The same feature set the viewer's own Cargo.toml selects for iOS.
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "links", "wgpu"] }
+# The folder picker and the bookmarks that keep its grants across launches
+# (src/places.rs). The versions are the ones egui-winit already uses on iOS;
+# default features off, so only the classes named here are compiled.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSData",
+    "NSError",
+    "NSObject",
+    "NSString",
+    "NSURL",
+    "NSValue",
+] }
+objc2-ui-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-uniform-type-identifiers",
+    "UIApplication",
+    "UIDevice",
+    "UIDocumentPickerViewController",
+    "UIResponder",
+    "UIScene",
+    "UIView",
+    "UIViewController",
+    "UIWindow",
+    "UIWindowScene",
+] }
+objc2-uniform-type-identifiers = { version = "0.3", default-features = false, features = [
+    "std",
+    "UTCoreTypes",
+    "UTType",
+] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+panic = "unwind"
+# The debug information alone is hundreds of megabytes; the bundle does not
+# want it. The symbol table stays, so the backtrace in the panic file still
+# has function names.
+strip = "debuginfo"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

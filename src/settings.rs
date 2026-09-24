@@ -365,6 +365,10 @@ pub fn snap_env() -> Option<SnapEnv> {
 /// Android:
 ///   the app's private files folder, as handed over by the activity
 ///   (see [`android::set_dirs`])
+///
+/// iOS / iPadOS:
+///   ~/Library/Application Support/RustDICOMStation inside the app's
+///   container (iOS points `$HOME` there), as on macOS
 pub fn config_dir() -> PathBuf {
     #[cfg(target_os = "android")]
     {
@@ -408,6 +412,16 @@ pub fn config_dir() -> PathBuf {
         }
     }
 
+    #[cfg(target_os = "ios")]
+    {
+        if let Some(home) = home_dir() {
+            return home
+                .join("Library")
+                .join("Application Support")
+                .join(APP_NAME);
+        }
+    }
+
     // Fallback for unsupported platforms or unusual environments.
     app_dir()
 }
@@ -429,6 +443,12 @@ pub fn config_dir() -> PathBuf {
 /// Android:
 ///   the app's folder on the shared storage
 ///   (`Android/data/<package>/files`, see [`android::set_dirs`])
+///
+/// iOS / iPadOS:
+///   ~/Documents inside the app's container: the folder the Files app
+///   shows as *On My iPad* (or *On My iPhone*) *> Rust DICOM Station*, so
+///   models, the archive and downloaded test data can be seen, copied in
+///   and removed there
 pub fn data_dir() -> PathBuf {
     #[cfg(target_os = "android")]
     {
@@ -469,6 +489,13 @@ pub fn data_dir() -> PathBuf {
                 .join("Library")
                 .join("Application Support")
                 .join(APP_NAME);
+        }
+    }
+
+    #[cfg(target_os = "ios")]
+    {
+        if let Some(home) = home_dir() {
+            return home.join("Documents");
         }
     }
 
@@ -517,6 +544,46 @@ pub mod android {
 
     pub(super) fn data_dir() -> Option<PathBuf> {
         DIRS.get().map(|(_, d)| d.clone())
+    }
+}
+
+/// iOS keeps every app in a sandbox. The app's own folders are ordinary
+/// paths under `$HOME` (see [`config_dir`] and [`data_dir`]). Anything else,
+/// a folder in iCloud Drive, on a USB drive or on a file server, can be
+/// read only after the user has picked it in the system's folder picker,
+/// and that picker is UIKit, which lives in the iOS front end
+/// (`packaging/ios/src/places.rs`). The front end registers itself here at
+/// start-up; the file browser (`app/pick.rs`) asks it for the folders
+/// granted so far and to show the picker for one more.
+#[cfg(target_os = "ios")]
+pub mod ios {
+    use std::path::{Path, PathBuf};
+    use std::sync::OnceLock;
+
+    /// Folders outside the app's container that the user has granted.
+    pub trait Places: Send + Sync {
+        /// What the Files app calls the app's own folder on this device:
+        /// *On My iPad* or *On My iPhone*.
+        fn home_label(&self) -> &'static str;
+        /// The granted folders, oldest first.
+        fn granted(&self) -> Vec<PathBuf>;
+        /// Show the system's folder picker. What the user picks appears in
+        /// a later [`Places::granted`]; nothing happens on *Cancel*.
+        fn request(&self);
+        /// Stop offering `path` and hand its access back.
+        fn forget(&self, path: &Path);
+    }
+
+    static PLACES: OnceLock<Box<dyn Places>> = OnceLock::new();
+
+    /// Register the front end's places. The first call wins.
+    pub fn set_places(places: Box<dyn Places>) {
+        let _ = PLACES.set(places);
+    }
+
+    /// The registered places, if a front end registered any.
+    pub fn places() -> Option<&'static dyn Places> {
+        PLACES.get().map(|p| p.as_ref())
     }
 }
 
