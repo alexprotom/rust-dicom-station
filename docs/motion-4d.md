@@ -131,8 +131,9 @@ Playing is for looking; the pipeline below is for measuring.
    carries its own contour of a target, the propagated structure is also
    scored against that contour and the score is listed under the phase
    (`GTV vs contoured`): the honest measure of whether the model followed
-   the anatomy, not just the image. Both go into the CSV as
-   `registration_dice` rows and into the MCP report as `image_dice` and
+   the anatomy, not just the image. Both go into the CSV's *Registration
+   quality* section (`Image Dice after` / `before`, `Dice <structure> vs
+   contoured`) and into the MCP report as `image_dice` and
    `structure_dice`.
 
 *Keep per-phase segmentations* additionally stores every propagated mask
@@ -162,13 +163,63 @@ was ticked once is one line and one amplitude; ticking the same name on
 every phase separately would have made ten targets of it, which is what
 the grouped *Targets* list prevents.
 
+The window lays itself out to its own size: the run pickers wrap onto a
+second line when the window is narrow, the export buttons stay at the
+bottom, and only the report scrolls, vertically. The chart takes the full
+width and scales its height with it (never more than about 60 % of the
+visible height), and its margins are measured from the labels that go in
+them - the widest value label on the left, half the last phase label on
+the right - so the axis labels and the last phase are always on screen. A
+per-phase table wider than the window scrolls sideways on its own.
+
+The value axis uses a step of 1, 2 or 5 × 10ⁿ - the one whose interval
+count is nearest to what the chart's height has room for (about one tick
+per 34 points) - rounded out to whole steps, with as many decimals as the
+step needs (a 0.5 mm step reads `0.0 0.5 1.0 1.5 2.0`), so no two ticks
+carry the same label. The axis spans at least 1 mm, so a track that hardly
+moves stays flat instead of being blown up to fill the chart. Hovering the
+chart marks the phase under the pointer and lists every line's value there.
+
 **Compare with** puts a second run beside the first - workspace A vs. B,
 upright vs. supine - matching ITVs and tracks *by target name and model*:
 ITV volumes with percentage change, peak-to-peak amplitudes, side by side.
 
-**Export CSV** writes one long-format CSV (a `table` column separates the
-sections: per-phase centroids and displacements, peak-to-peak rows,
-correlations, QA, ITVs); a comparison appends the second run's rows.
+**Export CSV** writes the selected run as a table a spreadsheet opens as
+it is: **the phases are the columns and every method has its own row**,
+the methods of one quantity on consecutive rows, so rigid, deformable and
+as-contoured read against each other phase by phase. The file has a short
+header (run, workspace, reference phase, reference structure, the axis
+convention), then three sections separated by a blank line, each with its
+own header row:
+
+| Section | Label columns | Rows | Values |
+|---|---|---|---|
+| *Per-phase values* | Structure, Quantity, Unit, Method | per structure (targets, then the reference structure as `<name> (reference)`) and quantity, one per method | one column per phase |
+| *Summary* | Structure, Method | one per structure and method | peak-to-peak, largest \|d\|, target-reference drift peak-to-peak, correlation r and p per axis, ITV volume, margin and name |
+| *Registration quality* | Quantity, Unit, Method, Fit | per quantity, one per method and fit (`whole image`, or `<structure> neighbourhood` for a local rigid fit) | one column per phase; the reference phase is not registered and stays empty |
+
+The per-phase quantities are the centroid position (`Centroid RL (x)`,
+`AP (y)`, `SI (z)`, mm, patient LPS), the displacement from the reference
+phase per axis and as `Displacement |d|`, the volume (cm3), the grey-level
+minimum, mean and maximum inside the structure (where the phase images
+were at hand), and for a target, where the same method also carried the
+reference structure, `Offset to <reference> RL / AP / SI` (target centroid
+minus reference-structure centroid). The registration-quality quantities
+are the image Dice after and before, the metric at start and at end (its
+unit column names the metric, `MSD` or `MI`), iterations, time, the
+95th-percentile displacement, the folding rate and, where a phase carries
+its own contour, `Dice <structure> vs contoured`.
+
+Everything in the file is readable in any program: the typographic
+symbols the window uses are written in plain ASCII (`·` as `-`, `▶` as
+`->`, `cm³` as `cm3`), and a file that still holds a letter outside
+ASCII (a structure named in another alphabet, say) starts with a UTF-8
+byte-order mark, which is what makes Excel read it as UTF-8 rather than
+in the system's code page. Names with a comma are quoted. **Export comparison
+CSV** writes both runs one after the other and then a *Comparison*
+section: one row per structure and method, with the two peak-to-peak
+amplitudes and their difference, and the two ITV volumes and their change
+in percent. The MCP `motion_report` tool returns the same CSV text.
 
 ## Transfer by relationship (`src/app/transfer_win.rs`)
 

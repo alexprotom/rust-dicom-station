@@ -6539,7 +6539,7 @@ dependencies = [
 
 [[package]]
 name = "rust-dicom-station"
-version = "0.9.10"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "burn",
