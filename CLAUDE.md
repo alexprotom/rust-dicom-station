@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-The root crate is the viewer library + `rust-dicom-station` binary. Everything that packages it lives under `packaging/` (one folder per platform, see `packaging/README.md`); `packaging/windows/installer/` and `packaging/android/` are **separate Cargo workspaces** (empty `[workspace]` tables) with their own `target/`, reaching the viewer through a path dependency (`../..` and `../../..` respectively); a root `cargo build` never touches them.
+The root crate is the viewer library + `rust-dicom-station` binary. Everything that packages it lives under `packaging/` (one folder per platform, see `packaging/README.md`); `packaging/windows/installer/`, `packaging/android/` and `packaging/ios/` are **separate Cargo workspaces** (empty `[workspace]` tables) with their own `target/`, reaching the viewer through a path dependency (`../../..` for the installer, `../..` for the other two); a root `cargo build` never touches them, and the root `cargo fmt --all` does not format them either.
 
 ```bash
 cargo build --release
@@ -34,9 +34,9 @@ Tests marked `#[ignore]` need real downloaded weights and are enabled per engine
 
 Headless engine CLIs live in `examples/` (`autoseg_cli`, `segvol_cli`, `medsam2_cli`, `body_cli`, `*_probe`, `gen_ops_fixtures`), run with `cargo run --release --example <name> -- <args>`; the argument syntax is in each file's `//!` header.
 
-Windows installer: `cd packaging/windows/installer && cargo build --release` (Windows-only crate, `compile_error!` elsewhere). Android: see `packaging/android/Cargo.toml` header and `docs/android.md`. Linux AppImage: `packaging/linux/appimage/build-appimage.sh`; snap: `packaging/linux/snap/build-snap.sh` (snapcraft only reads `snap/snapcraft.yaml` in the repo root, so the recipe is copied there at build time); macOS: `packaging/macos/build-app.sh --arch arm64|x86_64`.
+Windows installer: `cd packaging/windows/installer && cargo build --release` (Windows-only crate, `compile_error!` elsewhere). Android: see `packaging/android/Cargo.toml` header and `docs/android.md`. iOS / iPadOS: `packaging/ios/build-ipa.sh` (Mac with Xcode; `--simulator` for the simulator build, `simulator-smoke.sh` starts it), `cargo clippy --target aarch64-apple-ios -- -D warnings` in `packaging/ios/` as the check; see `docs/ios.md`. Linux AppImage: `packaging/linux/appimage/build-appimage.sh`; snap: `packaging/linux/snap/build-snap.sh` (snapcraft only reads `snap/snapcraft.yaml` in the repo root, so the recipe is copied there at build time); macOS: `packaging/macos/build-app.sh --arch arm64|x86_64`.
 
-CI (`.github/workflows/ci.yml`) runs on pull requests only: fmt + clippy on Linux, tests on Linux, Windows and macOS, CPU-only check, MCP job, installer job; `android.yml` and `macos.yml` add cross-compilation checks on PRs that touch `src/` or their packaging folder. Every workflow's paths point into `packaging/`; keep them in step when a folder moves. A push to `main` runs `release.yml`, which reads the version from `Cargo.toml` and fails if that tag already exists. **Bump the version in `Cargo.toml` before anything merges to `main`.** Branch flow is `develop -> release -> main`; feature branches merge into `develop`.
+CI (`.github/workflows/ci.yml`) runs on pull requests only: fmt + clippy on Linux, tests on Linux, Windows and macOS, CPU-only check, MCP job, installer job; `android.yml`, `macos.yml` and `ios.yml` add cross-compilation checks on PRs that touch `src/` or their packaging folder (`ios.yml` also builds the `.ipa` and runs it on a simulated iPad and iPhone when a PR changes `packaging/ios/`). Every workflow's paths point into `packaging/`; keep them in step when a folder moves. A push to `main` runs `release.yml`, which reads the version from `Cargo.toml` and fails if that tag already exists. **Bump the version in `Cargo.toml` before anything merges to `main`.** Branch flow is `develop -> release -> main`; feature branches merge into `develop`.
 
 ## Architecture in brief
 
@@ -55,9 +55,9 @@ CI (`.github/workflows/ci.yml`) runs on pull requests only: fmt + clippy on Linu
 
 **Rendering** is cache-driven: per-view keyed textures (grayscale, dose, contours, seg overlay, fusion) invalidated by generation counters bumped only at the owning mutation site. Repaints are demand-driven, 10 Hz while jobs run.
 
-**Tool windows** are real OS windows (immediate viewports) drawn through `app/detach.rs::tool_window`; position/size are applied only on the creating pass, and every title goes through `window_title`. File dialogs go through `app/pick.rs` with a continuation closure (rfd on desktop, an egui browser on Android). The four engine tools share their section layout via `app/seg_engines.rs` and live in the Structure auto tools module (`app/auto_tools.rs`).
+**Tool windows** are real OS windows (immediate viewports) drawn through `app/detach.rs::tool_window`; position/size are applied only on the creating pass, and every title goes through `window_title`. File dialogs go through `app/pick.rs` with a continuation closure (rfd on desktop, an egui browser on Android and iOS; on iOS its extra roots come from the system folder picker in `packaging/ios/src/places.rs` via `settings::ios::Places`). The four engine tools share their section layout via `app/seg_engines.rs` and live in the Structure auto tools module (`app/auto_tools.rs`).
 
-**Platform keying.** Desktop vs Android differences are expressed in `Cargo.toml` `[target.'cfg(...)']` tables (eframe glue, rfd, TLS roots) and in `app/pick.rs`; the rest of the code is one.
+**Platform keying.** Desktop vs Android vs iOS differences are expressed in `Cargo.toml` `[target.'cfg(...)']` tables (eframe glue, rfd, TLS roots), in `app/pick.rs`, and in the `config_dir` / `data_dir` arms of `settings.rs` (plus `gfx.rs`: Metal only on Apple); the rest of the code is one. Keep every iOS change behind `cfg(target_os = "ios")` so the other builds stay what they were.
 
 ## Conventions that matter
 

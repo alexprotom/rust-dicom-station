@@ -139,7 +139,7 @@ now falls back to Direct3D 12 by itself, the installer asks which backend to
 use, and *View ▸ Graphics backend* changes it afterwards - see
 [docs/viewer.md](docs/viewer.md#graphics-backend).
 
-Windows, Linux, macOS and Android tablets are supported; `--no-default-features` builds a
+Windows, Linux, macOS, Android tablets, iPads and iPhones are supported; `--no-default-features` builds a
 CPU-only viewer without the GPU inference backend. Every push to `main`
 publishes a release: a Windows installer
 (`rust-dicom-station-<version>-windows-x86_64.exe` - shortcuts, "Open with"
@@ -148,7 +148,9 @@ a Linux AppImage, two macOS disk images
 (`rust-dicom-station-<version>-macos-arm64.dmg` and `-macos-x86_64.dmg`, both
 for macOS 12 Monterey and newer, [docs/macos.md](docs/macos.md)) and an
 Android APK (`rust-dicom-station-<version>-android-arm64.apk`,
-the same viewer on a tablet, [docs/android.md](docs/android.md)), and puts the snap into the Snap Store (`sudo snap
+the same viewer on a tablet, [docs/android.md](docs/android.md)) and an
+iOS package (`rust-dicom-station-<version>-ios.ipa`, iPad and iPhone, iOS 15 and newer,
+also to TestFlight when configured, [docs/ios.md](docs/ios.md)), and puts the snap into the Snap Store (`sudo snap
 install rust-dicom-station`, [docs/snap.md](docs/snap.md)); the same program
 is on Flathub as `io.github.alexprotom.rust-dicom-station`
 ([docs/flatpak.md](docs/flatpak.md)) and, with a tap configured, in Homebrew
@@ -196,6 +198,7 @@ https://alexprotom.github.io/rust-dicom-station/
 | [docs/flatpak.md](docs/flatpak.md) | The Flatpak: the sandbox, where its files are, the MCP server in it, building and submitting to Flathub |
 | [docs/macos.md](docs/macos.md) | The macOS package: the two disk images, the first launch, Metal, where its files are, building, signing, notarisation, Homebrew |
 | [docs/android.md](docs/android.md) | The Android package: installing, all files access, what differs on a tablet, where its files are, building and signing |
+| [docs/ios.md](docs/ios.md) | The iOS package for iPad and iPhone: installing (TestFlight, ad hoc, sideloading), getting studies onto the device, what differs on a tablet and a phone, where its files are, building, signing and releasing |
 | [docs/example-data.md](docs/example-data.md) | Bundled patient data, source and citations |
 | [packaging/README.md](packaging/README.md) | The packaging folder: one subfolder per platform, what each builds and where |
 | [packaging/windows/installer/README.md](packaging/windows/installer/README.md) | The Windows installer: building it, what it installs, updating, winget, silent switches |

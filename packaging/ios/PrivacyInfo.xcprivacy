@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The app's privacy manifest, copied into the bundle by build-ipa.sh. App
+  Store Connect (and so TestFlight) refuses an upload whose executable calls
+  one of Apple's "required reason" APIs without a reason declared here, and
+  it finds them by the symbols the executable imports. Two groups are
+  imported (checked with `nm -u` on the linked executable):
+
+  * File timestamp APIs - stat, fstat, fstatat, lstat - which Rust's
+    std::fs uses for every metadata call: listing a folder in the file
+    browser, the archive, the model cache. C617.1 covers the app's own
+    container, 3B52.1 the folders the user granted in the folder picker.
+  * System boot time APIs - mach_absolute_time - which std::time::Instant
+    uses for elapsed time (progress, repaint pacing, timing logs): 35F9.1.
+
+  Nothing is collected and nothing is tracked: the program sends no data
+  anywhere; its only network use is downloading model weights and test
+  data, and talking to a PACS the user configures.
+-->
+<plist version="1.0">
+<dict>
+    <key>NSPrivacyTracking</key>
+    <false/>
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array/>
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array>
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>C617.1</string>
+                <string>3B52.1</string>
+            </array>
+        </dict>
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>35F9.1</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

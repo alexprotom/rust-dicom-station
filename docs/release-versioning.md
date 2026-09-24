@@ -69,11 +69,12 @@ The workflow:
 4. Builds the Linux AppImage (`packaging/linux/appimage/build-appimage.sh`).
 5. Builds the two macOS disk images, signed and notarised when the `MACOS_*` secrets are set (see [macOS](#macos)).
 6. Builds the Android APK, signed with the release key when the `ANDROID_KEYSTORE_*` secrets are set (see [Android](#android)).
-7. Builds the snap, tests it on the runner and releases it to the Snap Store, when the `SNAPCRAFT_STORE_CREDENTIALS` secret is set (see [Snap Store](#snap-store)).
-8. Generates SHA256 checksums.
-9. Creates the GitHub Release and uploads the binaries.
-10. Submits the new version to winget, when the `WINGET_TOKEN` secret is set (see [winget](#winget)).
-11. Writes the Homebrew cask, attaches it to the release and pushes it to the tap, when `HOMEBREW_TAP` and `HOMEBREW_TAP_TOKEN` are set (see [Homebrew](#homebrew)).
+7. Builds the iOS `.ipa` (iPad and iPhone), signed for installation when the `IOS_*` secrets are set and uploaded to TestFlight when the `APP_STORE_CONNECT_*` secrets are set too (see [iOS](#ios)).
+8. Builds the snap, tests it on the runner and releases it to the Snap Store, when the `SNAPCRAFT_STORE_CREDENTIALS` secret is set (see [Snap Store](#snap-store)).
+9. Generates SHA256 checksums.
+10. Creates the GitHub Release and uploads the binaries.
+11. Submits the new version to winget, when the `WINGET_TOKEN` secret is set (see [winget](#winget)).
+12. Writes the Homebrew cask, attaches it to the release and pushes it to the tap, when `HOMEBREW_TAP` and `HOMEBREW_TAP_TOKEN` are set (see [Homebrew](#homebrew)).
 
 ## Release Artifacts
 
@@ -85,6 +86,7 @@ rust-dicom-station-X.Y.Z-linux-x86_64.AppImage
 rust-dicom-station-X.Y.Z-macos-arm64.dmg
 rust-dicom-station-X.Y.Z-macos-x86_64.dmg
 rust-dicom-station-X.Y.Z-android-arm64.apk
+rust-dicom-station-X.Y.Z-ios.ipa
 rust-dicom-station-X.Y.Z-winget-manifests.zip
 rust-dicom-station.rb
 SHA256SUMS
@@ -216,6 +218,12 @@ is still attached to the release.
 The APK is built by [android.yml](../.github/workflows/android.yml), called by the `android` job of the release workflow; the GitHub Release waits for it like for the Windows and Linux builds. Its `versionCode` is derived from the version (`major * 10000 + minor * 100 + patch`, so 0.9.4 is 904), which is why versions must only ever go up: Android refuses to install a package whose code is lower than the installed one.
 
 The APK is signed with the release key when the four secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD` are set, and with a throwaway debug key otherwise. Only a package signed with the same key as the installed one can update it in place, so the key is made once and kept ([docs/android.md](android.md#releasing)). *Actions > Android > Run workflow* builds any branch the same way and attaches the APK to the run.
+
+## iOS
+
+The `.ipa` is built by [ios.yml](../.github/workflows/ios.yml), called by the `ios` job of the release workflow; the GitHub Release waits for it like for the other platforms. The same call also starts the app on a simulated iPad and a simulated iPhone and attaches the screenshots to the run, but that part never holds a release up. `CFBundleShortVersionString` is the crate version; `CFBundleVersion`, the build number App Store Connect wants unique and rising, is `major * 10000 + minor * 100 + patch` followed by the minutes since 2024 (`909.1426211`), so a release never has to bump anything by hand.
+
+Without secrets the `.ipa` is signed ad hoc and installs through a tool that re-signs it with the user's Apple ID. With `IOS_CERTIFICATE_BASE64`, `IOS_CERTIFICATE_PASSWORD` and `IOS_PROVISIONING_PROFILE_BASE64` it is signed for the devices (ad hoc profile) or the store (App Store profile) the profile covers, and with `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID` and `APP_STORE_CONNECT_KEY_BASE64` as well, an App Store-signed release is uploaded to TestFlight ([docs/ios.md](ios.md#releasing)). A pull request that changes `packaging/ios/` builds the `.ipa` and the simulator run the same way, and *Actions > iOS > Run workflow* does so for any branch once the workflow is on `main`.
 
 ## Important Rule
 
