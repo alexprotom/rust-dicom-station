@@ -205,10 +205,15 @@ pub fn run(req: AnchoredRequest, p: &Progress) -> Result<AnchoredOutcome> {
         .filter(|n| !n.trim().is_empty())
         .unwrap_or_else(|| landed_anchor_name(&req.src_anchor.name));
     let mut subjects = req.subjects;
+    req.finish.carry(&mut subjects);
     subjects.push(Subject {
         name: landed_name,
         color: req.anchor_landed_color.unwrap_or(req.src_anchor.color),
         mask: src_anchor_mask,
+        surface_cm3: req.src_anchor.surface_on(&src_grid),
+        // The check: it follows the transform whatever the structures do,
+        // or it would not be checking the transform.
+        keep_shape: false,
     });
     let anchor_idx = subjects.len() - 1;
 

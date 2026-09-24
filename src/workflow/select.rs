@@ -74,14 +74,38 @@ impl Structure {
         Ok(mask)
     }
 
+    /// The structure's surface-based volume, cm³: the volume enclosed by the
+    /// closed surface reconstructed from the contours (see
+    /// [`crate::rt_surface`]), with `grid`'s slice spacing standing in where
+    /// the contours give none - what Structure details shows in its
+    /// Surface-based column. `None` for a segment, which has no contours to
+    /// build a surface from.
+    pub fn surface_on(&self, grid: &Grid) -> Option<f64> {
+        match &self.source {
+            Source::Contours(roi) => crate::rt_surface::surface_volume_cm3(roi, grid.spacing[2]),
+            Source::Mask { .. } => None,
+        }
+    }
+
     /// The structure as something `propagate` carries, on `grid`.
     pub fn subject_on(&self, grid: &Grid) -> Result<Subject> {
         Ok(Subject {
             name: self.name.clone(),
             color: self.color,
             mask: self.mask_on(grid)?,
+            surface_cm3: self.surface_on(grid),
+            keep_shape: false,
         })
     }
+}
+
+/// Every structure as something `propagate` carries, on `grid`, measured in
+/// parallel - building the surface of a large contoured organ is a fair
+/// fraction of a second - and kept in their order. A structure that fails
+/// fails the lot.
+pub fn subjects_on(structures: &[Structure], grid: &Grid) -> Result<Vec<Subject>> {
+    use rayon::prelude::*;
+    structures.par_iter().map(|s| s.subject_on(grid)).collect()
 }
 
 /// What kind of object a named structure is.

@@ -128,6 +128,13 @@ pub struct GroupArgs {
     /// a solid.
     #[serde(default)]
     pub fill: bool,
+    /// Carry each structure as a rigid body - the transform's best rigid
+    /// fit over the structure itself - so it keeps its shape and volume and
+    /// follows the deformation's local position and turn. For a small
+    /// target inside an organ whose outline the registration matched. An
+    /// anchor still follows the transform: it is the run's check.
+    #[serde(default)]
+    pub keep_shape: bool,
     /// Where the propagated structures are filed on each phase:
     /// `segmentation` (default; a new segmentation series bound to the
     /// phase) or `structure_set` (contours appended to the phase's own RT
@@ -229,6 +236,7 @@ pub fn propagate_to_group(core: &mut Core, a: GroupArgs, p: &Progress) -> Result
         finish: crate::propagate::Finish {
             close_mm: a.close_mm.clamp(0.0, 50.0),
             fill: a.fill,
+            keep_shape: a.keep_shape,
         },
         group_name: group_name.clone(),
         group: gi,
@@ -251,6 +259,7 @@ pub fn propagate_to_group(core: &mut Core, a: GroupArgs, p: &Progress) -> Result
                     "mapped_cm3": round2(it.mapped_cm3),
                     "result_cm3": round2(it.result_cm3),
                     "voxels": it.voxels,
+                    "rigid_residual_mm": it.rigid_residual_mm.map(round2),
                 })
             })
             .collect();
@@ -400,6 +409,7 @@ fn propagate_anchored(
         finish: crate::propagate::Finish {
             close_mm: a.close_mm.clamp(0.0, 50.0),
             fill: a.fill,
+            keep_shape: a.keep_shape,
         },
         group_name: group_name.clone(),
         group: gi,
@@ -421,6 +431,7 @@ fn propagate_anchored(
                     "mapped_cm3": round2(it.mapped_cm3),
                     "result_cm3": round2(it.result_cm3),
                     "voxels": it.voxels,
+                    "rigid_residual_mm": it.rigid_residual_mm.map(round2),
                 })
             })
             .collect();
@@ -559,7 +570,7 @@ pub fn report_json(r: &MotionReport) -> Value {
             "phases": t.samples.iter().map(|s| json!({
                 "phase": clean_text(&s.phase),
                 "centroid_mm": vec3(s.centroid),
-                "volume_cm3": round1(s.volume_cm3),
+                "volume_cm3": round2(s.volume_cm3),
             })).collect::<Vec<_>>(),
             "displacements_mm": t.displacements().into_iter().map(vec3).collect::<Vec<_>>(),
         })
@@ -598,7 +609,7 @@ pub fn report_json(r: &MotionReport) -> Value {
             "target": clean_text(&i.target),
             "model": i.model.label(),
             "margin_mm": i.margin_mm,
-            "volume_cm3": round1(i.volume_cm3),
+            "volume_cm3": round2(i.volume_cm3),
             "structure": clean_text(&i.seg_name),
         })).collect::<Vec<_>>(),
     })

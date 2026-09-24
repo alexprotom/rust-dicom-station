@@ -54,7 +54,9 @@ The scan:
    become warnings, never errors.
 2. **Series grouping.** Image files are grouped by SeriesInstanceUID into the
    workspace tree; the largest series is reconstructed first (click another to
-   switch).
+   switch). Series of equal length - the phases of a 4DCT - follow in series
+   number order, so a folder numbers its series the same way on every
+   machine, whatever order the disk lists the files in.
 3. **Volume reconstruction.** Slices are decoded in parallel (`rayon`) -
    compressed transfer syntaxes (JPEG lossless, RLE, …) via `dicom-rs`'s
    pure-Rust decoders - sorted by projection onto the true slice normal (cross
@@ -162,8 +164,8 @@ below), the **3D A / 3D B** buttons and the segmentation tools.
 draws it there, and the pane is furnished like any other: **3D** (with the
 workspace's letter while more than one is open) in the top-left corner, and the same
 corner buttons in the same places - **⛶ / ⊞**, **◀ / ▶** (the same fold,
-the same switch), **⟲** (the camera back to its default angle, fit zoom and
-no offset), **✋** (a left drag moves the
+the same switch), **⟲** (the camera back to its default angle, centred on
+the structures, fit zoom and no offset), **✋** (a left drag moves the
 scene instead of turning it), **➕ / ➖**, and the **▶4D** transport with
 **Prepare** beside it where the workspace has a 4D group. What only a scene
 has sits under them, wrapping onto another line where a pane is narrow:
@@ -173,6 +175,16 @@ opacity panel down the pane's right-hand edge, the same panel and the same
 sliders the window shows. While a row carries the scene, that workspace's
 **3D** button leaves the toolbar - there is no window to open - and it
 comes back when the tick does.
+
+A pane keeps its scene between frames the way a window does, and so its
+camera too - until the workspace shows a different image. Then the camera
+starts over, exactly as a freshly opened window would: default angle, no
+zoom or offset, centred on the new structures and scaled to them. A view
+kept across images would orbit a point of the last patient's anatomy, at
+the last image's scale, and a structure of the new one would swing round
+the edge of the pane when turned. Stepping through the phases of a 4D group
+is not a new image in this sense - the phases are one patient a moment
+apart - and the view holds still while they play.
 
 **The 3D window** (3D A / 3D B) meshes the active structure set and keeps
 up with it: a structure moved or redrawn in the Structure editor is
@@ -283,9 +295,17 @@ anisotropic in-plane spacing, oblique axes, a missing frame of reference,
 files that are in the series but not in the volume. A regular study says
 *Nothing unusual*.
 
+Each section is a table of property and value, like every other module's
+list of facts; a value worth a second look is in amber, with the reason on
+its tooltip, and a long one (a UID, a path) is cut from the front with the
+whole of it on the tooltip. The report follows the volume on display: when
+a series is replaced by a newly read volume, the report is read again
+rather than kept from the one before.
+
 *Compare* puts this workspace beside another - *against* names which one
-when more than two are open - and lists only what they
-disagree about - the check to make before registering them, contouring
+when more than two are open - and tabulates only what they
+disagree about, one row per property with a column per workspace - the
+check to make before registering them, contouring
 across them or carrying a dose from one to the other. *Copy* puts the whole
 report on the clipboard; *Read again* re-reads the headers after the files
 on disk have changed.
@@ -621,8 +641,8 @@ the ticked group:
 
 Crossing between the two kinds converts on transfer: a structure moved into a
 segmentation series is rasterized onto its lattice (even-odd fill), a segment
-moved into a structure set becomes closed planar contours (marching squares),
-and a segment moved between different lattices is resampled. Anything that
+moved into a structure set becomes closed planar contours (the outline of its
+voxels), and a segment moved between different lattices is resampled. Anything that
 cannot cross - a contour outside the destination volume, a mask that does not
 overlap it - lands in the workspace's *Warnings* section, which carries an
 **Acknowledge** button beside its heading: the warnings describe a load or a

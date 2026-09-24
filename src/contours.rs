@@ -1125,6 +1125,109 @@ impl PaddedField {
             .collect()
     }
 
+    /// The closed loops along the edges of the filled cells: the exact
+    /// outline of the voxels, in raster coordinates like [`Self::trace`].
+    ///
+    /// Marching squares cuts every corner, which is what makes an outline
+    /// look drawn rather than stepped - and costs area: an eighth of a cell
+    /// at each outer corner, half a cell for a cell on its own. For an organ
+    /// that is nothing; for a target that lands as a cloud of single voxels
+    /// it is a tenth of its volume gone between the mask and its contours.
+    /// These loops enclose exactly the filled cells, so a contour made from
+    /// them has the planimetric area of the voxels it came from and
+    /// rasterizes back (centre inside) to the same voxels.
+    ///
+    /// Cells that touch only at a corner are kept apart - the walk turns
+    /// around the cell it is on - so each loop is simple. Holes come out as
+    /// loops of their own, wound the other way.
+    pub fn trace_voxels(&self) -> Vec<Vec<[f32; 2]>> {
+        let (pw, ph) = (self.w + 2, self.h + 2);
+        let filled = |i: usize, j: usize| self.buf[j * pw + i] > 0.5;
+        // Corner (u, v) sits at the low corner of padded cell (u, v); cell
+        // (i, j) spans corners (i, j) to (i + 1, j + 1). Each boundary edge
+        // runs with the filled cell on its left (y up): directions as bits,
+        // 1 = +x, 2 = +y, 4 = -x, 8 = -y, stored at the corner they leave.
+        let cw = pw + 1;
+        let mut out = vec![0u8; cw * (ph + 1)];
+        for j in 1..=self.h {
+            for i in 1..=self.w {
+                if !filled(i, j) {
+                    continue;
+                }
+                if !filled(i, j - 1) {
+                    out[j * cw + i] |= 1;
+                }
+                if !filled(i + 1, j) {
+                    out[j * cw + i + 1] |= 2;
+                }
+                if !filled(i, j + 1) {
+                    out[(j + 1) * cw + i + 1] |= 4;
+                }
+                if !filled(i - 1, j) {
+                    out[(j + 1) * cw + i] |= 8;
+                }
+            }
+        }
+        let step = |d: u8| -> (isize, isize) {
+            match d {
+                1 => (1, 0),
+                2 => (0, 1),
+                4 => (-1, 0),
+                _ => (0, -1),
+            }
+        };
+        let left = |d: u8| -> u8 {
+            if d == 8 {
+                1
+            } else {
+                d << 1
+            }
+        };
+        let right = |d: u8| -> u8 {
+            if d == 1 {
+                8
+            } else {
+                d >> 1
+            }
+        };
+        let mut used = vec![0u8; out.len()];
+        let mut loops = Vec::new();
+        for v0 in 0..out.len() {
+            loop {
+                let free = out[v0] & !used[v0];
+                if free == 0 {
+                    break;
+                }
+                // The lowest free direction (`free` is not zero here).
+                let d0 = 1u8 << free.trailing_zeros();
+                let (mut v, mut d) = (v0, d0);
+                let mut pts = Vec::new();
+                loop {
+                    used[v] |= d;
+                    let (u, w) = (v % cw, v / cw);
+                    pts.push([u as f32 - 1.5, w as f32 - 1.5]);
+                    let (dx, dy) = step(d);
+                    v = ((w as isize + dy) as usize) * cw + (u as isize + dx) as usize;
+                    // Where two edges leave a corner (cells touching only
+                    // there), the left turn keeps to the cell being walked.
+                    let avail = out[v];
+                    d = [left(d), d, right(d)]
+                        .into_iter()
+                        .find(|c| avail & c != 0)
+                        .expect("an outline of cells always closes");
+                    if v == v0 && d == d0 {
+                        break;
+                    }
+                }
+                let pts = drop_collinear(pts);
+                if pts.len() >= 3 {
+                    loops.push(pts);
+                }
+            }
+        }
+        loops
+    }
+
     /// [`Self::trace`] as a normalized [`Region`], shifted by `(x0, y0)`.
     pub fn trace_region(&self, x0: f64, y0: f64) -> Region {
         let mut region = Region::new();
@@ -1138,6 +1241,54 @@ impl PaddedField {
         region.normalize();
         region
     }
+}
+
+/// A contour path cut into the simple loops it is made of, wherever it
+/// comes back to a vertex it has already passed through.
+///
+/// Some systems write several touching pieces as one path: two voxels one
+/// above the other come out as the first square, then the second, drawn the
+/// other way round, through the corner they share - nine points, one
+/// contour. Its shoelace area is zero (the two halves cancel), so read as
+/// one ring it vanishes from the planimetry, while a scanline fill counts
+/// both squares. Cut at the shared vertex it is two squares, as it should
+/// be. A keyhole contour (an outline and its hole joined by a slit) comes
+/// apart the same way into the outline and the hole, with the slit - two
+/// points - dropped. A path that never revisits a vertex is returned whole;
+/// a closing point that repeats the first is not a second loop.
+pub fn simple_loops(pts: &[[f64; 3]]) -> Vec<Vec<[f64; 3]>> {
+    use std::collections::HashMap;
+    // Bit-exact: the repeated vertices are the same numbers written twice.
+    let key = |p: &[f64; 3]| (p[0].to_bits(), p[1].to_bits(), p[2].to_bits());
+    let mut path: Vec<[f64; 3]> = Vec::with_capacity(pts.len());
+    let mut seen: HashMap<(u64, u64, u64), usize> = HashMap::with_capacity(pts.len());
+    let mut out = Vec::new();
+    for p in pts {
+        match seen.get(&key(p)) {
+            Some(&i) => {
+                // A loop closes here: from the first visit to this one. The
+                // vertex itself stays on the path, which carries on from it.
+                let tail: Vec<[f64; 3]> = path.drain(i + 1..).collect();
+                for q in &tail {
+                    seen.remove(&key(q));
+                }
+                if tail.len() >= 2 {
+                    let mut ring = Vec::with_capacity(tail.len() + 1);
+                    ring.push(path[i]);
+                    ring.extend(tail);
+                    out.push(ring);
+                }
+            }
+            None => {
+                seen.insert(key(p), path.len());
+                path.push(*p);
+            }
+        }
+    }
+    if path.len() >= 3 {
+        out.push(path);
+    }
+    out
 }
 
 /// Endpoint key for loop stitching. On a binary field every marching-squares
@@ -1325,7 +1476,8 @@ impl Stack {
             if c.geometric_type == "POINT" || c.points.len() < 3 {
                 continue;
             }
-            vox.push(c.points.iter().map(|p| grid.patient_to_voxel(*p)).collect());
+            let pts: Vec<[f64; 3]> = c.points.iter().map(|p| grid.patient_to_voxel(*p)).collect();
+            vox.extend(simple_loops(&pts));
         }
         let mut spread = [0.0f64; 3];
         for pts in &vox {
@@ -2126,6 +2278,100 @@ mod tests {
     }
 
     use super::*;
+
+    /// Traced along their edges, the filled cells come back exactly: a
+    /// rectangle as its four corners, a lone cell as a whole square (not
+    /// the half a marching-squares diamond keeps), two cells touching at a
+    /// corner as two squares, and a ring as its outline and its hole.
+    #[test]
+    fn voxel_outlines_enclose_exactly_the_cells() {
+        let region = |f: &PaddedField| {
+            let mut r = Region::new();
+            for pts in f.trace_voxels() {
+                r.rings.push(Poly::new(
+                    pts.iter().map(|p| [p[0] as f64, p[1] as f64]).collect(),
+                ));
+            }
+            r.normalize();
+            r
+        };
+        let mut f = PaddedField::new(8, 8);
+        for j in 1..4 {
+            for i in 2..5 {
+                f.set(i, j);
+            }
+        }
+        let rings = f.trace_voxels();
+        assert_eq!(rings.len(), 1);
+        assert_eq!(rings[0].len(), 4, "a rectangle is its corners");
+        let r = region(&f);
+        assert!((r.area() - 9.0).abs() < 1e-9, "{}", r.area());
+        assert_eq!(r.bbox(), [1.5, 0.5, 4.5, 3.5]);
+
+        f.clear();
+        f.set(3, 3);
+        assert!((region(&f).area() - 1.0).abs() < 1e-9);
+
+        f.clear();
+        f.set(2, 2);
+        f.set(3, 3);
+        assert_eq!(
+            f.trace_voxels().len(),
+            2,
+            "corner-touching cells stay apart"
+        );
+        assert!((region(&f).area() - 2.0).abs() < 1e-9);
+        f.clear();
+        f.set(3, 2);
+        f.set(2, 3);
+        assert_eq!(f.trace_voxels().len(), 2);
+        assert!((region(&f).area() - 2.0).abs() < 1e-9);
+
+        f.clear();
+        for j in 1..4 {
+            for i in 1..4 {
+                if (i, j) != (2, 2) {
+                    f.set(i, j);
+                }
+            }
+        }
+        assert_eq!(f.trace_voxels().len(), 2, "outline and hole");
+        assert!((region(&f).area() - 8.0).abs() < 1e-9);
+    }
+
+    /// A contour that passes through a vertex twice is the loops it makes:
+    /// two squares written as one path through their shared corner count
+    /// both (the path's own shoelace area is zero); a closing point equal
+    /// to the first is not a loop of its own; a plain ring stays whole.
+    #[test]
+    fn a_path_through_a_vertex_twice_is_split_into_its_loops() {
+        let p = |x: f64, y: f64| [x, y, 0.0];
+        let two = [
+            p(0.0, 1.0),
+            p(0.0, 0.0),
+            p(1.0, 0.0),
+            p(1.0, 1.0),
+            p(0.0, 1.0),
+            p(0.0, 2.0),
+            p(1.0, 2.0),
+            p(1.0, 1.0),
+            p(0.0, 1.0),
+        ];
+        let loops = simple_loops(&two);
+        assert_eq!(loops.len(), 2, "{loops:?}");
+        assert!(loops.iter().all(|l| l.len() == 4));
+        let closed = [
+            p(0.0, 0.0),
+            p(2.0, 0.0),
+            p(2.0, 2.0),
+            p(0.0, 2.0),
+            p(0.0, 0.0),
+        ];
+        assert_eq!(simple_loops(&closed).len(), 1);
+        assert_eq!(simple_loops(&closed)[0].len(), 4);
+        let open = [p(0.0, 0.0), p(2.0, 0.0), p(2.0, 2.0)];
+        assert_eq!(simple_loops(&open), vec![open.to_vec()]);
+    }
 
     /// A padded field traces a filled rectangle as one ring of four
     /// corners, shifted by the origin it is asked for, and an empty one as

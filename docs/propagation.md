@@ -19,6 +19,17 @@ in the list only while there is a registration. With none, the entry is not
 offered at all and the destination falls to the first 4D group, because an
 entry that cannot be chosen is worse than a shorter list.
 
+**Without a registration, every loaded image series is a destination.** They
+are listed under a rule of their own, below the groups and their phases, and
+the run registers the source onto the one picked before carrying the
+structures - exactly what the group path already does for each phase, done
+once. So structures go from anything to anything: a planning CT onto a
+diagnostic one, a cardiac CT onto a cone-beam scan, either direction. A
+series that is already a phase of a 4D group is not listed twice; it is
+reached as that group's phase. With a registration active the list is
+unchanged, because then the two images it pairs are what "the other image"
+means.
+
 ## What it does
 
 * **Pull, never push.** Every voxel of the *destination* is asked where it
@@ -56,6 +67,38 @@ exactly that volume. For a structure larger than the voxels this is the
 usual half threshold; for one smaller, every piece lands in the voxel that
 holds most of it. The report lists three volumes: the source's, the mapped
 one (what the deformation made of it) and the filed one (the mask).
+
+## Deformed, or keeping its shape
+
+**Carry: deformed / keep shape** says how each structure goes through the
+transform. *Deformed* (the default) carries it point by point, so its shape
+and volume change the way the deformation changes where it lies. *Keep
+shape* carries it as a rigid body instead: the transform's best rigid fit
+over the structure's own voxels (orthogonal Procrustes). It lands where the
+transform takes it and turns as the tissue around it turns, and keeps its
+own shape and volume.
+
+This matters most for a small target inside an organ whose outline was
+what the registration matched, such as a cardiac target anchored on the
+heart's contours. The transform knows where the heart's surface goes and
+only interpolates inside it, so a target a few millimetres under that
+surface is squeezed by whatever the interpolation does at that spot. In
+one test pair (the cardiac CT of one patient onto the 4DCT of another, the
+two hearts contoured at 947 and 794 cm³), the heart as a whole lost 16 %
+but the deformation compressed the tissue at the target by a third (a mean
+Jacobian of 0.65 over it): 2.90 cm³ became 1.89. Carried with its shape
+kept, it lands at 2.89 cm³.
+
+What the rigid carry leaves out is reported: the RMS distance between the
+rigid body and the transform over the structure, marked *rigid* on the
+structure's row, with the number on its tooltip (and `rigid_residual_mm`
+from the MCP server). A few millimetres over a compact target means the
+deformation there was mostly a squeeze; a large figure over a spread-out
+one means the transform bends it, and a single rigid body is a
+simplification you have chosen to make. An anchor always follows the
+transform, whichever is chosen: it is the run's check on the transform.
+From the MCP server this is `keep_shape` on `propagate` and
+`propagate_to_group`.
 
 ## After landing: close, fill
 
@@ -106,6 +149,13 @@ the run's report.
 Picking one phase instead of the group narrows the same machinery to that
 phase: one registration, one segmentation series, one row in the report -
 including for an anchored run.
+
+**Refine locally first** applies only to a run that goes through the active
+registration: it is a second pass over that one pair of images. A
+destination that makes its own transform - a 4D group, a lone series - has
+nothing standing there to refine, and the section now says so with its
+controls greyed rather than refusing to open, which is how it came to look
+broken once a 4D group became the usual destination.
 
 The transforms are kept. Registering a group in the registration module
 (*Fixed image ▶ the group*) and then propagating onto it costs no
@@ -217,7 +267,8 @@ pairing is then the two images you chose there.
 *Last run* is two tables rather than a paragraph, because ten phases of four
 facts each is forty sentences nobody reads to the end.
 
-The first has a row per destination: the **phase**, what the registration did
+The first has a row per destination: the **phase** (on screen only when
+there is more than one destination to tell apart), what the registration did
 to the **metric** (its value before and after, with the stages on the row's
 tooltip), the **iterations** and the time (**t, s**) it took, the anchor's
 **Dice** where the run was anchored on a structure, and what the results were
@@ -229,13 +280,86 @@ is left out rather than repeating its neighbour. The last column is the
 **change** between the source and the result, in the warning colour past ten
 per cent, which is where a propagated volume stops being the same organ.
 
+When the structures land as a **structure set**, what arrives is contours,
+and a contour has two volumes - the two *Structure details* shows. So the
+second table measures both sides both ways, **Surface-based** first, then
+**Voxels-based** (the contours rasterized on the image's lattice): under
+each, the **Source**, the **Deformed** ROI that was filed, and the **Δ %**
+between them, so either measure reads across on its own. The deformed
+figures are read off the filed ROI with the very calls *Structure details*
+makes, so the two windows agree to the last digit.
+
+The exact rules and formulas behind every one of these figures are in
+[volumes.md](volumes.md). In short:
+
+- **Voxels-based** counts the voxels whose centres lie inside the contours
+  (even-odd, slice by slice) and multiplies by the voxel volume. On the
+  deformed side it is the filed mask itself, so the voxels-based **Δ %** is
+  the volume change the transform made: the ratio of the two is the mean
+  Jacobian determinant of the transform over the structure.
+- **Surface-based** reconstructs a closed triangle surface from the
+  contours - neighbouring slices joined by strips of triangles, the first
+  and last closed by shrunken caps half a slice beyond, any gap left where a
+  contour splits between slices closed - and integrates the volume inside it
+  (divergence theorem). It owes nothing to an image lattice.
+
+On an organ the two agree to about a per cent. On a target exported voxel by
+voxel as a thin sheet they part by tens of per cent, because such a structure
+is mostly ends: the surface stops at a cap where the voxels count a full
+slice, and a pair of voxels chained through a shared corner becomes two
+half-voxel triangles. The STAR target (1031 squares of 1 mm on 0.6 mm slices)
+is 0.62 cm³ of voxels and 0.53 cm³ of surface; the UPSTAR target, with 450
+corner-chained pairs among its cells, is 2.89 cm³ of voxels and 1.95 of
+surface. Neither is wrong; they measure different things.
+
+That is also why a small structure's two **Δ %** columns can disagree. The
+UPSTAR target carried onto the Lung 01-052 4DCT reads −34.4 % by voxels and
+−9.8 % by surface:
+
+- **Voxels-based, −34.4 %** (2.89 → 1.89 cm³) is the transform's local
+  compression. Over the carried target the mean Jacobian determinant of the
+  destination → source map is 1.53 (1.05 to 1.87), and summing it over the
+  target's voxels accounts for 2.90 cm³ of source - the source volume to
+  0.6 %. The heart the run is anchored on shrinks by 16 % (947 → 794 cm³,
+  mean Jacobian 1.19), because it is matched onto the other patient's smaller
+  heart (805 cm³); the target, 9 mm under its surface, is squeezed more.
+- **Surface-based, −9.8 %** (1.95 → 1.76 cm³) mixes that compression with a
+  change of shape class: the source is a sheet of 1 mm squares on 1 mm
+  slices, whose surface holds 68 % of its voxels; the filed target is a
+  compact voxel outline on 0.5 mm slices, whose surface holds 93 %. Carried
+  rigidly - no volume change at all (2.887 → 2.889 cm³ by voxels) - the same
+  target reads **+39 %** by surface for that reason alone.
+
+So it is the voxels-based **Δ %** that says how much the transform itself
+changed a structure. When a target inside an organ should keep its volume,
+carry it with **keep shape** (above).
+
+A structure that came from a segment has no contours on the source side;
+its surface and the change by it are left as a dash rather than reported as
+nought. Every volume in the program - these tables, the details, the tools'
+own confirmations - is given to two decimals.
+
 **📋 Copy** puts both tables on the clipboard tab separated, which a
 spreadsheet opens as a table without being asked twice.
+
+**Deformation field.** After a run onto a 4D group - an anchored one
+included - a **Deformation field** row sits under the tables, with one
+**👁** button per phase: it draws that phase's displacement on the views and
+in 3D (putting the phase on display if it is not), and a second click hides
+it. **deformation only** leaves out the rigid part, which for an anchored
+run is the jump between the two scanners' coordinates. The transform of the
+phase on display is made the active registration when the run finishes, so
+the arrows, the deformed grid, their spacing and scale are under *Image
+registration ▸ Vector field* as after any registration
+([registration.md](registration.md#against-a-4d-group)).
 
 ## Verification
 
 `src/propagate.rs`'s unit tests assert that a translation carries a ball
 by exactly that much (centroid within 0.5 mm, volume preserved to 6 %),
+that a ball carried with its shape kept through a transform that halves its
+volume keeps its volume to 3 % and lands within a voxel of where the
+transform put it,
 that the direction flag really reverses the mapping, that a structure
 mapped outside the destination comes back *empty*, and that a structure
 crosses between a 2 mm and a 3 mm grid with its volume intact to 10 %.

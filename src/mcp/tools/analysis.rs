@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use super::super::phi::clean_text;
 use super::super::Core;
 use super::fourd::report_json;
-use super::session::{round1, round2, round3, vec3};
+use super::session::{round2, round3, vec3};
 use crate::dvh;
 use crate::motion;
 use crate::progress::Progress;
@@ -56,8 +56,8 @@ pub fn compare_structures(core: &mut Core, args: CompareArgs, p: &Progress) -> R
     let same_for = vol_a.frame_of_reference_uid == vol_b.frame_of_reference_uid;
     let ov = motion::overlap(&ma, &mb, &grid).context("one of the masks is empty")?;
     let mut out = json!({
-        "a": { "dataset": args.a.dataset, "structure": clean_text(&sa.name), "volume_cm3": round1(ov.vol_a_cm3) },
-        "b": { "dataset": args.b.dataset, "structure": clean_text(&sb.name), "volume_cm3": round1(ov.vol_b_cm3) },
+        "a": { "dataset": args.a.dataset, "structure": clean_text(&sa.name), "volume_cm3": round2(ov.vol_a_cm3) },
+        "b": { "dataset": args.b.dataset, "structure": clean_text(&sb.name), "volume_cm3": round2(ov.vol_b_cm3) },
         "dice": round3(ov.dice),
         "hd95_mm": round2(ov.hd95_mm),
         "mean_surface_distance_mm": round2(ov.msd_mm),
@@ -187,8 +187,8 @@ pub fn compute_dvh(core: &mut Core, a: DvhArgs, p: &Progress) -> Result<Value> {
                 .collect();
             json!({
                 "structure": clean_text(&c.name),
-                "volume_cm3": round1(c.volume_cm3),
-                "outside_dose_grid_cm3": round1(c.outside_cm3),
+                "volume_cm3": round2(c.volume_cm3),
+                "outside_dose_grid_cm3": round2(c.outside_cm3),
                 "outside_fraction": round3(c.outside_fraction()),
                 "min": round2(c.min),
                 "mean": round2(c.mean),

@@ -230,8 +230,8 @@ pub(super) fn matrix_editor(
             if small_tip_button(
                 ui,
                 "📋 Copy",
-                "The sixteen numbers to the clipboard, whitespace separated - the form \
-                 3D Slicer reads",
+                "The sixteen numbers to the clipboard, whitespace separated - the \
+                 common plain-text form of a 4 x 4 matrix",
             ) {
                 ui.ctx().copy_text(state.m.to_text());
             }

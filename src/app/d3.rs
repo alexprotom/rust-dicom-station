@@ -79,6 +79,49 @@ fn set_meshes(w: &mut D3Window, meshes: Arc<Vec<RoiMesh>>) {
     w.mesh_gen += 1;
 }
 
+/// Fit a window's camera sphere to `meshes`: centre on their bounding box,
+/// radius to its half-diagonal. False, and the camera untouched, when there
+/// is no vertex to fit to.
+fn fit_to_meshes(w: &mut D3Window, meshes: &[RoiMesh]) -> bool {
+    let (mut mn, mut mx) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for m in meshes {
+        for v in &m.verts {
+            for a in 0..3 {
+                mn[a] = mn[a].min(v[a]);
+                mx[a] = mx[a].max(v[a]);
+            }
+        }
+    }
+    if mn[0] >= mx[0] {
+        return false;
+    }
+    w.center = [
+        (mn[0] + mx[0]) * 0.5,
+        (mn[1] + mx[1]) * 0.5,
+        (mn[2] + mx[2]) * 0.5,
+    ];
+    w.radius = (0..3)
+        .map(|a| (mx[a] - mn[a]) * 0.5)
+        .fold(0.0f32, |acc, v| (acc * acc + v * v).sqrt())
+        .max(10.0);
+    true
+}
+
+const RESET_TIP: &str =
+    "Reset the camera: default angle, centred on the structures, fit zoom and no offset";
+
+/// The camera a scene starts with: the default turn, no zoom, no pan,
+/// looking at `sphere` (centre and radius, patient mm) until meshes land to
+/// fit to.
+fn reset_camera(w: &mut D3Window, sphere: ([f32; 3], f32)) {
+    w.yaw = 0.7;
+    w.pitch = -0.5;
+    w.zoom = 1.0;
+    w.pan = Vec2::ZERO;
+    (w.center, w.radius) = sphere;
+    w.refit = true;
+}
+
 /// Read back what the opacity sliders write: "80 %", or just "80".
 fn percent_parser(text: &str) -> Option<f64> {
     text.trim()
@@ -171,6 +214,58 @@ impl ViewerApp {
         // is re-meshed while its window is open.
         h ^= self.settings_gen.wrapping_mul(0x9E37_79B9_7F4A_7C15);
         h
+    }
+
+    /// Identity of the image a workspace's 3D scene stands on: the series
+    /// on display, or - while it is a phase of a 4D group - the group, so
+    /// stepping through the phases holds the view still while loading a
+    /// different image starts it over.
+    pub(super) fn d3_scene_id(&self, slot: usize) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut eat = |s: &str| {
+            for b in s.bytes().chain(std::iter::once(0)) {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x0100_0000_01b3);
+            }
+        };
+        match self.fourd_phases(slot) {
+            Some((name, idxs, _)) => {
+                eat("4D");
+                eat(&name);
+                if let Some(st) = self.slots[slot].study.as_ref() {
+                    for i in idxs {
+                        if let Some(se) = st.series.get(i) {
+                            eat(&se.uid);
+                        }
+                    }
+                }
+            }
+            None => {
+                if let Some(uid) = self.slots[slot].displayed_uid() {
+                    eat(uid);
+                }
+            }
+        }
+        h
+    }
+
+    /// Centre and radius of a workspace's image volume, patient mm: where a
+    /// scene looks before it has meshes of its own to fit to.
+    fn volume_sphere(&self, slot: usize) -> ([f32; 3], f32) {
+        self.slots[slot]
+            .study
+            .as_ref()
+            .filter(|st| st.has_volume())
+            .map(|st| {
+                let v = &st.volume;
+                let d = v.dims;
+                let a = v.voxel_to_patient(0.0, 0.0, 0.0);
+                let b = v.voxel_to_patient(d[0] as f64 - 1.0, d[1] as f64 - 1.0, d[2] as f64 - 1.0);
+                let c = (a + b) * 0.5;
+                let r = ((b - a).length() * 0.5).max(10.0);
+                ([c.x as f32, c.y as f32, c.z as f32], r as f32)
+            })
+            .unwrap_or(([0.0; 3], 100.0))
     }
 
     /// Mesh every phase of the workspace's 4D group up front, so that
@@ -335,7 +430,6 @@ impl ViewerApp {
         });
         w.job = Some(Job { progress, rx });
         w.rebuilding = if partial { Some(changed) } else { None };
-        w.refit = false;
     }
 
     pub(super) fn open_d3_window(&mut self, slot: usize) {
@@ -353,19 +447,8 @@ impl ViewerApp {
         // Initial auto-fit from the volume extents; replaced by the meshes'
         // own bounding sphere once structure meshes arrive. Keeps the camera
         // stable for segmentation-only scenes that rebuild while painting.
-        let (center, radius) = self.slots[slot]
-            .study
-            .as_ref()
-            .map(|st| {
-                let v = &st.volume;
-                let d = v.dims;
-                let a = v.voxel_to_patient(0.0, 0.0, 0.0);
-                let b = v.voxel_to_patient(d[0] as f64 - 1.0, d[1] as f64 - 1.0, d[2] as f64 - 1.0);
-                let c = (a + b) * 0.5;
-                let r = ((b - a).length() * 0.5).max(10.0);
-                ([c.x as f32, c.y as f32, c.z as f32], r as f32)
-            })
-            .unwrap_or(([0.0; 3], 100.0));
+        let (center, radius) = self.volume_sphere(slot);
+        let scene = self.d3_scene_id(slot);
         self.d3_windows.retain(|w| w.slot != slot);
         let job = ss.map(|ss| {
             let progress = Arc::new(Progress::default());
@@ -407,6 +490,7 @@ impl ViewerApp {
             center,
             radius,
             key,
+            scene,
             job,
             refit: true,
             mesh_gen: 0,
@@ -447,34 +531,19 @@ impl ViewerApp {
                 }
                 self.error = self.error.take().or(err);
             }
+            // A different image under the scene: start the camera over, the
+            // way opening the window afresh does. A view kept from the last
+            // image orbits a point of *its* anatomy, at *its* scale.
+            let scene = self.d3_scene_id(w.slot);
+            if w.scene != scene {
+                w.scene = scene;
+                reset_camera(w, self.volume_sphere(w.slot));
+            }
             // Poll mesh building, and start one when the structures changed.
             self.refresh_d3_meshes(w);
             {
                 let mut err = None;
                 if let Some(meshes) = poll_job(&mut w.job, ctx, "Meshing", &mut err) {
-                    if w.refit {
-                        // Scene bounding sphere for auto-fit.
-                        let (mut mn, mut mx) = ([f32::MAX; 3], [f32::MIN; 3]);
-                        for m in &meshes {
-                            for v in &m.verts {
-                                for a in 0..3 {
-                                    mn[a] = mn[a].min(v[a]);
-                                    mx[a] = mx[a].max(v[a]);
-                                }
-                            }
-                        }
-                        if mn[0] < mx[0] {
-                            w.center = [
-                                (mn[0] + mx[0]) * 0.5,
-                                (mn[1] + mx[1]) * 0.5,
-                                (mn[2] + mx[2]) * 0.5,
-                            ];
-                            w.radius = (0..3)
-                                .map(|a| (mx[a] - mn[a]) * 0.5)
-                                .fold(0.0f32, |acc, v| (acc * acc + v * v).sqrt())
-                                .max(10.0);
-                        }
-                    }
                     let meshes = match (w.rebuilding.take(), w.meshes.take()) {
                         (Some(changed), Some(old)) => {
                             let mut all: Vec<RoiMesh> = old
@@ -488,6 +557,11 @@ impl ViewerApp {
                         }
                         _ => meshes,
                     };
+                    // Fit to the whole scene, not only to the structures a
+                    // partial rebuild just replaced.
+                    if w.refit && fit_to_meshes(w, &meshes) {
+                        w.refit = false;
+                    }
                     let meshes = Arc::new(meshes);
                     // File it under the key it was built for, so stepping
                     // back onto this phase later costs nothing.
@@ -497,6 +571,16 @@ impl ViewerApp {
                     set_meshes(w, meshes);
                 }
                 self.error = self.error.take().or(err);
+            }
+            // Nothing to wait for - the meshes came from the cache, or the
+            // structures are the same ones on a new image: fit to what is
+            // there now.
+            if w.refit && w.job.is_none() {
+                if let Some(meshes) = w.meshes.clone() {
+                    if fit_to_meshes(w, &meshes) {
+                        w.refit = false;
+                    }
+                }
             }
 
             // Live segmentation meshes: rebuilt in the background whenever a
@@ -793,17 +877,9 @@ impl ViewerApp {
                         // the right, so they read the same way round.
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
-                            if ui
-                                .small_button("⟲")
-                                .on_hover_text(
-                                    "Reset the camera: default angle, fit zoom and no offset",
-                                )
-                                .clicked()
-                            {
-                                w.yaw = 0.7;
-                                w.pitch = -0.5;
-                                w.zoom = 1.0;
-                                w.pan = Vec2::ZERO;
+                            if ui.small_button("⟲").on_hover_text(RESET_TIP).clicked() {
+                                // Centred again on what is there now.
+                                reset_camera(w, (w.center, w.radius));
                             }
                             if ui
                                 .add(
@@ -1309,12 +1385,9 @@ impl ViewerApp {
             }
             let resp = ui
                 .put(bar.reset, egui::Button::new("⟲").small())
-                .on_hover_text("Reset the camera: default angle, fit zoom and no offset");
+                .on_hover_text(RESET_TIP);
             if hit(bar.reset, &resp) {
-                w.yaw = 0.7;
-                w.pitch = -0.5;
-                w.zoom = 1.0;
-                w.pan = Vec2::ZERO;
+                reset_camera(w, (w.center, w.radius));
             }
         }
         let resp = ui
@@ -1540,6 +1613,11 @@ impl ViewerApp {
         }
         vertex_key = mix(vertex_key, cx.to_bits() as u64);
         vertex_key = mix(vertex_key, cyc.to_bits() as u64);
+        // The point the scene turns about: a camera started over for a new
+        // image can land on the same scale with a different centre.
+        for c in w.center {
+            vertex_key = mix(vertex_key, c.to_bits() as u64);
+        }
         vertex_key = mix(vertex_key, alpha as u64);
         vertex_key = mix(vertex_key, other_alpha as u64);
         if let Some(im) = &iso_meshes {

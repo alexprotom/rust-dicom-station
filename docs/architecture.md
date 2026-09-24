@@ -248,8 +248,8 @@ src/
     reg_panel.rs      the Image registration module: method, region, parameters,
                       landmarks, the run (against another workspace or every
                       phase of a 4D group), the analytics, the vector field
-    matrix_edit.rs    the hand-typed 4 x 4 transform, the way Slicer's
-                      Transforms module shows one: the sixteen numbers, use
+    matrix_edit.rs    the hand-typed 4 x 4 transform, as a planning system
+                      shows one: the sixteen numbers, use
                       / identity / invert / from the result, clipboard in
                       and out. Shared by registration, propagation and
                       transfer by relationship
@@ -369,6 +369,10 @@ src/
                     extruded-equipment test, box-blur smoothing; the mask
                     helpers everything shares (count, extent, surface walk)     Core
   rtstruct.rs       RT Structure Set parsing                                     DICOM
+  rt_surface.rs     the surface-based volume of an RT structure: a closed
+                    triangle surface from planar contours (keyholes, strips
+                    between slices, smooth end caps, seams closed) and the
+                    volume it encloses                                           DICOM
   dicomseg.rs       DICOM Segmentation: the segmentation-series model, SEG
                     reading, resampling between lattices, the SEG writer         DICOM
   rtdose.rs         RT Dose parsing + trilinear patient-space sampling           DICOM

@@ -34,6 +34,7 @@ pub mod progress;
 pub mod propagate;
 pub mod registration;
 pub mod render;
+pub mod rt_surface;
 pub mod rtdose;
 pub mod rtplan;
 pub mod rtstruct;

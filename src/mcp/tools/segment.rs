@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use super::super::phi::clean_text;
 use super::super::Core;
-use super::session::round1;
+use super::session::round2;
 use crate::autoseg;
 use crate::bodymask;
 use crate::models::{self, Engine};
@@ -124,7 +124,7 @@ pub fn segment_organs(core: &mut Core, a: OrgansArgs, p: &Progress) -> Result<Va
     let spacing = volume.spacing;
     let organs: Vec<Value> = made
         .iter()
-        .map(|s| json!({ "name": s.name, "volume_cm3": round1(s.volume_cm3(spacing)) }))
+        .map(|s| json!({ "name": s.name, "volume_cm3": round2(s.volume_cm3(spacing)) }))
         .collect();
     let masks: Vec<(String, [u8; 3], Vec<u8>)> = made
         .into_iter()
@@ -196,8 +196,8 @@ pub fn segment_body(core: &mut Core, a: BodyArgs, p: &Progress) -> Result<Value>
         "series": series + 1,
         "set": clean_text(&set),
         "structure": a.name,
-        "volume_cm3": round1(r.cm3),
-        "pieces": r.pieces.iter().map(|x| round1(x.cm3)).collect::<Vec<_>>(),
+        "volume_cm3": round2(r.cm3),
+        "pieces": r.pieces.iter().map(|x| round2(x.cm3)).collect::<Vec<_>>(),
         "removed_voxels": r.removed_voxels,
     }))
 }
@@ -320,7 +320,7 @@ pub fn combine_structures(core: &mut Core, a: CombineArgs, p: &Progress) -> Resu
         "set": clean_text(&set),
         "structure": a.name,
         "op": op.label(),
-        "volume_cm3": round1(out.cm3),
+        "volume_cm3": round2(out.cm3),
         "voxels": out.voxels,
         "pieces": out.pieces,
     }))

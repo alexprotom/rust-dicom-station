@@ -715,7 +715,7 @@ impl ViewerApp {
                 None => "nothing".to_string(),
             };
             format!(
-                "✔ {}: {} voxels ({cm3:.1} cm³) over {span} in {:.1} s on {} - {} slice(s) tracked",
+                "✔ {}: {} voxels ({cm3:.2} cm³) over {span} in {:.1} s on {} - {} slice(s) tracked",
                 self.medsam2.name.trim(),
                 r.voxels,
                 r.elapsed_secs,

@@ -83,16 +83,23 @@ impl ViewerApp {
         self.loading = Some(Job { progress, rx });
     }
 
+    /// Read series `idx` of `slot` off the disk and put it on display.
+    ///
+    /// Asked while another read is running, it waits its turn rather than
+    /// being dropped: a workspace that was handed its series list ahead of
+    /// the volume (a series moved in from another workspace) would
+    /// otherwise be left with nothing to show.
     pub(super) fn start_series_switch(&mut self, slot: usize, idx: usize) {
-        if self.loading.is_some() {
-            return;
-        }
         let Some(study) = &self.slots[slot].study else {
             return;
         };
         let Some(series) = study.series.get(idx).cloned() else {
             return;
         };
+        if self.loading.is_some() {
+            self.pending_switch = Some((slot, series.uid.clone()));
+            return;
+        }
         let progress = Arc::new(Progress::default());
         let (tx, rx) = mpsc::channel();
         let p2 = progress.clone();

@@ -284,6 +284,11 @@ pub struct PropagateArgs {
     /// a solid.
     #[serde(default)]
     pub fill: bool,
+    /// Carry each structure as a rigid body - the transform's best rigid
+    /// fit over the structure itself - so it keeps its shape and volume and
+    /// follows the deformation's local position and turn.
+    #[serde(default)]
+    pub keep_shape: bool,
 }
 
 pub fn propagate(core: &mut Core, a: PropagateArgs, p: &Progress) -> Result<Value> {
@@ -315,12 +320,14 @@ pub fn propagate(core: &mut Core, a: PropagateArgs, p: &Progress) -> Result<Valu
             .structure(&src.0, &s.structure, s.set.as_deref())?;
         subjects.push(st.subject_on(&src_grid)?);
     }
-    let mut items =
-        propagate::propagate(&src_vol, &dst_vol, &transform, use_inverse, &subjects, p)?;
     let finish = propagate::Finish {
         close_mm: a.close_mm.clamp(0.0, 50.0),
         fill: a.fill,
+        keep_shape: a.keep_shape,
     };
+    finish.carry(&mut subjects);
+    let mut items =
+        propagate::propagate(&src_vol, &dst_vol, &transform, use_inverse, &subjects, p)?;
     finish.apply_all(&mut items, &dst_vol.grid(), p);
     let suffix = a
         .suffix
@@ -336,6 +343,7 @@ pub fn propagate(core: &mut Core, a: PropagateArgs, p: &Progress) -> Result<Valu
             "mapped_cm3": round2(it.mapped_cm3),
             "result_cm3": round2(it.result_cm3),
             "voxels": it.voxels,
+            "rigid_residual_mm": it.rigid_residual_mm.map(round2),
             "summary": it.summary(),
         }));
         if it.voxels > 0 {

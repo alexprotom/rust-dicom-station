@@ -757,8 +757,14 @@ struct D3Window {
     radius: f32,
     /// Identity of the structure set the meshes were built from.
     key: u64,
-    /// Fit the camera to the meshes when they land: the first time only,
-    /// a rebuild after an edit keeps the view where it was.
+    /// Identity of the image the scene stands on ([`ViewerApp::d3_scene_id`]).
+    /// When it changes the camera starts over - turned, zoomed and centred
+    /// for the new anatomy - since a view kept from another image orbits a
+    /// point that is not in this one.
+    scene: u64,
+    /// Fit the camera to the meshes when they land: the first time, and
+    /// after the image changed; a rebuild after an edit keeps the view where
+    /// it was.
     refit: bool,
     /// Counts every set of meshes that landed; the frame cache is keyed on
     /// it. Only [`super::d3::set_meshes`] may change `meshes`, because a
@@ -1146,6 +1152,9 @@ struct ActiveRegistration {
     /// The region the run was restricted to, kept so the field can be
     /// re-sampled at a different lattice without rebuilding the mask.
     region: Option<Arc<RegionMask>>,
+    /// The phase of the group registration this is, when it was installed
+    /// from there to be looked at: clearing it leaves the group alone.
+    group_phase: Option<String>,
     /// Per-structure Dice, filled the first time it is asked for.
     ///
     /// Not computed with the rest of the analysis: it needs a mask
@@ -1311,6 +1320,10 @@ pub struct ViewerApp {
     pending_load: Option<(usize, PathBuf)>,
     /// The same, for an explicit file selection (slot, files).
     pending_load_files: Option<(usize, Vec<PathBuf>)>,
+    /// A series to put on display once the current read finishes (slot,
+    /// series UID): asked for while something else was loading. By UID,
+    /// not index, since the study may gain series in between.
+    pending_switch: Option<(usize, String)>,
     error: Option<String>,
     /// A one-line confirmation shown in a small modal (e.g. a written file).
     notice: Option<String>,
@@ -1360,6 +1373,12 @@ pub struct ViewerApp {
 
     // The deformation vector field of the active registration.
     field_on: bool,
+    /// Draw only what the warp adds to the rigid alignment
+    /// ([`Transform3::warp_only`]).
+    field_warp_only: bool,
+    /// A phase of the group registration asked to be shown, waiting for its
+    /// series to be put on display: (workspace, series UID, phase index).
+    pending_phase_field: Option<(usize, String, usize)>,
     field_style: FieldStyle,
     field_step_mm: f64,
     /// Arrows are drawn this many times their true length.
@@ -1847,6 +1866,7 @@ impl ViewerApp {
             archive_checked_at: f64::NEG_INFINITY,
             pending_load: None,
             pending_load_files: None,
+            pending_switch: None,
             error: None,
             notice: None,
             registration: None,
@@ -1871,6 +1891,8 @@ impl ViewerApp {
             reg_margin_mm: 10.0,
             reg_init: RegInit::Auto,
             field_on: false,
+            field_warp_only: false,
+            pending_phase_field: None,
             field_style: FieldStyle::Arrows,
             field_step_mm: 12.0,
             field_scale: 3.0,
@@ -2308,7 +2330,15 @@ impl eframe::App for ViewerApp {
         }
         // Kick a queued load once the current one finished.
         if self.loading.is_none() {
-            if let Some((slot, path)) = self.pending_load.take() {
+            if let Some((slot, uid)) = self.pending_switch.take() {
+                let idx = self.slots[slot]
+                    .study
+                    .as_ref()
+                    .and_then(|st| st.series.iter().position(|se| se.uid == uid));
+                if let Some(idx) = idx {
+                    self.start_series_switch(slot, idx);
+                }
+            } else if let Some((slot, path)) = self.pending_load.take() {
                 self.start_load(slot, path);
             } else if let Some((slot, paths)) = self.pending_load_files.take() {
                 self.start_load_files(slot, paths);
@@ -2322,6 +2352,8 @@ impl eframe::App for ViewerApp {
                 }
             }
         }
+
+        self.poll_pending_phase_field();
 
         // Poll background simulation.
         if let Some((target, study)) =

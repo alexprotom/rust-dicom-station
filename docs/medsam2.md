@@ -24,8 +24,8 @@ The **⏩ Slice propagation** section of the *Structure auto tools* module
 module's **Workspace A / B** row; the four sections share one layout, see
 [architecture.md](architecture.md#the-tool-windows-and-the-modules)). The
 box is drawn in the views while the section is unfolded.
-The workflow is the one the [MedSAM2 extension for 3D
-Slicer](https://github.com/bowang-lab/MedSAMSlicer/tree/MedSAM2)
+The workflow is the one the MedSAM2 authors' [interactive
+extension](https://github.com/bowang-lab/MedSAMSlicer/tree/MedSAM2)
 established - box the structure on one slice, check it, propagate - minus
 the round trips: no server to configure, and the network stays loaded
 between steps.

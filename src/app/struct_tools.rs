@@ -859,10 +859,17 @@ impl ViewerApp {
         ui.label(egui::RichText::new(format!("✏ {name}")).strong());
         ui.label(
             egui::RichText::new(format!(
-                "{vol:.1} cm³ · {occupied} slice(s) · {points} points · {} slices",
+                "{vol:.2} cm³ · {occupied} slice(s) · {points} points · {} slices",
                 axis_name(axis)
             ))
             .weak(),
+        )
+        .on_hover_text(
+            "The volume while you draw: each slice's contour area times the slice \
+             spacing, recomputed every frame. Structure details gives the \
+             surface-based volume, inside a closed surface reconstructed from the \
+             contours - the same on an organ, smaller on a small structure by its \
+             end caps.",
         );
         ui.horizontal_wrapped(|ui| {
             ui.label("Type:");
@@ -2186,7 +2193,7 @@ impl ViewerApp {
         self.settings_gen += 1;
         self.edit = None;
         self.tools.new.status = Some(format!(
-            "✔ {name} created: {cm3:.1} cm³ on {occupied} slice(s). It is now the \
+            "✔ {name} created: {cm3:.2} cm³ on {occupied} slice(s). It is now the \
              {kind} the editor works on."
         ));
     }

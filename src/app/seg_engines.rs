@@ -674,6 +674,8 @@ impl ViewerApp {
                         source_cm3: 0.0,
                         result_cm3: 0.0,
                         mapped_cm3: 0.0,
+                        source_surface_cm3: None,
+                        rigid_residual_mm: None,
                     })
                     .collect();
                 if let Some((_, names)) = workflow::group::land_in_structure_set_as(
