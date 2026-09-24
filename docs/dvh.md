@@ -80,7 +80,9 @@ typed something else. Dose-valued table columns follow the same switch, so
 ## The metrics table
 
 One row per curve. It starts with volume, minimum, mean, maximum, D95 % and D2
-%, and takes any column you type:
+%, and takes any column you type. The volume is voxels-based - the
+structure's voxels on the image lattice, those outside the dose grid
+included ([volumes.md](volumes.md#5-other-volumes)):
 
 | You type | You get |
 |---|---|

@@ -316,7 +316,7 @@ impl ViewerApp {
         // The working stack of the contour tools may be this very structure.
         self.edit = None;
         self.interp = None;
-        self.notice = Some(format!("{} updated: {:.1} cm³", result.name, result.cm3));
+        self.notice = Some(format!("{} updated: {:.2} cm³", result.name, result.cm3));
     }
 
     /// Update every derived structure of the active set that needs it, one

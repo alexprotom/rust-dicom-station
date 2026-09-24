@@ -150,7 +150,7 @@ total, ≈ 20 s on a desktop CPU, driving the mean-squared HU difference from
 ## The matrix, typed in by hand
 
 Under the *Register* row is a foldable **Transform matrix**: the same 4 × 4
-a planning system or 3D Slicer's *Transforms* module shows. Three rows of
+a planning system shows. Three rows of
 direction cosines with the shift in the right-hand column, in patient
 millimetres, mapping fixed → moving like everything else here; the bottom
 row is `0 0 0 1` for any spatial transform, so it is shown and not editable.
@@ -181,8 +181,8 @@ rather than showing an identity that means nothing.
 the mapping the other way, and is disabled for a matrix that flattens space,
 because that one has no inverse; *From the result* pulls the run's transform
 back in after a hand edit has wandered. **📋 Copy** and **📥 Paste** move the
-sixteen numbers through the clipboard whitespace-separated, the form Slicer
-reads and writes, so a matrix from elsewhere goes in without retyping
+sixteen numbers through the clipboard whitespace-separated, the common plain
+text form of a 4 × 4 matrix, so a matrix from elsewhere goes in without retyping
 (commas separate them just as well).
 
 **▶ Apply as the registration** installs it as the active registration of
@@ -209,8 +209,28 @@ The moving image can be any series - of the group's own workspace (a planning
 CT or a cardiac CT beside its 4DCT) or of the other one. Each phase
 reports its own metric line, and the transforms are kept so that propagating
 structures onto the same group afterwards costs no registration
-([propagation.md](propagation.md)). **Clear group registration** drops them,
-as does clearing the registration.
+([propagation.md](propagation.md)). A propagation onto a group - anchored or
+not - leaves its per-phase transforms here in the same way.
+
+**The deformation field of a group run.** When a group run (a propagation
+onto a 4D group, anchored or not, or a registration against the group)
+finishes, the transform of the phase on display becomes the active
+registration, so the result section below and its **Vector field** settings
+are there as after any other run; nothing is switched on by itself. To draw
+the field:
+
+- in the phase table, the **Vector field** column: **👁 show** draws that
+  phase's field on the views and in 3D (the phase is put on display first if
+  it is not); **👁 on the views** hides it again;
+- or, in *Structure propagation*, the **Deformation field** row under *Last
+  run*: one **👁** button per phase, with **deformation only** beside it;
+- or **Show the deformation field** under the result's *Vector field*.
+
+For a deformable transform the field starts as *deformation only* (see
+below), because an anchored run's rigid part is the jump from one frame of
+reference to the other. **Clear registration** then puts the phase away and
+keeps the group; **Clear group registration** drops the per-phase
+transforms, as does clearing a registration that was run here.
 
 ## Local registration
 
@@ -294,6 +314,11 @@ MPR views of the fixed workspace and, optionally, in the 3D window:
   warped graph paper, showing compression and expansion.
 * Lattice spacing, arrow scale and colouring are adjustable; changing the
   spacing re-samples on a worker thread.
+* **Deformation only** draws what the B-spline adds on top of the rigid
+  alignment instead of the whole displacement. Between two frames of
+  reference - a cardiac CT onto a 4DCT phase - the rigid part moves every
+  point by the same hundreds of millimetres, and a field drawn whole shows
+  that jump and hides the deformation.
 
 In the **3D window**, *Workspace B through the registration* meshes the other
 workspace's structures and maps every vertex through the recovered transform,

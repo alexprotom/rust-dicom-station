@@ -314,9 +314,20 @@ is visible: a phase with a poor contour shows up as a poor Dice.
   phase lattice: the mapped volume is what the deformation made of the
   source, and the filed mask holds exactly that. A cardiac target exported
   as a cloud of 1 mm cubes (an ablation map, voxel by voxel) keeps its
-  volume but becomes blockier on 1.2 × 1.2 × 2 mm voxels; if a solid region
-  is wanted for planning, close it with the structure algebra (a margin and
-  its negative) before propagating.
+  volume, but on 1.2 × 1.2 × 2 mm voxels it gets blockier and full of
+  holes. Such a target is often a sheet one cube thick, and a 1 mm sheet
+  crossing 2 mm slices fills about half of each voxel it passes through.
+  Keeping its volume means keeping only the fuller half of those voxels,
+  so the sheet arrives perforated. If a solid region is wanted for
+  planning, close it with the structure algebra (a margin and its
+  negative) before propagating, or tick *close gaps*. Either way the
+  volume grows by what the closing adds.
+* **Surface-based against voxels-based.** The same target reads lower as a
+  surface than as voxels: the surface ends in shrunken caps half a slice
+  beyond the end contours, and a pair of voxels chained through a corner
+  becomes two half-voxel triangles, while the voxels count every slice in
+  full. The **Voxels-based** columns are what the transform actually
+  changed. How each figure is calculated is in [volumes.md](volumes.md).
 * **Folded fraction** of the refinement should be 0; a displacement p95 of a
   few millimetres inside the heart region is normal between a breath-hold
   cardiac CT and a respiratory bin.

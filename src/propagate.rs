@@ -31,6 +31,21 @@
 //! voxels this is the ½ threshold as before; for one smaller, every piece
 //! lands in the voxel that holds most of it instead of vanishing.
 //!
+//! ## Keeping a structure's shape
+//!
+//! A deformable transform is only as good inside an organ as what it was
+//! fitted to there. Matched on an outline (the heart's contours, say), it
+//! knows where the surface goes and interpolates everything inside, and a
+//! small target a few millimetres under that surface is squeezed or
+//! stretched by whatever the interpolation does at that spot - a third of
+//! its volume, when two differently shaped hearts are matched. With
+//! [`Subject::keep_shape`] the structure is carried instead by the rigid
+//! body that best fits the transform over the structure itself: it goes
+//! where the transform takes it and turns as the tissue around it turns,
+//! and keeps its shape and volume. How much deformation that leaves out is
+//! reported, as the RMS distance between the fit and the transform over the
+//! structure.
+//!
 //! ## The mapping cache
 //!
 //! The inverse of a deformable transform is a fixed-point iteration -
@@ -58,6 +73,18 @@ pub struct Subject {
     pub color: [u8; 3],
     /// One byte per source voxel, 1 inside.
     pub mask: Vec<u8>,
+    /// The structure's surface-based volume, cm³ - the volume enclosed by
+    /// the closed surface reconstructed from its contours (see
+    /// [`crate::rt_surface`]) - when it was drawn as contours; `None` for a
+    /// segment, which has no contours to build a surface from. Carried
+    /// through untouched so the report can set it beside the surface volume
+    /// of what lands.
+    pub surface_cm3: Option<f64>,
+    /// Carry it as a rigid body - the transform's best rigid fit over the
+    /// structure's own voxels - rather than through the transform itself:
+    /// shape and volume kept, place and orientation followed. See the
+    /// module notes.
+    pub keep_shape: bool,
 }
 
 /// What arrived on the other side.
@@ -77,6 +104,13 @@ pub struct Propagated {
     /// filed on the destination lattice: the sum of the occupancies. The
     /// mask holds this to within one voxel.
     pub mapped_cm3: f64,
+    /// The source structure's surface-based volume, cm³, when it was
+    /// contours (see [`Subject::surface_cm3`]).
+    pub source_surface_cm3: Option<f64>,
+    /// When it was carried rigidly ([`Subject::keep_shape`]): the RMS
+    /// distance between that rigid body and the transform over the
+    /// structure, mm - the deformation that was left out.
+    pub rigid_residual_mm: Option<f64>,
 }
 
 impl Propagated {
@@ -87,8 +121,12 @@ impl Propagated {
         } else {
             0.0
         };
+        let rigid = match self.rigid_residual_mm {
+            Some(r) => format!(", carried rigidly, {r:.1} mm of deformation left out"),
+            None => String::new(),
+        };
         format!(
-            "{}: {:.3} cm³ ▶ {:.3} cm³ ({:+.3} %)",
+            "{}: {:.2} cm³ ▶ {:.2} cm³ ({:+.2} %){rigid}",
             self.name, self.source_cm3, self.result_cm3, change
         )
     }
@@ -198,6 +236,53 @@ fn sample_mask(mask: &[u8], dims: [usize; 3], v: [f64; 3]) -> f32 {
     c0 + (c1 - c0) * fw
 }
 
+/// A point mapping, destination → source or back.
+type MapFn<'a> = Box<dyn Fn(Vec3) -> Vec3 + Sync + 'a>;
+
+/// Points of a structure the rigid fit is made on, at most.
+const RIGID_FIT_POINTS: usize = 4000;
+
+/// The rigid body that best explains `to_dst` over the structure `mask` on
+/// `src` (orthogonal Procrustes on its voxel centres), as a destination →
+/// source mapping, with the RMS distance between the two over the
+/// structure, mm. `None` for an empty mask.
+fn rigid_fit_over(
+    src: &Volume,
+    mask: &[u8],
+    to_dst: &(dyn Fn(Vec3) -> Vec3 + Sync),
+) -> Option<(crate::registration::RigidTransform, f64)> {
+    let n = crate::morphology::count_set(mask);
+    if n == 0 {
+        return None;
+    }
+    let stride = n.div_ceil(RIGID_FIT_POINTS);
+    let [nx, ny, _] = src.dims;
+    let at: Vec<Vec3> = mask
+        .iter()
+        .enumerate()
+        .filter(|(_, &m)| m != 0)
+        .step_by(stride)
+        .map(|(i, _)| {
+            src.voxel_to_patient(
+                (i % nx) as f64,
+                ((i / nx) % ny) as f64,
+                (i / (nx * ny)) as f64,
+            )
+        })
+        .collect();
+    let lands: Vec<Vec3> = at.par_iter().map(|&q| to_dst(q)).collect();
+    // Fitted destination → source: from where each point lands, back to
+    // where it is.
+    let fit = crate::registration::analysis::fit_rigid(&lands, &at);
+    let centre = lands.iter().fold(Vec3::ZERO, |a, b| a + *b) * (1.0 / lands.len() as f64);
+    let r = fit.rotation_deg.map(f64::to_radians);
+    let t = fit.translation;
+    Some((
+        crate::registration::RigidTransform::new([r[0], r[1], r[2], t.x, t.y, t.z], centre),
+        fit.residual_mm,
+    ))
+}
+
 /// Carry `subjects` from `src` onto `dst` through `t`.
 ///
 /// `use_inverse` says which way the transform runs relative to the two
@@ -218,8 +303,8 @@ pub fn propagate(
     let src_vox_cm3 = src.voxel_cm3();
     let dst_vox_cm3 = dst.voxel_cm3();
     // Destination → source, and its opposite (used only to find the box).
-    let to_src = |p: Vec3| if use_inverse { t.unmap(p) } else { t.map(p) };
-    let to_dst = |p: Vec3| if use_inverse { t.map(p) } else { t.unmap(p) };
+    let to_src = move |p: Vec3| if use_inverse { t.unmap(p) } else { t.map(p) };
+    let to_dst = move |p: Vec3| if use_inverse { t.map(p) } else { t.unmap(p) };
 
     let n = subjects.len();
     let mut out = Vec::with_capacity(n);
@@ -238,6 +323,18 @@ pub fn propagate(
             continue;
         };
         let source_voxels = crate::morphology::count_set(&s.mask);
+        // The mapping this structure is pulled along: the transform, or
+        // its rigid fit over the structure.
+        let fitted = if s.keep_shape {
+            rigid_fit_over(src, &s.mask, &to_dst)
+        } else {
+            None
+        };
+        let (to_src, to_dst): (MapFn, MapFn) = match &fitted {
+            Some((r, _)) => (Box::new(|p| r.map(p)), Box::new(|p| r.unmap(p))),
+            None => (Box::new(to_src), Box::new(to_dst)),
+        };
+        let rigid_residual_mm = fitted.as_ref().map(|(_, res)| *res);
 
         // Where does this structure land in the destination? Map the eight
         // corners of its box across, then keep a generous margin: for a
@@ -281,11 +378,13 @@ pub fn propagate(
                 source_cm3: source_voxels as f64 * src_vox_cm3,
                 result_cm3: 0.0,
                 mapped_cm3: 0.0,
+                source_surface_cm3: s.surface_cm3,
+                rigid_residual_mm,
             });
             continue;
         }
 
-        let cache = MapCache::build(dst, lo, hi, &to_src, 3.0);
+        let cache = MapCache::build(dst, lo, hi, &*to_src, 3.0);
         let [dnx, dny, dnz] = dst.dims;
         let src_dims = src.dims;
         let src_mask = &s.mask;
@@ -336,6 +435,8 @@ pub fn propagate(
             source_cm3: source_voxels as f64 * src_vox_cm3,
             result_cm3: voxels as f64 * dst_vox_cm3,
             mapped_cm3: mapped_voxels * dst_vox_cm3,
+            source_surface_cm3: s.surface_cm3,
+            rigid_residual_mm,
         });
     }
     sink.report(1.0, "done");
@@ -354,20 +455,44 @@ pub struct Finish {
     /// Fill the interior afterwards (slice by slice, so a shell becomes a
     /// solid and a solid stays one).
     pub fill: bool,
+    /// Carry the structures rigidly ([`Subject::keep_shape`]) - not
+    /// something done after landing, but chosen beside it, so it travels
+    /// with the rest of how a run lands its structures. The workflows set
+    /// it on their subjects; an anchor that is the run's own check follows
+    /// the transform regardless.
+    pub keep_shape: bool,
 }
 
 impl Finish {
+    /// Is nothing done to the masks once they have landed? (Keeping the
+    /// shape is how they land, not something done afterwards.)
     pub fn is_none(&self) -> bool {
         self.close_mm <= 0.0 && !self.fill
     }
 
-    /// `closed 2 mm, filled`.
+    /// `closed 2 mm, filled`, `shape kept`.
     pub fn describe(&self) -> String {
-        match (self.close_mm > 0.0, self.fill) {
-            (false, false) => "as landed".into(),
-            (true, false) => format!("closed {:.0} mm", self.close_mm),
-            (false, true) => "filled".into(),
-            (true, true) => format!("closed {:.0} mm, filled", self.close_mm),
+        let mut parts = Vec::new();
+        if self.keep_shape {
+            parts.push("shape kept".to_string());
+        }
+        if self.close_mm > 0.0 {
+            parts.push(format!("closed {:.0} mm", self.close_mm));
+        }
+        if self.fill {
+            parts.push("filled".into());
+        }
+        if parts.is_empty() {
+            "as landed".into()
+        } else {
+            parts.join(", ")
+        }
+    }
+
+    /// Mark `subjects` to be carried as this asks.
+    pub fn carry(&self, subjects: &mut [Subject]) {
+        for s in subjects {
+            s.keep_shape |= self.keep_shape;
         }
     }
 
@@ -481,6 +606,68 @@ mod tests {
         m
     }
 
+    /// A structure carried with its shape kept goes where the transform
+    /// takes it and keeps its volume, where the transform itself would
+    /// have shrunk it to half; the report says how much deformation was
+    /// left out.
+    #[test]
+    fn a_structure_carried_with_its_shape_kept_keeps_its_volume() {
+        use crate::registration::Mat4;
+        let src = vol([48, 48, 48], 1.0, Vec3::ZERO);
+        let dst = vol([48, 48, 48], 1.0, Vec3::ZERO);
+        let c = Vec3::new(20.0, 22.0, 24.0);
+        let mask = ball(&src, c, 8.0);
+        // Destination -> source: a scale by 1.25 about (24, 24, 24) and a
+        // shift, so the ball lands 0.8 times the size (half the volume).
+        let (o, k) = (24.0, 1.25);
+        let m = Mat4([
+            [k, 0.0, 0.0, o * (1.0 - k) + 1.0],
+            [0.0, k, 0.0, o * (1.0 - k) - 2.0],
+            [0.0, 0.0, k, o * (1.0 - k)],
+            [0.0, 0.0, 0.0, 1.0],
+        ]);
+        let t = Transform3::from_matrix(m, Vec3::ZERO);
+        let run = |keep_shape: bool| {
+            propagate(
+                &src,
+                &dst,
+                &t,
+                false,
+                &[Subject {
+                    name: "ball".into(),
+                    color: [255, 0, 0],
+                    mask: mask.clone(),
+                    surface_cm3: None,
+                    keep_shape,
+                }],
+                &Quiet,
+            )
+            .unwrap()
+            .pop()
+            .unwrap()
+        };
+        let grid = dst.grid();
+        let centroid = |m: &[u8]| crate::motion::centroid_mm(m, &grid).unwrap();
+        let deformed = run(false);
+        let kept = run(true);
+        let ratio = |it: &Propagated| it.result_cm3 / it.source_cm3;
+        assert!(
+            (ratio(&deformed) - 0.512).abs() < 0.05,
+            "{}",
+            ratio(&deformed)
+        );
+        assert!((ratio(&kept) - 1.0).abs() < 0.03, "{}", ratio(&kept));
+        assert!(deformed.rigid_residual_mm.is_none());
+        // The rigid body leaves out the scale: points 4 mm from the centre
+        // on average, a fifth of that each.
+        let res = kept.rigid_residual_mm.expect("reported");
+        assert!(res > 0.5 && res < 1.5, "{res}");
+        // Where the transform took it, within a voxel.
+        let d = centroid(&kept.mask) - centroid(&deformed.mask);
+        assert!(d.length() < 1.0, "{d:?}");
+        assert!(kept.summary().contains("carried rigidly"));
+    }
+
     #[test]
     fn a_translation_carries_a_structure_by_exactly_that_much() {
         let dims = [40, 40, 40];
@@ -504,6 +691,8 @@ mod tests {
                 name: "ball".into(),
                 color: [255, 0, 0],
                 mask,
+                surface_cm3: None,
+                keep_shape: false,
             }],
             &Quiet,
         )
@@ -592,6 +781,8 @@ mod tests {
                 name: "cloud".into(),
                 color: [255, 0, 0],
                 mask,
+                surface_cm3: None,
+                keep_shape: false,
             }],
             &Quiet,
         )
@@ -641,6 +832,8 @@ mod tests {
             source_cm3: 0.0,
             result_cm3: 0.0,
             mapped_cm3: 0.0,
+            source_surface_cm3: None,
+            rigid_residual_mm: None,
         };
         let pieces = crate::morphology::components(&item.mask, dst.dims).len();
         assert!(pieces > 50, "a cloud to begin with: {pieces} pieces");
@@ -653,10 +846,13 @@ mod tests {
             source_cm3: 0.0,
             result_cm3: 0.0,
             mapped_cm3: 0.0,
+            source_surface_cm3: None,
+            rigid_residual_mm: None,
         };
         Finish {
             close_mm: 3.0,
             fill: false,
+            ..Finish::default()
         }
         .apply(&mut surface, &grid, &Quiet);
         let closed = crate::morphology::components(&surface.mask, dst.dims).len();
@@ -671,6 +867,7 @@ mod tests {
         Finish {
             close_mm: 3.0,
             fill: true,
+            ..Finish::default()
         }
         .apply(&mut item, &grid, &Quiet);
         let ball = 4.0 / 3.0 * std::f64::consts::PI * 15.0f64.powi(3) / 1000.0;
@@ -698,6 +895,8 @@ mod tests {
                 name: "ball".into(),
                 color: [0, 255, 0],
                 mask: mask.clone(),
+                surface_cm3: None,
+                keep_shape: false,
             }]
         };
         let centroid = |m: &[u8]| {
@@ -741,6 +940,8 @@ mod tests {
                 name: "gone".into(),
                 color: [1, 2, 3],
                 mask,
+                surface_cm3: None,
+                keep_shape: false,
             }],
             &Quiet,
         )
@@ -769,6 +970,8 @@ mod tests {
                 name: "ball".into(),
                 color: [9, 9, 9],
                 mask,
+                surface_cm3: None,
+                keep_shape: false,
             }],
             &Quiet,
         )

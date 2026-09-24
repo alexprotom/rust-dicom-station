@@ -113,7 +113,7 @@ impl ViewerApp {
         });
         ui.label(
             egui::RichText::new(format!(
-                "{cm3:.1} cm³ · {occupied} slice(s) · {voxels} voxels"
+                "{cm3:.2} cm³ · {occupied} slice(s) · {voxels} voxels"
             ))
             .weak(),
         );

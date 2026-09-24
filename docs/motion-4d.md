@@ -227,13 +227,18 @@ there is nothing to compare" messages left as sentences.
 ## Structure details (`src/app/stats_win.rs`)
 
 *Tools ▸ 📋 Structure details* is the other half: one row per structure of
-one workspace rather than two structures against each other. Volume twice over
-- by planimetry on the contours and by counting the voxels they fill, which
-disagree by a few per cent on a coarse series and neither of which is wrong
-- the grey levels inside the structure (which is how a mis-drawn organ gives
-itself away), what the geometry costs in slices and points, and whether a
-derived structure still matches its recipe. Points of interest show their
-coordinates instead of a volume.
+one workspace rather than two structures against each other. The columns
+are the structure's **Format** (contours, voxels or a point) and its volume
+twice over - **Surface-based**, inside a closed triangle surface
+reconstructed from the contours, and **Voxels-based**, the voxels the
+contours fill - which disagree by a few per cent on a coarse series, more on
+a small structure, and neither of which is wrong; then the grey levels
+inside the structure (which is how a mis-drawn organ gives itself away),
+what the geometry costs in slices and points, and whether a derived
+structure still matches its recipe. Points of interest show their
+coordinates instead of a volume. How each column is calculated, formula by
+formula, is in [volumes.md](volumes.md). The CSV carries them as
+`surface_based_cm3` and `voxels_based_cm3`.
 
 The **Dice** column measures every row against a reference chosen above the
 table: the structure or segment of *the same name in another workspace* -

@@ -298,7 +298,7 @@ impl ViewerApp {
                                         ),
                                     );
                                     ui.label(organ.name);
-                                    ui.monospace(format!("{:.1} cm³", organ.cm3));
+                                    ui.monospace(format!("{:.2} cm³", organ.cm3));
                                     ui.end_row();
                                 }
                             });

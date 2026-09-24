@@ -149,6 +149,42 @@ fn the_motion_pipeline_recovers_the_phantoms_target_motion() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Which series of a folder is "series 2" must not depend on the order the
+/// file system lists its files in. On ext4 that order is a hash of the
+/// names seeded per disk, so the same phantom loaded its phases in a
+/// different order on the CI runner than here, and the MCP suite registered
+/// the wrong phase. Phases of equal length now go by series number.
+#[test]
+fn the_series_order_does_not_depend_on_the_file_listing() {
+    let dir = common::target_dir("test_workflow_series_order");
+    let folder = common::fourd_folder(&dir, SHIFTS);
+    let mut files: Vec<_> = std::fs::read_dir(&folder)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    let order = |files: &[std::path::PathBuf]| {
+        let study = loader::load_files(files, "test", &Progress::default()).expect("loads");
+        study
+            .series
+            .iter()
+            .map(|s| s.description.clone())
+            .collect::<Vec<_>>()
+    };
+    files.sort();
+    let forward = order(&files);
+    files.reverse();
+    let backward = order(&files);
+    // The middle file first: neither end of the listing.
+    let half = files.len() / 2;
+    files.rotate_left(half);
+    let rotated = order(&files);
+    assert_eq!(forward, common::PHASES.map(String::from).to_vec());
+    assert_eq!(backward, forward);
+    assert_eq!(rotated, forward);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn one_volume_onto_every_phase_reuses_cached_transforms() {
     let dir = common::target_dir("test_workflow_group");

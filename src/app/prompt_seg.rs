@@ -297,7 +297,7 @@ impl ViewerApp {
         let cm3 = self.slots[slot].voxels_cm3(result.voxels);
         if let Some(d) = &mut self.segvol_dialog {
             d.status = Some(format!(
-                "✔ {}: {} voxels ({cm3:.1} cm³) in {:.1} s on {} - {} refinement window(s), \
+                "✔ {}: {} voxels ({cm3:.2} cm³) in {:.1} s on {} - {} refinement window(s), \
                  coarse pass {}",
                 result.name,
                 result.voxels,

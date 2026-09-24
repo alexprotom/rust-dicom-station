@@ -52,7 +52,7 @@ engine.*
   6 DOF, displacement statistics, Jacobian determinant and folding; the vector
   field draws in the views and in 3D; fusion overlay; DICOM REG and Deformable
   Spatial Registration read and written; a known-transform simulator for QA.
-  The 4 × 4 transform can also be typed in by hand, Slicer-style, and used in
+  The 4 × 4 transform can also be typed in by hand and used in
   place of a recovered one - in the registration, in propagation and in
   transfer by relationship.
 * **Structure propagation** - contours and segmentations carried through a
@@ -175,6 +175,7 @@ https://alexprotom.github.io/rust-dicom-station/
 | [docs/rt-objects.md](docs/rt-objects.md) | RTSTRUCT, RTDOSE, RTPLAN, REG, RTRECORD, reference chains |
 | [docs/registration.md](docs/registration.md) | The four registration engines, local registration, analytics, vector fields, fusion, simulator, verification |
 | [docs/propagation.md](docs/propagation.md) | Carrying contours and segmentations across a registration |
+| [docs/volumes.md](docs/volumes.md) | How every volume is calculated: voxels-based, surface-based, planimetry, propagation - the exact formulas |
 | [docs/motion-4d.md](docs/motion-4d.md) | 4D groups, the motion / ITV workflow, results, structure comparison and transfer |
 | [docs/drr.md](docs/drr.md) | Digitally reconstructed radiographs: the two projectors and the geometry |
 | [docs/dvh.md](docs/dvh.md) | Dose-volume histograms: curves, metrics, constraint checking, export |
