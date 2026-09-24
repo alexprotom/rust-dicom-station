@@ -1025,6 +1025,23 @@ pub struct Transform3 {
 }
 
 impl Transform3 {
+    /// The deformation alone: the warp on top of an identity, so
+    /// `displacement` is what the B-spline adds to the rigid alignment. A
+    /// registration between two frames of reference moves every point by
+    /// the same hundreds of millimetres, and drawn whole its field shows
+    /// that shift and nothing of the deformation. `None` for a transform
+    /// with no warp, or one a hand-typed matrix stands in for.
+    pub fn warp_only(&self) -> Option<Transform3> {
+        if self.manual.is_some() || self.warp.is_none() {
+            return None;
+        }
+        Some(Transform3 {
+            rigid: RigidTransform::identity(Vec3::ZERO),
+            warp: self.warp.clone(),
+            manual: None,
+        })
+    }
+
     /// A rigid-body-only mapping.
     pub fn rigid_only(rigid: RigidTransform) -> Self {
         Transform3 {

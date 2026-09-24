@@ -1,27 +1,26 @@
 //! *Tools ▶ Structure details*: one row per structure, with the numbers a
 //! planner reads off a list rather than off a picture.
 //!
-//! Volume twice over - by the surface 3D Slicer builds from the contours
-//! and by counting the voxels they fill - because the two answer different
-//! questions and the difference is worth seeing; the grey levels inside the
-//! structure, which is how a mis-drawn organ gives itself away; how many
-//! slices and points the geometry costs; and whether the structure still
-//! matches the recipe it was derived from.
+//! Volume twice over - surface-based, inside the closed surface
+//! reconstructed from the contours, and voxels-based, by counting the voxels
+//! they fill - because the two answer different questions and the
+//! difference is worth seeing; the grey levels inside the structure, which
+//! is how a mis-drawn organ gives itself away; how many slices and points
+//! the geometry costs; and whether the structure still matches the recipe
+//! it was derived from.
 //!
-//! The surface volume is the one Slicer's Segment Statistics reports for an
-//! RT structure: the contours joined into a closed surface by SlicerRT's
-//! conversion, smooth end caps half a slice beyond the first and last, and
-//! the volume inside it - computed here by the same algorithm
-//! ([`crate::rt_surface`]), so the two programs can be read against each
-//! other. It owes nothing to this image's lattice. The
-//! voxel figure is what the structure becomes once drawn onto this image,
-//! which is what every tool that carries voxels then works with, through
+//! The surface-based volume ([`crate::rt_surface`]) joins the contours slice
+//! to slice into a closed triangle surface, with smooth end caps half a
+//! slice beyond the first and last, and integrates the volume inside it; it
+//! owes nothing to this image's lattice. The voxel figure is what the
+//! structure becomes once drawn onto this image, which is what every tool
+//! that carries voxels then works with, through
 //! `segmentation::rasterize_roi`, the one path the rest of the program
 //! uses, so the number here is the number propagation and DVH see. On a
-//! compact organ the two agree to a fraction of a per cent; on a small
-//! structure or one drawn as voxel outlines they part by tens of per cent,
-//! mostly at the ends, where the surface puts a cap and the voxels a
-//! whole slice.
+//! compact organ the two agree to about a per cent; on a small structure or
+//! one drawn as voxel outlines they part by tens of per cent, mostly at the
+//! ends, where the surface puts a cap and the voxels a whole slice. The
+//! formulas are in `docs/volumes.md`.
 //!
 //! The table is computed on demand, not every frame: rasterizing a hundred
 //! structures and building their surfaces is a second or two of work, and
@@ -49,9 +48,9 @@ pub(super) struct StatRow {
     pub roi_type: String,
     /// "contours" or "voxels" - the representation the geometry is kept in.
     pub repr: &'static str,
-    /// The volume inside the closed surface Slicer builds from the contours
-    /// ([`crate::rt_surface`]). Empty for a segmentation, which has no
-    /// contours to build it from.
+    /// The volume enclosed by the closed surface reconstructed from the
+    /// contours ([`crate::rt_surface`]), cm³. Empty for a
+    /// segmentation, which has no contours to build it from.
     pub surface_cm3: Option<f64>,
     /// The voxels the geometry fills on the lattice it is measured on.
     pub voxel_cm3: f64,
@@ -301,8 +300,7 @@ impl ViewerApp {
                     // registration regions, DVH - so the number here is the
                     // number those tools work with rather than a second
                     // opinion. The slice count is read from the stack, the
-                    // surface volume from the contours as they are filed,
-                    // the way Slicer reads them.
+                    // surface volume from the contours as they are filed.
                     let mask = crate::segmentation::rasterize_roi(&grid, roi)
                         .unwrap_or_else(|| vec![0u8; grid.dims[0] * grid.dims[1] * grid.dims[2]]);
                     let (voxels, grey) = measure(&mask, grid.dims, Some(vol));
@@ -312,7 +310,7 @@ impl ViewerApp {
                         color: roi.color,
                         roi_type: roi.roi_type.clone(),
                         repr: "contours",
-                        surface_cm3: crate::rt_surface::slicer_volume_cm3(roi, grid.spacing[2]),
+                        surface_cm3: crate::rt_surface::surface_volume_cm3(roi, grid.spacing[2]),
                         voxel_cm3: voxel_cm3(grid.spacing, voxels),
                         voxels,
                         slices: st.occupied(),
@@ -372,7 +370,7 @@ impl ViewerApp {
 
     fn stats_csv(rows: &[StatRow]) -> String {
         let mut s = String::from(
-            "name,type,representation,surface_cm3,voxel_cm3,voxels,slices,points,\
+            "name,type,format,surface_based_cm3,voxels_based_cm3,voxels,slices,points,\
              grey_min,grey_mean,grey_max,dice,dice_reference,derived,point_mm\n",
         );
         for r in rows {
@@ -470,10 +468,10 @@ impl ViewerApp {
                 switch = seg_engines::workspace_row(ui, d.slot, has, true);
                 ui.label(
                     egui::RichText::new(
-                        "Volume twice over - inside the surface 3D Slicer builds from the \
-                         contours (its Segment Statistics figure), and the voxels they \
-                         fill. They disagree by a few per cent on a coarse series, more \
-                         on a small structure, and neither number is wrong.",
+                        "Volume twice over - surface-based, inside a closed surface \
+                         reconstructed from the contours, and voxels-based, the voxels \
+                         they fill. They disagree by a few per cent on a coarse series, \
+                         more on a small structure, and neither number is wrong.",
                     )
                     .weak(),
                 );
@@ -540,20 +538,24 @@ impl ViewerApp {
                             for (h, tip) in [
                                 ("Structure", ""),
                                 ("Type", ""),
-                                ("Kept as", ""),
                                 (
-                                    "Surface / place",
-                                    "The volume 3D Slicer's Segment Statistics reports for the \
-                                     structure: the contours joined slice to slice into a closed \
-                                     surface, capped half a slice beyond the first and last with \
-                                     a shrunken copy of the end contour (SlicerRT's conversion, \
-                                     smooth end caps), and the volume inside it. Computed here by \
-                                     the same algorithm, so it is the number Slicer shows for the \
-                                     same contours; it owes nothing to this image's lattice. For a \
-                                     point of interest this is its position instead.",
+                                    "Format",
+                                    "What the geometry is kept as: contours (an RT structure), \
+                                     voxels (a segment) or a point.",
                                 ),
                                 (
-                                    "Voxels",
+                                    "Surface-based",
+                                    "The volume enclosed by a closed triangle surface \
+                                     reconstructed from the contours: neighbouring slices joined \
+                                     by strips of triangles, the first and last capped half a \
+                                     slice beyond with a shrunken copy of the end contour, and \
+                                     any gap left where a contour splits between slices closed. \
+                                     It owes nothing to this image's lattice. The formulas are \
+                                     in docs/volumes.md. For a point of interest this is its \
+                                     position instead.",
+                                ),
+                                (
+                                    "Voxels-based",
                                     "The volume of the mask, once the contours are drawn onto \
                                      this image's own lattice: the number of voxels whose \
                                      centre falls inside, times the voxel volume. This is what \

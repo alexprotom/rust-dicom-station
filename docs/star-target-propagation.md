@@ -322,13 +322,12 @@ is visible: a phase with a poor contour shows up as a poor Dice.
   planning, close it with the structure algebra (a margin and its
   negative) before propagating, or tick *close gaps*. Either way the
   volume grows by what the closing adds.
-* **Against 3D Slicer**, the same target reads lower in *Segment
-  Statistics* than its voxels, because Slicer measures a surface it builds
-  with shrunken end caps (and halves voxel pairs chained through a corner).
-  The **Surface** columns of *Structure details* and of the propagation
-  report compute that same figure, so they read the same as Slicer; the
-  **Voxels** columns are what the transform actually changed. See
-  *Surface* in [propagation.md](propagation.md).
+* **Surface-based against voxels-based.** The same target reads lower as a
+  surface than as voxels: the surface ends in shrunken caps half a slice
+  beyond the end contours, and a pair of voxels chained through a corner
+  becomes two half-voxel triangles, while the voxels count every slice in
+  full. The **Voxels-based** columns are what the transform actually
+  changed. How each figure is calculated is in [volumes.md](volumes.md).
 * **Folded fraction** of the refinement should be 0; a displacement p95 of a
   few millimetres inside the heart region is normal between a breath-hold
   cardiac CT and a respiratory bin.

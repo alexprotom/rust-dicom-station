@@ -1152,6 +1152,9 @@ struct ActiveRegistration {
     /// The region the run was restricted to, kept so the field can be
     /// re-sampled at a different lattice without rebuilding the mask.
     region: Option<Arc<RegionMask>>,
+    /// The phase of the group registration this is, when it was installed
+    /// from there to be looked at: clearing it leaves the group alone.
+    group_phase: Option<String>,
     /// Per-structure Dice, filled the first time it is asked for.
     ///
     /// Not computed with the rest of the analysis: it needs a mask
@@ -1370,6 +1373,12 @@ pub struct ViewerApp {
 
     // The deformation vector field of the active registration.
     field_on: bool,
+    /// Draw only what the warp adds to the rigid alignment
+    /// ([`Transform3::warp_only`]).
+    field_warp_only: bool,
+    /// A phase of the group registration asked to be shown, waiting for its
+    /// series to be put on display: (workspace, series UID, phase index).
+    pending_phase_field: Option<(usize, String, usize)>,
     field_style: FieldStyle,
     field_step_mm: f64,
     /// Arrows are drawn this many times their true length.
@@ -1882,6 +1891,8 @@ impl ViewerApp {
             reg_margin_mm: 10.0,
             reg_init: RegInit::Auto,
             field_on: false,
+            field_warp_only: false,
+            pending_phase_field: None,
             field_style: FieldStyle::Arrows,
             field_step_mm: 12.0,
             field_scale: 3.0,
@@ -2341,6 +2352,8 @@ impl eframe::App for ViewerApp {
                 }
             }
         }
+
+        self.poll_pending_phase_field();
 
         // Poll background simulation.
         if let Some((target, study)) =

@@ -1170,6 +1170,7 @@ impl ViewerApp {
             params.method = registration::RegMethod::PlastimatchBSpline;
         }
         let field_step = self.field_step_mm;
+        let warp_only = self.field_warp_only;
 
         let progress = Arc::new(Progress::default());
         progress.set("starting");
@@ -1180,11 +1181,12 @@ impl ViewerApp {
                 p.set("Refining the registration on the region");
                 match registration::register(&fixed_vol, &moving_vol, &params, p) {
                     Ok(result) => {
-                        let field = VectorField::sample(
+                        let field = super::reg_panel::sample_field(
                             &fixed_vol,
                             &result.transform,
                             region.as_deref(),
                             field_step,
+                            warp_only,
                         );
                         let t = result.transform.clone();
                         refined = Some(Box::new(RegOutcome {
@@ -1544,6 +1546,11 @@ impl ViewerApp {
             phases: regs,
         });
         self.reg_gen += 1;
+        // The phase on display becomes the active registration, so its
+        // fusion and its vector field are one tick away in the registration
+        // module and in the last-run section below - as after any other
+        // registration.
+        self.show_displayed_group_phase();
         report
     }
 
@@ -1587,6 +1594,25 @@ impl ViewerApp {
                 r.result.region.clone(),
             )
         });
+        // The deformation field of a group run's phases, for the last-run
+        // section: which phases there are, which one is the active
+        // registration, and whether its field is on the views.
+        let group_field: Option<(Vec<String>, Option<usize>)> =
+            self.group_registration.as_ref().map(|gr| {
+                let shown = self
+                    .registration
+                    .as_ref()
+                    .and_then(|r| r.group_phase.clone());
+                let labels: Vec<String> = gr.phases.iter().map(|p| p.label.clone()).collect();
+                let active = labels.iter().position(|l| {
+                    shown.as_deref() == Some(format!("{} · {l}", gr.group_name).as_str())
+                });
+                (labels, active)
+            });
+        let field_on = self.field_on;
+        let mut warp_only = self.field_warp_only;
+        let mut show_field: Option<usize> = None;
+        let mut hide_field = false;
         let mut d = self.propagate_dialog.take().unwrap();
         let mut manual = self.prop_matrix;
         let (matrix_choices, deformable) = self.propagate_matrix_choices(d.target);
@@ -2329,6 +2355,42 @@ impl ViewerApp {
                         }
                     });
                     d.summary.ui(ui, "prop_run");
+                    if let Some((phases, active)) = &group_field {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Deformation field").on_hover_text(
+                                "The displacement the run's registration found, drawn on \
+                                 the views and in 3D. Arrows, grid, spacing and scale are \
+                                 set under Image registration ▸ Vector field.",
+                            );
+                            for (i, label) in phases.iter().enumerate() {
+                                let on = *active == Some(i) && field_on;
+                                if ui
+                                    .selectable_label(on, format!("👁 {label}"))
+                                    .on_hover_text(if on {
+                                        "On the views; click to hide it"
+                                    } else {
+                                        "Draw this phase's field on the views (the phase is \
+                                         put on display if it is not)"
+                                    })
+                                    .clicked()
+                                {
+                                    if on {
+                                        hide_field = true;
+                                    } else {
+                                        show_field = Some(i);
+                                    }
+                                }
+                            }
+                            if active.is_some() {
+                                ui.checkbox(&mut warp_only, "deformation only")
+                                    .on_hover_text(
+                                        "Leave the rigid part out: what the B-spline adds to the \
+                                     rigid alignment. The rigid part of an anchored run is the \
+                                     jump from one scanner's coordinates to the other's.",
+                                    );
+                            }
+                        });
+                    }
                 }
             });
         ui.separator();
@@ -2339,6 +2401,16 @@ impl ViewerApp {
         let _ = dst_slot;
         self.prop_matrix = manual;
         self.propagate_dialog = Some(d);
+        if let Some(i) = show_field {
+            self.show_group_phase(i);
+        }
+        if hide_field {
+            self.field_on = false;
+        }
+        if warp_only != self.field_warp_only {
+            self.field_warp_only = warp_only;
+            self.rebuild_field();
+        }
         cancel_if(cancel, &self.propagate_job);
         if run {
             self.start_propagation();

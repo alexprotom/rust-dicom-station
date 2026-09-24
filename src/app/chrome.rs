@@ -312,7 +312,7 @@ impl ViewerApp {
                         ui,
                         any,
                         super::stats_win::DETAILS.menu_entry(),
-                        "One row per structure: volume by Slicer's surface and by voxel count, \
+                        "One row per structure: volume surface-based and voxels-based, \
                          the Dice against a reference, the grey levels inside it, what \
                          the geometry costs in slices and points, and whether a derived \
                          structure still matches its recipe. With CSV export.",

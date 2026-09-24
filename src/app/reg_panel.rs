@@ -69,6 +69,22 @@ pub(super) struct RegChoice {
     pub displayed: bool,
 }
 
+/// The field the views draw for `t` on `vol`: the whole displacement, or
+/// with the rigid part left out ([`Transform3::warp_only`]) when that is
+/// asked for and there is a deformation to show.
+pub(super) fn sample_field(
+    vol: &Volume,
+    t: &Transform3,
+    region: Option<&RegionMask>,
+    step_mm: f64,
+    warp_only: bool,
+) -> VectorField {
+    match warp_only.then(|| t.warp_only()).flatten() {
+        Some(w) => VectorField::sample(vol, &w, region, step_mm),
+        None => VectorField::sample(vol, t, region, step_mm),
+    }
+}
+
 impl ViewerApp {
     // -- region ------------------------------------------------------------
 
@@ -308,6 +324,7 @@ impl ViewerApp {
             moving_vol: out.moving.vol,
             field: Arc::new(out.field),
             region: out.region,
+            group_phase: None,
             struct_dice: None,
         });
         self.reg_gen += 1;
@@ -517,6 +534,7 @@ impl ViewerApp {
             return;
         }
         let step = self.field_step_mm;
+        let warp_only = self.field_warp_only;
         let progress = Arc::new(Progress::default());
         progress.set("starting");
         self.reg_job = Some(Job::spawn(progress, move |p| {
@@ -533,7 +551,13 @@ impl ViewerApp {
                 let moving = load(moving_ready, &mseries, "moving")?;
                 let result = registration::register(&fixed, &moving, &params, p)?;
                 p.set("Sampling the vector field");
-                let field = VectorField::sample(&fixed, &result.transform, region.as_deref(), step);
+                let field = sample_field(
+                    &fixed,
+                    &result.transform,
+                    region.as_deref(),
+                    step,
+                    warp_only,
+                );
                 Ok(RegOutcome {
                     result,
                     field,
@@ -609,7 +633,13 @@ impl ViewerApp {
         let vol = fstudy.volume.clone();
         let mut analysis = analysis::analyse(&vol, &transform, None);
         analysis.overlap = analysis::overlap(&vol, &mstudy.volume, &transform, None);
-        let field = VectorField::sample(&vol, &transform, None, self.field_step_mm);
+        let field = sample_field(
+            &vol,
+            &transform,
+            None,
+            self.field_step_mm,
+            self.field_warp_only,
+        );
         self.registration = Some(ActiveRegistration {
             result: RegistrationResult {
                 transform,
@@ -630,6 +660,7 @@ impl ViewerApp {
             moving_vol: mstudy.volume.clone(),
             field: Arc::new(field),
             region: None,
+            group_phase: None,
             struct_dice: None,
         });
         self.fusion_on = true;
@@ -654,6 +685,144 @@ impl ViewerApp {
         self.reg_gen += 1;
     }
 
+    /// Drop the active registration and nothing else: what the Clear button
+    /// does to a phase that was only put on display from the group
+    /// registration, which stays for the next run and the next look.
+    fn clear_shown_phase(&mut self) {
+        if let Some(job) = &self.field_job {
+            job.progress.cancel();
+        }
+        self.registration = None;
+        self.fusion_on = false;
+        self.reg_gen += 1;
+    }
+
+    /// Put phase `i` of the group registration on display as the active
+    /// registration - fusion, crosshair link and vector field, exactly as
+    /// after a registration run - without running anything. A phase that
+    /// is not the displayed series of its workspace is read and shown
+    /// first, and installed when it arrives (see `pending_phase_field`).
+    pub(super) fn show_group_phase(&mut self, i: usize) {
+        let Some(gr) = &self.group_registration else {
+            return;
+        };
+        let Some(ph) = gr.phases.get(i) else {
+            return;
+        };
+        let (slot, moving_slot) = (gr.slot, gr.moving_slot);
+        let Some(study) = self.slots[slot].study.as_ref() else {
+            return;
+        };
+        let displayed = study
+            .series
+            .get(study.active_series)
+            .is_some_and(|s| s.uid == ph.series_uid);
+        if !displayed {
+            match study.series.iter().position(|s| s.uid == ph.series_uid) {
+                Some(idx) => {
+                    self.pending_phase_field = Some((slot, ph.series_uid.clone(), i));
+                    self.start_series_switch(slot, idx);
+                }
+                None => {
+                    self.error = Some(format!(
+                        "Phase {} is no longer in workspace {}.",
+                        ph.label, SLOT_NAMES[slot]
+                    ));
+                }
+            }
+            return;
+        }
+        let transform = (*ph.transform).clone();
+        let deformable = !transform.warp.is_none();
+        let shown = format!("{} · {}", gr.group_name, ph.label);
+        let metrics = ph.metrics;
+        // A reused transform carries no measurement of its own, and is
+        // filed like a matrix that was handed over: no row of zeros.
+        let method = match (metrics.is_some(), deformable) {
+            (false, _) => RegMethod::Given,
+            (true, true) => RegMethod::ElastixBSpline,
+            (true, false) => RegMethod::ElastixRigid,
+        };
+        // The rigid part of such a run is the jump between two frames of
+        // reference - a cardiac CT onto a 4DCT phase, hundreds of mm - and
+        // drawn whole the field would show that jump and nothing else.
+        if deformable {
+            self.field_warp_only = true;
+        }
+        self.apply_external_transform_between(transform, method, slot, moving_slot);
+        if let Some(r) = &mut self.registration {
+            r.group_phase = Some(shown);
+            if let Some(m) = metrics {
+                r.result.metric = if m.tag == Metric::MutualInformation.tag() {
+                    Metric::MutualInformation
+                } else {
+                    Metric::MeanSquares
+                };
+                r.result.initial_metric = m.initial;
+                r.result.final_metric = m.final_value;
+                r.result.iterations_run = m.iterations;
+                r.result.elapsed_secs = m.secs;
+            }
+        }
+        self.field_on = true;
+        if self.field_style == FieldStyle::None {
+            self.field_style = FieldStyle::Arrows;
+        }
+    }
+
+    /// After a group run: make the transform of the phase the group's
+    /// workspace displays the active registration, quietly - the fusion and
+    /// the field stay as they were switched - so the registration module has
+    /// it ready. A registration of the user's own is left alone.
+    pub(super) fn show_displayed_group_phase(&mut self) {
+        if self
+            .registration
+            .as_ref()
+            .is_some_and(|r| r.group_phase.is_none())
+        {
+            return;
+        }
+        let Some(gr) = &self.group_registration else {
+            return;
+        };
+        let Some(uid) = self.slots[gr.slot]
+            .study
+            .as_ref()
+            .and_then(|st| st.series.get(st.active_series))
+            .map(|s| s.uid.clone())
+        else {
+            return;
+        };
+        let Some(i) = gr.phases.iter().position(|p| p.series_uid == uid) else {
+            return;
+        };
+        let (fusion, field) = (self.fusion_on, self.field_on);
+        self.show_group_phase(i);
+        self.fusion_on = fusion;
+        self.field_on = field;
+    }
+
+    /// A phase asked for by [`Self::show_group_phase`] whose series has now
+    /// arrived on display: install it. Given up on when the read ended and
+    /// something else is on display.
+    pub(super) fn poll_pending_phase_field(&mut self) {
+        let Some((slot, uid, i)) = self.pending_phase_field.clone() else {
+            return;
+        };
+        if self.loading.is_some() || self.pending_switch.is_some() {
+            return;
+        }
+        self.pending_phase_field = None;
+        let displayed = self.slots[slot]
+            .study
+            .as_ref()
+            .and_then(|st| st.series.get(st.active_series))
+            .is_some_and(|s| s.uid == uid);
+        if displayed {
+            self.show_group_phase(i);
+        }
+    }
+
     /// Re-sample the vector field after the lattice step changed.
     pub(super) fn rebuild_field(&mut self) {
         if self.field_job.is_some() {
@@ -666,9 +835,10 @@ impl ViewerApp {
         let t = reg.result.transform.clone();
         let region = reg.region.clone();
         let step = self.field_step_mm;
+        let warp_only = self.field_warp_only;
         let progress = Arc::new(Progress::default());
         self.field_job = Some(Job::spawn(progress, move |_| {
-            VectorField::sample(&vol, &t, region.as_deref(), step)
+            sample_field(&vol, &t, region.as_deref(), step, warp_only)
         }));
     }
 
@@ -775,6 +945,8 @@ impl ViewerApp {
         let mut save_field = false;
         let mut run_group: Option<(RegPick, usize, usize)> = None;
         let mut clear_group = false;
+        let mut show_phase: Option<usize> = None;
+        let mut hide_field = false;
         let mut score_structs = false;
         let mut apply_matrix = false;
         // 4D groups either workspace offers, keyed the way `reg_group` is.
@@ -1177,6 +1349,10 @@ impl ViewerApp {
                 }
 
                 // ---- what a group run left behind ----
+                let shown_phase = self
+                    .registration
+                    .as_ref()
+                    .and_then(|r| r.group_phase.clone());
                 if let Some(gr) = &self.group_registration {
                     ui.separator();
                     ui.label(
@@ -1209,8 +1385,9 @@ impl ViewerApp {
                                     run_report::head(ui, "Metric ▶");
                                     run_report::head(ui, "Iters");
                                     run_report::head(ui, "t, s");
+                                    run_report::head(ui, "Vector field");
                                     ui.end_row();
-                                    for ph in &gr.phases {
+                                    for (pi, ph) in gr.phases.iter().enumerate() {
                                         ui.label(&ph.label);
                                         match &ph.metrics {
                                             Some(m) => {
@@ -1228,6 +1405,41 @@ impl ViewerApp {
                                                 ui.weak(&ph.metric_line);
                                                 ui.weak("-");
                                                 ui.weak("-");
+                                            }
+                                        }
+                                        // The phase's transform as the active
+                                        // registration: its fusion and its
+                                        // deformation field, drawn as after
+                                        // any other registration.
+                                        let on_show = shown_phase.as_deref()
+                                            == Some(
+                                                format!("{} · {}", gr.group_name, ph.label)
+                                                    .as_str(),
+                                            );
+                                        let field_shown = on_show && self.field_on;
+                                        if ui
+                                            .selectable_label(
+                                                field_shown,
+                                                if field_shown {
+                                                    "👁 on the views"
+                                                } else {
+                                                    "👁 show"
+                                                },
+                                            )
+                                            .on_hover_text(
+                                                "Draw this phase's deformation field on the views \
+                                                 (and in 3D): its transform becomes the active \
+                                                 registration, with the fusion overlay and the \
+                                                 Vector field settings below, and the phase is put \
+                                                 on display if it is not. Click again to hide the \
+                                                 field. The group registration stays as it is.",
+                                            )
+                                            .clicked()
+                                        {
+                                            if field_shown {
+                                                hide_field = true;
+                                            } else {
+                                                show_phase = Some(pi);
                                             }
                                         }
                                         ui.end_row();
@@ -1256,6 +1468,12 @@ impl ViewerApp {
                         ))
                         .strong(),
                     );
+                    if let Some(g) = &reg.group_phase {
+                        ui.weak(format!(
+                            "Phase {g} of the group registration above, on display. \
+                             Clearing it here leaves the group as it is."
+                        ));
+                    }
                     // A matrix that was handed over was not optimized, so
                     // "MSD 0.0 ▶ 0.0 (0 iters)" would be a row of zeros
                     // pretending to be a measurement; those rows are left
@@ -1342,6 +1560,26 @@ impl ViewerApp {
                                      in the 3D window - instead of leaving it implicit in \
                                      the fusion colours",
                                 );
+                            if ui
+                                .add_enabled(
+                                    !res.transform.warp.is_none(),
+                                    egui::Checkbox::new(
+                                        &mut self.field_warp_only,
+                                        "Deformation only (leave the rigid part out)",
+                                    ),
+                                )
+                                .on_hover_text(
+                                    "Draw what the B-spline adds on top of the rigid \
+                                     alignment rather than the whole displacement. A \
+                                     registration between two frames of reference - a \
+                                     cardiac CT onto a 4DCT phase - moves every point by the \
+                                     same hundreds of millimetres, and drawn whole the field \
+                                     shows that jump and hides the deformation.",
+                                )
+                                .changed()
+                            {
+                                resample = true;
+                            }
                             ui.horizontal(|ui| {
                                 ui.label("Style");
                                 for s in FieldStyle::ALL {
@@ -1420,6 +1658,12 @@ impl ViewerApp {
             self.group_registration = None;
             self.reg_gen += 1;
         }
+        if let Some(i) = show_phase {
+            self.show_group_phase(i);
+        }
+        if hide_field {
+            self.field_on = false;
+        }
         if let Some((moving, gslot, group)) = run_group {
             self.start_group_run(
                 moving,
@@ -1447,7 +1691,15 @@ impl ViewerApp {
             self.apply_external_transform(t, RegMethod::Given, fixed);
         }
         if clear {
-            self.clear_registration();
+            if self
+                .registration
+                .as_ref()
+                .is_some_and(|r| r.group_phase.is_some())
+            {
+                self.clear_shown_phase();
+            } else {
+                self.clear_registration();
+            }
         }
         if add_landmark {
             self.add_landmark_pair();

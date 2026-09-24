@@ -73,11 +73,12 @@ pub struct Subject {
     pub color: [u8; 3],
     /// One byte per source voxel, 1 inside.
     pub mask: Vec<u8>,
-    /// The structure's surface volume, cm³ - the figure 3D Slicer's Segment
-    /// Statistics gives for it (see [`crate::rt_surface`]) - when it was drawn
-    /// as contours; `None` for a segment, which has no contours to build a
-    /// surface from. Carried through untouched so the report can set it
-    /// beside the surface volume of what lands.
+    /// The structure's surface-based volume, cm³ - the volume enclosed by
+    /// the closed surface reconstructed from its contours (see
+    /// [`crate::rt_surface`]) - when it was drawn as contours; `None` for a
+    /// segment, which has no contours to build a surface from. Carried
+    /// through untouched so the report can set it beside the surface volume
+    /// of what lands.
     pub surface_cm3: Option<f64>,
     /// Carry it as a rigid body - the transform's best rigid fit over the
     /// structure's own voxels - rather than through the transform itself:
@@ -103,8 +104,8 @@ pub struct Propagated {
     /// filed on the destination lattice: the sum of the occupancies. The
     /// mask holds this to within one voxel.
     pub mapped_cm3: f64,
-    /// The source structure's surface volume, cm³, when it was contours
-    /// (see [`Subject::surface_cm3`]).
+    /// The source structure's surface-based volume, cm³, when it was
+    /// contours (see [`Subject::surface_cm3`]).
     pub source_surface_cm3: Option<f64>,
     /// When it was carried rigidly ([`Subject::keep_shape`]): the RMS
     /// distance between that rigid body and the transform over the

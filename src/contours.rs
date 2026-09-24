@@ -1198,7 +1198,8 @@ impl PaddedField {
                 if free == 0 {
                     break;
                 }
-                let d0 = free & free.wrapping_neg();
+                // The lowest free direction (`free` is not zero here).
+                let d0 = 1u8 << free.trailing_zeros();
                 let (mut v, mut d) = (v0, d0);
                 let mut pts = Vec::new();
                 loop {

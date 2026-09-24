@@ -1,49 +1,40 @@
-//! The volume 3D Slicer reports for an RT structure.
+//! The surface-based volume of an RT structure: the volume enclosed by a
+//! closed triangle surface reconstructed from its planar contours.
 //!
-//! Slicer does not measure a structure set ROI by its contours. It builds a
-//! closed surface from them - SlicerRT's planar-contour-to-closed-surface
-//! conversion - and *Segment Statistics* reports the volume inside that
-//! surface (`vtkMassProperties`). The surface is a reconstruction with rules
-//! of its own, and on small or voxel-exported structures the number it
-//! gives differs from any planimetry by tens of per cent. So rather than
-//! approximate it, this module runs the same algorithm:
+//! 1. **Reading**: every contour becomes one line, LPS turned to RAS, the
+//!    first point repeated at the end, coordinates in single precision.
+//! 2. **Orientation**: the contours are turned so their planes are axial
+//!    (the identity for axial contours).
+//! 3. **Order, keyholes, winding**: lines sorted by height; a line that
+//!    comes back to one of its own points is cut into separate lines; every
+//!    line made counter-clockwise.
+//! 4. **Between slices**: each line is joined by a strip of triangles (a
+//!    dynamic-programming match of the two point sequences) to every line on
+//!    the next plane whose bounding box overlaps it; a line overlapping
+//!    several is divided among them.
+//! 5. **End caps**: a line with nothing joined above or below is closed by a
+//!    cap half a slice away - the contour rasterized, eroded until at most
+//!    half of it is left, traced, thinned, and joined to the line with
+//!    another strip.
+//! 6. **Seams** ([`close_seams`]): where the strips leave the surface open,
+//!    every loop of boundary edges is closed by a fan from its centroid.
+//! 7. **Volume**: the discrete divergence theorem, with per-axis weighting,
+//!    on the closed surface - which makes it independent of where the
+//!    structure lies.
 //!
-//! 1. **Reading** (`vtkSlicerDicomRtReader::LoadContour`): every contour
-//!    becomes one line, DICOM LPS turned to RAS, the first point repeated at
-//!    the end, coordinates stored in single precision as VTK stores them.
-//! 2. **Orientation** (`CalculateContourTransform`): the contours are turned
-//!    so their planes are axial. For axial contours that is the identity.
-//! 3. **Order, keyholes, winding** (`SortContours`, `FixKeyholes`,
-//!    `SetLinesCounterClockwise`): lines sorted by height; a line that comes
-//!    back to one of its own points is cut into separate lines by SlicerRT's
-//!    keyhole rule; every line made counter-clockwise.
-//! 4. **Between slices** (`TriangulateBetweenContours`, `Branch`): each line
-//!    is joined by a ribbon of triangles (a dynamic-programming match of the
-//!    two point sequences) to every line on the next plane whose bounding
-//!    box overlaps it; a line overlapping several is split among them.
-//! 5. **End caps** (`EndCapping`, `CreateSmoothEndCapContour`): a line with
-//!    nothing joined above or below is closed by a cap half a slice away -
-//!    by default a "smooth" cap, the contour rasterised, eroded until at most
-//!    half of it is left, traced with marching squares, decimated, and
-//!    joined to the line with another ribbon.
-//! 6. **Volume** (`vtkMassProperties`): the discrete divergence theorem, with
-//!    its per-axis weighting, on the triangles.
+//! The formulas are written out in `docs/volumes.md`.
 //!
-//! The VTK pieces the conversion leans on - the polydata stencil and its
-//! raster, the ellipsoidal erosion kernel, marching squares with merged
-//! points, the stripper, the priority queue behind the decimation - are
-//! ported with them, quirks included, because each of them decides which
-//! points a cap is made of. The one liberty taken is the triangulation of a
-//! cap's flat interior, which is done by ear clipping rather than VTK's own
-//! ear cut: any triangulation of a flat polygon contributes the same to the
-//! volume.
-//!
-//! Verified against Slicer 5.10 (VTK 9.5.2, SlicerRT master) on four
-//! structures of two test patients - two targets exported voxel by voxel,
-//! 1031 and 2178 contours, and two hearts of 218 000 and 53 000 points -
-//! where it gives the volume Segment Statistics shows to every digit it
-//! shows. The tests below hold the behaviour on shapes whose volume is
-//! known; they cannot carry the patient contours.
+//! Provenance: steps 1-5 and 7 are a port of SlicerRT's
+//! planar-contour-to-closed-surface conversion rule and of the VTK filters
+//! it uses (the polydata stencil, the ellipsoidal erosion, marching squares,
+//! the stripper, the priority queue behind the decimation,
+//! `vtkMassProperties`), quirks included, and the notes on each function
+//! name the routine it follows. Before step 6 the result reproduces that
+//! implementation's figure to six significant digits on four clinical
+//! structures (two targets exported voxel by voxel, 1031 and 2178 contours,
+//! and two hearts of 218 000 and 53 000 points). Step 6 is ours: without it
+//! the divergence sum of an open surface depends on the coordinate origin,
+//! and a heart on a 4DCT a metre down the couch reads a third low.
 //!
 //! Joining the slices is the costly step - a dynamic-programming match of
 //! every pair of joined contours, quadratic in their points - so the pairs
@@ -74,26 +65,45 @@ pub enum EndCapping {
     Straight,
 }
 
-/// The volume Slicer's *Segment Statistics* gives for `roi`, cm³, with its
-/// default conversion (smooth end caps). `slice_mm` is the slice spacing of
-/// the image the structure set refers to, which Slicer's DICOM import hands
-/// the conversion as its default slice thickness - it only matters for a
-/// structure drawn on a single plane. `None` when the ROI has no line to
-/// build a surface from.
-pub fn slicer_volume_cm3(roi: &Roi, slice_mm: f64) -> Option<f64> {
+/// The surface-based volume of `roi`, cm³: the volume enclosed by the
+/// closed triangle surface reconstructed from its contours (smooth end
+/// caps, seams closed). `slice_mm` is the slice spacing of the image the
+/// structure is measured on; it stands in for the spacing between contour
+/// planes when the contours give none (a structure on a single plane).
+/// `None` when the ROI has no line to build a surface from.
+pub fn surface_volume_cm3(roi: &Roi, slice_mm: f64) -> Option<f64> {
     surface_volume_mm3(roi, EndCapping::Smooth, stream_rounded(slice_mm)).map(|v| v / 1000.0)
 }
 
-/// The volume inside the surface SlicerRT builds from `roi`, mm³, with
-/// `default_thickness` the spacing assumed when the contours give none.
+/// The volume enclosed by the surface reconstructed from `roi` with the
+/// given end caps, seams closed, mm³, with `default_thickness` the spacing
+/// assumed when the contours give none.
 pub fn surface_volume_mm3(roi: &Roi, capping: EndCapping, default_thickness: f64) -> Option<f64> {
+    build_surface(roi, capping, default_thickness).map(|s| s.1)
+}
+
+/// The reconstruction, then the volume twice: of the surface as the strips
+/// and caps leave it (`vtkMassProperties` on it is the reference figure),
+/// and of the same surface with its seams closed. mm³, mm³, mm².
+fn build_surface(
+    roi: &Roi,
+    capping: EndCapping,
+    default_thickness: f64,
+) -> Option<(f64, f64, f64)> {
     let mut m = Mesh::read(roi, default_thickness)?;
     m.orient_axial();
     m.sort_contours();
     m.fix_keyholes(0.001, 3);
     m.set_lines_counter_clockwise();
-    let tris = m.build(capping);
-    mass_properties_volume(&m.pts, &tris)
+    let mut tris = m.build(capping);
+    let slicer = mass_properties_volume(&m.pts, &tris)?;
+    let seam = close_seams(&mut m.pts, &mut tris);
+    let closed = if seam > 0.0 {
+        mass_properties_volume(&m.pts, &tris).unwrap_or(slicer)
+    } else {
+        slicer
+    };
+    Some((slicer, closed, seam))
 }
 
 /// A double written to a `std::stringstream` and read back, as the import
@@ -103,6 +113,96 @@ fn stream_rounded(v: f64) -> f64 {
         return 0.0;
     }
     format!("{:.5e}", v).parse().unwrap_or(v)
+}
+
+/// Close every open seam of a triangle set: the edges walked one way more
+/// often than the other form closed loops, and each loop gets a fan from
+/// its centre walked the other way. Returns the area added, mm².
+///
+/// SlicerRT's surface is not closed wherever a contour is split between
+/// two or more contours on the next slice: `Branch` hands each of them its
+/// nearest stretch, and the stretch between two of them belongs to no
+/// ribbon. `vtkMassProperties` integrates about the patient origin, so each
+/// such seam counts its area times its distance from the origin as volume -
+/// harmless for a structure near the origin, and hundreds of cm³ for a
+/// branching heart on a 4DCT whose couch puts it a metre down z. Closed, the
+/// surface has one volume wherever it is.
+fn close_seams(pts: &mut Vec<P3>, tris: &mut Vec<[usize; 3]>) -> f64 {
+    let mut net: HashMap<(usize, usize), i32> = HashMap::new();
+    for t in tris.iter() {
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            if a == b {
+                continue;
+            }
+            if a < b {
+                *net.entry((a, b)).or_default() += 1;
+            } else {
+                *net.entry((b, a)).or_default() -= 1;
+            }
+        }
+    }
+    // Outgoing boundary edges per vertex, with multiplicity.
+    let mut out: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut n_edges = 0usize;
+    let mut keys: Vec<_> = net
+        .iter()
+        .filter(|(_, v)| **v != 0)
+        .map(|(k, v)| (*k, *v))
+        .collect();
+    keys.sort_unstable();
+    for ((a, b), v) in keys {
+        let (from, to) = if v > 0 { (a, b) } else { (b, a) };
+        for _ in 0..v.unsigned_abs() {
+            out.entry(from).or_default().push(to);
+            n_edges += 1;
+        }
+    }
+    if n_edges == 0 {
+        return 0.0;
+    }
+    let mut starts: Vec<usize> = out.keys().copied().collect();
+    starts.sort_unstable();
+    let mut area = 0.0;
+    for s0 in starts {
+        while out.get(&s0).is_some_and(|v| !v.is_empty()) {
+            let mut cycle = vec![s0];
+            let mut cur = s0;
+            while let Some(next) = out.get_mut(&cur).and_then(|v| v.pop()) {
+                if next == s0 {
+                    break;
+                }
+                cycle.push(next);
+                cur = next;
+            }
+            if cycle.len() < 3 {
+                continue;
+            }
+            let n = cycle.len() as f64;
+            let mut c = [0.0; 3];
+            for &i in &cycle {
+                for d in 0..3 {
+                    c[d] += pts[i][d] / n;
+                }
+            }
+            pts.push(c);
+            let ci = pts.len() - 1;
+            for w in 0..cycle.len() {
+                let (a, b) = (cycle[w], cycle[(w + 1) % cycle.len()]);
+                tris.push([ci, b, a]);
+                let (p, q) = (pts[a], pts[b]);
+                let u = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+                let v = [q[0] - c[0], q[1] - c[1], q[2] - c[2]];
+                let x = [
+                    u[1] * v[2] - u[2] * v[1],
+                    u[2] * v[0] - u[0] * v[2],
+                    u[0] * v[1] - u[1] * v[0],
+                ];
+                area += 0.5 * (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt();
+            }
+        }
+    }
+    area
 }
 
 /// Single precision, as a `vtkPoints` of the default type stores it.
@@ -409,6 +509,12 @@ impl Mesh {
         // pair does is read by another - so the pairs run in parallel, and
         // their triangles are laid end to end in the order the conversion
         // would have made them, which keeps the volume's sum in its order.
+        // `vtkPointLocator`s of the lines, built once as the conversion does.
+        let near: Vec<Nearest> = self
+            .lines
+            .iter()
+            .map(|l| Nearest::new(&self.pts, l))
+            .collect();
         let joined: Vec<Joined> = planes
             .par_windows(2)
             .map(|w| {
@@ -423,14 +529,21 @@ impl Mesh {
                         }
                     }
                 }
+                // Which overlapping line every point of a line is nearest
+                // to: `Branch` asks it once per pair, the answer is the
+                // same for all of them.
+                let owners1: Vec<Option<Vec<usize>>> = (0..n1)
+                    .map(|a| owners(&self.pts, &self.lines[first1 + a], &over1[a], &near))
+                    .collect();
+                let owners2: Vec<Option<Vec<usize>>> = (0..n2)
+                    .map(|b| owners(&self.pts, &self.lines[first2 + b], &over2[b], &near))
+                    .collect();
                 let mut tris = Vec::new();
                 let (mut up, mut down) = (Vec::new(), Vec::new());
                 for l1 in first1..first1 + n1 {
                     for &l2 in &over1[l1 - first1] {
-                        let div1 =
-                            self.branch(&self.lines[l1], l2, &over1[l1 - first1], &self.lines);
-                        let div2 =
-                            self.branch(&self.lines[l2], l1, &over2[l2 - first2], &self.lines);
+                        let div1 = divide(&self.lines[l1], owners1[l1 - first1].as_deref(), l2);
+                        let div2 = divide(&self.lines[l2], owners2[l2 - first2].as_deref(), l1);
                         if div1.len() > 1 && div2.len() > 1 {
                             up.push(l1);
                             down.push(l2);
@@ -455,46 +568,6 @@ impl Mesh {
             self.end_capping(capping, &above, &below, &mut tris);
         }
         tris
-    }
-
-    /// `Branch`: the part of `line` whose points are nearer to `current`
-    /// than to any other of the `overlapping` lines, one point either side
-    /// kept to close up the surface.
-    fn branch(
-        &self,
-        line: &[usize],
-        current: usize,
-        overlapping: &[usize],
-        all: &[Vec<usize>],
-    ) -> Vec<usize> {
-        if overlapping.len() == 1 {
-            return line.to_vec();
-        }
-        let grids: Vec<Nearest> = overlapping
-            .iter()
-            .map(|&o| Nearest::new(&self.pts, &all[o]))
-            .collect();
-        let mut out = Vec::new();
-        let mut prev = false;
-        for &pid in line {
-            let p = self.pts[pid];
-            if closest_branch(&p, overlapping, &grids) == current {
-                out.push(pid);
-                prev = true;
-            } else {
-                if prev {
-                    out.push(pid);
-                }
-                prev = false;
-            }
-        }
-        if out.len() > 1 {
-            let closed = line[0] == line[line.len() - 1];
-            if closed && out[0] != out[out.len() - 1] {
-                out.push(out[0]);
-            }
-        }
-        out
     }
 
     // -- 5. end caps ---------------------------------------------------------
@@ -525,12 +598,14 @@ impl Mesh {
                     triangulate_interior(&self.pts, cap, dir_above, tris);
                 }
                 let idx: Vec<usize> = (0..caps.len()).collect();
-                for k in 0..caps.len() {
-                    let divided = self.branch(&line, k, &idx, &caps);
+                let near: Vec<Nearest> = caps.iter().map(|c| Nearest::new(&self.pts, c)).collect();
+                let own = owners(&self.pts, &line, &idx, &near);
+                for (k, cap) in caps.iter().enumerate() {
+                    let divided = divide(&line, own.as_deref(), k);
                     if dir_above {
-                        triangulate_between(&self.pts, &divided, &caps[k], tris);
+                        triangulate_between(&self.pts, &divided, cap, tris);
                     } else {
-                        triangulate_between(&self.pts, &caps[k], &divided, tris);
+                        triangulate_between(&self.pts, cap, &divided, tris);
                     }
                 }
             }
@@ -734,17 +809,62 @@ fn within_radius(coords: &[P3], eps: f64) -> Vec<Vec<usize>> {
 
 /// `GetClosestBranch`: the overlapping line with the nearest point, the
 /// first of them on a tie.
-fn closest_branch(p: &P3, overlapping: &[usize], grids: &[Nearest]) -> usize {
+fn closest_branch(p: &P3, overlapping: &[usize], near: &[Nearest]) -> usize {
     let mut best = f64::MAX;
     let mut id = overlapping[0];
-    for (o, g) in overlapping.iter().zip(grids) {
-        let d = g.query(p).1;
+    for &o in overlapping {
+        let d = near[o].query(p).1;
         if d < best {
             best = d;
-            id = *o;
+            id = o;
         }
     }
     id
+}
+
+/// `GetClosestBranch` for every point of `line`: which of `overlapping`
+/// (indices into `near`) it is nearest to. `None` when there is only the
+/// one, and `Branch` keeps the whole line.
+fn owners(
+    pts: &[P3],
+    line: &[usize],
+    overlapping: &[usize],
+    near: &[Nearest],
+) -> Option<Vec<usize>> {
+    (overlapping.len() > 1).then(|| {
+        line.iter()
+            .map(|&pid| closest_branch(&pts[pid], overlapping, near))
+            .collect()
+    })
+}
+
+/// `Branch`: the part of `line` whose points are nearer to `current` than
+/// to any other of the lines it overlaps (`owners`), one point either side
+/// kept to close up the surface.
+fn divide(line: &[usize], owners: Option<&[usize]>, current: usize) -> Vec<usize> {
+    let Some(own) = owners else {
+        return line.to_vec();
+    };
+    let mut out = Vec::new();
+    let mut prev = false;
+    for (&pid, &o) in line.iter().zip(own) {
+        if o == current {
+            out.push(pid);
+            prev = true;
+        } else {
+            if prev {
+                out.push(pid);
+            }
+            prev = false;
+        }
+    }
+    if out.len() > 1 {
+        let closed = line[0] == line[line.len() - 1];
+        if closed && out[0] != out[out.len() - 1] {
+            out.push(out[0]);
+        }
+    }
+    out
 }
 
 /// `DoLinesOverlap`: strict overlap of the xy bounding boxes.
@@ -1683,9 +1803,12 @@ mod tests {
     #[test]
     fn a_stack_of_squares_is_closed_and_its_caps_sit_half_a_slice_out() {
         let r = box_stack();
-        // Open ends: exactly the prism between the first and last contour.
+        // No caps: the strips' open ends are closed flat as seams, exactly
+        // the prism between the first and last contour.
         let open = surface_volume_mm3(&r, EndCapping::None, 0.0).unwrap();
         assert!((open - 7200.0).abs() < 1e-6, "{open}");
+        let (unclosed, _, seam) = build_surface(&r, EndCapping::None, 0.0).unwrap();
+        assert!((unclosed - 7200.0).abs() < 1e-6 && (seam - 800.0).abs() < 1e-6);
         for capping in [EndCapping::Straight, EndCapping::Smooth] {
             assert!(closed(&r, capping), "{capping:?} left a hole");
         }
@@ -1704,17 +1827,17 @@ mod tests {
         let smooth = surface_volume_mm3(&r, EndCapping::Smooth, 0.0).unwrap();
         assert!(smooth < straight && smooth > open, "{smooth}");
         // In cm³, as the tables show it.
-        let cm3 = slicer_volume_cm3(&r, 2.0).unwrap();
+        let cm3 = surface_volume_cm3(&r, 2.0).unwrap();
         assert!((cm3 - smooth / 1000.0).abs() < 1e-12);
     }
 
     #[test]
     fn the_order_the_contours_come_in_does_not_matter() {
         let mut r = box_stack();
-        let a = slicer_volume_cm3(&r, 2.0).unwrap();
+        let a = surface_volume_cm3(&r, 2.0).unwrap();
         r.contours.reverse();
         r.contours.swap(2, 7);
-        let b = slicer_volume_cm3(&r, 2.0).unwrap();
+        let b = surface_volume_cm3(&r, 2.0).unwrap();
         assert_eq!(a, b);
     }
 
@@ -1728,7 +1851,7 @@ mod tests {
         // sliver the top ribbon folds in, 400 x 1.5 / 6 mm³).
         let slab = surface_volume_mm3(&r, EndCapping::Straight, 3.0).unwrap();
         assert!((1100.0 - 1e-6..=1200.0 + 1e-6).contains(&slab), "{slab}");
-        let smooth = slicer_volume_cm3(&r, 3.0).unwrap();
+        let smooth = surface_volume_cm3(&r, 3.0).unwrap();
         assert!(smooth > 0.0 && smooth < slab / 1000.0, "{smooth}");
     }
 
@@ -1767,10 +1890,57 @@ mod tests {
     }
 
     #[test]
+    fn a_closed_surface_reads_the_same_both_ways() {
+        let (open, closed, seam) = build_surface(&box_stack(), EndCapping::Smooth, 2.0).unwrap();
+        assert_eq!(seam, 0.0);
+        assert_eq!(open, closed);
+    }
+
+    /// A block that splits into four posts halfway up, one at each corner.
+    /// Each post takes the stretch of the block's outline nearest to it,
+    /// and the chords that close those stretches enclose nothing between
+    /// them: the strips leave a square seam in the middle.
+    fn fork(z0: f64) -> Roi {
+        roi((0..12)
+            .flat_map(|k| {
+                let z = z0 + 2.0 * k as f64;
+                if k < 6 {
+                    vec![square(0.0, 0.0, 40.0, z)]
+                } else {
+                    vec![
+                        square(0.0, 0.0, 10.0, z),
+                        square(30.0, 0.0, 10.0, z),
+                        square(30.0, 30.0, 10.0, z),
+                        square(0.0, 30.0, 10.0, z),
+                    ]
+                }
+            })
+            .collect())
+    }
+
+    #[test]
+    fn a_seam_is_closed_before_the_volume_is_read() {
+        let near = build_surface(&fork(0.0), EndCapping::Smooth, 2.0).unwrap();
+        let far = build_surface(&fork(-1000.0), EndCapping::Smooth, 2.0).unwrap();
+        assert!(near.2 > 0.0, "the fork leaves a seam");
+        // Left open, the volume moves with the origin; closed, it does not.
+        assert!((near.0 - far.0).abs() > 50.0, "{near:?} {far:?}");
+        assert!((near.1 - far.1).abs() < 1e-6 * near.1, "{near:?} {far:?}");
+        // And it is the fork's volume: 17.6 cm³ of block with its cap, 4.4
+        // of posts with theirs, less what the smooth caps take off and plus
+        // the strips between block and posts.
+        let cm3 = surface_volume_cm3(&fork(-1000.0), 2.0).unwrap();
+        assert!((19.0..24.0).contains(&cm3), "{cm3}");
+        // The seam is the block's top between the posts' stretches: the
+        // whole square here.
+        assert!((near.2 - 1600.0).abs() < 1.0, "{near:?}");
+    }
+
+    #[test]
     fn nothing_to_build_from_is_no_volume() {
-        assert_eq!(slicer_volume_cm3(&roi(vec![]), 2.0), None);
+        assert_eq!(surface_volume_cm3(&roi(vec![]), 2.0), None);
         assert_eq!(
-            slicer_volume_cm3(&roi(vec![vec![[1.0, 2.0, 3.0]]]), 2.0),
+            surface_volume_cm3(&roi(vec![vec![[1.0, 2.0, 3.0]]]), 2.0),
             None
         );
     }

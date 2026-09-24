@@ -74,15 +74,15 @@ impl Structure {
         Ok(mask)
     }
 
-    /// The structure's surface volume, cm³: the volume inside the closed
-    /// surface 3D Slicer builds from the contours, as its Segment Statistics
-    /// reports it (see [`crate::rt_surface`]), with `grid`'s slice spacing
-    /// standing in where the contours give none - the figure Structure
-    /// details shows in its Surface column. `None` for a segment, which has
-    /// no contours to build a surface from.
+    /// The structure's surface-based volume, cm³: the volume enclosed by the
+    /// closed surface reconstructed from the contours (see
+    /// [`crate::rt_surface`]), with `grid`'s slice spacing standing in where
+    /// the contours give none - what Structure details shows in its
+    /// Surface-based column. `None` for a segment, which has no contours to
+    /// build a surface from.
     pub fn surface_on(&self, grid: &Grid) -> Option<f64> {
         match &self.source {
-            Source::Contours(roi) => crate::rt_surface::slicer_volume_cm3(roi, grid.spacing[2]),
+            Source::Contours(roi) => crate::rt_surface::surface_volume_cm3(roi, grid.spacing[2]),
             Source::Mask { .. } => None,
         }
     }

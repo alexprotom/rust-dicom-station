@@ -56,7 +56,7 @@ pub(super) struct RunItem {
     /// destination lattice.
     pub(super) mapped_cm3: f64,
     pub(super) result_cm3: f64,
-    /// The source's surface volume, when it was drawn as contours.
+    /// The source's surface-based volume, when it was drawn as contours.
     pub(super) source_surface_cm3: Option<f64>,
     /// Carried as a rigid body: the deformation that left out, RMS mm.
     pub(super) rigid_residual_mm: Option<f64>,
@@ -65,13 +65,13 @@ pub(super) struct RunItem {
 }
 
 /// A propagated structure filed as contours, measured both ways Structure
-/// details measures a contour: the surface volume (the volume inside the
-/// closed surface 3D Slicer builds from the contours, see
-/// [`crate::rt_surface`]) and voxels (the contours rasterized on the
-/// destination).
+/// details measures a contour: surface-based (the volume enclosed by the
+/// closed surface reconstructed from the contours, see
+/// [`crate::rt_surface`]) and voxels-based (the contours rasterized on the
+/// destination). `surface_cm3` is `None` for a ROI with no surface to build.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Filed {
-    pub(super) surface_cm3: f64,
+    pub(super) surface_cm3: Option<f64>,
     pub(super) voxel_cm3: f64,
 }
 
@@ -80,7 +80,7 @@ impl Filed {
     /// two calls Structure details makes, so the figures are the ones it
     /// shows for that ROI.
     pub(super) fn measure(roi: &crate::rtstruct::Roi, grid: &Grid) -> Filed {
-        let surface_cm3 = crate::rt_surface::slicer_volume_cm3(roi, grid.spacing[2]).unwrap_or(0.0);
+        let surface_cm3 = crate::rt_surface::surface_volume_cm3(roi, grid.spacing[2]);
         let voxels = crate::segmentation::rasterize_roi(grid, roi)
             .map(|m| crate::morphology::count_set(&m))
             .unwrap_or(0);
@@ -109,7 +109,7 @@ impl RunItem {
     /// Filed contours against the source's, both by surface: `None`
     /// unless both sides were contours.
     fn surface_change_pct(&self) -> Option<f64> {
-        Some(pct(self.source_surface_cm3?, self.filed?.surface_cm3))
+        Some(pct(self.source_surface_cm3?, self.filed?.surface_cm3?))
     }
 
     /// Filed contours against the source, both counted in voxels.
@@ -231,10 +231,10 @@ impl RunReport {
         out
     }
 
-    /// The volume table of a run filed as contours: by surface first, then
-    /// by voxels, each as the source, the ROI that was filed, and the
-    /// change between them - so either measure reads across on its own. A
-    /// side with nothing to show (a segment has no surface, a structure
+    /// The volume table of a run filed as contours: surface-based first,
+    /// then voxels-based, each as the source, the ROI that was filed, and
+    /// the change between them, so either measure reads across on its own.
+    /// A side with nothing to show (a segment has no surface, a structure
     /// that did not land has no result) leaves its cells empty.
     fn contour_volumes_tsv(&self, out: &mut String) {
         let num = |v: Option<f64>| v.map(|v| format!("{v:.2}")).unwrap_or_default();
@@ -251,7 +251,7 @@ impl RunReport {
                     b.label,
                     it.name,
                     num(it.source_surface_cm3),
-                    num(it.filed.map(|f| f.surface_cm3)),
+                    num(it.filed.and_then(|f| f.surface_cm3)),
                     signed(it.surface_change_pct()),
                     it.source_cm3,
                     num(it.filed.map(|f| f.voxel_cm3)),
@@ -394,12 +394,13 @@ impl RunReport {
     /// [`RunReport::contour_volumes_tsv`]. Two heading rows: which side
     /// over each pair of columns, then how each column measures.
     fn contour_volumes_ui(&self, ui: &mut egui::Ui, id: &str, phased: bool) {
-        const SURFACE: &str = "Surface: the volume inside the closed surface 3D Slicer \
-             builds from the contours (SlicerRT's planar-contour conversion, smooth \
-             end caps) - the number Slicer's Segment Statistics reports.";
-        const VOXELS: &str = "Voxels: the contours rasterized on the image's lattice, counted \
-             and multiplied by the voxel volume - the figure every tool that \
-             works on a mask uses.";
+        const SURFACE: &str = "Surface-based: the volume enclosed by a closed triangle \
+             surface reconstructed from the contours - neighbouring slices joined by \
+             strips of triangles, the ends closed by caps half a slice beyond the \
+             last contours. See docs/volumes.md for the formulas.";
+        const VOXELS: &str = "Voxels-based: the contours rasterized on the image's lattice, \
+             counted and multiplied by the voxel volume - the figure every tool \
+             that works on a mask uses.";
         table_scroll(ui, (id, "vols"), |ui| {
             egui::Grid::new((id, "vols_contours"))
                 .striped(true)
@@ -411,11 +412,11 @@ impl RunReport {
                         ui.label("");
                     }
                     ui.label("");
-                    ui.label(egui::RichText::new("Surface, cm³").strong())
+                    ui.label(egui::RichText::new("Surface-based, cm³").strong())
                         .on_hover_text(SURFACE);
                     ui.label("");
                     ui.label("");
-                    ui.label(egui::RichText::new("Voxels, cm³").strong())
+                    ui.label(egui::RichText::new("Voxels-based, cm³").strong())
                         .on_hover_text(VOXELS);
                     ui.label("");
                     ui.label("");
@@ -461,7 +462,7 @@ impl RunReport {
                             }
                             name_cell(ui, it);
                             volume(ui, it.source_surface_cm3);
-                            volume(ui, it.filed.map(|f| f.surface_cm3));
+                            volume(ui, it.filed.and_then(|f| f.surface_cm3));
                             change(ui, it.surface_change_pct());
                             volume(ui, Some(it.source_cm3));
                             volume(ui, it.filed.map(|f| f.voxel_cm3));
@@ -694,14 +695,14 @@ mod tests {
         let mut heart = item("heart", 947.0, 800.0);
         heart.source_surface_cm3 = Some(940.0);
         heart.filed = Some(Filed {
-            surface_cm3: 789.6,
+            surface_cm3: Some(789.6),
             voxel_cm3: 795.5,
         });
         // A segment has no contours on the source side: its surface and
         // the change by it are left empty, not reported as zero.
         let mut seg = item("from a segment", 10.0, 9.0);
         seg.filed = Some(Filed {
-            surface_cm3: 8.8,
+            surface_cm3: Some(8.8),
             voxel_cm3: 9.1,
         });
         let report = RunReport {

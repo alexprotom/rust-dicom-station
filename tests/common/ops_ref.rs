@@ -96,9 +96,7 @@ pub fn conv_transpose2d(x: &WTensor, w: &WTensor, b: &WTensor, stride: usize) ->
     let mut y = vec![0.0; n * o * ho * wo];
     for ni in 0..n {
         for oi in 0..o {
-            for v in y[(ni * o + oi) * ho * wo..(ni * o + oi + 1) * ho * wo].iter_mut() {
-                *v = bv[oi];
-            }
+            y[(ni * o + oi) * ho * wo..(ni * o + oi + 1) * ho * wo].fill(bv[oi]);
             for ci in 0..c {
                 for i in 0..h {
                     for j in 0..wd {

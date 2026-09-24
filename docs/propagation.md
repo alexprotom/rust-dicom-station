@@ -282,52 +282,57 @@ per cent, which is where a propagated volume stops being the same organ.
 
 When the structures land as a **structure set**, what arrives is contours,
 and a contour has two volumes - the two *Structure details* shows. So the
-second table measures both sides both ways, **Surface** first, then
-**Voxels** (the contours rasterized on the image's lattice): under each, the
-**Source**, the **Deformed** ROI that was filed, and the **Δ %** between
-them, so either measure reads across on its own. The deformed figures are
-read off the filed ROI with the very calls *Structure details* makes, so the
-two windows agree to the last digit.
+second table measures both sides both ways, **Surface-based** first, then
+**Voxels-based** (the contours rasterized on the image's lattice): under
+each, the **Source**, the **Deformed** ROI that was filed, and the **Δ %**
+between them, so either measure reads across on its own. The deformed
+figures are read off the filed ROI with the very calls *Structure details*
+makes, so the two windows agree to the last digit.
 
-**Surface** is the volume 3D Slicer's *Segment Statistics* reports for a
-structure imported from RTSTRUCT, computed by the same algorithm
-(`src/rt_surface.rs`, a port of SlicerRT's planar-contour-to-closed-surface
-conversion and of the VTK filters it uses). Slicer does not measure the
-contours; it joins them into a closed surface and reports the volume inside:
+The exact rules and formulas behind every one of these figures are in
+[volumes.md](volumes.md). In short:
 
-- each contour is joined by a ribbon of triangles to every contour on the
-  next slice whose bounding box overlaps it;
-- a contour with nothing joined above or below gets a *smooth end cap*
-  (SlicerRT's default): the contour rasterized, eroded until at most half of
-  it is left, traced again and set half a slice away, then joined to the
-  contour with another ribbon;
-- before any of that, a path that comes back to one of its own points is cut
-  into separate lines by SlicerRT's *keyhole* rule, which keeps a pair of
-  voxels chained through a corner as two triangles of half a voxel each;
-- the volume is `vtkMassProperties`' divergence sum over the triangles.
+- **Voxels-based** counts the voxels whose centres lie inside the contours
+  (even-odd, slice by slice) and multiplies by the voxel volume. On the
+  deformed side it is the filed mask itself, so the voxels-based **Δ %** is
+  the volume change the transform made: the ratio of the two is the mean
+  Jacobian determinant of the transform over the structure.
+- **Surface-based** reconstructs a closed triangle surface from the
+  contours - neighbouring slices joined by strips of triangles, the first
+  and last closed by shrunken caps half a slice beyond, any gap left where a
+  contour splits between slices closed - and integrates the volume inside it
+  (divergence theorem). It owes nothing to an image lattice.
 
-On an organ the surface and the voxels agree to within half a per cent: the
-end caps are a sliver of the whole. On a target exported voxel by voxel as a
-thin sheet they part by tens of per cent, because such a structure is mostly
-open ends. The STAR target (1031 squares of 1 mm on 0.6 mm slices) is
-0.619 cm³ of voxels and 0.534 cm³ of surface; the UPSTAR target, with 450
-corner-chained pairs among its cells, is 2.90 cm³ of voxels and 1.95 of
-surface. Neither is wrong; they measure different things. A filed ROI's
-contours run along the edges of the voxels it was made from (see *Mask →
-RTSTRUCT* in [segmentation.md](segmentation.md)), so its voxel volume is its
-contour area times the slice spacing exactly, and its surface is smaller by
-its end caps. So a small structure's two **Δ %** columns can disagree, and
-it is the voxel one that says how much the transform itself changed.
+On an organ the two agree to about a per cent. On a target exported voxel by
+voxel as a thin sheet they part by tens of per cent, because such a structure
+is mostly ends: the surface stops at a cap where the voxels count a full
+slice, and a pair of voxels chained through a shared corner becomes two
+half-voxel triangles. The STAR target (1031 squares of 1 mm on 0.6 mm slices)
+is 0.62 cm³ of voxels and 0.53 cm³ of surface; the UPSTAR target, with 450
+corner-chained pairs among its cells, is 2.89 cm³ of voxels and 1.95 of
+surface. Neither is wrong; they measure different things.
 
-Checked against Slicer 5.10 on four structures of two test patients, the
-surface volume here and Slicer's agree to every digit Slicer shows: the STAR
-target 0.533518 cm³ and heart 910.498, the UPSTAR target 1.95196 and heart
-949.369. Slicer's *End capping* parameter set to 2 (straight caps: a copy of
-the end contour itself half a slice away) gives 0.599 and 2.267 cm³ for the
-two targets, not the voxel volume: SlicerRT copies a straight cap's closing
-point as a point of its own, its ribbon matcher then takes the cap for an
-open line, and at a top end the ribbon folds a sliver in. An earlier version
-of this page predicted 0.619 and 2.45 there; those were wrong.
+That is also why a small structure's two **Δ %** columns can disagree. The
+UPSTAR target carried onto the Lung 01-052 4DCT reads −34.4 % by voxels and
+−9.8 % by surface:
+
+- **Voxels-based, −34.4 %** (2.89 → 1.89 cm³) is the transform's local
+  compression. Over the carried target the mean Jacobian determinant of the
+  destination → source map is 1.53 (1.05 to 1.87), and summing it over the
+  target's voxels accounts for 2.90 cm³ of source - the source volume to
+  0.6 %. The heart the run is anchored on shrinks by 16 % (947 → 794 cm³,
+  mean Jacobian 1.19), because it is matched onto the other patient's smaller
+  heart (805 cm³); the target, 9 mm under its surface, is squeezed more.
+- **Surface-based, −9.8 %** (1.95 → 1.76 cm³) mixes that compression with a
+  change of shape class: the source is a sheet of 1 mm squares on 1 mm
+  slices, whose surface holds 68 % of its voxels; the filed target is a
+  compact voxel outline on 0.5 mm slices, whose surface holds 93 %. Carried
+  rigidly - no volume change at all (2.887 → 2.889 cm³ by voxels) - the same
+  target reads **+39 %** by surface for that reason alone.
+
+So it is the voxels-based **Δ %** that says how much the transform itself
+changed a structure. When a target inside an organ should keep its volume,
+carry it with **keep shape** (above).
 
 A structure that came from a segment has no contours on the source side;
 its surface and the change by it are left as a dash rather than reported as
@@ -336,6 +341,17 @@ own confirmations - is given to two decimals.
 
 **📋 Copy** puts both tables on the clipboard tab separated, which a
 spreadsheet opens as a table without being asked twice.
+
+**Deformation field.** After a run onto a 4D group - an anchored one
+included - a **Deformation field** row sits under the tables, with one
+**👁** button per phase: it draws that phase's displacement on the views and
+in 3D (putting the phase on display if it is not), and a second click hides
+it. **deformation only** leaves out the rigid part, which for an anchored
+run is the jump between the two scanners' coordinates. The transform of the
+phase on display is made the active registration when the run finishes, so
+the arrows, the deformed grid, their spacing and scale are under *Image
+registration ▸ Vector field* as after any registration
+([registration.md](registration.md#against-a-4d-group)).
 
 ## Verification
 

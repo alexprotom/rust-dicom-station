@@ -1,7 +1,7 @@
 # Interactive segmentation and the 3D view
 
 MITK-style manual and semi-automatic segmentation, entirely in Rust and
-CPU-side, plus a Slicer-style 3D surface view. Neural-network
+CPU-side, plus a 3D surface view. Neural-network
 auto-segmentation is [auto-segmentation.md](auto-segmentation.md), the patient
 outline [body-contour.md](body-contour.md) - both land as the editable masks
 described here - and combining structures is
@@ -121,7 +121,9 @@ replaced a marching-squares outline, which looks smoother but cuts every
 corner. That costs an eighth of a voxel per outer corner and half of a lone
 voxel. A large organ does not notice, but a target carried onto a 1.2 mm
 lattice as a cloud of single voxels lost a tenth of its planimetric volume
-that way. Voxels that touch only at a corner come out as separate contours. The new ROI joins the active structure set - or a new
+that way. Voxels that touch only at a corner come out as separate contours.
+Its surface-based volume is smaller than the voxels by the end caps - see
+[volumes.md](volumes.md). The new ROI joins the active structure set - or a new
 in-memory set ("Segmentations") when the study has no RTSTRUCT - and renders
 like any ROI, participates in the 3D view, and rides the existing DICOM export
 ([export-and-tools.md](export-and-tools.md)).
