@@ -443,35 +443,83 @@ pub fn overlay_slice(
     alpha: u8,
     out: &mut [Color32],
 ) {
+    overlay_slice_within(mask, dims, None, plane, slice, color, alpha, out);
+}
+
+/// [`overlay_slice`] for a mask whose extent is known ([`Segmentation::bbox`],
+/// which may overestimate but never underestimates): a slice the extent does
+/// not reach is skipped outright and a slice it does is scanned only inside
+/// it. With a hundred organs from an auto-segmentation that is the difference
+/// between reading the whole plane a hundred times and reading a few small
+/// boxes. `None` scans the whole lattice.
+#[allow(clippy::too_many_arguments)]
+pub fn overlay_slice_within(
+    mask: &[u8],
+    dims: [usize; 3],
+    bbox: Option<([usize; 3], [usize; 3])>,
+    plane: ViewPlane,
+    slice: usize,
+    color: [u8; 3],
+    alpha: u8,
+    out: &mut [Color32],
+) {
     let [nx, ny, nz] = dims;
+    if nx == 0 || ny == 0 || nz == 0 {
+        return;
+    }
     let col = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], alpha);
+    // Unknown extent: the whole lattice.
+    let (lo, hi) = bbox.unwrap_or(([0; 3], [nx - 1, ny - 1, nz - 1]));
+    let hi = [hi[0].min(nx - 1), hi[1].min(ny - 1), hi[2].min(nz - 1)];
+    if lo[0] > hi[0] || lo[1] > hi[1] || lo[2] > hi[2] {
+        return;
+    }
     match plane {
         ViewPlane::Axial => {
-            let k = slice.min(nz.saturating_sub(1));
-            let base = k * nx * ny;
-            for (o, &m) in out.iter_mut().zip(&mask[base..base + nx * ny]) {
-                if m != 0 {
-                    *o = col;
-                }
+            let k = slice.min(nz - 1);
+            if k < lo[2] || k > hi[2] {
+                return;
             }
-        }
-        ViewPlane::Sagittal => {
-            let i = slice.min(nx.saturating_sub(1));
-            for (r, row) in out.chunks_mut(ny).enumerate() {
-                let base = (nz - 1 - r) * nx * ny + i;
-                for (j, o) in row.iter_mut().enumerate() {
-                    if mask[base + j * nx] != 0 {
+            let base = k * nx * ny;
+            for j in lo[1]..=hi[1] {
+                let row = base + j * nx;
+                let src = &mask[row + lo[0]..=row + hi[0]];
+                let dst = &mut out[j * nx + lo[0]..=j * nx + hi[0]];
+                for (o, &m) in dst.iter_mut().zip(src) {
+                    if m != 0 {
                         *o = col;
                     }
                 }
             }
         }
+        ViewPlane::Sagittal => {
+            let i = slice.min(nx - 1);
+            if i < lo[0] || i > hi[0] {
+                return;
+            }
+            for k in lo[2]..=hi[2] {
+                let r = nz - 1 - k;
+                let base = k * nx * ny + i;
+                let row = &mut out[r * ny..(r + 1) * ny];
+                for j in lo[1]..=hi[1] {
+                    if mask[base + j * nx] != 0 {
+                        row[j] = col;
+                    }
+                }
+            }
+        }
         ViewPlane::Coronal => {
-            let j = slice.min(ny.saturating_sub(1));
-            for (r, row) in out.chunks_mut(nx).enumerate() {
-                let base = (nz - 1 - r) * nx * ny + j * nx;
-                for (i, o) in row.iter_mut().enumerate() {
-                    if mask[base + i] != 0 {
+            let j = slice.min(ny - 1);
+            if j < lo[1] || j > hi[1] {
+                return;
+            }
+            for k in lo[2]..=hi[2] {
+                let r = nz - 1 - k;
+                let base = k * nx * ny + j * nx;
+                let src = &mask[base + lo[0]..=base + hi[0]];
+                let dst = &mut out[r * nx + lo[0]..=r * nx + hi[0]];
+                for (o, &m) in dst.iter_mut().zip(src) {
+                    if m != 0 {
                         *o = col;
                     }
                 }
@@ -859,62 +907,75 @@ pub fn rasterize_roi(grid: &Grid, roi: &Roi) -> Option<Vec<u8>> {
         return None;
     }
 
+    if nx * ny == 0 {
+        return None;
+    }
+    // Every slice is filled on its own, so the slices go in parallel; the
+    // result does not depend on the order they finish in.
     let mut mask = vec![0u8; nx * ny * nz];
+    let any = mask
+        .par_chunks_mut(nx * ny)
+        .zip(by_slice.par_iter())
+        .map(|(plane, polys)| fill_slice(plane, polys, nx, ny))
+        .reduce(|| false, |a, b| a || b);
+    any.then_some(mask)
+}
+
+/// Scan-convert one slice's contours (voxel (i, j) coordinates) into its
+/// plane of the mask. Whether any voxel was set.
+fn fill_slice(plane: &mut [u8], polys: &[Vec<[f64; 2]>], nx: usize, ny: usize) -> bool {
+    if polys.is_empty() {
+        return false;
+    }
     let mut any = false;
     let mut crossings: Vec<f64> = Vec::new();
-    for (k, polys) in by_slice.iter().enumerate() {
-        if polys.is_empty() {
+    // Rows the contours of this slice can possibly touch.
+    let (mut j0, mut j1) = (f64::MAX, f64::MIN);
+    for poly in polys {
+        for p in poly {
+            j0 = j0.min(p[1]);
+            j1 = j1.max(p[1]);
+        }
+    }
+    let j_start = j0.floor().max(0.0) as usize;
+    let j_end = (j1.ceil() as i64).clamp(0, ny as i64 - 1) as usize;
+    for j in j_start..=j_end {
+        // Scanline through the *centre* of the row, so a voxel counts as
+        // inside when its centre is - the rule `mask_to_roi` reverses,
+        // and the one every planning system uses.
+        let y = j as f64;
+        crossings.clear();
+        for poly in polys {
+            let n = poly.len();
+            for a in 0..n {
+                let p = poly[a];
+                let q = poly[(a + 1) % n];
+                // Half-open edge test: a vertex exactly on the scanline
+                // is counted once, never twice, so the parity holds.
+                if (p[1] <= y) != (q[1] <= y) {
+                    let t = (y - p[1]) / (q[1] - p[1]);
+                    crossings.push(p[0] + t * (q[0] - p[0]));
+                }
+            }
+        }
+        if crossings.len() < 2 {
             continue;
         }
-        // Rows the contours of this slice can possibly touch.
-        let (mut j0, mut j1) = (f64::MAX, f64::MIN);
-        for poly in polys {
-            for p in poly {
-                j0 = j0.min(p[1]);
-                j1 = j1.max(p[1]);
-            }
-        }
-        let j_start = j0.floor().max(0.0) as usize;
-        let j_end = (j1.ceil() as i64).clamp(0, ny as i64 - 1) as usize;
-        let base = k * nx * ny;
-        for j in j_start..=j_end {
-            // Scanline through the *centre* of the row, so a voxel counts as
-            // inside when its centre is - the rule `mask_to_roi` reverses,
-            // and the one every planning system uses.
-            let y = j as f64;
-            crossings.clear();
-            for poly in polys {
-                let n = poly.len();
-                for a in 0..n {
-                    let p = poly[a];
-                    let q = poly[(a + 1) % n];
-                    // Half-open edge test: a vertex exactly on the scanline
-                    // is counted once, never twice, so the parity holds.
-                    if (p[1] <= y) != (q[1] <= y) {
-                        let t = (y - p[1]) / (q[1] - p[1]);
-                        crossings.push(p[0] + t * (q[0] - p[0]));
-                    }
-                }
-            }
-            if crossings.len() < 2 {
+        crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        for span in crossings.as_chunks::<2>().0 {
+            let from = span[0].ceil().max(0.0) as i64;
+            let to = (span[1].floor() as i64).min(nx as i64 - 1);
+            if from > to {
                 continue;
             }
-            crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            for span in crossings.as_chunks::<2>().0 {
-                let from = span[0].ceil().max(0.0) as i64;
-                let to = (span[1].floor() as i64).min(nx as i64 - 1);
-                if from > to {
-                    continue;
-                }
-                let row = base + j * nx;
-                for i in from..=to {
-                    mask[row + i as usize] = 1;
-                    any = true;
-                }
+            let row = j * nx;
+            for i in from..=to {
+                plane[row + i as usize] = 1;
+                any = true;
             }
         }
     }
-    any.then_some(mask)
+    any
 }
 
 // ---------------------------------------------------------------------------
@@ -1107,5 +1168,62 @@ mod raster_tests {
             n,
             "the sound contour measures the same with debris beside it"
         );
+    }
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+
+    /// A sparse mask with a known extent, filled pseudo-randomly inside it.
+    fn blob(dims: [usize; 3], lo: [usize; 3], hi: [usize; 3]) -> Vec<u8> {
+        let [nx, ny, nz] = dims;
+        let mut m = vec![0u8; nx * ny * nz];
+        let mut s = 0x9E37_79B9_u32;
+        for k in lo[2]..=hi[2] {
+            for j in lo[1]..=hi[1] {
+                for i in lo[0]..=hi[0] {
+                    s ^= s << 13;
+                    s ^= s >> 17;
+                    s ^= s << 5;
+                    m[k * nx * ny + j * nx + i] = u8::from(s.is_multiple_of(3));
+                }
+            }
+        }
+        m
+    }
+
+    #[test]
+    fn the_extent_only_saves_work_and_never_changes_a_pixel() {
+        let dims = [23, 17, 11];
+        let (lo, hi) = ([4, 3, 2], [15, 12, 8]);
+        let mask = blob(dims, lo, hi);
+        let (exact, _) = crate::morphology::mask_extent(&mask, dims);
+        // The stored extent may be larger than the voxels (after erasing).
+        let loose = Some(([1, 0, 1], [20, 16, 10]));
+        for (plane, n, w, h) in [
+            (ViewPlane::Axial, dims[2], dims[0], dims[1]),
+            (ViewPlane::Sagittal, dims[0], dims[1], dims[2]),
+            (ViewPlane::Coronal, dims[1], dims[0], dims[2]),
+        ] {
+            for slice in 0..n {
+                let mut full = vec![Color32::TRANSPARENT; w * h];
+                overlay_slice(&mask, dims, plane, slice, [1, 2, 3], 90, &mut full);
+                for bbox in [exact, loose] {
+                    let mut boxed = vec![Color32::TRANSPARENT; w * h];
+                    overlay_slice_within(
+                        &mask,
+                        dims,
+                        bbox,
+                        plane,
+                        slice,
+                        [1, 2, 3],
+                        90,
+                        &mut boxed,
+                    );
+                    assert_eq!(full, boxed, "{plane:?} slice {slice} with {bbox:?}");
+                }
+            }
+        }
     }
 }

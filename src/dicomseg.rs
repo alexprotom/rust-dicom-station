@@ -483,31 +483,30 @@ pub fn load(path: &Path) -> Result<SegSeries> {
         }
     };
 
-    let mut segs = Vec::with_capacity(segments.len());
-    for info in &segments {
-        let mut mask = vec![0u8; cols * rows * nz];
-        for (fi, f) in frames.iter().enumerate() {
-            if f.segment != info.number || fi >= n_frames {
-                continue;
-            }
-            let k = levels
-                .iter()
-                .position(|l| (f.proj - l).abs() <= tol)
-                .unwrap_or(0);
-            let base = k * plane;
-            for idx in 0..plane {
-                if bit_of(fi, idx) {
-                    mask[base + idx] = 1;
+    // Each segment reads only its own frames, so the segments are unpacked
+    // in parallel and collected in their order.
+    let segs: Vec<Segmentation> = segments
+        .par_iter()
+        .map(|info| {
+            let mut mask = vec![0u8; cols * rows * nz];
+            for (fi, f) in frames.iter().enumerate() {
+                if f.segment != info.number || fi >= n_frames {
+                    continue;
+                }
+                let k = levels
+                    .iter()
+                    .position(|l| (f.proj - l).abs() <= tol)
+                    .unwrap_or(0);
+                let base = k * plane;
+                for idx in 0..plane {
+                    if bit_of(fi, idx) {
+                        mask[base + idx] = 1;
+                    }
                 }
             }
-        }
-        segs.push(Segmentation::from_mask(
-            info.label.clone(),
-            info.color,
-            grid.dims,
-            mask,
-        ));
-    }
+            Segmentation::from_mask(info.label.clone(), info.color, grid.dims, mask)
+        })
+        .collect();
 
     let referenced_series_uid = items_of(&obj, tags::REFERENCED_SERIES_SEQUENCE)
         .and_then(|i| i.first())
@@ -822,14 +821,38 @@ pub fn build(ser: &SegSeries, ctx: &SegWriteCtx) -> InMemDicomObject {
     // ---- pixel data: one continuous bit stream over all frames ------------
     let total_bits = frames.len() * plane;
     let mut bytes = vec![0u8; total_bits.div_ceil(8)];
-    for (fi, &(si, k)) in frames.iter().enumerate() {
-        let src = &ser.segs[si].mask;
-        let base = k * plane;
-        let bit0 = fi * plane;
-        for idx in 0..plane {
-            if src.get(base + idx).copied().unwrap_or(0) != 0 {
-                let bit = bit0 + idx;
-                bytes[bit >> 3] |= 1 << (bit & 7);
+    let set = |src: &[u8], i: usize| src.get(i).copied().unwrap_or(0) != 0;
+    if plane > 0 && plane.is_multiple_of(8) {
+        // Every frame starts on a byte boundary (a 512 x 512 plane always
+        // does), so the frames own disjoint bytes and are packed in
+        // parallel, eight voxels to a byte.
+        let per_frame = plane / 8;
+        bytes
+            .par_chunks_mut(per_frame)
+            .zip(frames.par_iter())
+            .for_each(|(dst, &(si, k))| {
+                let src = &ser.segs[si].mask;
+                let base = k * plane;
+                for (bi, byte) in dst.iter_mut().enumerate() {
+                    let mut b = 0u8;
+                    for bit in 0..8 {
+                        if set(src, base + bi * 8 + bit) {
+                            b |= 1 << bit;
+                        }
+                    }
+                    *byte = b;
+                }
+            });
+    } else {
+        for (fi, &(si, k)) in frames.iter().enumerate() {
+            let src = &ser.segs[si].mask;
+            let base = k * plane;
+            let bit0 = fi * plane;
+            for idx in 0..plane {
+                if set(src, base + idx) {
+                    let bit = bit0 + idx;
+                    bytes[bit >> 3] |= 1 << (bit & 7);
+                }
             }
         }
     }

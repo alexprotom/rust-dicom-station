@@ -148,10 +148,29 @@ struct Level<'a> {
     lambda: f64,
 }
 
+/// How many pieces the gradient scatter is split into. Fixed rather than one
+/// per thread: the pieces are added in order (see `crate::par`), and that
+/// order must not depend on the machine. Each piece holds a full coefficient
+/// vector, so this is also the memory the scatter costs.
+const SCATTER_PARTS: usize = 16;
+
+/// One evaluation of the cost at a coefficient vector, with what the
+/// gradient needs. Kept so that the line-search trial the optimizer accepts
+/// is not evaluated a second time just to get its gradient.
+struct Eval {
+    /// Data term plus bending energy.
+    cost: f64,
+    /// Where every sample lands, and the moving image's value and gradient
+    /// there (`None` outside).
+    mapped: Vec<Option<(f32, Vec3)>>,
+    /// The per-sample scalar the gradient scatters.
+    scalars: Vec<f64>,
+}
+
 impl Level<'_> {
-    /// Displacement of every sample under `c`, plus the support each sample
-    /// touches. Recomputed per evaluation; this is the engine's hot loop.
-    fn cost_and_gradient(&self, c: &[f64], grad: Option<&mut [f64]>) -> f64 {
+    /// Displacement of every sample under `c` and the cost it gives. This is
+    /// the engine's hot loop.
+    fn evaluate(&self, c: &[f64]) -> Eval {
         let [gnx, gny, _] = self.grid.grid_dims;
         let grid = &self.grid;
 
@@ -194,14 +213,22 @@ impl Level<'_> {
         // loop serve the mean-squared and the mutual-information cost alike.
         let (cost, scalars) = match self.metric {
             Metric::MeanSquares => {
-                let (sum, cnt) = mapped
-                    .par_iter()
-                    .zip(self.samples.par_iter())
-                    .map(|(m, &(_, f))| match m {
-                        Some((v, _)) => ((v - f) as f64 * (v - f) as f64, 1usize),
-                        None => (0.0, 0),
-                    })
-                    .reduce(|| (0.0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+                let samples = &self.samples;
+                let (sum, cnt) = crate::par::ordered_fold(
+                    &mapped,
+                    |mp, off| {
+                        let (mut sum, mut cnt) = (0.0f64, 0usize);
+                        for (m, &(_, f)) in mp.iter().zip(&samples[off..]) {
+                            if let Some((v, _)) = m {
+                                sum += (v - f) as f64 * (v - f) as f64;
+                                cnt += 1;
+                            }
+                        }
+                        (sum, cnt)
+                    },
+                    |a, b| (a.0 + b.0, a.1 + b.1),
+                    (0.0, 0),
+                );
                 let denom = (cnt.max(1) as f64) * self.variance;
                 let s: Vec<f64> = mapped
                     .par_iter()
@@ -217,69 +244,67 @@ impl Level<'_> {
         };
 
         let mut total = cost;
-
-        if let Some(g) = grad {
-            g.iter_mut().for_each(|v| *v = 0.0);
-            let chunk = self
-                .samples
-                .len()
-                .div_ceil(rayon::current_num_threads().max(1))
-                .max(1);
-            let acc = self
-                .samples
-                .par_chunks(chunk)
-                .zip(mapped.par_chunks(chunk))
-                .zip(scalars.par_chunks(chunk))
-                .fold(
-                    || vec![0.0f64; self.n_coeffs],
-                    |mut acc, ((part, mp), sc)| {
-                        for ((&(x, _), m), &s) in part.iter().zip(mp).zip(sc) {
-                            let Some((_, mg)) = m else { continue };
-                            if s == 0.0 {
-                                continue;
-                            }
-                            let Some((base, w)) = grid.support(x) else {
-                                continue;
-                            };
-                            let sx = s * mg.x;
-                            let sy = s * mg.y;
-                            let sz = s * mg.z;
-                            for kz in 0..4 {
-                                let iz = (base[2] + kz as i64) as usize;
-                                for (ky, wy) in w[1].iter().enumerate() {
-                                    let iy = (base[1] + ky as i64) as usize;
-                                    let wyz = wy * w[2][kz];
-                                    let row = 3 * (base[0] as usize + gnx * (iy + gny * iz));
-                                    for (kx, wx) in w[0].iter().enumerate() {
-                                        let wt = wx * wyz;
-                                        let o = row + 3 * kx;
-                                        acc[o] += wt * sx;
-                                        acc[o + 1] += wt * sy;
-                                        acc[o + 2] += wt * sz;
-                                    }
-                                }
-                            }
-                        }
-                        acc
-                    },
-                )
-                .reduce(
-                    || vec![0.0f64; self.n_coeffs],
-                    |mut a, b| {
-                        for (x, y) in a.iter_mut().zip(b.iter()) {
-                            *x += y;
-                        }
-                        a
-                    },
-                );
-            g.copy_from_slice(&acc);
-            if self.lambda > 0.0 {
-                total += bending_energy(c, self.grid.grid_dims, self.grid.spacing, self.lambda, g);
-            }
-        } else if self.lambda > 0.0 {
+        if self.lambda > 0.0 {
             total += bending_energy_value(c, self.grid.grid_dims, self.grid.spacing, self.lambda);
         }
-        total
+        Eval {
+            cost: total,
+            mapped,
+            scalars,
+        }
+    }
+
+    /// The gradient of the cost at `c`, from that point's evaluation.
+    fn gradient(&self, c: &[f64], eval: &Eval, g: &mut [f64]) {
+        let [gnx, gny, _] = self.grid.grid_dims;
+        let grid = &self.grid;
+        let chunk = self.samples.len().div_ceil(SCATTER_PARTS).max(1);
+        let parts: Vec<Vec<f64>> = self
+            .samples
+            .par_chunks(chunk)
+            .zip(eval.mapped.par_chunks(chunk))
+            .zip(eval.scalars.par_chunks(chunk))
+            .map(|((part, mp), sc)| {
+                let mut acc = vec![0.0f64; self.n_coeffs];
+                for ((&(x, _), m), &s) in part.iter().zip(mp).zip(sc) {
+                    let Some((_, mg)) = m else { continue };
+                    if s == 0.0 {
+                        continue;
+                    }
+                    let Some((base, w)) = grid.support(x) else {
+                        continue;
+                    };
+                    let sx = s * mg.x;
+                    let sy = s * mg.y;
+                    let sz = s * mg.z;
+                    for kz in 0..4 {
+                        let iz = (base[2] + kz as i64) as usize;
+                        for (ky, wy) in w[1].iter().enumerate() {
+                            let iy = (base[1] + ky as i64) as usize;
+                            let wyz = wy * w[2][kz];
+                            let row = 3 * (base[0] as usize + gnx * (iy + gny * iz));
+                            for (kx, wx) in w[0].iter().enumerate() {
+                                let wt = wx * wyz;
+                                let o = row + 3 * kx;
+                                acc[o] += wt * sx;
+                                acc[o + 1] += wt * sy;
+                                acc[o + 2] += wt * sz;
+                            }
+                        }
+                    }
+                }
+                acc
+            })
+            .collect();
+        g.iter_mut().for_each(|v| *v = 0.0);
+        for part in &parts {
+            for (x, y) in g.iter_mut().zip(part) {
+                *x += y;
+            }
+        }
+        if self.lambda > 0.0 {
+            bending_energy(c, self.grid.grid_dims, self.grid.spacing, self.lambda, g);
+        }
     }
 
     /// Mattes mutual information: build the joint histogram, then the
@@ -287,18 +312,15 @@ impl Level<'_> {
     fn mi_cost_and_scalars(&self, mapped: &[Option<(f32, Vec3)>]) -> (f64, Vec<f64>) {
         let nb = MI_BINS;
         // The histogram is a reduction over a few hundred thousand samples
-        // into a 1024-entry table; per-thread tables and one merge.
-        let chunk = mapped
-            .len()
-            .div_ceil(rayon::current_num_threads().max(1))
-            .max(1);
-        let (mut joint, valid) = mapped
-            .par_chunks(chunk)
-            .zip(self.samples.par_chunks(chunk))
-            .map(|(mp, part)| {
+        // into a 1024-entry table: one table per fixed piece, merged in
+        // order (`par::ordered_fold`), so it does not depend on the threads.
+        let samples = &self.samples;
+        let (joint, valid) = crate::par::ordered_fold(
+            mapped,
+            |mp, off| {
                 let mut h = vec![0.0f64; nb * nb];
                 let mut c = 0usize;
-                for (m, &(_, f)) in mp.iter().zip(part) {
+                for (m, &(_, f)) in mp.iter().zip(&samples[off..]) {
                     let Some((mv, _)) = m else { continue };
                     let fb = self.mi.fixed_bin(f);
                     let u = self.mi.moving_coord(*mv);
@@ -310,16 +332,16 @@ impl Level<'_> {
                     c += 1;
                 }
                 (h, c)
-            })
-            .reduce(
-                || (vec![0.0f64; nb * nb], 0usize),
-                |mut a, b| {
-                    for (x, y) in a.0.iter_mut().zip(b.0.iter()) {
-                        *x += y;
-                    }
-                    (a.0, a.1 + b.1)
-                },
-            );
+            },
+            |mut a, b| {
+                for (x, y) in a.0.iter_mut().zip(&b.0) {
+                    *x += y;
+                }
+                (a.0, a.1 + b.1)
+            },
+            (vec![0.0f64; nb * nb], 0usize),
+        );
+        let mut joint = joint;
         if valid == 0 {
             return (0.0, vec![0.0; mapped.len()]);
         }
@@ -454,7 +476,8 @@ fn bending_energy(c: &[f64], dims: [usize; 3], spacing: f64, lambda: f64, grad: 
     energy
 }
 
-/// The bending energy alone (line-search evaluations need no gradient).
+/// The bending energy alone (an evaluation needs the value; the gradient is
+/// added only for the point the optimizer moves to).
 fn bending_energy_value(c: &[f64], dims: [usize; 3], spacing: f64, lambda: f64) -> f64 {
     let mut throwaway = vec![0.0; c.len()];
     bending_energy(c, dims, spacing, lambda, &mut throwaway)
@@ -475,7 +498,10 @@ fn lbfgs(
     const HISTORY: usize = 6;
     let n = x.len();
     let mut g = vec![0.0; n];
-    let mut f = level.cost_and_gradient(&x, Some(&mut g));
+    let first = level.evaluate(&x);
+    level.gradient(&x, &first, &mut g);
+    let mut f = first.cost;
+    drop(first);
     let mut evals = 1usize;
     let mut s_hist: Vec<Vec<f64>> = Vec::new();
     let mut y_hist: Vec<Vec<f64>> = Vec::new();
@@ -521,9 +547,11 @@ fn lbfgs(
             continue;
         }
 
-        // Armijo backtracking.
+        // Armijo backtracking. The accepted trial's evaluation is kept: its
+        // gradient comes from the same pass, not from evaluating the point a
+        // second time.
         let mut step = 1.0f64;
-        let mut ok = false;
+        let mut accepted = None;
         let mut x_new = x.clone();
         for _ in 0..24 {
             if progress.cancelled() {
@@ -531,21 +559,22 @@ fn lbfgs(
             }
             x_new.copy_from_slice(&x);
             axpy(step, &dir, &mut x_new);
-            let trial = level.cost_and_gradient(&x_new, None);
+            let trial = level.evaluate(&x_new);
             evals += 1;
-            if trial.is_finite() && trial <= f + 1e-4 * step * slope {
-                ok = true;
+            if trial.cost.is_finite() && trial.cost <= f + 1e-4 * step * slope {
+                accepted = Some(trial);
                 break;
             }
             step *= 0.5;
         }
-        if !ok {
+        let Some(trial) = accepted else {
             break;
-        }
+        };
 
         let mut g_new = vec![0.0; n];
-        let f_new = level.cost_and_gradient(&x_new, Some(&mut g_new));
-        evals += 1;
+        level.gradient(&x_new, &trial, &mut g_new);
+        let f_new = trial.cost;
+        drop(trial);
         let s: Vec<f64> = x_new.iter().zip(&x).map(|(a, b)| a - b).collect();
         let y: Vec<f64> = g_new.iter().zip(&g).map(|(a, b)| a - b).collect();
         let sy = dot(&s, &y);

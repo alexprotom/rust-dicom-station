@@ -54,49 +54,72 @@ impl MotionModel {
 
 /// Minimum, mean and maximum image value under a mask; `None` when the mask
 /// is empty or does not fit the volume.
+///
+/// Slices in parallel. The sum is kept in integers, which is exact in any
+/// order, so the mean is the same number to the last bit as a sequential
+/// sum in `f64` gives (that one is exact too: every partial sum is an
+/// integer far below 2^53).
 pub fn grey_stats(mask: &[u8], vol: &crate::volume::Volume) -> Option<[f64; 3]> {
     let n = vol.dims[0] * vol.dims[1] * vol.dims[2];
-    if mask.len() != n {
+    if mask.len() != n || vol.data.len() != n || n == 0 {
         return None;
     }
-    let (mut lo, mut hi, mut sum, mut count) = (f64::MAX, f64::MIN, 0.0f64, 0usize);
-    for (&m, &v) in mask.iter().zip(vol.data.iter()) {
-        if m == 0 {
-            continue;
-        }
-        let v = v as f64;
-        lo = lo.min(v);
-        hi = hi.max(v);
-        sum += v;
-        count += 1;
-    }
-    (count > 0).then(|| [lo, sum / count as f64, hi])
+    let plane = (vol.dims[0] * vol.dims[1]).max(1);
+    let (lo, hi, sum, count) = mask
+        .par_chunks(plane)
+        .zip(vol.data.par_chunks(plane))
+        .map(|(m, v)| {
+            let (mut lo, mut hi, mut sum, mut count) = (i16::MAX, i16::MIN, 0i64, 0u64);
+            for (&m, &v) in m.iter().zip(v) {
+                if m != 0 {
+                    lo = lo.min(v);
+                    hi = hi.max(v);
+                    sum += v as i64;
+                    count += 1;
+                }
+            }
+            (lo, hi, sum, count)
+        })
+        .reduce(
+            || (i16::MAX, i16::MIN, 0i64, 0u64),
+            |a, b| (a.0.min(b.0), a.1.max(b.1), a.2 + b.2, a.3 + b.3),
+        );
+    (count > 0).then(|| [lo as f64, sum as f64 / count as f64, hi as f64])
 }
 
 /// Centroid of a mask in patient coordinates (mm); `None` for an empty mask.
 ///
 /// The mean voxel index is mapped through the grid's affine, which is the
-/// centroid exactly because the mapping is affine.
+/// centroid exactly because the mapping is affine. The index sums are
+/// integers, summed per slice in parallel - exact in any order, so the
+/// result is what a sequential walk gives.
 pub fn centroid_mm(mask: &[u8], grid: &Grid) -> Option<Vec3> {
     let [nx, ny, nz] = grid.dims;
     debug_assert_eq!(mask.len(), nx * ny * nz);
-    let (mut si, mut sj, mut sk, mut n) = (0.0f64, 0.0f64, 0.0f64, 0u64);
-    for k in 0..nz {
-        for j in 0..ny {
-            let row = k * nx * ny + j * nx;
-            for (i, &v) in mask[row..row + nx].iter().enumerate() {
-                if v != 0 {
-                    si += i as f64;
-                    sj += j as f64;
-                    sk += k as f64;
-                    n += 1;
+    let plane = (nx * ny).max(1);
+    let (si, sj, sk, n) = mask
+        .par_chunks(plane)
+        .enumerate()
+        .map(|(k, slice)| {
+            let (mut si, mut sj, mut n) = (0u64, 0u64, 0u64);
+            for (j, row) in slice.chunks(nx.max(1)).enumerate() {
+                for (i, &v) in row.iter().enumerate() {
+                    if v != 0 {
+                        si += i as u64;
+                        sj += j as u64;
+                        n += 1;
+                    }
                 }
             }
-        }
-    }
+            (si, sj, k as u64 * n, n)
+        })
+        .reduce(
+            || (0, 0, 0, 0),
+            |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2, a.3 + b.3),
+        );
     (n > 0).then(|| {
         let n = n as f64;
-        grid.voxel_to_patient(si / n, sj / n, sk / n)
+        grid.voxel_to_patient(si as f64 / n, sj as f64 / n, sk as f64 / n)
     })
 }
 
@@ -121,11 +144,11 @@ pub fn peak_to_peak(points: &[Vec3]) -> f64 {
 /// In-place union of masks (all on one grid).
 pub fn union_into(acc: &mut [u8], mask: &[u8]) {
     debug_assert_eq!(acc.len(), mask.len());
-    for (a, &m) in acc.iter_mut().zip(mask) {
+    acc.par_iter_mut().zip(mask.par_iter()).for_each(|(a, &m)| {
         if m != 0 {
             *a = 1;
         }
-    }
+    });
 }
 
 // ---- correlation -----------------------------------------------------------
@@ -1704,6 +1727,62 @@ mod tests {
         assert_eq!(
             row(&csv, &["GTV", "deformable"])[2..],
             ["4.000", "6.000", "2.000", "10.000", "12.500", "25.0"]
+        );
+    }
+
+    /// The parallel integer sums give exactly what a sequential walk in
+    /// `f64` gives - the statistics did not move by a bit.
+    #[test]
+    fn the_parallel_statistics_match_a_sequential_walk_exactly() {
+        let g = grid([37, 29, 23], [0.9, 1.1, 2.5]);
+        let mask = ball(&g, [17.3, 12.8, 11.1], 14.0);
+        let mut s = 0x5DEE_CE66_u32;
+        let data: Vec<i16> = (0..mask.len())
+            .map(|_| {
+                s ^= s << 13;
+                s ^= s >> 17;
+                s ^= s << 5;
+                (s % 4001) as i16 - 1500
+            })
+            .collect();
+        let vol = crate::volume::Volume {
+            data,
+            dims: g.dims,
+            spacing: g.spacing,
+            origin: g.origin,
+            row_dir: g.row_dir,
+            col_dir: g.col_dir,
+            normal: g.normal,
+            frame_of_reference_uid: String::new(),
+            min_value: -1500,
+            max_value: 2500,
+        };
+        let [nx, ny, _] = g.dims;
+        let (mut si, mut sj, mut sk, mut n) = (0.0f64, 0.0f64, 0.0f64, 0u64);
+        let (mut lo, mut hi, mut sum) = (f64::MAX, f64::MIN, 0.0f64);
+        for (o, &m) in mask.iter().enumerate() {
+            if m != 0 {
+                si += (o % nx) as f64;
+                sj += ((o / nx) % ny) as f64;
+                sk += (o / (nx * ny)) as f64;
+                n += 1;
+                let v = vol.data[o] as f64;
+                lo = lo.min(v);
+                hi = hi.max(v);
+                sum += v;
+            }
+        }
+        let nf = n as f64;
+        let want = g.voxel_to_patient(si / nf, sj / nf, sk / nf);
+        let got = centroid_mm(&mask, &g).expect("not empty");
+        assert_eq!(
+            [got.x.to_bits(), got.y.to_bits(), got.z.to_bits()],
+            [want.x.to_bits(), want.y.to_bits(), want.z.to_bits()]
+        );
+        let stats = grey_stats(&mask, &vol).expect("not empty");
+        assert_eq!(
+            stats.map(f64::to_bits),
+            [lo, sum / nf, hi].map(f64::to_bits)
         );
     }
 }

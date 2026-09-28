@@ -30,6 +30,7 @@ pub mod models;
 pub mod morphology;
 pub mod motion;
 pub mod nn;
+pub mod par;
 pub mod progress;
 pub mod propagate;
 pub mod registration;

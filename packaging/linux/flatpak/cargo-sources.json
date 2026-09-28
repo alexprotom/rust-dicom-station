@@ -1900,6 +1900,19 @@
     {
         "type": "archive",
         "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/crossbeam-channel/crossbeam-channel-0.5.17.crate",
+        "sha256": "98b0cc327b5bc766e7fda9c9260cc0fa81b43a8e240440422dff70788e3f9ef1",
+        "dest": "cargo/vendor/crossbeam-channel-0.5.17"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"98b0cc327b5bc766e7fda9c9260cc0fa81b43a8e240440422dff70788e3f9ef1\", \"files\": {}}",
+        "dest": "cargo/vendor/crossbeam-channel-0.5.17",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
         "url": "https://static.crates.io/crates/crossbeam-deque/crossbeam-deque-0.8.7.crate",
         "sha256": "5181e0de7b61eb03a81e347d6dd8797bae9da5146707b51077e2d71a54ec0ceb",
         "dest": "cargo/vendor/crossbeam-deque-0.8.7"
@@ -2909,6 +2922,32 @@
         "type": "inline",
         "contents": "{\"package\": \"c977ac91dfaa651633fd9722e4ce9ccb32cda4c748b89a5cb57e504036e37c13\", \"files\": {}}",
         "dest": "cargo/vendor/egui-0.36.1",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/egui-scale/egui-scale-0.6.1.crate",
+        "sha256": "16194efd2800275df80448afa0ee11d3e23ce0220f6754e1af53fec8e9b7467a",
+        "dest": "cargo/vendor/egui-scale-0.6.1"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"16194efd2800275df80448afa0ee11d3e23ce0220f6754e1af53fec8e9b7467a\", \"files\": {}}",
+        "dest": "cargo/vendor/egui-scale-0.6.1",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/egui-snarl/egui-snarl-0.12.0.crate",
+        "sha256": "247c36a1f3b71fb25597f16f9396687641fec220a8116d5093941138fae59e61",
+        "dest": "cargo/vendor/egui-snarl-0.12.0"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"247c36a1f3b71fb25597f16f9396687641fec220a8116d5093941138fae59e61\", \"files\": {}}",
+        "dest": "cargo/vendor/egui-snarl-0.12.0",
         "dest-filename": ".cargo-checksum.json"
     },
     {
@@ -8694,6 +8733,19 @@
         "type": "inline",
         "contents": "{\"package\": \"bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af\", \"files\": {}}",
         "dest": "cargo/vendor/thiserror-impl-2.0.20",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/thread-tree/thread-tree-0.3.3.crate",
+        "sha256": "ffbd370cb847953a25954d9f63e14824a36113f8c72eecf6eccef5dc4b45d630",
+        "dest": "cargo/vendor/thread-tree-0.3.3"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"ffbd370cb847953a25954d9f63e14824a36113f8c72eecf6eccef5dc4b45d630\", \"files\": {}}",
+        "dest": "cargo/vendor/thread-tree-0.3.3",
         "dest-filename": ".cargo-checksum.json"
     },
     {

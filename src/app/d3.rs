@@ -825,10 +825,10 @@ impl ViewerApp {
             let registered = self.registration.is_some();
             // The dose the surfaces can be painted with: the one selected in
             // this workspace, with its own reference for the colour scale.
-            let dose_here: Option<(crate::rtdose::DoseGrid, f32)> = self.slots[w.slot]
+            let dose_here: Option<(&crate::rtdose::DoseGrid, f32)> = self.slots[w.slot]
                 .study
                 .as_ref()
-                .and_then(|st| st.doses.get(self.slots[w.slot].active_dose).cloned())
+                .and_then(|st| st.doses.get(self.slots[w.slot].active_dose))
                 .map(|d| (d, self.slots[w.slot].dose_reference.max(1e-6)));
             // The 4D transport of this window. It starts the same run the
             // viewports' ▶4D does - there is one phase per workspace, and this
@@ -1085,10 +1085,10 @@ impl ViewerApp {
             .as_ref()
             .filter(|r| r.shows_fixed(slot, &self.slots))
             .map(|r| (r.field.clone(), r.result.method.short()));
-        let dose_here: Option<(crate::rtdose::DoseGrid, f32)> = self.slots[slot]
+        let dose_here: Option<(&crate::rtdose::DoseGrid, f32)> = self.slots[slot]
             .study
             .as_ref()
-            .and_then(|st| st.doses.get(self.slots[slot].active_dose).cloned())
+            .and_then(|st| st.doses.get(self.slots[slot].active_dose))
             .map(|d| (d, self.slots[slot].dose_reference.max(1e-6)));
         // Worked out first, drawn last: the scene fills the whole pane, so
         // it has to know which parts of it the buttons own before it reads
@@ -1494,7 +1494,7 @@ impl ViewerApp {
             std::sync::Arc<crate::registration::dvf::VectorField>,
             &'static str,
         )>,
-        dose_here: &Option<(crate::rtdose::DoseGrid, f32)>,
+        dose_here: &Option<(&crate::rtdose::DoseGrid, f32)>,
         over_buttons: bool,
     ) {
         // The scene fills whatever rect it is given: its own window, or a

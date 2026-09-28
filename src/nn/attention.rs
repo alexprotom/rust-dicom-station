@@ -12,6 +12,8 @@
 //! the working set small and still hands each matrix multiply to `gemm` with
 //! full parallelism.
 
+use rayon::prelude::*;
+
 use super::linalg::softmax_rows;
 use super::tensor::Mat;
 
@@ -63,18 +65,22 @@ pub fn attention(q: &Mat, k: &Mat, v: &Mat, heads: usize, mask: Mask) -> Mat {
 
         // scores = qh @ khᵀ  -> [n_q, n_kv]
         matmul((&qh, n_q, hd), (&kh, n_kv, hd), true, &mut scores);
-        for s in scores.iter_mut() {
-            *s *= scale;
-        }
-        if mask == Mask::Causal {
-            for (i, row) in scores.chunks_mut(n_kv).enumerate() {
-                for (j, s) in row.iter_mut().enumerate() {
-                    if j > i {
+        // Scale (and mask) row by row in parallel: the image encoder's score
+        // matrix is 2048 x 2048 per head, and one core walking it twelve
+        // times per block was a third of a window's time on a big machine.
+        scores
+            .par_chunks_mut(n_kv)
+            .enumerate()
+            .for_each(|(i, row)| {
+                for s in row.iter_mut() {
+                    *s *= scale;
+                }
+                if mask == Mask::Causal {
+                    for s in row.iter_mut().skip(i + 1) {
                         *s = f32::NEG_INFINITY;
                     }
                 }
-            }
-        }
+            });
         softmax_rows(&mut scores, n_kv);
 
         // ctx = scores @ vh -> [n_q, hd]

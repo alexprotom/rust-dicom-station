@@ -91,6 +91,8 @@ mod transfer_win;
 mod tree;
 mod views;
 mod widgets;
+mod workflow_edit;
+mod workflow_run;
 mod workspace_pick;
 
 use drr_win::DrrDialog;
@@ -415,11 +417,19 @@ struct ViewState {
     dose_key: Option<u64>,
     contour_key: Option<u64>,
     slice_buf: Vec<i16>,
+    /// What `slice_buf` holds: (volume, plane, slice). A window/level drag
+    /// changes only the mapping to grey, so the slice itself is kept.
+    slice_key: Option<(usize, ViewPlane, usize)>,
     dose_plane: Vec<f32>,
     iso_segs: Vec<(usize, render::Segment)>,
     contours: Vec<(usize, render::RoiPlaneGraphics)>,
     fusion_tex: Option<TextureHandle>,
     fusion_key: Option<u64>,
+    /// The other image sampled at every pixel of the fused slice (`None`
+    /// outside it), and what it was sampled for: everything but the window
+    /// and the blend weight, which only recolour these values.
+    fusion_samples: Vec<Option<f32>>,
+    fusion_geom: Option<u64>,
     seg_tex: Option<TextureHandle>,
     seg_key: Option<u64>,
     /// Identity of the vector-field geometry cached below.
@@ -444,11 +454,14 @@ impl ViewState {
             dose_key: None,
             contour_key: None,
             slice_buf: Vec::new(),
+            slice_key: None,
             dose_plane: Vec::new(),
             iso_segs: Vec::new(),
             contours: Vec::new(),
             fusion_tex: None,
             fusion_key: None,
+            fusion_samples: Vec::new(),
+            fusion_geom: None,
             seg_tex: None,
             seg_key: None,
             field_key: None,
@@ -459,9 +472,11 @@ impl ViewState {
 
     fn invalidate(&mut self) {
         self.img_key = None;
+        self.slice_key = None;
         self.dose_key = None;
         self.contour_key = None;
         self.fusion_key = None;
+        self.fusion_geom = None;
         self.seg_key = None;
         self.field_key = None;
     }
@@ -1242,6 +1257,10 @@ pub(crate) struct RegPick {
 
 // Application
 
+/// What the edit section's volume summary was computed for: slot, set, ROI,
+/// `settings_gen`, the volume's identity, the contour and point counts.
+type EditSummaryKey = (usize, usize, usize, u64, usize, usize, usize);
+
 pub struct ViewerApp {
     slots: [StudySlot; MAX_WORKSPACES],
     /// Which workspaces are on screen, A first.
@@ -1665,6 +1684,10 @@ pub struct ViewerApp {
 
     /// Bumped whenever ROI visibility / dose settings change → cache rebuild.
     settings_gen: u64,
+    /// The edited structure's volume and occupied-slice count, and what they
+    /// were computed for: rebuilding its slice stack every frame the edit
+    /// section is open cost milliseconds for a body outline.
+    edit_summary_cache: Option<(EditSummaryKey, (f64, usize))>,
 
     /// The CT window preset last picked from the toolbar list (an index into
     /// [`WL_PRESETS`]), so the closed combo can name it instead of reading
@@ -1740,6 +1763,16 @@ pub struct ViewerApp {
     /// The file dialog in flight, where the platform has no native one
     /// (see `pick.rs`); never anything on the desktop.
     picker: pick::Picker,
+
+    // Workflows (the Workflows menu; see `workflow::graph`).
+    /// The workflow being edited, and its window.
+    wf_editor: Option<workflow_edit::WorkflowEditor>,
+    /// A New / Load that would drop unsaved changes, waiting for a yes.
+    wf_confirm: Option<workflow_edit::WfPending>,
+    /// The run window, and the run going on in it.
+    wf_run: Option<workflow_run::WorkflowRun>,
+    /// The workflow files last saved, newest first (persisted).
+    recent_workflows: Vec<PathBuf>,
 }
 
 /// Last few characters of a UID for compact display.
@@ -2034,6 +2067,7 @@ impl ViewerApp {
             dose_threshold_pct: 15.0,
             iso_levels: default_iso_levels(),
             settings_gen: 0,
+            edit_summary_cache: None,
             wl_preset: None,
             module_registration: prefs.module_registration,
             module_simulation: prefs.module_simulation,
@@ -2068,6 +2102,10 @@ impl ViewerApp {
                 .map(|r| crate::gfx::Backend::from_wgpu(r.adapter.get_info().backend)),
             settings_error: None,
             picker: pick::Picker::default(),
+            wf_editor: None,
+            wf_confirm: None,
+            wf_run: None,
+            recent_workflows: prefs.recent_workflows.clone(),
         };
         if let Some(p) = initial_a {
             app.start_load(0, p);
@@ -2118,6 +2156,7 @@ impl ViewerApp {
             session: self.session.clone(),
             view_rows: self.view_rows.clone(),
             graphics_backend: self.graphics_backend,
+            recent_workflows: self.recent_workflows.clone(),
         }) {
             Ok(()) => self.settings_error = None,
             Err(e) => {
@@ -2528,6 +2567,9 @@ impl eframe::App for ViewerApp {
         });
         self.record_tick(&ctx, shot.as_ref());
         self.snapshot_tick(&ctx, shot.as_ref());
+
+        // Poll a workflow run: its steps, what it shows, its end.
+        self.poll_workflow_run(&ctx);
 
         // Poll a vector-field re-sampling.
         if let Some(field) = poll_job(&mut self.field_job, &ctx, "Vector field", &mut self.error) {

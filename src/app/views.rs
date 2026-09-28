@@ -1783,12 +1783,13 @@ impl ViewerApp {
             self.commit_draw();
         }
         if let Some(to) = nudge_to {
+            let first = !matches!(self.paint_last, Some((s, _)) if s == slot);
             let from = match self.paint_last {
                 Some((s, p)) if s == slot => p,
                 _ => to,
             };
             let radius = self.brush_radius_mm as f64;
-            self.nudge_contour(slot, plane, cur_slice, from, to, radius);
+            self.nudge_contour(slot, plane, cur_slice, from, to, radius, first);
             self.paint_last = Some((slot, to));
         }
         if nudge_done {
@@ -1965,7 +1966,11 @@ impl ViewerApp {
             let view = &mut views[idx];
             let mut slice_buf = std::mem::take(&mut view.slice_buf);
             let mut gray = Vec::new();
-            vol.extract_slice(plane, slice, &mut slice_buf);
+            let slice_key = (Arc::as_ptr(vol) as usize, plane, slice);
+            if view.slice_key != Some(slice_key) || slice_buf.len() != w * h {
+                vol.extract_slice(plane, slice, &mut slice_buf);
+                view.slice_key = Some(slice_key);
+            }
             render::slice_to_gray(&slice_buf, wc, ww, w, &mut gray);
             // Moved straight into the texture: keeping a second copy around
             // as a scratch buffer only bought an extra full-image memcpy.
@@ -2071,8 +2076,8 @@ impl ViewerApp {
             if views[idx].seg_key != Some(skey) {
                 let mut rgba = vec![Color32::TRANSPARENT; w * h];
                 for seg in segs.iter().filter(|s| s.visible) {
-                    segmentation::overlay_slice(
-                        &seg.mask, vol.dims, plane, slice, seg.color, 90, &mut rgba,
+                    segmentation::overlay_slice_within(
+                        &seg.mask, vol.dims, seg.bbox, plane, slice, seg.color, 90, &mut rgba,
                     );
                 }
                 let n = vol.dims[0] * vol.dims[1] * vol.dims[2];
@@ -2212,18 +2217,34 @@ impl ViewerApp {
         let slice = view.slice;
         let [w, h] = avol.plane_dims(plane);
 
-        let mut key: u64 = 0x243F6A8885A308D3 ^ self.reg_gen.wrapping_mul(0x9E3779B97F4A7C15);
-        for v in [
-            inverse as u64,
-            slice as u64,
-            wc.to_bits() as u64,
-            ww.to_bits() as u64,
-            weight.to_bits() as u64,
-            self.settings_gen,
-        ] {
-            key ^= v;
-            key = key.wrapping_mul(0x100000001b3);
-        }
+        let mix = |mut key: u64, vals: &[u64]| {
+            for &v in vals {
+                key ^= v;
+                key = key.wrapping_mul(0x100000001b3);
+            }
+            key
+        };
+        // Where the other image is sampled depends on the registration, the
+        // slice and the two volumes; its colour on the window and the blend.
+        let geom = mix(
+            0x243F6A8885A308D3 ^ self.reg_gen.wrapping_mul(0x9E3779B97F4A7C15),
+            &[
+                inverse as u64,
+                plane as u64,
+                slice as u64,
+                Arc::as_ptr(avol) as u64,
+                Arc::as_ptr(bvol) as u64,
+                self.settings_gen,
+            ],
+        );
+        let key = mix(
+            geom,
+            &[
+                wc.to_bits() as u64,
+                ww.to_bits() as u64,
+                weight.to_bits() as u64,
+            ],
+        );
         if view.fusion_key == Some(key) {
             return;
         }
@@ -2232,7 +2253,32 @@ impl ViewerApp {
         if view.slice_buf.len() != w * h {
             avol.extract_slice(plane, slice, &mut view.slice_buf);
         }
+
+        // The expensive half - a transform (for a deformable one, a B-spline
+        // per pixel, or a fixed-point inversion) and a trilinear sample - is
+        // done once per slice and kept, so dragging the window or the blend
+        // slider only recolours.
+        if view.fusion_geom != Some(geom) || view.fusion_samples.len() != w * h {
+            let mut samples = std::mem::take(&mut view.fusion_samples);
+            samples.clear();
+            samples.resize(w * h, None);
+            samples.par_chunks_mut(w).enumerate().for_each(|(py, row)| {
+                for (px, out) in row.iter_mut().enumerate() {
+                    let vxl = avol.plane_pixel_to_voxel(plane, slice, px as f64, py as f64);
+                    let p = avol.voxel_to_patient(vxl[0], vxl[1], vxl[2]);
+                    let q = if inverse {
+                        transform.unmap(p)
+                    } else {
+                        transform.map(p)
+                    };
+                    *out = bvol.sample_patient(q);
+                }
+            });
+            view.fusion_samples = samples;
+            view.fusion_geom = Some(geom);
+        }
         let slice_buf = &view.slice_buf;
+        let samples = &view.fusion_samples;
 
         let lo = wc - ww * 0.5;
         let scale = 255.0 / ww;
@@ -2242,14 +2288,7 @@ impl ViewerApp {
         pixels.par_chunks_mut(w).enumerate().for_each(|(py, row)| {
             for (px, out) in row.iter_mut().enumerate() {
                 let a_gray = wl(slice_buf[py * w + px] as f32);
-                let vxl = avol.plane_pixel_to_voxel(plane, slice, px as f64, py as f64);
-                let p = avol.voxel_to_patient(vxl[0], vxl[1], vxl[2]);
-                let q = if inverse {
-                    transform.unmap(p)
-                } else {
-                    transform.map(p)
-                };
-                let b_gray = bvol.sample_patient(q).map(&wl).unwrap_or(0.0);
+                let b_gray = samples[py * w + px].map(&wl).unwrap_or(0.0);
                 let g = a_gray + (b_gray - a_gray) * weight;
                 *out = Color32::from_rgb(a_gray as u8, g as u8, a_gray as u8);
             }

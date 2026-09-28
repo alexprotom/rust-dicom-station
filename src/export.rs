@@ -55,10 +55,13 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use dicom_core::Tag;
 use dicom_dictionary_std::tags;
+use rayon::prelude::*;
 
 use crate::dicom_export::{self, ExportParams, ImageRef};
 use crate::dicomseg::{self, SegSeries};
@@ -1333,29 +1336,41 @@ fn copy_series(
         spacing: 1.0,
         ..Written::default()
     };
-    for (i, file) in src.files.iter().enumerate() {
-        if i % 25 == 0 {
-            progress.set(format!(
-                "{} {}: copying {}/{}",
-                src.modality,
-                node.description.trimmed(),
-                i + 1,
-                src.files.len()
-            ));
-        }
-        let mut set = base.clone();
-        if plan.uid_mode == UidMode::New {
-            set.push((tags::SOP_INSTANCE_UID, VR::UI, dicom_export::new_uid()));
-        }
-        let dst = dir.join(format!("{}_{i:04}.dcm", safe(&src.modality, "IM")));
-        let done = dicom_export::copy_patched(file, &dst, &set)?;
+    // Every file is read, patched, re-encoded and written on its own, and
+    // that is most of an export's time, so the files go in parallel. The
+    // names depend only on the index and the results are collected in index
+    // order, so the folder and the slice list are what a serial loop wrote.
+    let total = src.files.len();
+    let label = format!("{} {}", src.modality, node.description.trimmed());
+    let prefix = safe(&src.modality, "IM");
+    let copied_count = AtomicUsize::new(0);
+    progress.set(format!("{label}: copying 1/{total}"));
+    let copied: Vec<dicom_export::CopiedSlice> = src
+        .files
+        .par_iter()
+        .enumerate()
+        .map(|(i, file)| {
+            let mut set = base.clone();
+            if plan.uid_mode == UidMode::New {
+                set.push((tags::SOP_INSTANCE_UID, VR::UI, dicom_export::new_uid()));
+            }
+            let dst = dir.join(format!("{prefix}_{i:04}.dcm"));
+            let done = dicom_export::copy_patched(file, &dst, &set)?;
+            let n = copied_count.fetch_add(1, Ordering::Relaxed) + 1;
+            if n.is_multiple_of(25) {
+                progress.set(format!("{label}: copying {n}/{total}"));
+            }
+            Ok(done)
+        })
+        .collect::<Result<_>>()?;
+    for d in &copied {
         if out.sop_class.is_empty() {
-            out.sop_class = done.sop_class.clone();
-            out.normal = done.normal;
+            out.sop_class = d.sop_class.clone();
+            out.normal = d.normal;
         }
-        out.slices.push((done.sop_uid, done.axis));
-        *files += 1;
     }
+    *files += copied.len();
+    out.slices = copied.into_iter().map(|d| (d.sop_uid, d.axis)).collect();
     finish(&mut out);
     Ok(Some(out))
 }
@@ -1403,36 +1418,44 @@ fn render_series(
         sop_class: dicom_export::SOP_CT.to_string(),
         normal: vol.normal,
         spacing: vol.spacing[2],
-        slices: Vec::with_capacity(vol.dims[2]),
+        slices: Vec::new(),
     };
     // The plan's own UIDs are per series; the slices need one each. In Keep
     // mode the volume no longer knows which file each slice came from, so
     // they are minted either way and the slice-level identity is the one
     // thing a rendered series cannot preserve.
-    for k in 0..vol.dims[2] {
-        let sop_uid = dicom_export::new_uid();
-        let mut o = dicom_export::build_image_slice(
-            &vol,
-            k,
-            &ctx,
-            modality,
-            &sop_uid,
-            node.uid.trimmed(),
-            series_number,
-            if desc.is_empty() { None } else { Some(&desc) },
-            study.default_window,
-        );
-        dicom_export::apply(&mut o, &ident);
-        // 4D: the phase a series belongs to is an attribute of its images.
-        if let Some(t) = src.temporal_id {
-            dicom_export::put_is(&mut o, tags::TEMPORAL_POSITION_IDENTIFIER, t);
-        }
-        let path = dir.join(format!("{}_{k:04}.dcm", safe(modality, "IM")));
-        dicom_export::write_object(o, dicom_export::SOP_CT, &path)?;
-        let pos = vol.voxel_to_patient(0.0, 0.0, k as f64).dot(vol.normal);
-        out.slices.push((sop_uid, pos));
-        *files += 1;
-    }
+    //
+    // Slices are independent, so they are built and written in parallel and
+    // collected in slice order, as the copy path above does.
+    let prefix = safe(modality, "IM");
+    let slices: Vec<(String, f64)> = (0..vol.dims[2])
+        .into_par_iter()
+        .map(|k| {
+            let sop_uid = dicom_export::new_uid();
+            let mut o = dicom_export::build_image_slice(
+                &vol,
+                k,
+                &ctx,
+                modality,
+                &sop_uid,
+                node.uid.trimmed(),
+                series_number,
+                if desc.is_empty() { None } else { Some(&desc) },
+                study.default_window,
+            );
+            dicom_export::apply(&mut o, &ident);
+            // 4D: the phase a series belongs to is an attribute of its images.
+            if let Some(t) = src.temporal_id {
+                dicom_export::put_is(&mut o, tags::TEMPORAL_POSITION_IDENTIFIER, t);
+            }
+            let path = dir.join(format!("{prefix}_{k:04}.dcm"));
+            dicom_export::write_object(o, dicom_export::SOP_CT, &path)?;
+            let pos = vol.voxel_to_patient(0.0, 0.0, k as f64).dot(vol.normal);
+            Ok((sop_uid, pos))
+        })
+        .collect::<Result<_>>()?;
+    *files += slices.len();
+    out.slices = slices;
     finish(&mut out);
     Ok(Some(out))
 }
@@ -1457,18 +1480,18 @@ fn finish(w: &mut Written) {
     }
 }
 
-/// The voxels of a series: the displayed volume when it is the active one,
-/// otherwise a fresh read of its files.
-fn series_volume(study: &LoadedStudy, index: usize, src: &SeriesInfo) -> Option<Volume> {
+/// The voxels of a series: the displayed volume when it is the active one
+/// (shared, not copied), otherwise a fresh read of its files.
+fn series_volume(study: &LoadedStudy, index: usize, src: &SeriesInfo) -> Option<Arc<Volume>> {
     if index == study.active_series && !study.volume.is_empty() {
-        return Some((*study.volume).clone());
+        return Some(Arc::clone(&study.volume));
     }
     if src.files.is_empty() {
         return None;
     }
     crate::loader::load_series_volume(src, &Progress::default())
         .ok()
-        .map(|(v, _, _)| v)
+        .map(|(v, _, _)| Arc::new(v))
 }
 
 // ---------------------------------------------------------------------------
@@ -1512,7 +1535,7 @@ fn write_structures(
         }
     };
 
-    let name = safe(&node.label, "structures");
+    let name = unique_object_name(study, node);
     match (node.kind, node.format) {
         // Native: contours as RTSTRUCT.
         (ObjKind::Structures, StructFormat::RtStruct) => {
@@ -1577,8 +1600,14 @@ fn write_structures(
                 ctx.study_uid.clone(),
             );
             let mut empty = Vec::new();
-            for roi in &ss.rois {
-                match segmentation::rasterize_roi(&grid, roi) {
+            // The ROIs are rasterised in parallel, then filed in their order.
+            let masks: Vec<Option<Vec<u8>>> = ss
+                .rois
+                .par_iter()
+                .map(|roi| segmentation::rasterize_roi(&grid, roi))
+                .collect();
+            for (roi, mask) in ss.rois.iter().zip(masks) {
+                match mask {
                     Some(mask) => ser.segs.push(Segmentation::from_mask(
                         roi.name.clone(),
                         roi.color,
@@ -1679,6 +1708,40 @@ fn write_structures(
         _ => {}
     }
     Ok(())
+}
+
+/// The file-name stem of a structure set or segmentation series: its label,
+/// made safe - with its position added when another set or series of the
+/// study carries the same label, since the objects are written side by side
+/// and the second would silently replace the first (every phase of a 4D
+/// group given a new set with one label, say).
+fn unique_object_name(study: &LoadedStudy, node: &ObjNode) -> String {
+    let base = safe(&node.label, "structures");
+    let own = match node.kind {
+        ObjKind::Segmentation => study.seg_series.get(node.index).map(|s| s.label.as_str()),
+        _ => study
+            .structure_sets
+            .get(node.index)
+            .map(|s| s.label.as_str()),
+    };
+    let Some(own) = own else {
+        return base;
+    };
+    let key = safe(own, "structures");
+    let same = study
+        .structure_sets
+        .iter()
+        .map(|s| s.label.as_str())
+        .chain(study.seg_series.iter().map(|s| s.label.as_str()))
+        .filter(|l| safe(l, "structures") == key)
+        .count();
+    if same <= 1 {
+        return base;
+    }
+    match node.kind {
+        ObjKind::Segmentation => format!("{base}_seg{}", node.index + 1),
+        _ => format!("{base}_{}", node.index + 1),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
