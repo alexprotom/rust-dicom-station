@@ -43,11 +43,21 @@ impl ViewerApp {
             return;
         }
         self.remember_source(slot, &path);
+        if let Some(r) = &mut self.wf_run {
+            r.forget_parked(slot);
+        }
+        // Into an open workspace it is a merge, which keeps the workspace's
+        // own volume: no point decoding the folder's.
+        let merge = self.slots[slot].study.is_some();
         let progress = Arc::new(Progress::default());
         let (tx, rx) = mpsc::channel();
         let p2 = progress.clone();
         std::thread::spawn(move || {
-            let res = loader::load_directory(&path, &p2);
+            let res = if merge {
+                loader::load_directory_to_merge(&path, &p2)
+            } else {
+                loader::load_directory(&path, &p2)
+            };
             let _ = tx.send(LoadResult::Study(Box::new(res), slot));
         });
         self.loading = Some(Job { progress, rx });
@@ -73,11 +83,16 @@ impl ViewerApp {
             1 => paths[0].display().to_string(),
             n => format!("{n} selected files"),
         };
+        let merge = self.slots[slot].study.is_some();
         let progress = Arc::new(Progress::default());
         let (tx, rx) = mpsc::channel();
         let p2 = progress.clone();
         std::thread::spawn(move || {
-            let res = loader::load_files(&paths, &origin, &p2);
+            let res = if merge {
+                loader::load_files_to_merge(&paths, &origin, &p2)
+            } else {
+                loader::load_files(&paths, &origin, &p2)
+            };
             let _ = tx.send(LoadResult::Study(Box::new(res), slot));
         });
         self.loading = Some(Job { progress, rx });
@@ -164,7 +179,14 @@ impl ViewerApp {
     /// studies / series simply appear in the data tree.
     pub(super) fn absorb_loaded_study(&mut self, slot: usize, study: LoadedStudy) {
         let Some(dest) = self.slots[slot].study.as_mut() else {
+            // Loaded to be merged, but the workspace was closed meanwhile:
+            // it is installed instead, and its volume is read now.
+            let unread = !study.has_volume() && !study.series.is_empty();
+            let series = study.active_series;
             self.on_study_loaded(slot, study);
+            if unread {
+                self.start_series_switch(slot, series);
+            }
             return;
         };
         let was_empty = !dest.has_volume();

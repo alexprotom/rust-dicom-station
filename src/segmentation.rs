@@ -31,6 +31,18 @@ pub const SEG_PALETTE: &[[u8; 3]] = &[
 /// Cap on how many strokes can be undone (bounds undo memory).
 const UNDO_DEPTH: usize = 64;
 
+/// Where [`Segmentation::gen`] comes from: one counter for every
+/// segmentation in the process, so a generation names one state of one mask
+/// (and of its copies, until either is edited). The 3D window keeps a mesh
+/// per segment on the strength of that and re-meshes only the segment that
+/// was painted; with a counter per segmentation, two copies edited once each
+/// would have looked alike.
+static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_gen() -> u64 {
+    GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// A meshing snapshot of a mask: `(padded bool grid, grid dims, bbox lo,
 /// stride)` - see [`Segmentation::mesh_grid`].
 pub type MeshGrid = (Vec<bool>, [usize; 3], [usize; 3], usize);
@@ -47,7 +59,9 @@ pub struct Segmentation {
     pub dims: [usize; 3],
     /// Number of set voxels (kept incrementally).
     pub count: usize,
-    /// Bumped on every edit → 2D overlays and 3D meshes rebuild.
+    /// A new value on every edit, so the 2D overlays and the 3D meshes
+    /// rebuild. Unique in the process (see `GENERATIONS`): two
+    /// segmentations with the same `gen` hold the same mask.
     pub gen: u64,
     /// Extent of all voxels ever set (inclusive). May overestimate after
     /// erasing - harmless, it only bounds later scans.
@@ -67,7 +81,7 @@ impl Segmentation {
             mask: vec![0; dims[0] * dims[1] * dims[2]],
             dims,
             count: 0,
-            gen: 0,
+            gen: next_gen(),
             bbox: None,
             undo: Vec::new(),
             pending: Vec::new(),
@@ -264,7 +278,7 @@ impl Segmentation {
             }
         }
         if any {
-            self.gen += 1;
+            self.gen = next_gen();
         }
     }
 
@@ -286,7 +300,7 @@ impl Segmentation {
             }
         }
         if any {
-            self.gen += 1;
+            self.gen = next_gen();
         }
     }
 
@@ -327,7 +341,7 @@ impl Segmentation {
         let (bbox, count) = crate::morphology::mask_extent(&self.mask, self.dims);
         self.count = count;
         self.bbox = bbox;
-        self.gen += 1;
+        self.gen = next_gen();
         if too_many {
             self.undo.clear();
         } else {
@@ -369,7 +383,7 @@ impl Segmentation {
             }
             self.mask[idx as usize] = old;
         }
-        self.gen += 1;
+        self.gen = next_gen();
         true
     }
 

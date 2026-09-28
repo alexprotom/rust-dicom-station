@@ -286,7 +286,11 @@ mod tests {
     type Bk = burn::backend::NdArray;
 
     fn fixture(name: &str, dev: &burn::tensor::Device<Bk>) -> Tensor<Bk, 4> {
-        let f = load_safetensors(Path::new("tests/data/medsam2-ops.safetensors")).unwrap();
+        let f = load_safetensors(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/data/medsam2-ops.safetensors"
+        )))
+        .unwrap();
         let t = f.get(name).unwrap_or_else(|| panic!("fixture {name}"));
         let mut shape = [1usize; 4];
         shape.copy_from_slice(&t.shape);

@@ -191,7 +191,7 @@ impl Volume {
     /// A workspace does not have to contain a reconstructable volume - a folder
     /// or a handful of files can hold nothing but RT images, a structure set
     /// or a plan, and those are legitimate things to open. Rather than making
-    /// [`crate::loader::LoadedStudy::volume`] optional and forcing a hundred
+    /// the viewer's `LoadedStudy::volume` optional and forcing a hundred
     /// call sites to unwrap it, such a study carries this: dimensions of
     /// zero, so every voxel loop is empty and every lookup misses.
     ///

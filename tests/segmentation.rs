@@ -321,3 +321,26 @@ fn replacing_the_whole_mask_keeps_the_count_the_box_and_one_undo_step() {
     assert_eq!(seg.count, 0, "an emptied mask holds nothing");
     assert_eq!(seg.bbox, None, "and has no extent");
 }
+
+#[test]
+fn a_generation_names_one_state_of_one_mask() {
+    // The 3D window keeps a mesh per segment by generation and re-meshes
+    // only the segments whose generation it has not seen. So two
+    // segmentations may share a generation only while they hold the same
+    // mask: a copy does until either is edited, and a copy edited once
+    // must not look like its source edited once.
+    let vol = test_volume([20, 20, 10], 0);
+    let a = Segmentation::new("a".into(), [0, 255, 0], vol.dims);
+    let b = Segmentation::new("b".into(), [0, 255, 0], vol.dims);
+    assert_ne!(a.gen, b.gen, "two new segmentations");
+
+    let mut a2 = a.clone();
+    let mut b2 = a.clone();
+    assert_eq!(a2.gen, a.gen, "a copy is the same mask until edited");
+    a2.paint_capsule(&vol, [5.0, 5.0, 5.0], [5.0, 5.0, 5.0], 2.0, false, None);
+    b2.paint_capsule(&vol, [14.0, 14.0, 5.0], [14.0, 14.0, 5.0], 2.0, false, None);
+    assert_ne!(a2.mask, b2.mask);
+    assert_ne!(a2.gen, b2.gen, "copies edited apart are told apart");
+    assert_ne!(a2.gen, a.gen);
+    assert_ne!(b2.gen, a.gen);
+}

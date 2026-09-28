@@ -75,7 +75,15 @@ sequence.
    max_open_datasets = 4
    job_timeout_minutes = 60
    audit_log = true                       # data folder /mcp/audit-YYYY-MM-DD.log
+   volume_cache_mb = 4096                 # image volumes kept between calls
+   workflows_dir = ""                     # empty: the viewer's workflow folder
    ```
+
+   `volume_cache_mb` is the memory for series other than a workspace's
+   displayed one (the phases of a 4D group, say), kept between calls so a
+   phase is read from disk once rather than by every tool; past it the
+   least used are let go. `workflows_dir` is where `list_workflows` looks
+   for saved workflows.
 
 3. Tell the client about it. *Settings ▶ MCP server ▶ Copy client
    configuration* puts the entry on the clipboard; for Claude Desktop it goes
@@ -116,6 +124,7 @@ segmentation series added when a name repeats. Series are numbered as
 | `export`, `export_registration` | DICOM into the output folder: SEG or RTSTRUCT, doses, plans, images; a Deformable Spatial Registration object |
 | `import_to_archive`, `open_in_viewer` | File an exported folder into the local archive; launch the viewer on it |
 | `anonymize` | An anonymized copy of a folder, written under the output folder |
+| `list_workflows`, `run_workflow` | The saved workflows (and the program's examples) with their steps and inputs, and a run of one: a folder under a root for each input, by its title; the reports come back as tables, the files go into a folder under the output folder, and `open_results` keeps the studies the run read open as workspaces. A *DICOM folders* input runs a batch over its subfolders |
 
 Every call that can take more than a few seconds has an `_async` twin that
 returns a job handle at once; `list_jobs`, `job_result` and `cancel_job` go
@@ -127,6 +136,16 @@ segmentation series bound to the image series they were made on, ITVs on the
 reference phase, per-phase results on their phase, and `export` writes them
 with the same identifiers, so the tree looks the same whether a person or an
 assistant made it. `open_in_viewer` on the exported folder is the way to look.
+
+A workflow runs under the same rules as the tools. Every folder it reads is
+under a root and passes the identity gate first (each case of a batch that
+its pattern takes), and under a policy other than `allow` it must be
+anonymized already: a workflow reads its folders as they are, so there is
+nothing to redact in memory. What it writes goes under the output folder
+(a step that names an absolute folder is refused), it reads the station's
+archive only when that is under a root, and it files only into the
+station's own archive. The folders a workflow file names are never told:
+they are its author's, and a folder name can carry a patient's.
 
 Two prompt and resource conveniences: the prompt `heart_target_propagation`
 (arguments: the three folders and the target's name) is the standard sequence
@@ -204,7 +223,11 @@ server and the tests use, and the only place redaction happens.
 
 The pipelines themselves live in `src/workflow/` (the 4D motion pipeline,
 one volume onto every phase of a group, structures by name), shared with the
-viewer's tool windows, so the server and the viewer run the same code.
+viewer's tool windows, so the server and the viewer run the same code. So
+does the headless core under the session: `workflow::session` holds the
+budgeted volume cache and the filing of structures under a name rule, and
+`workflow::params` the choices (variant, device, method, landing) that the
+tools, the dialogs and the workflow steps read by the same names.
 `tests/workflow.rs` is the guard for that: the phantom's target moves 0 / 6 /
 3 mm between phases and the pipeline has to find it.
 

@@ -126,17 +126,26 @@ jobs:
   # macOS run it without them (`--no-default-features`, the CPU-only build).
   # No test drives the wgpu backend - the GPU agreement tests are #[ignore]d,
   # see below - so this runs the same tests, but the `gpu` feature makes
-  # burn's wgpu/cubecl kernels part of this crate, and they were well over
-  # half of what it compiled: measured, the library went from 448 s to 184 s
-  # of compile time and its unit-test build from 363 s to 130 s. That compile
-  # is most of the Windows job, the one every pull request waited for. The
-  # GPU build itself is still compiled on every platform, by clippy above,
-  # and tested here on Linux.
+  # burn's wgpu/cubecl kernels part of the build, and they were well over
+  # half of what it compiled: measured before the engines became their own
+  # crate, the library went from 448 s to 184 s of compile time and its
+  # unit-test build from 363 s to 130 s. That compile is most of the Windows
+  # job, the one every pull request waited for. The GPU build itself is
+  # still compiled on every platform, by clippy above, and tested here on
+  # Linux.
   #
-  # `--lib --bins --tests` rather than a bare `cargo test`: that would also
-  # link every example (ten large executables, the lint jobs already
-  # type-check them) and hand the library to rustdoc for doc tests, of which
-  # there are none.
+  # `--lib --bins --tests` rather than everything: that would also link
+  # every example (ten large executables, the lint jobs already type-check
+  # them) and hand the library to rustdoc for doc tests, of which there are
+  # none.
+  #
+  # The runner is cargo-nextest (.config/nextest.toml): each test is its own
+  # process and all suites run at once, where `cargo test` runs the test
+  # binaries one after another - the MedSAM2 suite's forward passes, the
+  # workflow runs and the registrations overlap instead of queueing.
+  # `cargo test` itself is unchanged for local use. The engines crate
+  # (crates/rds-engines) and the core crate are default members of the
+  # workspace, so their unit tests run here too.
   #
   # macOS runs on the Apple Silicon image and needs no system packages - the
   # window stack is Metal and AppKit, which come with the SDK. The Intel
@@ -178,8 +187,12 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: cargo test
-        run: cargo test ${{ matrix.features }} --lib --bins --tests ${{ env.NO_RUN }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: cargo nextest
+        run: cargo nextest run ${{ matrix.features }} --lib --bins --tests ${{ env.NO_RUN }}
 
   # The pure-CPU build the README documents: the GPU inference backend is
   # behind the default `gpu` feature. The Windows and macOS test jobs build
@@ -236,8 +249,12 @@ jobs:
       - name: cargo clippy (mcp)
         run: cargo clippy --features mcp --all-targets -- -D warnings
 
-      - name: cargo test (mcp)
-        run: cargo test --no-default-features --features mcp --test workflow --test mcp_tools --test mcp_phi ${{ env.NO_RUN }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: cargo nextest (mcp)
+        run: cargo nextest run --no-default-features --features mcp --test workflow --test mcp_tools --test mcp_phi ${{ env.NO_RUN }}
 
   # The Windows installer is a separate workspace and is never built by
   # `cargo build` in the repository root, so it needs its own job. It is

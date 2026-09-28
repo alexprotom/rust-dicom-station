@@ -49,12 +49,18 @@ pub(super) const ALLOWED: &str = "✋«°±²³·»Ö×ĊĠΔβμσφ–—“�
 mod tests {
     use super::ALLOWED;
 
-    /// Walk the crate's own sources and refuse any glyph not on the list.
+    /// Walk the program's sources - the viewer's and those of the
+    /// workspace's crates, whose progress messages reach the screen too -
+    /// and refuse any glyph not on the list.
     #[test]
     fn the_interface_draws_no_glyph_the_bundled_fonts_lack() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut offenders: Vec<String> = Vec::new();
-        let mut stack = vec![root];
+        let mut stack = vec![
+            manifest.join("src"),
+            manifest.join("crates/rds-core/src"),
+            manifest.join("crates/rds-engines/src"),
+        ];
         while let Some(dir) = stack.pop() {
             for entry in std::fs::read_dir(&dir).expect("read src") {
                 let path = entry.expect("dir entry").path();

@@ -299,7 +299,7 @@ impl Archive {
             if !f.file_type().map(|t| t.is_file()).unwrap_or(false) {
                 continue;
             }
-            let Ok(obj) = crate::dicomfile::open_header(&f.path()) else {
+            let Ok(obj) = crate::dicomfile::open_scan(&f.path()) else {
                 continue;
             };
             files += 1;
@@ -363,7 +363,7 @@ impl Archive {
             if n % 25 == 0 {
                 progress.set(format!("Filing {}/{}", n + 1, files.len()));
             }
-            let Ok(obj) = crate::dicomfile::open_header(path) else {
+            let Ok(obj) = crate::dicomfile::open_scan(path) else {
                 sum.skipped += 1;
                 continue;
             };

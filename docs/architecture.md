@@ -66,7 +66,9 @@ rust-dicom-station
 │   │   structure sets and segmentation series; move single structures / segments
 │   ├── Workflows: a node editor (menu bar *Workflows*) whose steps are the
 │   │   program's own tools; saved as .rdsflow files, run in the background
-│   │   or step by step in the viewer, on other input folders
+│   │   or step by step in the viewer, on other input folders, as a batch
+│   │   over patient folders, with unchanged steps taken over from the
+│   │   last run and independent rows side by side
 │   ├── Background jobs: one progress handle, one poll loop
 │   ├── Settings: theme, model folder, archive folder, optional modules,
 │   │   detached windows (viewer_settings.txt in the config folder)
@@ -208,7 +210,6 @@ src/
                     mcp.toml, serves the tools over standard input and output    MCP
   lib.rs            library root - every module is public, so the integration
                     tests and the examples drive the same code as the GUI
-  progress.rs       the one progress handle + ProgressSink, Quiet, Stderr         Core
   par.rs            parallel sums in a fixed order (ordered_fold): the same
                     result on every run and every thread count                   Core
   models.rs         the model folder: root, per-engine sub-folders, migration,
@@ -356,10 +357,14 @@ src/
     workflow_edit.rs  the workflow editor: the egui-snarl canvas (typed pins,
                       wires, the add-a-step menus), the palette, the
                       parameter forms, load / save / recent, the Workflows
-                      menu's actions
+                      menu's actions; undo / redo (JSON snapshots), the
+                      clipboard (workflow fragments), frames, the map,
+                      keyboard nudging
     workflow_run.rs   the run window: inputs, results folder, background or
-                      step by step; the run as a Job, its events polled each
-                      frame, each shown step put in a workspace, the results
+                      step by step, reruns, parallel rows, memory, batches;
+                      the run as a Job, its events polled each frame, each
+                      shown step put in a workspace (the user's study there
+                      parked, and put back on request), the results
 
   loader.rs         directory / file-list scan, classification, parallel volume
                     loading, workspace merging, safe DICOM element helpers         DICOM
@@ -370,9 +375,6 @@ src/
                     back out of its slice headers: spacing, thickness, gaps,
                     uneven positions, tilt, frame of reference, kV / mAs / kernel,
                     each row carrying the reason it wants attention              DICOM
-  volume.rs         3D volume, patient-space geometry, slice extraction,
-                    trilinear sampling, canonical [S, A, R] axes                 Core
-  geometry.rs       minimal 3D vector math (Vec3, f64, patient mm)               Core
   render.rs         window / level, dose colorwash, marching-squares isodose,
                     contour / plane intersection                                 Core
   morphology.rs     binary-mask geometry in millimetres: exact anisotropic
@@ -448,6 +450,14 @@ src/
 
   workflow/         the pipelines without a window around them, shared by the
                     viewer's tool windows and the MCP server                     4D
+    session.rs        the headless core under the MCP session and the
+                      workflow runner: Volumes (a budgeted LRU cache of image
+                      volumes, shared by every pipeline of a run or session),
+                      UIDs, filing structures into a study under one
+                      name-clash rule across phases (file_items)
+    params.rs         the choices the dialogs, the MCP tools and the workflow
+                      steps share (variant, device, method, landing, name
+                      clash), with the names files and tools use
     select.rs         structures by name over RTSTRUCT ROIs and segmentation
                       series; contour or mask onto any lattice
     motion.rs         the per-phase 4D pipeline (register ▸ propagate ▸
@@ -460,14 +470,20 @@ src/
     graph/            user workflows: the steps above (and the engines, loading,
                       export) as nodes of a graph the user draws and saves
                       (docs/workflows.md)
-      mod.rs            the document: Workflow, Node, Link; check, run order,
-                        folder templates
+      mod.rs            the document: Workflow, Node, Link, Frame; check, run
+                        order, folder templates, fragments for the clipboard
       catalog.rs        every kind of step: typed ports, parameter structs
                         (serde), what the canvas says about each
       exec.rs           the runner: wire values as references into the run's
-                        state, events and the show-and-wait handshake, the
-                        outcome, the run folder's own files
+                        copy-on-write state (Arc per dataset), events and the
+                        show-and-wait handshake, step fingerprints and the
+                        StepCache for reruns, parallel rows (scoped threads,
+                        merged in run order), batches, the outcome, the run
+                        folder's own files
       nodes.rs          what each step does and how it files its results
+      nodes/more.rs     the archive, anonymize, prompt, combine, rename,
+                        transfer, copy-to-phases, DVH, dose, archive-import
+                        and DRR steps
       store.rs          the user's workflow folder, load / save, the recent
                         list, the examples compiled in
 
@@ -485,72 +501,83 @@ src/
   mesh3d.rs         contour / mask ▶ surface meshes (scanline fill, surface
                     nets, Laplacian smoothing)                                   Seg
 
-  nn/               shared neural-network infrastructure - nothing in here
-                    knows about a particular architecture                        NN
-    cache.rs          RemoteFile download, torch checkpoint ▶ safetensors
-                      conversion (ConvertSpec), the converted-weight cache
-    pickle.rs         native PyTorch checkpoint (.pth / .pt / .bin) reader
-    device.rs         DevicePref (Auto / GPU / CPU), the validated wgpu
-                      context, the backend-panic guard
-    params.rs         shape-checked view of a loaded state dict
-    half.rs           binary16 ↔ binary32 conversion
-    tensor.rs         Mat [rows, cols] and Act [c, d, h, w]; transposed conv
-    linalg.rs         gemm-backed linear / matmul, layer norm, softmax, activations
-    attention.rs      multi-head attention, optionally causally masked
+crates/            the workspace's two library crates; lib.rs re-exports their
+                   modules under the paths they had in src/ (crate::volume,
+                   rust_dicom_station::medsam2, ...)
+  rds-core/src/
+    progress.rs     the one progress handle + ProgressSink, Quiet, Stderr         Core
+    volume.rs       3D volume, patient-space geometry, slice extraction,
+                    trilinear sampling, canonical [S, A, R] axes                 Core
+    geometry.rs     minimal 3D vector math (Vec3, f64, patient mm)               Core
+  rds-engines/src/  the inference engines and their shared plumbing, a crate of
+                    their own so burn's wgpu backend (cargo feature `gpu`) is
+                    compiled once rather than with every change to the viewer
+    nn/               shared neural-network infrastructure - nothing in here
+                      knows about a particular architecture                        NN
+      cache.rs          RemoteFile download, torch checkpoint ▶ safetensors
+                        conversion (ConvertSpec), the converted-weight cache
+      pickle.rs         native PyTorch checkpoint (.pth / .pt / .bin) reader
+      device.rs         DevicePref (Auto / GPU / CPU), the validated wgpu
+                        context, the backend-panic guard
+      params.rs         shape-checked view of a loaded state dict
+      half.rs           binary16 ↔ binary32 conversion
+      tensor.rs         Mat [rows, cols] and Act [c, d, h, w]; transposed conv
+      linalg.rs         gemm-backed linear / matmul, layer norm, softmax, activations
+      attention.rs      multi-head attention, optionally causally masked
 
-  autoseg/          automatic segmentation (pure-Rust TotalSegmentator)         Seg
-    mod.rs            public API: variants, run(), run_specs() (shared with the
-                      body contour), progress phases
-    classes.rs        117-class table, sub-model maps, organ colors
-    config.rs         nnU-Net plans.json parsing
-    weights.rs        which models exist, where they are published, the
-                      release-zip unpacking in front of the shared conversion
-    cpu.rs            CPU conv engine (im2col + SIMD GEMM conv3d, norms)
-    net.rs            PlainConvUNet assembly + CPU forward
-    gpu.rs            wgpu forward via burn (cargo feature `gpu`)
-    preprocess.rs     resampling to the model grid and back (scipy conventions)
-    infer.rs          Gaussian sliding window, streaming argmax
+    autoseg/          automatic segmentation (pure-Rust TotalSegmentator)         Seg
+      mod.rs            public API: variants, run(), run_specs() (shared with the
+                        body contour), progress phases
+      classes.rs        117-class table, sub-model maps, organ colors
+      config.rs         nnU-Net plans.json parsing
+      weights.rs        which models exist, where they are published, the
+                        release-zip unpacking in front of the shared conversion
+      cpu.rs            CPU conv engine (im2col + SIMD GEMM conv3d, norms)
+      net.rs            PlainConvUNet assembly + CPU forward
+      gpu.rs            wgpu forward via burn (cargo feature `gpu`)
+      preprocess.rs     resampling to the model grid and back (scipy conventions)
+      infer.rs          Gaussian sliding window, streaming argmax
 
-  segvol/           prompt segmentation (pure-Rust SegVol)                       Seg
-    weights.rs        the checkpoint and tokenizer files, load(), licensing notes
-    layout.rs         the published checkpoint's tensor layout and its checks
-    config.rs         the network's fixed dimensions
-    vit.rs            image encoder (MONAI 3-D ViT, 12 blocks, 2048 tokens)
-    prompt.rs         prompt encoder: box / point / text ▶ sparse + dense
-    decoder.rs        two-way transformer, upscaling, mask hypernetworks
-    net.rs            assembly and the single-window forward pass
-    preprocess.rs     foreground normalization, canonical orientation,
-                      nearest-exact / trilinear resampling, mask back-mapping
-    infer.rs          zoom-out / zoom-in orchestration, MONAI window layout
-    bpe.rs            CLIP byte-pair tokenizer
-    clip.rs           CLIP text tower + dim_align, with a prompt cache
-    gpu.rs            image encoder on wgpu via burn (cargo feature `gpu`)
+    segvol/           prompt segmentation (pure-Rust SegVol)                       Seg
+      weights.rs        the checkpoint and tokenizer files, load(), licensing notes
+      layout.rs         the published checkpoint's tensor layout and its checks
+      config.rs         the network's fixed dimensions
+      vit.rs            image encoder (MONAI 3-D ViT, 12 blocks, 2048 tokens)
+      prompt.rs         prompt encoder: box / point / text ▶ sparse + dense
+      decoder.rs        two-way transformer, upscaling, mask hypernetworks
+      net.rs            assembly and the single-window forward pass
+      preprocess.rs     foreground normalization, canonical orientation,
+                        nearest-exact / trilinear resampling, mask back-mapping
+      infer.rs          zoom-out / zoom-in orchestration, MONAI window layout
+      bpe.rs            CLIP byte-pair tokenizer
+      clip.rs           CLIP text tower + dim_align, with a prompt cache
+      gpu.rs            image encoder on wgpu via burn (cargo feature `gpu`)
 
-  medsam2/          slice propagation (pure-Rust MedSAM2); every module is
-                    generic over a `burn` backend, so one implementation runs
-                    on GPU and CPU                                               Seg
-    weights.rs        the four published variants, load(), the research-only licence
-    layout.rs         the checkpoint's tensor layout and its checks
-    config.rs         the fixed dimensions: 512 input, 7 memories, 16 pointers
-    ops.rs            the tensor helpers the port needs on top of burn
-    layers.rs         conv, layer norm, linear (kept transposed), MLP
-    hiera.rs          Hiera-T image encoder: 4 stages, windowed attention
-    neck.rs           FPN neck to 256 channels + the sine position encoding
-    prompt.rs         SAM's prompt encoder: points, boxes, mask prompts
-    decoder.rs        two-way transformer, hypernetwork mask filters, IoU and
-                      object-presence heads
-    sam.rs            the SAM head assembled: prompt ▶ masks for one slice
-    memory.rs         memory encoder: mask downsampler + ConvNeXt fuser
-    memattn.rs        memory attention: 4 layers, 2-D axial RoPE
-    model.rs          the whole network, and the two ways a slice is conditioned
-    track.rs          the memory bank and the slice-to-slice state machine
-    infer.rs          one-slice preview, the two propagation passes, the slice
-                      range, thresholding, largest-component cleanup
-    preprocess.rs     window, quantize to u8, orient; the prompt's and the
-                      mask's way between the study grid and the network's
-    resample.rs       PIL's resampling kernels, incl. 8-bit fixed-point arithmetic
-    engine.rs         backend choice, the encoded-slice cache, the one call
-                      the user interface makes
+    medsam2/          slice propagation (pure-Rust MedSAM2); every module is
+                      generic over a `burn` backend, so one implementation runs
+                      on GPU and CPU                                               Seg
+      weights.rs        the four published variants, load(), the research-only licence
+      layout.rs         the checkpoint's tensor layout and its checks
+      config.rs         the fixed dimensions: 512 input, 7 memories, 16 pointers
+      ops.rs            the tensor helpers the port needs on top of burn
+      layers.rs         conv, layer norm, linear (kept transposed), MLP
+      hiera.rs          Hiera-T image encoder: 4 stages, windowed attention
+      neck.rs           FPN neck to 256 channels + the sine position encoding
+      prompt.rs         SAM's prompt encoder: points, boxes, mask prompts
+      decoder.rs        two-way transformer, hypernetwork mask filters, IoU and
+                        object-presence heads
+      sam.rs            the SAM head assembled: prompt ▶ masks for one slice
+      memory.rs         memory encoder: mask downsampler + ConvNeXt fuser
+      memattn.rs        memory attention: 4 layers, 2-D axial RoPE
+      model.rs          the whole network, and the two ways a slice is conditioned
+      track.rs          the memory bank and the slice-to-slice state machine
+      infer.rs          one-slice preview, the two propagation passes, the slice
+                        range, thresholding, largest-component cleanup
+      preprocess.rs     window, quantize to u8, orient; the prompt's and the
+                        mask's way between the study grid and the network's
+      resample.rs       PIL's resampling kernels, incl. 8-bit fixed-point arithmetic
+      engine.rs         backend choice, the encoded-slice cache, the one call
+                        the user interface makes
 
 tests/             the integration suites (see Testing); common/ holds the
                    4D phantom fixture the workflow and MCP suites share, and
@@ -842,7 +869,9 @@ objects, and an image series added afterwards (**open_files**) - the DVH
 against an analytic
 Gaussian phantom (**dvh**), structure algebra (**structops**), the shipped
 workflow example rebuilt on the 4D phantom and run end to end, in the
-background and step by step (**workflow_graph**), and the three
+background and step by step (**workflow_graph**), the other workflow steps,
+reruns, parallel rows against the serial run, and a batch
+(**workflow_steps**), and the three
 engines assembled and run without a download - a miniature nnU-Net with the
 exact checkpoint naming (**autoseg**), and synthesized checkpoints with the
 real key names and shapes for **segvol** and **medsam2**, so genuine forward
@@ -865,7 +894,8 @@ Three suites need the `mcp` feature: **workflow** runs the 4D pipeline
 headless on a three-phase phantom whose target moves 0 / 6 / 3 mm and checks
 the recovered motion; **mcp_tools** runs the heart sequence through the
 server's core (register, propagate, propagate onto a group, motion, DVH,
-export, re-open); **mcp_phi** gives the phantom a patient's name and asserts
+export, re-open) and saved workflows through `list_workflows` /
+`run_workflow`, a batch included; **mcp_phi** gives the phantom a patient's name and asserts
 that no tool, no error path and no protocol frame of the real executable ever
 carries it.
 

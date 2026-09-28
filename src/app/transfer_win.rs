@@ -142,7 +142,7 @@ impl ViewerApp {
             return;
         };
         let out_grid = study.volume.grid();
-        let mask = map_mask(&tm, &tg, &out_grid, &placement);
+        let mask = crate::propagate::carry_mask(&tm, &tg, &out_grid, &placement);
         if mask.iter().all(|&v| v == 0) {
             let msg = format!(
                 "'{tname}' lands outside workspace {}'s displayed volume - nothing to store.",
@@ -357,93 +357,6 @@ impl ViewerApp {
     }
 }
 
-/// Resample `mask` (on `from`) onto `to`, shifted by `delta` in patient
-/// coordinates: `out(p) = mask(p − delta)`. Nearest neighbour, restricted
-/// to the translated bounding box of the source mask.
-/// Carry a mask from one lattice to another through a transform.
-///
-/// The bounding box is mapped forward to find the destination box worth
-/// filling; every voxel of that box is then mapped *back* and takes the
-/// value it lands on, which is what keeps the result free of holes whatever
-/// the two spacings are. A pure shift and a hand-typed matrix are the same
-/// operation here, and go through the same code.
-fn map_mask(
-    mask: &[u8],
-    from: &crate::volume::Grid,
-    to: &crate::volume::Grid,
-    t: &Transform3,
-) -> Vec<u8> {
-    let [nx, ny, nz] = to.dims;
-    let mut out = vec![0u8; nx * ny * nz];
-    // Bounding box of the source mask, in source voxels.
-    let [sx, sy, sz] = from.dims;
-    let (mut lo, mut hi) = ([usize::MAX; 3], [0usize; 3]);
-    for k in 0..sz {
-        for j in 0..sy {
-            for i in 0..sx {
-                if mask[k * sx * sy + j * sx + i] != 0 {
-                    let v = [i, j, k];
-                    for a in 0..3 {
-                        lo[a] = lo[a].min(v[a]);
-                        hi[a] = hi[a].max(v[a]);
-                    }
-                }
-            }
-        }
-    }
-    if lo[0] == usize::MAX {
-        return out;
-    }
-    // The eight translated corners, in destination voxels, give the
-    // destination box to fill (padded a voxel for rounding).
-    let (mut dlo, mut dhi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
-    for &ci in &[lo[0], hi[0]] {
-        for &cj in &[lo[1], hi[1]] {
-            for &ck in &[lo[2], hi[2]] {
-                let p = t.map(from.voxel_to_patient(ci as f64, cj as f64, ck as f64));
-                let v = to.patient_to_voxel(p);
-                for a in 0..3 {
-                    dlo[a] = dlo[a].min(v[a]);
-                    dhi[a] = dhi[a].max(v[a]);
-                }
-            }
-        }
-    }
-    let clamp = |v: f64, n: usize| (v.max(0.0) as usize).min(n.saturating_sub(1));
-    let (blo, bhi) = (
-        [
-            clamp(dlo[0].floor() - 1.0, nx),
-            clamp(dlo[1].floor() - 1.0, ny),
-            clamp(dlo[2].floor() - 1.0, nz),
-        ],
-        [
-            clamp(dhi[0].ceil() + 1.0, nx),
-            clamp(dhi[1].ceil() + 1.0, ny),
-            clamp(dhi[2].ceil() + 1.0, nz),
-        ],
-    );
-    for k in blo[2]..=bhi[2] {
-        for j in blo[1]..=bhi[1] {
-            for i in blo[0]..=bhi[0] {
-                let p = t.unmap(to.voxel_to_patient(i as f64, j as f64, k as f64));
-                let v = from.patient_to_voxel(p);
-                let (si, sj, sk) = (v[0].round(), v[1].round(), v[2].round());
-                if si < 0.0 || sj < 0.0 || sk < 0.0 {
-                    continue;
-                }
-                let (si, sj, sk) = (si as usize, sj as usize, sk as usize);
-                if si >= sx || sj >= sy || sk >= sz {
-                    continue;
-                }
-                if mask[sk * sx * sy + sj * sx + si] != 0 {
-                    out[k * nx * ny + j * nx + i] = 1;
-                }
-            }
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -474,7 +387,7 @@ mod tests {
             }
         }
         let delta = Vec3::new(6.0, -2.0, 0.0);
-        let out = map_mask(
+        let out = crate::propagate::carry_mask(
             &m,
             &g1,
             &g2,

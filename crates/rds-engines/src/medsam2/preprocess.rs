@@ -416,7 +416,11 @@ mod tests {
     #[test]
     fn the_pipeline_matches_the_reference_preprocessing() {
         let dev: burn::tensor::Device<Bk> = Default::default();
-        let f = load_safetensors(Path::new("tests/data/medsam2-ops.safetensors")).unwrap();
+        let f = load_safetensors(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/data/medsam2-ops.safetensors"
+        )))
+        .unwrap();
         let u8s = f.get("preprocess.u8").expect("fixture");
         let want = f.get("preprocess.y").expect("fixture");
         let (h, w) = (u8s.shape[0], u8s.shape[1]);

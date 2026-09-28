@@ -534,6 +534,39 @@ struct StudySlot {
     /// Index of the ROI the contour tools edit, within the active structure
     /// set. Out of range simply means "none yet".
     active_roi: usize,
+    /// The active structure set's ROIs mapped into the displayed volume's
+    /// voxel space, for the image views' contours.
+    roi_prep: RoiPrep,
+}
+
+/// The ROIs of one structure set prepared for drawing on one volume
+/// ([`render::PreparedRoi`]): scrolling through a view, dragging the
+/// crosshair or playing a 4D cine then costs the contours that cross each
+/// slice, instead of mapping every point of every visible structure per view
+/// per step. Filled per ROI the first time it is drawn.
+#[derive(Default)]
+struct RoiPrep {
+    /// (structure set index, `ViewerApp::structures_gen`) the ROIs are for.
+    key: Option<(usize, u64)>,
+    /// The volume they were mapped into. Weak: a cache must not keep a
+    /// replaced volume's voxels alive, and unlike its address a `Weak` cannot
+    /// be taken over by the next volume allocated in the same place.
+    volume: std::sync::Weak<Volume>,
+    rois: Vec<Option<render::PreparedRoi>>,
+}
+
+impl RoiPrep {
+    /// The cache for `(set, gen)` on `vol`, emptied when it was for anything
+    /// else.
+    fn for_set(&mut self, set: usize, gen: u64, vol: &Arc<Volume>, n_rois: usize) {
+        let same_volume = std::ptr::eq(self.volume.as_ptr(), Arc::as_ptr(vol));
+        if self.key != Some((set, gen)) || !same_volume || self.rois.len() != n_rois {
+            self.key = Some((set, gen));
+            self.volume = Arc::downgrade(vol);
+            self.rois.clear();
+            self.rois.resize_with(n_rois, || None);
+        }
+    }
 }
 
 impl StudySlot {
@@ -646,6 +679,7 @@ impl StudySlot {
             active_seg_series: 0,
             active_seg: 0,
             active_roi: usize::MAX,
+            roi_prep: RoiPrep::default(),
         }
     }
 }
@@ -753,6 +787,10 @@ fn poll_tool_job<T>(
 type PhaseMeshes = Vec<(u64, Vec<RoiMesh>)>;
 
 /// A floating 3D structure-rendering window (one per study slot).
+/// A segmentation meshing result: the meshes, the generation each was built
+/// from, and the geometry they were built on (see `D3Window::seg_mesh_gens`).
+type SegMeshes = (Vec<RoiMesh>, Vec<u64>, u64);
+
 struct D3Window {
     slot: usize,
     open: bool,
@@ -805,7 +843,12 @@ struct D3Window {
     job: Option<Job<Vec<RoiMesh>>>,
     /// Live meshes of the painted segmentations (`roi_index` = seg index).
     seg_meshes: Option<Arc<Vec<RoiMesh>>>,
-    seg_job: Option<Job<Vec<RoiMesh>>>,
+    /// The [`Segmentation::gen`] each of `seg_meshes` was built from, in the
+    /// same order, and the volume geometry they were built on: a rebuild
+    /// re-meshes only the segments whose generation it has no mesh for.
+    seg_mesh_gens: Vec<u64>,
+    seg_geom: u64,
+    seg_job: Option<Job<SegMeshes>>,
     /// Hash of the segmentation state `seg_meshes` was built from.
     seg_built: u64,
     /// Also draw the *other* workspace's structures, mapped through the active
@@ -1671,6 +1714,8 @@ pub struct ViewerApp {
     segvol_slot: usize,
     /// The tool window, when open; it stays open across runs.
     segvol_dialog: Option<prompt_seg::SegVolDialog>,
+    /// The SegVol network, kept from one prompt to the next.
+    segvol_model: Arc<KeptModel<crate::segvol::model::Model>>,
 
     // Slice-propagating segmentation (MedSAM2 re-implementation): the drawn
     // box, the loaded engine and the prepared stack all live in one struct.
@@ -1684,6 +1729,13 @@ pub struct ViewerApp {
 
     /// Bumped whenever ROI visibility / dose settings change → cache rebuild.
     settings_gen: u64,
+    /// Per workspace: bumped by every sample of a contour edit (brush,
+    /// nudge, hand drag, drawing), which used to bump `settings_gen` and so
+    /// rebuilt every cache of every workspace - dose washes, fusion, the
+    /// other workspace's contours and meshes - on each mouse move. Caches of
+    /// structures read [`ViewerApp::structures_gen`], which combines the
+    /// two; the rest keep reading `settings_gen` alone.
+    struct_gen: [u64; MAX_WORKSPACES],
     /// The edited structure's volume and occupied-slice count, and what they
     /// were computed for: rebuilding its slice stack every frame the edit
     /// section is open cost milliseconds for a body outline.
@@ -2033,6 +2085,7 @@ impl ViewerApp {
             segvol_job: None,
             segvol_slot: 0,
             segvol_dialog: None,
+            segvol_model: Arc::default(),
             medsam2_job: None,
             medsam2: Default::default(),
             seg_tool: SegTool::None,
@@ -2067,6 +2120,7 @@ impl ViewerApp {
             dose_threshold_pct: 15.0,
             iso_levels: default_iso_levels(),
             settings_gen: 0,
+            struct_gen: [0; MAX_WORKSPACES],
             edit_summary_cache: None,
             wl_preset: None,
             module_registration: prefs.module_registration,

@@ -123,7 +123,11 @@ mod tests {
     #[test]
     fn the_sine_encoding_matches_the_reference() {
         let dev: burn::tensor::Device<Bk> = Default::default();
-        let f = load_safetensors(Path::new("tests/data/medsam2-ops.safetensors")).unwrap();
+        let f = load_safetensors(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/data/medsam2-ops.safetensors"
+        )))
+        .unwrap();
         let want = f.get("pe_sine.y").expect("fixture");
         // `PositionEmbeddingSine(num_pos_feats=8)` emits eight channels in
         // total - four for y and four for x - over a 3 x 4 grid.

@@ -65,6 +65,14 @@ pub struct Config {
     /// The viewer executable `open_in_viewer` launches; empty finds it
     /// beside `rds-mcp`.
     pub viewer_exe: Option<PathBuf>,
+    /// Megabytes of image volumes (series other than a dataset's displayed
+    /// one, 4D phases) kept in memory between calls, so a 4D dataset's
+    /// phases are read from disk once rather than by every tool.
+    pub volume_cache_mb: usize,
+    /// Where `list_workflows` and `run_workflow` look for saved workflows;
+    /// empty is the viewer's workflow folder. The program's examples are
+    /// always offered.
+    pub workflows_dir: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -80,6 +88,8 @@ impl Default for Config {
             job_timeout_minutes: 60,
             audit_log: true,
             viewer_exe: None,
+            volume_cache_mb: 4096,
+            workflows_dir: None,
         }
     }
 }
@@ -110,9 +120,7 @@ impl Config {
         if self.max_open_datasets == 0 {
             bail!("max_open_datasets must be at least 1");
         }
-        if !["auto", "gpu", "cpu"].contains(&self.device.as_str()) {
-            bail!("device must be auto, gpu or cpu (got '{}')", self.device);
-        }
+        crate::workflow::params::Device::from_name(&self.device)?;
         if let Some(out) = &self.output_dir {
             if out.as_os_str().is_empty() {
                 bail!("output_dir must not be empty");
@@ -122,11 +130,9 @@ impl Config {
     }
 
     pub fn device_pref(&self) -> DevicePref {
-        match self.device.as_str() {
-            "gpu" => DevicePref::Gpu,
-            "cpu" => DevicePref::Cpu,
-            _ => DevicePref::Auto,
-        }
+        crate::workflow::params::Device::from_name(&self.device)
+            .map(|d| d.pref())
+            .unwrap_or(DevicePref::Auto)
     }
 
     pub fn models_dir(&self) -> PathBuf {

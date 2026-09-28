@@ -364,10 +364,39 @@ fn keeping_the_uids_keeps_the_series_of_the_rt_objects_too() {
     );
 }
 
+/// With new UIDs a structure set sent without its images has nothing to
+/// point at, and the run says so.
 #[test]
 fn structures_exported_without_their_images_say_so() {
     let (study, _) = phantom("test_exp_alone");
     let out = target("test_exp_alone_out");
+    let mut plan = plan_for(&study);
+    plan.set_uid_mode(UidMode::New);
+    for st in plan.studies_mut() {
+        for s in &mut st.series {
+            s.selected = false;
+        }
+    }
+    let sum =
+        export::run(&plan, export::one_study(&study), &out, &Progress::default()).expect("runs");
+    assert!(files(&out, "CT_").is_empty(), "no images were written");
+    assert!(
+        sum.warnings
+            .iter()
+            .any(|w| w.contains("no reference to the images")),
+        "the run reports the missing link: {:?}",
+        sum.warnings
+    );
+}
+
+/// With the UIDs kept the export is the same study: a structure set sent
+/// without its images names them as their source files have them, slice by
+/// slice, and every contour the slice it lies on, exactly as it would had
+/// the images gone out with it.
+#[test]
+fn structures_exported_alone_with_kept_uids_reference_the_source_images() {
+    let (study, src) = phantom("test_exp_alone_keep");
+    let out = target("test_exp_alone_keep_out");
     let mut plan = plan_for(&study);
     for st in plan.studies_mut() {
         for s in &mut st.series {
@@ -380,9 +409,66 @@ fn structures_exported_without_their_images_say_so() {
     assert!(
         sum.warnings
             .iter()
-            .any(|w| w.contains("without its image series")),
-        "the run reports the missing link: {:?}",
+            .any(|w| w.contains("without its image series") && w.contains("UIDs are kept")),
+        "the run still says the images stayed behind: {:?}",
         sum.warnings
+    );
+
+    let source: Vec<String> = files(&src, "")
+        .iter()
+        .filter_map(|p| dicomfile::open_full(p).ok())
+        .map(|o| o.into_inner())
+        .filter(|o| str_of(o, tags::MODALITY) == "CT")
+        .map(|o| str_of(&o, tags::SOP_INSTANCE_UID))
+        .collect();
+    assert_eq!(source.len(), study.volume.dims[2], "the phantom's CT files");
+
+    let rs = files(&out, "RS_");
+    assert_eq!(rs.len(), 1, "one structure set");
+    let rs = dicomfile::open_full(&rs[0]).expect("reopens").into_inner();
+    let series_item = referenced_series(&rs);
+    assert_eq!(
+        str_of(&series_item, tags::SERIES_INSTANCE_UID),
+        study.series[study.active_series].uid,
+        "the source series"
+    );
+    let images = loader::items_of(&series_item, tags::CONTOUR_IMAGE_SEQUENCE)
+        .expect("the series item lists its images");
+    assert_eq!(images.len(), source.len(), "every source slice is listed");
+    for it in images {
+        assert!(source.contains(&str_of(it, tags::REFERENCED_SOP_INSTANCE_UID)));
+    }
+    let rois = loader::items_of(&rs, tags::ROI_CONTOUR_SEQUENCE).expect("ROIs");
+    let mut checked = 0usize;
+    for roi in rois {
+        for c in loader::items_of(roi, tags::CONTOUR_SEQUENCE).unwrap_or_default() {
+            let refs = loader::items_of(c, tags::CONTOUR_IMAGE_SEQUENCE)
+                .expect("a contour names the image it was drawn on");
+            assert!(source.contains(&str_of(&refs[0], tags::REFERENCED_SOP_INSTANCE_UID)));
+            checked += 1;
+        }
+    }
+    assert!(checked > 10, "contours checked: {checked}");
+
+    // Put beside its source images, it loads onto them.
+    let both = target("test_exp_alone_keep_both");
+    std::fs::create_dir_all(&both).expect("folder");
+    for (i, f) in files(&src, "").iter().enumerate() {
+        let is_ct = dicomfile::open_full(f)
+            .map(|o| str_of(&o.into_inner(), tags::MODALITY) == "CT")
+            .unwrap_or(false);
+        if is_ct {
+            std::fs::copy(f, both.join(format!("ct{i:04}.dcm"))).expect("copy");
+        }
+    }
+    for (i, f) in files(&out, "RS_").iter().enumerate() {
+        std::fs::copy(f, both.join(format!("rs{i}.dcm"))).expect("copy");
+    }
+    let re = loader::load_directory(&both, &Progress::default()).expect("loads");
+    assert_eq!(re.structure_sets.len(), 1);
+    assert_eq!(
+        re.structure_sets[0].referenced_series_uid, re.series[re.active_series].uid,
+        "bound to the CT it was drawn on"
     );
 }
 

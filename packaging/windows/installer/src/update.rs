@@ -273,7 +273,7 @@ mod tests {
         let a = "a".repeat(64);
         let b = "B".repeat(64);
         let sums = format!(
-            "{a}  rust-dicom-station-0.8.9-linux-x86_64.AppImage\n\
+            "{a}  rust-dicom-station-0.8.9-x86_64.AppImage\n\
              {b} *rust-dicom-station-0.8.9-windows-x86_64.exe\n"
         );
         assert_eq!(

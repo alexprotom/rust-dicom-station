@@ -25,7 +25,7 @@ use crate::progress::CANCELLED;
 use crate::segvol::infer::{self, Config};
 use crate::segvol::preprocess::{self, Prepared};
 use crate::segvol::prompt::{BBox, Point};
-use crate::segvol::{bpe::Bpe, clip::TextEncoder, net::SegVolNet, weights};
+use crate::segvol::{model::Model, weights};
 
 use super::*;
 
@@ -85,6 +85,8 @@ struct SegVolRequest {
     device: DevicePref,
     models_dir: PathBuf,
     name: String,
+    /// The network a previous run loaded, or where this one files its own.
+    model: Arc<KeptModel<Model>>,
 }
 
 /// Convert the crosshair - fractional voxel indices in the slot's volume -
@@ -191,6 +193,7 @@ impl ViewerApp {
                 PromptKind::Text if d.name.trim() == "Prompted" => d.text.trim().to_string(),
                 _ => d.name.trim().to_string(),
             },
+            model: self.segvol_model.clone(),
         };
         let phases = if d.output.phases {
             match self.phase_inputs(slot) {
@@ -477,31 +480,19 @@ fn run_segvol(
         bail!(CANCELLED);
     }
 
-    let params = weights::load(&req.models_dir, progress)?;
+    progress.set("Loading the network");
+    let key = ModelKey {
+        models_dir: req.models_dir.clone(),
+        device: req.device,
+        variant: "SegVol",
+    };
+    let model = req
+        .model
+        .get_or_load(&key, || Model::load(&req.models_dir, req.device, progress))?;
     if progress.cancelled() {
         bail!(CANCELLED);
     }
-    progress.set("Assembling the network");
-    #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
-    let mut net = SegVolNet::build(&params).context("assemble the SegVol network")?;
-
-    // Put the image encoder on the GPU when asked and a usable adapter
-    // exists; fall back to the CPU otherwise. Either way the device is
-    // reported, both in the progress row and in the finished-run status.
-    progress.set("Choosing the compute device");
-    let gpu = req.device.resolve()?;
-    let device = match gpu {
-        #[cfg(feature = "gpu")]
-        Some(ctx) => {
-            let vit = crate::segvol::gpu::GpuVit::new(&ctx, &params)
-                .context("upload the image encoder")?;
-            net.attach_gpu(vit);
-            ctx.describe()
-        }
-        #[cfg(not(feature = "gpu"))]
-        Some(ctx) => ctx.unreachable(),
-        None => crate::nn::device::describe_cpu(),
-    };
+    let device = model.device.clone();
     progress.set_device(&device);
 
     let centre = prompt_from_crosshair(&prep, req.cursor);
@@ -518,21 +509,12 @@ fn run_segvol(
             points.push(Point::foreground(c));
         }
         PromptKind::Text => {
-            if req.text.is_empty() {
-                bail!("enter a structure name");
-            }
-            progress.set("Encoding the text prompt");
-            for f in &weights::CLIP_FILES {
-                f.ensure(&req.models_dir, progress)?;
-            }
-            let bpe = Bpe::from_dir(&req.models_dir)?;
-            let enc = TextEncoder::build(&params)?;
-            text_vec = Some(enc.encode_structure(&bpe, &req.text));
+            text_vec = Some(model.encode_text(&req.text, progress)?);
         }
     }
 
     let seg = infer::segment(
-        &net,
+        &model.net,
         &prep,
         &points,
         &boxes,

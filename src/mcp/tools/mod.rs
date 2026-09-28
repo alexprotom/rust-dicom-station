@@ -14,6 +14,7 @@ pub mod output;
 pub mod register;
 pub mod segment;
 pub mod session;
+pub mod workflows;
 
 use anyhow::{bail, Context, Result};
 use schemars::JsonSchema;
@@ -154,6 +155,19 @@ registry! {
     "open_in_viewer" => (output::OpenViewerArgs, output::open_in_viewer, false,
         "Launch the Rust DICOM Station viewer on one or two folders (an exported one, or a root \
          subfolder), so a person can look at the result."),
+    // ---- workflows ----------------------------------------------------
+    "list_workflows" => (NoArgs, workflows::list_workflows, false,
+        "The saved workflows the server can run (the workflows folder and the program's \
+         examples): name, description, steps and the inputs each needs, by title. A workflow \
+         is the viewer's own steps wired into a file - load, segment, register, propagate, \
+         measure the motion, export."),
+    "run_workflow" => (workflows::RunArgs, workflows::run_workflow, true,
+        "Run a saved workflow headless on folders under the roots, one per input (by title; \
+         see list_workflows). The inputs must pass the PHI gate (anonymized, unless the \
+         policy is allow). Everything it writes goes into a run folder under the output \
+         folder. Returns every step's result, the reports' tables, and with open_results the \
+         studies it worked on as datasets. A workflow over a folder of cases runs once per \
+         subfolder and reports a table across them."),
     "anonymize" => (output::AnonymizeArgs, output::anonymize, true,
         "Write an anonymized copy of a folder under a root into the output folder: patient \
          identifiers replaced by a deterministic alias, dates fixed, physicians and institution \

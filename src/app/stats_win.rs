@@ -218,7 +218,7 @@ impl ViewerApp {
             slot,
             rows: Vec::new(),
             dice_ref,
-            gen: self.settings_gen,
+            gen: self.all_structures_gen(),
             stale: true,
         });
     }
@@ -421,7 +421,7 @@ impl ViewerApp {
                 .as_ref()
                 .map_or(DiceRef::None, |d| d.dice_ref);
             let rows = self.stats_rows(slot, dice_ref);
-            let gen = self.settings_gen;
+            let gen = self.all_structures_gen();
             if let Some(d) = &mut self.stats_dialog {
                 d.rows = rows;
                 d.gen = gen;
@@ -451,7 +451,7 @@ impl ViewerApp {
                     })
             })
             .collect();
-        let current_gen = self.settings_gen;
+        let current_gen = self.all_structures_gen();
         let mut open = true;
         let mut close = false;
         let mut save = false;

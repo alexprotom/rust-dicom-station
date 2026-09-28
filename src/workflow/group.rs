@@ -13,11 +13,12 @@ use std::sync::Arc;
 use crate::dicomseg::SegSeries;
 use crate::loader::{self, LoadedStudy, SeriesInfo};
 use crate::progress::Progress;
-use crate::propagate::{self, Finish, Propagated, Subject};
+use crate::propagate::{self, Finish, PackedItem, Propagated, Subject};
 use crate::registration::{self, RegParams, Transform3};
-use crate::rtstruct::{Roi, StructureSet};
-use crate::segmentation::{self, Segmentation};
+
+use crate::segmentation::Segmentation;
 use crate::volume::{Grid, Volume};
+use crate::workflow::session;
 
 use anyhow::{Context, Result};
 
@@ -62,6 +63,9 @@ pub struct GroupRequest {
     pub group: usize,
     pub moving_slot: usize,
     pub moving_series_uid: String,
+    /// Where the phases are read from: a run's shared cache, or
+    /// [`session::Volumes::none`] to read each from disk.
+    pub volumes: session::Volumes,
 }
 
 /// What one phase of a 4D group came out with.
@@ -73,8 +77,9 @@ pub struct PhaseOutcome {
     pub study_uid: String,
     /// The lattice they are on.
     pub grid: Grid,
-    /// Empty when the run was a registration and nothing else.
-    pub items: Vec<Propagated>,
+    /// Empty when the run was a registration and nothing else. Packed: a
+    /// group's phases are all held until they are filed.
+    pub items: Vec<PackedItem>,
     /// Phase → the moving image.
     pub transform: Arc<Transform3>,
     /// `MSD 9700 ▶ 1800  (900 iters, 20.1 s)` of that phase's registration,
@@ -86,6 +91,11 @@ pub struct PhaseOutcome {
 }
 
 impl PhaseOutcome {
+    /// The propagated structures with their whole-volume masks, for filing.
+    pub fn unpacked(&self) -> Vec<Propagated> {
+        self.items.iter().map(PackedItem::unpack).collect()
+    }
+
     /// The propagated structures as one segmentation series bound to the
     /// phase's image series, so the tree files it under the right member.
     /// Empty items (nothing landed) are skipped; `None` when none landed.
@@ -104,7 +114,7 @@ impl PhaseOutcome {
                 item.name.clone(),
                 item.color,
                 self.grid.dims,
-                &item.mask,
+                &item.mask(),
                 1,
             ));
         }
@@ -177,67 +187,53 @@ pub fn land_items_as(
     new_set_label: &str,
     roi_type: &str,
 ) -> Option<(String, Vec<Option<String>>)> {
-    let rois: Vec<Option<Roi>> = items
-        .iter()
-        .map(|it| {
-            if it.voxels == 0 {
-                return None;
-            }
-            let seg =
-                Segmentation::from_label_map(it.name.clone(), it.color, grid.dims, &it.mask, 1);
-            let mut roi = segmentation::mask_to_roi(&seg, grid, 0);
-            roi.roi_type = roi_type.to_string();
-            (!roi.contours.is_empty()).then_some(roi)
-        })
-        .collect();
-    if rois.iter().all(Option::is_none) {
+    if items.iter().all(|it| it.voxels == 0) {
         return None;
     }
-    let set = match study
+    // The series the set is bound to: the study's own entry when it lists
+    // it (a phase does), else one that carries just the identity.
+    let series = study
+        .series
+        .iter()
+        .find(|s| s.uid == series_uid)
+        .cloned()
+        .unwrap_or_else(|| SeriesInfo {
+            uid: series_uid.to_string(),
+            study_uid: study_uid.to_string(),
+            ..SeriesInfo::default()
+        });
+    let types = vec![roi_type.to_string(); items.len()];
+    // A set that is locked (approved) is not written into: the structures
+    // go into a new set beside it.
+    let locked = study
         .structure_sets
         .iter()
-        .rposition(|ss| ss.referenced_series_uid == series_uid)
-    {
-        Some(i) => i,
-        None => {
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0);
-            study.structure_sets.push(StructureSet {
-                label: new_set_label.to_string(),
-                frame_of_reference_uid: grid.frame_of_reference_uid.clone(),
-                sop_instance_uid: format!("2.25.{stamp}"),
-                series_instance_uid: format!("2.25.{stamp}.1"),
-                study_uid: study_uid.to_string(),
-                referenced_series_uid: series_uid.to_string(),
-                file_name: "propagated".into(),
-                locked: false,
-                rois: Vec::new(),
-            });
-            study.structure_sets.len() - 1
-        }
-    };
-    let ss = &mut study.structure_sets[set];
-    let mut names = Vec::with_capacity(rois.len());
-    for roi in rois {
-        let Some(mut roi) = roi else {
-            names.push(None);
-            continue;
-        };
-        roi.number = ss.rois.iter().map(|r| r.number).max().unwrap_or(0) + 1;
-        if ss.rois.iter().any(|r| r.name == roi.name) {
-            let base = roi.name.clone();
-            let mut n = 2;
-            while ss.rois.iter().any(|r| r.name == format!("{base} ({n})")) {
-                n += 1;
-            }
-            roi.name = format!("{base} ({n})");
-        }
-        names.push(Some(roi.name.clone()));
-        ss.rois.push(roi);
+        .rposition(|s| s.referenced_series_uid == series_uid)
+        .is_some_and(|i| study.structure_sets[i].locked);
+    let filed = session::file_items(
+        study,
+        &series,
+        grid,
+        items,
+        &types,
+        &session::Filing {
+            kind: session::OutputKind::Structures,
+            set: if locked {
+                session::SetChoice::New
+            } else {
+                session::SetChoice::Own
+            },
+            set_label: new_set_label,
+            clash: Some(session::NameClash::Counter),
+            taken: None,
+        },
+    )
+    .ok()?;
+    if filed.names.iter().all(Option::is_none) {
+        return None;
     }
-    Some((ss.label.clone(), names))
+    let set = filed.set?;
+    Some((study.structure_sets[set].label.clone(), filed.names))
 }
 
 /// What a run against a whole 4D group hands back.
@@ -257,13 +253,18 @@ pub fn run(mut req: GroupRequest, p: &Progress) -> Result<GroupOutcome> {
     finish.carry(&mut req.subjects);
     let n = req.phases.len().max(1);
     let mut phases = Vec::with_capacity(req.phases.len());
+    // The source volume is the moving image of every registration: its
+    // pyramid is built once.
+    let mut pyramids = registration::PyramidCache::default();
     for (i, (label, series)) in req.phases.iter().enumerate() {
         let base = i as f32 / n as f32;
         let span = 1.0 / n as f32;
         p.set_phase(base, span * 0.25);
         p.set(format!("Phase {label}: loading ({}/{n})", i + 1));
-        let (vol, _, _) =
-            loader::load_series_volume(series, p).with_context(|| format!("phase '{label}'"))?;
+        let vol = req
+            .volumes
+            .load(series, p)
+            .with_context(|| format!("phase '{label}'"))?;
         let cached = req.cached.get(i).and_then(|t| t.clone());
         let (transform, metric_line, metrics) = match cached {
             Some(t) => (t, "transform reused".to_string(), None),
@@ -274,8 +275,14 @@ pub fn run(mut req: GroupRequest, p: &Progress) -> Result<GroupOutcome> {
                 // transform maps phase → source: exactly the destination →
                 // source direction `propagate` pulls along, with no
                 // inversion.
-                let r = registration::register(&vol, &req.src_vol, &req.params, p)
-                    .with_context(|| format!("phase '{label}'"))?;
+                let r = registration::register_cached(
+                    &vol,
+                    &req.src_vol,
+                    &req.params,
+                    &mut pyramids,
+                    p,
+                )
+                .with_context(|| format!("phase '{label}'"))?;
                 (r.transform.clone(), r.metric_line(), Some(r.metrics()))
             }
         };
@@ -289,6 +296,9 @@ pub fn run(mut req: GroupRequest, p: &Progress) -> Result<GroupOutcome> {
                     .with_context(|| format!("phase '{label}'"))?;
             req.finish.apply_all(&mut items, &vol.grid(), p);
             items
+                .into_iter()
+                .map(|it| PackedItem::pack(it, vol.dims))
+                .collect()
         };
         phases.push(PhaseOutcome {
             label: label.clone(),
@@ -338,7 +348,8 @@ impl PhaseCopy {
 }
 
 /// Carry `structures` onto every phase of a group without registering
-/// anything: each phase is loaded for its lattice and the structures are
+/// anything: each phase's lattice is read from its slice headers (the
+/// pixels play no part) and the structures are
 /// rasterized (contours) or resampled (masks) onto it in patient
 /// coordinates. This is a copy in the sense of the tree's *Copy to*, not a
 /// propagation - the structure stays where it is while the anatomy under
@@ -352,13 +363,14 @@ pub fn copy_to_phases(
     let mut out = Vec::with_capacity(phases.len());
     for (i, (label, series)) in phases.iter().enumerate() {
         p.set_phase(i as f32 / n as f32, 1.0 / n as f32);
-        p.set(format!("Phase {label}: loading ({}/{n})", i + 1));
+        p.set(format!(
+            "Phase {label}: reading the lattice ({}/{n})",
+            i + 1
+        ));
         if p.cancelled() {
             anyhow::bail!("cancelled");
         }
-        let (vol, _, _) =
-            loader::load_series_volume(series, p).with_context(|| format!("loading {label}"))?;
-        let grid = vol.grid();
+        let grid = loader::series_grid(series).with_context(|| format!("reading {label}"))?;
         let mut segs = Vec::new();
         let mut notes = Vec::new();
         for s in structures {

@@ -113,6 +113,98 @@ pub struct Propagated {
     pub rigid_residual_mm: Option<f64>,
 }
 
+/// A [`Propagated`] kept with its mask cut down to the box it landed in.
+///
+/// A run over a 4D group holds every structure on every phase until it is
+/// filed at the end, and at one byte a voxel that is the whole CT per
+/// structure per phase: 30 structures on 10 phases of a 512² study are
+/// 12 GB, for masks that fill a few per cent of their volume. Packed, each
+/// holds its box; [`Self::unpack`] gives the whole-volume result back, one
+/// structure at a time, when it is filed. The numbers are fields, as on
+/// [`Propagated`]; the mask is only reachable through `unpack`, so nothing
+/// can read a packed one as if it were whole.
+#[derive(Clone)]
+pub struct PackedItem {
+    pub name: String,
+    pub color: [u8; 3],
+    pub voxels: usize,
+    pub source_cm3: f64,
+    pub result_cm3: f64,
+    pub mapped_cm3: f64,
+    pub source_surface_cm3: Option<f64>,
+    pub rigid_residual_mm: Option<f64>,
+    /// The volume's dimensions, the box (first voxel and size) and the
+    /// voxels inside it; an empty box for an empty mask.
+    dims: [usize; 3],
+    lo: [usize; 3],
+    size: [usize; 3],
+    boxed: Vec<u8>,
+}
+
+impl PackedItem {
+    /// Keep `item`, whose mask is on a lattice of `dims`, as its box.
+    pub fn pack(item: Propagated, dims: [usize; 3]) -> PackedItem {
+        let (lo, size, boxed) = match crate::morphology::mask_bbox(&item.mask, dims) {
+            Some((lo, hi)) if item.mask.len() == dims[0] * dims[1] * dims[2] => {
+                let size = [0, 1, 2].map(|a| hi[a] - lo[a] + 1);
+                let mut boxed = Vec::with_capacity(size[0] * size[1] * size[2]);
+                for k in lo[2]..=hi[2] {
+                    for j in lo[1]..=hi[1] {
+                        let at = (k * dims[1] + j) * dims[0] + lo[0];
+                        boxed.extend_from_slice(&item.mask[at..at + size[0]]);
+                    }
+                }
+                (lo, size, boxed)
+            }
+            _ => ([0; 3], [0; 3], Vec::new()),
+        };
+        PackedItem {
+            name: item.name,
+            color: item.color,
+            voxels: item.voxels,
+            source_cm3: item.source_cm3,
+            result_cm3: item.result_cm3,
+            mapped_cm3: item.mapped_cm3,
+            source_surface_cm3: item.source_surface_cm3,
+            rigid_residual_mm: item.rigid_residual_mm,
+            dims,
+            lo,
+            size,
+            boxed,
+        }
+    }
+
+    /// The whole-volume mask.
+    pub fn mask(&self) -> Vec<u8> {
+        let [nx, ny, nz] = self.dims;
+        let mut mask = vec![0u8; nx * ny * nz];
+        let [sx, sy, sz] = self.size;
+        for k in 0..sz {
+            for j in 0..sy {
+                let at = ((self.lo[2] + k) * ny + self.lo[1] + j) * nx + self.lo[0];
+                let from = (k * sy + j) * sx;
+                mask[at..at + sx].copy_from_slice(&self.boxed[from..from + sx]);
+            }
+        }
+        mask
+    }
+
+    /// The result as it came out of [`propagate`].
+    pub fn unpack(&self) -> Propagated {
+        Propagated {
+            name: self.name.clone(),
+            color: self.color,
+            mask: self.mask(),
+            voxels: self.voxels,
+            source_cm3: self.source_cm3,
+            result_cm3: self.result_cm3,
+            mapped_cm3: self.mapped_cm3,
+            source_surface_cm3: self.source_surface_cm3,
+            rigid_residual_mm: self.rigid_residual_mm,
+        }
+    }
+}
+
 impl Propagated {
     /// `liver: 1642.318 cm³ ▶ 1701.052 cm³ (+3.576 %)`.
     pub fn summary(&self) -> String {
@@ -145,6 +237,39 @@ struct MapCache {
 }
 
 impl MapCache {
+    /// Node spacing in destination voxels for nodes about `node_mm` apart.
+    fn step(dst: &Volume, node_mm: f64) -> [usize; 3] {
+        [0, 1, 2].map(|a| ((node_mm / dst.spacing[a]).round() as usize).max(1))
+    }
+
+    /// The lattice box that brackets every point within half a voxel of the
+    /// destination voxel box `lo..=hi`: its first node (a multiple of the
+    /// step) and its node counts.
+    ///
+    /// The nodes sit on one lattice anchored at voxel 0, whatever the box.
+    /// So a point is interpolated between the same eight nodes, holding the
+    /// same values, in any cache whose box brackets it - which is what lets
+    /// several structures share one cache without a voxel of any of them
+    /// landing differently than with a cache of its own.
+    fn lattice(step: [usize; 3], lo: [usize; 3], hi: [usize; 3]) -> ([usize; 3], [usize; 3]) {
+        let mut first = [0usize; 3];
+        let mut dims = [2usize; 3];
+        for a in 0..3 {
+            // A node at or below `lo - 1`: the sub-points of the first voxel
+            // reach half a voxel below it.
+            first[a] = lo[a].saturating_sub(1) / step[a] * step[a];
+            // +2: one node past the far edge, so every voxel is bracketed.
+            dims[a] = (hi[a] - first[a]) / step[a] + 2;
+        }
+        (first, dims)
+    }
+
+    /// How many nodes [`Self::build`] evaluates for the box `lo..=hi`.
+    fn nodes_for(step: [usize; 3], lo: [usize; 3], hi: [usize; 3]) -> usize {
+        let (_, dims) = Self::lattice(step, lo, hi);
+        dims.iter().product()
+    }
+
     /// Build the cache over the destination voxel box `lo..=hi`.
     fn build(
         dst: &Volume,
@@ -153,13 +278,8 @@ impl MapCache {
         map: &(dyn Fn(Vec3) -> Vec3 + Sync),
         node_mm: f64,
     ) -> MapCache {
-        let mut step = [1usize; 3];
-        let mut dims = [2usize; 3];
-        for a in 0..3 {
-            step[a] = ((node_mm / dst.spacing[a]).round() as usize).max(1);
-            // +2: one node past the far edge, so every voxel is bracketed.
-            dims[a] = (hi[a] - lo[a]) / step[a] + 2;
-        }
+        let step = Self::step(dst, node_mm);
+        let (lo, dims) = Self::lattice(step, lo, hi);
         let [nx, ny, nz] = dims;
         let nodes: Vec<Vec3> = (0..nz)
             .into_par_iter()
@@ -236,9 +356,6 @@ fn sample_mask(mask: &[u8], dims: [usize; 3], v: [f64; 3]) -> f32 {
     c0 + (c1 - c0) * fw
 }
 
-/// A point mapping, destination → source or back.
-type MapFn<'a> = Box<dyn Fn(Vec3) -> Vec3 + Sync + 'a>;
-
 /// Points of a structure the rigid fit is made on, at most.
 const RIGID_FIT_POINTS: usize = 4000;
 
@@ -283,6 +400,78 @@ fn rigid_fit_over(
     ))
 }
 
+/// Spacing of the mapping cache's nodes, mm.
+const NODE_MM: f64 = 3.0;
+
+/// One structure of a [`propagate`] run, once its mapping is settled.
+struct Plan<'a> {
+    subject: &'a Subject,
+    source_voxels: usize,
+    /// The rigid body it is carried by instead of the transform
+    /// ([`Subject::keep_shape`]), with the deformation that leaves out.
+    fitted: Option<(crate::registration::RigidTransform, f64)>,
+    /// The destination voxel box it can land in; `None` when it maps
+    /// entirely outside the destination volume.
+    landing: Option<([usize; 3], [usize; 3])>,
+}
+
+/// Where a structure whose source box is `slo..=shi` can land in the
+/// destination, as a voxel box, or `None` when it maps entirely outside.
+///
+/// The eight corners of its box are mapped across, then a generous margin
+/// kept: for a deformable transform the image of a box is not a box, and a
+/// clipped structure is a silent error nobody would notice. The margin
+/// covers what a deformable map does inside the box that its corners do not
+/// show: a quarter of the box plus 20 mm. It is deliberately not the distance
+/// the corners travelled - between two frames of reference that is the whole
+/// patient, and the box would become the volume.
+fn landing_box(
+    src: &Volume,
+    dst: &Volume,
+    slo: [usize; 3],
+    shi: [usize; 3],
+    to_dst: &dyn Fn(Vec3) -> Vec3,
+) -> Option<([usize; 3], [usize; 3])> {
+    let (mut dlo, mut dhi) = ([f64::MAX; 3], [f64::MIN; 3]);
+    for ci in 0..8 {
+        let c = src.voxel_to_patient(
+            if ci & 1 == 0 { slo[0] } else { shi[0] } as f64,
+            if ci & 2 == 0 { slo[1] } else { shi[1] } as f64,
+            if ci & 4 == 0 { slo[2] } else { shi[2] } as f64,
+        );
+        let v = dst.patient_to_voxel(to_dst(c));
+        for a in 0..3 {
+            dlo[a] = dlo[a].min(v[a]);
+            dhi[a] = dhi[a].max(v[a]);
+        }
+    }
+    let mut lo = [0usize; 3];
+    let mut hi = [0usize; 3];
+    for a in 0..3 {
+        let margin = 20.0 / dst.spacing[a] + 0.25 * (dhi[a] - dlo[a]) + 4.0;
+        lo[a] = (dlo[a] - margin).max(0.0) as usize;
+        hi[a] = ((dhi[a] + margin) as i64).clamp(0, dst.dims[a] as i64 - 1) as usize;
+        if lo[a] > hi[a] {
+            lo[a] = hi[a];
+        }
+    }
+    if hi.iter().zip(&lo).any(|(h, l)| h <= l) {
+        return None;
+    }
+    Some((lo, hi))
+}
+
+/// The smallest box holding all of `boxes`.
+fn union_box(boxes: &[([usize; 3], [usize; 3])]) -> Option<([usize; 3], [usize; 3])> {
+    let (first, rest) = boxes.split_first()?;
+    Some(rest.iter().fold(*first, |(lo, hi), (l, h)| {
+        (
+            [0, 1, 2].map(|a| lo[a].min(l[a])),
+            [0, 1, 2].map(|a| hi[a].max(h[a])),
+        )
+    }))
+}
+
 /// Carry `subjects` from `src` onto `dst` through `t`.
 ///
 /// `use_inverse` says which way the transform runs relative to the two
@@ -306,9 +495,66 @@ pub fn propagate(
     let to_src = move |p: Vec3| if use_inverse { t.unmap(p) } else { t.map(p) };
     let to_dst = move |p: Vec3| if use_inverse { t.map(p) } else { t.unmap(p) };
 
-    let n = subjects.len();
+    // First, per structure: the mapping it is pulled along (the transform,
+    // or its rigid fit over the structure) and where it lands.
+    let mut plans: Vec<Plan> = Vec::with_capacity(subjects.len());
+    for s in subjects {
+        if sink.cancelled() {
+            bail!(CANCELLED);
+        }
+        if s.mask.len() != src.dims[0] * src.dims[1] * src.dims[2] {
+            continue;
+        }
+        let Some((slo, shi)) = crate::morphology::mask_bbox(&s.mask, src.dims) else {
+            continue;
+        };
+        let fitted = if s.keep_shape {
+            rigid_fit_over(src, &s.mask, &to_dst)
+        } else {
+            None
+        };
+        let landing = match &fitted {
+            Some((r, _)) => landing_box(src, dst, slo, shi, &|p| r.unmap(p)),
+            None => landing_box(src, dst, slo, shi, &to_dst),
+        };
+        plans.push(Plan {
+            subject: s,
+            source_voxels: crate::morphology::count_set(&s.mask),
+            fitted,
+            landing,
+        });
+    }
+
+    // The structures pulled along the transform itself share one mapping
+    // cache over all their boxes when that evaluates fewer nodes than a
+    // cache each - forty organs of one abdomen overlap almost entirely, two
+    // small targets at opposite ends of the scan do not. Every point maps
+    // the same either way ([`MapCache::lattice`]).
+    let step = MapCache::step(dst, NODE_MM);
+    let shared_boxes: Vec<([usize; 3], [usize; 3])> = plans
+        .iter()
+        .filter(|p| p.fitted.is_none())
+        .filter_map(|p| p.landing)
+        .collect();
+    let shared = union_box(&shared_boxes).filter(|&(lo, hi)| {
+        let apart: usize = shared_boxes
+            .iter()
+            .map(|&(l, h)| MapCache::nodes_for(step, l, h))
+            .sum();
+        shared_boxes.len() > 1 && MapCache::nodes_for(step, lo, hi) < apart
+    });
+    let shared = match shared {
+        Some((lo, hi)) => {
+            sink.report(0.0, "Mapping the transform");
+            Some(MapCache::build(dst, lo, hi, &to_src, NODE_MM))
+        }
+        None => None,
+    };
+
+    let n = plans.len();
     let mut out = Vec::with_capacity(n);
-    for (si, s) in subjects.iter().enumerate() {
+    for (si, plan) in plans.iter().enumerate() {
+        let s = plan.subject;
         if sink.cancelled() {
             bail!(CANCELLED);
         }
@@ -316,59 +562,9 @@ pub fn propagate(
             si as f32 / n as f32,
             &format!("Propagating {} ({}/{n})", s.name, si + 1),
         );
-        if s.mask.len() != src.dims[0] * src.dims[1] * src.dims[2] {
-            continue;
-        }
-        let Some((slo, shi)) = crate::morphology::mask_bbox(&s.mask, src.dims) else {
-            continue;
-        };
-        let source_voxels = crate::morphology::count_set(&s.mask);
-        // The mapping this structure is pulled along: the transform, or
-        // its rigid fit over the structure.
-        let fitted = if s.keep_shape {
-            rigid_fit_over(src, &s.mask, &to_dst)
-        } else {
-            None
-        };
-        let (to_src, to_dst): (MapFn, MapFn) = match &fitted {
-            Some((r, _)) => (Box::new(|p| r.map(p)), Box::new(|p| r.unmap(p))),
-            None => (Box::new(to_src), Box::new(to_dst)),
-        };
-        let rigid_residual_mm = fitted.as_ref().map(|(_, res)| *res);
-
-        // Where does this structure land in the destination? Map the eight
-        // corners of its box across, then keep a generous margin: for a
-        // deformable transform the image of a box is not a box, and a
-        // clipped structure is a silent error nobody would notice.
-        // The margin covers what a deformable map does inside the box that
-        // its corners do not show: a quarter of the box plus 20 mm. It is
-        // deliberately not the distance the corners travelled - between two
-        // frames of reference that is the whole patient, and the box would
-        // become the volume.
-        let (mut dlo, mut dhi) = ([f64::MAX; 3], [f64::MIN; 3]);
-        for ci in 0..8 {
-            let c = src.voxel_to_patient(
-                if ci & 1 == 0 { slo[0] } else { shi[0] } as f64,
-                if ci & 2 == 0 { slo[1] } else { shi[1] } as f64,
-                if ci & 4 == 0 { slo[2] } else { shi[2] } as f64,
-            );
-            let v = dst.patient_to_voxel(to_dst(c));
-            for a in 0..3 {
-                dlo[a] = dlo[a].min(v[a]);
-                dhi[a] = dhi[a].max(v[a]);
-            }
-        }
-        let mut lo = [0usize; 3];
-        let mut hi = [0usize; 3];
-        for a in 0..3 {
-            let margin = 20.0 / dst.spacing[a] + 0.25 * (dhi[a] - dlo[a]) + 4.0;
-            lo[a] = (dlo[a] - margin).max(0.0) as usize;
-            hi[a] = ((dhi[a] + margin) as i64).clamp(0, dst.dims[a] as i64 - 1) as usize;
-            if lo[a] > hi[a] {
-                lo[a] = hi[a];
-            }
-        }
-        if hi.iter().zip(&lo).any(|(h, l)| h <= l) {
+        let source_voxels = plan.source_voxels;
+        let rigid_residual_mm = plan.fitted.as_ref().map(|(_, res)| *res);
+        let Some((lo, hi)) = plan.landing else {
             // The structure maps entirely outside the destination volume.
             out.push(Propagated {
                 name: s.name.clone(),
@@ -382,9 +578,20 @@ pub fn propagate(
                 rigid_residual_mm,
             });
             continue;
-        }
+        };
 
-        let cache = MapCache::build(dst, lo, hi, &*to_src, 3.0);
+        let own;
+        let cache = match (&plan.fitted, &shared) {
+            (None, Some(shared)) => shared,
+            (Some((r, _)), _) => {
+                own = MapCache::build(dst, lo, hi, &|p| r.map(p), NODE_MM);
+                &own
+            }
+            (None, None) => {
+                own = MapCache::build(dst, lo, hi, &to_src, NODE_MM);
+                &own
+            }
+        };
         let [dnx, dny, dnz] = dst.dims;
         let src_dims = src.dims;
         let src_mask = &s.mask;
@@ -450,6 +657,89 @@ pub fn propagate(
     }
     sink.report(1.0, "done");
     Ok(out)
+}
+
+/// Carry a mask from one lattice to another through a transform, taking
+/// each destination voxel's value from the nearest source voxel.
+///
+/// What *Transfer by relationship* places a target with (a shift from one
+/// reference structure to another) and what a typed matrix does to it.
+///
+/// The bounding box is mapped forward to find the destination box worth
+/// filling; every voxel of that box is then mapped *back* and takes the
+/// value it lands on, which is what keeps the result free of holes whatever
+/// the two spacings are. A pure shift and a hand-typed matrix are the same
+/// operation here, and go through the same code.
+pub fn carry_mask(mask: &[u8], from: &Grid, to: &Grid, t: &Transform3) -> Vec<u8> {
+    let [nx, ny, nz] = to.dims;
+    let mut out = vec![0u8; nx * ny * nz];
+    // Bounding box of the source mask, in source voxels.
+    let [sx, sy, sz] = from.dims;
+    let (mut lo, mut hi) = ([usize::MAX; 3], [0usize; 3]);
+    for k in 0..sz {
+        for j in 0..sy {
+            for i in 0..sx {
+                if mask[k * sx * sy + j * sx + i] != 0 {
+                    let v = [i, j, k];
+                    for a in 0..3 {
+                        lo[a] = lo[a].min(v[a]);
+                        hi[a] = hi[a].max(v[a]);
+                    }
+                }
+            }
+        }
+    }
+    if lo[0] == usize::MAX {
+        return out;
+    }
+    // The eight translated corners, in destination voxels, give the
+    // destination box to fill (padded a voxel for rounding).
+    let (mut dlo, mut dhi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for &ci in &[lo[0], hi[0]] {
+        for &cj in &[lo[1], hi[1]] {
+            for &ck in &[lo[2], hi[2]] {
+                let p = t.map(from.voxel_to_patient(ci as f64, cj as f64, ck as f64));
+                let v = to.patient_to_voxel(p);
+                for a in 0..3 {
+                    dlo[a] = dlo[a].min(v[a]);
+                    dhi[a] = dhi[a].max(v[a]);
+                }
+            }
+        }
+    }
+    let clamp = |v: f64, n: usize| (v.max(0.0) as usize).min(n.saturating_sub(1));
+    let (blo, bhi) = (
+        [
+            clamp(dlo[0].floor() - 1.0, nx),
+            clamp(dlo[1].floor() - 1.0, ny),
+            clamp(dlo[2].floor() - 1.0, nz),
+        ],
+        [
+            clamp(dhi[0].ceil() + 1.0, nx),
+            clamp(dhi[1].ceil() + 1.0, ny),
+            clamp(dhi[2].ceil() + 1.0, nz),
+        ],
+    );
+    for k in blo[2]..=bhi[2] {
+        for j in blo[1]..=bhi[1] {
+            for i in blo[0]..=bhi[0] {
+                let p = t.unmap(to.voxel_to_patient(i as f64, j as f64, k as f64));
+                let v = from.patient_to_voxel(p);
+                let (si, sj, sk) = (v[0].round(), v[1].round(), v[2].round());
+                if si < 0.0 || sj < 0.0 || sk < 0.0 {
+                    continue;
+                }
+                let (si, sj, sk) = (si as usize, sj as usize, sk as usize);
+                if si >= sx || sj >= sy || sk >= sz {
+                    continue;
+                }
+                if mask[sk * sx * sy + sj * sx + si] != 0 {
+                    out[k * nx * ny + j * nx + i] = 1;
+                }
+            }
+        }
+    }
+    out
 }
 
 /// What is done to a propagated mask after it lands: a structure that
@@ -886,6 +1176,117 @@ mod tests {
             "filled to a solid ball: {:.1} cm³ vs {ball:.1}",
             item.result_cm3
         );
+    }
+
+    /// A packed result gives back exactly the mask it was packed from, and
+    /// keeps only its box.
+    #[test]
+    fn a_packed_result_unpacks_to_the_same_mask() {
+        let v = vol([30, 20, 12], 1.0, Vec3::ZERO);
+        let mut mask = ball(&v, Vec3::new(9.0, 7.0, 5.0), 3.5);
+        mask[(11 * 20 + 19) * 30 + 29] = 1; // the far corner as well
+        let item = |mask: Vec<u8>| Propagated {
+            name: "x".into(),
+            color: [1, 2, 3],
+            voxels: crate::morphology::count_set(&mask),
+            mask,
+            source_cm3: 1.0,
+            result_cm3: 2.0,
+            mapped_cm3: 3.0,
+            source_surface_cm3: Some(4.0),
+            rigid_residual_mm: None,
+        };
+        let packed = PackedItem::pack(item(mask.clone()), v.dims);
+        assert!(packed.mask() == mask);
+        let back = packed.unpack();
+        assert!(back.mask == mask);
+        assert_eq!((back.voxels, back.mapped_cm3), (packed.voxels, 3.0));
+
+        let small = ball(&v, Vec3::new(9.0, 7.0, 5.0), 3.5);
+        let packed = PackedItem::pack(item(small.clone()), v.dims);
+        assert!(
+            packed.boxed.len() < small.len() / 10,
+            "only the box is kept"
+        );
+        assert!(packed.mask() == small);
+
+        let empty = PackedItem::pack(item(vec![0; small.len()]), v.dims);
+        assert!(empty.boxed.is_empty());
+        assert_eq!(empty.mask(), vec![0; small.len()]);
+    }
+
+    /// Structures pulled along the transform share one mapping cache when
+    /// that is cheaper; a structure lands exactly where it lands on its own,
+    /// voxel for voxel, because the cache's nodes sit on one lattice
+    /// whatever box it covers.
+    #[test]
+    fn structures_sharing_a_mapping_cache_land_exactly_as_alone() {
+        use crate::registration::{BSplineTransform, Warp};
+        // Large enough that the structures' boxes do not all reach the
+        // volume's edges, so each has a lattice of its own to compare with.
+        let src = vol([90, 90, 50], 1.0, Vec3::ZERO);
+        let dst = vol([90, 90, 50], 1.0, Vec3::new(0.3, -0.2, 0.1));
+        // A smooth, clearly non-affine warp: every control point pushed by
+        // a different amount.
+        let mut b = BSplineTransform::new(&dst, 12.0);
+        for (i, c) in b.coeffs.iter_mut().enumerate() {
+            *c = ((i * 7919 % 13) as f64 - 6.0) * 0.45;
+        }
+        let t = Transform3 {
+            rigid: RigidTransform::new(
+                [0.02, -0.01, 0.03, 1.5, -0.5, 0.8],
+                Vec3::new(45.0, 45.0, 25.0),
+            ),
+            warp: Warp::BSpline(b),
+            manual: None,
+        };
+        let subject = |name: &str, c: Vec3, r: f64| Subject {
+            name: name.into(),
+            color: [1, 2, 3],
+            mask: ball(&src, c, r),
+            surface_cm3: None,
+            keep_shape: false,
+        };
+        let subjects = vec![
+            subject("a", Vec3::new(30.0, 30.0, 20.0), 6.0),
+            subject("b", Vec3::new(45.0, 40.0, 25.0), 7.5),
+            subject("c", Vec3::new(38.0, 52.0, 22.0), 4.0),
+        ];
+        // The case under test: one cache for the three is the cheaper.
+        let step = MapCache::step(&dst, NODE_MM);
+        let boxes: Vec<_> = subjects
+            .iter()
+            .map(|s| {
+                let (lo, hi) = crate::morphology::mask_bbox(&s.mask, src.dims).unwrap();
+                landing_box(&src, &dst, lo, hi, &|p| t.unmap(p)).unwrap()
+            })
+            .collect();
+        let (ulo, uhi) = union_box(&boxes).unwrap();
+        let apart: usize = boxes
+            .iter()
+            .map(|&(l, h)| MapCache::nodes_for(step, l, h))
+            .sum();
+        assert!(MapCache::nodes_for(step, ulo, uhi) < apart, "shared");
+        assert!(
+            boxes.iter().any(|(l, _)| l[0] > 0 && l[1] > 0),
+            "boxes off the edges"
+        );
+        let together = propagate(&src, &dst, &t, false, &subjects, &Quiet).unwrap();
+        assert_eq!(together.len(), 3);
+        for (s, t_all) in subjects.iter().zip(&together) {
+            let alone = propagate(&src, &dst, &t, false, std::slice::from_ref(s), &Quiet)
+                .unwrap()
+                .remove(0);
+            assert!(alone.voxels > 0, "{} landed", s.name);
+            assert_eq!(alone.voxels, t_all.voxels, "{}", s.name);
+            assert!(alone.mask == t_all.mask, "{}: the same voxels", s.name);
+            assert_eq!(
+                alone.mapped_cm3.to_bits(),
+                t_all.mapped_cm3.to_bits(),
+                "{}",
+                s.name
+            );
+        }
     }
 
     #[test]

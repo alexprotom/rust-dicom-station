@@ -325,12 +325,109 @@ fn pass_along(f: &mut [f32], dims: [usize; 3], axis: usize, step: f32, sweep: Sw
     );
 }
 
+// ---------------------------------------------------------------------------
+// Working on the part of the volume a margin can reach
+// ---------------------------------------------------------------------------
+
+/// A box of the volume a margin is worked out in, instead of the whole
+/// volume: a 5 mm margin on a 30 mm target of a 512 × 512 × 300 CT is a
+/// question about 60 000 voxels, not 80 million.
+///
+/// The box holds everything the operation can change or depends on, so the
+/// result is the one the whole volume gives:
+///
+/// * a **dilation** reaches no further than its radius from the mask, so the
+///   mask's box grown by the radius (and a voxel) holds every voxel it sets;
+/// * an **erosion** keeps only voxels of the mask, and the nearest
+///   background to any of them is inside the mask's box or on the ring of
+///   voxels just outside it (every background voxel further out has one on
+///   the ring that is nearer along every axis). So the box grown by one
+///   voxel holds all of it - except where the mask touches the volume's
+///   face, where the box stops at the face exactly as the volume does, and
+///   outside still counts as set.
+///
+/// Distances inside the box are computed on line positions counted from the
+/// box's corner instead of the volume's, which can move a distance that
+/// equals the radius to within float rounding across the threshold; nothing
+/// coarser changes.
+#[derive(Clone, Copy, Debug)]
+struct Crop {
+    lo: [usize; 3],
+    dims: [usize; 3],
+}
+
+impl Crop {
+    /// The mask's box grown by `pad` voxels a side along each axis, cut at
+    /// the volume's faces; `None` when that is most of the volume anyway
+    /// (cutting it out and pasting it back would only add two copies) or
+    /// when nothing is set.
+    fn around(mask: &[u8], dims: [usize; 3], pad: [usize; 3]) -> Option<Crop> {
+        let (lo, hi) = mask_bbox(mask, dims)?;
+        let mut c = Crop {
+            lo: [0; 3],
+            dims: [0; 3],
+        };
+        for a in 0..3 {
+            c.lo[a] = lo[a].saturating_sub(pad[a]);
+            let end = (hi[a] + pad[a]).min(dims[a] - 1);
+            c.dims[a] = end - c.lo[a] + 1;
+        }
+        let whole = dims[0] * dims[1] * dims[2];
+        (c.dims.iter().product::<usize>() * 2 < whole).then_some(c)
+    }
+
+    /// The part of `mask` inside the box.
+    fn cut(&self, mask: &[u8], dims: [usize; 3]) -> Vec<u8> {
+        let [cx, cy, cz] = self.dims;
+        let mut out = vec![0u8; cx * cy * cz];
+        out.par_chunks_mut(cx * cy)
+            .enumerate()
+            .for_each(|(k, plane)| {
+                for (j, row) in plane.chunks_mut(cx).enumerate() {
+                    let at = ((self.lo[2] + k) * dims[1] + self.lo[1] + j) * dims[0] + self.lo[0];
+                    row.copy_from_slice(&mask[at..at + cx]);
+                }
+            });
+        out
+    }
+
+    /// A whole-volume mask holding `part` in the box and nothing outside it.
+    fn paste(&self, part: &[u8], dims: [usize; 3]) -> Vec<u8> {
+        let [cx, cy, _] = self.dims;
+        let mut out = vec![0u8; dims[0] * dims[1] * dims[2]];
+        out.par_chunks_mut(dims[0] * dims[1])
+            .enumerate()
+            .skip(self.lo[2])
+            .take(self.dims[2])
+            .for_each(|(k, plane)| {
+                let k = k - self.lo[2];
+                for j in 0..cy {
+                    let at = (self.lo[1] + j) * dims[0] + self.lo[0];
+                    let from = (k * cy + j) * cx;
+                    plane[at..at + cx].copy_from_slice(&part[from..from + cx]);
+                }
+            });
+        out
+    }
+}
+
+/// Voxels a margin of `radius_mm` can reach along each axis, and one more.
+fn reach(spacing: [f64; 3], radius_mm: f64) -> [usize; 3] {
+    spacing.map(|sp| (radius_mm / sp.max(1e-6)).ceil() as usize + 1)
+}
+
 /// Erosion by a ball of `radius_mm`: the voxels further than the radius from
 /// any background voxel. Voxels outside the volume are not background, so a
 /// mask that runs into the volume boundary is not eroded there.
 pub fn erode_mm(mask: &[u8], dims: [usize; 3], spacing: [f64; 3], radius_mm: f64) -> Vec<u8> {
     if radius_mm <= 0.0 {
         return mask.to_vec();
+    }
+    if let Some(c) = Crop::around(mask, dims, [1; 3]) {
+        return c.paste(
+            &erode_mm(&c.cut(mask, dims), c.dims, spacing, radius_mm),
+            dims,
+        );
     }
     let r2 = (radius_mm * radius_mm) as f32;
     let d = dist2_to_background(mask, dims, spacing);
@@ -341,6 +438,12 @@ pub fn erode_mm(mask: &[u8], dims: [usize; 3], spacing: [f64; 3], radius_mm: f64
 pub fn dilate_mm(mask: &[u8], dims: [usize; 3], spacing: [f64; 3], radius_mm: f64) -> Vec<u8> {
     if radius_mm <= 0.0 {
         return mask.to_vec();
+    }
+    if let Some(c) = Crop::around(mask, dims, reach(spacing, radius_mm)) {
+        return c.paste(
+            &dilate_mm(&c.cut(mask, dims), c.dims, spacing, radius_mm),
+            dims,
+        );
     }
     let r2 = (radius_mm * radius_mm) as f32;
     let d = dist2_to_foreground(mask, dims, spacing);
@@ -393,6 +496,12 @@ pub fn dilate_radii(mask: &[u8], dims: [usize; 3], spacing: [f64; 3], radii: &Ra
     if widest(radii) <= 0.0 {
         return mask.to_vec();
     }
+    if let Some(c) = Crop::around(mask, dims, reach(spacing, widest(radii))) {
+        return c.paste(
+            &dilate_radii(&c.cut(mask, dims), c.dims, spacing, radii),
+            dims,
+        );
+    }
     let seed = || -> Vec<f32> {
         mask.par_iter()
             .map(|&v| if v == 0 { f32::INFINITY } else { 0.0 })
@@ -443,6 +552,16 @@ pub fn dilate_radii(mask: &[u8], dims: [usize; 3], spacing: [f64; 3], radii: &Ra
 pub fn erode_radii(mask: &[u8], dims: [usize; 3], spacing: [f64; 3], radii: &Radii) -> Vec<u8> {
     if widest(radii) <= 0.0 {
         return mask.to_vec();
+    }
+    // The ring argument of [`Crop`] holds for the ellipsoid too: moving a
+    // background voxel onto the ring shortens its offset along every axis
+    // without changing its direction, and every octant of the shape keeps
+    // what it held when its coordinates shrink toward the centre.
+    if let Some(c) = Crop::around(mask, dims, [1; 3]) {
+        return c.paste(
+            &erode_radii(&c.cut(mask, dims), c.dims, spacing, radii),
+            dims,
+        );
     }
     let inverted: Vec<u8> = mask.par_iter().map(|&v| u8::from(v == 0)).collect();
     // Reflected: eroding the anterior surface by 5 mm is dilating the
@@ -1121,6 +1240,93 @@ mod tests {
             .iter()
             .all(|d| d.is_infinite()));
         assert_eq!(erode_mm(&mask, dims, [1.0; 3], 100.0), vec![1u8; 64]);
+    }
+
+    /// The margins on a small structure are worked out in a box around it
+    /// ([`Crop`]); what they set must be what the whole volume sets, at a
+    /// face of the volume included.
+    #[test]
+    fn margins_worked_out_around_the_structure_match_the_whole_volume() {
+        // Whole-volume references: the transforms with no crop.
+        let whole_dilate = |m: &[u8], d: [usize; 3], sp: [f64; 3], r: f64| -> Vec<u8> {
+            let r2 = (r * r) as f32;
+            dist2_to_foreground(m, d, sp)
+                .iter()
+                .map(|&v| u8::from(v <= r2))
+                .collect()
+        };
+        let whole_erode = |m: &[u8], d: [usize; 3], sp: [f64; 3], r: f64| -> Vec<u8> {
+            let r2 = (r * r) as f32;
+            dist2_to_background(m, d, sp)
+                .iter()
+                .map(|&v| u8::from(v > r2))
+                .collect()
+        };
+        let dims = [60, 50, 40];
+        let spacing = [0.8, 1.1, 2.5];
+        let idx = |i: usize, j: usize, k: usize| (k * dims[1] + j) * dims[0] + i;
+        // A blob in the middle with a hole, and one pressed against the
+        // i = 0 and k = last faces.
+        let mut mask = vec![0u8; dims[0] * dims[1] * dims[2]];
+        for k in 0..dims[2] {
+            for j in 0..dims[1] {
+                for i in 0..dims[0] {
+                    let (x, y, z) = (i as f64 * 0.8, j as f64 * 1.1, k as f64 * 2.5);
+                    let a = (x - 24.0).powi(2) + (y - 26.0).powi(2) + (z - 40.0).powi(2);
+                    let hole = (x - 25.0).powi(2) + (y - 27.0).powi(2) + (z - 40.0).powi(2);
+                    let b = (x - 1.0).powi(2) / 9.0 + (y - 20.0).powi(2) / 16.0;
+                    if (a < 64.0 && hole > 4.0) || (b < 1.0 && z > 85.0) {
+                        mask[idx(i, j, k)] = 1;
+                    }
+                }
+            }
+        }
+        for r in [1.0, 2.6, 5.0] {
+            assert!(Crop::around(&mask, dims, reach(spacing, r)).is_some());
+            assert_eq!(
+                dilate_mm(&mask, dims, spacing, r),
+                whole_dilate(&mask, dims, spacing, r),
+                "dilate {r}"
+            );
+            assert_eq!(
+                erode_mm(&mask, dims, spacing, r),
+                whole_erode(&mask, dims, spacing, r),
+                "erode {r}"
+            );
+        }
+        // The asymmetric margin, against the same operation on a copy of
+        // the volume padded so that the crop covers too much to be used.
+        let radii: Radii = [[2.0, 4.0], [1.0, 0.0], [5.0, 3.0]];
+        let grown = dilate_radii(&mask, dims, spacing, &radii);
+        let shrunk = erode_radii(&mask, dims, spacing, &radii);
+        let fill = |m: &[u8]| -> Vec<u8> {
+            // Set a far corner so the mask's box spans the volume.
+            let mut m = m.to_vec();
+            m[idx(dims[0] - 1, dims[1] - 1, 0)] = 1;
+            m
+        };
+        assert!(Crop::around(&fill(&mask), dims, [1; 3]).is_none());
+        let mut grown_whole = dilate_radii(&fill(&mask), dims, spacing, &radii);
+        let mut shrunk_whole = erode_radii(&fill(&mask), dims, spacing, &radii);
+        // Take the corner's own contribution back out: it is at the far
+        // end of the volume from both blobs.
+        for k in 0..dims[2] {
+            for j in 0..dims[1] {
+                for i in 0..dims[0] {
+                    let (x, y, z) = (
+                        (dims[0] - 1 - i) as f64 * 0.8,
+                        (dims[1] - 1 - j) as f64 * 1.1,
+                        k as f64 * 2.5,
+                    );
+                    if x < 10.0 && y < 10.0 && z < 10.0 {
+                        grown_whole[idx(i, j, k)] = grown[idx(i, j, k)];
+                        shrunk_whole[idx(i, j, k)] = shrunk[idx(i, j, k)];
+                    }
+                }
+            }
+        }
+        assert_eq!(grown, grown_whole, "asymmetric dilation");
+        assert_eq!(shrunk, shrunk_whole, "asymmetric erosion");
     }
 
     #[test]

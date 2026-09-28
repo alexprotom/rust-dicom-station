@@ -106,11 +106,33 @@ pub fn download_to_file(
     label: &str,
     sink: &dyn ProgressSink,
 ) -> Result<()> {
-    sink.report(0.0, &format!("Downloading {label}"));
-    let agent = ureq::AgentBuilder::new()
+    download_with(&download_agent(), url, dest, size_hint, label, sink)
+}
+
+/// The HTTP client downloads go through. It keeps its connections open and
+/// hands them to the next request for the same host, so fetching many files
+/// from one server costs a TLS handshake per connection rather than one per
+/// file - the difference between seconds and minutes for a folder of a
+/// thousand DICOM slices.
+pub fn download_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(30))
         .timeout_read(std::time::Duration::from_secs(60))
-        .build();
+        .max_idle_connections_per_host(8)
+        .build()
+}
+
+/// [`download_to_file`] through a given `agent` (one shared by many
+/// downloads, see [`download_agent`]).
+pub fn download_with(
+    agent: &ureq::Agent,
+    url: &str,
+    dest: &Path,
+    size_hint: u64,
+    label: &str,
+    sink: &dyn ProgressSink,
+) -> Result<()> {
+    sink.report(0.0, &format!("Downloading {label}"));
     let resp = agent
         .get(url)
         .call()

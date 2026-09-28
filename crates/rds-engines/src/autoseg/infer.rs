@@ -173,41 +173,27 @@ pub fn predict(
                 }
                 // ---- weighted accumulate ----------------------------------
                 // parallel over patch rows pz (distinct accumulator rows)
+                let tile = Tile {
+                    origin: [s0, s1, s2],
+                    off,
+                    dims,
+                    patch: cfg.patch_size,
+                    classes,
+                };
                 let acc_ptr = SendPtr(acc.as_mut_ptr());
                 (0..p0).into_par_iter().for_each(|pz| {
                     let z = s0 + pz;
                     if z < off[0] || z >= off[0] + d0 {
                         return;
                     }
-                    let r = z - off[0];
-                    let slot = r % win;
-                    let w0 = g0[pz];
+                    let slot = (z - off[0]) % win;
                     let acc = unsafe {
                         std::slice::from_raw_parts_mut(
                             acc_ptr.get().add(slot * classes * plane),
                             classes * plane,
                         )
                     };
-                    for c in 0..classes {
-                        let lbase = ((c * p0) + pz) * p1 * p2;
-                        let abase = c * plane;
-                        for (py, g1v) in g1.iter().enumerate() {
-                            let y = s1 + py;
-                            if y < off[1] || y >= off[1] + d1 {
-                                continue;
-                            }
-                            let wy = w0 * g1v;
-                            let arow = abase + (y - off[1]) * d2;
-                            let lrow = lbase + py * p2;
-                            for px in 0..p2 {
-                                let x = s2 + px;
-                                if x < off[2] || x >= off[2] + d2 {
-                                    continue;
-                                }
-                                acc[arow + (x - off[2])] += logits[lrow + px] * wy * g2[px];
-                            }
-                        }
-                    }
+                    tile.accumulate_row(acc, &logits, pz, g0[pz], &g1, &g2);
                 });
                 done_tiles += 1;
                 if !hooks.tile_done(done_tiles, total_tiles) {
@@ -218,6 +204,69 @@ pub fn predict(
     }
     finalize_rows(&mut acc, &mut labels, finalized, d0);
     Ok(labels)
+}
+
+/// Where one tile sits: its corner on the padded grid, the padding, the
+/// volume and the patch.
+struct Tile {
+    origin: [usize; 3],
+    off: [usize; 3],
+    dims: [usize; 3],
+    patch: [usize; 3],
+    classes: usize,
+}
+
+impl Tile {
+    /// The patch indices along `axis` that land inside the volume.
+    fn inside(&self, axis: usize) -> std::ops::Range<usize> {
+        let lo = self.off[axis].saturating_sub(self.origin[axis]);
+        let hi = (self.off[axis] + self.dims[axis])
+            .saturating_sub(self.origin[axis])
+            .min(self.patch[axis]);
+        lo..hi.max(lo)
+    }
+
+    /// Add patch row `pz` of the tile's logits, Gaussian-weighted, into its
+    /// accumulator row `acc` (`[classes][d1 * d2]`).
+    ///
+    /// The part of each patch row inside the volume is worked out once, not
+    /// tested voxel by voxel, which leaves the inner loop a plain
+    /// multiply-add over three slices that the compiler vectorizes; every
+    /// voxel still gets exactly `acc += logit * (w0 * g1) * g2`, in that
+    /// order, so the sums are the ones the per-voxel loop made to the bit.
+    fn accumulate_row(
+        &self,
+        acc: &mut [f32],
+        logits: &[f32],
+        pz: usize,
+        w0: f32,
+        g1: &[f32],
+        g2: &[f32],
+    ) {
+        let [p0, p1, p2] = self.patch;
+        let [_, d1, d2] = self.dims;
+        let plane = d1 * d2;
+        let (ys, xs) = (self.inside(1), self.inside(2));
+        if xs.is_empty() {
+            return;
+        }
+        let g2 = &g2[xs.clone()];
+        // The first volume column the patch row covers.
+        let x0 = self.origin[2] + xs.start - self.off[2];
+        for c in 0..self.classes {
+            let lbase = ((c * p0) + pz) * p1 * p2;
+            let abase = c * plane;
+            for py in ys.clone() {
+                let wy = w0 * g1[py];
+                let y = self.origin[1] + py - self.off[1];
+                let arow = &mut acc[abase + y * d2 + x0..][..xs.len()];
+                let lrow = &logits[lbase + py * p2 + xs.start..][..xs.len()];
+                for ((a, &l), &g) in arow.iter_mut().zip(lrow).zip(g2) {
+                    *a += l * wy * g;
+                }
+            }
+        }
+    }
 }
 
 /// Wrapper making a raw pointer Sync for the disjoint-row parallel loop.
@@ -244,6 +293,94 @@ mod tests {
         assert_eq!(compute_steps(300, 112, 0.8), vec![0, 63, 125, 188]);
         assert_eq!(compute_steps(128, 128, 0.5), vec![0]);
         assert_eq!(compute_steps(200, 128, 0.5), vec![0, 36, 72]);
+    }
+
+    /// The accumulate loop as it was: every voxel of the patch tested
+    /// against the volume on its own.
+    #[allow(clippy::too_many_arguments)]
+    fn accumulate_row_per_voxel(
+        acc: &mut [f32],
+        logits: &[f32],
+        t: &Tile,
+        pz: usize,
+        w0: f32,
+        g1: &[f32],
+        g2: &[f32],
+    ) {
+        let [s0, s1, s2] = t.origin;
+        let _ = s0;
+        let [p0, p1, p2] = t.patch;
+        let [_, d1, d2] = t.dims;
+        let off = t.off;
+        let plane = d1 * d2;
+        for c in 0..t.classes {
+            let lbase = ((c * p0) + pz) * p1 * p2;
+            let abase = c * plane;
+            for (py, g1v) in g1.iter().enumerate() {
+                let y = s1 + py;
+                if y < off[1] || y >= off[1] + d1 {
+                    continue;
+                }
+                let wy = w0 * g1v;
+                let arow = abase + (y - off[1]) * d2;
+                let lrow = lbase + py * p2;
+                for px in 0..p2 {
+                    let x = s2 + px;
+                    if x < off[2] || x >= off[2] + d2 {
+                        continue;
+                    }
+                    acc[arow + (x - off[2])] += logits[lrow + px] * wy * g2[px];
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_accumulate_row_adds_what_the_per_voxel_loop_added() {
+        // A patch wider than the volume on one axis (padding on both sides)
+        // and narrower on the other, at several tile positions.
+        let classes = 3;
+        let patch = [4, 7, 9];
+        let g0 = gauss_profile(patch[0]);
+        let g1 = gauss_profile(patch[1]);
+        let g2 = gauss_profile(patch[2]);
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut rand = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+        };
+        let logits: Vec<f32> = (0..classes * patch[0] * patch[1] * patch[2])
+            .map(|_| rand())
+            .collect();
+        for (dims, off, origin) in [
+            ([4, 12, 5], [0, 0, 2], [0, 0, 0]),
+            ([4, 12, 5], [0, 0, 2], [0, 5, 0]),
+            ([4, 20, 30], [0, 0, 0], [0, 13, 21]),
+            ([4, 5, 30], [0, 1, 0], [0, 0, 11]),
+        ] {
+            let t = Tile {
+                origin,
+                off,
+                dims,
+                patch,
+                classes,
+            };
+            let plane = dims[1] * dims[2];
+            let start: Vec<f32> = (0..classes * plane).map(|_| rand()).collect();
+            for (pz, &w0) in g0.iter().enumerate() {
+                let mut a = start.clone();
+                let mut b = start.clone();
+                t.accumulate_row(&mut a, &logits, pz, w0, &g1, &g2);
+                accumulate_row_per_voxel(&mut b, &logits, &t, pz, w0, &g1, &g2);
+                let (a, b): (Vec<u32>, Vec<u32>) = (
+                    a.iter().map(|v| v.to_bits()).collect(),
+                    b.iter().map(|v| v.to_bits()).collect(),
+                );
+                assert_eq!(a, b, "dims {dims:?} origin {origin:?} row {pz}");
+            }
+        }
     }
 
     #[test]

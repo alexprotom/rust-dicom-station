@@ -862,6 +862,7 @@ impl ViewerApp {
                 group,
                 moving_slot,
                 moving_series_uid,
+                volumes: crate::workflow::session::Volumes::none(),
             };
             (slot, run_group(req, p).map(PropOutcome::Group))
         }));
@@ -984,6 +985,7 @@ impl ViewerApp {
                 group,
                 moving_slot,
                 moving_series_uid,
+                volumes: crate::workflow::session::Volumes::none(),
             };
             (slot, anchored::run(req, p).map(PropOutcome::Anchored))
         }));
@@ -1501,7 +1503,7 @@ impl ViewerApp {
                 label: phase.label.clone(),
                 metrics: phase.metrics,
                 detail: phase.metric_line.clone(),
-                items: phase.items.iter().map(item_row).collect(),
+                items: phase.items.iter().map(packed_row).collect(),
                 ..run_report::RunBlock::default()
             };
             match landing {
@@ -1524,7 +1526,7 @@ impl ViewerApp {
                         &phase.series_uid,
                         &phase.study_uid,
                         &phase.grid,
-                        &phase.items,
+                        &phase.unpacked(),
                         &format!("{} {}", g.group_name, phase.label),
                     ) {
                         block.landed = Some(label);
@@ -2432,6 +2434,19 @@ struct RegImageRef {
 /// went wrong from one that merely moved something. Filed as contours, the
 /// ROI it became is measured afterwards ([`run_report::RunBlock::file_volumes`]),
 /// and the table gives both sides by surface and by voxels instead.
+/// [`item_row`] for a result of a run over a group.
+fn packed_row(it: &propagate::PackedItem) -> run_report::RunItem {
+    run_report::RunItem {
+        name: it.name.clone(),
+        source_cm3: it.source_cm3,
+        mapped_cm3: it.mapped_cm3,
+        result_cm3: it.result_cm3,
+        source_surface_cm3: it.source_surface_cm3,
+        rigid_residual_mm: it.rigid_residual_mm,
+        filed: None,
+    }
+}
+
 fn item_row(it: &Propagated) -> run_report::RunItem {
     run_report::RunItem {
         name: it.name.clone(),

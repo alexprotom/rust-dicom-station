@@ -515,3 +515,19 @@ fn image_information_flags_a_gap_and_uneven_spacing() {
     assert!(info.warnings().iter().any(|r| r.label == "Slice positions"));
     let _ = std::fs::remove_dir_all(&uneven_dir);
 }
+
+#[test]
+fn a_series_lattice_read_from_its_headers_is_the_loaded_volumes() {
+    // Exports and copies onto 4D phases read a series' lattice without its
+    // pixels; it has to be the lattice the pixels would have come on.
+    let dir = test_data_dir();
+    let study = loader::load_directory(dir, &Progress::default()).expect("study should load");
+    let series = study
+        .series
+        .iter()
+        .find(|s| s.modality == "CT" && !s.files.is_empty())
+        .expect("a CT series");
+    let (vol, _, _) = loader::load_series_volume(series, &Progress::default()).unwrap();
+    let g = loader::series_grid(series).expect("the headers give a lattice");
+    assert!(g == vol.grid(), "dims {:?} vs {:?}", g.dims, vol.dims);
+}

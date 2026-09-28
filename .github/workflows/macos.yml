@@ -34,6 +34,7 @@ on:
   pull_request:
     paths:
       - "src/**"
+      - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "build.rs"
@@ -79,7 +80,11 @@ jobs:
   # that is visible without linking or optimising.
   check:
     name: check (x86_64-apple-darwin)
-    if: github.event_name == 'pull_request'
+    # Also when the release calls this workflow (a version is passed): that
+    # run is on `main`, and `main` is the one place a cache can be saved
+    # that every pull request can restore - a PR's own cache is visible to
+    # that PR alone, so each new PR used to start this check cold.
+    if: github.event_name == 'pull_request' || inputs.version != ''
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
@@ -91,6 +96,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: x86_64-apple-darwin
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # The library and both binaries - what the bundle ships. Not
       # --all-targets: the tests and examples add a great deal of build time

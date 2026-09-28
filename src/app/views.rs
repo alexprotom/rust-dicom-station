@@ -39,7 +39,7 @@ impl ViewerApp {
                 h = h.rotate_left(7) ^ (i as u64 + 1);
             }
         }
-        h ^ self.settings_gen.wrapping_mul(0x2545F4914F6CDD1D)
+        h ^ self.structures_gen(slot).wrapping_mul(0x2545F4914F6CDD1D)
     }
 
     // -- Central: one row per workspace, each of up to four panes -----------
@@ -1920,6 +1920,7 @@ impl ViewerApp {
         // Pre-compute hashes that need `&self` before borrowing mutably.
         let dose_hash = self.dose_settings_hash(slot);
         let contour_hash = self.contour_settings_hash(slot);
+        let structures_gen = self.structures_gen(slot);
         let seg_hash = self.seg_overlay_hash(slot);
         // The tick box on the segmentation series row. `seg_series_idx` still
         // reports the active series to the editing tools; only the overlay
@@ -1941,6 +1942,7 @@ impl ViewerApp {
             active_structs,
             active_dose,
             dose_reference,
+            roi_prep,
             ..
         } = &mut self.slots[slot];
         let study = study.as_ref().unwrap();
@@ -2049,20 +2051,34 @@ impl ViewerApp {
                 let ckey =
                     contour_hash.wrapping_add((slice as u64).wrapping_mul(0x517CC1B727220A95));
                 if views[idx].contour_key != Some(ckey) {
-                    let mut contours = Vec::new();
-                    for (ri, roi) in ss.rois.iter().enumerate() {
-                        if !roi_visible.get(ri).copied().unwrap_or(false) {
-                            continue;
-                        }
-                        let gfx = render::roi_on_plane(vol, roi, plane, slice);
-                        if !gfx.polylines.is_empty()
-                            || !gfx.segments.is_empty()
-                            || !gfx.points.is_empty()
-                        {
-                            contours.push((ri, gfx));
-                        }
+                    let visible: Vec<usize> = (0..ss.rois.len())
+                        .filter(|&ri| roi_visible.get(ri).copied().unwrap_or(false))
+                        .collect();
+                    // Map the visible ROIs not mapped yet, all at once.
+                    roi_prep.for_set(*active_structs, structures_gen, vol, ss.rois.len());
+                    let missing: Vec<usize> = visible
+                        .iter()
+                        .copied()
+                        .filter(|&ri| roi_prep.rois[ri].is_none())
+                        .collect();
+                    let prepared: Vec<render::PreparedRoi> = missing
+                        .par_iter()
+                        .map(|&ri| render::PreparedRoi::new(vol, &ss.rois[ri]))
+                        .collect();
+                    for (ri, p) in missing.into_iter().zip(prepared) {
+                        roi_prep.rois[ri] = Some(p);
                     }
-                    views[idx].contours = contours;
+                    let rois = &roi_prep.rois;
+                    views[idx].contours = visible
+                        .par_iter()
+                        .filter_map(|&ri| {
+                            let gfx = rois[ri].as_ref()?.on_plane(vol, plane, slice);
+                            let drawn = !gfx.polylines.is_empty()
+                                || !gfx.segments.is_empty()
+                                || !gfx.points.is_empty();
+                            drawn.then_some((ri, gfx))
+                        })
+                        .collect();
                     views[idx].contour_key = Some(ckey);
                 }
             }

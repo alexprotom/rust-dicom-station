@@ -216,39 +216,64 @@ jobs:
   linux:
     name: Linux AppImage
     needs: version
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
+    # Built inside Ubuntu 20.04, not on the runner's own newer Ubuntu. An
+    # executable asks at run time for the C library it was linked against,
+    # or a newer one: built on 22.04 the image needed glibc 2.35, which the
+    # AppImage catalog reports as "not self-contained" and which rules out
+    # every distribution older than 2022. 20.04's glibc 2.31 opens the image
+    # to them. GitHub no longer offers 20.04 runners, hence the container.
+    container: ubuntu:20.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      # A container has no FUSE: linuxdeploy (itself an AppImage) and the
+      # finished image checked at the end unpack themselves instead of
+      # mounting. build-appimage.sh sets this too when /dev/fuse is absent.
+      APPIMAGE_EXTRACT_AND_RUN: 1
 
     steps:
+      # Before the checkout, so it can use git; the container starts bare.
+      # libxkbcommon-x11-0 and the other runtime libraries are here to be
+      # *bundled*: winit opens them by name at run time, so linuxdeploy
+      # never sees them, and the catalog's test machine has no
+      # libxkbcommon-x11 (build-appimage.sh names them to linuxdeploy).
+      - name: Install Linux build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates \
+            curl \
+            git \
+            build-essential \
+            pkg-config \
+            libxkbcommon-dev \
+            libxkbcommon-x11-0 \
+            libwayland-dev \
+            libwayland-cursor0 \
+            libx11-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            file \
+            wget
+
       - name: Checkout
         uses: actions/checkout@v5
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Linux build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libxkbcommon-dev \
-            libwayland-dev \
-            libx11-dev \
-            libxcursor-dev \
-            libxrandr-dev \
-            libxi-dev \
-            libgl1-mesa-dev \
-            libfuse2 \
-            file \
-            wget
-
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
       # packaging/linux/appimage/build-appimage.sh: the release build of both
       # executables, the AppDir (desktop entry, icon, the AppRun that routes
-      # `mcp` to the server), linuxdeploy, and the checks - the file is
-      # executable and `<image> mcp --check` starts the MCP server. Models
-      # are intentionally NOT included: the application downloads them at
-      # run time into ~/.local/share/RustDICOMStation/models.
+      # `mcp` to the server), the window-system libraries winit loads at run
+      # time, linuxdeploy, and the checks - the file is executable, those
+      # libraries are inside, and `<image> mcp --check` starts the MCP
+      # server. Models are intentionally NOT included: the application
+      # downloads them at run time into ~/.local/share/RustDICOMStation/models.
       #
       # Through bash, so a checkout that lost the executable bit (a commit
       # made on Windows) still works.
@@ -256,17 +281,19 @@ jobs:
         shell: bash
         run: bash packaging/linux/appimage/build-appimage.sh
 
+      # The name has no "linux" in it: every AppImage is for Linux, and the
+      # AppImage catalog warns about names that say so.
       - name: Check the version
         shell: bash
         run: |
           set -euo pipefail
-          test -f "packaging/linux/appimage/out/rust-dicom-station-${{ needs.version.outputs.version }}-linux-x86_64.AppImage"
+          test -f "packaging/linux/appimage/out/rust-dicom-station-${{ needs.version.outputs.version }}-x86_64.AppImage"
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
           name: linux-release
-          path: packaging/linux/appimage/out/rust-dicom-station-${{ needs.version.outputs.version }}-linux-x86_64.AppImage
+          path: packaging/linux/appimage/out/rust-dicom-station-${{ needs.version.outputs.version }}-x86_64.AppImage
           if-no-files-found: error
 
   # ==========================================================================

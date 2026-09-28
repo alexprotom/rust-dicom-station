@@ -44,6 +44,24 @@ pub fn load(path: &Path) -> Result<Workflow> {
     Workflow::from_json(&text).with_context(|| format!("open {}", path.display()))
 }
 
+/// Every workflow file in `dir` (not its subfolders) that reads, sorted by
+/// file name. Files that do not read as workflows are left out.
+pub fn list(dir: &Path) -> Vec<(PathBuf, Workflow)> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = rd
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == EXTENSION))
+        .collect();
+    paths.sort();
+    paths
+        .into_iter()
+        .filter_map(|p| load(&p).ok().map(|wf| (p, wf)))
+        .collect()
+}
+
 /// Write a workflow file, adding the extension when the name has none.
 /// Returns the path written.
 pub fn save(wf: &Workflow, path: &Path) -> Result<PathBuf> {

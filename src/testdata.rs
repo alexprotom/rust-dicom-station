@@ -30,7 +30,7 @@
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
-use crate::nn::cache::download_to_file;
+use crate::nn::cache::{download_agent, download_with};
 use crate::progress::{ProgressSink, CANCELLED};
 use crate::settings;
 
@@ -277,12 +277,19 @@ pub fn is_rate_limit(e: &anyhow::Error) -> bool {
     text.contains("rate limit") || text.contains("answered 429")
 }
 
+/// Files fetched at once. The folder is a thousand-odd small files from one
+/// host, where each request is mostly waiting on the network: a few in
+/// flight over kept connections fill the line that one at a time leaves idle.
+const WORKERS: usize = 4;
+
 /// [`download`] with a listing already in hand (what the tests use).
 pub fn download_entries(
     entries: &[RemoteEntry],
     dir: &Path,
     sink: &dyn ProgressSink,
 ) -> Result<Summary> {
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
     std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     let todo: Vec<&RemoteEntry> = entries.iter().filter(|e| !e.is_present(dir)).collect();
     // Progress in bytes when the listing gave sizes, in files when it did
@@ -293,47 +300,76 @@ pub fn download_entries(
     } else {
         todo.len().max(1) as u64
     };
-    let mut summary = Summary {
-        kept: entries.len() - todo.len(),
-        dir: dir.to_path_buf(),
-        ..Summary::default()
+    let bar = Bar {
+        inner: sink,
+        done: AtomicU64::new(0),
+        total,
+        finished: AtomicUsize::new(0),
+        files: todo.len(),
+        by_bytes,
     };
-    let mut done: u64 = 0;
-    for (i, e) in todo.iter().enumerate() {
-        if sink.cancelled() {
-            bail!(CANCELLED);
-        }
+    let agent = download_agent();
+    let next = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    let failed: std::sync::Mutex<Option<anyhow::Error>> = std::sync::Mutex::new(None);
+    let (downloaded, bytes) = (AtomicUsize::new(0), AtomicU64::new(0));
+    let fetch = |e: &RemoteEntry| -> Result<u64> {
         let dest = e.path_in(dir);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create {}", parent.display()))?;
         }
-        let window = Window {
-            inner: sink,
-            base: done as f32 / total as f32,
-            span: if by_bytes { e.bytes } else { 1 } as f32 / total as f32,
-            label: if by_bytes {
-                format!(
-                    "{FOLDER}: file {} of {}, {} / {} MB",
-                    i + 1,
-                    todo.len(),
-                    done / 1_000_000,
-                    total / 1_000_000
-                )
-            } else {
-                format!("{FOLDER}: file {} of {}", i + 1, todo.len())
-            },
+        let share = Share {
+            bar: &bar,
+            weight: if by_bytes { e.bytes } else { 1 },
+            counted: AtomicU64::new(0),
         };
         let tmp = dest.with_extension("part");
-        download_to_file(&raw_url(&e.rel), &tmp, e.bytes, &e.rel, &window)
+        download_with(&agent, &raw_url(&e.rel), &tmp, e.bytes, &e.rel, &share)
             .with_context(|| format!("download {}", e.rel))?;
         std::fs::rename(&tmp, &dest).with_context(|| format!("rename to {}", dest.display()))?;
-        let got = dest.metadata().map(|m| m.len()).unwrap_or(e.bytes);
-        done += if by_bytes { e.bytes } else { 1 };
-        summary.downloaded += 1;
-        summary.bytes += got;
+        share.report(1.0, "");
+        Ok(dest.metadata().map(|m| m.len()).unwrap_or(e.bytes))
+    };
+    std::thread::scope(|scope| {
+        for _ in 0..WORKERS.min(todo.len()) {
+            scope.spawn(|| loop {
+                if stop.load(Ordering::Relaxed) || sink.cancelled() {
+                    break;
+                }
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                let Some(e) = todo.get(i) else {
+                    break;
+                };
+                match fetch(e) {
+                    Ok(got) => {
+                        downloaded.fetch_add(1, Ordering::Relaxed);
+                        bytes.fetch_add(got, Ordering::Relaxed);
+                        bar.finished.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(err) => {
+                        stop.store(true, Ordering::Relaxed);
+                        let mut first = failed.lock().unwrap_or_else(|p| p.into_inner());
+                        first.get_or_insert(err);
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    if sink.cancelled() {
+        bail!(CANCELLED);
     }
-    summary.datasets = datasets_in(dir);
+    if let Some(err) = failed.into_inner().unwrap_or_else(|p| p.into_inner()) {
+        return Err(err);
+    }
+    let summary = Summary {
+        kept: entries.len() - todo.len(),
+        dir: dir.to_path_buf(),
+        downloaded: downloaded.into_inner(),
+        bytes: bytes.into_inner(),
+        datasets: datasets_in(dir),
+    };
     sink.report(1.0, &format!("{FOLDER}: {} file(s)", entries.len()));
     Ok(summary)
 }
@@ -386,22 +422,57 @@ fn holds_files(dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Maps one file's `0..=1` onto its share of the whole, and replaces the
-/// downloader's per-file message with one that counts files.
-struct Window<'a> {
+/// One progress bar over files fetched side by side.
+struct Bar<'a> {
     inner: &'a dyn ProgressSink,
-    base: f32,
-    span: f32,
-    label: String,
+    /// Units fetched over all files (bytes, or files when the listing gave
+    /// no sizes), and the whole.
+    done: std::sync::atomic::AtomicU64,
+    total: u64,
+    /// Files finished, of `files`.
+    finished: std::sync::atomic::AtomicUsize,
+    files: usize,
+    by_bytes: bool,
 }
 
-impl ProgressSink for Window<'_> {
+/// One file's share of the [`Bar`]: the downloader's own per-file reports
+/// become what this file adds to the whole since it last reported, and its
+/// message is replaced by one that counts files.
+struct Share<'a> {
+    bar: &'a Bar<'a>,
+    /// The file's size in the bar's units, and how much of it is counted.
+    weight: u64,
+    counted: std::sync::atomic::AtomicU64,
+}
+
+impl ProgressSink for Share<'_> {
     fn report(&self, frac: f32, _msg: &str) {
-        self.inner
-            .report(self.base + self.span * frac.clamp(0.0, 1.0), &self.label);
+        use std::sync::atomic::Ordering;
+        let now = (self.weight as f64 * f64::from(frac.clamp(0.0, 1.0))) as u64;
+        let before = self.counted.swap(now, Ordering::Relaxed);
+        // Wrapping: a report below the last one takes the difference back.
+        let done = self
+            .bar
+            .done
+            .fetch_add(now.wrapping_sub(before), Ordering::Relaxed)
+            .wrapping_add(now.wrapping_sub(before));
+        let b = self.bar;
+        let finished = b.finished.load(Ordering::Relaxed);
+        let label = if b.by_bytes {
+            format!(
+                "{FOLDER}: {finished} of {} files, {} / {} MB",
+                b.files,
+                done / 1_000_000,
+                b.total / 1_000_000
+            )
+        } else {
+            format!("{FOLDER}: {finished} of {} files", b.files)
+        };
+        b.inner
+            .report((done as f32 / b.total as f32).clamp(0.0, 1.0), &label);
     }
     fn cancelled(&self) -> bool {
-        self.inner.cancelled()
+        self.bar.inner.cancelled()
     }
 }
 
@@ -643,8 +714,8 @@ mod tests {
     }
 
     #[test]
-    fn the_window_maps_a_file_onto_its_share_of_the_whole() {
-        use std::sync::atomic::{AtomicU32, Ordering};
+    fn files_fetched_side_by_side_add_up_to_one_bar() {
+        use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
         struct Last(AtomicU32);
         impl Last {
             fn get(&self) -> f32 {
@@ -657,17 +728,35 @@ mod tests {
             }
         }
         let last = Last(AtomicU32::new((-1f32).to_bits()));
-        let w = Window {
+        let bar = Bar {
             inner: &last,
-            base: 0.25,
-            span: 0.5,
-            label: "x".into(),
+            done: AtomicU64::new(0),
+            total: 400,
+            finished: AtomicUsize::new(0),
+            files: 2,
+            by_bytes: true,
         };
-        w.report(0.0, "");
-        assert_eq!(last.get(), 0.25);
-        w.report(1.0, "");
-        assert_eq!(last.get(), 0.75);
-        w.report(2.0, "");
-        assert_eq!(last.get(), 0.75, "clamped");
+        let share = |weight| Share {
+            bar: &bar,
+            weight,
+            counted: AtomicU64::new(0),
+        };
+        let (a, b) = (share(100), share(300));
+        a.report(0.5, "");
+        assert_eq!(last.get(), 50.0 / 400.0);
+        b.report(0.5, "");
+        assert_eq!(last.get(), 200.0 / 400.0);
+        a.report(1.0, "");
+        a.report(2.0, "");
+        assert_eq!(last.get(), 250.0 / 400.0, "a file counts once, clamped");
+        a.report(0.0, "");
+        assert_eq!(
+            last.get(),
+            150.0 / 400.0,
+            "a report below the last takes it back"
+        );
+        a.report(1.0, "");
+        b.report(1.0, "");
+        assert_eq!(last.get(), 1.0);
     }
 }

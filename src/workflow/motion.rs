@@ -11,7 +11,7 @@
 //! dialog and the MCP server both build a [`MotionRequest`] and call [`run`].
 
 use crate::dicomseg::{resample_mask, SegSeries};
-use crate::loader::{self, SeriesInfo};
+use crate::loader::SeriesInfo;
 use crate::morphology;
 use crate::motion::{
     self, AxisCorrelation, ItvResult, MotionModel, MotionReport, PhaseSample, RegQa, Track,
@@ -60,6 +60,9 @@ pub struct MotionRequest {
     /// Levels, iterations, samples, grid spacing and threshold of the
     /// per-phase runs; the method is set by the pipeline.
     pub params: RegParams,
+    /// Where the phases are read from (see
+    /// [`crate::workflow::group::GroupRequest::volumes`]).
+    pub volumes: crate::workflow::session::Volumes,
 }
 
 /// One structure as it exists on every phase, in the phases' order.
@@ -146,8 +149,11 @@ pub fn run(req: MotionRequest, p: &Progress) -> Result<MotionOutcome> {
 
     // The reference phase.
     p.set_phase(0.0, 0.04);
-    let (ref_vol, _, _) = loader::load_series_volume(&req.phases[req.reference].1, p)?;
+    let ref_vol = req.volumes.load(&req.phases[req.reference].1, p)?;
     let ref_grid = ref_vol.grid();
+    // Every registration below is of the reference and the phase in hand:
+    // their pyramids are built once and shared (see `PyramidCache`).
+    let mut pyramids = registration::PyramidCache::default();
 
     // All structures on the reference lattice: targets first, then the
     // reference structure.
@@ -198,7 +204,7 @@ pub fn run(req: MotionRequest, p: &Progress) -> Result<MotionOutcome> {
         let (label, series) = &req.phases[pi];
         p.set_phase(base, span * 0.15);
         p.set(format!("Phase {label}: loading"));
-        let (vol, _, _) = loader::load_series_volume(series, p)?;
+        let vol = req.volumes.load(series, p)?;
         let phase_grid = vol.grid();
 
         // The global rigid body: the start of the deformable model, and the
@@ -218,7 +224,7 @@ pub fn run(req: MotionRequest, p: &Progress) -> Result<MotionOutcome> {
             p.set(format!("Phase {label}: rigid registration"));
             let mut params = req.params.clone();
             params.method = RegMethod::ElastixRigid;
-            let rigid = registration::register(&ref_vol, &vol, &params, p)?;
+            let rigid = registration::register_cached(&ref_vol, &vol, &params, &mut pyramids, p)?;
             qa.push(RegQa {
                 phase: label.clone(),
                 model: MotionModel::Rigid,
@@ -264,7 +270,7 @@ pub fn run(req: MotionRequest, p: &Progress) -> Result<MotionOutcome> {
                 let mut params = req.params.clone();
                 params.method = RegMethod::ElastixRigid;
                 params.region = Some(std::sync::Arc::new(region));
-                let r = registration::register(&ref_vol, &vol, &params, p)?;
+                let r = registration::register_cached(&ref_vol, &vol, &params, &mut pyramids, p)?;
                 qa.push(RegQa {
                     phase: label.clone(),
                     model: MotionModel::Rigid,
@@ -287,7 +293,7 @@ pub fn run(req: MotionRequest, p: &Progress) -> Result<MotionOutcome> {
             let mut params = req.params.clone();
             params.method = RegMethod::ElastixBSpline;
             params.start = Some(rigid.as_ref().expect("built above").transform.clone());
-            let def = registration::register(&ref_vol, &vol, &params, p)?;
+            let def = registration::register_cached(&ref_vol, &vol, &params, &mut pyramids, p)?;
             qa.push(RegQa {
                 phase: label.clone(),
                 model: MotionModel::Deformable,

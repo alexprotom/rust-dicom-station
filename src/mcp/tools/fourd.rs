@@ -242,6 +242,7 @@ pub fn propagate_to_group(core: &mut Core, a: GroupArgs, p: &Progress) -> Result
         group: gi,
         moving_slot: 0,
         moving_series_uid: moving_uid,
+        volumes: core.session.volumes.clone(),
     };
     let out = group::run(req, p)?;
 
@@ -300,11 +301,12 @@ pub fn propagate_to_group(core: &mut Core, a: GroupArgs, p: &Progress) -> Result
     }))
 }
 
+/// Where carried structures land, by the names the workflow file uses
+/// ([`crate::workflow::params::Landing`]); segments when not said.
 fn parse_landing(s: Option<&str>) -> Result<group::Landing> {
     Ok(match s.map(str::trim) {
-        None | Some("") | Some("segmentation") => group::Landing::Segmentation,
-        Some("structure_set") | Some("rtstruct") => group::Landing::StructureSet,
-        Some(other) => bail!("land must be segmentation or structure_set (got '{other}')"),
+        None | Some("") => group::Landing::Segmentation,
+        Some(name) => crate::workflow::params::Landing::from_name(name)?.group_landing(),
     })
 }
 
@@ -332,7 +334,7 @@ fn file_phase(
             &ph.series_uid,
             &ph.study_uid,
             &ph.grid,
-            &ph.items,
+            &ph.unpacked(),
             &format!("{} {}", group_name, ph.label),
         )
         .map(|(label, _)| label)
@@ -415,6 +417,7 @@ fn propagate_anchored(
         group: gi,
         moving_slot: 0,
         moving_series_uid: moving_uid,
+        volumes: core.session.volumes.clone(),
     };
     let out = anchored::run(req, p)?;
 
@@ -791,6 +794,7 @@ pub fn analyse_motion(core: &mut Core, a: MotionArgs, p: &Progress) -> Result<Va
         itv_margin_mm: a.itv_margin_mm.max(0.0),
         keep_phase_segs: a.keep_phase_segs,
         params,
+        volumes: core.session.volumes.clone(),
     };
     let out = motion::run(req, p)?;
 

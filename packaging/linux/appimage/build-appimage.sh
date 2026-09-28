@@ -6,15 +6,17 @@
 #   ./build-appimage.sh --linuxdeploy /path/to/linuxdeploy-x86_64.AppImage
 #
 # Needs: a Rust toolchain, the GUI build dependencies of the viewer
-# (libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev
-# libxi-dev libgl1-mesa-dev), `file`, `wget` and libfuse2 (linuxdeploy is
-# itself an AppImage). linuxdeploy is downloaded into out/ unless a copy is
-# named with --linuxdeploy.
+# (libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libx11-dev
+# libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev), `file`, `wget`
+# and libfuse2 (linuxdeploy is itself an AppImage; without FUSE, in a
+# container, it is unpacked instead). linuxdeploy is downloaded into out/
+# unless a copy is named with --linuxdeploy.
 #
 # Models are intentionally NOT included: the application downloads them at
 # run time into ~/.local/share/RustDICOMStation/models.
 #
-# Result: out/rust-dicom-station-<version>-linux-x86_64.AppImage
+# Result: out/rust-dicom-station-<version>-x86_64.AppImage (no "linux" in
+# the name: every AppImage is for Linux, and the AppImage catalog says so).
 #
 # The release workflow runs this on every push to main (docs/release-versioning.md).
 set -euo pipefail
@@ -30,7 +32,7 @@ while [ $# -gt 0 ]; do
         --skip-build) build=0; shift ;;
         --linuxdeploy) linuxdeploy="${2:?--linuxdeploy needs a path}"; shift 2 ;;
         --linuxdeploy=*) linuxdeploy="${1#*=}"; shift ;;
-        -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -38,7 +40,7 @@ done
 # ---- the version, from the viewer's Cargo.toml ----------------------------
 version="$(sed -nE 's/^version = "([^"]+)"/\1/p' "$root/Cargo.toml" | head -n 1)"
 [ -n "$version" ] || { echo "could not read the version from $root/Cargo.toml" >&2; exit 1; }
-output="rust-dicom-station-$version-linux-x86_64.AppImage"
+output="rust-dicom-station-$version-x86_64.AppImage"
 echo "rust-dicom-station $version, Linux x86_64 AppImage"
 
 # ---- 1. the executables ----------------------------------------------------
@@ -73,6 +75,13 @@ cp "$here/rust-dicom-station.desktop" "$appdir/usr/share/applications/"
 cp "$here/AppRun" "$appdir/AppRun"
 chmod +x "$appdir/AppRun"
 
+# Without FUSE (a container, as the release builds in) an AppImage cannot
+# mount itself; this makes linuxdeploy, and the finished image checked at
+# the end, unpack themselves into a temporary folder instead.
+if [ ! -e /dev/fuse ] && [ -z "${APPIMAGE_EXTRACT_AND_RUN:-}" ]; then
+    export APPIMAGE_EXTRACT_AND_RUN=1
+fi
+
 # ---- 3. linuxdeploy --------------------------------------------------------
 if [ -z "$linuxdeploy" ]; then
     linuxdeploy="$out/linuxdeploy-x86_64.AppImage"
@@ -85,7 +94,36 @@ if [ -z "$linuxdeploy" ]; then
     fi
 fi
 
-# ---- 4. the image ----------------------------------------------------------
+# ---- 4. libraries the window system loads at run time ----------------------
+# linuxdeploy bundles what the executables link against, and winit links
+# none of the window-system libraries: it opens them by name while the
+# program starts. So linuxdeploy never sees them, and a host that lacks one
+# stops the viewer before any window exists - which is how the AppImage
+# catalog's test machine, which has no libxkbcommon-x11, saw it crash.
+# They are named to linuxdeploy explicitly; the executable's RUNPATH
+# ($ORIGIN/../lib) is where the loader looks first for these too. Whatever
+# the AppImage excludelist names (libX11, libxcb, libwayland-client, libGL,
+# libEGL) is left to the host, as it has to be.
+dlopened=(
+    libxkbcommon-x11.so.0
+    libxkbcommon.so.0
+    libXcursor.so.1
+    libXi.so.6
+    libXrandr.so.2
+    libwayland-cursor.so.0
+)
+bundle=()
+for lib in "${dlopened[@]}"; do
+    path="$(ldconfig -p | awk -v l="$lib" '$1 == l && /x86-64/ { print $NF; exit }')"
+    [ -n "$path" ] || {
+        echo "$lib is not installed on this machine, so it cannot be bundled" >&2
+        echo "(install libxkbcommon-x11-0 libxkbcommon0 libxcursor1 libxi6 libxrandr2 libwayland-cursor0)" >&2
+        exit 1
+    }
+    bundle+=(--library "$path")
+done
+
+# ---- 5. the image ----------------------------------------------------------
 # linuxdeploy writes the image into the current directory, named after the
 # desktop entry; it is moved to its release name afterwards.
 rm -f "$out"/*.AppImage.tmp
@@ -94,6 +132,7 @@ rm -f "$out"/*.AppImage.tmp
     rm -f "$output"
     NO_STRIP=1 "$linuxdeploy" \
         --appdir "$appdir" \
+        "${bundle[@]}" \
         --custom-apprun "$here/AppRun" \
         --output appimage
     made="$(find . -maxdepth 1 -type f -name '*.AppImage' \
@@ -103,9 +142,17 @@ rm -f "$out"/*.AppImage.tmp
     chmod +x "$output"
 )
 
-# ---- 5. checks -------------------------------------------------------------
+# ---- 6. checks -------------------------------------------------------------
 file "$out/$output"
 [ -x "$out/$output" ] || { echo "$output is not executable" >&2; exit 1; }
+
+# The window-system libraries made it into the image.
+for lib in "${dlopened[@]}"; do
+    [ -f "$appdir/usr/lib/$lib" ] || {
+        echo "$lib was not bundled into the image" >&2
+        exit 1
+    }
+done
 
 # The MCP server has to be reachable, which means the dispatcher in AppRun
 # survived the packaging. `--check` reads the configuration and exits without

@@ -305,15 +305,11 @@ impl ViewerApp {
             ss.rois.len() - 1
         } else {
             let active_series = study.series.get(study.active_series);
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0);
             study.structure_sets.push(StructureSet {
                 label: "Contours".into(),
                 frame_of_reference_uid: vol.frame_of_reference_uid.clone(),
-                sop_instance_uid: format!("2.25.{stamp}"),
-                series_instance_uid: format!("2.25.{stamp}.1"),
+                sop_instance_uid: crate::dicom_export::new_uid(),
+                series_instance_uid: crate::dicom_export::new_uid(),
                 study_uid: active_series
                     .map(|s| s.study_uid.clone())
                     .unwrap_or_default(),
@@ -422,7 +418,7 @@ impl ViewerApp {
                     || e.set != set
                     || e.roi != roi
                     || e.stack.axis != axis
-                    || e.gen != self.settings_gen
+                    || e.gen != self.structures_gen(slot)
             }
             None => true,
         };
@@ -456,13 +452,33 @@ impl ViewerApp {
             set,
             roi,
             stack,
-            gen: self.settings_gen,
+            gen: self.structures_gen(slot),
         });
         Some(())
     }
 
+    /// What a cache of this workspace's structures has to be invalidated by:
+    /// `settings_gen` (studies, sets, settings - anything) and the contour
+    /// edits made in this workspace. Exact, not a hash: neither counter
+    /// comes near 2^32.
+    pub(super) fn structures_gen(&self, slot: usize) -> u64 {
+        (self.struct_gen[slot] << 32) | (self.settings_gen & 0xFFFF_FFFF)
+    }
+
+    /// The same for caches that span the workspaces (the DVH, the
+    /// statistics): it moves whenever any workspace's does.
+    pub(super) fn all_structures_gen(&self) -> u64 {
+        let edits = self.struct_gen.iter().fold(0u64, |a, g| a.wrapping_add(*g));
+        (edits << 32) | (self.settings_gen & 0xFFFF_FFFF)
+    }
+
     /// Write the working stack back into the ROI (as axial contours) and
     /// keep the cache valid.
+    ///
+    /// Called on every sample of a brush stroke or a drag, so it bumps only
+    /// this workspace's contour counter (see `struct_gen`), not
+    /// `settings_gen`: the dose wash, the fusion and the other workspace have
+    /// no reason to be rebuilt sixty times a second.
     fn flush_edit(&mut self) {
         let Some(e) = self.edit.take() else { return };
         let Some(grid) = self.slots[e.slot].study.as_ref().map(|st| st.volume.grid()) else {
@@ -471,12 +487,12 @@ impl ViewerApp {
         if let Some(roi) = self.slots[e.slot].roi_mut(e.set, e.roi) {
             e.stack.apply_to_roi(roi, &grid);
         }
-        self.settings_gen += 1;
+        self.struct_gen[e.slot] += 1;
         // A derived structure edited by hand is no longer what its recipe
         // produced, and has to say so.
         self.mark_overridden(e.slot, e.set, e.roi);
         self.edit = Some(EditStack {
-            gen: self.settings_gen,
+            gen: self.structures_gen(e.slot),
             ..e
         });
     }
@@ -996,13 +1012,13 @@ impl ViewerApp {
         let points: usize = r.contours.iter().map(|c| c.points.len()).sum();
         // The name, type and point count are read fresh; the volume needs
         // the whole slice stack, so it is kept until the structure changes
-        // (every edit bumps `settings_gen`; the counts and the volume's
+        // (every edit moves `structures_gen`; the counts and the volume's
         // identity are in the key as well, in case something else did not).
         let key = (
             slot,
             set,
             roi,
-            self.settings_gen,
+            self.structures_gen(slot),
             Arc::as_ptr(&study.volume) as usize,
             r.contours.len(),
             points,
@@ -1171,7 +1187,7 @@ impl ViewerApp {
                 && p.set == set
                 && p.roi == roi
                 && p.axis == axis
-                && p.gen == self.settings_gen
+                && p.gen == self.structures_gen(slot)
         });
         if fresh {
             return;
@@ -1194,7 +1210,7 @@ impl ViewerApp {
             roi,
             axis,
             stack,
-            gen: self.settings_gen,
+            gen: self.structures_gen(slot),
         });
     }
 

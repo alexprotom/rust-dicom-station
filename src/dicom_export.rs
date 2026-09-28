@@ -36,7 +36,7 @@ const EXPLICIT_VR_LE: &str = "1.2.840.10008.1.2.1";
 static UID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Generate a unique UID under the UUID-derived `2.25.` root.
-pub(crate) fn new_uid() -> String {
+pub fn new_uid() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())

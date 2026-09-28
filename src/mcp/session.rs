@@ -21,6 +21,7 @@ use crate::registration::{RegistrationResult, Transform3};
 use crate::segmentation::Segmentation;
 use crate::volume::{Grid, Volume};
 use crate::workflow::select;
+use crate::workflow::session::Volumes;
 
 use super::config::Config;
 use super::phi::{Public, Redactor};
@@ -40,15 +41,7 @@ pub struct Dataset {
     pub root_label: String,
     /// Identity tags that held values when it was opened (names only).
     pub phi_tags: Vec<String>,
-    /// Volumes of series other than the displayed one, by series index.
-    /// Bounded: see [`Session::volume`].
-    volumes: HashMap<usize, Arc<Volume>>,
-    /// Insertion order of `volumes`, oldest first.
-    volume_order: Vec<usize>,
 }
-
-/// Volumes kept per dataset beyond the active one.
-const EXTRA_VOLUMES: usize = 2;
 
 /// A registration between two series, kept for propagation.
 pub struct Registration {
@@ -96,6 +89,10 @@ pub struct Session {
     pub registrations: Vec<Registration>,
     pub group_registrations: Vec<GroupRegistration>,
     pub runs: Vec<Run>,
+    /// Volumes read so far - of every dataset, the 4D pipelines' phases
+    /// included - under the configured budget (`volume_cache_mb`). The
+    /// same cache a workflow run keeps (`workflow::session`).
+    pub volumes: Volumes,
     counters: HashMap<&'static str, usize>,
     /// The per-session output folder, created on first use.
     out_dir: Option<PathBuf>,
@@ -110,8 +107,10 @@ impl Session {
         if let Some(out) = &config.output_dir {
             redactor.add_root(out, "output");
         }
+        let volumes = Volumes::with_budget_mb(config.volume_cache_mb);
         Session {
             config,
+            volumes,
             redactor: Arc::new(RwLock::new(redactor)),
             datasets: Vec::new(),
             registrations: Vec::new(),
@@ -151,8 +150,6 @@ impl Session {
             origin,
             root_label,
             phi_tags,
-            volumes: HashMap::new(),
-            volume_order: Vec::new(),
         });
         Ok(self.datasets.last().expect("just pushed"))
     }
@@ -211,15 +208,13 @@ impl Session {
     }
 
     /// The volume of one series of a dataset, loading it if it is not the
-    /// displayed one. A few loaded volumes are kept per dataset; beyond
-    /// that the oldest goes, since a 4D study would otherwise pin gigabytes.
+    /// displayed one. What is read is kept under the configured budget
+    /// ([`Session::volumes`]); beyond it the oldest goes, since a 4D study
+    /// would otherwise pin gigabytes.
     pub fn volume(&mut self, id: &str, series: usize, p: &Progress) -> Result<Arc<Volume>> {
-        let ds = self.dataset_mut(id)?;
+        let ds = self.dataset(id)?;
         if series == ds.study.active_series && ds.study.has_volume() {
             return Ok(ds.study.volume.clone());
-        }
-        if let Some(v) = ds.volumes.get(&series) {
-            return Ok(v.clone());
         }
         let info = ds
             .study
@@ -227,21 +222,31 @@ impl Session {
             .get(series)
             .cloned()
             .ok_or_else(|| anyhow!("no series {} in {}", series + 1, id))?;
-        let (vol, _, _) = loader::load_series_volume(&info, p)?;
-        let vol = Arc::new(vol);
-        while ds.volume_order.len() >= EXTRA_VOLUMES {
-            let old = ds.volume_order.remove(0);
-            ds.volumes.remove(&old);
-        }
-        ds.volumes.insert(series, vol.clone());
-        ds.volume_order.push(series);
-        Ok(vol)
+        self.volumes.load(&info, p)
     }
 
-    /// The grid a series' masks live on, without loading its pixels when
-    /// it is the displayed series.
+    /// The grid a series' masks live on, without loading its pixels: the
+    /// displayed volume's, a kept volume's, or the slice headers'.
     pub fn grid(&mut self, id: &str, series: usize, p: &Progress) -> Result<Grid> {
-        Ok(self.volume(id, series, p)?.grid())
+        let ds = self.dataset(id)?;
+        if series == ds.study.active_series && ds.study.has_volume() {
+            return Ok(ds.study.volume.grid());
+        }
+        let info = ds
+            .study
+            .series
+            .get(series)
+            .cloned()
+            .ok_or_else(|| anyhow!("no series {} in {}", series + 1, id))?;
+        if let Some(v) = self.volumes.get(&info) {
+            return Ok(v.grid());
+        }
+        match loader::series_grid(&info) {
+            Ok(g) => Ok(g),
+            // A series whose headers do not make a lattice on their own is
+            // read in full, which says why when it cannot be.
+            Err(_) => Ok(self.volume(id, series, p)?.grid()),
+        }
     }
 
     // ---- structures -------------------------------------------------------

@@ -56,7 +56,7 @@ pub const SPEC_6MM: ModelSpec = ModelSpec {
 /// Apache-2.0 licence, a different question: two classes, trunk and
 /// extremities, whose union is the patient. They are what the body-contour
 /// tool's model-assisted method uses to tell patient from equipment - see
-/// [`crate::bodymask`].
+/// the viewer's `bodymask` module.
 pub const SPEC_BODY_15MM: ModelSpec = ModelSpec {
     key: "body_1_5mm",
     label: "body 1.5 mm",
@@ -125,7 +125,7 @@ pub const SPECS_15MM: [ModelSpec; 5] = [
 /// Every published model, in the order the interface lists them: the fast
 /// single model, the five full-resolution sub-models, the preview model.
 ///
-/// The inventory in [`crate::models`] walks this list; nothing else needs to
+/// The inventory in the viewer's `models` module walks this list; nothing else needs to
 /// know that the 1.5 mm variant is five downloads rather than one.
 pub fn all_specs() -> Vec<ModelSpec> {
     let mut v = vec![SPEC_3MM];
