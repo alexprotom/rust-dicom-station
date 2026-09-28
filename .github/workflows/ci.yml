@@ -1,20 +1,33 @@
 name: CI
 
-# Pull requests only, deliberately.
+# Pull requests, plus one build on `main` that exists only to fill the cache.
 #
 # A pull request check does not build your branch: GitHub checks out
 # `refs/pull/N/merge`, your head already merged into the base. So by the time
 # the PR is green, the exact tree that will land on main has been tested, and
-# running the same jobs again on the push that lands it is the same work
+# running the same tests again on the push that lands it is the same work
 # twice. Branch protection is what makes that safe - nothing reaches main
 # except through a checked pull request - together with "require branches to
 # be up to date", which closes the one gap by forcing a re-check whenever the
 # base moves underneath an open PR.
 #
+# The push to `main` therefore runs no tests. It compiles what the pull
+# request jobs compile and saves that as the cache, because of where GitHub
+# lets a run look for one: its own ref, its base branch and the default
+# branch. A cache saved by a pull request lives under `refs/pull/N/merge` and
+# is invisible to every other pull request, so each new PR used to start from
+# nothing - 25 to 31 minutes for the first run, 11 to 17 for the next push to
+# the same PR. A cache on `main` is visible to all of them, so every PR starts
+# warm. Only `main` saves (`save-if` below): a PR restores and never writes,
+# which also keeps these caches from crowding the release and platform ones
+# out of the repository's 10 GB.
+#
 # `workflow_dispatch` stays as the manual way to run the whole thing against
 # any branch.
 on:
   pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -27,15 +40,14 @@ concurrency:
 # Why this file is a handful of small jobs rather than one long one.
 #
 # Cargo shares compiled dependencies between commands only when the *feature
-# set* matches: `cargo clippy` and `cargo test` reuse each other's work, but
-# `--no-default-features` and `--features mcp` each build the dependency graph
-# again from nothing. Three graphs in one job are three graphs one after the
-# other; three graphs in three jobs are three graphs at once, and the wall
-# clock becomes the longest of them instead of their sum. Each job also gets
-# its own cache, so a cache holds one graph rather than three and is quick to
-# save and restore.
-#
-# Nothing is checked less than before: every command below was already run.
+# set* and the *mode* match. `--no-default-features` and `--features mcp`
+# each change the features of crates deep in the graph and so build much of
+# it again; and `cargo clippy` only type-checks (it writes metadata, no
+# machine code), so it cannot reuse what `cargo test` compiled and the other
+# way round. Several graphs in one job are several graphs one after the
+# other; in separate jobs they build at once, and the wall clock becomes the
+# longest of them instead of their sum. Each job also gets its own cache, so
+# a cache holds one graph and is quick to save and restore.
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -46,6 +58,8 @@ env:
   # opens a debugger, and a backtrace still names the functions.
   CARGO_PROFILE_DEV_DEBUG: 0
   CARGO_PROFILE_TEST_DEBUG: 0
+  # On a push to main the test steps compile and stop (see the top).
+  NO_RUN: ${{ github.event_name == 'push' && '--no-run' || '' }}
 
 jobs:
   # Formatting and lints of the default feature set. Platform-independent, so
@@ -69,6 +83,8 @@ jobs:
             libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
@@ -76,9 +92,51 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
 
-  # The test suite, on all three desktop platforms. Windows and macOS each
-  # get their own clippy pass here rather than a job apiece: it shares this
-  # job's dependency graph, so it costs the workspace crate and nothing else.
+  # The one thing the Linux lint job cannot see: code behind `cfg(windows)`
+  # and `cfg(target_os = "macos")` - the Metal arm of src/gfx.rs, the
+  # Application Support paths in src/settings.rs. This used to be a step in
+  # the test jobs, but clippy's type-check shares nothing with the test
+  # build (see the top), so there it was a whole second graph in front of the
+  # tests - 1 to 1.5 minutes warm and 8.5 cold on Windows, on the job every
+  # pull request waits for. Here it runs alongside them.
+  clippy-platform:
+    name: clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  # The test suite, on all three desktop platforms.
+  #
+  # Linux runs it with the default features, `gpu` included. Windows and
+  # macOS run it without them (`--no-default-features`, the CPU-only build).
+  # No test drives the wgpu backend - the GPU agreement tests are #[ignore]d,
+  # see below - so this runs the same tests, but the `gpu` feature makes
+  # burn's wgpu/cubecl kernels part of this crate, and they were well over
+  # half of what it compiled: measured, the library went from 448 s to 184 s
+  # of compile time and its unit-test build from 363 s to 130 s. That compile
+  # is most of the Windows job, the one every pull request waited for. The
+  # GPU build itself is still compiled on every platform, by clippy above,
+  # and tested here on Linux.
+  #
+  # `--lib --bins --tests` rather than a bare `cargo test`: that would also
+  # link every example (ten large executables, the lint jobs already
+  # type-check them) and hand the library to rustdoc for doc tests, of which
+  # there are none.
   #
   # macOS runs on the Apple Silicon image and needs no system packages - the
   # window stack is Metal and AppKit, which come with the SDK. The Intel
@@ -96,12 +154,17 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-15]
+        include:
+          - os: ubuntu-latest
+            features: ""
+          - os: windows-latest
+            features: --no-default-features
+          - os: macos-15
+            features: --no-default-features
     steps:
       - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
 
       - name: Install Linux GUI build dependencies
         if: runner.os == 'Linux'
@@ -112,25 +175,16 @@ jobs:
             libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
 
       - uses: Swatinem/rust-cache@v2
-
-      # The one thing the Linux lint job cannot see: code behind
-      # `cfg(windows)`.
-      - name: cargo clippy (windows-only code)
-        if: runner.os == 'Windows'
-        run: cargo clippy --all-targets -- -D warnings
-
-      # The same for `cfg(target_os = "macos")` - the Metal arm of
-      # src/gfx.rs and the Application Support paths in src/settings.rs.
-      - name: cargo clippy (macOS-only code)
-        if: runner.os == 'macOS'
-        run: cargo clippy --all-targets -- -D warnings
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo test
-        run: cargo test
+        run: cargo test ${{ matrix.features }} --lib --bins --tests ${{ env.NO_RUN }}
 
   # The pure-CPU build the README documents: the GPU inference backend is
-  # behind the default `gpu` feature. Its own dependency graph, so its own
-  # job. Feature wiring does not vary by platform.
+  # behind the default `gpu` feature. The Windows and macOS test jobs build
+  # and run this configuration; this job adds what they leave out, the
+  # examples, for which a type-check is enough.
   cpu-only:
     name: check (CPU only)
     runs-on: ubuntu-latest
@@ -147,14 +201,17 @@ jobs:
             libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo check (CPU only)
         run: cargo check --no-default-features --all-targets
 
   # The MCP server (`rds-mcp`) and its three suites live behind the `mcp`
-  # feature so the viewer's build never links the protocol stack. Same
-  # dependency graph as the default build plus a few small crates, but Cargo
-  # builds it separately all the same - hence a job of its own.
+  # feature so the viewer's build never links the protocol stack. Clippy
+  # checks it with the default features, as it ships; the suites run in the
+  # CPU-only build, for the reason given at the test job - nothing they do
+  # touches the GPU, and the build is less than half the size.
   mcp:
     name: mcp
     runs-on: ubuntu-latest
@@ -173,12 +230,14 @@ jobs:
             libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo clippy (mcp)
         run: cargo clippy --features mcp --all-targets -- -D warnings
 
       - name: cargo test (mcp)
-        run: cargo test --features mcp --test workflow --test mcp_tools --test mcp_phi
+        run: cargo test --no-default-features --features mcp --test workflow --test mcp_tools --test mcp_phi ${{ env.NO_RUN }}
 
   # The Windows installer is a separate workspace and is never built by
   # `cargo build` in the repository root, so it needs its own job. It is
@@ -199,6 +258,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: packaging/windows/installer
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
@@ -209,9 +269,10 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       # A debug build, not a release one: what this proves is that the crate
-      # compiles and links, and it shares the dependencies clippy just built.
-      # The optimised installer is built by the release workflow, which is the
-      # only place its size and speed matter.
+      # compiles and links. (It does not reuse what clippy just checked -
+      # see the top - but the cache keeps both.) The optimised installer is
+      # built by the release workflow, which is the only place its size and
+      # speed matter.
       #
       # One configuration, not two: the default feature set pulls the whole
       # viewer in as a path dependency, so building both means two copies of
