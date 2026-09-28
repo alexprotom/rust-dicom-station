@@ -1,6 +1,6 @@
 [package]
 name = "rust-dicom-station"
-version = "0.10.0"
+version = "0.10.1"
 edition = "2021"
 description = "Fast, robust DICOM / RT DICOM viewer in pure Rust (CT/MR volumes, RTSTRUCT, RTDOSE, RTPLAN) with a three-view MPR layout"
 license = "MIT"
@@ -29,12 +29,26 @@ gemm = "0.18"                       # pure-Rust SIMD GEMM kernels (CPU conv engi
 serde_json = "1"                    # nnU-Net plans.json, CLIP vocab.json
 zip = { version = "2", default-features = false, features = ["deflate"] }
 safetensors = "0.8"                 # converted-weight cache format
+# The workflow files (`workflow::graph`) are JSON read and written through
+# serde's derive; serde_json above already pulls serde itself in.
+serde = { version = "1", features = ["derive"] }
+# The node canvas of the workflow editor (`app/workflow_edit.rs`): pure Rust
+# over egui, the wires, pins, pan and zoom of a node graph.
+egui-snarl = "0.12"
 # Neural-network backend. Always compiled: the MedSAM2 engine is written once
 # against a `burn` backend and falls back to the pure-Rust `ndarray` one when
 # there is no usable GPU adapter. The `gpu` feature adds the wgpu backend
 # (Vulkan / DX12 / Metal - no CUDA toolkit needed), which SegVol's image
 # encoder also uses.
 burn = { version = "0.21", default-features = false, features = ["std", "ndarray"] }
+# burn's `ndarray` feature above brings burn-ndarray in without its default
+# features, and those are what make it fast: `multi-threads` (rayon over the
+# batch of a matmul, the output channels of a convolution and every
+# elementwise pass, plus matrixmultiply's own threads inside one large
+# matmul) and `simd` (vectorised elementwise and pooling kernels). Without
+# them the CPU path of MedSAM2 ran on one core. The crate is never named in
+# the code; listing it here only turns the features on, Cargo unifies them.
+burn-ndarray = { version = "0.21", default-features = false, features = ["std", "multi-threads", "simd"] }
 
 # ---- the MCP server (`rds-mcp`, feature `mcp`) ----
 # Optional: the viewer's default build compiles none of this. The server is a
@@ -42,7 +56,6 @@ burn = { version = "0.21", default-features = false, features = ["std", "ndarray
 # Protocol over standard input and output; see docs/mcp.md.
 rmcp = { version = "3.2", optional = true, default-features = false, features = ["server", "macros", "transport-io", "schemars"] }
 tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
-serde = { version = "1", optional = true, features = ["derive"] }
 schemars = { version = "1", optional = true }
 toml = { version = "1", optional = true, default-features = false, features = ["parse", "serde", "std"] }
 
@@ -88,7 +101,7 @@ winresource = "0.1"
 default = ["gpu"]
 gpu = ["burn/wgpu", "burn/fusion", "burn/autotune"]
 # The MCP server executable and the `mcp` library module behind it.
-mcp = ["dep:rmcp", "dep:tokio", "dep:serde", "dep:schemars", "dep:toml"]
+mcp = ["dep:rmcp", "dep:tokio", "dep:schemars", "dep:toml"]
 
 [[bin]]
 name = "rds-mcp"

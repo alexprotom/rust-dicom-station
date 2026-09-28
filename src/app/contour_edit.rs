@@ -784,6 +784,7 @@ impl ViewerApp {
     /// Push the contour under the pointer: every vertex within `radius_mm`
     /// moves with the drag, by a cosine falloff, so the outline deforms
     /// smoothly instead of developing a corner.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn nudge_contour(
         &mut self,
         slot: usize,
@@ -792,6 +793,7 @@ impl ViewerApp {
         from: [f64; 3],
         to: [f64; 3],
         radius_mm: f64,
+        first: bool,
     ) {
         let Some((set, roi)) = self.edit_target(slot) else {
             return;
@@ -808,6 +810,13 @@ impl ViewerApp {
         // lattice, so the geometry is told how long a unit of each axis is.
         let mm = [spacing[ua], spacing[va]];
         let (a, b) = (uv(axis, from), uv(axis, to));
+        // One undo step per stroke, taken before its first sample, as the
+        // contour brush does: a snapshot of the whole ROI per mouse sample
+        // cost a copy of every contour each frame and filled the undo stack
+        // in half a second, so Ctrl+Z took back one sample of the drag.
+        if first {
+            self.push_roi_undo(slot, set, roi);
+        }
         let Some(e) = self.edit.as_mut() else { return };
         let Some(region) = e
             .stack
@@ -821,7 +830,6 @@ impl ViewerApp {
         if !region.nudge(a, b, radius_mm, mm) {
             return;
         }
-        self.push_roi_undo(slot, set, roi);
         self.flush_edit();
     }
 
@@ -978,20 +986,38 @@ impl ViewerApp {
     }
 
     /// What the contour window reports about the structure being edited.
-    pub(super) fn edit_summary(&self, slot: usize) -> Option<(String, String, f64, usize, usize)> {
+    pub(super) fn edit_summary(
+        &mut self,
+        slot: usize,
+    ) -> Option<(String, String, f64, usize, usize)> {
         let (set, roi) = self.edit_target(slot)?;
         let study = self.slots[slot].study.as_ref()?;
         let r = study.structure_sets.get(set)?.rois.get(roi)?;
-        let grid = study.volume.grid();
-        let st = Stack::from_roi(r, &grid);
         let points: usize = r.contours.iter().map(|c| c.points.len()).sum();
-        Some((
-            r.name.clone(),
-            r.roi_type.clone(),
-            st.volume_cm3(grid.spacing),
-            st.occupied(),
+        // The name, type and point count are read fresh; the volume needs
+        // the whole slice stack, so it is kept until the structure changes
+        // (every edit bumps `settings_gen`; the counts and the volume's
+        // identity are in the key as well, in case something else did not).
+        let key = (
+            slot,
+            set,
+            roi,
+            self.settings_gen,
+            Arc::as_ptr(&study.volume) as usize,
+            r.contours.len(),
             points,
-        ))
+        );
+        let (cm3, occupied) = match self.edit_summary_cache {
+            Some((k, v)) if k == key => v,
+            _ => {
+                let grid = study.volume.grid();
+                let st = Stack::from_roi(r, &grid);
+                (st.volume_cm3(grid.spacing), st.occupied())
+            }
+        };
+        let (name, roi_type) = (r.name.clone(), r.roi_type.clone());
+        self.edit_summary_cache = Some((key, (cm3, occupied)));
+        Some((name, roi_type, cm3, occupied, points))
     }
 
     /// Set the RT ROI Interpreted Type of the edited structure - the tag a

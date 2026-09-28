@@ -136,11 +136,28 @@ pub fn layer_norm(data: &mut [f32], group: usize, weight: &[f32], bias: &[f32], 
         // PyTorch normalizes by the biased variance (divide by N, not N-1).
         let var = (sq * inv_n - mean * mean).max(0.0);
         let inv_std = 1.0 / (var + eps as f64).sqrt();
-        for ((v, w), b) in row.iter_mut().zip(weight.iter()).zip(bias.iter()) {
-            *v = (((*v as f64 - mean) * inv_std) as f32) * w + b;
+        let affine = |row: &mut [f32], weight: &[f32], bias: &[f32]| {
+            for ((v, w), b) in row.iter_mut().zip(weight.iter()).zip(bias.iter()) {
+                *v = (((*v as f64 - mean) * inv_std) as f32) * w + b;
+            }
+        };
+        // The statistics above stay one sequential sum (they decide the
+        // normalisation), but the affine pass is per element: when a single
+        // group is a whole volume (the mask decoder's millions of values)
+        // it is spread over every core instead of left on one.
+        if group >= AFFINE_PIECE * 4 {
+            row.par_chunks_mut(AFFINE_PIECE)
+                .zip(weight.par_chunks(AFFINE_PIECE))
+                .zip(bias.par_chunks(AFFINE_PIECE))
+                .for_each(|((r, w), b)| affine(r, w, b));
+        } else {
+            affine(row, weight, bias);
         }
     });
 }
+
+/// Elements per parallel piece of a large LayerNorm group's affine pass.
+const AFFINE_PIECE: usize = 1 << 14;
 
 /// In-place row-wise softmax over `cols`-wide rows, max-subtracted.
 pub fn softmax_rows(data: &mut [f32], cols: usize) {

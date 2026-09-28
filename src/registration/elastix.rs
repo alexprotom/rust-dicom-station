@@ -19,6 +19,17 @@ use rayon::prelude::*;
 
 use super::*;
 
+/// Samples per piece of the rigid gradient sum. An iteration draws a few
+/// thousand samples, so a fixed piece this short still spreads them over
+/// every core; being fixed, it keeps the sum's order (and so the result)
+/// the same on every machine (see `crate::par`).
+const RIGID_PIECE: usize = 256;
+
+/// Samples per piece of the B-spline gradient scatter (at most 16 pieces).
+/// Each piece carries a dense accumulator over every coefficient, so fewer,
+/// longer pieces keep a fine control grid cheap.
+const BSPLINE_PIECE: usize = 512;
+
 /// Metric value + gradient callback: given parameters, fill `grad` (scaled
 /// space) and return (metric, valid_sample_fraction).
 type GradFn<'a> = dyn Fn(&[f64], &mut [f64], &mut XorShift) -> (f64, f64) + Sync + 'a;
@@ -224,36 +235,44 @@ pub(super) fn run(setup: &RegSetup, progress: &Progress) -> Result<EngineOutput>
             );
             let samples = draw_samples(fixed, n_samples, rng);
             let n_total = samples.len().max(1);
-            let (g, sum, cnt) = samples
-                .par_iter()
-                .map(|&(x, fval)| {
-                    let mut gl = [0.0f64; 6];
-                    match moving.sample_grad(tr.map(x)) {
-                        Some((mval, mg)) => {
-                            let diff = (mval - fval) as f64;
-                            let jac = tr.jacobian(x);
-                            for (pi, j) in jac.iter().enumerate() {
-                                gl[pi] = 2.0 * diff * mg.dot(*j);
-                            }
-                            // chain rule into scaled space
-                            gl[0] /= rot_scale;
-                            gl[1] /= rot_scale;
-                            gl[2] /= rot_scale;
-                            (gl, diff * diff, 1usize)
+            // Summed in fixed pieces and in order (`crate::par`), so the
+            // step the optimizer takes does not depend on the thread count.
+            let (g, sum, cnt) = crate::par::ordered_fold_by(
+                &samples,
+                RIGID_PIECE,
+                |part, _| {
+                    let mut acc = ([0.0f64; 6], 0.0f64, 0usize);
+                    for &(x, fval) in part {
+                        let Some((mval, mg)) = moving.sample_grad(tr.map(x)) else {
+                            continue;
+                        };
+                        let diff = (mval - fval) as f64;
+                        let jac = tr.jacobian(x);
+                        let mut gl = [0.0f64; 6];
+                        for (pi, j) in jac.iter().enumerate() {
+                            gl[pi] = 2.0 * diff * mg.dot(*j);
                         }
-                        None => (gl, 0.0, 0usize),
+                        // chain rule into scaled space
+                        gl[0] /= rot_scale;
+                        gl[1] /= rot_scale;
+                        gl[2] /= rot_scale;
+                        for (a, b) in acc.0.iter_mut().zip(gl) {
+                            *a += b;
+                        }
+                        acc.1 += diff * diff;
+                        acc.2 += 1;
                     }
-                })
-                .reduce(
-                    || ([0.0; 6], 0.0, 0),
-                    |a, b| {
-                        let mut g = a.0;
-                        for (x, y) in g.iter_mut().zip(b.0) {
-                            *x += y;
-                        }
-                        (g, a.1 + b.1, a.2 + b.2)
-                    },
-                );
+                    acc
+                },
+                |a, b| {
+                    let mut g = a.0;
+                    for (x, y) in g.iter_mut().zip(b.0) {
+                        *x += y;
+                    }
+                    (g, a.1 + b.1, a.2 + b.2)
+                },
+                ([0.0; 6], 0.0, 0),
+            );
             let cntf = cnt.max(1) as f64;
             for i in 0..6 {
                 grad[i] = g[i] / cntf;
@@ -338,21 +357,20 @@ pub(super) fn run(setup: &RegSetup, progress: &Progress) -> Result<EngineOutput>
             let eval = move |p: &[f64], grad: &mut [f64], rng: &mut XorShift| -> (f64, f64) {
                 let samples = draw_samples(fixed, n_samples, rng);
                 let n_total = samples.len().max(1);
-                // One dense gradient accumulator per worker chunk, scattered
-                // into directly. The previous shape built a 192-entry sparse
-                // Vec for every sample (one heap allocation per sample) and
-                // let rayon allocate an `n_coeffs` accumulator per split,
-                // so the gradient reduction cost far more than the metric.
-                let chunk = samples
-                    .len()
-                    .div_ceil(rayon::current_num_threads().max(1))
-                    .max(1);
-                let (gsum, sum, cnt) = samples
+                // One dense gradient accumulator per piece, scattered into
+                // directly. The number of pieces follows the sample count
+                // alone (never the thread count) and the pieces are added
+                // in order, so the step is the same on every machine; a few
+                // thousand samples make only a few pieces, so the dense
+                // accumulators stay cheap even on a fine grid.
+                let parts = samples.len().div_ceil(BSPLINE_PIECE).clamp(1, 16);
+                let chunk = samples.len().div_ceil(parts).max(1);
+                let pieces: Vec<(Vec<f64>, f64, usize)> = samples
                     .par_chunks(chunk)
-                    .fold(
-                        || (vec![0.0f64; n_coeffs], 0.0f64, 0usize),
-                        |acc, part| {
-                            part.iter().fold(acc, |mut acc, &(x, fval)| {
+                    .map(|part| {
+                        part.iter().fold(
+                            (vec![0.0f64; n_coeffs], 0.0f64, 0usize),
+                            |mut acc, &(x, fval)| {
                                 let Some((base, w)) = grid.support(x) else {
                                     return acc;
                                 };
@@ -390,18 +408,19 @@ pub(super) fn run(setup: &RegSetup, progress: &Progress) -> Result<EngineOutput>
                                 acc.1 += diff * diff;
                                 acc.2 += 1;
                                 acc
-                            })
-                        },
-                    )
-                    .reduce(
-                        || (vec![0.0f64; n_coeffs], 0.0f64, 0usize),
-                        |mut a, b| {
-                            for (x, y) in a.0.iter_mut().zip(b.0.iter()) {
-                                *x += y;
-                            }
-                            (a.0, a.1 + b.1, a.2 + b.2)
-                        },
-                    );
+                            },
+                        )
+                    })
+                    .collect();
+                let mut gsum = vec![0.0f64; n_coeffs];
+                let (mut sum, mut cnt) = (0.0f64, 0usize);
+                for (g, s, c) in &pieces {
+                    for (x, y) in gsum.iter_mut().zip(g) {
+                        *x += y;
+                    }
+                    sum += s;
+                    cnt += c;
+                }
                 let cntf = cnt.max(1) as f64;
                 for i in 0..n_coeffs {
                     grad[i] = gsum[i] / cntf;

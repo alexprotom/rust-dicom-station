@@ -1,0 +1,72 @@
+{
+  "format": "rds-workflow",
+  "version": 1,
+  "name": "4DCT target motion and ITV",
+  "description": "Find the target contoured on the phases of a 4DCT, measure its motion through the phases and build the motion-encompassing ITV on the reference phase.",
+  "output": {
+    "root": "",
+    "folder": "{workflow} {date}-{time}"
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "title": "4DCT",
+      "pos": [0.0, 0.0],
+      "kind": "load_folder",
+      "params": { "path": "", "workspace": "auto" }
+    },
+    {
+      "id": 2,
+      "title": "The 4D group",
+      "pos": [250.0, 0.0],
+      "kind": "select_group",
+      "params": { "name": "", "if_none": "group_all", "modality": "CT" }
+    },
+    {
+      "id": 3,
+      "title": "Find the target",
+      "pos": [500.0, 0.0],
+      "kind": "select_structures",
+      "params": { "names": "GTV*, target*, ITV*", "first_only": true, "required": true }
+    },
+    {
+      "id": 4,
+      "title": "Target motion",
+      "pos": [760.0, 0.0],
+      "kind": "motion",
+      "params": {
+        "reference_phase": "",
+        "phases": "",
+        "contoured": true,
+        "rigid": true,
+        "local_rigid_margin_mm": 15.0,
+        "deformable": true,
+        "build_itv": true,
+        "itv_margin_mm": 0.0,
+        "itv_landing": "structure_set",
+        "keep_phase_segs": false
+      }
+    },
+    {
+      "id": 5,
+      "title": "ITV",
+      "pos": [1020.0, -100.0],
+      "kind": "export_dicom",
+      "params": { "folder": "{input}", "format": "rtstruct", "sets": "changed", "images": false, "doses_and_plans": false, "uids": "keep" }
+    },
+    {
+      "id": 6,
+      "title": "Motion report",
+      "pos": [1020.0, 150.0],
+      "kind": "save_report",
+      "params": { "folder": "reports", "csv": true, "text": true }
+    }
+  ],
+  "links": [
+    { "from": [1, 0], "to": [2, 0] },
+    { "from": [2, 0], "to": [3, 0] },
+    { "from": [3, 0], "to": [4, 0] },
+    { "from": [4, 0], "to": [5, 0] },
+    { "from": [4, 1], "to": [6, 0] }
+  ]
+}

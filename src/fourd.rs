@@ -818,4 +818,23 @@ mod tests {
         let r = groups[0].resolve(&v);
         assert_eq!(r, vec![Some(2), Some(1), Some(0)]);
     }
+
+    /// The UPSTAR 4DCT names its phases `4DCT, 0%A` .. `4DCT, 90%A`: a
+    /// percent followed by a letter still reads as the phase, and the ten
+    /// make one group in temporal order (the workflows' example relies on
+    /// it).
+    #[test]
+    fn percent_phases_with_a_letter_after_them_make_one_group() {
+        let v: Vec<SeriesInfo> = (0..10)
+            .map(|i| series(&format!("s{i}"), &format!("4DCT, {}%A", i * 10), "st", "CT"))
+            .collect();
+        let groups = detect(&v);
+        assert_eq!(groups.len(), 1, "{groups:?}");
+        let labels: Vec<&str> = groups[0].members.iter().map(|m| m.label.as_str()).collect();
+        assert_eq!(labels.len(), 10, "{labels:?}");
+        assert!(
+            labels[0].starts_with('0') && labels[9].starts_with("90"),
+            "{labels:?}"
+        );
+    }
 }

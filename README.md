@@ -64,6 +64,13 @@ engine.*
   generation, a results window with run-vs-run comparison and CSV export;
   structure comparison (Dice, HD95, surface distance) and transfer by
   relationship.
+* **Workflows** - the program's own steps wired into a graph in a node
+  editor (*Workflows* in the menu bar): read a folder, find the image, the
+  4D group and the structures, segment, register, propagate (anchored on a
+  structure), measure the motion and build the ITV, export DICOM, write the
+  reports. Saved as a small file, run again on other input folders without
+  editing it - in the background, or step by step with every result shown
+  in the viewer - and from the command line for batches.
 * **MCP server** - `rds-mcp`, a second executable that lets an AI assistant
   drive the station's tools (load, segment, register, propagate, 4D motion,
   DVH, export) headlessly over the Model Context Protocol, with a
@@ -191,6 +198,7 @@ https://alexprotom.github.io/rust-dicom-station/
 | [docs/medsam2.md](docs/medsam2.md) | Propagating a prompt through a stack: the MedSAM2 re-implementation |
 | [docs/pacs.md](docs/pacs.md) | The local patient archive: window, on-disk layout, filing, loading, sending changes back |
 | [docs/export-and-tools.md](docs/export-and-tools.md) | DICOM export, the model manager, anonymizer, test-data generator and download |
+| [docs/workflows.md](docs/workflows.md) | Workflows: the node editor, the steps, running in the background or step by step, the run folder, the heart-anchored example |
 | [docs/mcp.md](docs/mcp.md) | The MCP server: tools, the heart workflow prompt, patient-identity safety, configuration |
 | [docs/architecture.md](docs/architecture.md) | Design, functional overview, module map, threading, the model folder, conventions, testing |
 | [docs/release-versioning.md](docs/release-versioning.md) | How versions and releases are produced |

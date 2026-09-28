@@ -1014,7 +1014,9 @@ dependencies = [
  "burn-backend",
  "burn-ir",
  "burn-std",
+ "bytemuck",
  "const-random",
+ "itertools 0.14.0",
  "libm",
  "macerator",
  "matrixmultiply",
@@ -1024,6 +1026,8 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "rand 0.10.3",
+ "rayon",
+ "seq-macro",
 ]
 
 [[package]]
@@ -1665,6 +1669,15 @@ name = "critical-section"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
+
+[[package]]
+name = "crossbeam-channel"
+version = "0.5.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98b0cc327b5bc766e7fda9c9260cc0fa81b43a8e240440422dff70788e3f9ef1"
+dependencies = [
+ "crossbeam-utils",
+]
 
 [[package]]
 name = "crossbeam-deque"
@@ -2690,6 +2703,28 @@ dependencies = [
  "smallvec",
  "unicode-segmentation",
  "web-sys",
+]
+
+[[package]]
+name = "egui-scale"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16194efd2800275df80448afa0ee11d3e23ce0220f6754e1af53fec8e9b7467a"
+dependencies = [
+ "egui",
+]
+
+[[package]]
+name = "egui-snarl"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "247c36a1f3b71fb25597f16f9396687641fec220a8116d5093941138fae59e61"
+dependencies = [
+ "ahash",
+ "egui",
+ "egui-scale",
+ "slab",
+ "smallvec",
 ]
 
 [[package]]
@@ -4740,7 +4775,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f607c237553f086e7043417a51df26b2eb899d3caff94e6a67592ff992fedc7"
 dependencies = [
  "autocfg",
+ "num_cpus",
+ "once_cell",
  "rawpointer",
+ "thread-tree",
 ]
 
 [[package]]
@@ -4966,6 +5004,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "rawpointer",
+ "rayon",
 ]
 
 [[package]]
@@ -6508,10 +6547,11 @@ dependencies = [
 
 [[package]]
 name = "rust-dicom-station"
-version = "0.9.4"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "burn",
+ "burn-ndarray",
  "dicom-core",
  "dicom-dictionary-std",
  "dicom-object",
@@ -6519,12 +6559,14 @@ dependencies = [
  "dicom-transfer-syntax-registry",
  "eframe",
  "egui",
+ "egui-snarl",
  "gemm 0.18.2",
  "image",
  "png",
  "rayon",
  "rfd",
  "safetensors 0.8.0",
+ "serde",
  "serde_json",
  "ureq",
  "walkdir",
@@ -7324,6 +7366,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "thread-tree"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffbd370cb847953a25954d9f63e14824a36113f8c72eecf6eccef5dc4b45d630"
+dependencies = [
+ "crossbeam-channel",
 ]
 
 [[package]]

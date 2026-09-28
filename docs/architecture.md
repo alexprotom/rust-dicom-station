@@ -64,6 +64,9 @@ rust-dicom-station
 │   ├── Data tree operations: rename every level; Shift-click ranges; copy / move /
 │   │   remove / export the ticked items; create / connect / copy / move / remove
 │   │   structure sets and segmentation series; move single structures / segments
+│   ├── Workflows: a node editor (menu bar *Workflows*) whose steps are the
+│   │   program's own tools; saved as .rdsflow files, run in the background
+│   │   or step by step in the viewer, on other input folders
 │   ├── Background jobs: one progress handle, one poll loop
 │   ├── Settings: theme, model folder, archive folder, optional modules,
 │   │   detached windows (viewer_settings.txt in the config folder)
@@ -206,6 +209,8 @@ src/
   lib.rs            library root - every module is public, so the integration
                     tests and the examples drive the same code as the GUI
   progress.rs       the one progress handle + ProgressSink, Quiet, Stderr         Core
+  par.rs            parallel sums in a fixed order (ordered_fold): the same
+                    result on every run and every thread count                   Core
   models.rs         the model folder: root, per-engine sub-folders, migration,
                     the inventory of every downloadable model                    NN
   settings.rs       persisted preferences and the config / data folders - the
@@ -348,6 +353,13 @@ src/
                       import, load, send back
     models_win.rs     the model manager window
     testdata_win.rs   the Download test data window over testdata.rs
+    workflow_edit.rs  the workflow editor: the egui-snarl canvas (typed pins,
+                      wires, the add-a-step menus), the palette, the
+                      parameter forms, load / save / recent, the Workflows
+                      menu's actions
+    workflow_run.rs   the run window: inputs, results folder, background or
+                      step by step; the run as a Job, its events polled each
+                      frame, each shown step put in a workspace, the results
 
   loader.rs         directory / file-list scan, classification, parallel volume
                     loading, workspace merging, safe DICOM element helpers         DICOM
@@ -445,6 +457,19 @@ src/
     anchored.rs       the same anchored on a structure contoured on both sides
                       (a cardiac CT onto a 4DCT by the heart): centroids, a rigid
                       fit on the structure, a local refinement, Dice as the check
+    graph/            user workflows: the steps above (and the engines, loading,
+                      export) as nodes of a graph the user draws and saves
+                      (docs/workflows.md)
+      mod.rs            the document: Workflow, Node, Link; check, run order,
+                        folder templates
+      catalog.rs        every kind of step: typed ports, parameter structs
+                        (serde), what the canvas says about each
+      exec.rs           the runner: wire values as references into the run's
+                        state, events and the show-and-wait handshake, the
+                        outcome, the run folder's own files
+      nodes.rs          what each step does and how it files its results
+      store.rs          the user's workflow folder, load / save, the recent
+                        list, the examples compiled in
 
   mcp/              the MCP server behind rds-mcp (cargo feature `mcp`)         MCP
     config.rs         the operator's mcp.toml: roots, output folder, PHI policy
@@ -533,7 +558,8 @@ tests/             the integration suites (see Testing); common/ holds the
                    op fixture
 examples/          autoseg_cli, autoseg_probe, body_cli, segvol_cli, segvol_probe,
                    medsam2_cli, medsam2_probe, gen_ops_fixtures (writes the op
-                   fixture); common/ holds what the CLIs share
+                   fixture), workflow_cli (runs a saved workflow headless);
+                   common/ holds what the CLIs share
 packaging/         everything that turns the viewer into an installable package,
                    one folder per platform (see packaging/README.md); nothing in
                    it is part of a root cargo build
@@ -774,7 +800,10 @@ helpers return `Option`, and per-file failures inside a batch become
 warnings in the UI. Cancellation is an error whose message contains
 `progress::CANCELLED`. `rayon` idioms: `par_iter` over independent files /
 ROIs, `par_chunks_mut` over rows / slices; sums that decide a threshold or a
-normalization stay sequential so a run reproduces itself. Modules open with
+normalization stay sequential so a run reproduces itself, or go through
+`par::ordered_fold`, which folds fixed-size pieces in parallel and adds the
+pieces in input order - never rayon's own `sum` / `reduce`, whose order
+depends on how the work was stolen. Modules open with
 a `//!` block explaining the algorithm and its conventions, usually citing
 the reference implementation.
 
@@ -786,18 +815,21 @@ tests).
 ## Dependencies
 
 All pure Rust: `dicom-rs` (DICOM, with `dicom-pixeldata` for decoding),
-`egui` / `eframe` (UI over wgpu), `rayon`, `rfd` (file dialogs; desktop
+`egui` / `eframe` (UI over wgpu), `egui-snarl` (the workflow editor's node
+canvas), `serde` (the workflow files), `rayon`, `rfd` (file dialogs; desktop
 only), `walkdir`, `anyhow`; for the engines `gemm` (SIMD matrix kernels),
 `serde_json`, `zip`, `ureq` (rustls + OS trust store; the bundled Mozilla
 roots on Android and iOS), `safetensors`, and `burn` - always with
-its `ndarray` CPU backend, with the wgpu backend added by the cargo feature
+its `ndarray` CPU backend (named directly as `burn-ndarray` as well, only to
+switch on its thread pool and SIMD kernels, which burn's own `ndarray`
+feature leaves off), with the wgpu backend added by the cargo feature
 `gpu` (default on). The cargo feature `mcp` (off by default) adds `rmcp`
-(the official MCP SDK), `tokio`, `serde`, `schemars` and `toml` for the
+(the official MCP SDK), `tokio`, `schemars` and `toml` for the
 `rds-mcp` executable only; the viewer's build pulls none of them.
 
 ## Testing
 
-Twenty-two integration suites plus in-module unit tests run against the same
+Twenty-three integration suites plus in-module unit tests run against the same
 code paths the GUI uses, with no external data or tooling: the analytic
 phantom round trip (**synthetic_study**), simulate → export → reload
 (**simulate_export**), rigid and B-spline recovery of known transforms
@@ -808,7 +840,9 @@ anonymize → reload (**anonymize**), SEG written and read back voxel for voxel
 RT images and a structure set on their own, a single slice, a folder of RT
 objects, and an image series added afterwards (**open_files**) - the DVH
 against an analytic
-Gaussian phantom (**dvh**), structure algebra (**structops**), and the three
+Gaussian phantom (**dvh**), structure algebra (**structops**), the shipped
+workflow example rebuilt on the 4D phantom and run end to end, in the
+background and step by step (**workflow_graph**), and the three
 engines assembled and run without a download - a miniature nnU-Net with the
 exact checkpoint naming (**autoseg**), and synthesized checkpoints with the
 real key names and shapes for **segvol** and **medsam2**, so genuine forward

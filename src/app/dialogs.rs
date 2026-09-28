@@ -47,6 +47,8 @@ impl ViewerApp {
         self.transfer_window(ctx);
         self.compare_window(ctx);
         self.autoseg_result_window(ctx);
+        self.workflow_editor_window(ctx);
+        self.workflow_run_window(ctx);
         self.picker_window(ctx);
         if let Some(msg) = self.notice.clone() {
             egui::Window::new("Done")

@@ -52,6 +52,10 @@ pub const MAX_WORKSPACES: usize = 4;
 const SESSION_KEYS: [&str; MAX_WORKSPACES] = ["session_a", "session_b", "session_c", "session_d"];
 const SESSION_SEP: char = '|';
 
+/// Settings key of the workflow files last saved or opened, newest first,
+/// separated like the session's paths.
+const RECENT_WORKFLOWS_KEY: &str = "recent_workflows";
+
 /// Settings keys of what each row of the central area shows, one per row.
 const VIEW_ROW_KEYS: [&str; MAX_WORKSPACES] =
     ["view_row_a", "view_row_b", "view_row_c", "view_row_d"];
@@ -223,6 +227,10 @@ pub struct Settings {
     /// What each row of the central area shows, left to right: up to three
     /// panes, chosen under *Settings ▸ View layout*.
     pub view_rows: [Vec<PaneKind>; MAX_WORKSPACES],
+
+    /// The workflow files last saved or opened, newest first - what
+    /// *Workflows ▸ Recent* lists (see `workflow::graph::store`).
+    pub recent_workflows: Vec<PathBuf>,
 }
 
 impl Default for Settings {
@@ -249,6 +257,7 @@ impl Default for Settings {
             modules_open: Vec::new(),
             session: std::array::from_fn(|_| Vec::new()),
             view_rows: std::array::from_fn(|_| default_view_row()),
+            recent_workflows: Vec::new(),
             // Let wgpu choose. The installer writes an explicit value when
             // the person installing picks one.
             graphics_backend: Backend::Auto,
@@ -852,6 +861,13 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from)
                 .collect();
+        } else if key.eq_ignore_ascii_case(RECENT_WORKFLOWS_KEY) {
+            s.recent_workflows = value
+                .split(SESSION_SEP)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .collect();
         } else if key.eq_ignore_ascii_case(MODULE_SIM_KEY) {
             if let Some(b) = bool_from_str(value) {
                 s.module_simulation = b;
@@ -950,6 +966,17 @@ fn render(s: &Settings) -> String {
     out.push_str("# up to three of axial, sagittal, coronal, 3d\n");
     for (key, row) in VIEW_ROW_KEYS.iter().zip(&s.view_rows) {
         out.push_str(&format!("{key} = {}\n", render_view_row(row)));
+    }
+    if !s.recent_workflows.is_empty() {
+        let joined: Vec<String> = s
+            .recent_workflows
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        out.push_str(&format!(
+            "# the workflow files last saved or opened, newest first\n{RECENT_WORKFLOWS_KEY} = {}\n",
+            joined.join(&SESSION_SEP.to_string())
+        ));
     }
     for (key, paths) in SESSION_KEYS.iter().zip(&s.session) {
         if paths.is_empty() {
@@ -1253,6 +1280,20 @@ mod tests {
         // Nothing usable leaves the default rather than an empty window.
         assert_eq!(parse_view_row(""), default_view_row());
         assert_eq!(parse_view_row("sideways, upside-down"), default_view_row());
+    }
+
+    #[test]
+    fn round_trips_the_recent_workflows() {
+        let s = Settings {
+            recent_workflows: vec![
+                PathBuf::from("D:/flows/heart 4D.rdsflow"),
+                PathBuf::from("/home/u/b.rdsflow"),
+            ],
+            ..Settings::default()
+        };
+        let back = parse(&render(&s));
+        assert_eq!(back.recent_workflows, s.recent_workflows);
+        assert!(parse("").recent_workflows.is_empty());
     }
 
     #[test]

@@ -15,6 +15,9 @@ impl ViewerApp {
         let mut open_pacs = false;
         let mut open_drr = false;
         let mut open_export = false;
+        let mut wf_menu: Option<workflow_edit::WfPending> = None;
+        let mut wf_show_editor = false;
+        let mut wf_show_run = false;
         let mut new_theme: Option<egui::ThemePreference> = None;
         let mut save_settings = false;
         // A module was switched on or off - remember it for the next run.
@@ -446,6 +449,83 @@ impl ViewerApp {
                         ui.close();
                     }
                 });
+                // Workflows: the program's steps wired into a graph, saved as
+                // a file and run again on other data (see workflow_edit.rs).
+                ui.menu_button("Workflows", |ui| {
+                    if tip_button(
+                        ui,
+                        "🔀 New",
+                        "Open the workflow editor on an empty canvas: add steps from the \
+                         palette, wire what one makes into the next",
+                    ) {
+                        wf_menu = Some(workflow_edit::WfPending::New);
+                        ui.close();
+                    }
+                    if tip_button(
+                        ui,
+                        "📂 Load",
+                        "Open a workflow file (.rdsflow) in the editor, to run it again or \
+                         change it",
+                    ) {
+                        wf_menu = Some(workflow_edit::WfPending::Open);
+                        ui.close();
+                    }
+                    let recent = self.recent_workflows.clone();
+                    ui.add_enabled_ui(!recent.is_empty(), |ui| {
+                        ui.menu_button("🕐 Last saved", |ui| {
+                            for p in &recent {
+                                let name = p
+                                    .file_stem()
+                                    .map(|s| s.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| p.display().to_string());
+                                if ui
+                                    .button(name)
+                                    .on_hover_text(p.display().to_string())
+                                    .clicked()
+                                {
+                                    wf_menu = Some(workflow_edit::WfPending::File(p.clone()));
+                                    ui.close();
+                                }
+                            }
+                        });
+                    });
+                    ui.menu_button("Examples", |ui| {
+                        for (i, e) in crate::workflow::graph::store::EXAMPLES.iter().enumerate() {
+                            if ui.button(e.name).on_hover_text(e.blurb).clicked() {
+                                wf_menu = Some(workflow_edit::WfPending::Example(i));
+                                ui.close();
+                            }
+                        }
+                    });
+                    if self.wf_editor.is_some() || self.wf_run.is_some() {
+                        ui.separator();
+                    }
+                    if let Some(ed) = &self.wf_editor {
+                        if ui
+                            .button(format!("Show the editor: {}", ed.name.trim()))
+                            .clicked()
+                        {
+                            wf_show_editor = true;
+                            ui.close();
+                        }
+                    }
+                    if let Some(run) = &self.wf_run {
+                        let what = if run.is_running() {
+                            "Show the run in progress"
+                        } else {
+                            "Show the last run"
+                        };
+                        if ui.button(what).clicked() {
+                            wf_show_run = true;
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    ui.weak(format!(
+                        "Your workflows: {}",
+                        crate::workflow::graph::store::user_dir().display()
+                    ));
+                });
                 ui.menu_button("Settings", |ui| {
                     // Tick boxes: the submenu stays open while rows are being
                     // put together, and goes away on a click outside it or on
@@ -604,6 +684,19 @@ impl ViewerApp {
         }
         if open_export {
             self.open_export_dialog();
+        }
+        if let Some(what) = wf_menu {
+            self.wf_replace(what);
+        }
+        if wf_show_editor {
+            if let Some(e) = &mut self.wf_editor {
+                e.open = true;
+            }
+        }
+        if wf_show_run {
+            if let Some(r) = &mut self.wf_run {
+                r.open = true;
+            }
         }
         if let Some(theme) = new_theme {
             self.set_theme(ctx, theme);

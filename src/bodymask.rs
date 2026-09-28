@@ -649,11 +649,21 @@ pub fn flatten_bias(volume: &Volume, sigma_mm: f64) -> Vec<f32> {
     let den = morph::blur_mm(&weight, volume.dims, volume.spacing, sigma_mm);
     // The level everything is rescaled to, and the fallback wherever the
     // weight is too thin for a local estimate to mean anything.
-    let (sum, count) = signal
-        .par_iter()
-        .zip(weight.par_iter())
-        .map(|(&v, &w)| (v as f64, w as f64))
-        .reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1));
+    // Summed in fixed pieces and in order (`crate::par`): this mean rescales
+    // everything, so it must be the same number on every run.
+    let (sum, count) = crate::par::ordered_fold(
+        &signal,
+        |part, off| {
+            let mut acc = (0.0f64, 0.0f64);
+            for (&v, &w) in part.iter().zip(&weight[off..]) {
+                acc.0 += v as f64;
+                acc.1 += w as f64;
+            }
+            acc
+        },
+        |a, b| (a.0 + b.0, a.1 + b.1),
+        (0.0, 0.0),
+    );
     if count == 0.0 {
         return raw;
     }

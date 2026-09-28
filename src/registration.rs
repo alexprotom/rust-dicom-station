@@ -1202,7 +1202,9 @@ pub struct RegImage {
 impl RegImage {
     pub fn from_volume(v: &Volume) -> Self {
         RegImage {
-            data: v.data.iter().map(|&x| x as f32).collect(),
+            // Two of these per registration, and a workflow registers the
+            // same reference many times: the conversion runs on every core.
+            data: v.data.par_iter().map(|&x| x as f32).collect(),
             dims: v.dims,
             spacing: v.spacing,
             origin: v.origin,
@@ -1518,13 +1520,21 @@ fn draw_samples(fixed: &RegImage, n: usize, rng: &mut XorShift) -> Vec<(Vec3, f3
 fn msd_value(fixed: &RegImage, moving: &RegImage, t: &Transform3, n: usize) -> f64 {
     let mut rng = XorShift(0xD1B54A32D192ED03);
     let samples = draw_samples(fixed, n, &mut rng);
-    let (sum, cnt) = samples
-        .par_iter()
-        .map(|&(p, f)| match moving.sample_grad(t.map(p)) {
-            Some((m, _)) => ((m - f) as f64 * (m - f) as f64, 1usize),
-            None => (0.0, 0),
-        })
-        .reduce(|| (0.0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+    let (sum, cnt) = crate::par::ordered_fold(
+        &samples,
+        |part, _| {
+            let (mut sum, mut cnt) = (0.0f64, 0usize);
+            for &(p, f) in part {
+                if let Some((m, _)) = moving.sample_grad(t.map(p)) {
+                    sum += (m - f) as f64 * (m - f) as f64;
+                    cnt += 1;
+                }
+            }
+            (sum, cnt)
+        },
+        |a, b| (a.0 + b.0, a.1 + b.1),
+        (0.0, 0),
+    );
     if cnt == 0 {
         f64::MAX
     } else {
@@ -1533,41 +1543,54 @@ fn msd_value(fixed: &RegImage, moving: &RegImage, t: &Transform3, n: usize) -> f
 }
 
 /// Centre of gravity of the voxels at or above `threshold`.
+///
+/// It sets the initial translation, so it is summed in a fixed order
+/// (`crate::par`): the same images give the same starting point every run.
 pub(crate) fn center_of_gravity(img: &RegImage, threshold: f32) -> Option<Vec3> {
     let [nx, ny, _] = img.dims;
-    let (sum, n) = img
-        .data
-        .par_iter()
-        .enumerate()
-        .filter(|(_, &v)| v >= threshold)
-        .map(|(o, _)| {
-            let k = o / (nx * ny);
-            let rem = o - k * nx * ny;
-            (
-                img.index_to_patient((rem % nx) as f64, (rem / nx) as f64, k as f64),
-                1usize,
-            )
-        })
-        .reduce(|| (Vec3::ZERO, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+    let (sum, n) = crate::par::ordered_fold(
+        &img.data,
+        |part, off| {
+            let mut acc = (Vec3::ZERO, 0usize);
+            for (i, &v) in part.iter().enumerate() {
+                if v < threshold {
+                    continue;
+                }
+                let o = off + i;
+                let k = o / (nx * ny);
+                let rem = o - k * nx * ny;
+                acc.0 =
+                    acc.0 + img.index_to_patient((rem % nx) as f64, (rem / nx) as f64, k as f64);
+                acc.1 += 1;
+            }
+            acc
+        },
+        |a, b| (a.0 + b.0, a.1 + b.1),
+        (Vec3::ZERO, 0),
+    );
     (n > 0).then(|| sum * (1.0 / n as f64))
 }
 
 /// Centre of gravity of the eligible voxels of a prepared fixed image.
 pub(crate) fn eligible_center_of_gravity(img: &RegImage) -> Option<Vec3> {
     let [nx, ny, _] = img.dims;
-    let (sum, n) = img
-        .eligible
-        .par_iter()
-        .map(|&o| {
-            let o = o as usize;
-            let k = o / (nx * ny);
-            let rem = o - k * nx * ny;
-            (
-                img.index_to_patient((rem % nx) as f64, (rem / nx) as f64, k as f64),
-                1usize,
-            )
-        })
-        .reduce(|| (Vec3::ZERO, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+    let (sum, n) = crate::par::ordered_fold(
+        &img.eligible,
+        |part, _| {
+            let mut acc = (Vec3::ZERO, 0usize);
+            for &o in part {
+                let o = o as usize;
+                let k = o / (nx * ny);
+                let rem = o - k * nx * ny;
+                acc.0 =
+                    acc.0 + img.index_to_patient((rem % nx) as f64, (rem / nx) as f64, k as f64);
+                acc.1 += 1;
+            }
+            acc
+        },
+        |a, b| (a.0 + b.0, a.1 + b.1),
+        (Vec3::ZERO, 0),
+    );
     (n > 0).then(|| sum * (1.0 / n as f64))
 }
 

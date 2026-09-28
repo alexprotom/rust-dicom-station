@@ -263,27 +263,36 @@ impl ViewerApp {
         let progress = Arc::new(Progress::default());
         progress.set("Sampling dose");
         self.dvh_job = Some(Job::spawn(progress, move |p| {
+            use rayon::prelude::*;
+            use std::sync::atomic::{AtomicUsize, Ordering};
             let t0 = std::time::Instant::now();
             let total = (req.items.len() * req.doses.len()).max(1);
-            let mut curves = Vec::with_capacity(total);
-            let mut n = 0usize;
-            for dose in &req.doses {
-                for (mask, grid, name, color) in &req.items {
+            // Every (dose, structure) curve is independent of the others, so
+            // they are sampled in parallel; each one is still one sequential
+            // walk, so a curve is the same number it always was, and the
+            // list keeps the order the pairs were asked for in.
+            type Item = (Vec<u8>, crate::volume::Grid, String, [u8; 3]);
+            let pairs: Vec<(&crate::rtdose::DoseGrid, &Item)> = req
+                .doses
+                .iter()
+                .flat_map(|dose| req.items.iter().map(move |item| (dose, item)))
+                .collect();
+            let done = AtomicUsize::new(0);
+            let curves: Vec<_> = pairs
+                .par_iter()
+                .filter_map(|(dose, (mask, grid, name, color))| {
                     if p.cancelled() {
-                        break;
+                        return None;
                     }
+                    let c = dvh::compute(name, *color, mask, grid, dose, DvhParams::default()).ok();
+                    let n = done.fetch_add(1, Ordering::Relaxed) + 1;
                     p.report(
                         n as f32 / total as f32,
                         &format!("{name} on {}", dose.label),
                     );
-                    if let Ok(c) =
-                        dvh::compute(name, *color, mask, grid, dose, DvhParams::default())
-                    {
-                        curves.push(c);
-                    }
-                    n += 1;
-                }
-            }
+                    c
+                })
+                .collect();
             p.report(1.0, "Done");
             Ok(DvhDone {
                 curves,

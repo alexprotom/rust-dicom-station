@@ -160,3 +160,50 @@ fn each_phase_gets_its_own_folder() {
     assert_eq!(with_files.len(), 4, "one folder per phase: {with_files:?}");
     let _ = std::fs::remove_dir_all(&out);
 }
+
+/// Two structure sets with one label - every phase given a new set of the
+/// same name, say - are written side by side; the second must not replace
+/// the first on disk while the count says two were written.
+#[test]
+fn sets_that_share_a_label_are_both_written() {
+    let mut study = fourd_study("test_export_same_label");
+    let first = study.structure_sets[0].clone();
+    for i in 1..3 {
+        let mut ss = first.clone();
+        ss.sop_instance_uid = format!("{}.{i}", first.sop_instance_uid);
+        ss.series_instance_uid = format!("{}.{i}", first.series_instance_uid);
+        ss.referenced_series_uid = study.series[i].uid.clone();
+        study.structure_sets.push(ss);
+    }
+    let mut plan = plan_for(&study);
+    plan.layout = export::Layout::StudyFolders;
+    for st in plan.studies_mut() {
+        for se in &mut st.series {
+            se.selected = false;
+        }
+        for ob in &mut st.objects {
+            ob.selected = ob.kind == export::ObjKind::Structures;
+        }
+    }
+    let out = target("test_export_same_label_out");
+    let summary = export::run(&plan, export::one_study(&study), &out, &Progress::default())
+        .expect("the export runs");
+    let mut written = Vec::new();
+    let mut stack = vec![out.clone()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("RS_"))
+            {
+                written.push(p);
+            }
+        }
+    }
+    assert_eq!(summary.files, 3, "{:?}", summary.warnings);
+    assert_eq!(written.len(), 3, "one file per set: {written:?}");
+    let _ = std::fs::remove_dir_all(&out);
+}

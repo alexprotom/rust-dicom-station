@@ -419,11 +419,20 @@ pub fn propagate(
         let mut cells: Vec<(usize, f32)> = rows.into_iter().flatten().collect();
         let mapped_voxels: f64 = cells.iter().map(|(_, o)| *o as f64).sum();
         // Fill with the most-occupied voxels until the mapped volume is held.
-        let keep = mapped_voxels.round() as usize;
-        cells.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        // Only which cells are kept matters, not their order among
+        // themselves, so a selection does it in linear time instead of a
+        // sort (a body outline is millions of cells). The order is total
+        // (the voxel index breaks ties), so the kept set is exactly the
+        // first `keep` of the sorted list.
+        let keep = (mapped_voxels.round() as usize).min(cells.len());
+        let by_occupancy =
+            |a: &(usize, f32), b: &(usize, f32)| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0));
+        if keep > 0 && keep < cells.len() {
+            cells.select_nth_unstable_by(keep - 1, by_occupancy);
+        }
         let mut mask = vec![0u8; dnx * dny * dnz];
         let mut voxels = 0usize;
-        for (idx, _) in cells.into_iter().take(keep) {
+        for &(idx, _) in &cells[..keep] {
             mask[idx] = 1;
             voxels += 1;
         }

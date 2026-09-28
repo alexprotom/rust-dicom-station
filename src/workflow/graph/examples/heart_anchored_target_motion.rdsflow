@@ -1,0 +1,148 @@
+{
+  "format": "rds-workflow",
+  "version": 1,
+  "name": "Heart-anchored target motion",
+  "description": "A cardiac CT and a 4DCT of one patient. The heart is segmented on the CT and on every phase of the 4DCT and filed as 'heart total' in each image's own structure set; the target is carried from the CT onto every phase, anchored on the heart; the motion of the heart and the target through the phases is measured and the ITV built. Each input is written to its own folder of the run - its images with the structure sets the run added to - and the reports beside them.",
+  "output": {
+    "root": "",
+    "folder": "{workflow} {date}-{time}"
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "title": "Cardiac CT",
+      "pos": [0.0, 0.0],
+      "kind": "load_folder",
+      "params": { "path": "data-test-complex/UPSTAR/STAR R P01", "workspace": "a" }
+    },
+    {
+      "id": 2,
+      "title": "The CT",
+      "pos": [250.0, 0.0],
+      "kind": "select_image",
+      "params": { "modality": "CT", "description": "", "pick": "largest", "outside_4d": false }
+    },
+    {
+      "id": 3,
+      "title": "Find the target",
+      "pos": [500.0, -100.0],
+      "kind": "select_structures",
+      "params": { "names": "target*, GTV*, CTV*, PTV*", "first_only": true, "required": true }
+    },
+    {
+      "id": 4,
+      "title": "Heart on the CT",
+      "pos": [500.0, 130.0],
+      "kind": "auto_segment",
+      "params": {
+        "variant": "fast",
+        "organs": [ { "organ": "heart", "name": "heart total" } ],
+        "output": "structures",
+        "set": "own",
+        "set_label": "Auto-segmentation",
+        "device": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "title": "4DCT",
+      "pos": [0.0, 440.0],
+      "kind": "load_folder",
+      "params": { "path": "data-test-complex/UPSTAR/Lung 01-052", "workspace": "b" }
+    },
+    {
+      "id": 6,
+      "title": "The 4D group",
+      "pos": [250.0, 440.0],
+      "kind": "select_group",
+      "params": { "name": "", "if_none": "group_all", "modality": "CT" }
+    },
+    {
+      "id": 7,
+      "title": "Heart on every phase",
+      "pos": [500.0, 440.0],
+      "kind": "auto_segment",
+      "params": {
+        "variant": "fast",
+        "organs": [ { "organ": "heart", "name": "heart total" } ],
+        "output": "structures",
+        "set": "own",
+        "set_label": "Auto-segmentation",
+        "device": "auto"
+      }
+    },
+    {
+      "id": 8,
+      "title": "Target onto the phases",
+      "pos": [760.0, 220.0],
+      "kind": "propagate_to_group",
+      "params": {
+        "method": "elastix_bspline",
+        "anchor_by": "contours",
+        "anchor_margin_mm": 10.0,
+        "rigid_only": false,
+        "anchor_landed_as": "",
+        "landing": "structure_set",
+        "finish": { "close_mm": 0.0, "fill": false, "keep_shape": false }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Heart and target motion",
+      "pos": [1020.0, 300.0],
+      "kind": "motion",
+      "params": {
+        "reference_phase": "",
+        "phases": "",
+        "contoured": true,
+        "rigid": true,
+        "local_rigid_margin_mm": 15.0,
+        "deformable": true,
+        "build_itv": true,
+        "itv_margin_mm": 0.0,
+        "itv_landing": "structure_set",
+        "keep_phase_segs": false
+      }
+    },
+    {
+      "id": 10,
+      "title": "CCT results",
+      "pos": [760.0, -100.0],
+      "kind": "export_dicom",
+      "params": { "folder": "CCT", "format": "rtstruct", "sets": "changed", "images": true, "doses_and_plans": false, "uids": "keep" }
+    },
+    {
+      "id": 11,
+      "title": "4DCT results",
+      "pos": [1280.0, 440.0],
+      "kind": "export_dicom",
+      "params": { "folder": "4DCT", "format": "rtstruct", "sets": "changed", "images": true, "doses_and_plans": false, "uids": "keep" }
+    },
+    {
+      "id": 12,
+      "title": "Reports",
+      "pos": [1280.0, 40.0],
+      "kind": "save_report",
+      "params": { "folder": "reports", "csv": true, "text": true }
+    }
+  ],
+  "links": [
+    { "from": [1, 0], "to": [2, 0] },
+    { "from": [2, 0], "to": [3, 0] },
+    { "from": [2, 0], "to": [4, 0] },
+    { "from": [5, 0], "to": [6, 0] },
+    { "from": [6, 0], "to": [7, 0] },
+    { "from": [3, 0], "to": [8, 0] },
+    { "from": [4, 0], "to": [8, 1] },
+    { "from": [7, 0], "to": [8, 2] },
+    { "from": [8, 0], "to": [9, 0] },
+    { "from": [7, 0], "to": [9, 1] },
+    { "from": [4, 0], "to": [10, 0] },
+    { "from": [8, 0], "to": [11, 0] },
+    { "from": [9, 0], "to": [11, 0] },
+    { "from": [4, 1], "to": [12, 0] },
+    { "from": [7, 1], "to": [12, 0] },
+    { "from": [8, 2], "to": [12, 0] },
+    { "from": [9, 1], "to": [12, 0] }
+  ]
+}

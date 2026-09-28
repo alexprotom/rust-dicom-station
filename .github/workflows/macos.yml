@@ -51,8 +51,12 @@ on:
 permissions:
   contents: read
 
+# The workflow's own name is spelled out: in a workflow that release.yml
+# calls, `github.workflow` is the caller's ("Release"), so android.yml,
+# macos.yml and ios.yml would all land in one group - one runs, one waits,
+# and the third to arrive cancels the one waiting.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  group: ${{ github.workflow }}-macos-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:

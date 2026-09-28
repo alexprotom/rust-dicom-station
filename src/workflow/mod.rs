@@ -16,6 +16,7 @@
 //!   this layer only sequences them.
 
 pub mod anchored;
+pub mod graph;
 pub mod group;
 pub mod motion;
 pub mod select;
