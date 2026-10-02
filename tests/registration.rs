@@ -12,8 +12,8 @@
 use rust_dicom_station::geometry::Vec3;
 use rust_dicom_station::progress::Progress;
 use rust_dicom_station::registration::{
-    register, Init, LandmarkKernel, LandmarkPair, LandmarkParams, Metric, RegMethod, RegParams,
-    RegionMask, RigidTransform, VectorField,
+    register, register_cached, Init, LandmarkKernel, LandmarkPair, LandmarkParams, Metric,
+    PyramidCache, RegMethod, RegParams, RegionMask, RigidTransform, VectorField,
 };
 use rust_dicom_station::volume::Volume;
 
@@ -323,6 +323,54 @@ fn a_same_frame_pair_still_starts_from_the_identity() {
         "auto is the identity when the images overlap: {auto} vs {}",
         res.initial_metric
     );
+}
+
+#[test]
+fn a_kept_pyramid_registers_exactly_as_a_fresh_one() {
+    // A workflow hands one pyramid cache to all its registrations; what it
+    // saves is building the pyramids, never a digit of the result - in
+    // either role, and after a third volume has come and gone.
+    use std::sync::Arc;
+    let n = 32;
+    let fixed = Arc::new(make_volume(n, 4.0, phantom));
+    let moving = Arc::new(make_volume(n, 4.0, |p| {
+        phantom(p - Vec3::new(3.0, -2.0, 1.0))
+    }));
+    let other = Arc::new(make_volume(n, 4.0, |p| phantom(p * 1.02)));
+    let params = RegParams {
+        method: RegMethod::ElastixRigid,
+        levels: 2,
+        iterations: 40,
+        samples: 2000,
+        ..RegParams::default()
+    };
+    let probes = [Vec3::new(10.0, -20.0, 5.0), Vec3::new(-30.0, 15.0, 25.0)];
+    let bits = |r: &rust_dicom_station::registration::RegistrationResult| -> Vec<u64> {
+        probes
+            .iter()
+            .flat_map(|&p| {
+                let q = r.transform.map(p);
+                [q.x.to_bits(), q.y.to_bits(), q.z.to_bits()]
+            })
+            .chain([r.final_metric.to_bits()])
+            .collect()
+    };
+    let pr = Progress::default();
+    let fresh = bits(&register(&fixed, &moving, &params, &pr).unwrap());
+    let back = bits(&register(&moving, &fixed, &params, &pr).unwrap());
+    assert_eq!(
+        fresh,
+        bits(&register(&fixed, &moving, &params, &pr).unwrap()),
+        "a registration is repeatable to the bit"
+    );
+    let mut cache = PyramidCache::default();
+    for _ in 0..2 {
+        let r = register_cached(&fixed, &moving, &params, &mut cache, &pr).unwrap();
+        assert_eq!(bits(&r), fresh, "cached, fixed and moving as given");
+        let r = register_cached(&moving, &fixed, &params, &mut cache, &pr).unwrap();
+        assert_eq!(bits(&r), back, "cached, the roles swapped");
+        register_cached(&other, &moving, &params, &mut cache, &pr).unwrap();
+    }
 }
 
 /// Ground-truth smooth displacement (fixed → moving), a Gaussian bump.

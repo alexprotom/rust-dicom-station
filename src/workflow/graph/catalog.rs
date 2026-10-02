@@ -20,6 +20,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::autoseg::classes::TOTAL_CLASS_NAMES;
 
+// The parameters every caller of an engine shares - the workflow file, the
+// MCP tools, the viewer's dialogs - are defined once, in `workflow::params`;
+// the workflow file names them as it always did.
+pub use crate::workflow::params::{
+    AnchorBy, AutosegVariant, BodyMethod, DeformMethod, Device, Effort, FinishParams, Landing,
+    NameClash, OutputKind, RegInit, RegMethodChoice, SetChoice,
+};
+
 /// What travels along a wire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PortType {
@@ -130,18 +138,22 @@ pub enum Category {
     Input,
     Select,
     Segment,
+    Edit,
     Register,
     FourD,
+    Measure,
     Output,
 }
 
 impl Category {
-    pub const ALL: [Category; 6] = [
+    pub const ALL: [Category; 8] = [
         Category::Input,
         Category::Select,
         Category::Segment,
+        Category::Edit,
         Category::Register,
         Category::FourD,
+        Category::Measure,
         Category::Output,
     ];
 
@@ -150,8 +162,10 @@ impl Category {
             Category::Input => "Input",
             Category::Select => "Find in the data",
             Category::Segment => "Segment",
+            Category::Edit => "Edit structures",
             Category::Register => "Register and propagate",
             Category::FourD => "4D",
+            Category::Measure => "Measure the dose",
             Category::Output => "Output",
         }
     }
@@ -162,8 +176,10 @@ impl Category {
             Category::Input => [70, 85, 110],
             Category::Select => [40, 110, 115],
             Category::Segment => [55, 115, 60],
+            Category::Edit => [95, 110, 45],
             Category::Register => [50, 80, 140],
             Category::FourD => [140, 95, 35],
+            Category::Measure => [120, 70, 130],
             Category::Output => [125, 45, 70],
         }
     }
@@ -186,33 +202,57 @@ pub struct KindInfo {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
     LoadFolder,
+    LoadFolders,
+    LoadFromArchive,
+    Anonymize,
     SelectImage,
     SelectGroup,
     SelectStructures,
     AutoSegment,
     BodyContour,
+    SegVolText,
+    Combine,
+    Rename,
     Register,
     Propagate,
+    Transfer,
     PropagateToGroup,
+    CopyToPhases,
     Motion,
+    Dvh,
+    DoseMetrics,
     ExportDicom,
     SaveReport,
+    ArchiveImport,
+    Drr,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 12] = [
+    pub const ALL: [Kind; 24] = [
         Kind::LoadFolder,
+        Kind::LoadFolders,
+        Kind::LoadFromArchive,
+        Kind::Anonymize,
         Kind::SelectImage,
         Kind::SelectGroup,
         Kind::SelectStructures,
         Kind::AutoSegment,
         Kind::BodyContour,
+        Kind::SegVolText,
+        Kind::Combine,
+        Kind::Rename,
         Kind::Register,
         Kind::Propagate,
+        Kind::Transfer,
         Kind::PropagateToGroup,
+        Kind::CopyToPhases,
         Kind::Motion,
+        Kind::Dvh,
+        Kind::DoseMetrics,
         Kind::ExportDicom,
         Kind::SaveReport,
+        Kind::ArchiveImport,
+        Kind::Drr,
     ];
 
     pub fn info(self) -> &'static KindInfo {
@@ -227,6 +267,36 @@ impl Kind {
                         on the next patient.",
                 ends_a_branch: false,
                 writes: false,
+            },
+            Kind::LoadFolders => &KindInfo {
+                name: "DICOM folders",
+                glyph: "📁",
+                category: Category::Input,
+                blurb: "A batch: the workflow runs once for every subfolder of a folder (one \
+                        patient each), every case in a folder of its own, and ends with one \
+                        table across the cases for every table its reports make.",
+                ends_a_branch: false,
+                writes: false,
+            },
+            Kind::LoadFromArchive => &KindInfo {
+                name: "From the archive",
+                glyph: "🏥",
+                category: Category::Input,
+                blurb: "Take a study out of the station's local archive (Tools > PACS): the \
+                        patient by ID or name, the study by date or description, or the \
+                        newest.",
+                ends_a_branch: false,
+                writes: false,
+            },
+            Kind::Anonymize => &KindInfo {
+                name: "Anonymize",
+                glyph: "🔏",
+                category: Category::Input,
+                blurb: "Write an anonymized copy of the study's folder into the run folder - \
+                        identifiers replaced by an alias, dates fixed, private tags removed, \
+                        UIDs remapped - and go on with the copy.",
+                ends_a_branch: false,
+                writes: true,
             },
             Kind::SelectImage => &KindInfo {
                 name: "Image series",
@@ -279,6 +349,36 @@ impl Kind {
                 ends_a_branch: false,
                 writes: false,
             },
+            Kind::SegVolText => &KindInfo {
+                name: "Prompt by name",
+                glyph: "💬",
+                category: Category::Segment,
+                blurb: "SegVol, prompted with structure names in plain text (liver, \
+                        pancreas, aorta), on one image series or on every phase of a 4D \
+                        group. For what TotalSegmentator's fixed classes do not name.",
+                ends_a_branch: false,
+                writes: false,
+            },
+            Kind::Combine => &KindInfo {
+                name: "Combine structures",
+                glyph: "⊕",
+                category: Category::Edit,
+                blurb: "Boolean algebra with margins: A alone with a margin (a PTV from an \
+                        ITV), A ∪ B, A ∩ B or A minus B, each side grown or shrunk first, the \
+                        result cleaned. On an image, or on every phase of a 4D group.",
+                ends_a_branch: false,
+                writes: false,
+            },
+            Kind::Rename => &KindInfo {
+                name: "Rename or delete",
+                glyph: "✏",
+                category: Category::Edit,
+                blurb: "Rename structures by name or pattern (GTV* to GTV), or delete them, \
+                        where they are: on an image, on every phase of a 4D group, or in \
+                        the whole study.",
+                ends_a_branch: false,
+                writes: false,
+            },
             Kind::Register => &KindInfo {
                 name: "Register",
                 glyph: "⇄",
@@ -296,6 +396,17 @@ impl Kind {
                 ends_a_branch: false,
                 writes: false,
             },
+            Kind::Transfer => &KindInfo {
+                name: "Transfer by relationship",
+                glyph: "📌",
+                category: Category::Register,
+                blurb: "Place a structure onto another image at the same offset from a \
+                        reference structure both images have - a target placed by the heart \
+                        when the two share no registration. Onto one image, or onto every \
+                        phase of a 4D group.",
+                ends_a_branch: false,
+                writes: false,
+            },
             Kind::PropagateToGroup => &KindInfo {
                 name: "Propagate to 4D group",
                 glyph: "⏩",
@@ -308,6 +419,16 @@ impl Kind {
                 ends_a_branch: false,
                 writes: false,
             },
+            Kind::CopyToPhases => &KindInfo {
+                name: "Copy to each phase",
+                glyph: "🔁",
+                category: Category::FourD,
+                blurb: "Copy structures onto every phase of a 4D group as they are, in \
+                        patient coordinates - no registration: the structure stays where it \
+                        is while the anatomy under it moves (a fixed margin, a couch, an ITV).",
+                ends_a_branch: false,
+                writes: false,
+            },
             Kind::Motion => &KindInfo {
                 name: "Motion and ITV",
                 glyph: "📈",
@@ -316,6 +437,25 @@ impl Kind {
                         as contoured on every phase, rigidly and deformably - their \
                         correlation with a reference structure, and build the \
                         motion-encompassing ITV.",
+                ends_a_branch: false,
+                writes: false,
+            },
+            Kind::Dvh => &KindInfo {
+                name: "DVH",
+                glyph: "📊",
+                category: Category::Measure,
+                blurb: "Dose-volume histograms of structures against a dose of the study, \
+                        the metrics you list (D95%, V20Gy, Dmean) and, with a protocol, \
+                        which constraints hold.",
+                ends_a_branch: false,
+                writes: false,
+            },
+            Kind::DoseMetrics => &KindInfo {
+                name: "Dose estimation",
+                glyph: "📐",
+                category: Category::Measure,
+                blurb: "One table of dose metrics per structure against the physical or the \
+                        RBE-weighted dose - what the Dose estimation module shows.",
                 ends_a_branch: false,
                 writes: false,
             },
@@ -338,6 +478,26 @@ impl Kind {
                 ends_a_branch: true,
                 writes: true,
             },
+            Kind::ArchiveImport => &KindInfo {
+                name: "File in the archive",
+                glyph: "📥",
+                category: Category::Output,
+                blurb: "File the studies into the station's local archive: what the run \
+                        exported of them, or the folders they were read from (an anonymized \
+                        copy, say).",
+                ends_a_branch: true,
+                writes: true,
+            },
+            Kind::Drr => &KindInfo {
+                name: "DRR",
+                glyph: "☢",
+                category: Category::Output,
+                blurb: "Digitally reconstructed radiographs of an image series at the angles \
+                        you list, or at the plan's beams: PNG files in the run folder, and \
+                        planar images in the study.",
+                ends_a_branch: false,
+                writes: true,
+            },
         }
     }
 
@@ -348,7 +508,102 @@ impl Kind {
         const DATA: &[PortType] = &[T::Study, T::Image, T::Group, T::Structures];
         const GROUPISH: &[PortType] = &[T::Group, T::Structures];
         match self {
-            Kind::LoadFolder => &[],
+            Kind::LoadFolder | Kind::LoadFolders | Kind::LoadFromArchive => &[],
+            Kind::Anonymize => {
+                const P: &[PortSpec] = &[PortSpec::one(
+                    "Study",
+                    STUDY,
+                    "the study whose folder is copied anonymized",
+                )];
+                P
+            }
+            Kind::SegVolText => {
+                const P: &[PortSpec] = &[PortSpec::one(
+                    "Images",
+                    IMAGE_OR_GROUP,
+                    "one image series, or a 4D group to run on every phase",
+                )];
+                P
+            }
+            Kind::Combine => {
+                const P: &[PortSpec] = &[
+                    PortSpec::one(
+                        "A",
+                        &[T::Structures],
+                        "the first operand (several names are joined first)",
+                    ),
+                    PortSpec::one(
+                        "B",
+                        &[T::Structures],
+                        "the second operand; leave it free to grow or shrink A alone",
+                    )
+                    .optional()
+                    .many(),
+                ];
+                P
+            }
+            Kind::Rename => {
+                const P: &[PortSpec] = &[PortSpec::one(
+                    "Structures",
+                    &[T::Structures],
+                    "where to rename: the image, the phases or the study they were found on",
+                )];
+                P
+            }
+            Kind::Transfer => {
+                const P: &[PortSpec] = &[
+                    PortSpec::one(
+                        "Target",
+                        &[T::Structures],
+                        "what to place, on the source image",
+                    ),
+                    PortSpec::one(
+                        "Reference",
+                        &[T::Structures],
+                        "the reference structure on the source image (the heart)",
+                    ),
+                    PortSpec::one(
+                        "Onto",
+                        &[T::Structures],
+                        "the same reference structure on the destination: one image, or \
+                         every phase of a 4D group",
+                    ),
+                ];
+                P
+            }
+            Kind::CopyToPhases => {
+                const P: &[PortSpec] = &[
+                    PortSpec::one("Structures", &[T::Structures], "what to copy"),
+                    PortSpec::one("Onto", GROUPISH, "the 4D group, or structures made on it"),
+                ];
+                P
+            }
+            Kind::Dvh | Kind::DoseMetrics => {
+                const P: &[PortSpec] = &[PortSpec::one(
+                    "Structures",
+                    &[T::Structures],
+                    "the structures, on the image the dose was planned on",
+                )
+                .many()];
+                P
+            }
+            Kind::ArchiveImport => {
+                const P: &[PortSpec] = &[PortSpec::one(
+                    "Data",
+                    DATA,
+                    "the studies to file: a study, or anything made on one",
+                )
+                .many()];
+                P
+            }
+            Kind::Drr => {
+                const P: &[PortSpec] = &[PortSpec::one(
+                    "Image",
+                    &[T::Image],
+                    "the image series to project",
+                )];
+                P
+            }
             Kind::SelectImage => {
                 const P: &[PortSpec] = &[PortSpec::one("Study", STUDY, "the study to look in")];
                 P
@@ -462,6 +717,68 @@ impl Kind {
                 const P: &[OutSpec] = &[out("Study", T::Study, "everything in the folder")];
                 P
             }
+            Kind::LoadFolders => {
+                const P: &[OutSpec] = &[out("Study", T::Study, "one subfolder per run")];
+                P
+            }
+            Kind::LoadFromArchive => {
+                const P: &[OutSpec] = &[out("Study", T::Study, "the study taken out")];
+                P
+            }
+            Kind::Anonymize => {
+                const P: &[OutSpec] = &[out("Study", T::Study, "the anonymized copy")];
+                P
+            }
+            Kind::SegVolText => {
+                const P: &[OutSpec] = &[
+                    out("Structures", T::Structures, "what the prompts found"),
+                    out("Report", T::Report, "volumes per image"),
+                ];
+                P
+            }
+            Kind::Combine => {
+                const P: &[OutSpec] = &[
+                    out("Result", T::Structures, "the combined structure"),
+                    out("Report", T::Report, "its volume per image"),
+                ];
+                P
+            }
+            Kind::Rename => {
+                const P: &[OutSpec] = &[out(
+                    "Structures",
+                    T::Structures,
+                    "the structures under their new names (none after a delete)",
+                )];
+                P
+            }
+            Kind::Transfer => {
+                const P: &[OutSpec] = &[
+                    out("Placed", T::Structures, "the structure where it landed"),
+                    out("Report", T::Report, "offsets and volumes"),
+                ];
+                P
+            }
+            Kind::CopyToPhases => {
+                const P: &[OutSpec] = &[out(
+                    "Copied",
+                    T::Structures,
+                    "the structures on every phase",
+                )];
+                P
+            }
+            Kind::Dvh => {
+                const P: &[OutSpec] = &[out("Report", T::Report, "metrics and constraints")];
+                P
+            }
+            Kind::DoseMetrics => {
+                const P: &[OutSpec] = &[out("Report", T::Report, "one row per structure")];
+                P
+            }
+            Kind::Drr => {
+                const P: &[OutSpec] = &[out("Report", T::Report, "the images written")];
+                P
+            }
+            Kind::ArchiveImport => &[],
             Kind::SelectImage => {
                 const P: &[OutSpec] = &[out("Image", T::Image, "the image series found")];
                 P
@@ -533,6 +850,18 @@ impl Kind {
     pub fn default_op(self) -> Op {
         match self {
             Kind::LoadFolder => Op::LoadFolder(Default::default()),
+            Kind::LoadFolders => Op::LoadFolders(Default::default()),
+            Kind::LoadFromArchive => Op::LoadFromArchive(Default::default()),
+            Kind::Anonymize => Op::Anonymize(Default::default()),
+            Kind::SegVolText => Op::SegVolText(Default::default()),
+            Kind::Combine => Op::Combine(Default::default()),
+            Kind::Rename => Op::Rename(Default::default()),
+            Kind::Transfer => Op::Transfer(Default::default()),
+            Kind::CopyToPhases => Op::CopyToPhases(Default::default()),
+            Kind::Dvh => Op::Dvh(Default::default()),
+            Kind::DoseMetrics => Op::DoseMetrics(Default::default()),
+            Kind::ArchiveImport => Op::ArchiveImport(Default::default()),
+            Kind::Drr => Op::Drr(Default::default()),
             Kind::SelectImage => Op::SelectImage(Default::default()),
             Kind::SelectGroup => Op::SelectGroup(Default::default()),
             Kind::SelectStructures => Op::SelectStructures(Default::default()),
@@ -556,10 +885,26 @@ impl Kind {
 }
 
 /// A node's kind and parameters: `kind` + `params` in the file.
+// A node's parameters are read and written, never moved in a loop: the size
+// of the largest block does not matter, and a box around it would only make
+// every `Op::Combine(p)` in the program read worse.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "params", rename_all = "snake_case")]
 pub enum Op {
     LoadFolder(LoadFolder),
+    LoadFolders(LoadFolders),
+    LoadFromArchive(LoadFromArchive),
+    Anonymize(Anonymize),
+    SegVolText(SegVolText),
+    Combine(Combine),
+    Rename(Rename),
+    Transfer(Transfer),
+    CopyToPhases(CopyToPhases),
+    Dvh(Dvh),
+    DoseMetrics(DoseMetrics),
+    ArchiveImport(ArchiveImport),
+    Drr(Drr),
     SelectImage(SelectImage),
     SelectGroup(SelectGroup),
     SelectStructures(SelectStructures),
@@ -577,6 +922,18 @@ impl Op {
     pub fn kind(&self) -> Kind {
         match self {
             Op::LoadFolder(_) => Kind::LoadFolder,
+            Op::LoadFolders(_) => Kind::LoadFolders,
+            Op::LoadFromArchive(_) => Kind::LoadFromArchive,
+            Op::Anonymize(_) => Kind::Anonymize,
+            Op::SegVolText(_) => Kind::SegVolText,
+            Op::Combine(_) => Kind::Combine,
+            Op::Rename(_) => Kind::Rename,
+            Op::Transfer(_) => Kind::Transfer,
+            Op::CopyToPhases(_) => Kind::CopyToPhases,
+            Op::Dvh(_) => Kind::Dvh,
+            Op::DoseMetrics(_) => Kind::DoseMetrics,
+            Op::ArchiveImport(_) => Kind::ArchiveImport,
+            Op::Drr(_) => Kind::Drr,
             Op::SelectImage(_) => Kind::SelectImage,
             Op::SelectGroup(_) => Kind::SelectGroup,
             Op::SelectStructures(_) => Kind::SelectStructures,
@@ -726,6 +1083,147 @@ impl Op {
                 ),
             ],
             Op::SaveReport(p) => vec![format!("to {}", quoted(&p.folder))],
+            Op::LoadFolders(p) => {
+                let path = p.path.trim().replace('\\', "/");
+                let tail = path.rsplit('/').find(|s| !s.is_empty()).unwrap_or("");
+                vec![
+                    if path.is_empty() {
+                        "no folder yet".to_string()
+                    } else {
+                        format!("every subfolder of {tail}")
+                    },
+                    if p.pattern.trim().is_empty() || p.pattern.trim() == "*" {
+                        "one run per subfolder".to_string()
+                    } else {
+                        format!("named like {}", quoted(&p.pattern))
+                    },
+                ]
+            }
+            Op::LoadFromArchive(p) => vec![
+                if p.patient.trim().is_empty() {
+                    "no patient yet".to_string()
+                } else {
+                    format!("patient {}", quoted(&p.patient))
+                },
+                if p.study.trim().is_empty() {
+                    "the newest study".to_string()
+                } else {
+                    format!("study like {}", quoted(&p.study))
+                },
+            ],
+            Op::Anonymize(p) => vec![
+                format!("to {}", quoted(&p.folder)),
+                format!(
+                    "{}{}",
+                    if p.remap_uids {
+                        "new UIDs"
+                    } else {
+                        "UIDs kept"
+                    },
+                    if p.remove_private {
+                        ", private tags removed"
+                    } else {
+                        ""
+                    }
+                ),
+            ],
+            Op::SegVolText(p) => vec![
+                if p.prompts.is_empty() {
+                    "no prompt yet".to_string()
+                } else {
+                    p.prompts
+                        .iter()
+                        .map(|r| r.landed_name())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                },
+                p.output.label().to_string(),
+            ],
+            Op::Combine(p) => {
+                let a = p.margin_a.describe();
+                let r = p.margin.describe();
+                let expr = match p.op {
+                    CombineOp::Union => "A ∪ B",
+                    CombineOp::Intersect => "A ∩ B",
+                    CombineOp::Subtract => "A − B",
+                };
+                let mut v = vec![format!("{} = {expr}", quoted(&p.name))];
+                if !a.is_empty() || !r.is_empty() {
+                    v.push(
+                        [
+                            (!a.is_empty()).then(|| format!("A {a}")),
+                            (!r.is_empty()).then(|| format!("result {r}")),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    );
+                }
+                v
+            }
+            Op::Rename(p) => {
+                let rules: Vec<String> = p
+                    .rules
+                    .iter()
+                    .map(|r| match p.action {
+                        RenameAction::Rename => {
+                            format!("{} to {}", r.from.trim(), quoted(&r.to))
+                        }
+                        RenameAction::Delete => r.from.trim().to_string(),
+                    })
+                    .collect();
+                vec![
+                    match p.action {
+                        RenameAction::Rename => "rename".to_string(),
+                        RenameAction::Delete => "delete".to_string(),
+                    },
+                    if rules.is_empty() {
+                        "no names yet".into()
+                    } else {
+                        rules.join(", ")
+                    },
+                ]
+            }
+            Op::Transfer(p) => vec![
+                "same offset from the reference".to_string(),
+                format!("{}, {}", p.output.label(), p.names.label()),
+            ],
+            Op::CopyToPhases(p) => vec![format!("into each phase's {}", p.landing.label())],
+            Op::Dvh(p) => {
+                let mut v = vec![if p.metrics.trim().is_empty() {
+                    "the default metrics".to_string()
+                } else {
+                    p.metrics.trim().to_string()
+                }];
+                let n = crate::dvh::parse_protocol(&p.protocol).len();
+                if n > 0 {
+                    v.push(format!("{n} constraints"));
+                } else if !p.protocol_file.trim().is_empty() {
+                    v.push("protocol from a file".into());
+                }
+                v
+            }
+            Op::DoseMetrics(p) => vec![
+                p.dose_kind.label().to_string(),
+                p.metrics.trim().to_string(),
+            ],
+            Op::ArchiveImport(p) => vec![
+                p.source.label().to_string(),
+                if p.archive.trim().is_empty() {
+                    "the station's archive".to_string()
+                } else {
+                    quoted(&p.archive)
+                },
+            ],
+            Op::Drr(p) => vec![
+                if p.plan_beams {
+                    "at the plan's beams".to_string()
+                } else {
+                    format!("gantry {}", p.angles.trim())
+                },
+                format!("to {}", quoted(&p.folder)),
+            ],
         }
     }
 
@@ -760,6 +1258,55 @@ impl Op {
             Op::SaveReport(p) if p.folder.trim().is_empty() => {
                 v.push("no folder is given".into());
             }
+            Op::LoadFolders(p) if p.path.trim().is_empty() => {
+                v.push("no folder is given (set one here or in the run dialog)".into());
+            }
+            Op::LoadFromArchive(p) if p.patient.trim().is_empty() => {
+                v.push("no patient is given".into());
+            }
+            Op::Anonymize(p) if p.folder.trim().is_empty() => {
+                v.push("no folder is given".into());
+            }
+            Op::SegVolText(p) if p.prompts.iter().all(|r| r.structure.trim().is_empty()) => {
+                v.push("no structure name to prompt with".into());
+            }
+            Op::Combine(p) if p.name.trim().is_empty() => {
+                v.push("the result needs a name".into());
+            }
+            Op::Rename(p) => {
+                if p.rules.iter().all(|r| r.from.trim().is_empty()) {
+                    v.push("no names are given".into());
+                }
+                if p.action == RenameAction::Rename
+                    && p.rules
+                        .iter()
+                        .any(|r| !r.from.trim().is_empty() && r.to.trim().is_empty())
+                {
+                    v.push("a rename needs the new name".into());
+                }
+            }
+            Op::Dvh(p) => {
+                for m in split_names(&p.metrics) {
+                    if crate::dvh::Metric::parse(&m).is_none() {
+                        v.push(format!("'{m}' is not a metric (D95%, D2cc, V20Gy, Dmean)"));
+                    }
+                }
+            }
+            Op::DoseMetrics(p) => {
+                for m in split_names(&p.metrics) {
+                    if crate::dvh::Metric::parse(&m).is_none() {
+                        v.push(format!("'{m}' is not a metric (D95%, D2cc, V20Gy, Dmean)"));
+                    }
+                }
+            }
+            Op::Drr(p) => {
+                if !p.plan_beams && parse_angles(&p.angles).is_none() {
+                    v.push("the angles are numbers separated by commas: 0, 90".into());
+                }
+                if p.folder.trim().is_empty() {
+                    v.push("no folder is given".into());
+                }
+            }
             _ => {}
         }
         v
@@ -783,6 +1330,15 @@ pub fn split_names(s: &str) -> Vec<String> {
         .filter(|x| !x.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// Gantry angles written as `0, 90, 180`; `None` when one is not a number.
+pub fn parse_angles(s: &str) -> Option<Vec<f64>> {
+    let v: Option<Vec<f64>> = split_names(s)
+        .iter()
+        .map(|a| a.trim_end_matches('°').trim().parse::<f64>().ok())
+        .collect();
+    v.filter(|v| !v.is_empty())
 }
 
 /// Does `name` match `pattern`? Case-insensitive; `*` stands for any run
@@ -971,125 +1527,6 @@ impl Default for SelectStructures {
     }
 }
 
-/// TotalSegmentator's three models.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AutosegVariant {
-    /// One 3 mm model, all 117 classes.
-    #[default]
-    Fast,
-    /// The 1.5 mm sub-models; only those holding the organs asked for run.
-    High,
-    /// One 6 mm model.
-    Preview,
-}
-
-impl AutosegVariant {
-    pub const ALL: [AutosegVariant; 3] = [
-        AutosegVariant::Fast,
-        AutosegVariant::High,
-        AutosegVariant::Preview,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            AutosegVariant::Fast => "3 mm",
-            AutosegVariant::High => "1.5 mm",
-            AutosegVariant::Preview => "6 mm",
-        }
-    }
-}
-
-/// Where segmentation results are filed.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OutputKind {
-    /// Contours in an RT structure set.
-    #[default]
-    Structures,
-    /// Segments of a segmentation series.
-    Segments,
-    Both,
-}
-
-impl OutputKind {
-    pub const ALL: [OutputKind; 3] = [
-        OutputKind::Structures,
-        OutputKind::Segments,
-        OutputKind::Both,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            OutputKind::Structures => "RT structures",
-            OutputKind::Segments => "segments",
-            OutputKind::Both => "RT structures and segments",
-        }
-    }
-
-    pub fn structures(self) -> bool {
-        matches!(self, OutputKind::Structures | OutputKind::Both)
-    }
-
-    pub fn segments(self) -> bool {
-        matches!(self, OutputKind::Segments | OutputKind::Both)
-    }
-}
-
-/// Which structure set RT structures go into.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SetChoice {
-    /// The image's own structure set - the one that references the series
-    /// (each phase's own on a 4D group) - or a new one when it has none.
-    #[default]
-    Own,
-    /// Always a new structure set.
-    New,
-}
-
-impl SetChoice {
-    pub const ALL: [SetChoice; 2] = [SetChoice::Own, SetChoice::New];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            SetChoice::Own => "the image's own set",
-            SetChoice::New => "a new set",
-        }
-    }
-}
-
-/// Where the engines run.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Device {
-    #[default]
-    Auto,
-    Gpu,
-    Cpu,
-}
-
-impl Device {
-    pub const ALL: [Device; 3] = [Device::Auto, Device::Gpu, Device::Cpu];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Device::Auto => "automatic",
-            Device::Gpu => "GPU",
-            Device::Cpu => "CPU",
-        }
-    }
-
-    pub fn pref(self) -> crate::nn::device::DevicePref {
-        use crate::nn::device::DevicePref;
-        match self {
-            Device::Auto => DevicePref::Auto,
-            Device::Gpu => DevicePref::Gpu,
-            Device::Cpu => DevicePref::Cpu,
-        }
-    }
-}
-
 /// One organ to keep, and the name it is filed under.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -1121,6 +1558,8 @@ pub struct AutoSegment {
     pub set: SetChoice,
     /// The label of a new structure set or segmentation series.
     pub set_label: String,
+    /// What happens when an organ's name is taken in the set it goes into.
+    pub names: NameClash,
     pub device: Device,
 }
 
@@ -1135,27 +1574,8 @@ impl Default for AutoSegment {
             output: OutputKind::Structures,
             set: SetChoice::Own,
             set_label: "Auto-segmentation".into(),
+            names: NameClash::Counter,
             device: Device::Auto,
-        }
-    }
-}
-
-/// How the body outline is found.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BodyMethod {
-    #[default]
-    Classical,
-    ModelAssisted,
-}
-
-impl BodyMethod {
-    pub const ALL: [BodyMethod; 2] = [BodyMethod::Classical, BodyMethod::ModelAssisted];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            BodyMethod::Classical => "classical",
-            BodyMethod::ModelAssisted => "model-assisted",
         }
     }
 }
@@ -1168,6 +1588,7 @@ pub struct BodyContour {
     pub output: OutputKind,
     pub set: SetChoice,
     pub set_label: String,
+    pub names: NameClash,
     pub device: Device,
 }
 
@@ -1179,118 +1600,8 @@ impl Default for BodyContour {
             output: OutputKind::Structures,
             set: SetChoice::Own,
             set_label: "Body contour".into(),
+            names: NameClash::Counter,
             device: Device::Auto,
-        }
-    }
-}
-
-/// The registration engines a workflow offers.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RegMethodChoice {
-    #[default]
-    ElastixRigid,
-    ElastixBspline,
-    PlastimatchBspline,
-}
-
-impl RegMethodChoice {
-    pub const ALL: [RegMethodChoice; 3] = [
-        RegMethodChoice::ElastixRigid,
-        RegMethodChoice::ElastixBspline,
-        RegMethodChoice::PlastimatchBspline,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            RegMethodChoice::ElastixRigid => "rigid (elastix)",
-            RegMethodChoice::ElastixBspline => "rigid + B-spline (elastix)",
-            RegMethodChoice::PlastimatchBspline => "B-spline (plastimatch)",
-        }
-    }
-
-    pub fn method(self) -> crate::registration::RegMethod {
-        use crate::registration::RegMethod;
-        match self {
-            RegMethodChoice::ElastixRigid => RegMethod::ElastixRigid,
-            RegMethodChoice::ElastixBspline => RegMethod::ElastixBSpline,
-            RegMethodChoice::PlastimatchBspline => RegMethod::PlastimatchBSpline,
-        }
-    }
-}
-
-/// Where a registration starts its search.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RegInit {
-    /// The identity when the images overlap, else their centres of gravity.
-    #[default]
-    Auto,
-    Identity,
-    CentresOfGravity,
-}
-
-impl RegInit {
-    pub const ALL: [RegInit; 3] = [RegInit::Auto, RegInit::Identity, RegInit::CentresOfGravity];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            RegInit::Auto => "start: automatic",
-            RegInit::Identity => "start: identity",
-            RegInit::CentresOfGravity => "start: centres of gravity",
-        }
-    }
-
-    pub fn init(self) -> crate::registration::Init {
-        use crate::registration::Init;
-        match self {
-            RegInit::Auto => Init::Auto,
-            RegInit::Identity => Init::Identity,
-            RegInit::CentresOfGravity => Init::CenterOfGravity,
-        }
-    }
-}
-
-/// The optimiser's effort, shared by every node that registers.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Effort {
-    /// Resolution levels of the pyramid.
-    pub levels: usize,
-    /// Iterations per level.
-    pub iterations: usize,
-    /// Random samples per iteration.
-    pub samples: usize,
-    /// B-spline control point spacing, mm.
-    pub grid_spacing_mm: f64,
-    /// Sample only fixed-image voxels above this value (HU).
-    pub fixed_threshold: f32,
-}
-
-impl Default for Effort {
-    fn default() -> Self {
-        let d = crate::registration::RegParams::default();
-        Effort {
-            levels: d.levels,
-            iterations: d.iterations,
-            samples: d.samples,
-            grid_spacing_mm: d.grid_spacing_mm,
-            fixed_threshold: d.fixed_threshold,
-        }
-    }
-}
-
-impl Effort {
-    /// Registration parameters with this effort and `method`.
-    pub fn params(&self, method: crate::registration::RegMethod) -> crate::registration::RegParams {
-        crate::registration::RegParams {
-            method,
-            levels: self.levels.clamp(1, 6),
-            iterations: self.iterations.clamp(1, 5000),
-            samples: self.samples.clamp(100, 200_000),
-            grid_spacing_mm: self.grid_spacing_mm.clamp(4.0, 200.0),
-            fixed_threshold: self.fixed_threshold,
-            ..crate::registration::RegParams::default()
         }
     }
 }
@@ -1303,117 +1614,15 @@ pub struct Register {
     pub effort: Effort,
 }
 
-/// Where carried structures are filed on their destination image.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Landing {
-    /// Contours in the destination image's own RT structure set.
-    #[default]
-    StructureSet,
-    /// Segments of a segmentation series bound to the image.
-    Segmentation,
-}
-
-impl Landing {
-    pub const ALL: [Landing; 2] = [Landing::StructureSet, Landing::Segmentation];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Landing::StructureSet => "structure set",
-            Landing::Segmentation => "segmentation series",
-        }
-    }
-
-    pub fn group_landing(self) -> crate::workflow::group::Landing {
-        match self {
-            Landing::StructureSet => crate::workflow::group::Landing::StructureSet,
-            Landing::Segmentation => crate::workflow::group::Landing::Segmentation,
-        }
-    }
-}
-
-/// What is done to carried structures once they have landed.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct FinishParams {
-    /// Morphological closing radius, mm (0: none).
-    pub close_mm: f64,
-    /// Fill the interior slice by slice.
-    pub fill: bool,
-    /// Carry each structure as a rigid body.
-    pub keep_shape: bool,
-}
-
-impl FinishParams {
-    pub fn finish(&self) -> crate::propagate::Finish {
-        crate::propagate::Finish {
-            close_mm: self.close_mm.clamp(0.0, 50.0),
-            fill: self.fill,
-            keep_shape: self.keep_shape,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Propagate {
     pub landing: Landing,
     /// Appended to each landed structure's name; empty keeps the names.
     pub suffix: String,
+    /// What happens when a landed name is taken on the destination.
+    pub names: NameClash,
     pub finish: FinishParams,
-}
-
-/// What an anchored run compares.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AnchorBy {
-    /// The anchor's surfaces (signed distance maps).
-    #[default]
-    Contours,
-    /// The images inside the anchor's region.
-    Intensity,
-}
-
-impl AnchorBy {
-    pub const ALL: [AnchorBy; 2] = [AnchorBy::Contours, AnchorBy::Intensity];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            AnchorBy::Contours => "contours",
-            AnchorBy::Intensity => "intensity",
-        }
-    }
-}
-
-/// The deformable engines a run onto a 4D group may use.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeformMethod {
-    #[default]
-    ElastixBspline,
-    PlastimatchBspline,
-}
-
-impl DeformMethod {
-    pub const ALL: [DeformMethod; 2] = [
-        DeformMethod::ElastixBspline,
-        DeformMethod::PlastimatchBspline,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            DeformMethod::ElastixBspline => "B-spline (elastix)",
-            DeformMethod::PlastimatchBspline => "B-spline (plastimatch)",
-        }
-    }
-
-    pub fn method(self) -> crate::registration::RegMethod {
-        use crate::registration::RegMethod;
-        match self {
-            DeformMethod::ElastixBspline => RegMethod::ElastixBSpline,
-            DeformMethod::PlastimatchBspline => RegMethod::PlastimatchBSpline,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1430,6 +1639,9 @@ pub struct PropagateToGroup {
     /// contour; empty is `<anchor>_prop`.
     pub anchor_landed_as: String,
     pub landing: Landing,
+    /// What happens when a landed name is taken on a phase - a target the
+    /// phases were contoured with.
+    pub names: NameClash,
     pub finish: FinishParams,
     pub effort: Effort,
 }
@@ -1443,6 +1655,7 @@ impl Default for PropagateToGroup {
             rigid_only: false,
             anchor_landed_as: String::new(),
             landing: Landing::StructureSet,
+            names: NameClash::Counter,
             finish: FinishParams::default(),
             effort: Effort::default(),
         }
@@ -1467,6 +1680,8 @@ pub struct Motion {
     pub itv_margin_mm: f64,
     /// Where the ITVs are filed on the reference phase.
     pub itv_landing: Landing,
+    /// What happens when an ITV's name is taken there.
+    pub names: NameClash,
     /// Also file every propagated per-phase mask.
     pub keep_phase_segs: bool,
     pub effort: Effort,
@@ -1484,6 +1699,7 @@ impl Default for Motion {
             build_itv: true,
             itv_margin_mm: 0.0,
             itv_landing: Landing::StructureSet,
+            names: NameClash::Counter,
             keep_phase_segs: false,
             effort: Effort::default(),
         }
@@ -1599,6 +1815,437 @@ impl Default for SaveReport {
             folder: "reports".into(),
             csv: true,
             text: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LoadFolders {
+    /// The folder whose subfolders are the cases.
+    pub path: String,
+    /// Which subfolders: `*` is all, `P*` those starting with P.
+    pub pattern: String,
+    pub workspace: Workspace,
+}
+
+impl Default for LoadFolders {
+    fn default() -> Self {
+        LoadFolders {
+            path: String::new(),
+            pattern: "*".into(),
+            workspace: Workspace::Auto,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LoadFromArchive {
+    /// The archive's folder; empty is the station's (Tools > PACS).
+    pub archive: String,
+    /// The patient's ID or name, or a pattern with `*`.
+    pub patient: String,
+    /// Words of the study's description, or its date (YYYYMMDD); empty
+    /// takes the newest.
+    pub study: String,
+    pub workspace: Workspace,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Anonymize {
+    /// Inside the run folder, or absolute; `{input}` is the study's title.
+    pub folder: String,
+    pub remove_private: bool,
+    pub remap_uids: bool,
+    /// Clear the study and series descriptions too.
+    pub clear_descriptions: bool,
+}
+
+impl Default for Anonymize {
+    fn default() -> Self {
+        Anonymize {
+            folder: "anonymized/{input}".into(),
+            remove_private: true,
+            remap_uids: true,
+            clear_descriptions: false,
+        }
+    }
+}
+
+/// One text prompt, and the name its result is filed under.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PromptRule {
+    /// What the prompt says: a structure name (liver, pancreas).
+    pub structure: String,
+    /// What it is called in the study; empty keeps the prompt.
+    pub name: String,
+}
+
+impl PromptRule {
+    pub fn landed_name(&self) -> String {
+        if self.name.trim().is_empty() {
+            self.structure.trim().to_string()
+        } else {
+            self.name.trim().to_string()
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SegVolText {
+    pub prompts: Vec<PromptRule>,
+    /// The sliding-window refinement pass (slower, sharper).
+    pub refine: bool,
+    /// Probability threshold of the mask.
+    pub threshold: f32,
+    pub output: OutputKind,
+    pub set: SetChoice,
+    pub set_label: String,
+    pub names: NameClash,
+    pub device: Device,
+}
+
+impl Default for SegVolText {
+    fn default() -> Self {
+        SegVolText {
+            prompts: vec![PromptRule {
+                structure: "liver".into(),
+                name: String::new(),
+            }],
+            refine: true,
+            threshold: 0.5,
+            output: OutputKind::Structures,
+            set: SetChoice::Own,
+            set_label: "SegVol".into(),
+            names: NameClash::Counter,
+            device: Device::Auto,
+        }
+    }
+}
+
+/// How the two operands of *Combine structures* are joined.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CombineOp {
+    /// A ∪ B, or A alone when B is free.
+    #[default]
+    Union,
+    Intersect,
+    /// A minus B.
+    Subtract,
+}
+
+impl CombineOp {
+    pub const ALL: [CombineOp; 3] = [CombineOp::Union, CombineOp::Intersect, CombineOp::Subtract];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CombineOp::Union => "A ∪ B (or A alone)",
+            CombineOp::Intersect => "A ∩ B",
+            CombineOp::Subtract => "A − B",
+        }
+    }
+
+    pub fn bool_op(self) -> crate::structops::BoolOp {
+        match self {
+            CombineOp::Union => crate::structops::BoolOp::Union,
+            CombineOp::Intersect => crate::structops::BoolOp::Intersect,
+            CombineOp::Subtract => crate::structops::BoolOp::Subtract,
+        }
+    }
+}
+
+/// A margin in millimetres: one number for every direction, or one per
+/// patient direction overriding it. Negative shrinks.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MarginMm {
+    pub uniform_mm: f64,
+    pub right_mm: Option<f64>,
+    pub left_mm: Option<f64>,
+    pub anterior_mm: Option<f64>,
+    pub posterior_mm: Option<f64>,
+    pub superior_mm: Option<f64>,
+    pub inferior_mm: Option<f64>,
+}
+
+impl MarginMm {
+    pub fn margin(&self) -> crate::structops::Margin {
+        let u = self.uniform_mm;
+        crate::structops::Margin {
+            right: self.right_mm.unwrap_or(u),
+            left: self.left_mm.unwrap_or(u),
+            anterior: self.anterior_mm.unwrap_or(u),
+            posterior: self.posterior_mm.unwrap_or(u),
+            superior: self.superior_mm.unwrap_or(u),
+            inferior: self.inferior_mm.unwrap_or(u),
+        }
+    }
+
+    /// `+5 mm`, or the structops description of a directional margin;
+    /// empty for none.
+    pub fn describe(&self) -> String {
+        let m = self.margin();
+        if m.is_none() {
+            String::new()
+        } else if m.is_uniform() {
+            format!("{:+} mm", m.right)
+        } else {
+            m.describe()
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Combine {
+    pub op: CombineOp,
+    /// Applied to A (and to B) before they are joined.
+    pub margin_a: MarginMm,
+    pub margin_b: MarginMm,
+    /// Applied to the result.
+    pub margin: MarginMm,
+    pub fill_holes: bool,
+    pub close_mm: f64,
+    pub keep_largest: bool,
+    pub min_volume_cm3: f64,
+    pub name: String,
+    pub output: OutputKind,
+    pub set: SetChoice,
+    pub set_label: String,
+    pub names: NameClash,
+}
+
+impl Default for Combine {
+    fn default() -> Self {
+        Combine {
+            op: CombineOp::Union,
+            margin_a: MarginMm::default(),
+            margin_b: MarginMm::default(),
+            margin: MarginMm {
+                uniform_mm: 5.0,
+                ..MarginMm::default()
+            },
+            fill_holes: false,
+            close_mm: 0.0,
+            keep_largest: false,
+            min_volume_cm3: 0.0,
+            name: "PTV".into(),
+            output: OutputKind::Structures,
+            set: SetChoice::Own,
+            set_label: "Combined".into(),
+            names: NameClash::Counter,
+        }
+    }
+}
+
+/// What *Rename or delete* does to the structures its rules name.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenameAction {
+    #[default]
+    Rename,
+    Delete,
+}
+
+impl RenameAction {
+    pub const ALL: [RenameAction; 2] = [RenameAction::Rename, RenameAction::Delete];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            RenameAction::Rename => "rename",
+            RenameAction::Delete => "delete",
+        }
+    }
+}
+
+/// One rule: the structures named like `from` get the name `to`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RenameRule {
+    /// A name, or a pattern with `*` and `?`.
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Rename {
+    pub action: RenameAction,
+    pub rules: Vec<RenameRule>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Transfer {
+    /// What it lands as; empty keeps the target's name.
+    pub name: String,
+    pub output: OutputKind,
+    pub set: SetChoice,
+    pub set_label: String,
+    pub names: NameClash,
+}
+
+impl Default for Transfer {
+    fn default() -> Self {
+        Transfer {
+            name: String::new(),
+            output: OutputKind::Structures,
+            set: SetChoice::Own,
+            set_label: "Transferred".into(),
+            names: NameClash::Counter,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CopyToPhases {
+    pub landing: Landing,
+    pub names: NameClash,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Dvh {
+    /// Words of the dose's label; empty takes the study's first dose.
+    pub dose: String,
+    /// Metrics separated by commas: D95%, D2cc, V20Gy, V20Gy[cc], Dmean.
+    pub metrics: String,
+    /// Constraints, one per line: `Heart Dmean < 5`, `PTV D95% >= 25`.
+    pub protocol: String,
+    /// A protocol file (the DVH window's format), read when the run starts.
+    pub protocol_file: String,
+    /// Bin width in dose units; 0 derives it from the dose maximum.
+    pub bin_width: f64,
+    /// Put the cumulative curves in the report too.
+    pub curves: bool,
+}
+
+impl Default for Dvh {
+    fn default() -> Self {
+        Dvh {
+            dose: String::new(),
+            metrics: "D95%, D2%, Dmean, Dmax".into(),
+            protocol: String::new(),
+            protocol_file: String::new(),
+            bin_width: 0.0,
+            curves: false,
+        }
+    }
+}
+
+/// Which dose *Dose estimation* measures against.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DoseKindChoice {
+    /// The first dose, whatever its type.
+    #[default]
+    Any,
+    Physical,
+    /// RBE-weighted.
+    Effective,
+}
+
+impl DoseKindChoice {
+    pub const ALL: [DoseKindChoice; 3] = [
+        DoseKindChoice::Any,
+        DoseKindChoice::Physical,
+        DoseKindChoice::Effective,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DoseKindChoice::Any => "the study's dose",
+            DoseKindChoice::Physical => "the physical dose",
+            DoseKindChoice::Effective => "the RBE-weighted dose",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DoseMetrics {
+    pub dose_kind: DoseKindChoice,
+    /// Words of the dose's label; empty takes the first of that type.
+    pub dose: String,
+    /// The columns, separated by commas.
+    pub metrics: String,
+}
+
+impl Default for DoseMetrics {
+    fn default() -> Self {
+        DoseMetrics {
+            dose_kind: DoseKindChoice::Any,
+            dose: String::new(),
+            metrics: "Volume, Dmean, Dmin, Dmax, D95%, D2%".into(),
+        }
+    }
+}
+
+/// What *File in the archive* files.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportSource {
+    /// What an Export DICOM step of this run wrote of the study; the folder
+    /// it was read from when none did.
+    #[default]
+    Exported,
+    /// The folder the study was read from.
+    Read,
+}
+
+impl ImportSource {
+    pub const ALL: [ImportSource; 2] = [ImportSource::Exported, ImportSource::Read];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ImportSource::Exported => "what the run exported",
+            ImportSource::Read => "the folder it was read from",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ArchiveImport {
+    /// The archive's folder; empty is the station's.
+    pub archive: String,
+    pub source: ImportSource,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Drr {
+    /// Gantry angles, degrees, separated by commas.
+    pub angles: String,
+    pub couch_deg: f64,
+    /// At the beams of the study's plan instead (angles and isocentre).
+    pub plan_beams: bool,
+    /// Dark bone on a light background, as a radiograph looks.
+    pub invert: bool,
+    /// Image size, pixels (square).
+    pub size_px: usize,
+    /// Inside the run folder, or absolute; `{input}` is the study's title.
+    pub folder: String,
+    /// Also file each image as a planar image of the study.
+    pub file_into_study: bool,
+}
+
+impl Default for Drr {
+    fn default() -> Self {
+        Drr {
+            angles: "0, 90".into(),
+            couch_deg: 0.0,
+            plan_beams: false,
+            invert: true,
+            size_px: 512,
+            folder: "drr/{input}".into(),
+            file_into_study: true,
         }
     }
 }

@@ -177,6 +177,56 @@ pub(super) fn output_rows(
     });
 }
 
+// ---- a loaded network, kept for the next run --------------------------------
+
+/// What a loaded network was loaded for. A run that asks for anything else -
+/// another model folder, another device, another variant - loads its own
+/// instead of quietly reusing one it did not ask for.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(super) struct ModelKey {
+    pub models_dir: PathBuf,
+    pub device: DevicePref,
+    pub variant: &'static str,
+}
+
+/// A loaded network kept between runs of a tool.
+///
+/// Shared with the worker that loads it, which files the network here as
+/// soon as it has one: a run that is cancelled or fails after loading still
+/// leaves the network for the next run, and the next run - or the next
+/// phase of a run over a 4D group - starts at the image instead of at the
+/// weights on disk.
+pub(super) struct KeptModel<M>(std::sync::Mutex<Option<(ModelKey, Arc<M>)>>);
+
+impl<M> Default for KeptModel<M> {
+    fn default() -> Self {
+        KeptModel(std::sync::Mutex::new(None))
+    }
+}
+
+impl<M> KeptModel<M> {
+    /// The kept network when it was loaded for `key`; otherwise `load` makes
+    /// one, which is kept in its place.
+    pub fn get_or_load(
+        &self,
+        key: &ModelKey,
+        load: impl FnOnce() -> anyhow::Result<M>,
+    ) -> anyhow::Result<Arc<M>> {
+        let mut kept = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((k, m)) = kept.as_ref() {
+            if k == key {
+                return Ok(m.clone());
+            }
+        }
+        // The network loaded for something else goes first: two of them
+        // resident at once is what a machine short of memory cannot afford.
+        *kept = None;
+        let m = Arc::new(load()?);
+        *kept = Some((key.clone(), m.clone()));
+        Ok(m)
+    }
+}
+
 /// One phase an engine ran on: what to load, or the volume already in
 /// memory when it is the displayed one.
 pub(super) struct PhaseInput {

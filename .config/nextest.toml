@@ -1,0 +1,27 @@
+# cargo-nextest: how CI runs the tests (`cargo nextest run`).
+#
+# nextest runs every test in its own process and all test binaries at once,
+# where `cargo test` runs the binaries one after another - so the MedSAM2
+# suite's long forward passes, the workflow runs and the registrations
+# overlap instead of queueing. `cargo test` works exactly as before; this file
+# only concerns nextest.
+
+[profile.default]
+# One failure should not hide the others.
+fail-fast = false
+# A test is reported as slow after a minute and stopped after ten: a hung
+# test must not hold a runner for the job's whole time limit.
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+# Suites that build one on-disk fixture and share it between their tests
+# (`synthetic_study`, `dvh`: a `OnceLock` that removes and regenerates a
+# folder under target/). Under `cargo test` that happens once per binary;
+# under nextest every test is its own process and would regenerate the same
+# folder at the same moment. One at a time, each process regenerates it
+# without another one deleting it underneath.
+[test-groups]
+shared-fixture = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = "binary(synthetic_study) | binary(dvh)"
+test-group = "shared-fixture"

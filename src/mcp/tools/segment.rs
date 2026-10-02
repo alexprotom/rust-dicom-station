@@ -63,12 +63,7 @@ fn default_variant() -> String {
 }
 
 pub fn segment_organs(core: &mut Core, a: OrgansArgs, p: &Progress) -> Result<Value> {
-    let variant = match a.variant.as_str() {
-        "fast" => autoseg::Variant::Fast3mm,
-        "high" => autoseg::Variant::HighRes15mm,
-        "preview" => autoseg::Variant::Preview6mm,
-        other => bail!("variant must be fast, high or preview (got '{other}')"),
-    };
+    let variant = crate::workflow::params::AutosegVariant::from_name(&a.variant)?.variant();
     let mut parts = [a.parts.is_empty(); 5];
     for part in &a.parts {
         let Some(i) = autoseg::classes::PART_NAMES
@@ -168,11 +163,7 @@ pub fn segment_body(core: &mut Core, a: BodyArgs, p: &Progress) -> Result<Value>
     let series = core.session.series_index(ds, a.series)?;
     let modality = ds.study.series[series].modality.clone();
     let mut params = bodymask::BodyParams::for_modality(&modality);
-    params.method = match a.method.as_str() {
-        "classical" => bodymask::Method::Classical,
-        "model_assisted" => bodymask::Method::ModelAssisted,
-        other => bail!("method must be classical or model_assisted (got '{other}')"),
-    };
+    params.method = crate::workflow::params::BodyMethod::from_name(&a.method)?.method();
     params.device = core.session.config.device_pref();
     let dir = models_dir(core, Engine::TotalSegmentator);
     if params.method == bodymask::Method::ModelAssisted {

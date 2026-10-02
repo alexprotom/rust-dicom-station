@@ -20,6 +20,22 @@
 //! going, each node's header carries its state - running, done, failed -
 //! and the running one is outlined.
 //!
+//! **Editing.** Every change is a step of the history (*Undo*, *Redo*,
+//! Ctrl+Z / Ctrl+Shift+Z or Ctrl+Y): the editor compares the workflow with
+//! the last state it kept once the mouse is let go and no text field has
+//! the keyboard, so a drag or a typed title is one step, not a hundred.
+//! Ctrl+C / Ctrl+X copy or cut the selected steps (Shift-click or a
+//! Shift-drag selects several; else the one in the inspector) with the
+//! wires between them, as workflow JSON on the system clipboard, so they
+//! paste into another workflow or another copy of the program; Ctrl+V puts
+//! them under the pointer, Ctrl+D duplicates. The arrow keys move the
+//! selection by 10 units (Shift: a grid square).
+//!
+//! **Frames** are titled boxes around groups of steps, drawn behind them;
+//! the box follows its steps, and dragging its title moves them all. A
+//! **map** in the corner shows the whole canvas and the part in view; a
+//! click or a drag on it moves the view.
+//!
 //! Loading, saving, the recent list and the confirmation before unsaved
 //! changes are dropped are here too; the run window is `workflow_run.rs`.
 
@@ -36,7 +52,9 @@ use egui_snarl::{InPin, InPinId, NodeId, OutPin, OutPinId, Snarl};
 
 use super::*;
 use crate::workflow::graph::catalog::{self as cat, Category, Kind, Op, PortType};
-use crate::workflow::graph::{store, Findings, Node as WfNode, OutputSettings, Workflow};
+use crate::workflow::graph::{
+    store, Findings, Frame as WfFrame, Node as WfNode, OutputSettings, Workflow,
+};
 
 /// The id the canvas widget keeps its state (pan, zoom, selection) under.
 const CANVAS_ID: &str = "workflow_canvas";
@@ -72,6 +90,8 @@ pub(super) enum Mark {
     Waiting,
     Running,
     Done(f64),
+    /// Unchanged since the last run, whose result it took over.
+    Reused,
     Failed(String),
     NotRun,
 }
@@ -100,6 +120,71 @@ pub(super) struct WorkflowEditor {
     canvas: u64,
     /// Frames left in which the view is set to show every step.
     fit: u8,
+    /// Boxes around groups of steps.
+    pub frames: Vec<WfFrame>,
+    /// Earlier states, oldest first, and the states undone (the next redo
+    /// last), as workflow JSON.
+    undo: Vec<String>,
+    redo: Vec<String>,
+    /// The state the history last kept.
+    committed: String,
+    /// Canvas to window as last drawn, and a view to set on the next frame
+    /// (the minimap's, or the one kept across a rebuilt canvas).
+    view: TSTransform,
+    set_view: Option<TSTransform>,
+    /// Every node's rectangle when last drawn, in canvas units, for the
+    /// frames and the minimap.
+    rects: Vec<(u32, Rect)>,
+    /// Show the minimap.
+    pub minimap: bool,
+    /// What *Copy* took, for *Paste* when the system clipboard cannot be
+    /// read.
+    clip: Option<Workflow>,
+    /// A frame being dragged.
+    frame_drag: Option<FrameDrag>,
+}
+
+/// A frame's title being dragged: which frame, where the pointer was
+/// pressed (window), and where its steps were then (canvas).
+struct FrameDrag {
+    frame: usize,
+    from: Pos2,
+    origins: Vec<(u32, Pos2)>,
+}
+
+/// States the history keeps.
+const HISTORY: usize = 100;
+
+/// Build the canvas of a workflow.
+fn snarl_of(wf: &Workflow) -> Snarl<EdNode> {
+    let mut snarl = Snarl::new();
+    let mut ids: BTreeMap<u32, NodeId> = BTreeMap::new();
+    for n in &wf.nodes {
+        let id = snarl.insert_node(
+            egui::pos2(n.pos[0], n.pos[1]),
+            EdNode {
+                id: n.id,
+                title: n.title.clone(),
+                op: n.op.clone(),
+            },
+        );
+        ids.insert(n.id, id);
+    }
+    for l in &wf.links {
+        if let (Some(&a), Some(&b)) = (ids.get(&l.from.0), ids.get(&l.to.0)) {
+            snarl.connect(
+                OutPinId {
+                    node: a,
+                    output: l.from.1,
+                },
+                InPinId {
+                    node: b,
+                    input: l.to.1,
+                },
+            );
+        }
+    }
+    snarl
 }
 
 /// Canvases made so far, for [`WorkflowEditor::canvas`].
@@ -132,33 +217,7 @@ pub(super) enum WfPending {
 impl WorkflowEditor {
     /// An editor on a workflow; `path` when it came from a file.
     pub(super) fn from_workflow(wf: Workflow, path: Option<PathBuf>) -> WorkflowEditor {
-        let mut snarl = Snarl::new();
-        let mut ids: BTreeMap<u32, NodeId> = BTreeMap::new();
-        for n in &wf.nodes {
-            let id = snarl.insert_node(
-                egui::pos2(n.pos[0], n.pos[1]),
-                EdNode {
-                    id: n.id,
-                    title: n.title.clone(),
-                    op: n.op.clone(),
-                },
-            );
-            ids.insert(n.id, id);
-        }
-        for l in &wf.links {
-            if let (Some(&a), Some(&b)) = (ids.get(&l.from.0), ids.get(&l.to.0)) {
-                snarl.connect(
-                    OutPinId {
-                        node: a,
-                        output: l.from.1,
-                    },
-                    InPinId {
-                        node: b,
-                        input: l.to.1,
-                    },
-                );
-            }
-        }
+        let snarl = snarl_of(&wf);
         let max_x = wf.nodes.iter().map(|n| n.pos[0]).fold(0.0f32, f32::max);
         let findings = wf.check();
         let mut ed = WorkflowEditor {
@@ -184,9 +243,187 @@ impl WorkflowEditor {
             // Two frames: the canvas's first frame may be discarded while it
             // places itself.
             fit: 2,
+            frames: wf.frames.clone(),
+            undo: Vec::new(),
+            redo: Vec::new(),
+            committed: String::new(),
+            view: TSTransform::IDENTITY,
+            set_view: None,
+            rects: Vec::new(),
+            minimap: true,
+            clip: None,
+            frame_drag: None,
         };
         ed.saved = ed.to_workflow().to_json();
+        ed.committed = ed.snapshot();
         ed
+    }
+
+    /// The whole state the history keeps: the workflow, its name as typed.
+    fn snapshot(&self) -> String {
+        let mut wf = self.to_workflow();
+        wf.name = self.name.clone();
+        wf.to_json()
+    }
+
+    /// Put `wf` on the canvas in place of what is there, keeping the file,
+    /// the view and the history. The canvas is a new one (the selection
+    /// named nodes of the old), shown as the old was.
+    fn load(&mut self, wf: Workflow) {
+        self.snarl = snarl_of(&wf);
+        self.name = wf.name;
+        self.description = wf.description;
+        self.output = wf.output;
+        self.frames = wf.frames;
+        self.canvas = CANVASES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.set_view = Some(self.view);
+        if self
+            .inspect
+            .is_some_and(|i| !self.snarl.nodes().any(|n| n.id == i))
+        {
+            self.inspect = None;
+        }
+    }
+
+    /// Keep the current state as a step of the history when it changed,
+    /// unless the mouse is down or a text field has the keyboard (the
+    /// change is still being made).
+    fn track_history(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.pointer.any_down()) || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        let now = self.snapshot();
+        if now != self.committed {
+            self.undo.push(std::mem::replace(&mut self.committed, now));
+            if self.undo.len() > HISTORY {
+                self.undo.remove(0);
+            }
+            self.redo.clear();
+        }
+    }
+
+    /// Keep a change not yet in the history (a title still being typed)
+    /// before moving through it, so it is undone rather than lost.
+    fn commit_pending(&mut self) {
+        let now = self.snapshot();
+        if now != self.committed {
+            self.undo.push(std::mem::replace(&mut self.committed, now));
+            self.redo.clear();
+        }
+    }
+
+    fn undo(&mut self) {
+        self.commit_pending();
+        let Some(prev) = self.undo.pop() else {
+            return;
+        };
+        self.redo
+            .push(std::mem::replace(&mut self.committed, prev.clone()));
+        if let Ok(wf) = Workflow::from_json(&prev) {
+            self.load(wf);
+        }
+        self.status = Some("Undone".into());
+    }
+
+    fn redo(&mut self) {
+        let now = self.snapshot();
+        if now != self.committed {
+            // Changed since the undo: that is a new branch, and there is
+            // nothing to redo on it.
+            self.commit_pending();
+            return;
+        }
+        let Some(next) = self.redo.pop() else {
+            return;
+        };
+        self.undo
+            .push(std::mem::replace(&mut self.committed, next.clone()));
+        if let Ok(wf) = Workflow::from_json(&next) {
+            self.load(wf);
+        }
+        self.status = Some("Redone".into());
+    }
+
+    /// The steps an edit applies to: the selected ones, else the one in
+    /// the inspector.
+    fn targets(&self, selected: &[NodeId]) -> Vec<NodeId> {
+        if !selected.is_empty() {
+            return selected.to_vec();
+        }
+        self.snarl
+            .nodes_ids_data()
+            .filter(|(_, n)| Some(n.value.id) == self.inspect)
+            .map(|(nid, _)| nid)
+            .collect()
+    }
+
+    /// The workflow ids of canvas nodes.
+    fn ids_of(&self, nodes: &[NodeId]) -> std::collections::BTreeSet<u32> {
+        nodes
+            .iter()
+            .filter_map(|n| self.snarl.get_node(*n).map(|x| x.id))
+            .collect()
+    }
+
+    /// Copy the steps to the clipboard (and keep them for *Paste*).
+    fn copy(&mut self, ctx: &egui::Context, nodes: &[NodeId]) -> bool {
+        let ids = self.ids_of(nodes);
+        if ids.is_empty() {
+            return false;
+        }
+        let part = self.to_workflow().fragment(&ids);
+        ctx.copy_text(part.to_json());
+        self.status = Some(format!(
+            "{} step{} copied",
+            ids.len(),
+            if ids.len() == 1 { "" } else { "s" }
+        ));
+        self.clip = Some(part);
+        true
+    }
+
+    fn remove(&mut self, nodes: &[NodeId]) {
+        for n in nodes {
+            if self.snarl.get_node(*n).is_some() {
+                self.snarl.remove_node(*n);
+            }
+        }
+        self.inspect = None;
+        self.prune_frames();
+    }
+
+    /// Put copied steps on the canvas: their top-left corner at `at`
+    /// (canvas units), or a little down and right of where they were.
+    fn paste(&mut self, part: &Workflow, at: Option<Pos2>) {
+        if part.nodes.is_empty() {
+            return;
+        }
+        let min = part.nodes.iter().fold([f32::MAX, f32::MAX], |m, n| {
+            [m[0].min(n.pos[0]), m[1].min(n.pos[1])]
+        });
+        let offset = match at {
+            Some(p) => [p.x - min[0], p.y - min[1]],
+            None => [40.0, 40.0],
+        };
+        let mut wf = self.to_workflow();
+        wf.name = self.name.clone();
+        let ids = wf.paste(part, offset);
+        self.load(wf);
+        self.inspect = ids.values().next().copied();
+        self.status = Some(format!(
+            "{} step{} pasted",
+            ids.len(),
+            if ids.len() == 1 { "" } else { "s" }
+        ));
+    }
+
+    /// Frames lose the steps that are gone, and go with the last of them.
+    fn prune_frames(&mut self) {
+        let have: std::collections::BTreeSet<u32> = self.snarl.nodes().map(|n| n.id).collect();
+        for f in &mut self.frames {
+            f.nodes.retain(|n| have.contains(n));
+        }
+        self.frames.retain(|f| !f.nodes.is_empty());
     }
 
     /// The canvas as a workflow: nodes in id order, wires as links.
@@ -209,6 +446,8 @@ impl WorkflowEditor {
             });
         }
         wf.nodes.sort_by_key(|n| n.id);
+        wf.frames = self.frames.clone();
+        wf.prune_frames();
         for (out, inp) in self.snarl.wires() {
             if let (Some(&a), Some(&b)) = (by_node.get(&out.node), by_node.get(&inp.node)) {
                 wf.link(a, out.output, b, inp.input);
@@ -255,8 +494,10 @@ impl WorkflowEditor {
     /// Point a folder node at `path`.
     pub(super) fn set_folder(&mut self, id: u32, path: &Path) {
         if let Some(n) = self.node_mut(id) {
-            if let Op::LoadFolder(p) = &mut n.op {
-                p.path = path.display().to_string();
+            match &mut n.op {
+                Op::LoadFolder(p) => p.path = path.display().to_string(),
+                Op::LoadFolders(p) => p.path = path.display().to_string(),
+                _ => {}
             }
         }
     }
@@ -312,6 +553,42 @@ impl WorkflowEditor {
                     self.fit = 2;
                 }
                 ui.separator();
+                if ui
+                    .add_enabled(!self.undo.is_empty(), egui::Button::new("⟲ Undo"))
+                    .on_hover_text("Take back the last change (Ctrl+Z)")
+                    .clicked()
+                {
+                    self.undo();
+                }
+                if ui
+                    .add_enabled(!self.redo.is_empty(), egui::Button::new("⟳ Redo"))
+                    .on_hover_text("Make the change taken back again (Ctrl+Shift+Z, Ctrl+Y)")
+                    .clicked()
+                {
+                    self.redo();
+                }
+                let selected =
+                    get_selected_nodes(egui::Id::new((CANVAS_ID, self.canvas)), ui.ctx());
+                let targets = self.targets(&selected);
+                if ui
+                    .add_enabled(!targets.is_empty(), egui::Button::new("⬚ Frame"))
+                    .on_hover_text(
+                        "Draw a titled frame around the selected steps (Shift-click or \
+                         Shift-drag to select several). Its title is set under Frames on the \
+                         left; dragging the title moves every step inside",
+                    )
+                    .clicked()
+                {
+                    let nodes = self.ids_of(&targets).into_iter().collect();
+                    self.frames.push(WfFrame {
+                        title: format!("Frame {}", self.frames.len() + 1),
+                        nodes,
+                        ..WfFrame::default()
+                    });
+                }
+                ui.checkbox(&mut self.minimap, "Map")
+                    .on_hover_text("A map of the whole canvas in its corner");
+                ui.separator();
                 let ok = self.findings.ok();
                 if ui
                     .add_enabled(!running, egui::Button::new("▶ Run"))
@@ -355,6 +632,31 @@ impl WorkflowEditor {
         egui::CentralPanel::default().show(ui, |ui| {
             self.canvas_ui(ui, marks);
         });
+        // Undo and redo wherever the pointer is in the editor, unless a
+        // text field has the keyboard (it undoes its own typing). By
+        // position: the canvas's layers lie over this one.
+        let inside = ui
+            .input(|i| i.pointer.hover_pos())
+            .is_some_and(|p| ui.max_rect().contains(p));
+        if inside && !ui.ctx().egui_wants_keyboard_input() {
+            use egui::{Key, KeyboardShortcut as Ks, Modifiers as M};
+            // Redo first: Ctrl+Z also matches with Shift held.
+            let (redo, undo) = ui.input_mut(|i| {
+                let redo = i.consume_shortcut(&Ks::new(M::COMMAND | M::SHIFT, Key::Z))
+                    || i.consume_shortcut(&Ks::new(M::COMMAND, Key::Y));
+                (
+                    redo,
+                    !redo && i.consume_shortcut(&Ks::new(M::COMMAND, Key::Z)),
+                )
+            });
+            if redo {
+                self.redo();
+            } else if undo {
+                self.undo();
+            }
+        }
+        self.prune_frames();
+        self.track_history(ui.ctx());
     }
 
     fn findings_ui(&mut self, ui: &mut egui::Ui) {
@@ -390,7 +692,8 @@ impl WorkflowEditor {
         ui.weak(
             "Click to add, or right-click the canvas. Wire an output to an input. \
              Delete removes the step shown on the right (or the ones Shift-clicked); \
-             double-click empty canvas to see every step.",
+             Ctrl+C, Ctrl+X, Ctrl+V and Ctrl+D copy, cut, paste and duplicate them, the \
+             arrow keys move them; double-click empty canvas to see every step.",
         );
         for c in Category::ALL {
             egui::CollapsingHeader::new(c.label())
@@ -407,6 +710,30 @@ impl WorkflowEditor {
                             self.add(k, at);
                             self.drop_at = at + egui::vec2(30.0, 30.0);
                         }
+                    }
+                });
+        }
+        if !self.frames.is_empty() {
+            ui.separator();
+            egui::CollapsingHeader::new("Frames")
+                .default_open(true)
+                .show(ui, |ui| {
+                    let mut gone = None;
+                    for (k, f) in self.frames.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.color_edit_button_srgb(&mut f.color);
+                            ui.add(egui::TextEdit::singleline(&mut f.title).desired_width(90.0));
+                            if ui
+                                .small_button("🗑")
+                                .on_hover_text("Remove the frame (the steps stay)")
+                                .clicked()
+                            {
+                                gone = Some(k);
+                            }
+                        });
+                    }
+                    if let Some(k) = gone {
+                        self.frames.remove(k);
                     }
                 });
         }
@@ -533,26 +860,51 @@ impl WorkflowEditor {
         } else {
             None
         };
+        let id = egui::Id::new((CANVAS_ID, self.canvas));
+        // The canvas's area, taken before the canvas: its response covers
+        // an unbounded rectangle (the canvas is endless).
+        let canvas = ui.max_rect();
         let mut viewer = Viewer {
             marks,
             findings: &self.findings,
             refused: None,
             clicked: None,
             fit,
+            set_view: self.set_view.take(),
             to_global: TSTransform::IDENTITY,
             rects: Vec::new(),
+            frames: &self.frames,
+            last_rects: &self.rects,
         };
-        let id = egui::Id::new((CANVAS_ID, self.canvas));
         let response =
             SnarlWidget::new()
                 .id(id)
                 .style(style)
                 .show(&mut self.snarl, &mut viewer, ui);
-        if let Some(why) = viewer.refused {
+        let refused = viewer.refused.take();
+        let clicked = viewer.clicked;
+        let to_global = viewer.to_global;
+        let rects = std::mem::take(&mut viewer.rects);
+        self.view = to_global;
+        self.rects = rects;
+        if let Some(why) = refused {
             self.status = Some(why);
         }
-        if let Some(c) = viewer.clicked {
+        if let Some(c) = clicked {
             self.inspect = Some(c);
+        }
+        // What the canvas holds is drawn over by a layer of its own: the
+        // frames' handles and the map, which have to win the pointer over
+        // the canvas (a sublayer added after the canvas's is above it).
+        if canvas.is_finite() && canvas.is_positive() {
+            let overlay = egui::LayerId::new(ui.layer_id().order, id.with("overlay"));
+            ui.ctx().set_sublayer(ui.layer_id(), overlay);
+            let mut over = ui.new_child(egui::UiBuilder::new().layer_id(overlay).max_rect(canvas));
+            over.set_clip_rect(canvas);
+            self.frame_handles(&mut over, id);
+            if self.minimap && !self.rects.is_empty() {
+                self.minimap_ui(&mut over, canvas, id);
+            }
         }
         // A click on a node shows it in the inspector: the pointer taken
         // back into canvas units, the topmost node under it.
@@ -564,43 +916,21 @@ impl WorkflowEditor {
             }
         });
         if let Some(at) = click.filter(|_| response.contains_pointer()) {
-            let on_canvas = viewer.to_global.inverse() * at;
-            if let Some((id, _)) = viewer
-                .rects
-                .iter()
-                .rev()
-                .find(|(_, r)| r.contains(on_canvas))
-            {
+            let on_canvas = to_global.inverse() * at;
+            if let Some((id, _)) = self.rects.iter().rev().find(|(_, r)| r.contains(on_canvas)) {
                 self.inspect = Some(*id);
             }
         }
         // The selection drives the inspector: one node selected is the one
         // shown; clicking empty space keeps the last one.
         let selected = get_selected_nodes(id, ui.ctx());
-        // Delete removes the selected steps (Shift-click or a Shift-drag
-        // selects several), or else the one shown in the inspector - only
-        // while the pointer is over the canvas and no text field has the
-        // keyboard.
-        if response.contains_pointer()
-            && !ui.ctx().egui_wants_keyboard_input()
-            && ui.input(|i| i.key_pressed(egui::Key::Delete))
-        {
-            let mut gone: Vec<NodeId> = selected.clone();
-            if gone.is_empty() {
-                gone.extend(
-                    self.snarl
-                        .nodes_ids_data()
-                        .filter(|(_, n)| Some(n.value.id) == self.inspect)
-                        .map(|(nid, _)| nid),
-                );
-            }
-            for n in gone {
-                if self.snarl.get_node(n).is_some() {
-                    self.snarl.remove_node(n);
-                }
-            }
-            self.inspect = None;
-            return;
+        // The keys act while the pointer is over the canvas and no text
+        // field has the keyboard.
+        let over_canvas = ui
+            .input(|i| i.pointer.hover_pos())
+            .is_some_and(|p| canvas.contains(p));
+        if over_canvas && !ui.ctx().egui_wants_keyboard_input() {
+            self.canvas_keys(ui, &selected, to_global);
         }
         if selected.len() == 1 {
             if let Some(n) = self.snarl.get_node(selected[0]) {
@@ -614,6 +944,259 @@ impl WorkflowEditor {
             self.inspect = None;
         }
     }
+
+    /// Delete, copy, cut, paste, duplicate and the arrow keys on the
+    /// canvas. Delete and the arrows act on the selected steps (Shift-click
+    /// or a Shift-drag selects several), or else the one in the inspector.
+    fn canvas_keys(&mut self, ui: &egui::Ui, selected: &[NodeId], to_global: TSTransform) {
+        use egui::{Key, KeyboardShortcut as Ks, Modifiers as M};
+        let targets = self.targets(selected);
+        let (copy, cut, paste, delete, dup, nudge, pointer) = ui.input_mut(|i| {
+            let mut copy = false;
+            let mut cut = false;
+            let mut paste = None;
+            for e in &i.events {
+                match e {
+                    egui::Event::Copy => copy = true,
+                    egui::Event::Cut => cut = true,
+                    egui::Event::Paste(t) => paste = Some(t.clone()),
+                    _ => {}
+                }
+            }
+            let dup = i.consume_shortcut(&Ks::new(M::COMMAND, Key::D));
+            // Every arrow press of the frame, each with the Shift it was
+            // pressed with (several can arrive between two frames).
+            let mut nudge = egui::Vec2::ZERO;
+            for e in &i.events {
+                if let egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } = e
+                {
+                    if modifiers.command {
+                        continue;
+                    }
+                    let step = if modifiers.shift { 40.0 } else { 10.0 };
+                    nudge += match key {
+                        Key::ArrowLeft => egui::vec2(-step, 0.0),
+                        Key::ArrowRight => egui::vec2(step, 0.0),
+                        Key::ArrowUp => egui::vec2(0.0, -step),
+                        Key::ArrowDown => egui::vec2(0.0, step),
+                        _ => egui::Vec2::ZERO,
+                    };
+                }
+            }
+            (
+                copy,
+                cut,
+                paste,
+                i.key_pressed(Key::Delete),
+                dup,
+                nudge,
+                i.pointer.hover_pos(),
+            )
+        });
+        if delete {
+            self.remove(&targets);
+            return;
+        }
+        if copy || cut {
+            let done = self.copy(ui.ctx(), &targets);
+            if cut && done {
+                self.remove(&targets);
+                self.status = Some("Cut; Ctrl+V puts the steps back".into());
+            }
+        }
+        if dup && !targets.is_empty() {
+            let part = self.to_workflow().fragment(&self.ids_of(&targets));
+            self.paste(&part, None);
+        }
+        if let Some(text) = paste {
+            match Workflow::from_json(&text) {
+                Ok(part) if !part.nodes.is_empty() => {
+                    let at = pointer.map(|p| to_global.inverse() * p);
+                    self.paste(&part, at);
+                }
+                _ => match self.clip.clone() {
+                    // Another program's text on the clipboard: what this
+                    // editor copied last, if anything.
+                    Some(part) => {
+                        let at = pointer.map(|p| to_global.inverse() * p);
+                        self.paste(&part, at);
+                    }
+                    None => {
+                        self.status = Some("The clipboard holds no workflow steps".into());
+                    }
+                },
+            }
+        }
+        if nudge != egui::Vec2::ZERO && !targets.is_empty() {
+            for n in &targets {
+                if let Some(info) = self.snarl.get_node_info_mut(*n) {
+                    info.pos += nudge;
+                }
+            }
+        }
+    }
+
+    /// The frames' title bars as handles: dragging one moves every step in
+    /// its frame. The steps follow the pointer from where the drag began
+    /// (not frame by frame), so a frame whose first delta also holds the
+    /// move before the press, or a second pass of the same frame, does not
+    /// throw them off.
+    fn frame_handles(&mut self, over: &mut egui::Ui, id: egui::Id) {
+        let mut started = None;
+        let mut at = None;
+        let mut stopped = false;
+        for (k, f) in self.frames.iter().enumerate() {
+            let Some(b) = frame_box(f, &self.rects) else {
+                continue;
+            };
+            let bar = (self.view * frame_title(b)).intersect(over.clip_rect());
+            if !bar.is_positive() {
+                continue;
+            }
+            let r = over
+                .interact(bar, id.with(("frame", k)), egui::Sense::drag())
+                .on_hover_cursor(egui::CursorIcon::Grab)
+                .on_hover_text("Drag to move the steps in this frame");
+            if r.drag_started() {
+                let from = over
+                    .input(|i| i.pointer.press_origin())
+                    .or(r.interact_pointer_pos());
+                started = from.map(|p| (k, p));
+            }
+            if r.dragged() {
+                at = r.interact_pointer_pos().map(|p| (k, p));
+            }
+            stopped |= r.drag_stopped();
+        }
+        if let Some((k, from)) = started {
+            let ids = &self.frames[k].nodes;
+            let origins = self
+                .snarl
+                .nodes_info()
+                .filter(|n| ids.contains(&n.value.id))
+                .map(|n| (n.value.id, n.pos))
+                .collect();
+            self.frame_drag = Some(FrameDrag {
+                frame: k,
+                from,
+                origins,
+            });
+        }
+        if let (Some((k, p)), Some(drag)) = (at, &self.frame_drag) {
+            if k == drag.frame {
+                let d = (p - drag.from) / self.view.scaling;
+                for n in self.snarl.nodes_info_mut() {
+                    if let Some((_, o)) = drag.origins.iter().find(|(id, _)| *id == n.value.id) {
+                        n.pos = *o + d;
+                    }
+                }
+            }
+        }
+        if stopped {
+            self.frame_drag = None;
+        }
+    }
+
+    /// The map: every step and frame, scaled into the canvas's corner, with
+    /// the part in view outlined. A click or a drag on it centres the view
+    /// there.
+    fn minimap_ui(&mut self, over: &mut egui::Ui, canvas: Rect, id: egui::Id) {
+        let size = egui::vec2(180.0, 120.0);
+        let mini = Rect::from_min_size(canvas.right_bottom() - size - egui::vec2(10.0, 10.0), size);
+        if !canvas.contains_rect(mini) || canvas.width() < 400.0 {
+            return;
+        }
+        let view = self.view.inverse() * canvas;
+        let mut world = view;
+        for (_, r) in &self.rects {
+            world = world.union(*r);
+        }
+        let world = world.expand(40.0);
+        let inner = mini.shrink(6.0);
+        let scale = (inner.width() / world.width()).min(inner.height() / world.height());
+        let to_mini = |r: Rect| {
+            Rect::from_min_max(
+                inner.center() + (r.min - world.center()) * scale,
+                inner.center() + (r.max - world.center()) * scale,
+            )
+        };
+        let visuals = over.visuals().clone();
+        let painter = over.painter();
+        painter.rect(
+            mini,
+            6.0,
+            visuals.window_fill.gamma_multiply(0.92),
+            visuals.window_stroke,
+            egui::StrokeKind::Inside,
+        );
+        for f in &self.frames {
+            if let Some(b) = frame_box(f, &self.rects) {
+                painter.rect_filled(to_mini(b), 2.0, rgb(f.color).gamma_multiply(0.35));
+            }
+        }
+        let colors: BTreeMap<u32, Color32> = self
+            .snarl
+            .nodes()
+            .map(|n| (n.id, rgb(n.op.kind().info().category.color())))
+            .collect();
+        for (nid, r) in &self.rects {
+            let c = colors.get(nid).copied().unwrap_or(Color32::GRAY);
+            painter.rect_filled(to_mini(*r), 1.0, c);
+        }
+        painter.rect_stroke(
+            to_mini(view).intersect(inner.expand(2.0)),
+            2.0,
+            egui::Stroke::new(1.5, visuals.strong_text_color()),
+            egui::StrokeKind::Middle,
+        );
+        let r = over
+            .interact(mini, id.with("minimap"), egui::Sense::click_and_drag())
+            .on_hover_text(
+                "The whole canvas; the outline is the part in view. Click or drag to move the view",
+            );
+        if r.clicked() || r.dragged() {
+            if let Some(p) = r.interact_pointer_pos() {
+                let at = world.center() + (p - inner.center()) / scale;
+                let scaling = self.view.scaling;
+                self.set_view = Some(TSTransform {
+                    scaling,
+                    translation: canvas.center().to_vec2() - at.to_vec2() * scaling,
+                });
+                over.ctx().request_repaint();
+            }
+        }
+    }
+}
+
+/// Room around a frame's steps, and its title bar's height, canvas units.
+const FRAME_PAD: f32 = 18.0;
+const FRAME_TITLE: f32 = 26.0;
+
+/// A frame's box: around its steps as last drawn, with its title bar on
+/// top. `None` while none of its steps has been drawn.
+fn frame_box(f: &WfFrame, rects: &[(u32, Rect)]) -> Option<Rect> {
+    let mut bb = Rect::NOTHING;
+    for (id, r) in rects {
+        if f.nodes.contains(id) {
+            bb = bb.union(*r);
+        }
+    }
+    bb.is_positive().then(|| {
+        Rect::from_min_max(
+            bb.min - egui::vec2(FRAME_PAD, FRAME_PAD + FRAME_TITLE),
+            bb.max + egui::vec2(FRAME_PAD, FRAME_PAD),
+        )
+    })
+}
+
+/// The title bar of a frame's box.
+fn frame_title(b: Rect) -> Rect {
+    Rect::from_min_size(b.min, egui::vec2(b.width(), FRAME_TITLE))
 }
 
 /// The canvas's look: pins on the node edges, round, a little larger than
@@ -686,14 +1269,24 @@ struct Viewer<'a> {
     /// Set the view to show this part of the canvas (canvas units) in this
     /// rectangle of the window.
     fit: Option<(Rect, Rect)>,
+    /// Set the view to this (the map's, or the one kept across a rebuilt
+    /// canvas).
+    set_view: Option<TSTransform>,
     /// Canvas to window, as the canvas was drawn this frame.
     to_global: TSTransform,
     /// Every node's rectangle this frame, in canvas units, in drawing order.
     rects: Vec<(u32, Rect)>,
+    /// The frames, drawn behind the nodes around where they were last
+    /// drawn.
+    frames: &'a [WfFrame],
+    last_rects: &'a [(u32, Rect)],
 }
 
 impl SnarlViewer<EdNode> for Viewer<'_> {
     fn current_transform(&mut self, to_global: &mut TSTransform, _snarl: &mut Snarl<EdNode>) {
+        if let Some(v) = self.set_view.take() {
+            *to_global = v;
+        }
         // Every step in view, no larger than life and not so small that the
         // summaries cannot be read; what does not fit is a pan away.
         if let Some((bb, rect)) = self.fit.take() {
@@ -706,6 +1299,53 @@ impl SnarlViewer<EdNode> for Viewer<'_> {
             };
         }
         self.to_global = *to_global;
+    }
+
+    fn draw_background(
+        &mut self,
+        background: Option<&BackgroundPattern>,
+        viewport: &Rect,
+        snarl_style: &SnarlStyle,
+        style: &egui::Style,
+        painter: &egui::Painter,
+        _snarl: &Snarl<EdNode>,
+    ) {
+        if let Some(b) = background {
+            b.draw(viewport, snarl_style, style, painter);
+        }
+        // The frames: behind every node, in canvas units (the painter is
+        // the canvas's).
+        for f in self.frames {
+            let Some(b) = frame_box(f, self.last_rects) else {
+                continue;
+            };
+            let c = rgb(f.color);
+            painter.rect(
+                b,
+                8.0,
+                c.gamma_multiply(0.16),
+                egui::Stroke::new(1.5, c.gamma_multiply(0.8)),
+                egui::StrokeKind::Inside,
+            );
+            let bar = frame_title(b);
+            painter.rect_filled(
+                bar,
+                egui::CornerRadius {
+                    nw: 8,
+                    ne: 8,
+                    sw: 0,
+                    se: 0,
+                },
+                c.gamma_multiply(0.7),
+            );
+            painter.text(
+                bar.left_center() + egui::vec2(10.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+                &f.title,
+                egui::FontId::proportional(15.0),
+                Color32::WHITE,
+            );
+        }
     }
 
     fn final_node_rect(
@@ -734,6 +1374,7 @@ impl SnarlViewer<EdNode> for Viewer<'_> {
         let mark = match self.marks.get(&n.id) {
             Some(Mark::Running) => " ⏳",
             Some(Mark::Done(_)) => " ✔",
+            Some(Mark::Reused) => " ♻",
             Some(Mark::Failed(_)) => " ✖",
             _ => "",
         };
@@ -861,6 +1502,9 @@ impl SnarlViewer<EdNode> for Viewer<'_> {
             match self.marks.get(&n.id) {
                 Some(Mark::Done(secs)) => {
                     ui.label(egui::RichText::new(format!("✔ {secs:.1} s")).small());
+                }
+                Some(Mark::Reused) => {
+                    ui.label(egui::RichText::new("♻ unchanged since the last run").small());
                 }
                 Some(Mark::Failed(e)) => {
                     ui.add(
@@ -1319,6 +1963,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
                 }
             });
             output_rows(f, id, &mut p.output, &mut p.set, &mut p.set_label);
+            names_row(f, id, &mut p.names);
             f.row("Compute", |ui| {
                 choice(ui, ("dev", id), &mut p.device, &cat::Device::ALL, |v| {
                     v.label()
@@ -1333,6 +1978,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
                 });
             });
             output_rows(f, id, &mut p.output, &mut p.set, &mut p.set_label);
+            names_row(f, id, &mut p.names);
             if p.method == cat::BodyMethod::ModelAssisted {
                 f.row("Compute", |ui| {
                     choice(ui, ("dev", id), &mut p.device, &cat::Device::ALL, |v| {
@@ -1371,6 +2017,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
                     text(ui, &mut p.suffix, "none", 120.0);
                 },
             );
+            names_row(f, id, &mut p.names);
             finish_ui(f, &mut p.finish);
         }
         Op::PropagateToGroup(p) => {
@@ -1422,6 +2069,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
                     v.label()
                 });
             });
+            names_row(f, id, &mut p.names);
             finish_ui(f, &mut p.finish);
             effort_ui(f, id, &mut p.effort);
         }
@@ -1477,6 +2125,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
                         |v| v.label(),
                     );
                 });
+                names_row(f, id, &mut p.names);
             }
             f.row("", |ui| {
                 ui.checkbox(&mut p.keep_phase_segs, "Keep every phase's propagated copy");
@@ -1531,7 +2180,341 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
                 ui.checkbox(&mut p.text, "A readable summary (Markdown)");
             });
         }
+        Op::LoadFolders(p) => {
+            f.row("Folder", |ui| {
+                text(ui, &mut p.path, "the folder of the cases", 170.0);
+                if ui
+                    .small_button("📂")
+                    .on_hover_text("Choose the folder")
+                    .clicked()
+                {
+                    actions.push(EdAction::BrowseFolder(id));
+                }
+            });
+            f.row_tip(
+                "Subfolders",
+                "Which subfolders are cases: * is all, P* those starting with P",
+                |ui| text(ui, &mut p.pattern, "*", 90.0),
+            );
+            f.wide(|ui| {
+                ui.weak(
+                    "The whole workflow runs once per subfolder, in the background, each \
+                     case in a folder of its own; the run ends with one table across the \
+                     cases for every table its reports make.",
+                );
+            });
+        }
+        Op::LoadFromArchive(p) => {
+            f.row_tip(
+                "Patient",
+                "The patient's ID or name, or a pattern with *",
+                |ui| text(ui, &mut p.patient, "ID or name", 150.0),
+            );
+            f.row_tip(
+                "Study",
+                "Words of its description, or its date (YYYYMMDD); empty takes the newest",
+                |ui| text(ui, &mut p.study, "the newest", 150.0),
+            );
+            f.row_tip(
+                "Archive",
+                "The archive's folder; empty is the station's (Tools > PACS)",
+                |ui| text(ui, &mut p.archive, "the station's", 150.0),
+            );
+            f.row_tip(
+                "Workspace",
+                "Where the study is shown when a run shows its steps in the viewer",
+                |ui| {
+                    choice(
+                        ui,
+                        ("ws", id),
+                        &mut p.workspace,
+                        &cat::Workspace::ALL,
+                        |w| w.label(),
+                    )
+                },
+            );
+        }
+        Op::Anonymize(p) => {
+            f.row_tip(
+                "Folder",
+                "Inside the run folder, or an absolute path; {input} is the study's title",
+                |ui| text(ui, &mut p.folder, "anonymized/{input}", 150.0),
+            );
+            f.row("", |ui| {
+                ui.checkbox(&mut p.remap_uids, "New UIDs, consistently");
+            });
+            f.row("", |ui| {
+                ui.checkbox(&mut p.remove_private, "Remove private tags");
+            });
+            f.row("", |ui| {
+                ui.checkbox(
+                    &mut p.clear_descriptions,
+                    "Clear study and series descriptions",
+                );
+            });
+        }
+        Op::SegVolText(p) => {
+            f.wide(|ui| {
+                ui.strong("Prompts, and the names they are filed under");
+                let mut remove = None;
+                for (k, r) in p.prompts.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        text(ui, &mut r.structure, "liver", 100.0);
+                        ui.label("as");
+                        let hint = r.structure.clone();
+                        text(ui, &mut r.name, &hint, 100.0);
+                        if ui
+                            .small_button("🗑")
+                            .on_hover_text("Remove this prompt")
+                            .clicked()
+                        {
+                            remove = Some(k);
+                        }
+                    });
+                }
+                if let Some(k) = remove {
+                    p.prompts.remove(k);
+                }
+                if ui.small_button("➕ Prompt").clicked() {
+                    p.prompts.push(cat::PromptRule::default());
+                }
+            });
+            f.row("", |ui| {
+                ui.checkbox(&mut p.refine, "Refinement pass (slower, sharper)");
+            });
+            f.row("Threshold", |ui| {
+                ui.add(egui::Slider::new(&mut p.threshold, 0.05..=0.95));
+            });
+            output_rows(f, id, &mut p.output, &mut p.set, &mut p.set_label);
+            names_row(f, id, &mut p.names);
+            f.row("Compute", |ui| {
+                choice(ui, ("dev", id), &mut p.device, &cat::Device::ALL, |v| {
+                    v.label()
+                });
+            });
+        }
+        Op::Combine(p) => {
+            f.row("Result", |ui| text(ui, &mut p.name, "PTV", 120.0));
+            f.row("Operation", |ui| {
+                choice(ui, ("op", id), &mut p.op, &cat::CombineOp::ALL, |v| {
+                    v.label()
+                });
+            });
+            margin_row(f, "A first", &mut p.margin_a);
+            margin_row(f, "B first", &mut p.margin_b);
+            margin_row(f, "Result", &mut p.margin);
+            f.row("", |ui| {
+                ui.checkbox(&mut p.fill_holes, "Fill holes");
+            });
+            f.row("", |ui| {
+                ui.checkbox(&mut p.keep_largest, "Keep the largest piece only");
+            });
+            f.row_tip("Close gaps", "Morphological closing of the result", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut p.close_mm)
+                        .range(0.0..=50.0)
+                        .suffix(" mm"),
+                );
+            });
+            output_rows(f, id, &mut p.output, &mut p.set, &mut p.set_label);
+            names_row(f, id, &mut p.names);
+        }
+        Op::Rename(p) => {
+            f.row("Action", |ui| {
+                choice(
+                    ui,
+                    ("act", id),
+                    &mut p.action,
+                    &cat::RenameAction::ALL,
+                    |v| v.label(),
+                );
+            });
+            let rename = p.action == cat::RenameAction::Rename;
+            f.wide(|ui| {
+                ui.weak(
+                    "Names or patterns with * (GTV*). Only the structures that arrive are \
+                     touched, when any do.",
+                );
+                let mut remove = None;
+                for (k, r) in p.rules.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        text(ui, &mut r.from, "GTV*", 100.0);
+                        if rename {
+                            ui.label("to");
+                            text(ui, &mut r.to, "GTV", 100.0);
+                        }
+                        if ui
+                            .small_button("🗑")
+                            .on_hover_text("Remove this rule")
+                            .clicked()
+                        {
+                            remove = Some(k);
+                        }
+                    });
+                }
+                if let Some(k) = remove {
+                    p.rules.remove(k);
+                }
+                if ui.small_button("➕ Rule").clicked() {
+                    p.rules.push(cat::RenameRule::default());
+                }
+            });
+        }
+        Op::Transfer(p) => {
+            f.row_tip(
+                "Lands as",
+                "The name on the destination; empty keeps the target's",
+                |ui| text(ui, &mut p.name, "the target's", 120.0),
+            );
+            output_rows(f, id, &mut p.output, &mut p.set, &mut p.set_label);
+            names_row(f, id, &mut p.names);
+        }
+        Op::CopyToPhases(p) => {
+            f.row("File into", |ui| {
+                choice(ui, ("land", id), &mut p.landing, &cat::Landing::ALL, |v| {
+                    v.label()
+                });
+            });
+            names_row(f, id, &mut p.names);
+        }
+        Op::Dvh(p) => {
+            f.row_tip(
+                "Dose",
+                "Words of the dose's label; empty takes the study's first dose",
+                |ui| text(ui, &mut p.dose, "the first", 120.0),
+            );
+            f.row_tip(
+                "Metrics",
+                "Separated by commas: D95%, D2cc, V20Gy, V20Gy[cc], Dmean, Dmax",
+                |ui| text(ui, &mut p.metrics, "D95%, Dmean", 180.0),
+            );
+            f.wide(|ui| {
+                ui.label("Protocol, one constraint per line (Heart Dmean < 5)");
+                ui.add(
+                    egui::TextEdit::multiline(&mut p.protocol)
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY),
+                );
+            });
+            f.row_tip(
+                "Protocol file",
+                "A protocol saved from the DVH window, read when the run starts",
+                |ui| text(ui, &mut p.protocol_file, "none", 160.0),
+            );
+            f.row("", |ui| {
+                ui.checkbox(&mut p.curves, "The cumulative curves too");
+            });
+        }
+        Op::DoseMetrics(p) => {
+            f.row("Dose", |ui| {
+                choice(
+                    ui,
+                    ("kind", id),
+                    &mut p.dose_kind,
+                    &cat::DoseKindChoice::ALL,
+                    |v| v.label(),
+                );
+            });
+            f.row_tip(
+                "Label has",
+                "Words of the dose's label; empty takes the first",
+                |ui| text(ui, &mut p.dose, "any", 120.0),
+            );
+            f.row_tip("Columns", "Metrics separated by commas", |ui| {
+                text(ui, &mut p.metrics, "Dmean, D95%", 180.0)
+            });
+        }
+        Op::ArchiveImport(p) => {
+            f.row("File", |ui| {
+                choice(
+                    ui,
+                    ("src", id),
+                    &mut p.source,
+                    &cat::ImportSource::ALL,
+                    |v| v.label(),
+                );
+            });
+            f.row_tip(
+                "Archive",
+                "The archive's folder; empty is the station's (Tools > PACS)",
+                |ui| text(ui, &mut p.archive, "the station's", 150.0),
+            );
+        }
+        Op::Drr(p) => {
+            f.row("", |ui| {
+                ui.checkbox(&mut p.plan_beams, "At the plan's beams");
+            });
+            if !p.plan_beams {
+                f.row_tip("Gantry", "Angles in degrees, separated by commas", |ui| {
+                    text(ui, &mut p.angles, "0, 90", 120.0)
+                });
+                f.row("Couch", |ui| {
+                    ui.add(egui::DragValue::new(&mut p.couch_deg).suffix(" deg"));
+                });
+            }
+            f.row("Size", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut p.size_px)
+                        .range(64..=2048)
+                        .suffix(" px"),
+                );
+            });
+            f.row("", |ui| {
+                ui.checkbox(&mut p.invert, "Dark bone, as a radiograph");
+            });
+            f.row_tip(
+                "Folder",
+                "Inside the run folder, or an absolute path; {input} is the study's title",
+                |ui| text(ui, &mut p.folder, "drr/{input}", 150.0),
+            );
+            f.row("", |ui| {
+                ui.checkbox(&mut p.file_into_study, "Also as planar images of the study");
+            });
+        }
     });
+}
+
+/// What happens when a name a step files under is taken.
+fn names_row(f: &mut form::Form, id: u32, names: &mut cat::NameClash) {
+    f.row_tip(
+        "Name taken",
+        "When the set it goes into already holds a structure of that name. The same \
+         name lands on every phase of a 4D group, and later steps look it up by it.",
+        |ui| {
+            choice(ui, ("clash", id), names, &cat::NameClash::ALL, |v| {
+                v.label()
+            })
+        },
+    );
+}
+
+/// A margin: one number for every direction.
+fn margin_row(f: &mut form::Form, label: &str, m: &mut cat::MarginMm) {
+    f.row_tip(
+        label,
+        "Grow (positive) or shrink (negative); a per-direction margin is set in the file",
+        |ui| {
+            ui.add(
+                egui::DragValue::new(&mut m.uniform_mm)
+                    .range(-50.0..=50.0)
+                    .speed(0.5)
+                    .suffix(" mm"),
+            );
+            if [
+                m.right_mm,
+                m.left_mm,
+                m.anterior_mm,
+                m.posterior_mm,
+                m.superior_mm,
+                m.inferior_mm,
+            ]
+            .iter()
+            .any(Option::is_some)
+            {
+                ui.weak("and per direction");
+            }
+        },
+    );
 }
 
 fn output_rows(

@@ -12,15 +12,16 @@
 //! segmentation series it touched, which is what *Export DICOM* with
 //! *what the run changed* writes.
 
+use std::collections::BTreeSet;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::autoseg::{self, classes};
 use crate::bodymask;
 use crate::dicom_export::ExportParams;
-use crate::dicomseg::{resample_mask, SegSeries};
 use crate::export::{self, ExportPlan, Layout, ObjKind, StructFormat, UidMode};
 use crate::loader::{self, LoadedStudy, SeriesInfo};
 use crate::models::{self, Engine};
@@ -28,14 +29,16 @@ use crate::motion::MotionModel;
 use crate::progress::Progress;
 use crate::propagate::{self, Propagated};
 use crate::registration::{self, RegMethod};
-use crate::rtstruct::StructureSet;
 use crate::segmentation::Segmentation;
 use crate::volume::Grid;
+use crate::workflow::session::{self, item, NameClash};
 use crate::workflow::{self, anchored, group, motion, select};
 
 use super::catalog::{self as cat, name_matches, split_names, Op};
-use super::exec::{Ctx, Done, RegEntry, Report, Scope, Table, Value};
+use super::exec::{Ctx, Done, RegEntry, Report, RunOptions, Scope, Table, Value};
 use super::{safe_name, Node};
+
+mod more;
 
 /// Run one node on its inputs (one list of values per input port).
 pub(super) fn run_node(
@@ -68,10 +71,24 @@ pub(super) fn run_node(
         Op::Motion(p_) => motion_node(ctx, node, need(0)?, one(1), one(2), p_, p),
         Op::ExportDicom(p_) => export_dicom(ctx, &inputs[0], p_, p),
         Op::SaveReport(p_) => save_report(ctx, node, &inputs[0], p_),
+        // A batch is run by the runner, a case at a time, each as a plain
+        // folder step; the node itself never runs.
+        Op::LoadFolders(_) => bail!("a batch runs through the run dialog, one case at a time"),
+        Op::LoadFromArchive(p_) => more::load_from_archive(ctx, node, p_, p),
+        Op::Anonymize(p_) => more::anonymize(ctx, node, need(0)?, p_, p),
+        Op::SegVolText(p_) => more::segvol_text(ctx, node, need(0)?, p_, p),
+        Op::Combine(p_) => more::combine(ctx, node, need(0)?, &inputs[1], p_, p),
+        Op::Rename(p_) => more::rename(ctx, need(0)?, p_),
+        Op::Transfer(p_) => more::transfer(ctx, node, need(0)?, need(1)?, need(2)?, p_, p),
+        Op::CopyToPhases(p_) => more::copy_to_phases(ctx, node, need(0)?, need(1)?, p_, p),
+        Op::Dvh(p_) => more::dvh(ctx, node, &inputs[0], p_, p),
+        Op::DoseMetrics(p_) => more::dose_metrics(ctx, node, &inputs[0], p_, p),
+        Op::ArchiveImport(p_) => more::archive_import(&mut *ctx, &inputs[0], p_, p),
+        Op::Drr(p_) => more::drr(ctx, node, need(0)?, p_, p),
     }
 }
 
-fn done(outputs: Vec<Value>, lines: Vec<String>) -> Done {
+pub(super) fn done(outputs: Vec<Value>, lines: Vec<String>) -> Done {
     Done {
         outputs,
         lines,
@@ -81,15 +98,15 @@ fn done(outputs: Vec<Value>, lines: Vec<String>) -> Done {
 }
 
 /// `1 structure set`, `3 structure sets`.
-fn count(n: usize, one: &str, many: &str) -> String {
+pub(super) fn count(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
-fn r2(v: f64) -> String {
+pub(super) fn r2(v: f64) -> String {
     format!("{v:.2}")
 }
 
-fn r1(v: f64) -> String {
+pub(super) fn r1(v: f64) -> String {
     format!("{v:.1}")
 }
 
@@ -98,8 +115,8 @@ fn r1(v: f64) -> String {
 /// A folder node's folder: the run's override, else the parameter, a
 /// relative one looked for beside the workflow file, in the current folder
 /// and beside the program.
-fn input_folder(ctx: &Ctx, node: &Node, given: &str) -> Result<PathBuf> {
-    let raw = match ctx.opts.inputs.get(&node.id) {
+pub(super) fn input_folder(opts: &RunOptions, node: &Node, given: &str) -> Result<PathBuf> {
+    let raw = match opts.inputs.get(&node.id) {
         Some(p) => p.clone(),
         None => PathBuf::from(given.trim()),
     };
@@ -111,7 +128,7 @@ fn input_folder(ctx: &Ctx, node: &Node, given: &str) -> Result<PathBuf> {
     }
     let mut tried = Vec::new();
     let bases = [
-        ctx.opts.base_dir.clone(),
+        opts.base_dir.clone(),
         std::env::current_dir().ok(),
         Some(crate::settings::app_dir()),
     ];
@@ -125,13 +142,71 @@ fn input_folder(ctx: &Ctx, node: &Node, given: &str) -> Result<PathBuf> {
     Ok(tried.into_iter().next().unwrap_or(raw))
 }
 
+/// What is on disk under `dir`: every file's path, size and time, hashed.
+/// A step reading the folder is not taken from an earlier run when this
+/// changed.
+fn folder_signature(dir: &Path) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    dir.hash(&mut h);
+    for e in walkdir::WalkDir::new(dir)
+        .follow_links(true)
+        .sort_by_file_name()
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        e.path().hash(&mut h);
+        if let Ok(m) = e.metadata() {
+            m.len().hash(&mut h);
+            if let Ok(t) = m.modified() {
+                t.hash(&mut h);
+            }
+        }
+    }
+    h.finish()
+}
+
+/// For a step that reads from disk, a fingerprint of what it would read
+/// (see `exec`'s reruns); `None` for every other step.
+pub(super) fn source_signature(opts: &RunOptions, node: &Node) -> Option<u64> {
+    match &node.op {
+        Op::LoadFolder(p) => {
+            let dir = input_folder(opts, node, &p.path).ok()?;
+            Some(folder_signature(&dir))
+        }
+        Op::LoadFromArchive(p) => {
+            let dir = more::archive_study_dir(p).ok()?;
+            Some(folder_signature(&dir))
+        }
+        // The protocol file is read when the step runs.
+        Op::Dvh(p) if !p.protocol_file.trim().is_empty() => {
+            let text = std::fs::read_to_string(p.protocol_file.trim()).unwrap_or_default();
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            text.hash(&mut h);
+            Some(h.finish())
+        }
+        _ => None,
+    }
+}
+
 fn load_folder(ctx: &mut Ctx, node: &Node, prm: &cat::LoadFolder, p: &Progress) -> Result<Done> {
-    let path = input_folder(ctx, node, &prm.path)?;
+    let path = input_folder(ctx.opts, node, &prm.path)?;
     if !path.is_dir() {
         bail!("the folder {} does not exist", path.display());
     }
     p.set(format!("Reading {}", path.display()));
     let study = loader::load_directory(&path, p)?;
+    Ok(study_loaded(ctx, node, path, prm.workspace, study))
+}
+
+/// A study just read, as a dataset of the run and the step's lines.
+pub(super) fn study_loaded(
+    ctx: &mut Ctx,
+    node: &Node,
+    path: PathBuf,
+    workspace: cat::Workspace,
+    study: LoadedStudy,
+) -> Done {
     // A group's name carries its phase count already ("4DCT (10 phases)").
     let groups: Vec<String> = study
         .fourd_groups
@@ -160,15 +235,15 @@ fn load_folder(ctx: &mut Ctx, node: &Node, prm: &cat::LoadFolder, p: &Progress) 
         lines.push(format!("4D: {}", groups.join(", ")));
     }
     let focus = study.series.get(study.active_series).map(|s| s.uid.clone());
-    let ds = ctx.add_dataset(node.label(), node.id, path, prm.workspace.slot(), study);
+    let ds = ctx.add_dataset(node.label(), node.id, path, workspace.slot(), study);
     let mut d = done(vec![Value::Study(ds)], lines);
     d.touched.push((ds, focus));
-    Ok(d)
+    d
 }
 
 // ---- finding things -------------------------------------------------------
 
-fn study_of(ctx: &Ctx, v: &Value) -> Result<usize> {
+pub(super) fn study_of(ctx: &Ctx, v: &Value) -> Result<usize> {
     let ds = v
         .dataset()
         .ok_or_else(|| anyhow!("this input needs something that belongs to a study"))?;
@@ -330,7 +405,7 @@ fn select_group(ctx: &mut Ctx, v: &Value, prm: &cat::SelectGroup) -> Result<Done
 }
 
 /// The phases of group `gi` of a study as (label, series).
-fn phases(ctx: &Ctx, ds: usize, gi: usize) -> Result<Vec<(String, SeriesInfo)>> {
+pub(super) fn phases(ctx: &Ctx, ds: usize, gi: usize) -> Result<Vec<(String, SeriesInfo)>> {
     let st = &ctx.ds(ds)?.study;
     let g = st
         .fourd_groups
@@ -342,7 +417,7 @@ fn phases(ctx: &Ctx, ds: usize, gi: usize) -> Result<Vec<(String, SeriesInfo)>> 
 /// Names of the structures drawn on one image series: in the structure sets
 /// and segmentation series that reference it; failing any, every name of
 /// the study (a set that names no series still counts).
-fn names_on_image(study: &LoadedStudy, uid: &str) -> Vec<String> {
+pub(super) fn names_on_image(study: &LoadedStudy, uid: &str) -> Vec<String> {
     let mut bound = Vec::new();
     for ss in study
         .structure_sets
@@ -451,182 +526,108 @@ fn select_structures(ctx: &mut Ctx, v: &Value, prm: &cat::SelectStructures) -> R
 
 // ---- filing ------------------------------------------------------------------
 
-/// A process-wide counter, so structure sets made in the same millisecond
-/// still get UIDs of their own.
-static UID_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn fresh_uid() -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let n = UID_COUNTER.fetch_add(1, Ordering::Relaxed) as u128;
-    format!("2.25.{}", nanos * 1000 + n % 1000)
+/// How a step files what it made: where, and what happens to a name that
+/// is taken.
+#[derive(Clone, Copy)]
+pub(super) struct FileAs<'a> {
+    pub kind: cat::OutputKind,
+    pub set: cat::SetChoice,
+    pub set_label: &'a str,
+    pub clash: NameClash,
 }
 
-/// A new, empty structure set bound to one image series; returns its index.
-fn new_structure_set(
-    study: &mut LoadedStudy,
-    series: &SeriesInfo,
-    grid: &Grid,
-    label: &str,
-) -> usize {
-    let sop = fresh_uid();
-    study.structure_sets.push(StructureSet {
-        label: label.to_string(),
-        frame_of_reference_uid: grid.frame_of_reference_uid.clone(),
-        series_instance_uid: format!("{sop}.1"),
-        sop_instance_uid: sop,
-        study_uid: series.study_uid.clone(),
-        referenced_series_uid: series.uid.clone(),
-        file_name: "workflow".into(),
-        locked: false,
-        rois: Vec::new(),
-    });
-    study.structure_sets.len() - 1
-}
+impl<'a> FileAs<'a> {
+    pub fn new(
+        kind: cat::OutputKind,
+        set: cat::SetChoice,
+        set_label: &'a str,
+        clash: NameClash,
+    ) -> Self {
+        FileAs {
+            kind,
+            set,
+            set_label,
+            clash,
+        }
+    }
 
-/// A mask as something the landing functions file.
-fn item(name: String, color: [u8; 3], mask: Vec<u8>) -> Propagated {
-    let voxels = mask.iter().filter(|&&v| v != 0).count();
-    Propagated {
-        name,
-        color,
-        mask,
-        voxels,
-        source_cm3: 0.0,
-        result_cm3: 0.0,
-        mapped_cm3: 0.0,
-        source_surface_cm3: None,
-        rigid_residual_mm: None,
+    /// Where a step that carries structures onto an image files them:
+    /// that image's own set, or a segmentation series.
+    pub fn landing(landing: cat::Landing, set_label: &'a str, clash: NameClash) -> Self {
+        FileAs {
+            kind: match landing {
+                cat::Landing::StructureSet => cat::OutputKind::Structures,
+                cat::Landing::Segmentation => cat::OutputKind::Segments,
+            },
+            set: cat::SetChoice::Own,
+            set_label,
+            clash,
+        }
     }
 }
 
-/// File masks made on one image series of study `ds`: as contours in its
-/// own structure set (or a new one), as segments of the segmentation series
-/// bound to it, or both - the way the viewer's tools file them. Answers item
-/// by item, in the order of `items`: the name each landed under (a name the
-/// set holds already gets a counter), `None` where nothing was filed (an
-/// empty mask).
+/// Every name the filings of one step on these images would meet: the
+/// same name on every phase of a 4D group comes from here.
+pub(super) fn taken_on(
+    ctx: &Ctx,
+    ds: usize,
+    series: &[&SeriesInfo],
+    how: &FileAs,
+) -> Result<BTreeSet<String>> {
+    let st = &ctx.ds(ds)?.study;
+    Ok(session::taken_names(
+        st,
+        series.iter().copied(),
+        how.kind,
+        how.set,
+    ))
+}
+
+/// File masks made on one image series of study `ds` - as contours in its
+/// structure set (or a new one), as segments of its segmentation series,
+/// or both - the way the viewer's tools file them ([`session::file_items`]).
+/// `taken`: the names every image of the step's filing meets (a 4D group's
+/// phases); the name each item lands under is then the same on all of
+/// them. Answers item by item, in the order of `items`: the name it landed
+/// under, `None` where nothing was filed (an empty mask).
 #[allow(clippy::too_many_arguments)]
-fn land(
+pub(super) fn land(
     ctx: &mut Ctx,
     ds: usize,
     series: &SeriesInfo,
     grid: &Grid,
     items: Vec<Propagated>,
-    kind: cat::OutputKind,
-    set: cat::SetChoice,
-    set_label: &str,
+    how: &FileAs,
     roi_types: &[String],
+    taken: Option<&BTreeSet<String>>,
 ) -> Result<Vec<Option<String>>> {
     let d = ctx.ds_mut(ds)?;
-    let mut names: Vec<Option<String>> = vec![None; items.len()];
-    if kind.structures() {
-        let existing = d
-            .study
-            .structure_sets
-            .iter()
-            .rposition(|s| s.referenced_series_uid == series.uid);
-        let idx = match (set, existing) {
-            (cat::SetChoice::Own, Some(i)) => i,
-            _ => new_structure_set(&mut d.study, series, grid, set_label),
-        };
-        let ss = &mut d.study.structure_sets[idx];
-        if ss.locked {
-            bail!(
-                "the structure set '{}' is locked (approved); file into a new set instead",
-                ss.label
-            );
-        }
-        for (k, it) in items.iter().enumerate() {
-            if it.voxels == 0 {
-                continue;
-            }
-            let seg =
-                Segmentation::from_label_map(it.name.clone(), it.color, grid.dims, &it.mask, 1);
-            let mut roi = crate::segmentation::mask_to_roi(&seg, grid, 0);
-            if roi.contours.is_empty() {
-                continue;
-            }
-            roi.roi_type = roi_types.get(k).cloned().unwrap_or_default();
-            roi.number = ss.rois.iter().map(|r| r.number).max().unwrap_or(0) + 1;
-            // A second run adds `heart total (2)` rather than a second
-            // `heart total`, as the viewer's tools do.
-            if ss.rois.iter().any(|r| r.name == roi.name) {
-                let base = roi.name.clone();
-                let mut n = 2;
-                while ss.rois.iter().any(|r| r.name == format!("{base} ({n})")) {
-                    n += 1;
-                }
-                roi.name = format!("{base} ({n})");
-            }
-            names[k] = Some(roi.name.clone());
-            ss.rois.push(roi);
-        }
-        d.touched_sets.insert(idx);
+    let filed = session::file_items(
+        &mut d.study,
+        series,
+        grid,
+        &items,
+        roi_types,
+        &session::Filing {
+            kind: how.kind,
+            set: how.set,
+            set_label: how.set_label,
+            clash: Some(how.clash),
+            taken,
+        },
+    )?;
+    if let Some(i) = filed.set {
+        d.touched_sets.insert(i);
     }
-    if kind.segments() {
-        let existing = d
-            .study
-            .seg_series
-            .iter()
-            .rposition(|s| s.referenced_series_uid == series.uid && s.grid.matches(grid));
-        let idx = match (set, existing) {
-            (cat::SetChoice::Own, Some(i)) => i,
-            _ => {
-                d.study.seg_series.push(SegSeries::new(
-                    set_label.to_string(),
-                    grid.clone(),
-                    series.uid.clone(),
-                    series.study_uid.clone(),
-                ));
-                d.study.seg_series.len() - 1
-            }
-        };
-        let sr = &mut d.study.seg_series[idx];
-        for (k, it) in items.iter().enumerate() {
-            if it.voxels == 0 {
-                continue;
-            }
-            let mask = if sr.grid.matches(grid) {
-                it.mask.clone()
-            } else {
-                resample_mask(&it.mask, grid, &sr.grid)
-            };
-            sr.segs.push(Segmentation::from_mask(
-                it.name.clone(),
-                it.color,
-                sr.grid.dims,
-                mask,
-            ));
-            if names[k].is_none() {
-                names[k] = Some(it.name.clone());
-            }
-        }
-        d.touched_segs.insert(idx);
+    if let Some(i) = filed.seg_series {
+        d.touched_segs.insert(i);
     }
-    Ok(names)
-}
-
-/// A landed item again (`Propagated` is not `Clone`: its owners move it).
-fn copy_item(it: &Propagated) -> Propagated {
-    Propagated {
-        name: it.name.clone(),
-        color: it.color,
-        mask: it.mask.clone(),
-        voxels: it.voxels,
-        source_cm3: it.source_cm3,
-        result_cm3: it.result_cm3,
-        mapped_cm3: it.mapped_cm3,
-        source_surface_cm3: it.source_surface_cm3,
-        rigid_residual_mm: it.rigid_residual_mm,
-    }
+    Ok(filed.names)
 }
 
 /// The RT ROI Interpreted Type of a named structure on an image, when it is
 /// an RT structure; empty otherwise.
-fn roi_type_of(study: &LoadedStudy, name: &str, uid: &str) -> String {
+pub(super) fn roi_type_of(study: &LoadedStudy, name: &str, uid: &str) -> String {
     let lower = name.to_lowercase();
     let sets = study
         .structure_sets
@@ -650,9 +651,9 @@ fn roi_type_of(study: &LoadedStudy, name: &str, uid: &str) -> String {
 /// The images a segmentation step runs on: one image series, or every phase
 /// of a group; with the scope its result is on.
 /// A study, the (label, series) it runs on, and the scope of the result.
-type Targets = (usize, Vec<(String, SeriesInfo)>, Scope);
+pub(super) type Targets = (usize, Vec<(String, SeriesInfo)>, Scope);
 
-fn engine_targets(ctx: &Ctx, v: &Value) -> Result<Targets> {
+pub(super) fn engine_targets(ctx: &Ctx, v: &Value) -> Result<Targets> {
     match v {
         Value::Image { ds, uid } => {
             let st = &ctx.ds(*ds)?.study;
@@ -670,30 +671,29 @@ fn engine_targets(ctx: &Ctx, v: &Value) -> Result<Targets> {
 }
 
 /// One volume's masks, named and coloured, with their interpreted types.
-struct Made {
-    items: Vec<Propagated>,
-    roi_types: Vec<String>,
+pub(super) struct Made {
+    pub items: Vec<Propagated>,
+    pub roi_types: Vec<String>,
     /// Report rows: (structure, cm³).
-    rows: Vec<(String, f64)>,
-    notes: Vec<String>,
+    pub rows: Vec<(String, f64)>,
+    pub notes: Vec<String>,
 }
 
 /// Run an engine on every target image and file what it makes; the shared
 /// body of the two segmentation nodes.
-#[allow(clippy::too_many_arguments)]
-fn engine_node(
+pub(super) fn engine_node(
     ctx: &mut Ctx,
     node: &Node,
     v: &Value,
-    kind: cat::OutputKind,
-    set: cat::SetChoice,
-    set_label: &str,
+    how: FileAs,
     title: &str,
     p: &Progress,
     mut engine: impl FnMut(&crate::volume::Volume, &Progress) -> Result<Made>,
 ) -> Result<Done> {
     let (ds, targets, scope) = engine_targets(ctx, v)?;
     let n = targets.len().max(1);
+    let series: Vec<&SeriesInfo> = targets.iter().map(|(_, s)| s).collect();
+    let taken = taken_on(ctx, ds, &series, &how)?;
     let mut table = Table::new(
         "Structures",
         &["Image", "Structure", "Filed as", "Volume (cm3)"],
@@ -722,9 +722,9 @@ fn engine_node(
         // A set made on a phase is named after the phase too, so the ten
         // sets of a 4D group are told apart in the tree and on disk.
         let label_here = if label.is_empty() {
-            set_label.to_string()
+            how.set_label.to_string()
         } else {
-            format!("{set_label} {label}")
+            format!("{} {label}", how.set_label)
         };
         let landed = land(
             ctx,
@@ -732,10 +732,12 @@ fn engine_node(
             series,
             &grid,
             made.items,
-            kind,
-            set,
-            &label_here,
+            &FileAs {
+                set_label: &label_here,
+                ..how
+            },
             &made.roi_types,
+            Some(&taken),
         )?;
         let image = if label.is_empty() {
             series.description.clone()
@@ -767,13 +769,9 @@ fn engine_node(
     }
     p.set_prefix("");
     p.set_outer(0.0, 1.0);
-    // The names downstream steps look up: what the first image filed them
-    // as. On a group every phase files the same names into its own set.
-    let names: Vec<String> = first_names
-        .unwrap_or_default()
-        .into_iter()
-        .map(|n| strip_counter(&n))
-        .collect();
+    // The names downstream steps look up: what they were filed as - the
+    // same on every phase of a group, a counter included (see `land`).
+    let names: Vec<String> = first_names.unwrap_or_default();
     let mut lines = vec![format!(
         "{} on {} image{}",
         if names.is_empty() {
@@ -808,20 +806,7 @@ fn engine_node(
     Ok(out)
 }
 
-/// `heart total (2)` → `heart total`: the name a second run's counter was
-/// added to, for looking the structure up again by name (the last match
-/// wins, which is the new one).
-fn strip_counter(name: &str) -> String {
-    if let Some(open) = name.rfind(" (") {
-        let tail = &name[open + 2..];
-        if tail.ends_with(')') && tail[..tail.len() - 1].chars().all(|c| c.is_ascii_digit()) {
-            return name[..open].to_string();
-        }
-    }
-    name.to_string()
-}
-
-fn models_root(ctx: &Ctx, engine: Engine) -> PathBuf {
+pub(super) fn models_root(ctx: &Ctx, engine: Engine) -> PathBuf {
     models::engine_dir(&ctx.opts.models_dir, engine)
 }
 
@@ -832,11 +817,7 @@ fn auto_segment(
     prm: &cat::AutoSegment,
     p: &Progress,
 ) -> Result<Done> {
-    let variant = match prm.variant {
-        cat::AutosegVariant::Fast => autoseg::Variant::Fast3mm,
-        cat::AutosegVariant::High => autoseg::Variant::HighRes15mm,
-        cat::AutosegVariant::Preview => autoseg::Variant::Preview6mm,
-    };
+    let variant = prm.variant.variant();
     let wanted: Vec<(u8, String)> = prm
         .organs
         .iter()
@@ -906,9 +887,7 @@ fn auto_segment(
         ctx,
         node,
         v,
-        prm.output,
-        prm.set,
-        &prm.set_label,
+        FileAs::new(prm.output, prm.set, &prm.set_label, prm.names),
         "Auto-segmentation",
         p,
         run,
@@ -929,10 +908,7 @@ fn body_contour(
         .map(|(_, s)| s.modality.clone())
         .unwrap_or_else(|| "CT".into());
     let mut params = bodymask::BodyParams::for_modality(&modality);
-    params.method = match prm.method {
-        cat::BodyMethod::Classical => bodymask::Method::Classical,
-        cat::BodyMethod::ModelAssisted => bodymask::Method::ModelAssisted,
-    };
+    params.method = prm.method.method();
     params.device = prm.device.pref();
     if params.method == bodymask::Method::ModelAssisted {
         let need = bodymask::download_needed(params.model, &dir);
@@ -958,9 +934,7 @@ fn body_contour(
         ctx,
         node,
         v,
-        prm.output,
-        prm.set,
-        &prm.set_label,
+        FileAs::new(prm.output, prm.set, &prm.set_label, prm.names),
         "Body contour",
         p,
         run,
@@ -969,7 +943,7 @@ fn body_contour(
 
 // ---- registration --------------------------------------------------------------
 
-fn image_of(v: &Value) -> Result<(usize, String)> {
+pub(super) fn image_of(v: &Value) -> Result<(usize, String)> {
     match v {
         Value::Image { ds, uid } => Ok((*ds, uid.clone())),
         Value::Structures {
@@ -1036,12 +1010,11 @@ fn register(
         format!("{:.4}", a.jacobian.folded),
     ]);
     let line = r.metric_line();
-    ctx.regs.push(RegEntry::Pair {
+    let reg = ctx.add_reg(RegEntry::Pair {
         fixed: f.clone(),
         moving: m,
-        result: Box::new(r),
+        result: Arc::new(r),
     });
-    let reg = ctx.regs.len() - 1;
     let report = ctx.add_report(Report {
         node: node.id,
         title: format!("Registration: {}", node.label()),
@@ -1060,7 +1033,7 @@ fn register(
 
 /// The structures a value names, on the image `uid` of study `ds`, as
 /// subjects on `grid`.
-fn subjects_on(
+pub(super) fn subjects_on(
     study: &LoadedStudy,
     names: &[String],
     uid: &str,
@@ -1171,22 +1144,17 @@ fn propagate_pair(
         .find(|s| s.uid == dst.1)
         .cloned()
         .ok_or_else(|| anyhow!("the destination series is gone"))?;
-    let kind = match prm.landing {
-        cat::Landing::StructureSet => cat::OutputKind::Structures,
-        cat::Landing::Segmentation => cat::OutputKind::Segments,
-    };
     let landed = land(
         ctx,
         dst.0,
         &dst_series,
         &dst_grid,
         items,
-        kind,
-        cat::SetChoice::Own,
-        "Propagated",
+        &FileAs::landing(prm.landing, "Propagated", prm.names),
         &types,
+        None,
     )?;
-    let names: Vec<String> = landed.iter().flatten().map(|n| strip_counter(n)).collect();
+    let names: Vec<String> = landed.iter().flatten().cloned().collect();
     let report = ctx.add_report(Report {
         node: node.id,
         title: format!("Propagation: {}", node.label()),
@@ -1211,7 +1179,7 @@ fn propagate_pair(
 }
 
 /// The 4D group a value points at: a group, or structures made on one.
-fn group_of(v: &Value) -> Result<(usize, usize)> {
+pub(super) fn group_of(v: &Value) -> Result<(usize, usize)> {
     match v {
         Value::Group { ds, group } => Ok((*ds, *group)),
         Value::Structures {
@@ -1328,6 +1296,7 @@ fn propagate_to_group(
                 group: gi,
                 moving_slot: 0,
                 moving_series_uid: src_uid.clone(),
+                volumes: ctx.volumes.clone(),
             };
             let out = anchored::run(req, p)?;
             (out.group, Some(out.qa))
@@ -1347,6 +1316,7 @@ fn propagate_to_group(
                 group: gi,
                 moving_slot: 0,
                 moving_series_uid: src_uid.clone(),
+                volumes: ctx.volumes.clone(),
             };
             (group::run(req, p)?, None)
         }
@@ -1377,6 +1347,11 @@ fn propagate_to_group(
     );
     let mut first_names: Option<Vec<String>> = None;
     let mut transforms = Vec::new();
+    let how = FileAs::landing(prm.landing, "", prm.names);
+    let taken = {
+        let series: Vec<&SeriesInfo> = ph.iter().map(|(_, s)| s).collect();
+        taken_on(ctx, dst_ds, &series, &how)?
+    };
     for (k, phase) in group_out.phases.iter().enumerate() {
         let series = ph
             .iter()
@@ -1395,20 +1370,19 @@ fn propagate_to_group(
                 }
             })
             .collect();
-        let kind = match prm.landing {
-            cat::Landing::StructureSet => cat::OutputKind::Structures,
-            cat::Landing::Segmentation => cat::OutputKind::Segments,
-        };
+        let set_label = format!("{group_name} {}", phase.label);
         let landed = land(
             ctx,
             dst_ds,
             &series,
             &phase.grid,
-            phase.items.iter().map(copy_item).collect(),
-            kind,
-            cat::SetChoice::Own,
-            &format!("{group_name} {}", phase.label),
+            phase.unpacked(),
+            &FileAs {
+                set_label: &set_label,
+                ..how
+            },
             &item_types,
+            Some(&taken),
         )?;
         for (i, it) in phase.items.iter().enumerate() {
             vol_table.row(vec![
@@ -1445,13 +1419,12 @@ fn propagate_to_group(
             phase.transform.clone(),
         ));
     }
-    ctx.regs.push(RegEntry::Group {
+    let reg = ctx.add_reg(RegEntry::Group {
         ds: dst_ds,
         group: gi,
         moving: (*src_ds, src_uid.clone()),
         phases: transforms,
     });
-    let reg = ctx.regs.len() - 1;
     let worst = qa
         .as_ref()
         .map(|q| {
@@ -1475,11 +1448,7 @@ fn propagate_to_group(
     if let Some(w) = worst {
         notes.push(format!("Worst anchor Dice over the phases: {w:.3}."));
     }
-    let names: Vec<String> = first_names
-        .unwrap_or_default()
-        .into_iter()
-        .map(|n| strip_counter(&n))
-        .collect();
+    let names: Vec<String> = first_names.unwrap_or_default();
     let mut lines = vec![format!(
         "{} onto {} phases of '{group_name}'",
         if names.is_empty() {
@@ -1689,6 +1658,7 @@ fn motion_node(
         itv_margin_mm: prm.itv_margin_mm.max(0.0),
         keep_phase_segs: prm.keep_phase_segs,
         params: prm.effort.params(RegMethod::ElastixRigid),
+        volumes: ctx.volumes.clone(),
     };
     let out = motion::run(req, p)?;
 
@@ -1701,10 +1671,6 @@ fn motion_node(
             .into_iter()
             .map(|(n, c, m)| item(n, c, m))
             .collect();
-        let kind = match prm.itv_landing {
-            cat::Landing::StructureSet => cat::OutputKind::Structures,
-            cat::Landing::Segmentation => cat::OutputKind::Segments,
-        };
         let types = vec![String::new(); items.len()];
         let landed = land(
             ctx,
@@ -1712,12 +1678,11 @@ fn motion_node(
             &series,
             &itv.grid,
             items,
-            kind,
-            cat::SetChoice::Own,
-            &itv.label,
+            &FileAs::landing(prm.itv_landing, &itv.label, prm.names),
             &types,
+            None,
         )?;
-        itv_names = landed.iter().flatten().map(|n| strip_counter(n)).collect();
+        itv_names = landed.iter().flatten().cloned().collect();
     }
     {
         let d = ctx.ds_mut(ds)?;
@@ -1894,6 +1859,8 @@ fn export_dicom(
         std::fs::create_dir_all(&folder).with_context(|| format!("create {}", folder.display()))?;
         p.set(format!("Writing {}", d.label));
         let summary = export::run(&plan, export::one_study(study), &folder, p)?;
+        ctx.ds_mut(ds)?.exported.push(folder.clone());
+        let d = ctx.ds(ds)?;
         lines.push(format!(
             "{}: {} files to {}",
             d.label,
@@ -1974,19 +1941,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_counter_added_by_a_second_run_is_taken_off_again() {
-        assert_eq!(strip_counter("heart total (2)"), "heart total");
-        assert_eq!(strip_counter("heart total"), "heart total");
-        assert_eq!(strip_counter("case (a)"), "case (a)");
-        assert_eq!(strip_counter("x (12)"), "x");
-    }
-
-    #[test]
-    fn uids_made_together_differ() {
-        let a = fresh_uid();
-        let b = fresh_uid();
-        assert_ne!(a, b);
-        assert!(a.starts_with("2.25."));
-        assert!(a[5..].chars().all(|c| c.is_ascii_digit()));
+    fn a_folder_signature_changes_with_what_is_in_it() {
+        let dir = std::env::temp_dir().join(format!("rds-wf-sig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::write(dir.join("a/x.dcm"), b"one").unwrap();
+        let before = folder_signature(&dir);
+        assert_eq!(
+            before,
+            folder_signature(&dir),
+            "the same files, the same signature"
+        );
+        std::fs::write(dir.join("a/y.dcm"), b"two").unwrap();
+        assert_ne!(before, folder_signature(&dir), "a file added");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

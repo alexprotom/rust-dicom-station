@@ -96,15 +96,10 @@ fn default_method() -> String {
     "elastix_rigid".into()
 }
 
+/// A method as the client names it - the names the workflow file uses too
+/// ([`crate::workflow::params::RegMethodChoice`]).
 pub fn parse_method(s: &str) -> Result<RegMethod> {
-    Ok(match s {
-        "elastix_rigid" => RegMethod::ElastixRigid,
-        "elastix_bspline" => RegMethod::ElastixBSpline,
-        "plastimatch_bspline" => RegMethod::PlastimatchBSpline,
-        other => bail!(
-            "method must be elastix_rigid, elastix_bspline or plastimatch_bspline (got '{other}')"
-        ),
-    })
+    Ok(crate::workflow::params::RegMethodChoice::from_name(s)?.method())
 }
 
 /// The registration analysis as JSON: displacement, rotation, Jacobian.

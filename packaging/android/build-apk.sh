@@ -21,9 +21,10 @@
 # Otherwise a debug key is generated once into out/debug.keystore.
 #
 # Result: out/rust-dicom-station-<version>-android-arm64.apk - the naming
-# every release asset shares (-windows-x86_64.exe, -linux-x86_64.AppImage,
-# -macos-arm64.dmg); `abi` below stays arm64-v8a, which is what Android
-# calls the folder inside the package.
+# the release assets share (-windows-x86_64.exe, -macos-arm64.dmg; the
+# AppImage is -x86_64.AppImage, without "linux", as the AppImage catalog
+# asks); `abi` below stays arm64-v8a, which is what Android calls the
+# folder inside the package.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

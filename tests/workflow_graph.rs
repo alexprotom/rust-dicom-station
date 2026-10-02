@@ -196,10 +196,10 @@ fn the_anchored_example_runs_end_to_end_on_the_phantom() {
             .flat_map(|s| s.rois.iter().map(|r| r.name.as_str()))
             .collect();
         assert!(names.contains(&"body total"), "{label}: {names:?}");
-        assert!(
-            names.iter().any(|n| n.starts_with("TARGET")),
-            "{label}: {names:?}"
-        );
+        // Phase 0 was contoured with a TARGET of its own, so the carried
+        // one lands beside it as TARGET (2) - and under that same name on
+        // every phase, which is the name the motion step reads.
+        assert!(names.contains(&"TARGET (2)"), "{label}: {names:?}");
         assert!(
             names.contains(&"body total_prop"),
             "{label}: the anchor's own landed copy is there, {names:?}"
@@ -216,8 +216,8 @@ fn the_anchored_example_runs_end_to_end_on_the_phantom() {
     let track = motion
         .tracks
         .iter()
-        .find(|t| t.model == MotionModel::Contoured && t.target == "TARGET")
-        .expect("the target read as contoured");
+        .find(|t| t.model == MotionModel::Contoured && t.target == "TARGET (2)")
+        .expect("the carried target read as contoured, not phase 0's own");
     let p2p = track.peak_to_peak();
     eprintln!("as-contoured TARGET peak-to-peak {p2p:.2} mm");
     assert!(

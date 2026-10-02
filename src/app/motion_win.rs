@@ -526,6 +526,7 @@ impl ViewerApp {
             itv_margin_mm: d.itv_margin_mm,
             keep_phase_segs: d.keep_phase_segs,
             params,
+            volumes: crate::workflow::session::Volumes::none(),
         })
     }
 

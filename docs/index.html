@@ -1186,8 +1186,13 @@
       
       const windowsUrl = `https://github.com/alexprotom/rust-dicom-station/releases/download/v${version}/rust-dicom-station-${version}-windows-x86_64.exe`
 
-      const linuxUrl =
-        `https://github.com/alexprotom/rust-dicom-station/releases/download/v${version}/rust-dicom-station-${version}-linux-x86_64.AppImage`;
+      // The AppImage is taken from the release's own asset list: its name
+      // lost the "-linux" of the older releases (the AppImage catalog asks
+      // for names without it), and this way either spelling is found.
+      const appImage = (release.assets || []).find((a) => a.name.endsWith(".AppImage"));
+      const linuxUrl = appImage
+        ? appImage.browser_download_url
+        : `https://github.com/alexprotom/rust-dicom-station/releases/download/v${version}/rust-dicom-station-${version}-x86_64.AppImage`;
 
       const androidUrl =
         `https://github.com/alexprotom/rust-dicom-station/releases/download/v${version}/rust-dicom-station-${version}-android-arm64.apk`;

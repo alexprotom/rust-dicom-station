@@ -1,0 +1,51 @@
+[package]
+name = "rds-engines"
+version = "0.10.1"
+edition = "2021"
+description = "The native inference engines of rust-dicom-station: TotalSegmentator (nnU-Net), SegVol and MedSAM2, and the neural-network plumbing they share"
+license = "MIT"
+repository = "https://github.com/alexprotom/rust-dicom-station"
+publish = false
+
+# Why this is a crate of its own: with the `gpu` feature, burn's wgpu backend
+# is monomorphised wherever the engines are compiled - more than half of the
+# machine code the viewer used to build, compiled again for its unit tests.
+# As a dependency it is built once and left alone while the viewer, the
+# registration or the workflows are edited, and the viewer's own test build
+# no longer carries it.
+
+[dependencies]
+rds-core = { path = "../rds-core" }
+anyhow = "1.0"
+rayon = "1.12"
+gemm = "0.18"                       # pure-Rust SIMD GEMM kernels (CPU conv engine)
+serde_json = "1"                    # nnU-Net plans.json, CLIP vocab.json
+zip = { version = "2", default-features = false, features = ["deflate"] }
+safetensors = "0.8"                 # converted-weight cache format
+# Neural-network backend. Always compiled: the MedSAM2 engine is written once
+# against a `burn` backend and falls back to the pure-Rust `ndarray` one when
+# there is no usable GPU adapter. The `gpu` feature adds the wgpu backend
+# (Vulkan / DX12 / Metal - no CUDA toolkit needed), which SegVol's image
+# encoder also uses.
+burn = { version = "0.21", default-features = false, features = ["std", "ndarray"] }
+# burn's `ndarray` feature above brings burn-ndarray in without its default
+# features, and those are what make it fast: `multi-threads` (rayon over the
+# batch of a matmul, the output channels of a convolution and every
+# elementwise pass, plus matrixmultiply's own threads inside one large
+# matmul) and `simd` (vectorised elementwise and pooling kernels). Without
+# them the CPU path of MedSAM2 ran on one core. The crate is never named in
+# the code; listing it here only turns the features on, Cargo unifies them.
+burn-ndarray = { version = "0.21", default-features = false, features = ["std", "multi-threads", "simd"] }
+
+# The weight download: rustls with the OS trust store on the desktop, so
+# corporate/clinical TLS-inspection proxies with custom CAs work; the
+# bundled Mozilla roots on Android and iOS, whose stores rustls cannot read.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+ureq = { version = "2", features = ["native-certs"] }
+
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+ureq = { version = "2" }
+
+[features]
+default = ["gpu"]
+gpu = ["burn/wgpu", "burn/fusion", "burn/autotune"]

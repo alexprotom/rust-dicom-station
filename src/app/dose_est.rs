@@ -399,7 +399,7 @@ impl ViewerApp {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         slot.hash(&mut h);
         dose.hash(&mut h);
-        self.settings_gen.hash(&mut h);
+        self.structures_gen(slot).hash(&mut h);
         for m in self.dose_est.metrics() {
             m.label().hash(&mut h);
         }

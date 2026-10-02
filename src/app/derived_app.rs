@@ -133,7 +133,7 @@ impl ViewerApp {
     /// when nothing changed, which is every frame but the ones that matter.
     pub(super) fn refresh_derived(&mut self, slot: usize) {
         let set = self.slots[slot].active_structs;
-        let gen = self.settings_gen;
+        let gen = self.structures_gen(slot);
         if self.derived[slot].gen == gen && self.derived[slot].set == set {
             return;
         }

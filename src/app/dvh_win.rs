@@ -302,7 +302,7 @@ impl ViewerApp {
     }
 
     pub(super) fn on_dvh_done(&mut self, done: DvhDone) {
-        let gen = self.settings_gen;
+        let gen = self.all_structures_gen();
         let Some(d) = &mut self.dvh_dialog else {
             return;
         };
@@ -336,7 +336,7 @@ impl ViewerApp {
         let progress = self.dvh_job.as_ref().map(|j| j.progress.clone());
         let prescription = self.prescription();
 
-        let current_gen = self.settings_gen;
+        let current_gen = self.all_structures_gen();
         let mut open = self.dvh_open;
         let mut recompute = false;
         let mut cancel = false;

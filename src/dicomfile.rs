@@ -43,6 +43,19 @@ pub fn open_header(path: &Path) -> Result<DefaultDicomObject> {
     open(path, Some(tags::PIXEL_DATA))
 }
 
+/// Open a file for sorting it: the identity, series and geometry
+/// attributes, everything before group 3000.
+///
+/// Every attribute the directory scan, an archive's filing and a series'
+/// lattice read is in the lower groups. What sits above them in an RT object
+/// is the object itself - the ROI contours of a structure set (3006), the
+/// beams of a plan (300A), a SEG's per-frame groups (5200) - which
+/// [`open_header`] reads in full, only for the load to parse it again. For
+/// an image this stops where `open_header` does, at the pixels.
+pub fn open_scan(path: &Path) -> Result<DefaultDicomObject> {
+    open(path, Some(Tag(0x3000, 0x0000)))
+}
+
 /// Open a file in full, pixels included.
 pub fn open_full(path: &Path) -> Result<DefaultDicomObject> {
     open(path, None)
@@ -174,7 +187,9 @@ fn walk(bytes: &[u8], enc: Enc, stop: Option<Tag>) -> Walk {
             break;
         }
         last = Some(tag);
-        if stop == Some(tag) {
+        // The first element at or past `stop`: the tag itself is often
+        // absent (an RT object has no pixels; nothing is tagged (3000,0000)).
+        if stop.is_some_and(|s| tag >= s) {
             return Walk {
                 elements,
                 stop_at: Some(at),

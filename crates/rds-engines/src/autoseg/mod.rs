@@ -152,7 +152,7 @@ impl infer::InferHooks for Hooks<'_> {
 ///
 /// This is the whole engine minus the question being asked: the 117-class
 /// "total" task ([`run`]) and the two-class body-outline task
-/// ([`crate::bodymask`]) differ in which checkpoints they load and what
+/// (the viewer's `bodymask` module) differ in which checkpoints they load and what
 /// they do with the answer, not in how a checkpoint is fetched, converted,
 /// resampled onto, tiled over or mapped back from.
 ///

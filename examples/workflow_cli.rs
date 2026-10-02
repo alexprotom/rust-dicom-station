@@ -4,17 +4,22 @@
 //! ```text
 //! cargo run --release --example workflow_cli -- <WORKFLOW.rdsflow> \
 //!     [--input "<folder node title or id>=<DICOM_DIR>"]... \
-//!     [--out <RESULTS_ROOT>] [--models <MODELS_DIR>] [--no-download] [--list]
+//!     [--out <RESULTS_ROOT>] [--models <MODELS_DIR>] [--no-download] \
+//!     [--parallel] [--memory <MB>] [--list]
 //! ```
 //!
 //! `--input` points a folder node at another folder, which is what makes a
 //! saved workflow a batch tool: the same file over one patient after
-//! another. `--out` is the folder the run makes its own folder in (the
-//! workflow's, else `<data folder>/workflow_runs`). `--list` names the
-//! workflow's steps and folder nodes and exits.
+//! another. A *DICOM folders* node is one too: the run goes once over each
+//! of the folder's subfolders its pattern takes, and ends with the tables
+//! of every case put together. `--out` is the folder the run makes its own
+//! folder in (the workflow's, else `<data folder>/workflow_runs`).
+//! `--parallel` runs the independent rows at the start side by side;
+//! `--memory` is the megabytes of image volumes kept between steps (4096).
+//! `--list` names the workflow's steps and folder nodes and exits.
 //!
 //! Every event of the run is printed to standard error; the exit code is 0
-//! when every step ran.
+//! when every step ran (for a batch, every step of every case).
 
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -33,6 +38,8 @@ fn main() -> anyhow::Result<()> {
     let mut models_dir: Option<PathBuf> = None;
     let mut download = true;
     let mut list = false;
+    let mut parallel = false;
+    let mut memory: Option<usize> = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--input" => {
@@ -47,6 +54,16 @@ fn main() -> anyhow::Result<()> {
             "--out" => out = args.next().map(PathBuf::from),
             "--models" => models_dir = args.next().map(PathBuf::from),
             "--no-download" => download = false,
+            "--parallel" => parallel = true,
+            "--memory" => {
+                let v = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--memory needs megabytes"))?;
+                memory = Some(
+                    v.parse()
+                        .map_err(|_| anyhow::anyhow!("--memory needs megabytes, got '{v}'"))?,
+                );
+            }
             "--list" => list = true,
             other if file.is_none() && !other.starts_with("--") => {
                 file = Some(PathBuf::from(other))
@@ -62,6 +79,7 @@ fn main() -> anyhow::Result<()> {
             let n = wf.node(id).expect("ordered ids exist");
             let path = match &n.op {
                 Op::LoadFolder(p) => format!("  folder: {}", p.path),
+                Op::LoadFolders(p) => format!("  cases: {} ({})", p.path, p.pattern),
                 _ => String::new(),
             };
             println!("  {id}: {} ({}){path}", n.label(), n.op.kind().info().name);
@@ -78,12 +96,16 @@ fn main() -> anyhow::Result<()> {
     );
     opts.base_dir = file.parent().map(|p| p.to_path_buf());
     opts.allow_download = download;
+    opts.parallel = parallel;
+    if let Some(mb) = memory {
+        opts.volume_budget_mb = mb;
+    }
     for (key, path) in inputs {
         let node = wf
             .nodes
             .iter()
             .find(|n| {
-                matches!(n.op, Op::LoadFolder(_))
+                matches!(n.op, Op::LoadFolder(_) | Op::LoadFolders(_))
                     && (n.id.to_string() == key || n.label().eq_ignore_ascii_case(&key))
             })
             .ok_or_else(|| anyhow::anyhow!("no folder node named '{key}' (see --list)"))?;
@@ -116,6 +138,13 @@ fn main() -> anyhow::Result<()> {
     let outcome = exec::run(&wf, &opts, &Progress::default(), &channel);
     drop(channel);
     let _ = printer.join();
+    for c in &outcome.cases {
+        eprintln!(
+            "case {}: {}",
+            c.name,
+            c.error.as_deref().unwrap_or("every step ran")
+        );
+    }
     eprintln!("results: {}", outcome.run_dir.display());
     match outcome.error {
         None => {

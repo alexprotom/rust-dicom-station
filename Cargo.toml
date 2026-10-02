@@ -1,6 +1,6 @@
 [package]
 name = "rust-dicom-station"
-version = "0.10.1"
+version = "0.10.2"
 edition = "2021"
 description = "Fast, robust DICOM / RT DICOM viewer in pure Rust (CT/MR volumes, RTSTRUCT, RTDOSE, RTPLAN) with a three-view MPR layout"
 license = "MIT"
@@ -24,31 +24,20 @@ egui = "0.36"
 rayon = "1.12"
 walkdir = "2.5"
 
-# ---- auto-segmentation (TotalSegmentator re-implementation, pure Rust) ----
-gemm = "0.18"                       # pure-Rust SIMD GEMM kernels (CPU conv engine)
-serde_json = "1"                    # nnU-Net plans.json, CLIP vocab.json
-zip = { version = "2", default-features = false, features = ["deflate"] }
-safetensors = "0.8"                 # converted-weight cache format
+# ---- the workspace's own crates ----
+# Core types (geometry, volume, progress) and the inference engines (nn,
+# autoseg, segvol, medsam2) are crates of their own, so the engines - burn's
+# wgpu backend above all - are compiled once rather than with every change
+# to the viewer. `lib.rs` re-exports their modules under the paths they had.
+rds-core = { path = "crates/rds-core" }
+rds-engines = { path = "crates/rds-engines", default-features = false }
+serde_json = "1"                    # settings, templates, workflow files, MCP
 # The workflow files (`workflow::graph`) are JSON read and written through
 # serde's derive; serde_json above already pulls serde itself in.
 serde = { version = "1", features = ["derive"] }
 # The node canvas of the workflow editor (`app/workflow_edit.rs`): pure Rust
 # over egui, the wires, pins, pan and zoom of a node graph.
 egui-snarl = "0.12"
-# Neural-network backend. Always compiled: the MedSAM2 engine is written once
-# against a `burn` backend and falls back to the pure-Rust `ndarray` one when
-# there is no usable GPU adapter. The `gpu` feature adds the wgpu backend
-# (Vulkan / DX12 / Metal - no CUDA toolkit needed), which SegVol's image
-# encoder also uses.
-burn = { version = "0.21", default-features = false, features = ["std", "ndarray"] }
-# burn's `ndarray` feature above brings burn-ndarray in without its default
-# features, and those are what make it fast: `multi-threads` (rayon over the
-# batch of a matmul, the output channels of a convolution and every
-# elementwise pass, plus matrixmultiply's own threads inside one large
-# matmul) and `simd` (vectorised elementwise and pooling kernels). Without
-# them the CPU path of MedSAM2 ran on one core. The crate is never named in
-# the code; listing it here only turns the features on, Cargo unifies them.
-burn-ndarray = { version = "0.21", default-features = false, features = ["std", "multi-threads", "simd"] }
 
 # ---- the MCP server (`rds-mcp`, feature `mcp`) ----
 # Optional: the viewer's default build compiles none of this. The server is a
@@ -71,8 +60,9 @@ toml = { version = "1", optional = true, default-features = false, features = ["
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "links", "wgpu", "wayland", "x11"] }
 rfd = "0.17"
-# weight download - rustls (pure Rust TLS) with the OS trust store, so
-# corporate/clinical TLS-inspection proxies with custom CAs work
+# the test-data download - rustls (pure Rust TLS) with the OS trust store, so
+# corporate/clinical TLS-inspection proxies with custom CAs work (the model
+# weights come through crates/rds-engines, keyed the same way)
 ureq = { version = "2", features = ["native-certs"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
@@ -99,9 +89,14 @@ winresource = "0.1"
 
 [features]
 default = ["gpu"]
-gpu = ["burn/wgpu", "burn/fusion", "burn/autotune"]
+# The wgpu inference backend of the engines (see crates/rds-engines).
+gpu = ["rds-engines/gpu"]
 # The MCP server executable and the `mcp` library module behind it.
 mcp = ["dep:rmcp", "dep:tokio", "dep:schemars", "dep:toml"]
+
+# The MedSAM2 suite drives the engine's modules through burn tensors itself.
+[dev-dependencies]
+burn = { version = "0.21", default-features = false, features = ["std", "ndarray"] }
 
 [[bin]]
 name = "rds-mcp"
@@ -115,6 +110,12 @@ required-features = ["mcp"]
 [[test]]
 name = "mcp_tools"
 required-features = ["mcp"]
+
+[workspace]
+members = ["crates/rds-core", "crates/rds-engines"]
+# A bare `cargo build` / `test` / `clippy` in the repository root covers all
+# three crates, as it did when they were one.
+default-members = [".", "crates/rds-core", "crates/rds-engines"]
 
 [profile.release]
 opt-level = 3

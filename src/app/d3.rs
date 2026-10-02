@@ -25,6 +25,58 @@ fn roi_hash(roi: &crate::rtstruct::Roi) -> u64 {
     h.finish()
 }
 
+/// Identity of a volume geometry, for the segmentation meshes kept from one
+/// build to the next: a mesh is in patient millimetres, so it only stands for
+/// its mask on the lattice it was built on.
+fn grid_geom_key(g: &GridGeom) -> u64 {
+    let mut h = 0x6A09_E667_F3BC_C908u64;
+    for v in [g.origin, g.row_dir, g.col_dir, g.normal] {
+        for c in [v.x, v.y, v.z] {
+            h = mix(h, c.to_bits());
+        }
+    }
+    for s in g.spacing {
+        h = mix(h, s.to_bits());
+    }
+    h
+}
+
+/// One segment of a segmentation meshing run.
+enum SegMeshPart {
+    /// (segment index, generation, position in the last build's meshes):
+    /// unchanged since then, so its mesh is taken over.
+    Keep(usize, u64, usize),
+    /// (segment index, generation, colour, snapshot): meshed afresh.
+    Build(usize, u64, [u8; 3], crate::segmentation::MeshGrid),
+}
+
+impl SegMeshPart {
+    /// The segment's mesh and the generation it stands for.
+    fn mesh(self, old: Option<&[RoiMesh]>, geom: &GridGeom) -> Option<(RoiMesh, u64)> {
+        match self {
+            SegMeshPart::Keep(i, gen, pos) => {
+                let mut m = old?.get(pos)?.clone();
+                m.roi_index = i;
+                Some((m, gen))
+            }
+            SegMeshPart::Build(i, gen, color, (grid, gdims, lo, stride)) => mesh3d::mesh_from_mask(
+                &grid, gdims, lo, stride, geom,
+            )
+            .map(|(verts, normals, tris)| {
+                let m = RoiMesh {
+                    roi_index: i,
+                    color,
+                    external: false,
+                    verts,
+                    normals,
+                    tris,
+                };
+                (m, gen)
+            }),
+        }
+    }
+}
+
 /// What the pane's control strip asks the app to do afterwards, once the
 /// borrow of the window it drew has ended.
 #[derive(Default)]
@@ -212,7 +264,9 @@ impl ViewerApp {
         }
         // Every contour edit changes the generation, so a moved structure
         // is re-meshed while its window is open.
-        h ^= self.settings_gen.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        h ^= self
+            .structures_gen(slot)
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15);
         h
     }
 
@@ -317,7 +371,7 @@ impl ViewerApp {
             return;
         }
         let progress = Arc::new(Progress::default());
-        w.mesh_cache_gen = self.settings_gen;
+        w.mesh_cache_gen = self.structures_gen(w.slot);
         w.prep_job = Some(Job::spawn(progress, move |p| {
             let n = work.len();
             let mut out = Vec::with_capacity(n);
@@ -373,10 +427,10 @@ impl ViewerApp {
         }
         // An edit invalidates every key at once, so the phase meshes built
         // before it are not meshes of anything any more.
-        if w.mesh_cache_gen != self.settings_gen {
+        if w.mesh_cache_gen != self.structures_gen(w.slot) {
             w.mesh_cache.clear();
             w.iso_cache.clear();
-            w.mesh_cache_gen = self.settings_gen;
+            w.mesh_cache_gen = self.structures_gen(w.slot);
         }
         w.key = key;
         // Already meshed, most likely by *Prepare phases* or by an earlier
@@ -473,6 +527,8 @@ impl ViewerApp {
             opacity: 1.0,
             meshes: no_structs.then(|| Arc::new(Vec::new())),
             seg_meshes: None,
+            seg_mesh_gens: Vec::new(),
+            seg_geom: 0,
             seg_job: None,
             seg_built: 0,
             show_other: false,
@@ -483,7 +539,7 @@ impl ViewerApp {
             show_field: false,
             show_dose: false,
             mesh_cache: std::collections::HashMap::new(),
-            mesh_cache_gen: self.settings_gen,
+            mesh_cache_gen: self.structures_gen(slot),
             iso_cache: std::collections::HashMap::new(),
             prep_job: None,
             frame: D3Frame::default(),
@@ -586,11 +642,19 @@ impl ViewerApp {
             // Live segmentation meshes: rebuilt in the background whenever a
             // mask changes (one build in flight; a newer state simply spawns
             // the next build once the current one lands), so painting shows
-            // up in 3D essentially in real time.
+            // up in 3D essentially in real time. Only the segments that
+            // changed are meshed again - painting one of forty organs from
+            // an auto-segmentation re-meshes that organ - and the rest are
+            // taken over from the last build by their generation, which
+            // names one state of one mask (`Segmentation::gen`).
             {
                 let mut err = None;
-                if let Some(m) = poll_job(&mut w.seg_job, ctx, "Segmentation meshing", &mut err) {
+                if let Some((m, gens, geom)) =
+                    poll_job(&mut w.seg_job, ctx, "Segmentation meshing", &mut err)
+                {
                     w.seg_meshes = Some(Arc::new(m));
+                    w.seg_mesh_gens = gens;
+                    w.seg_geom = geom;
                 }
                 self.error = self.error.take().or(err);
                 let hash = self.seg_mesh_hash(w.slot);
@@ -598,34 +662,50 @@ impl ViewerApp {
                     w.seg_built = hash;
                     if let Some(study) = &self.slots[w.slot].study {
                         let geom = GridGeom::of(&study.volume);
-                        let snaps: Vec<_> = self.slots[w.slot]
+                        let geom_key = grid_geom_key(&geom);
+                        // The last build's meshes, by generation, when they
+                        // stand on the same geometry.
+                        let old = w
+                            .seg_meshes
+                            .clone()
+                            .filter(|m| w.seg_geom == geom_key && m.len() == w.seg_mesh_gens.len());
+                        let by_gen: std::collections::HashMap<u64, usize> = old
+                            .as_ref()
+                            .map(|_| {
+                                w.seg_mesh_gens
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(pos, g)| (*g, pos))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let parts: Vec<SegMeshPart> = self.slots[w.slot]
                             .segs()
                             .iter()
                             .enumerate()
-                            .filter_map(|(i, s)| s.mesh_grid().map(|g| (i, s.color, g)))
+                            .filter(|(_, s)| s.count > 0)
+                            .filter_map(|(i, s)| match by_gen.get(&s.gen) {
+                                Some(&pos) => Some(SegMeshPart::Keep(i, s.gen, pos)),
+                                None => s
+                                    .mesh_grid()
+                                    .map(|g| SegMeshPart::Build(i, s.gen, s.color, g)),
+                            })
                             .collect();
-                        if snaps.is_empty() {
+                        if parts.is_empty() {
                             w.seg_meshes = Some(Arc::new(Vec::new()));
+                            w.seg_mesh_gens.clear();
+                            w.seg_geom = geom_key;
                         } else {
                             let progress = Arc::new(Progress::default());
                             let (tx, rx) = mpsc::channel();
                             std::thread::spawn(move || {
-                                let meshes: Vec<RoiMesh> = snaps
+                                let old: Option<&[RoiMesh]> = old.as_ref().map(|v| v.as_slice());
+                                let built: Vec<(RoiMesh, u64)> = parts
                                     .into_par_iter()
-                                    .filter_map(|(i, color, (grid, gdims, lo, stride))| {
-                                        mesh3d::mesh_from_mask(&grid, gdims, lo, stride, &geom).map(
-                                            |(verts, normals, tris)| RoiMesh {
-                                                roi_index: i,
-                                                color,
-                                                external: false,
-                                                verts,
-                                                normals,
-                                                tris,
-                                            },
-                                        )
-                                    })
+                                    .filter_map(|part| part.mesh(old, &geom))
                                     .collect();
-                                let _ = tx.send(meshes);
+                                let (meshes, gens) = built.into_iter().unzip();
+                                let _ = tx.send((meshes, gens, geom_key));
                             });
                             w.seg_job = Some(Job { progress, rx });
                         }

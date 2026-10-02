@@ -56,6 +56,7 @@ fn the_motion_pipeline_recovers_the_phantoms_target_motion() {
             fixed_threshold: -500.0,
             ..RegParams::default()
         },
+        volumes: rust_dicom_station::workflow::session::Volumes::none(),
     };
     let t0 = std::time::Instant::now();
     let out = motion::run(req, &Progress::default()).expect("the pipeline runs");
@@ -218,6 +219,7 @@ fn one_volume_onto_every_phase_reuses_cached_transforms() {
         group: 0,
         moving_slot: 0,
         moving_series_uid: study.series[0].uid.clone(),
+        volumes: rust_dicom_station::workflow::session::Volumes::none(),
     };
     let out = group::run(req, &Progress::default()).expect("the group run works");
     assert_eq!(out.phases.len(), 3);
@@ -244,6 +246,7 @@ fn one_volume_onto_every_phase_reuses_cached_transforms() {
         group: 0,
         moving_slot: 0,
         moving_series_uid: study.series[0].uid.clone(),
+        volumes: rust_dicom_station::workflow::session::Volumes::none(),
     };
     let again = group::run(req, &Progress::default()).unwrap();
     assert!(again
@@ -375,6 +378,7 @@ fn anchored_case(
         group: 0,
         moving_slot: 0,
         moving_series_uid: study.series[0].uid.clone(),
+        volumes: rust_dicom_station::workflow::session::Volumes::none(),
     };
     let t0 = std::time::Instant::now();
     let out = anchored::run(req, &Progress::default()).expect("the anchored run works");
@@ -427,7 +431,7 @@ fn a_volume_in_another_frame_is_anchored_on_a_structure_and_lands() {
             t.source_cm3,
             t.result_cm3
         );
-        centroids.push(motion::centroid_mm(&t.mask, &ph.grid).unwrap());
+        centroids.push(motion::centroid_mm(&t.mask(), &ph.grid).unwrap());
         assert!(ph.seg_series("g").is_some());
     }
     // The deformable refinement on the body region carries the target to
@@ -499,6 +503,7 @@ fn propagated_structures_can_land_in_each_phases_own_structure_set() {
         group: 0,
         moving_slot: 0,
         moving_series_uid: study.series[0].uid.clone(),
+        volumes: rust_dicom_station::workflow::session::Volumes::none(),
     };
     let out = group::run(req, &Progress::default()).unwrap();
     let sets_before = study.structure_sets.len();
@@ -510,7 +515,7 @@ fn propagated_structures_can_land_in_each_phases_own_structure_set() {
             &ph.series_uid,
             &ph.study_uid,
             &ph.grid,
-            &ph.items,
+            &ph.unpacked(),
             &format!("{} {}", g.name, ph.label),
         )
         .expect("the target landed as contours");
@@ -545,7 +550,7 @@ fn propagated_structures_can_land_in_each_phases_own_structure_set() {
         &ph.series_uid,
         &ph.study_uid,
         &ph.grid,
-        &ph.items,
+        &ph.unpacked(),
         "x",
     )
     .unwrap();
@@ -620,6 +625,7 @@ fn a_target_every_phase_carries_is_read_as_contoured_and_the_local_rigid_fit_fol
             samples: 2000,
             ..RegParams::default()
         },
+        volumes: rust_dicom_station::workflow::session::Volumes::none(),
     };
     let out = motion::run(req, &Progress::default()).expect("the run works");
     let r = &out.report;

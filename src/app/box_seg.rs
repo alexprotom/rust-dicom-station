@@ -209,9 +209,9 @@ pub struct Medsam2Result {
     pub elapsed_secs: f64,
 }
 
-/// What came back, together with everything worth keeping for the next run.
+/// What came back, together with everything worth keeping for the next run
+/// (the network itself is kept by [`Medsam2State::engine`]).
 pub struct Medsam2Done {
-    pub engine: Arc<Engine>,
     pub prepared: Arc<Prepared>,
     pub volume: Arc<Volume>,
     pub key: PrepKey,
@@ -222,8 +222,8 @@ pub struct Medsam2Done {
 
 /// Everything a run needs, snapshotted from the panel when it starts.
 struct Medsam2Request {
-    /// The loaded network, when a previous run left one.
-    engine: Option<Arc<Engine>>,
+    /// The network a previous run loaded, or where this one files its own.
+    engine: Arc<KeptModel<Engine>>,
     /// The prepared stack, when it is still the one this study and window need.
     cached: Option<(Arc<Prepared>, Arc<Volume>)>,
     /// The voxels to prepare a stack from, when `cached` is `None`.
@@ -253,22 +253,24 @@ fn run_job(req: Medsam2Request, progress: &Progress) -> anyhow::Result<Medsam2Do
             (prepared, volume)
         }
     };
-    let engine = match req.engine {
-        Some(e) => {
-            if prepared_is_new {
-                // The engine keeps the last encoded slice; a stack built with
-                // a different window would make that a lie.
-                e.clear_cache();
-            }
-            e
-        }
-        None => {
-            progress.set("Loading the weights");
-            let params = weights::load(req.variant, &req.models_dir, progress)?;
-            progress.set("Choosing the compute device");
-            Arc::new(Engine::load(&params, req.device)?)
-        }
+    // Loaded for this variant, device and folder, or loaded now: a network
+    // kept from a run with other settings is not the one asked for.
+    let key = ModelKey {
+        models_dir: req.models_dir.clone(),
+        device: req.device,
+        variant: req.variant.label(),
     };
+    let engine = req.engine.get_or_load(&key, || {
+        progress.set("Loading the weights");
+        let params = weights::load(req.variant, &req.models_dir, progress)?;
+        progress.set("Choosing the compute device");
+        Engine::load(&params, req.device)
+    })?;
+    if prepared_is_new {
+        // The engine keeps the last encoded slice; a stack built with a
+        // different window would make that a lie.
+        engine.clear_cache();
+    }
     progress.set_device(engine.device().to_string());
 
     let started = std::time::Instant::now();
@@ -309,7 +311,6 @@ fn run_job(req: Medsam2Request, progress: &Progress) -> anyhow::Result<Medsam2Do
     };
     Ok(Medsam2Done {
         device: engine.device().to_string(),
-        engine,
         prepared,
         volume,
         key: req.key,
@@ -335,8 +336,9 @@ pub(super) struct Medsam2State {
     pub slot: usize,
     pub tool: BoxTool,
     pub prompt: Option<BoxPrompt>,
-    /// The loaded network, kept across runs and studies.
-    pub engine: Option<Arc<Engine>>,
+    /// The loaded network, kept across runs and studies (for as long as the
+    /// variant, the device and the model folder stay what it was loaded for).
+    pub engine: Arc<KeptModel<Engine>>,
     /// The prepared stack, kept until the study or the window changes.
     pub prep: Option<(PrepKey, Arc<Prepared>, Arc<Volume>)>,
     /// Index of the segmentation the preview and the result are written to.
@@ -371,7 +373,7 @@ impl Default for Medsam2State {
             slot: 0,
             tool: BoxTool::Draw,
             prompt: None,
-            engine: None,
+            engine: Arc::default(),
             prep: None,
             target_seg: None,
             auto_preview: true,
@@ -648,7 +650,6 @@ impl ViewerApp {
     pub(super) fn on_medsam2_done(&mut self, slot: usize, done: Medsam2Done) {
         let valid = self.slot_still_shows(slot, done.key.dims, &done.key.uid);
         // Keep the expensive parts whatever happened to the result.
-        self.medsam2.engine = Some(done.engine);
         self.medsam2.prep = Some((done.key.clone(), done.prepared, done.volume));
         if !valid {
             self.error = Some(stale_result(&SLICE_PROP));

@@ -1,0 +1,12 @@
+[package]
+name = "rds-core"
+version = "0.10.1"
+edition = "2021"
+description = "Core types of rust-dicom-station: patient-space geometry, the voxel volume and its lattice, the progress handle"
+license = "MIT"
+repository = "https://github.com/alexprotom/rust-dicom-station"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+rayon = "1.12"

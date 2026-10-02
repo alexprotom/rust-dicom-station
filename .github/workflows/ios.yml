@@ -53,6 +53,7 @@ on:
   pull_request:
     paths:
       - "src/**"
+      - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "build.rs"
@@ -99,7 +100,11 @@ jobs:
   # ==========================================================================
   check:
     name: clippy (aarch64-apple-ios)
-    if: github.event_name == 'pull_request'
+    # Also when the release calls this workflow (a version is passed): that
+    # run is on `main`, and `main` is the one place a cache can be saved
+    # that every pull request can restore - a PR's own cache is visible to
+    # that PR alone, so each new PR used to start this check cold.
+    if: github.event_name == 'pull_request' || inputs.version != ''
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
@@ -113,6 +118,7 @@ jobs:
         with:
           workspaces: packaging/ios
           key: aarch64-apple-ios
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # The root `cargo fmt --all` does not reach this crate: it is a
       # workspace of its own.

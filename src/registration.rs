@@ -1185,8 +1185,11 @@ impl RegistrationResult {
 // Registration image (f32 + geometry) and Gaussian pyramid
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct RegImage {
-    data: Vec<f32>,
+    /// Shared: a pyramid kept in a [`PyramidCache`] is handed to the next
+    /// registration as a copy of the geometry and a reference to the voxels.
+    data: Arc<Vec<f32>>,
     dims: [usize; 3],
     spacing: [f64; 3],
     origin: Vec3,
@@ -1204,7 +1207,7 @@ impl RegImage {
         RegImage {
             // Two of these per registration, and a workflow registers the
             // same reference many times: the conversion runs on every core.
-            data: v.data.par_iter().map(|&x| x as f32).collect(),
+            data: Arc::new(v.data.par_iter().map(|&x| x as f32).collect()),
             dims: v.dims,
             spacing: v.spacing,
             origin: v.origin,
@@ -1317,7 +1320,7 @@ impl RegImage {
                 }
             });
         RegImage {
-            data: out,
+            data: Arc::new(out),
             dims: [mx, my, mz],
             spacing: [
                 self.spacing[0] * dx as f64,
@@ -1609,6 +1612,53 @@ fn build_pyramid(img: RegImage, levels: usize) -> Vec<RegImage> {
     pyr
 }
 
+/// Image pyramids kept from one registration to the next.
+///
+/// A workflow registers the same volumes again and again - the reference
+/// phase against every other phase, and each phase once globally, once per
+/// structure and once more deformably - and every registration used to
+/// convert both volumes to floating point and smooth them down the pyramid
+/// afresh: about half a second a volume on a small machine, most of a
+/// minute over a ten-phase motion analysis. Handed a cache,
+/// [`register_cached`] builds each volume's pyramid once and shares its
+/// voxels with every later run; only the per-run sampling lists are made
+/// anew. The results are the same to the bit - the voxels are.
+///
+/// It holds the pyramids of the two volumes used last, and a weak reference
+/// to each volume: a volume that is gone cannot be mistaken for a new one
+/// allocated where it was.
+#[derive(Default)]
+pub struct PyramidCache {
+    /// Most recently used last.
+    entries: Vec<(std::sync::Weak<Volume>, usize, Vec<RegImage>)>,
+}
+
+impl PyramidCache {
+    /// How many volumes' pyramids are kept: a registration's two.
+    const KEEP: usize = 2;
+
+    /// The pyramid of `vol` with `levels` levels, built if it is not kept.
+    fn pyramid(&mut self, vol: &Arc<Volume>, levels: usize) -> Vec<RegImage> {
+        let at = self
+            .entries
+            .iter()
+            .position(|(w, l, _)| *l == levels && std::ptr::eq(w.as_ptr(), Arc::as_ptr(vol)));
+        let entry = match at {
+            Some(i) => self.entries.remove(i),
+            None => {
+                let pyr = build_pyramid(RegImage::from_volume(vol), levels);
+                (Arc::downgrade(vol), levels, pyr)
+            }
+        };
+        let pyr = entry.2.clone();
+        self.entries.push(entry);
+        if self.entries.len() > Self::KEEP {
+            self.entries.remove(0);
+        }
+        pyr
+    }
+}
+
 /// Everything an engine gets: the two pyramids, the rotation centre, the
 /// fixed volume and the run's parameters.
 pub(crate) struct RegSetup<'a> {
@@ -1706,6 +1756,52 @@ pub fn register(
     params: &RegParams,
     progress: &Progress,
 ) -> Result<RegistrationResult> {
+    register_with(
+        fixed_vol,
+        moving_vol,
+        params,
+        progress,
+        &mut |vol, levels| build_pyramid(RegImage::from_volume(vol), levels),
+    )
+}
+
+/// [`register`], taking the image pyramids from `cache` when it holds them
+/// and leaving them there for the next run.
+pub fn register_cached(
+    fixed_vol: &Arc<Volume>,
+    moving_vol: &Arc<Volume>,
+    params: &RegParams,
+    cache: &mut PyramidCache,
+    progress: &Progress,
+) -> Result<RegistrationResult> {
+    register_with(
+        fixed_vol,
+        moving_vol,
+        params,
+        progress,
+        &mut |vol, levels| {
+            // The two volumes are the only ones asked for, so which one is meant
+            // follows from the address.
+            let vol = if std::ptr::eq(vol, &**fixed_vol) {
+                fixed_vol
+            } else {
+                moving_vol
+            };
+            cache.pyramid(vol, levels)
+        },
+    )
+}
+
+/// A volume's pyramid: coarsest level first.
+type PyramidFn<'a> = dyn FnMut(&Volume, usize) -> Vec<RegImage> + 'a;
+
+fn register_with(
+    fixed_vol: &Volume,
+    moving_vol: &Volume,
+    params: &RegParams,
+    progress: &Progress,
+    pyramid: &mut PyramidFn,
+) -> Result<RegistrationResult> {
     let t_start = std::time::Instant::now();
 
     // The landmark warp never looks at a voxel, so it skips the pyramids
@@ -1734,8 +1830,9 @@ pub fn register(
     }
 
     progress.set("Building image pyramids");
-    let fixed_full = RegImage::from_volume(fixed_vol);
-    let moving_full = RegImage::from_volume(moving_vol);
+    let mut fixed_pyr = pyramid(fixed_vol, params.levels);
+    let moving_pyr = pyramid(moving_vol, params.levels);
+    let fixed_full = fixed_pyr.last().expect("a pyramid has a level");
 
     // Centre of rotation: the fixed image's geometric centre, or the
     // region's when the run is local - rotating a tumour about the patient's
@@ -1755,9 +1852,6 @@ pub fn register(
             )
         }
     };
-
-    let mut fixed_pyr = build_pyramid(fixed_full, params.levels);
-    let moving_pyr = build_pyramid(moving_full, params.levels);
 
     // Eligible-voxel lists (the fixed-image mask, intersected with the region
     // when the run is local) are built once per level instead of being

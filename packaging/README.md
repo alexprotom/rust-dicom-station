@@ -23,7 +23,7 @@ packaging/
 | Platform | Built by | Result | Docs |
 |---|---|---|---|
 | Windows | `windows-viewer` + `windows-setup` + `windows` jobs of release.yml | `rust-dicom-station-X.Y.Z-windows-x86_64.exe`, winget manifests | [windows/installer/README.md](windows/installer/README.md), [windows/winget/README.md](windows/winget/README.md) |
-| Linux AppImage | `linux` job of release.yml, `build-appimage.sh` | `rust-dicom-station-X.Y.Z-linux-x86_64.AppImage` | [linux/appimage/README.md](linux/appimage/README.md) |
+| Linux AppImage | `linux` job of release.yml, `build-appimage.sh` | `rust-dicom-station-X.Y.Z-x86_64.AppImage` | [linux/appimage/README.md](linux/appimage/README.md) |
 | Linux snap | snap.yml (called by release.yml) | Snap Store `rust-dicom-station` | [docs/snap.md](../docs/snap.md) |
 | Linux Flatpak | flatpak.yml (test builds); Flathub builds the release | Flathub `io.github.alexprotom.rust-dicom-station` | [docs/flatpak.md](../docs/flatpak.md) |
 | macOS | macos.yml (called by release.yml), `build-app.sh` | `rust-dicom-station-X.Y.Z-macos-{arm64,x86_64}.dmg`, Homebrew cask | [macos/README.md](macos/README.md), [docs/macos.md](../docs/macos.md) |

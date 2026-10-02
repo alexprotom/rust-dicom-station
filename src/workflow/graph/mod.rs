@@ -81,6 +81,33 @@ pub struct Workflow {
     pub nodes: Vec<Node>,
     #[serde(default)]
     pub links: Vec<Link>,
+    /// Boxes drawn around groups of nodes on the canvas. For the eye only:
+    /// a run ignores them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frames: Vec<Frame>,
+}
+
+/// A titled box around some nodes on the canvas: a row of the example, the
+/// phase work, a note to whoever opens the file next. It follows its nodes
+/// as they move, and goes when the last of them does.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Frame {
+    pub title: String,
+    /// sRGB; drawn faint behind the nodes.
+    pub color: [u8; 3],
+    /// The nodes inside, by id.
+    pub nodes: Vec<u32>,
+}
+
+impl Default for Frame {
+    fn default() -> Self {
+        Frame {
+            title: "Frame".into(),
+            color: [90, 120, 170],
+            nodes: Vec::new(),
+        }
+    }
 }
 
 fn format_tag() -> String {
@@ -193,7 +220,71 @@ impl Workflow {
             output: OutputSettings::default(),
             nodes: Vec::new(),
             links: Vec::new(),
+            frames: Vec::new(),
         }
+    }
+
+    /// The part of the workflow made of the nodes `ids`: those nodes, the
+    /// wires between them (a wire from outside is left behind) and the
+    /// frames around nothing else. What *Copy* puts on the clipboard.
+    pub fn fragment(&self, ids: &BTreeSet<u32>) -> Workflow {
+        let mut wf = Workflow::new(self.name.clone());
+        wf.nodes = self
+            .nodes
+            .iter()
+            .filter(|n| ids.contains(&n.id))
+            .cloned()
+            .collect();
+        wf.links = self
+            .links
+            .iter()
+            .filter(|l| ids.contains(&l.from.0) && ids.contains(&l.to.0))
+            .copied()
+            .collect();
+        wf.frames = self
+            .frames
+            .iter()
+            .filter(|f| !f.nodes.is_empty() && f.nodes.iter().all(|n| ids.contains(n)))
+            .cloned()
+            .collect();
+        wf
+    }
+
+    /// Add `part`'s nodes, wires and frames, moved by `offset` and given
+    /// ids of their own after this workflow's highest. Returns the new id of
+    /// each of `part`'s nodes, by its old one.
+    pub fn paste(&mut self, part: &Workflow, offset: [f32; 2]) -> BTreeMap<u32, u32> {
+        let first = self.nodes.iter().map(|n| n.id).max().unwrap_or(0) + 1;
+        let mut ids = BTreeMap::new();
+        for (id, n) in (first..).zip(&part.nodes) {
+            ids.insert(n.id, id);
+            let mut copy = n.clone();
+            copy.id = id;
+            copy.pos = [n.pos[0] + offset[0], n.pos[1] + offset[1]];
+            self.nodes.push(copy);
+        }
+        for l in &part.links {
+            if let (Some(&a), Some(&b)) = (ids.get(&l.from.0), ids.get(&l.to.0)) {
+                self.link(a, l.from.1, b, l.to.1);
+            }
+        }
+        for f in &part.frames {
+            let nodes: Vec<u32> = f.nodes.iter().filter_map(|n| ids.get(n).copied()).collect();
+            if !nodes.is_empty() {
+                self.frames.push(Frame { nodes, ..f.clone() });
+            }
+        }
+        ids
+    }
+
+    /// Drop from the frames the nodes that are gone, and the frames left
+    /// with none.
+    pub fn prune_frames(&mut self) {
+        let have: BTreeSet<u32> = self.nodes.iter().map(|n| n.id).collect();
+        for f in &mut self.frames {
+            f.nodes.retain(|n| have.contains(n));
+        }
+        self.frames.retain(|f| !f.nodes.is_empty());
     }
 
     /// Read a workflow from its JSON text.
@@ -479,6 +570,55 @@ mod tests {
         wf.link(a, 0, b, 0);
         wf.link(c, 0, d, 0);
         wf
+    }
+
+    #[test]
+    fn a_copied_part_pastes_with_ids_of_its_own_and_its_inner_wires() {
+        let mut wf = two_rows();
+        // A wire across the rows, which a copy of one row leaves behind.
+        wf.link(1, 0, 4, 0);
+        wf.frames.push(Frame {
+            title: "row A".into(),
+            nodes: vec![1, 2],
+            ..Frame::default()
+        });
+        wf.frames.push(Frame {
+            title: "both".into(),
+            nodes: vec![1, 2, 3, 4],
+            ..Frame::default()
+        });
+        let part = wf.fragment(&[1, 2].into_iter().collect());
+        assert_eq!(part.nodes.len(), 2);
+        assert_eq!(
+            part.links,
+            vec![Link {
+                from: (1, 0),
+                to: (2, 0)
+            }]
+        );
+        assert_eq!(part.frames.len(), 1, "only the frame around nothing else");
+        // Through the clipboard and back.
+        let part = Workflow::from_json(&part.to_json()).expect("reads back");
+
+        let ids = wf.paste(&part, [10.0, 20.0]);
+        assert_eq!(ids.get(&1), Some(&5));
+        assert_eq!(ids.get(&2), Some(&6));
+        assert_eq!(wf.nodes.len(), 6);
+        assert_eq!(wf.node(5).map(|n| n.pos), Some([10.0, 20.0]));
+        assert_eq!(wf.node(5).map(|n| n.title.as_str()), Some("A"));
+        assert!(wf.links.contains(&Link {
+            from: (5, 0),
+            to: (6, 0)
+        }));
+        assert_eq!(wf.links.len(), 4, "the original three and the copy's one");
+        assert_eq!(wf.frames.last().map(|f| f.nodes.clone()), Some(vec![5, 6]));
+        assert!(wf.check().errors.iter().all(|(n, _)| *n != Some(6)));
+
+        // The frames follow their nodes out.
+        wf.nodes.retain(|n| n.id != 1 && n.id != 2);
+        wf.prune_frames();
+        assert_eq!(wf.frames.len(), 2, "row A is gone, both keeps 3 and 4");
+        assert_eq!(wf.frames[0].nodes, vec![3, 4]);
     }
 
     #[test]

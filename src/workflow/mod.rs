@@ -19,7 +19,9 @@ pub mod anchored;
 pub mod graph;
 pub mod group;
 pub mod motion;
+pub mod params;
 pub mod select;
+pub mod session;
 
 use crate::fourd::{FourDGroup, Role};
 use crate::loader::SeriesInfo;

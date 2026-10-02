@@ -253,7 +253,11 @@ mod tests {
     use std::path::Path;
 
     fn fixtures() -> HashMap<String, WTensor> {
-        load_safetensors(Path::new("tests/data/medsam2-ops.safetensors")).unwrap()
+        load_safetensors(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/data/medsam2-ops.safetensors"
+        )))
+        .unwrap()
     }
 
     fn check(f: &HashMap<String, WTensor>, name: &str, filter: Filter, antialias: bool) {

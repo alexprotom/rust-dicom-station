@@ -369,15 +369,11 @@ impl ViewerApp {
         } else {
             let active_series = study.series.get(study.active_series);
             // Pseudo-UID for the in-memory set (rewritten on DICOM export).
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0);
             study.structure_sets.push(crate::rtstruct::StructureSet {
                 label: "Segmentations".into(),
                 frame_of_reference_uid: vol.frame_of_reference_uid.clone(),
-                sop_instance_uid: format!("2.25.{stamp}"),
-                series_instance_uid: format!("2.25.{stamp}.1"),
+                sop_instance_uid: crate::dicom_export::new_uid(),
+                series_instance_uid: crate::dicom_export::new_uid(),
                 study_uid: active_series
                     .map(|s| s.study_uid.clone())
                     .unwrap_or_default(),

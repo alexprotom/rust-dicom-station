@@ -43,7 +43,7 @@
 
 use std::sync::Arc;
 
-use crate::loader::{self, SeriesInfo};
+use crate::loader::SeriesInfo;
 use crate::morphology;
 use crate::motion::{self, Overlap};
 use crate::progress::Progress;
@@ -117,6 +117,8 @@ pub struct AnchoredRequest {
     pub group: usize,
     pub moving_slot: usize,
     pub moving_series_uid: String,
+    /// Where the phases are read from (see [`crate::workflow::group::GroupRequest::volumes`]).
+    pub volumes: crate::workflow::session::Volumes,
 }
 
 /// How well the anchor landed on one phase: the propagated source anchor
@@ -220,15 +222,19 @@ pub fn run(req: AnchoredRequest, p: &Progress) -> Result<AnchoredOutcome> {
     let n = req.phases.len().max(1);
     let mut phases = Vec::with_capacity(req.phases.len());
     let mut qa = Vec::with_capacity(req.phases.len());
+    // The moving side is the same for every phase, and each phase is
+    // registered twice (rigid, then deformable): pyramids built once.
+    let mut pyramids = registration::PyramidCache::default();
     for (i, ph) in req.phases.iter().enumerate() {
         let label = &ph.label;
         let base = i as f32 / n as f32;
         let span = 1.0 / n as f32;
         p.set_phase(base, span * 0.15);
         p.set(format!("Phase {label}: loading ({}/{n})", i + 1));
-        let (vol, _, _) = loader::load_series_volume(&ph.series, p)
+        let vol = req
+            .volumes
+            .load(&ph.series, p)
             .with_context(|| format!("phase '{label}'"))?;
-        let vol = Arc::new(vol);
         let grid = vol.grid();
 
         // The anchor on the phase: where the registration looks, and where
@@ -280,7 +286,7 @@ pub fn run(req: AnchoredRequest, p: &Progress) -> Result<AnchoredOutcome> {
             // threshold is for images.
             rigid.fixed_threshold = f32::MIN;
         }
-        let r = registration::register(&fixed_reg, &moving_reg, &rigid, p)
+        let r = registration::register_cached(&fixed_reg, &moving_reg, &rigid, &mut pyramids, p)
             .with_context(|| format!("phase '{label}', rigid stage"))?;
         let rigid_line = r.metric_line();
         let rigid_metrics = r.metrics();
@@ -306,8 +312,9 @@ pub fn run(req: AnchoredRequest, p: &Progress) -> Result<AnchoredOutcome> {
             if req.mode == AnchorMode::Contours {
                 params.fixed_threshold = f32::MIN;
             }
-            let r = registration::register(&fixed_reg, &moving_reg, &params, p)
-                .with_context(|| format!("phase '{label}', deformable stage"))?;
+            let r =
+                registration::register_cached(&fixed_reg, &moving_reg, &params, &mut pyramids, p)
+                    .with_context(|| format!("phase '{label}', deformable stage"))?;
             let line = r.metric_line();
             let m = r.metrics();
             metrics.final_value = m.final_value;
@@ -346,12 +353,16 @@ pub fn run(req: AnchoredRequest, p: &Progress) -> Result<AnchoredOutcome> {
             None => format!(" · {} did not land", check.anchor),
         });
         qa.push(check);
+        let dims = grid.dims;
         phases.push(PhaseOutcome {
             label: label.clone(),
             series_uid: ph.series.uid.clone(),
             study_uid: ph.series.study_uid.clone(),
             grid,
-            items,
+            items: items
+                .into_iter()
+                .map(|it| propagate::PackedItem::pack(it, dims))
+                .collect(),
             transform,
             metric_line,
             metrics: Some(metrics),

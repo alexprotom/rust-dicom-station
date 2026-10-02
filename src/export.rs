@@ -41,7 +41,12 @@
 //! * everything shares one Frame of Reference UID per frame of reference.
 //!
 //! When a structure set is exported without its images, that is not silently
-//! degraded: the object still goes out, and the run reports it.
+//! degraded: the object still goes out, and the run reports it. With the
+//! UIDs kept the export is the same study, so the references are read from
+//! the image series' source headers instead (nothing is copied) and point
+//! at the images as the archive already has them; the run still says the
+//! images were left out. With new UIDs, or when the source files are gone,
+//! the object carries only its frame of reference.
 //!
 //! ## Images are copied, not re-encoded
 //!
@@ -1171,6 +1176,7 @@ fn export_one_study(
                 &ident,
                 series_number,
                 &written,
+                plan.uid_mode == UidMode::Keep,
                 dir,
                 files,
                 warnings,
@@ -1498,6 +1504,57 @@ fn series_volume(study: &LoadedStudy, index: usize, src: &SeriesInfo) -> Option<
 // Structures, in either format
 // ---------------------------------------------------------------------------
 
+/// The references to a series that is not in the export, read from its
+/// source files' headers: what the export would have written for it with
+/// the UIDs kept, without writing it. `None` when the files are gone, or
+/// when they belong to another study or frame than the object being
+/// written (a reference across either would point nowhere).
+fn source_image_ref(src: &SeriesInfo, study_uid: &str, for_uid: &str) -> Option<ImageRef> {
+    if src.files.is_empty() || src.study_uid != study_uid {
+        return None;
+    }
+    let heads: Vec<(String, String, String, crate::geometry::Vec3, f64)> = src
+        .files
+        .par_iter()
+        .filter_map(|f| {
+            let obj = crate::dicomfile::open_scan(f).ok()?;
+            let class = crate::loader::str_of(&obj, tags::SOP_CLASS_UID).unwrap_or_default();
+            let uid = crate::loader::str_of(&obj, tags::SOP_INSTANCE_UID)?;
+            let frame =
+                crate::loader::str_of(&obj, tags::FRAME_OF_REFERENCE_UID).unwrap_or_default();
+            let iop = crate::loader::f64s_of(&obj, tags::IMAGE_ORIENTATION_PATIENT)
+                .filter(|v| v.len() >= 6)
+                .unwrap_or_else(|| vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+            // The same normal and projection `copy_patched` works out, so
+            // the references are those a copy of the series would get.
+            let normal = crate::geometry::Vec3::from_slice(&iop[0..3])
+                .normalized()
+                .cross(crate::geometry::Vec3::from_slice(&iop[3..6]).normalized())
+                .normalized();
+            let axis = crate::loader::f64s_of(&obj, tags::IMAGE_POSITION_PATIENT)
+                .filter(|v| v.len() >= 3)
+                .map(|v| crate::geometry::Vec3::from_slice(&v).dot(normal))
+                .unwrap_or(0.0);
+            Some((class, uid, frame, normal, axis))
+        })
+        .collect();
+    let first = heads.first()?;
+    if !for_uid.is_empty() && heads.iter().any(|h| h.2 != for_uid) {
+        return None;
+    }
+    let mut w = Written {
+        series_uid: src.uid.clone(),
+        study_uid: study_uid.to_string(),
+        for_uid: first.2.clone(),
+        sop_class: first.0.clone(),
+        slices: heads.iter().map(|h| (h.1.clone(), h.4)).collect(),
+        normal: first.3,
+        spacing: 1.0,
+    };
+    finish(&mut w);
+    Some(w.image_ref())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_structures(
     study: &LoadedStudy,
@@ -1506,6 +1563,7 @@ fn write_structures(
     ident: &[(Tag, dicom_core::VR, String)],
     series_number: i64,
     written: &HashMap<String, Written>,
+    keep_uids: bool,
     dir: &Path,
     files: &mut usize,
     warnings: &mut Vec<String>,
@@ -1520,17 +1578,42 @@ fn write_structures(
             let same_for = written
                 .values()
                 .find(|w| !w.for_uid.is_empty() && w.for_uid == ctx.for_uid);
+            // Else, with the UIDs kept, the images as they are: the export
+            // is the same study, so the series the object was drawn on
+            // still has the UIDs its source files carry, and a system that
+            // has those files shows the object on them.
+            let on_disk = || {
+                if !keep_uids {
+                    return None;
+                }
+                study
+                    .series
+                    .iter()
+                    .find(|s| s.uid == node.referenced_series_uid)
+                    .and_then(|s| source_image_ref(s, &ctx.study_uid, &ctx.for_uid))
+            };
             match same_for {
                 Some(w) => w.image_ref(),
-                None => {
-                    warnings.push(format!(
-                        "“{}” was exported without its image series - it carries a frame of \
-                         reference but no reference to the images, so a planning system will \
-                         not show it on a scan until they are exported too",
-                        node.label
-                    ));
-                    ImageRef::default()
-                }
+                None => match on_disk() {
+                    Some(r) => {
+                        warnings.push(format!(
+                            "“{}” was exported without its image series; it references the \
+                             images as its source files have them (the UIDs are kept), so a \
+                             system shows it on the scan once it has those images",
+                            node.label
+                        ));
+                        r
+                    }
+                    None => {
+                        warnings.push(format!(
+                            "“{}” was exported without its image series - it carries a frame \
+                             of reference but no reference to the images, so a planning \
+                             system will not show it on a scan until they are exported too",
+                            node.label
+                        ));
+                        ImageRef::default()
+                    }
+                },
             }
         }
     };
@@ -1796,8 +1879,16 @@ fn structure_grid(study: &LoadedStudy, ss: &StructureSet) -> Option<crate::volum
         .iter()
         .position(|s| s.uid == ss.referenced_series_uid)
     {
-        if let Some(v) = study.series.get(i).and_then(|s| series_volume(study, i, s)) {
-            return Some(v.grid());
+        // The displayed volume is in memory; any other series is read for
+        // its lattice from the slice headers alone.
+        if i == study.active_series && !study.volume.is_empty() {
+            return Some(study.volume.grid());
+        }
+        let se = &study.series[i];
+        if !se.files.is_empty() {
+            if let Ok(g) = crate::loader::series_grid(se) {
+                return Some(g);
+            }
         }
     }
     if !study.volume.is_empty() {

@@ -6267,6 +6267,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "rds-core"
+version = "0.10.1"
+dependencies = [
+ "anyhow",
+ "rayon",
+]
+
+[[package]]
+name = "rds-engines"
+version = "0.10.1"
+dependencies = [
+ "anyhow",
+ "burn",
+ "burn-ndarray",
+ "gemm 0.18.2",
+ "rayon",
+ "rds-core",
+ "safetensors 0.8.0",
+ "serde_json",
+ "ureq",
+ "zip 2.4.2",
+]
+
+[[package]]
 name = "rds-ios"
 version = "0.1.0"
 dependencies = [
@@ -6480,11 +6504,9 @@ dependencies = [
 
 [[package]]
 name = "rust-dicom-station"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
- "burn",
- "burn-ndarray",
  "dicom-core",
  "dicom-dictionary-std",
  "dicom-object",
@@ -6493,18 +6515,17 @@ dependencies = [
  "eframe",
  "egui",
  "egui-snarl",
- "gemm 0.18.2",
  "image",
  "png",
  "rayon",
+ "rds-core",
+ "rds-engines",
  "rfd",
- "safetensors 0.8.0",
  "serde",
  "serde_json",
  "ureq",
  "walkdir",
  "winresource",
- "zip 2.4.2",
 ]
 
 [[package]]

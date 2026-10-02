@@ -247,6 +247,28 @@ pub struct LoadedStudy {
     pub default_window: (f32, f32),
 }
 
+impl Default for LoadedStudy {
+    /// Nothing loaded: no series, no volume, nothing else.
+    fn default() -> Self {
+        LoadedStudy {
+            meta: PatientMeta::default(),
+            series: Vec::new(),
+            active_series: 0,
+            volume: Arc::new(Volume::empty()),
+            structure_sets: Vec::new(),
+            seg_series: Vec::new(),
+            doses: Vec::new(),
+            plans: Vec::new(),
+            planar_images: Vec::new(),
+            registrations: Vec::new(),
+            treat_records: Vec::new(),
+            fourd_groups: Vec::new(),
+            warnings: Vec::new(),
+            default_window: (40.0, 400.0),
+        }
+    }
+}
+
 impl LoadedStudy {
     /// Whether this workspace holds a reconstructed image volume.
     ///
@@ -272,6 +294,16 @@ const SOP_RTPLAN: &str = "1.2.840.10008.5.1.4.1.1.481.5";
 const SOP_RTIONPLAN: &str = "1.2.840.10008.5.1.4.1.1.481.8";
 
 pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
+    load_directory_with(dir, progress, true)
+}
+
+/// [`load_directory`] without reconstructing a volume - see
+/// [`load_files_to_merge`].
+pub fn load_directory_to_merge(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
+    load_directory_with(dir, progress, false)
+}
+
+fn load_directory_with(dir: &Path, progress: &Progress, with_volume: bool) -> Result<LoadedStudy> {
     progress.set("Scanning directory");
 
     let files: Vec<PathBuf> = walkdir::WalkDir::new(dir)
@@ -285,7 +317,7 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
     if files.is_empty() {
         bail!("No files found in {}", dir.display());
     }
-    load_files(&files, &dir.display().to_string(), progress)
+    load_files_with(&files, &dir.display().to_string(), progress, with_volume)
 }
 
 /// Load an explicit list of DICOM files (*File ▶ Add DICOM file(s)*).
@@ -298,6 +330,31 @@ pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
 ///
 /// `origin` names what is being opened, for error messages only.
 pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Result<LoadedStudy> {
+    load_files_with(files, origin, progress, true)
+}
+
+/// [`load_files`] for merging into a workspace (*File ▶ Add DICOM folder*
+/// on one that is open): everything but the volume.
+///
+/// A merge keeps the workspace's own volume and only adds series and RT
+/// objects to its tree, so the primary series the load would reconstruct -
+/// every slice decoded, the most expensive part of a load by far - was
+/// thrown away. The study comes back with an empty volume and its series
+/// listed, `active_series` pointing at the one that would have been shown.
+pub fn load_files_to_merge(
+    files: &[PathBuf],
+    origin: &str,
+    progress: &Progress,
+) -> Result<LoadedStudy> {
+    load_files_with(files, origin, progress, false)
+}
+
+fn load_files_with(
+    files: &[PathBuf],
+    origin: &str,
+    progress: &Progress,
+    with_volume: bool,
+) -> Result<LoadedStudy> {
     if files.is_empty() {
         bail!("No files to open");
     }
@@ -330,7 +387,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
     let scanned: Vec<Scanned> = files
         .par_iter()
         .filter_map(|path| {
-            let obj = crate::dicomfile::open_header(path).ok()?;
+            let obj = crate::dicomfile::open_scan(path).ok()?;
             let modality = str_of(&obj, tags::MODALITY).unwrap_or_default();
             let sop_class = str_of(&obj, tags::SOP_CLASS_UID).unwrap_or_default();
             let series_uid = str_of(&obj, tags::SERIES_INSTANCE_UID).unwrap_or_default();
@@ -490,6 +547,7 @@ pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Resul
     // workspace holding only those is loaded with an empty volume rather than
     // refused; see [`Volume::empty`].
     let (volume, default_window) = match image_series.first() {
+        Some(_) if !with_volume => (Volume::empty(), (40.0, 400.0)),
         Some(series) => {
             let (v, w, mut vol_warnings) = load_series_volume(series, progress)?;
             warnings.append(&mut vol_warnings);
@@ -653,6 +711,160 @@ fn integral_rescale(decoded: &dicom_pixeldata::DecodedPixelData<'_>) -> bool {
     })
 }
 
+/// Where one slice of a series sits, from its header alone.
+struct SliceGeom {
+    pos: Vec3,
+    proj: f64,
+    rows: usize,
+    cols: usize,
+    row_dir: Vec3,
+    col_dir: Vec3,
+    /// [along i (columns), along j (rows)].
+    spacing: [f64; 2],
+    for_uid: String,
+    window: Option<(f32, f32)>,
+    thickness: Option<f64>,
+}
+
+impl SliceGeom {
+    /// Read from a slice's header. What makes a slice unusable as part of a
+    /// volume - no position, several frames - is an error here, so the full
+    /// load and [`series_grid`] drop the same files.
+    fn of(obj: &InMemDicomObject, path: &Path) -> Result<SliceGeom> {
+        let ipp = f64s_of(obj, tags::IMAGE_POSITION_PATIENT)
+            .filter(|v| v.len() >= 3)
+            .with_context(|| format!("missing ImagePositionPatient in {}", path.display()))?;
+        let iop = f64s_of(obj, tags::IMAGE_ORIENTATION_PATIENT)
+            .filter(|v| v.len() >= 6)
+            .unwrap_or_else(|| vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+        let ps = f64s_of(obj, tags::PIXEL_SPACING)
+            .filter(|v| v.len() >= 2)
+            .unwrap_or_else(|| vec![1.0, 1.0]);
+
+        let row_dir = Vec3::from_slice(&iop[0..3]).normalized();
+        let col_dir = Vec3::from_slice(&iop[3..6]).normalized();
+        let normal = row_dir.cross(col_dir).normalized();
+        let pos = Vec3::from_slice(&ipp);
+
+        let window = match (
+            f64s_of(obj, tags::WINDOW_CENTER).and_then(|v| v.first().copied()),
+            f64s_of(obj, tags::WINDOW_WIDTH).and_then(|v| v.first().copied()),
+        ) {
+            (Some(c), Some(w)) if w > 1.0 => Some((c as f32, w as f32)),
+            _ => None,
+        };
+        // What the pixel decoder reads its geometry from, read the same way.
+        let rows = i32_of(obj, tags::ROWS).unwrap_or(0).max(0) as usize;
+        let cols = i32_of(obj, tags::COLUMNS).unwrap_or(0).max(0) as usize;
+        if i32_of(obj, tags::NUMBER_OF_FRAMES).unwrap_or(1) > 1 {
+            bail!(
+                "multi-frame image {} not supported as part of a series",
+                path.display()
+            );
+        }
+        Ok(SliceGeom {
+            pos,
+            proj: pos.dot(normal),
+            rows,
+            cols,
+            row_dir,
+            col_dir,
+            spacing: [ps[1], ps[0]],
+            for_uid: str_of(obj, tags::FRAME_OF_REFERENCE_UID).unwrap_or_default(),
+            window,
+            thickness: f64_of(obj, tags::SLICE_THICKNESS),
+        })
+    }
+}
+
+/// Put a series' slices in stack order - one in-plane size, sorted along the
+/// slice normal, duplicates dropped - and return the spacing between them.
+/// `geom` reads each slice's [`SliceGeom`].
+fn stack_slices<T>(
+    slices: &mut Vec<T>,
+    geom: impl Fn(&T) -> &SliceGeom,
+    warnings: &mut Vec<String>,
+) -> f64 {
+    // Consistent in-plane dimensions.
+    let (rows, cols) = (geom(&slices[0]).rows, geom(&slices[0]).cols);
+    let before = slices.len();
+    slices.retain(|s| geom(s).rows == rows && geom(s).cols == cols);
+    if slices.len() != before {
+        warnings.push(format!(
+            "{} slice(s) with mismatched dimensions were dropped",
+            before - slices.len()
+        ));
+    }
+
+    // Sort along the slice normal and drop duplicates.
+    slices.sort_by(|a, b| {
+        geom(a)
+            .proj
+            .partial_cmp(&geom(b).proj)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    slices.dedup_by(|a, b| (geom(a).proj - geom(b).proj).abs() < 0.01);
+
+    let nz = slices.len();
+    if nz > 1 {
+        let mut diffs: Vec<f64> = slices
+            .windows(2)
+            .map(|w| geom(&w[1]).proj - geom(&w[0]).proj)
+            .collect();
+        diffs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median = diffs[diffs.len() / 2];
+        let max_dev = diffs
+            .iter()
+            .map(|d| (d - median).abs())
+            .fold(0.0_f64, f64::max);
+        if median > 1e-6 && max_dev / median > 0.01 {
+            warnings.push(format!(
+                "Non-uniform slice spacing (median {:.3} mm, max deviation {:.3} mm) - using median",
+                median, max_dev
+            ));
+        }
+        median.max(1e-6)
+    } else {
+        geom(&slices[0]).thickness.unwrap_or(1.0).max(1e-6)
+    }
+}
+
+/// The lattice [`load_series_volume`] would build for `series`, from the
+/// slice headers alone.
+///
+/// Rasterizing structures onto a series - for an export, for a copy onto
+/// every phase of a 4D group - needs the series' geometry and nothing of its
+/// pixels, and decoding them is nearly all of what a load costs. A slice
+/// whose header is fine but whose pixels would not decode is part of this
+/// lattice and would be left out of the loaded volume; that is the one way
+/// the two can differ.
+pub fn series_grid(series: &SeriesInfo) -> Result<crate::volume::Grid> {
+    let results: Vec<Result<SliceGeom>> = series
+        .files
+        .par_iter()
+        .map(|path| {
+            let obj = crate::dicomfile::open_scan(path)?;
+            SliceGeom::of(&obj, path)
+        })
+        .collect();
+    let mut slices: Vec<SliceGeom> = results.into_iter().filter_map(Result::ok).collect();
+    if slices.is_empty() {
+        bail!("No slices of the series could be read");
+    }
+    let mut warnings = Vec::new();
+    let slice_spacing = stack_slices(&mut slices, |g| g, &mut warnings);
+    let first = &slices[0];
+    Ok(crate::volume::Grid {
+        dims: [first.cols, first.rows, slices.len()],
+        spacing: [first.spacing[0], first.spacing[1], slice_spacing],
+        origin: first.pos,
+        row_dir: first.row_dir,
+        col_dir: first.col_dir,
+        normal: first.row_dir.cross(first.col_dir).normalized(),
+        frame_of_reference_uid: first.for_uid.clone(),
+    })
+}
+
 pub fn load_series_volume(
     series: &SeriesInfo,
     progress: &Progress,
@@ -668,16 +880,7 @@ pub fn load_series_volume(
     ));
 
     struct SliceRec {
-        pos: Vec3,
-        proj: f64,
-        rows: usize,
-        cols: usize,
-        row_dir: Vec3,
-        col_dir: Vec3,
-        spacing: [f64; 2],
-        for_uid: String,
-        window: Option<(f32, f32)>,
-        thickness: Option<f64>,
+        geom: SliceGeom,
         data: Vec<i16>,
         /// Value range of this slice, accumulated while the pixels are still
         /// hot in cache instead of by a second serial pass over the volume.
@@ -692,35 +895,14 @@ pub fn load_series_volume(
         .par_iter()
         .map(|path| -> Result<SliceRec> {
             let obj = crate::dicomfile::open_full(path)?;
-
-            let ipp = f64s_of(&obj, tags::IMAGE_POSITION_PATIENT)
-                .filter(|v| v.len() >= 3)
-                .with_context(|| format!("missing ImagePositionPatient in {}", path.display()))?;
-            let iop = f64s_of(&obj, tags::IMAGE_ORIENTATION_PATIENT)
-                .filter(|v| v.len() >= 6)
-                .unwrap_or_else(|| vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
-            let ps = f64s_of(&obj, tags::PIXEL_SPACING)
-                .filter(|v| v.len() >= 2)
-                .unwrap_or_else(|| vec![1.0, 1.0]);
-
-            let row_dir = Vec3::from_slice(&iop[0..3]).normalized();
-            let col_dir = Vec3::from_slice(&iop[3..6]).normalized();
-            let normal = row_dir.cross(col_dir).normalized();
-            let pos = Vec3::from_slice(&ipp);
-
-            let window = match (
-                f64s_of(&obj, tags::WINDOW_CENTER).and_then(|v| v.first().copied()),
-                f64s_of(&obj, tags::WINDOW_WIDTH).and_then(|v| v.first().copied()),
-            ) {
-                (Some(c), Some(w)) if w > 1.0 => Some((c as f32, w as f32)),
-                _ => None,
-            };
+            let mut geom = SliceGeom::of(&obj, path)?;
 
             let decoded = obj
                 .decode_pixel_data()
                 .with_context(|| format!("decode pixel data of {}", path.display()))?;
             let rows = decoded.rows() as usize;
             let cols = decoded.columns() as usize;
+            (geom.rows, geom.cols) = (rows, cols);
             if decoded.number_of_frames() > 1 {
                 bail!(
                     "multi-frame image {} not supported as part of a series",
@@ -757,18 +939,8 @@ pub fn load_series_volume(
                 min = min.min(v);
                 max = max.max(v);
             }
-
             Ok(SliceRec {
-                pos,
-                proj: pos.dot(normal),
-                rows,
-                cols,
-                row_dir,
-                col_dir,
-                spacing: [ps[1], ps[0]], // [along i (columns), along j (rows)]
-                for_uid: str_of(&obj, tags::FRAME_OF_REFERENCE_UID).unwrap_or_default(),
-                window,
-                thickness: f64_of(&obj, tags::SLICE_THICKNESS),
+                geom,
                 data,
                 min,
                 max,
@@ -788,47 +960,9 @@ pub fn load_series_volume(
         bail!("No slices of the series could be decoded");
     }
 
-    // Consistent in-plane dimensions.
-    let (rows, cols) = (slices[0].rows, slices[0].cols);
-    let before = slices.len();
-    slices.retain(|s| s.rows == rows && s.cols == cols);
-    if slices.len() != before {
-        warnings.push(format!(
-            "{} slice(s) with mismatched dimensions were dropped",
-            before - slices.len()
-        ));
-    }
-
-    // Sort along the slice normal and drop duplicates.
-    slices.sort_by(|a, b| {
-        a.proj
-            .partial_cmp(&b.proj)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    slices.dedup_by(|a, b| (a.proj - b.proj).abs() < 0.01);
-
+    let slice_spacing = stack_slices(&mut slices, |s| &s.geom, &mut warnings);
     let nz = slices.len();
-    let slice_spacing = if nz > 1 {
-        let mut diffs: Vec<f64> = slices.windows(2).map(|w| w[1].proj - w[0].proj).collect();
-        diffs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let median = diffs[diffs.len() / 2];
-        let max_dev = diffs
-            .iter()
-            .map(|d| (d - median).abs())
-            .fold(0.0_f64, f64::max);
-        if median > 1e-6 && max_dev / median > 0.01 {
-            warnings.push(format!(
-                "Non-uniform slice spacing (median {:.3} mm, max deviation {:.3} mm) - using median",
-                median, max_dev
-            ));
-        }
-        median.max(1e-6)
-    } else {
-        slices[0].thickness.unwrap_or(1.0).max(1e-6)
-    };
-
-    let nx = cols;
-    let ny = rows;
+    let (nx, ny) = (slices[0].geom.cols, slices[0].geom.rows);
     let mut data = Vec::with_capacity(nx * ny * nz);
     let mut min_v = i16::MAX;
     let mut max_v = i16::MIN;
@@ -838,7 +972,7 @@ pub fn load_series_volume(
         data.extend_from_slice(&s.data);
     }
 
-    let first = &slices[0];
+    let first = &slices[0].geom;
     let volume = Volume {
         data,
         dims: [nx, ny, nz],

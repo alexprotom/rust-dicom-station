@@ -70,6 +70,8 @@ fn every_tool_has_a_schema_and_a_description() {
         "compute_dvh",
         "export",
         "anonymize",
+        "list_workflows",
+        "run_workflow",
     ] {
         assert!(names.contains(&must), "{must} is a tool");
     }
@@ -466,5 +468,154 @@ fn an_anchored_group_run_reports_the_check() {
         json!({"dataset": "ds1", "group": "1", "anchor": {"structure": "LIVER"}}),
     );
     assert!(e.contains("LIVER"), "{e}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A saved workflow, run by an assistant: listed with its inputs (never the
+/// folders its file names), refused on data that still carries a name, run
+/// on the anonymized copy with its reports passed back, and run as a batch
+/// over the cases its pattern matches.
+#[test]
+fn saved_workflows_are_listed_and_run() {
+    use rust_dicom_station::workflow::graph::catalog::*;
+    use rust_dicom_station::workflow::graph::{store, Workflow};
+
+    let dir = common::target_dir("test_mcp_tools_workflows");
+    let folder = common::fourd_folder(&dir, [0.0, 6.0, 3.0]);
+    let flows = dir.join("workflows");
+    std::fs::create_dir_all(&flows).unwrap();
+    let mut wf = Workflow::new("Grow the target");
+    wf.description = "TARGET plus 5 mm, and its dose".into();
+    let l = wf.add(
+        Op::LoadFolder(LoadFolder {
+            // The author's own folder: never told, never read.
+            path: "/home/someone/PHANTOM^RT".into(),
+            workspace: Workspace::Auto,
+        }),
+        "Plan",
+        [0.0, 0.0],
+    );
+    let img = wf.add(
+        Op::SelectImage(SelectImage {
+            description: "0%".into(),
+            ..SelectImage::default()
+        }),
+        "",
+        [250.0, 0.0],
+    );
+    let t = wf.add(
+        Op::SelectStructures(SelectStructures {
+            names: "TARGET".into(),
+            first_only: true,
+            required: true,
+        }),
+        "",
+        [500.0, 0.0],
+    );
+    let c = wf.add(Op::Combine(Combine::default()), "", [750.0, 0.0]);
+    let d = wf.add(Op::DoseMetrics(DoseMetrics::default()), "", [1000.0, 0.0]);
+    let r = wf.add(Op::SaveReport(SaveReport::default()), "", [1250.0, 0.0]);
+    wf.link(l, 0, img, 0);
+    wf.link(img, 0, t, 0);
+    wf.link(t, 0, c, 0);
+    wf.link(c, 0, d, 0);
+    wf.link(d, 0, r, 0);
+    store::save(&wf, &flows.join("grow")).unwrap();
+
+    let out = dir.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let mut core = Core::new(Config {
+        roots: vec![dir.to_path_buf()],
+        output_dir: Some(out),
+        phi_policy: PhiPolicy::Redact,
+        device: "cpu".into(),
+        audit_log: false,
+        workflows_dir: Some(flows.clone()),
+        ..Config::default()
+    });
+    let c = &mut core;
+
+    let list = call(c, "list_workflows", json!({}));
+    let text = list.to_string();
+    assert!(
+        !text.contains("someone"),
+        "the file's folder is not told: {text}"
+    );
+    let mine = list["workflows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["name"] == "Grow the target")
+        .expect("the saved workflow is offered");
+    assert_eq!(mine["source"], "file");
+    assert_eq!(mine["inputs"][0]["input"], "Plan");
+    assert!(list["workflows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|w| w["source"] == "example"));
+
+    // Named data, under a policy that is not Allow: refused before a step.
+    let e = fail(
+        c,
+        "run_workflow",
+        json!({"workflow": "grow", "inputs": {"Plan": folder}}),
+    );
+    assert!(e.contains("anonymized first"), "{e}");
+    // An input the workflow does not have is named.
+    let e = fail(
+        c,
+        "run_workflow",
+        json!({"workflow": "grow", "inputs": {"CT": folder}}),
+    );
+    assert!(e.contains("'Plan'"), "{e}");
+
+    let an = call(c, "anonymize", json!({"path": folder, "folder": "case_A"}));
+    let copy = an["folder"].as_str().unwrap().to_string();
+    let run = call(
+        c,
+        "run_workflow",
+        json!({"workflow": "Grow the target", "inputs": {"Plan": copy}, "open_results": true}),
+    );
+    assert_eq!(run["ok"], true, "{run}");
+    assert!(run["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|s| s["status"] == "done"));
+    let table = &run["reports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["title"].as_str().unwrap().starts_with("Dose estimation"))
+        .expect("the dose report")["tables"][0];
+    assert_eq!(table["rows"][0][0], "PTV");
+    assert_eq!(run["datasets"].as_array().unwrap().len(), 1);
+    let ds = run["datasets"][0]["dataset"].as_str().unwrap().to_string();
+    let ls = call(c, "list_structures", json!({"dataset": ds}));
+    assert!(ls.to_string().contains("\"PTV\""), "{ls}");
+    assert!(!run.to_string().contains("PHANTOM"), "{run}");
+
+    // A batch over the anonymized cases: the gate reads the ones the
+    // pattern takes.
+    call(c, "anonymize", json!({"path": folder, "folder": "case_B"}));
+    let session = Path::new(&copy).parent().unwrap().display().to_string();
+    let mut batch = wf.clone();
+    batch.name = "Grow every case".into();
+    batch.node_mut(l).unwrap().op = Op::LoadFolders(LoadFolders {
+        path: String::new(),
+        pattern: "case*".into(),
+        workspace: Workspace::Auto,
+    });
+    store::save(&batch, &flows.join("batch")).unwrap();
+    let run = call(
+        c,
+        "run_workflow",
+        json!({"workflow": "Grow every case", "inputs": {"Plan": session}}),
+    );
+    assert_eq!(run["ok"], true, "{run}");
+    let cases = run["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 2, "{run}");
+    assert!(cases.iter().all(|k| k["result"] == "every step ran"));
     let _ = std::fs::remove_dir_all(&dir);
 }
