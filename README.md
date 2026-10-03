@@ -43,6 +43,13 @@ engine.*
   file a study, list patients without opening a DICOM file, load into either
   workspace, and send the structures and segmentations you drew back as derived
   objects under the original Study and Frame of Reference UIDs.
+* **PACS server** (optional) - `rds-pacs` serves one station's archive to the
+  others over HTTPS, on the local network or over the internet (through a
+  VPN, a forwarded port or a reverse proxy): stations pair with a one-time
+  code and the server's pinned certificate, then pull studies into a local
+  mirror, work on them offline and sync back, or hand the server workflows to
+  run on its own hardware. Every build, Android and iOS included, is a
+  client.
 * **Registration** - rigid and B-spline after **elastix** (pyramids,
   stochastic sampling, ASGD), dense B-spline after **plastimatch** (analytic
   gradient, bending energy, L-BFGS, mean squares or Mattes mutual
@@ -203,6 +210,7 @@ https://alexprotom.github.io/rust-dicom-station/
 | [docs/segvol.md](docs/segvol.md) | Prompt-driven segmentation: the SegVol re-implementation |
 | [docs/medsam2.md](docs/medsam2.md) | Propagating a prompt through a stack: the MedSAM2 re-implementation |
 | [docs/pacs.md](docs/pacs.md) | The local patient archive: window, on-disk layout, filing, loading, sending changes back |
+| [docs/pacs-server.md](docs/pacs-server.md) | The PACS server: setting it up on a network and over the internet, pairing stations, mirror and sync, tasks run on the server, security |
 | [docs/export-and-tools.md](docs/export-and-tools.md) | DICOM export, the model manager, anonymizer, test-data generator and download |
 | [docs/workflows.md](docs/workflows.md) | Workflows: the node editor, the steps, running in the background or step by step, reruns, batches, the run folder, the heart-anchored example |
 | [docs/mcp.md](docs/mcp.md) | The MCP server: tools, the heart workflow prompt, patient-identity safety, configuration |
@@ -219,7 +227,7 @@ https://alexprotom.github.io/rust-dicom-station/
 
 ## License and citations
 
-The code is MIT-licensed, so commercial use is permitted. The MIT License
+The code is MIT-licensed. The MIT License 
 covers this project's own code; the third-party Rust libraries RDS depends on
 keep their own licences, reproduced in
 [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt). If you publish work
@@ -238,7 +246,7 @@ downloaded from Hugging Face to your own machine at your request and are
 never redistributed; see [docs/segvol.md](docs/segvol.md) and
 [docs/medsam2.md](docs/medsam2.md).
 
-This software is a viewer for research and QA convenience. **Not a medical
+This software is a station for research and QA convenience. **Not a medical
 device, neither CE-marked nor FDA-cleared, and not for clinical
 decision-making.** The ADDITIONAL NOTICE in [LICENSE.txt](LICENSE.txt) states
 this in full. It is a statement of fact about the software, not a condition of

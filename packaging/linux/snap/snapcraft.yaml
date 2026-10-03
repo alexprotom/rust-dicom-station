@@ -28,9 +28,10 @@ description: |
   dose-volume histograms, 4D motion analysis, manual and AI-assisted
   segmentation (TotalSegmentator, SegVol and MedSAM2 re-implemented in Rust,
   GPU accelerated through Vulkan), a 3D view, a local patient archive, DICOM
-  editing, anonymization and export, and an MCP server
+  editing, anonymization and export, an MCP server
   (rust-dicom-station.rds-mcp) through which an AI assistant can drive the
-  tools.
+  tools, and a PACS server (rust-dicom-station.rds-pacs) that serves the
+  archive to other stations over HTTPS.
 
   Model weights are downloaded on first use into
   ~/snap/rust-dicom-station/common/data/models. Folders outside your home
@@ -64,6 +65,9 @@ apps:
       - home
       - removable-media
       - network
+      # Settings > PACS server starts rds-pacs from the viewer, under the
+      # viewer's confinement, and it listens.
+      - network-bind
 
   # The MCP server speaks the protocol on standard output, so nothing may
   # write there before it starts. The GNOME launcher can (it rebuilds icon
@@ -84,6 +88,21 @@ apps:
       - desktop-legacy
       - wayland
       - x11
+
+  # The PACS server: `rust-dicom-station.rds-pacs serve` from a terminal,
+  # or started from the viewer's Settings > PACS server. A server that
+  # listens needs network-bind; its tasks run the engines, hence the GPU
+  # wrapper.
+  rds-pacs:
+    command: bin/rds-pacs
+    command-chain:
+      - snap/command-chain/gpu-2404-wrapper
+    plugs:
+      - home
+      - removable-media
+      - network
+      - network-bind
+      - opengl
 
 parts:
   # The toolchain. The plugin's own way of getting one is the `rustup` snap,
@@ -111,8 +130,9 @@ parts:
     # The toolchain comes from rust-deps above; the plugin puts
     # $HOME/.cargo/bin on the build PATH by itself.
     rust-channel: none
-    # rds-mcp is built only with the feature; the default `gpu` stays on.
-    rust-features: [mcp]
+    # rds-mcp and rds-pacs are built only with their features; the default
+    # `gpu` stays on.
+    rust-features: [mcp, pacs-server]
     build-environment:
       # The release profile carries no debug info of its own; this drops the
       # standard library's. Symbols stay, so a backtrace still names frames.

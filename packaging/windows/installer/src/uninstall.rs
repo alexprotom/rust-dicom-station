@@ -77,12 +77,20 @@ pub fn run(target: &Target, remove_models: bool, sink: Sink) -> Result<()> {
     let dir = &m.install_dir;
 
     let app_exe = dir.join(APP_EXE);
-    if app_exe.exists()
-        && std::fs::OpenOptions::new()
-            .write(true)
-            .open(&app_exe)
-            .is_err()
-    {
+    let in_use = |exe: &std::path::Path| {
+        exe.exists() && std::fs::OpenOptions::new().write(true).open(exe).is_err()
+    };
+    if in_use(&dir.join(PACS_EXE)) {
+        return Err(failure(
+            EXIT_IN_USE,
+            format!(
+                "the PACS server is still running from {} - stop it (Settings > PACS server \
+                 > Stop, or rds-pacs stop) and try again",
+                dir.display()
+            ),
+        ));
+    }
+    if in_use(&app_exe) {
         return Err(failure(
             EXIT_IN_USE,
             format!(

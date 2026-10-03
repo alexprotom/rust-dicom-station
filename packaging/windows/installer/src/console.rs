@@ -44,6 +44,7 @@ pub fn run_install(
         println!("Start menu shortcut : {}", yes_no(opts.start_menu_shortcut));
         println!("Desktop shortcut    : {}", yes_no(opts.desktop_shortcut));
         println!("MCP server          : {}", yes_no(opts.install_mcp));
+        println!("PACS server         : {}", yes_no(opts.install_pacs));
         println!("File association    : {}", yes_no(opts.file_association));
         println!("Add to PATH         : {}", yes_no(opts.add_to_path));
         println!(

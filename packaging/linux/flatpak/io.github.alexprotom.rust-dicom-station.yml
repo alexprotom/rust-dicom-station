@@ -26,7 +26,9 @@ finish-args:
   - --socket=fallback-x11
   # The GPU: Vulkan for the views and for the inference engines.
   - --device=dri
-  # Model weights are downloaded from Hugging Face on first use.
+  # Model weights are downloaded from Hugging Face on first use; PACS
+  # servers are reached over HTTPS, and rds-pacs listens (the network share
+  # covers both).
   - --share=network
   # No filesystem permission, on purpose. Flathub's linter rejects blanket
   # home access (finish-args-home-filesystem-access), and the file dialogs
@@ -53,11 +55,12 @@ modules:
         CARGO_PROFILE_RELEASE_STRIP: debuginfo
     build-commands:
       - cargo --offline fetch --manifest-path Cargo.toml --verbose
-      # `mcp` adds the second executable, rds-mcp; the default `gpu`
-      # feature stays on.
-      - cargo --offline build --release --features mcp
+      # `mcp` and `pacs-server` add the other two executables, rds-mcp and
+      # rds-pacs; the default `gpu` feature stays on.
+      - cargo --offline build --release --features mcp,pacs-server
       - install -Dm755 target/release/rust-dicom-station ${FLATPAK_DEST}/bin/rust-dicom-station
       - install -Dm755 target/release/rds-mcp ${FLATPAK_DEST}/bin/rds-mcp
+      - install -Dm755 target/release/rds-pacs ${FLATPAK_DEST}/bin/rds-pacs
       - install -Dm644 ${FLATPAK_ID}.desktop ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.desktop
       - install -Dm644 ${FLATPAK_ID}.metainfo.xml ${FLATPAK_DEST}/share/metainfo/${FLATPAK_ID}.metainfo.xml
       - install -Dm644 assets/rust-dicom-station.png ${FLATPAK_DEST}/share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png

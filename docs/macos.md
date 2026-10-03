@@ -108,6 +108,14 @@ viewer shows the snippet for the copy that is actually running. Everything
 else about the server - the tools, the PHI gate, `mcp.toml` - is in
 [docs/mcp.md](mcp.md).
 
+## The PACS server
+
+`rds-pacs` ships inside the bundle too, so *Settings ▸ PACS server ▸ Start*
+finds it beside the viewer, and the Homebrew cask links it into the prefix
+(`rds-pacs serve` from a terminal). macOS asks once whether it may accept
+incoming connections; allow it. Everything else is in
+[docs/pacs-server.md](pacs-server.md).
+
 ## Building it
 
 Needs the Xcode command line tools (`xcode-select --install`) and the

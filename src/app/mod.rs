@@ -66,6 +66,8 @@ mod matrix_edit;
 mod models_win;
 mod motion_results;
 mod motion_win;
+mod pacs_remote;
+mod pacs_server_win;
 mod pacs_win;
 mod panels;
 mod pick;
@@ -1642,6 +1644,11 @@ pub struct ViewerApp {
     pacs: Option<PacsWindow>,
     /// The archive job in flight - a scan, an import, an upload or a removal.
     pacs_job: Option<Job<anyhow::Result<PacsOutcome>>>,
+    /// A call to a paired PACS server in flight (`pacs_remote.rs`).
+    pacs_remote_job: Option<Job<anyhow::Result<pacs_remote::RemoteOutcome>>>,
+    // Settings ▶ PACS server: the server on this machine (`pacs_server_win.rs`).
+    pacs_server: Option<pacs_server_win::ServerWindow>,
+    pacs_server_job: Option<Job<anyhow::Result<pacs_server_win::ServerOutcome>>>,
 
     // Tools ▶ Downloaded models: the inventory window.
     models_open: bool,
@@ -2046,6 +2053,9 @@ impl ViewerApp {
             archive_dir,
             pacs: None,
             pacs_job: None,
+            pacs_remote_job: None,
+            pacs_server: None,
+            pacs_server_job: None,
             models_open: false,
             models_scan: Vec::new(),
             models_scan_at: f64::NEG_INFINITY,
@@ -2259,7 +2269,10 @@ impl ViewerApp {
         }
         self.archive_checked_at = now;
         let root = crate::archive::root_from_setting(&self.archive_dir);
-        self.archive_has_data = crate::archive::Archive::new(root).has_patients();
+        // The local archive, or a paired PACS server to take a study from.
+        self.archive_has_data = crate::archive::Archive::new(root).has_patients()
+            || crate::pacs::servers::Servers::load(&crate::pacs::servers::default_path())
+                .is_ok_and(|s| !s.servers.is_empty());
         self.archive_has_data
     }
 
@@ -2570,6 +2583,21 @@ impl eframe::App for ViewerApp {
             Some(Err(e)) => self.error = Some(format!("Archive: {e:#}")),
             None => {}
         }
+        // A call to a paired PACS server, and the queue it keeps current.
+        if let Some(r) = poll_job(&mut self.pacs_remote_job, &ctx, "PACS", &mut self.error) {
+            self.on_remote_done(r);
+        }
+        self.poll_remote_tasks(ctx.input(|i| i.time));
+        // The PACS server on this machine.
+        if let Some(r) = poll_job(
+            &mut self.pacs_server_job,
+            &ctx,
+            "PACS server",
+            &mut self.error,
+        ) {
+            self.on_server_done(r);
+        }
+        self.poll_server_status(ctx.input(|i| i.time));
 
         // Poll a DRR rendering.
         match poll_job(&mut self.drr_job, &ctx, "DRR", &mut self.error) {
@@ -2735,5 +2763,15 @@ impl eframe::App for ViewerApp {
             self.open_rename(target);
         }
         self.modals(&ctx);
+        // A PACS call started this frame - by a click, or by the result of
+        // the one before it (a pull is followed by a refresh) - has not been
+        // polled yet, so nothing else asks for the next frame.
+        if self.pacs_remote_job.is_some() || self.pacs_server_job.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        } else if self.pacs_server.is_some() || self.remote_tasks_running() {
+            // The server window's status and a running task's progress are
+            // polled; frames have to come for that to happen.
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        }
     }
 }

@@ -104,6 +104,11 @@ jobs:
       - name: The MCP server starts
         run: /snap/bin/rust-dicom-station.rds-mcp --check
 
+      # The PACS server prints its configuration and exits without
+      # listening.
+      - name: The PACS server starts
+        run: /snap/bin/rust-dicom-station.rds-pacs --check
+
       # Every library the window needs is opened at run time, so only
       # opening a window proves they are all there. Mesa's software Vulkan
       # driver draws it on a runner without a GPU.

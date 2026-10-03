@@ -5,8 +5,23 @@ studies: every patient ever filed into it, listed in one window.
 
 It is a PACS in the sense that matters at a workstation - a persistent place
 where patients live between sessions - not in the sense of DICOM networking:
-no listener, no association negotiation, no C-FIND, C-MOVE or C-STORE. The
-archive is a folder on disk that this application owns.
+no association negotiation, no C-FIND, C-MOVE or C-STORE. The archive is a
+folder on disk that this application owns.
+
+One station's archive can be served to others: the optional PACS server,
+`rds-pacs`, puts an HTTPS door on this folder, and every station can pair
+with such a server, pull its studies, work on them and send results back,
+or hand it workflows to run. The servers a station is paired with appear in
+this same window, beside *This station*; see
+[pacs-server.md](pacs-server.md) for the server, the setup on a local
+network and over the internet, and the two ways of working.
+
+## The sources
+
+The row at the top of the window chooses the archive shown: **🏥 This
+station** (the local archive, described on this page), one **🔗** button per
+paired PACS server (the remote half, [pacs-server.md](pacs-server.md#working-on-a-servers-studies)),
+and **➕ Add server** to pair with another one.
 
 ## The three gestures
 
@@ -49,6 +64,11 @@ grows - reading headers out of ten thousand files is not. They are a cache,
 never the truth: a study folder that arrived without one - copied in by hand -
 has it rebuilt from the headers the first time it is listed, and deleting
 every sidecar rebuilds the whole archive.
+
+A sidecar is written whole into a temporary file and renamed over the old
+one, and a filed instance is copied beside its place and renamed into it,
+so a reader - the PACS server sending the study on while the viewer on the
+same machine files into it - never sees half of either.
 
 Only the patient folder name comes from free text and so is sanitized:
 anything outside ASCII letters, digits, `.`, `-` and `_` becomes `_`, capped
@@ -101,10 +121,13 @@ through the data tree, or the study's older objects from the archive.
 ## What it is not
 
 * **Not a DICOM network node.** No SCP, no SCU, no AE titles. Files move by
-  the file system.
-* **Not multi-user.** One application owns the folder. Two instances pointed
-  at the same archive will not corrupt it - files are written under unique
-  UIDs - but their listings can go stale until rescanned.
+  the file system, or over HTTPS through the PACS server
+  ([pacs-server.md](pacs-server.md)).
+* **Not multi-user by itself.** One application owns the folder. Two
+  instances pointed at the same archive will not corrupt it - files are
+  written under unique UIDs, sidecars and files are renamed into place -
+  but their listings can go stale until rescanned. Sharing an archive
+  between people is what the PACS server is for.
 * **Not an anonymizer.** What goes in is what comes out. *Tools ▶ Anonymize*
   ([export-and-tools.md](export-and-tools.md)) is the pass to run before
   filing anything that must leave the department.

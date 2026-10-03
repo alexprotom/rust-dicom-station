@@ -39,6 +39,9 @@ OPTIONS:
     --mcp <FILE>       MCP server executable (default: <repo>/target/release/rds-mcp.exe,
                        shipped when it exists; build it with --features mcp)
     --no-mcp           leave the MCP server out even when it was built
+    --pacs <FILE>      PACS server executable (default: <repo>/target/release/rds-pacs.exe,
+                       shipped when it exists; build it with --features pacs-server)
+    --no-pacs          leave the PACS server out even when it was built
     --setup <FILE>     setup binary to wrap (default: target/release/rds-setup.exe)
     --out <FILE>       installer to write (default: dist/rust-dicom-station-setup.exe)
     --test-data        also ship data-test/ (~980 MB before compression)
@@ -56,6 +59,8 @@ struct Opts {
     app: Option<PathBuf>,
     mcp: Option<PathBuf>,
     no_mcp: bool,
+    pacs: Option<PathBuf>,
+    no_pacs: bool,
     setup: Option<PathBuf>,
     out: Option<PathBuf>,
     test_data: bool,
@@ -77,6 +82,8 @@ fn main() -> Result<()> {
         app: None,
         mcp: None,
         no_mcp: false,
+        pacs: None,
+        no_pacs: false,
         setup: None,
         out: None,
         test_data: false,
@@ -100,6 +107,8 @@ fn main() -> Result<()> {
             "--app" => o.app = Some(PathBuf::from(val("--app")?)),
             "--mcp" => o.mcp = Some(PathBuf::from(val("--mcp")?)),
             "--no-mcp" => o.no_mcp = true,
+            "--pacs" => o.pacs = Some(PathBuf::from(val("--pacs")?)),
+            "--no-pacs" => o.no_pacs = true,
             "--setup" => o.setup = Some(PathBuf::from(val("--setup")?)),
             "--out" => o.out = Some(PathBuf::from(val("--out")?)),
             "--test-data" => o.test_data = true,
@@ -151,6 +160,17 @@ fn main() -> Result<()> {
         files.push((MCP_EXE.into(), mcp));
     } else if o.mcp.is_some() {
         bail!("{} not found", mcp.display());
+    }
+    // The PACS server, the same way (feature `pacs-server`). It is offered
+    // unticked by the setup program: a default installation is a client.
+    let pacs = o
+        .pacs
+        .clone()
+        .unwrap_or_else(|| o.repo.join("target/release/rds-pacs.exe"));
+    if !o.no_pacs && pacs.is_file() {
+        files.push((PACS_EXE.into(), pacs));
+    } else if o.pacs.is_some() {
+        bail!("{} not found", pacs.display());
     }
     for name in ["LICENSE.txt", "THIRD-PARTY-NOTICES.txt", "README.md"] {
         let p = o.repo.join(name);

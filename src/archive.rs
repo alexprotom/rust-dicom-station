@@ -32,6 +32,7 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use dicom_dictionary_std::tags;
@@ -105,6 +106,78 @@ impl PatientEntry {
     pub fn files(&self) -> usize {
         self.studies.iter().map(|s| s.files).sum()
     }
+
+    /// The name of the patient's folder: what a remote client names the
+    /// patient by, since the ID itself may not be a usable name.
+    pub fn key(&self) -> String {
+        self.dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+}
+
+/// One file of a study folder, as a remote copy of the archive needs it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Instance {
+    pub sop_uid: String,
+    pub path: PathBuf,
+    pub bytes: u64,
+}
+
+/// Is `s` a DICOM UID: digits and single dots, 1 to 64 characters? What
+/// comes over the network is checked with this before anything looks for
+/// it.
+pub fn is_uid(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+        && !s.starts_with('.')
+        && !s.ends_with('.')
+        && !s.contains("..")
+}
+
+/// The DICOM files of one study folder with their SOP Instance UIDs.
+///
+/// A file the archive filed is called `<sop uid>.dcm`, so its name is its
+/// UID and no header is read; a file copied in by hand under another name
+/// has its header read once here. The sidecars and anything that is not
+/// DICOM are left out.
+pub fn instances(study_dir: &Path) -> Result<Vec<Instance>> {
+    let mut out = Vec::new();
+    for f in std::fs::read_dir(study_dir)
+        .with_context(|| format!("read {}", study_dir.display()))?
+        .filter_map(|e| e.ok())
+    {
+        if !f.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let path = f.path();
+        let name = f.file_name().to_string_lossy().into_owned();
+        if name == STUDY_FILE || name == PATIENT_FILE || name.ends_with(".tmp") {
+            continue;
+        }
+        let bytes = f.metadata().map(|m| m.len()).unwrap_or(0);
+        let stem = name.strip_suffix(".dcm").unwrap_or(&name);
+        let sop_uid = if is_uid(stem) {
+            stem.to_string()
+        } else {
+            match crate::dicomfile::open_scan(&path) {
+                Ok(obj) => str_of(&obj, tags::SOP_INSTANCE_UID).unwrap_or_default(),
+                Err(_) => continue,
+            }
+        };
+        if sop_uid.is_empty() {
+            continue;
+        }
+        out.push(Instance {
+            sop_uid,
+            path,
+            bytes,
+        });
+    }
+    out.sort_by(|a, b| a.sop_uid.cmp(&b.sop_uid));
+    Ok(out)
 }
 
 /// What an import did, for the line the window reports afterwards.
@@ -213,6 +286,52 @@ impl Archive {
         Archive { root: root.into() }
     }
 
+    /// The folder the archive lives in.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The folder of the study with this Study Instance UID, under whichever
+    /// patient it was filed. `None` when the archive does not hold it.
+    ///
+    /// Only a direct `<patient>/<study>` folder is ever answered, so a UID
+    /// that came over the network cannot name anything else: it is compared
+    /// with folder names, never joined onto a path.
+    pub fn find_study(&self, study_uid: &str) -> Option<PathBuf> {
+        let want = sanitize(study_uid);
+        let dirs = std::fs::read_dir(&self.root).ok()?;
+        for pd in dirs.filter_map(|e| e.ok()) {
+            if !pd.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let Ok(sdirs) = std::fs::read_dir(pd.path()) else {
+                continue;
+            };
+            for sd in sdirs.filter_map(|e| e.ok()) {
+                if sd.file_type().map(|t| t.is_dir()).unwrap_or(false)
+                    && sd.file_name().to_str() == Some(want.as_str())
+                {
+                    return Some(sd.path());
+                }
+            }
+        }
+        None
+    }
+
+    /// The folder of the patient whose folder is called `key` (the name a
+    /// listing gives as [`PatientEntry::key`]). Like [`Archive::find_study`]
+    /// it is found by comparing names, so a key with a separator or `..` in
+    /// it finds nothing.
+    pub fn find_patient(&self, key: &str) -> Option<PathBuf> {
+        let dirs = std::fs::read_dir(&self.root).ok()?;
+        dirs.filter_map(|e| e.ok())
+            .find(|e| {
+                e.file_type().map(|t| t.is_dir()).unwrap_or(false)
+                    && e.file_name().to_str() == Some(key)
+            })
+            .map(|e| e.path())
+    }
+
     /// Does the archive hold anything at all?
     ///
     /// The start screen asks this to decide whether to offer *Load data from
@@ -296,7 +415,9 @@ impl Archive {
         let (mut uid, mut date, mut desc) = (String::new(), String::new(), String::new());
         let (mut pname, mut pid) = (String::new(), String::new());
         for f in std::fs::read_dir(study_dir)?.filter_map(|e| e.ok()) {
-            if !f.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            if !f.file_type().map(|t| t.is_file()).unwrap_or(false)
+                || f.file_name().to_string_lossy().ends_with(".tmp")
+            {
                 continue;
             }
             let Ok(obj) = crate::dicomfile::open_scan(&f.path()) else {
@@ -388,8 +509,13 @@ impl Archive {
                 continue;
             }
             std::fs::create_dir_all(&sdir).with_context(|| format!("create {}", sdir.display()))?;
-            std::fs::copy(path, &dest)
+            // Copied beside its place and renamed into it, so that a reader
+            // (a PACS server sending the study on) never takes half a file.
+            let part = dest.with_extension("dcm.tmp");
+            std::fs::copy(path, &part)
                 .with_context(|| format!("copy {} into the archive", path.display()))?;
+            std::fs::rename(&part, &dest)
+                .with_context(|| format!("file {} into the archive", path.display()))?;
             sum.stored += 1;
             if let Some(pdir) = sdir.parent() {
                 if !pdir.join(PATIENT_FILE).exists() {
@@ -430,13 +556,28 @@ impl Archive {
     }
 }
 
+/// Write a sidecar so that a reader never sees half of it: into a
+/// temporary file beside it, then renamed over it. The archive has more
+/// than one writer once a PACS server serves it (the server and the viewer
+/// on the same machine), and a listing must never read a torn card.
+fn write_card(path: &Path, text: &str) -> Result<()> {
+    let tmp = path.with_extension(format!(
+        "{}.tmp",
+        std::process::id() as u64 * 1_000_000 + CARD_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::write(&tmp, text).with_context(|| format!("write {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("write {}", path.display()))
+}
+
+/// Keeps two cards written by one process at the same moment apart.
+static CARD_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 fn write_patient_card(dir: &Path, name: &str, id: &str) -> Result<()> {
     std::fs::create_dir_all(dir)?;
-    std::fs::write(
-        dir.join(PATIENT_FILE),
-        format!("name = {name}\nid = {id}\n"),
+    write_card(
+        &dir.join(PATIENT_FILE),
+        &format!("name = {name}\nid = {id}\n"),
     )
-    .with_context(|| format!("write {}", dir.join(PATIENT_FILE).display()))
 }
 
 fn write_study_card(
@@ -447,15 +588,14 @@ fn write_study_card(
     modalities: &[String],
     files: usize,
 ) -> Result<()> {
-    std::fs::write(
-        dir.join(STUDY_FILE),
-        format!(
+    write_card(
+        &dir.join(STUDY_FILE),
+        &format!(
             "uid = {uid}\ndate = {date}\ndescription = {description}\n\
              modalities = {}\nfiles = {files}\n",
             modalities.join(",")
         ),
     )
-    .with_context(|| format!("write {}", dir.join(STUDY_FILE).display()))
 }
 
 #[cfg(test)]
@@ -507,6 +647,37 @@ mod tests {
         assert!(st
             .describe()
             .starts_with("20260827 - Planning · CT, RTSTRUCT · 214 files"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn uids_from_the_network_are_checked_and_found_only_by_name() {
+        assert!(is_uid("1.2.840.10008.5.1.4.1.1.2"));
+        assert!(!is_uid(""));
+        assert!(!is_uid("1..2"));
+        assert!(!is_uid(".1"));
+        assert!(!is_uid("1.2/../3"));
+        assert!(!is_uid(&"1".repeat(65)));
+
+        let root = std::env::temp_dir().join("rds_archive_find");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("P1").join("1.2.3")).unwrap();
+        std::fs::write(root.join("P1").join("1.2.3").join("1.2.3.4.dcm"), b"x").unwrap();
+        std::fs::write(
+            root.join("P1").join("1.2.3").join(STUDY_FILE),
+            b"uid = 1.2.3",
+        )
+        .unwrap();
+        let a = Archive::new(&root);
+        assert_eq!(a.find_study("1.2.3"), Some(root.join("P1").join("1.2.3")));
+        assert_eq!(a.find_study("9.9"), None);
+        assert_eq!(a.find_patient("P1"), Some(root.join("P1")));
+        assert_eq!(a.find_patient(".."), None);
+        assert_eq!(a.find_patient("P1/1.2.3"), None);
+        let inst = instances(&root.join("P1").join("1.2.3")).unwrap();
+        assert_eq!(inst.len(), 1, "the sidecar is not an instance");
+        assert_eq!(inst[0].sop_uid, "1.2.3.4");
+        assert_eq!(inst[0].bytes, 1);
         let _ = std::fs::remove_dir_all(&root);
     }
 

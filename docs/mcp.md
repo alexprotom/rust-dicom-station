@@ -203,7 +203,9 @@ viewer's model manager. The audit log records every call after redaction.
 ## What it is not
 
 It is not a network service: it speaks over standard input and output to the
-client that launched it. It has no PACS side. It does not drive the open
+client that launched it. It has no PACS side of its own (the station's
+archive is served to other stations by the separate PACS server,
+[pacs-server.md](pacs-server.md)). It does not drive the open
 viewer: results are files, and `open_in_viewer` starts a viewer on them
 (an attach point inside the running viewer is a possible later step, and
 would reuse the same tools and the same safety layer, which live in the

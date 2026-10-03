@@ -76,6 +76,7 @@ the next section.
 | Text fields | Keyboard | The on-screen keyboard, which iPadOS shows when a field is tapped. It is laid over the window, not beside it: a field in the lower part of the screen can be covered while typing, so move its window up first |
 | Graphics backend | Vulkan, DirectX 12, OpenGL, with fallback at start | Metal only; `Auto` (the default) picks it. There is no second attempt in the same run, because iOS allows one window loop per process |
 | MCP server | `rds-mcp` beside the executable | Not applicable: an app has no standard input and output for a client to speak over. *Settings > MCP server* still shows the snippet, which has nothing to point at |
+| PACS | the station's own archive; `rds-pacs` serves it to others | A client: *Tools > PACS > Add server* pairs with a PACS server and pulls its studies into a mirror in the app's data folder, to work on them offline and sync back, or hands the server tasks ([pacs-server.md](pacs-server.md#phones-and-tablets)). The server itself does not run here, and *Settings > PACS server* is not offered |
 | Installer, updater | `rds-setup.exe` | TestFlight, or a newer `.ipa` |
 
 The inference engines are built exactly as on the desktop, with the `gpu`

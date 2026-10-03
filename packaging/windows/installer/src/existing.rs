@@ -153,6 +153,7 @@ pub fn options_from(i: &Installed) -> Options {
     o.file_association = m.file_association;
     o.add_to_path = m.path_added;
     o.install_mcp = m.files.iter().any(|f| f.eq_ignore_ascii_case(MCP_EXE));
+    o.install_pacs = m.files.iter().any(|f| f.eq_ignore_ascii_case(PACS_EXE));
     o.graphics = std::fs::read_to_string(i.dir.join(DEFAULTS_FILE))
         .ok()
         .and_then(|t| setting_value(&t, SETTINGS_GRAPHICS_KEY))
