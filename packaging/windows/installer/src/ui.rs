@@ -98,6 +98,8 @@ pub struct SetupApp {
     /// Size of the MCP server in the payload, 0 when this installer carries
     /// none. The check box is only shown when there is something to install.
     mcp_size: u64,
+    /// The same for the PACS server.
+    pacs_size: u64,
     /// Registered installations, found when the setup started.
     installed: Vec<Installed>,
     /// The newest release on GitHub; looked up in the background.
@@ -139,6 +141,7 @@ pub fn run_install(
     let version = install::payload_version(&payload);
     let payload_size = payload.total_size().unwrap_or(0);
     let mcp_size = payload.entry_size(MCP_EXE);
+    let pacs_size = payload.entry_size(PACS_EXE);
     let mut app = SetupApp::new(
         Job::Install {
             payload: Arc::new(payload),
@@ -150,6 +153,7 @@ pub fn run_install(
         payload_size,
         mcp_size,
     );
+    app.pacs_size = pacs_size;
     app.installed = installed;
     // An update was accepted when the installation was first made; the
     // license stays one click away on the first page.
@@ -384,6 +388,7 @@ impl SetupApp {
             remove_models: false,
             payload_size,
             mcp_size,
+            pacs_size: 0,
             installed: Vec::new(),
             online: Arc::new(Mutex::new(Online::Checking)),
             work: None,
@@ -907,6 +912,8 @@ impl SetupApp {
                 .map(|n| {
                     if *n == crate::plan::MCP_EXE {
                         self.mcp_size
+                    } else if *n == crate::plan::PACS_EXE {
+                        self.pacs_size
                     } else {
                         0
                     }
@@ -924,9 +931,11 @@ impl SetupApp {
 
             // Only offered when this installer actually carries the server:
             // a box that installs nothing is worse than no box.
-            if self.mcp_size > 0 {
+            if self.mcp_size > 0 || self.pacs_size > 0 {
                 ui.add_space(10.0);
                 ui.label(RichText::new("Components").strong());
+            }
+            if self.mcp_size > 0 {
                 ui.checkbox(
                     &mut self.opts.install_mcp,
                     format!("Install the MCP server ({})", human_size(self.mcp_size)),
@@ -936,6 +945,20 @@ impl SetupApp {
                      others - open studies, segment, register and export through this \
                      station. It is a separate program that does nothing until a client \
                      starts it; leave it out if you will not use one.",
+                );
+            }
+            if self.pacs_size > 0 {
+                ui.checkbox(
+                    &mut self.opts.install_pacs,
+                    format!("Install the PACS server ({})", human_size(self.pacs_size)),
+                )
+                .on_hover_text(
+                    "rds-pacs.exe serves this computer's archive to other stations - on \
+                     the local network or over the internet - which can then download \
+                     studies, work on them, send results back and hand it tasks to run. \
+                     It does nothing until it is started in Settings > PACS server. \
+                     Every station is a client without it; install it only on the \
+                     computer whose archive the others are to reach.",
                 );
             }
 
@@ -1136,6 +1159,13 @@ impl SetupApp {
                     ui.add_space(4.0);
                     ui.label("MCP server - point your client at:");
                     ui.label(RichText::new(self.opts.mcp_path().display().to_string()).monospace());
+                }
+                if self.pacs_size > 0 && self.opts.install_pacs {
+                    ui.add_space(4.0);
+                    ui.label(
+                        "PACS server - start it in the viewer under Settings > PACS server; \
+                         Windows asks once whether it may accept connections.",
+                    );
                 }
                 if self.passive {
                     ui.label(RichText::new("This window closes by itself.").weak());

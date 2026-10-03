@@ -85,6 +85,9 @@ cask "rust-dicom-station" do
   # The MCP server ships inside the bundle; linking it into the prefix is
   # what lets an MCP client be pointed at plain \`rds-mcp\` (docs/mcp.md).
   binary "#{appdir}/Rust DICOM Station.app/Contents/MacOS/rds-mcp"
+  # The PACS server likewise: \`rds-pacs serve\` from a terminal
+  # (docs/pacs-server.md).
+  binary "#{appdir}/Rust DICOM Station.app/Contents/MacOS/rds-pacs"
 
   zap trash: [
     "~/Library/Application Support/RustDICOMStation",

@@ -4,6 +4,7 @@
 pub mod anonymize;
 pub mod app;
 pub mod archive;
+pub mod audit;
 pub mod bodymask;
 pub mod contours;
 pub mod derived;
@@ -26,6 +27,7 @@ pub mod mesh3d;
 pub mod models;
 pub mod morphology;
 pub mod motion;
+pub mod pacs;
 pub mod par;
 pub mod propagate;
 pub mod registration;

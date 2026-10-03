@@ -125,8 +125,13 @@ pub(super) fn archive_study_dir(prm: &cat::LoadFromArchive) -> Result<PathBuf> {
         ),
     };
     let study = prm.study.trim().to_lowercase();
+    // A Study Instance UID names one study exactly (what a PACS server's
+    // task binds an input to); otherwise the date or the description.
+    let by_uid = pt.studies.iter().find(|s| s.study_uid == prm.study.trim());
     let pick = if study.is_empty() {
         pt.studies.iter().max_by(|a, b| a.date.cmp(&b.date))
+    } else if by_uid.is_some() {
+        by_uid
     } else {
         pt.studies.iter().rev().find(|s| {
             s.date == study

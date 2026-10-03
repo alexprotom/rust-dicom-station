@@ -210,10 +210,12 @@ impl ViewerApp {
                                             )),
                                     )
                                     .on_hover_text(if offer_pacs {
-                                        "Take a study out of the local patient archive"
+                                        "Take a study out of the local patient archive or \
+                                         a paired PACS server"
                                     } else {
-                                        "The local patient archive is empty: import a \
-                                         study into it first"
+                                        "The local patient archive is empty and no PACS \
+                                         server is paired: import a study, or pair with a \
+                                         server in Tools > PACS"
                                     })
                                     .clicked()
                                 {

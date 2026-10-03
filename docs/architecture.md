@@ -86,9 +86,13 @@ rust-dicom-station
 │   │   as the active registration, written back out), RT (Ion) Treatment Record
 │   ├── Export: CT + RTSTRUCT + SEG + RTDOSE + RTPLAN with an editable tag table
 │   ├── Anonymizer: scan, review every identifying tag, rewrite with a UID remap
-│   └── Patient archive: a local store filed patient ▶ study ▶ instance with text
-│       sidecars; import with dedupe, listing without opening a file, loading into
-│       a workspace, derived objects (RTSTRUCT, SEG) sent back under the original UIDs
+│   ├── Patient archive: a local store filed patient ▶ study ▶ instance with text
+│   │   sidecars; import with dedupe, listing without opening a file, loading into
+│   │   a workspace, derived objects (RTSTRUCT, SEG) sent back under the original UIDs
+│   └── PACS server (optional, rds-pacs): the archive served over HTTPS with a
+│       pinned self-signed certificate, pairing codes, roles and hashed tokens;
+│       every build a client: a mirror per server with an outbox and two-way
+│       sync, tasks (workflows run on the server against its studies)
 │
 ├── Data simulation
 │   ├── Synthetic RT phantom study (CT, RTSTRUCT, RTDOSE, RTPLAN, DX, RTIMAGE, REG, RTRECORD)
@@ -221,7 +225,31 @@ src/
                     settings key, the environment override, and the order to
                     fall back through when one will not start                    App
   archive.rs        the local patient archive: on-disk layout, sidecars,
-                    scanning, importing, index rebuild, removal                   DICOM
+                    scanning, importing, index rebuild, removal; files and
+                    sidecars renamed into place, lookups by UID that compare
+                    folder names (what the PACS server answers through)        DICOM
+  audit.rs          the call log both servers write (data/<server>/audit-*.log)
+                                                                                 App
+  pacs/             the PACS server and its client: the archive served to
+                    other stations over HTTPS (docs/pacs-server.md)              PACS
+    protocol.rs       the JSON both sides share; roles; every struct
+                      #[serde(default)] so versions read each other
+    client.rs         Remote: ureq with the certificate pin (a rustls
+                      verifier), listing, bundles, uploads, tasks, operator calls
+    servers.rs        the paired servers (pacs-servers.json, owner-only)
+    mirror.rs         a server's copy on this device: an archive under
+                      pacs-mirror/<id>/, the outbox, pull / send / sync as set
+                      differences of SOP Instance UIDs
+    config.rs         pacs.toml (read and written by the viewer too)
+    local.rs          the server on this machine: its folders, running.json,
+                      the local operator's token, starting it detached
+    tls.rs            (feature pacs-server) the self-signed certificate,
+                      rustls with the ring provider
+    auth.rs           (feature pacs-server) pairing codes, hashed tokens,
+                      roles, rate limits
+    server.rs         (feature pacs-server) the routes, axum over tokio
+    tasks.rs          (feature pacs-server) the queue and runner over
+                      workflow::graph::exec, bindings, the templates
 
   app/              egui application, split by concern; every submodule is a
                     further `impl ViewerApp` block, so the struct and its state
@@ -350,8 +378,13 @@ src/
                       the ticked structures against one dose (physical /
                       effective), recomputed whenever they change
     drr_win.rs        the DRR window: geometry, projectors, comparison
-    pacs_win.rs       the PACS window: archive root, patient / study list,
-                      import, load, send back
+    pacs_win.rs       the PACS window: the row of sources, archive root,
+                      patient / study list, import, load, send back
+    pacs_remote.rs    the PACS window on a paired server: pull, load, send,
+                      sync, upload, the Tasks tab, Add server / pairing
+    pacs_server_win.rs  Settings ▶ PACS server: start / stop rds-pacs, the
+                      connection details, pairing codes, paired stations,
+                      pacs.toml, the activity log
     models_win.rs     the model manager window
     testdata_win.rs   the Download test data window over testdata.rs
     workflow_edit.rs  the workflow editor: the egui-snarl canvas (typed pins,
@@ -496,7 +529,7 @@ src/
                       argument structs: session, segment, register, fourd,
                       analysis, output
     prompts.rs        the heart_target_propagation prompt, the doc resources
-    audit.rs          the call log
+    audit             the call log (the shared crate::audit)
     server.rs         the rmcp glue: transport, progress, cancellation, _async jobs
   mesh3d.rs         contour / mask ▶ surface meshes (scanline fill, surface
                     nets, Laplacian smoothing)                                   Seg
@@ -851,12 +884,17 @@ its `ndarray` CPU backend (named directly as `burn-ndarray` as well, only to
 switch on its thread pool and SIMD kernels, which burn's own `ndarray`
 feature leaves off), with the wgpu backend added by the cargo feature
 `gpu` (default on). The cargo feature `mcp` (off by default) adds `rmcp`
-(the official MCP SDK), `tokio`, `schemars` and `toml` for the
-`rds-mcp` executable only; the viewer's build pulls none of them.
+(the official MCP SDK), `tokio` and `schemars` for the `rds-mcp`
+executable only; the viewer's build pulls none of them. The PACS client
+(every build) uses `ureq` with `rustls` named directly for the certificate
+pin, `sha2`, `base64`, `getrandom`, `zip`, `toml` and `gethostname`; the
+cargo feature `pacs-server` (off by default) adds `axum`, `axum-server`
+(TLS through rustls, the `ring` provider), `tokio`, `rcgen`, `subtle` and
+`futures-util` for the `rds-pacs` executable only.
 
 ## Testing
 
-Twenty-three integration suites plus in-module unit tests run against the same
+Twenty-five integration suites plus in-module unit tests run against the same
 code paths the GUI uses, with no external data or tooling: the analytic
 phantom round trip (**synthetic_study**), simulate → export → reload
 (**simulate_export**), rigid and B-spline recovery of known transforms
@@ -899,7 +937,19 @@ export, re-open) and saved workflows through `list_workflows` /
 that no tool, no error path and no protocol frame of the real executable ever
 carries it.
 
+Two suites need the `pacs-server` feature and start real servers on loopback
+ports (TLS, a state folder and an archive of their own under `target/`):
+**pacs_server** holds the protocol to its rules - nothing without a token,
+a role is a ceiling, a pairing code works once and guessing is throttled,
+revoking is immediate, a changed certificate is refused before the token
+leaves, no path is reachable through a URL, an oversized upload leaves the
+archive alone, certificate, identity and tokens survive a restart;
+**pacs_mirror** is the archive round trip over the wire (pull, load, draw,
+send back, the outbox while the server is down, sync both ways, a study the
+server dropped) and a task run end to end.
+
 ```
 cargo test --release
 cargo test --features mcp --test workflow --test mcp_tools --test mcp_phi
+cargo test --features pacs-server --test pacs_server --test pacs_mirror
 ```

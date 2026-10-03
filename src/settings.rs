@@ -620,7 +620,47 @@ pub fn mcp_exe_path() -> PathBuf {
     app_dir().join(name)
 }
 
-/// How an MCP client starts the server: a command and its arguments.
+/// Full path of the PACS server's configuration file (`docs/pacs-server.md`).
+pub fn pacs_config_path() -> PathBuf {
+    config_dir().join("pacs.toml")
+}
+
+/// Where the PACS server executable would be: beside this one.
+pub fn pacs_exe_path() -> PathBuf {
+    let name = if cfg!(windows) {
+        "rds-pacs.exe"
+    } else {
+        "rds-pacs"
+    };
+    app_dir().join(name)
+}
+
+/// How a person starts this installation's PACS server from a terminal
+/// (`... serve`), by the same rules as the MCP server's command (see
+/// [`McpLaunch::resolve`]): the snap's command, `flatpak run`, the AppImage
+/// with `pacs`, or `rds-pacs` beside this executable.
+pub fn pacs_launch() -> McpLaunch {
+    let linux_var = |name: &str| {
+        if cfg!(target_os = "linux") {
+            std::env::var_os(name).filter(|v| !v.is_empty())
+        } else {
+            None
+        }
+    };
+    let flatpak = linux_var("FLATPAK_ID").map(|v| v.to_string_lossy().into_owned());
+    let appimage = linux_var("APPIMAGE").map(PathBuf::from);
+    McpLaunch::resolve_app(
+        "rds-pacs",
+        "pacs",
+        snap_env().as_ref(),
+        flatpak.as_deref(),
+        appimage,
+        pacs_exe_path(),
+    )
+}
+
+/// How an MCP client starts the server: a command and its arguments. (The
+/// PACS server's command, [`pacs_launch`], has the same shape.)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpLaunch {
     pub command: PathBuf,
@@ -644,9 +684,23 @@ impl McpLaunch {
         appimage: Option<PathBuf>,
         beside: PathBuf,
     ) -> McpLaunch {
+        McpLaunch::resolve_app("rds-mcp", "mcp", snap, flatpak, appimage, beside)
+    }
+
+    /// [`McpLaunch::resolve`] for any of the installation's executables:
+    /// `app` is its name (the snap's app and the Flatpak's command),
+    /// `appimage_arg` the word the AppImage's AppRun dispatches on.
+    fn resolve_app(
+        app: &str,
+        appimage_arg: &str,
+        snap: Option<&SnapEnv>,
+        flatpak: Option<&str>,
+        appimage: Option<PathBuf>,
+        beside: PathBuf,
+    ) -> McpLaunch {
         if let Some(snap) = snap {
             McpLaunch {
-                command: snap.command("rds-mcp"),
+                command: snap.command(app),
                 args: Vec::new(),
             }
         } else if let Some(id) = flatpak {
@@ -654,14 +708,14 @@ impl McpLaunch {
                 command: PathBuf::from("flatpak"),
                 args: vec![
                     "run".to_string(),
-                    "--command=rds-mcp".to_string(),
+                    format!("--command={app}"),
                     id.to_string(),
                 ],
             }
         } else if let Some(file) = appimage {
             McpLaunch {
                 command: file,
-                args: vec!["mcp".to_string()],
+                args: vec![appimage_arg.to_string()],
             }
         } else {
             McpLaunch {
@@ -1140,6 +1194,28 @@ mod tests {
             v["mcpServers"]["rust-dicom-station"]["command"],
             r"C:\Program Files\RDS\rds-mcp.exe"
         );
+    }
+
+    #[test]
+    fn the_pacs_server_is_started_the_way_the_installation_offers() {
+        let beside = PathBuf::from("/opt/rds/rds-pacs");
+        let snap = snap_vars(&SNAP_VARS).unwrap();
+        let resolve = |s, f, a| McpLaunch::resolve_app("rds-pacs", "pacs", s, f, a, beside.clone());
+        assert_eq!(resolve(None, None, None).command, beside);
+        let a = resolve(None, None, Some(PathBuf::from("/x/RDS.AppImage")));
+        assert_eq!(a.display(), "/x/RDS.AppImage pacs");
+        let f = resolve(None, Some("io.github.alexprotom.rust-dicom-station"), None);
+        assert_eq!(f.args[1], "--command=rds-pacs");
+        let s = resolve(Some(&snap), None, None);
+        assert_eq!(
+            s.command,
+            Path::new("/snap/bin/rust-dicom-station.rds-pacs")
+        );
+        assert!(pacs_exe_path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("rds-pacs"));
     }
 
     #[test]

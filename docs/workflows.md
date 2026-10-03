@@ -119,7 +119,7 @@ bar carries a `*` while there are unsaved changes.
 |---|---|---|---|
 | 📂 DICOM folder | - | study | Reads every DICOM file in the folder and its subfolders: patients, studies, series, RT objects, and the 4D groups among the series. *Workspace* is where a run that shows its steps puts the study. |
 | 📁 DICOM folders | - | study | A batch: the folder's subfolders that match the pattern (`*`, `P*`, `case ??`) are the cases, one patient each, and the whole workflow runs once per case (see *Batches*). One per workflow. |
-| 🏥 From the archive | - | study | A study of the station's local archive (*Tools ▸ PACS*): the patient by ID or name, the study by date or words of its description, or the newest. |
+| 🏥 From the archive | - | study | A study of the station's local archive (*Tools ▸ PACS*): the patient by ID or name, the study by date, words of its description or its Study Instance UID, or the newest. Run as a task of a PACS server ([pacs-server.md](pacs-server.md#tasks-letting-the-server-do-the-work)), it reads the server's archive, bound to the study the station chose. |
 | 🔏 Anonymize | study | study | Writes an anonymized copy of the study's folder into the run folder (identifiers replaced by an alias, dates fixed, private tags removed, UIDs remapped) and goes on with the copy. |
 | 🔍 Image series | study | image | One image series by modality, words in the description, *the largest* (most slices), *the first* or *the last*; optionally not a phase of a 4D group. |
 | 🎞 4D group | study | group | The 4D group whose name contains the words given (empty: the first). When the loader recognised none, the series of one modality can be grouped instead (by phase percent, temporal position, series number). |

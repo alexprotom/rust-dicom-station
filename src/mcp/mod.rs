@@ -12,7 +12,7 @@
 //! * [`tools`] - the tools themselves, as plain functions on a [`Core`].
 //! * [`prompts`] - the `heart_target_propagation` prompt and the documents
 //!   served as resources.
-//! * [`audit`] - the call log.
+//! * [`audit`] - the call log (the station's shared [`crate::audit`]).
 //! * [`server`] - the `rmcp` glue: transport, progress, cancellation.
 //!
 //! The tools are written against [`Core::call`], a synchronous function
@@ -22,13 +22,14 @@
 //!
 //! Compiled only with the `mcp` feature; the viewer never links any of it.
 
-pub mod audit;
 pub mod config;
 pub mod phi;
 pub mod prompts;
 pub mod server;
 pub mod session;
 pub mod tools;
+
+pub use crate::audit;
 
 use anyhow::Result;
 use serde_json::Value;

@@ -538,6 +538,28 @@ pub fn fill_template(template: &str, vars: &[(&str, &str)]) -> String {
     out
 }
 
+/// Every step that names a folder of its own for what it writes - an
+/// absolute path rather than one inside the run folder - by its label.
+/// The servers that run workflows for others (the MCP server, the PACS
+/// server) refuse those: everything a run writes there stays in its run
+/// folder.
+pub fn absolute_outputs(wf: &Workflow) -> Vec<String> {
+    let mut out = Vec::new();
+    for n in &wf.nodes {
+        let folder = match &n.op {
+            Op::ExportDicom(p) => &p.folder,
+            Op::SaveReport(p) => &p.folder,
+            Op::Anonymize(p) => &p.folder,
+            Op::Drr(p) => &p.folder,
+            _ => continue,
+        };
+        if std::path::Path::new(folder.trim()).is_absolute() {
+            out.push(n.label());
+        }
+    }
+    out
+}
+
 /// A string as one file or folder name.
 pub fn safe_name(s: &str) -> String {
     let t: String = s

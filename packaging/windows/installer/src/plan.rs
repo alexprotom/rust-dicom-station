@@ -249,6 +249,9 @@ pub struct Options {
     /// Install [`MCP_EXE`] alongside the viewer. Ignored when the installer
     /// carries no MCP server.
     pub install_mcp: bool,
+    /// Install [`PACS_EXE`] alongside the viewer. Ignored when the installer
+    /// carries no PACS server.
+    pub install_pacs: bool,
     pub launch_after: bool,
     /// Which graphics API the viewer should start on.
     pub graphics: Graphics,
@@ -278,6 +281,9 @@ impl Default for Options {
             // to be built with it, and leaving a 20 MB executable out by
             // default only means answering the question twice.
             install_mcp: true,
+            // Off: a default installation is a client. The server is for
+            // the one machine whose archive others are to reach.
+            install_pacs: false,
             launch_after: true,
             // Vulkan is the right default: it is the faster backend and it
             // works on the overwhelming majority of machines. The page
@@ -304,13 +310,20 @@ impl Options {
         self.dir.join(MCP_EXE)
     }
 
+    pub fn pacs_path(&self) -> PathBuf {
+        self.dir.join(PACS_EXE)
+    }
+
     /// The payload entries this installation leaves out.
     pub fn skipped_files(&self) -> Vec<&'static str> {
-        if self.install_mcp {
-            Vec::new()
-        } else {
-            vec![MCP_EXE]
+        let mut out = Vec::new();
+        if !self.install_mcp {
+            out.push(MCP_EXE);
         }
+        if !self.install_pacs {
+            out.push(PACS_EXE);
+        }
+        out
     }
 
     pub fn manifest_path(&self) -> PathBuf {

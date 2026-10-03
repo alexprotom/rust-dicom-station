@@ -47,6 +47,7 @@ out="$here/out"
 app_name="Rust DICOM Station"
 exe_name="rust-dicom-station"
 mcp_name="rds-mcp"
+pacs_name="rds-pacs"
 icon_stem="rust-dicom-station"
 
 # The floor, in one place. Everything else reads it from here.
@@ -86,8 +87,10 @@ version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$root/Cargo.toml" | head -n1)
 echo "rust-dicom-station $version, macOS $arch ($target), $profile, min macOS $min_macos"
 
 # ---- 1. the executables ----------------------------------------------------
-# --features mcp adds the second binary, rds-mcp, which goes into the bundle
-# beside the viewer; that is the whole of the macOS MCP story (docs/mcp.md).
+# --features mcp,pacs-server adds the other two binaries, rds-mcp and
+# rds-pacs, which go into the bundle beside the viewer; that is the whole of
+# the macOS MCP story (docs/mcp.md) and of the PACS server's
+# (docs/pacs-server.md).
 mkdir -p "$out"
 if [ "$build" = 1 ]; then
     # --profile rather than an optional --release: macOS still ships bash
@@ -95,14 +98,14 @@ if [ "$build" = 1 ]; then
     (
         cd "$root"
         MACOSX_DEPLOYMENT_TARGET="$min_macos" \
-            cargo build --features mcp --target "$target" --profile "$profile"
+            cargo build --features mcp,pacs-server --target "$target" --profile "$profile"
     )
 fi
 
 # `--profile dev` still writes into target/<triple>/debug.
 built="$root/target/$target/release"
 if [ "$profile" = dev ]; then built="$root/target/$target/debug"; fi
-for f in "$exe_name" "$mcp_name"; do
+for f in "$exe_name" "$mcp_name" "$pacs_name"; do
     [ -f "$built/$f" ] || { echo "$built/$f is missing - build it first" >&2; exit 1; }
 done
 
@@ -144,7 +147,9 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
 cp "$built/$exe_name" "$app/Contents/MacOS/$exe_name"
 cp "$built/$mcp_name" "$app/Contents/MacOS/$mcp_name"
-chmod +x "$app/Contents/MacOS/$exe_name" "$app/Contents/MacOS/$mcp_name"
+cp "$built/$pacs_name" "$app/Contents/MacOS/$pacs_name"
+chmod +x "$app/Contents/MacOS/$exe_name" "$app/Contents/MacOS/$mcp_name" \
+    "$app/Contents/MacOS/$pacs_name"
 cp "$icns" "$app/Contents/Resources/$icon_stem.icns"
 
 sed -e "s/@VERSION@/$version/g" -e "s/@MIN_MACOS@/$min_macos/g" \
@@ -157,7 +162,7 @@ printf 'APPL????' > "$app/Contents/PkgInfo"
 # user's machine: the wrong architecture, a deployment target that drifted
 # away from LSMinimumSystemVersion, and a bundle that does not hold both
 # executables.
-for f in "$exe_name" "$mcp_name"; do
+for f in "$exe_name" "$mcp_name" "$pacs_name"; do
     bin="$app/Contents/MacOS/$f"
     have_arch="$(lipo -archs "$bin")"
     [ "$have_arch" = "$arch" ] || {
@@ -194,6 +199,7 @@ else
     echo "no RDS_CODESIGN_IDENTITY - signing ad-hoc; the first launch needs Finder ▸ right-click ▸ Open"
 fi
 "${sign[@]}" "$app/Contents/MacOS/$mcp_name"
+"${sign[@]}" "$app/Contents/MacOS/$pacs_name"
 "${sign[@]}" "$app/Contents/MacOS/$exe_name"
 "${sign[@]}" "$app"
 codesign --verify --strict --verbose=2 "$app"

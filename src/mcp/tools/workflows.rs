@@ -136,25 +136,6 @@ pub struct RunArgs {
     pub parallel: bool,
 }
 
-/// Every folder a step names for its own output, which must stay inside
-/// the run folder here.
-fn absolute_outputs(wf: &Workflow) -> Vec<String> {
-    let mut out = Vec::new();
-    for n in &wf.nodes {
-        let folder = match &n.op {
-            Op::ExportDicom(p) => &p.folder,
-            Op::SaveReport(p) => &p.folder,
-            Op::Anonymize(p) => &p.folder,
-            Op::Drr(p) => &p.folder,
-            _ => continue,
-        };
-        if Path::new(folder.trim()).is_absolute() {
-            out.push(n.label());
-        }
-    }
-    out
-}
-
 /// Refuse what the server's rules do not allow a workflow to reach.
 fn outside_reads(core: &Core, wf: &Workflow) -> Result<()> {
     for n in &wf.nodes {
@@ -228,7 +209,7 @@ pub fn run_workflow(core: &mut Core, a: RunArgs, p: &Progress) -> Result<Value> 
         })
         .ok_or_else(|| anyhow!("no workflow '{}' (see list_workflows)", a.workflow))?;
     let wf = o.workflow;
-    let abs = absolute_outputs(&wf);
+    let abs = crate::workflow::graph::absolute_outputs(&wf);
     if !abs.is_empty() {
         bail!(
             "{} write to a folder of their own; here everything a run writes goes under the \

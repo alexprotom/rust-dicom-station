@@ -117,8 +117,11 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # With the PACS server: it ships on both, and it is the one part of
+      # the code base that only these two would otherwise first compile at
+      # release time. Features add, so the default build is checked as well.
       - name: cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --features pacs-server --all-targets -- -D warnings
 
   # The test suite, on all three desktop platforms.
   #
@@ -255,6 +258,43 @@ jobs:
 
       - name: cargo nextest (mcp)
         run: cargo nextest run --no-default-features --features mcp --test workflow --test mcp_tools --test mcp_phi ${{ env.NO_RUN }}
+
+  # The PACS server (`rds-pacs`) and its two suites live behind the
+  # `pacs-server` feature, as the MCP server lives behind `mcp`: the viewer's
+  # build carries only the client side. Clippy checks it with the default
+  # features, as it ships; the suites run in the CPU-only build. They start
+  # real servers on loopback ports (TLS, pairing, roles, the mirror, a task
+  # run) and need nothing from outside.
+  pacs:
+    name: pacs server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install Linux GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev \
+            libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo clippy (pacs-server)
+        run: cargo clippy --features pacs-server --all-targets -- -D warnings
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: cargo nextest (pacs-server)
+        run: cargo nextest run --no-default-features --features pacs-server --test pacs_server --test pacs_mirror ${{ env.NO_RUN }}
 
   # The Windows installer is a separate workspace and is never built by
   # `cargo build` in the repository root, so it needs its own job. It is
