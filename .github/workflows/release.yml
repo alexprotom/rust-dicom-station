@@ -97,10 +97,11 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
-      # `--features mcp` adds the second executable, rds-mcp.exe, which
-      # rds-pack ships beside the viewer.
+      # `--features mcp,pacs-server` adds the other two executables,
+      # rds-mcp.exe and rds-pacs.exe, which rds-pack ships beside the viewer
+      # (the setup program offers the PACS server unticked).
       - name: Build viewer
-        run: cargo build --release --features mcp
+        run: cargo build --release --features mcp,pacs-server
 
       - name: Upload viewer executables
         uses: actions/upload-artifact@v4
@@ -109,6 +110,7 @@ jobs:
           path: |
             target/release/rust-dicom-station.exe
             target/release/rds-mcp.exe
+            target/release/rds-pacs.exe
           if-no-files-found: error
           retention-days: 1
 
@@ -184,6 +186,7 @@ jobs:
             --repo . `
             --app built/viewer/rust-dicom-station.exe `
             --mcp built/viewer/rds-mcp.exe `
+            --pacs built/viewer/rds-pacs.exe `
             --setup built/setup/rds-setup.exe `
             --out $out `
             --winget winget-manifests `
@@ -267,12 +270,12 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
-      # packaging/linux/appimage/build-appimage.sh: the release build of both
-      # executables, the AppDir (desktop entry, icon, the AppRun that routes
-      # `mcp` to the server), the window-system libraries winit loads at run
-      # time, linuxdeploy, and the checks - the file is executable, those
-      # libraries are inside, and `<image> mcp --check` starts the MCP
-      # server. Models are intentionally NOT included: the application
+      # packaging/linux/appimage/build-appimage.sh: the release build of the
+      # three executables, the AppDir (desktop entry, icon, the AppRun that
+      # routes `mcp` and `pacs` to the servers), the window-system libraries
+      # winit loads at run time, linuxdeploy, and the checks - the file is
+      # executable, those libraries are inside, and `<image> mcp --check` and
+      # `<image> pacs --check` start the two servers. Models are intentionally NOT included: the application
       # downloads them at run time into ~/.local/share/RustDICOMStation/models.
       #
       # Through bash, so a checkout that lost the executable bit (a commit

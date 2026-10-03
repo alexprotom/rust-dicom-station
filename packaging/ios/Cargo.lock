@@ -6504,9 +6504,10 @@ dependencies = [
 
 [[package]]
 name = "rust-dicom-station"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "dicom-core",
  "dicom-dictionary-std",
  "dicom-object",
@@ -6515,17 +6516,23 @@ dependencies = [
  "eframe",
  "egui",
  "egui-snarl",
+ "gethostname",
+ "getrandom 0.3.4",
  "image",
  "png",
  "rayon",
  "rds-core",
  "rds-engines",
  "rfd",
+ "rustls",
  "serde",
  "serde_json",
+ "sha2",
+ "toml",
  "ureq",
  "walkdir",
  "winresource",
+ "zip 2.4.2",
 ]
 
 [[package]]

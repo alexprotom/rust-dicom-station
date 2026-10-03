@@ -50,7 +50,7 @@ pub struct RdsServer {
 impl RdsServer {
     pub fn new(core: Core) -> RdsServer {
         let redactor = core.session.redactor.clone();
-        let audit = Arc::new(Audit::new(core.session.config.audit_log));
+        let audit = Arc::new(Audit::new(core.session.config.audit_log, "mcp"));
         let timeout = Duration::from_secs(core.session.config.job_timeout_minutes.max(1) * 60);
         RdsServer {
             core: Arc::new(Mutex::new(core)),

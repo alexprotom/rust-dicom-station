@@ -96,6 +96,18 @@ available to the snap. If Vulkan cannot create a device, the viewer falls back t
 itself, as on any other installation ([viewer.md](viewer.md#graphics-backend));
 `WGPU_BACKEND=gl rust-dicom-station` forces it from a terminal.
 
+## The PACS server in a snap
+
+The PACS server ([pacs-server.md](pacs-server.md)) is the snap's third
+command, `rust-dicom-station.rds-pacs`, with the `network-bind` interface
+it needs to listen (connected automatically, as are the others it uses).
+*Settings ▶ PACS server ▶ Start* runs it from the viewer, under the
+viewer's own confinement, which plugs `network-bind` for that reason; from
+a terminal it is `rust-dicom-station.rds-pacs serve`. `pacs.toml` and the
+server's state go into `~/snap/rust-dicom-station/common/config`, its tasks
+and log into `.../common/data/pacs`, and the archive it serves must be a
+folder the snap may use, like the MCP server's roots.
+
 ## The MCP server in a snap
 
 An MCP client cannot run the executable inside the snap's read-only mount;

@@ -86,6 +86,16 @@ to OpenGL on its own ([viewer.md](viewer.md#graphics-backend)), and
 `flatpak run --env=WGPU_BACKEND=gl io.github.alexprotom.rust-dicom-station`
 forces it.
 
+## The PACS server in a Flatpak
+
+The PACS server ([pacs-server.md](pacs-server.md)) is a third command of
+the application: `flatpak run --command=rds-pacs
+io.github.alexprotom.rust-dicom-station serve`. *Settings ▶ PACS server ▶
+Start* starts the same executable from inside the sandbox; the
+`--share=network` permission covers both reaching servers and listening.
+The archive it serves is the application's own unless `archive_dir` names
+a folder granted with `flatpak override --filesystem=...`.
+
 ## The MCP server in a Flatpak
 
 A client cannot run the executable inside the sandbox; it runs it through

@@ -13,6 +13,7 @@ impl ViewerApp {
         let mut open_save_img = false;
         let mut open_models = false;
         let mut open_pacs = false;
+        let mut open_pacs_server = false;
         let mut open_drr = false;
         let mut open_export = false;
         let mut wf_menu: Option<workflow_edit::WfPending> = None;
@@ -401,9 +402,9 @@ impl ViewerApp {
                     if tip_button(
                         ui,
                         "🏥 PACS - patient archive",
-                        "The local archive: every study filed here, ready to be taken \
-                         into a workspace and given back the structures and \
-                         segmentations drawn on it",
+                        "The local archive, and the PACS servers this station is paired \
+                         with: every study filed there, ready to be taken into a workspace \
+                         and given back the structures and segmentations drawn on it",
                     ) {
                         open_pacs = true;
                         ui.close();
@@ -596,6 +597,39 @@ impl ViewerApp {
                             ui.close();
                         }
                     });
+                    // The server runs on a PC or a Mac; a tablet or a phone is
+                    // always a client (Tools > PACS > Add server).
+                    if cfg!(not(any(target_os = "android", target_os = "ios"))) {
+                        ui.menu_button("PACS server", |ui| {
+                            if crate::pacs::local::installed() {
+                                ui.weak(format!(
+                                    "PACS server installed: {}",
+                                    crate::settings::pacs_launch().display()
+                                ));
+                            } else {
+                                ui.weak(format!(
+                                    "PACS server not installed: {} was not found. It is an \
+                                     optional component of the installer, or cargo build \
+                                     --release --features pacs-server.",
+                                    crate::settings::pacs_exe_path().display()
+                                ));
+                            }
+                            ui.weak(format!(
+                                "Configuration: {}",
+                                crate::settings::pacs_config_path().display()
+                            ));
+                            ui.add_space(4.0);
+                            if tip_button(
+                                ui,
+                                "🖥 Open the server window",
+                                "Start and stop the server, copy what other stations need to \
+                                 connect, make pairing codes, see and revoke paired stations",
+                            ) {
+                                open_pacs_server = true;
+                                ui.close();
+                            }
+                        });
+                    }
                     if let Some(msg) = &self.settings_error {
                         ui.weak(msg);
                     }
@@ -674,6 +708,9 @@ impl ViewerApp {
         }
         if open_pacs {
             self.open_pacs_window();
+        }
+        if open_pacs_server {
+            self.open_pacs_server_window();
         }
         if open_models {
             self.open_models_window();

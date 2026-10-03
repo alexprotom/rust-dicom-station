@@ -27,6 +27,7 @@ Step 3 appends the payload to the setup binary. Useful flags:
 | `--no-docs` | leave `docs/` out |
 | `--app <FILE>` | use a different viewer executable |
 | `--mcp <FILE>` / `--no-mcp` | the MCP server `rds-mcp.exe` rides along when `target/release/rds-mcp.exe` exists (build it with `cargo build --release --features mcp`); these override that |
+| `--pacs <FILE>` / `--no-pacs` | the same for the PACS server `rds-pacs.exe` (`--features pacs-server`); the setup program offers it unticked |
 | `--out <FILE>` | write the installer somewhere else |
 | `--winget <DIR>` | also write the winget manifests for this installer into `DIR` (see [winget](#winget)) |
 | `--url <URL>` | the download URL recorded in them (default: this version's GitHub release asset) |
@@ -45,8 +46,10 @@ publisher" warning on first run.
 
 * **Copies the program** - `rust-dicom-station.exe`, `README.md`,
   `LICENSE.txt`, `docs/`, `rds-mcp.exe` (the MCP server, see
-  [docs/mcp.md](../../../docs/mcp.md)) when it was built, and `data-test/` when
-  it was packed in - into
+  [docs/mcp.md](../../../docs/mcp.md)) when it was built, `rds-pacs.exe` (the
+  PACS server, see [docs/pacs-server.md](../../../docs/pacs-server.md)) when it
+  was built *and* ticked on the options page (it is off by default: a default
+  installation is a client), and `data-test/` when it was packed in - into
   `%LOCALAPPDATA%\Programs\Rust DICOM Station` (per user, the default) or
   `%ProgramFiles%\Rust DICOM Station` (all users, asks for elevation).
 * **Dependencies** - checks for the Microsoft Visual C++ runtime that Rust's
@@ -189,7 +192,8 @@ ones it was made with; everything not mentioned stays as it was.
 `--models` takes `none | 6mm | 3mm | 1.5mm | all`, `--graphics` takes
 `vulkan | dx12 | auto` (default `vulkan`); the other flags are `--just-me`,
 `--models-dir` (the model folder), `--no-start-menu`, `--no-desktop-shortcut`,
-`--no-file-association`, `--no-vcredist`, `--no-mcp`, `--no-launch`,
+`--no-file-association`, `--no-vcredist`, `--no-mcp`, `--pacs` / `--no-pacs`
+(install the PACS server or not; not by default), `--no-launch`,
 `--keep-others`, `--allow-downgrade`, and `--from` for the uninstaller.
 
 | exit code | meaning |

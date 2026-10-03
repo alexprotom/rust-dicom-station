@@ -58,6 +58,9 @@ INSTALL OPTIONS:
     --add-to-path         add the program folder to PATH
     --no-vcredist         do not install the Visual C++ runtime when missing
     --no-mcp              do not install the MCP server (rds-mcp.exe)
+    --pacs                install the PACS server (rds-pacs.exe), which serves
+                          this computer's archive to other stations
+    --no-pacs             do not install the PACS server (default)
     --no-launch           do not offer to start the viewer afterwards
     --graphics <API>      which graphics API the viewer starts on:
                           vulkan (default) | dx12 | auto
@@ -117,7 +120,7 @@ fn parse_args() -> Result<Args> {
 /// Install options that take a value.
 const VALUE_FLAGS: [&str; 4] = ["--dir", "--models-dir", "--graphics", "--models"];
 /// Install options that stand alone.
-const SWITCHES: [&str; 10] = [
+const SWITCHES: [&str; 12] = [
     "--all-users",
     "--just-me",
     "--no-start-menu",
@@ -126,6 +129,8 @@ const SWITCHES: [&str; 10] = [
     "--add-to-path",
     "--no-vcredist",
     "--no-mcp",
+    "--pacs",
+    "--no-pacs",
     "--no-launch",
     "--keep-others",
 ];
@@ -188,6 +193,8 @@ fn apply_install_flags(opts: &mut Options, flags: &[String]) -> Result<()> {
             "--add-to-path" => opts.add_to_path = true,
             "--no-vcredist" => opts.install_vcredist = false,
             "--no-mcp" => opts.install_mcp = false,
+            "--pacs" => opts.install_pacs = true,
+            "--no-pacs" => opts.install_pacs = false,
             "--no-launch" => opts.launch_after = false,
             "--keep-others" => opts.remove_others = false,
             "--graphics" => {
@@ -260,6 +267,9 @@ pub fn args_for_relaunch(o: &Options) -> String {
     }
     if !o.install_mcp {
         s.push_str(" --no-mcp");
+    }
+    if o.install_pacs {
+        s.push_str(" --pacs");
     }
     if !o.remove_others {
         s.push_str(" --keep-others");
@@ -502,6 +512,8 @@ mod tests {
                         add_to_path: true,
                         install_vcredist: false,
                         install_mcp,
+                        // The two optional servers go opposite ways.
+                        install_pacs: !install_mcp,
                         launch_after: true,
                         models,
                         graphics,
@@ -511,6 +523,7 @@ mod tests {
                         .opts
                         .expect("parse_from always fills in the options");
                     assert_eq!(after.install_mcp, before.install_mcp, "the MCP component");
+                    assert_eq!(after.install_pacs, before.install_pacs, "the PACS server");
                     assert_eq!(after.dir, before.dir);
                     assert_eq!(after.models_dir, before.models_dir);
                     assert_eq!(after.scope, before.scope);

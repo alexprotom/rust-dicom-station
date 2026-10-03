@@ -1,6 +1,6 @@
 [package]
 name = "rust-dicom-station"
-version = "0.10.2"
+version = "0.11.0"
 edition = "2021"
 description = "Fast, robust DICOM / RT DICOM viewer in pure Rust (CT/MR volumes, RTSTRUCT, RTDOSE, RTPLAN) with a three-view MPR layout"
 license = "MIT"
@@ -44,9 +44,40 @@ egui-snarl = "0.12"
 # second executable that links the same library and speaks the Model Context
 # Protocol over standard input and output; see docs/mcp.md.
 rmcp = { version = "3.2", optional = true, default-features = false, features = ["server", "macros", "transport-io", "schemars"] }
-tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+# Shared with the PACS server below; `fs`, `io-util`, `net` and `signal` are
+# what that one needs (bodies streamed to disk, its listener, Ctrl+C).
+tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net", "signal"] }
 schemars = { version = "1", optional = true }
-toml = { version = "1", optional = true, default-features = false, features = ["parse", "serde", "std"] }
+
+# ---- the remote archive, client side (every build, the mobile ones too) ----
+# `src/pacs/` talks to a PACS server (`rds-pacs`, below) over HTTPS through
+# the same `ureq` as the downloads, so every build is a client. `rustls` is
+# named directly only for the certificate pin - a verifier that accepts
+# exactly the one certificate a server was paired with - and with the
+# version and features `ureq` already compiles. `sha2` makes fingerprints
+# and token hashes, `getrandom` the tokens' bytes, `zip` the bundles studies
+# travel in, `toml` reads and writes `pacs.toml` (and the MCP server's
+# `mcp.toml`), `gethostname` names this device when it pairs.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+toml = { version = "1", default-features = false, features = ["parse", "display", "serde", "std"] }
+gethostname = "1"
+
+# ---- the PACS server (`rds-pacs`, feature `pacs-server`) ----
+# Optional, like the MCP server: a third executable that serves the archive
+# folder to other stations over HTTPS (docs/pacs-server.md). The viewer's
+# default build compiles none of this, and the Android and iOS front ends
+# never enable it, so those are always clients. TLS is rustls with the
+# `ring` provider set explicitly (`tls-rustls-no-provider`), the same one
+# the client side uses; `rcgen` makes the self-signed certificate.
+axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "json", "query", "tokio"] }
+axum-server = { version = "0.8", optional = true, features = ["tls-rustls-no-provider"] }
+rcgen = { version = "0.14", optional = true }
+subtle = { version = "2", optional = true }
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["std"] }
 
 # ---- the desktop window stack (Windows, Linux, macOS) ----
 # The Android build (see `packaging/android/`) is the same library behind a different
@@ -92,7 +123,9 @@ default = ["gpu"]
 # The wgpu inference backend of the engines (see crates/rds-engines).
 gpu = ["rds-engines/gpu"]
 # The MCP server executable and the `mcp` library module behind it.
-mcp = ["dep:rmcp", "dep:tokio", "dep:schemars", "dep:toml"]
+mcp = ["dep:rmcp", "dep:tokio", "dep:schemars"]
+# The PACS server executable and the server half of the `pacs` module.
+pacs-server = ["dep:axum", "dep:axum-server", "dep:tokio", "dep:rcgen", "dep:subtle", "dep:futures-util"]
 
 # The MedSAM2 suite drives the engine's modules through burn tensors itself.
 [dev-dependencies]
@@ -110,6 +143,19 @@ required-features = ["mcp"]
 [[test]]
 name = "mcp_tools"
 required-features = ["mcp"]
+
+[[bin]]
+name = "rds-pacs"
+path = "src/bin/rds-pacs.rs"
+required-features = ["pacs-server"]
+
+[[test]]
+name = "pacs_server"
+required-features = ["pacs-server"]
+
+[[test]]
+name = "pacs_mirror"
+required-features = ["pacs-server"]
 
 [workspace]
 members = ["crates/rds-core", "crates/rds-engines"]

@@ -101,8 +101,8 @@ jobs:
       # The library and both binaries - what the bundle ships. Not
       # --all-targets: the tests and examples add a great deal of build time
       # and nothing this job is trying to find out.
-      - name: cargo check (Intel, with the MCP server)
-        run: cargo check --features mcp --target x86_64-apple-darwin
+      - name: cargo check (Intel, with the MCP and PACS servers)
+        run: cargo check --features mcp,pacs-server --target x86_64-apple-darwin
 
   # ==========================================================================
   # The disk images
@@ -239,7 +239,7 @@ jobs:
             exit 1
           fi
 
-          for exe in rust-dicom-station rds-mcp; do
+          for exe in rust-dicom-station rds-mcp rds-pacs; do
             bin="$app/Contents/MacOS/$exe"
             test -x "$bin"
             got=$(lipo -archs "$bin")
@@ -259,16 +259,17 @@ jobs:
           codesign --display --verbose=2 "$app" 2>&1 | grep -E 'Identifier|Authority|flags' || true
           test -f "$app/Contents/Resources/rust-dicom-station.icns"
 
-      # The MCP server is the one thing in the bundle that can be started
-      # without a display, and `--check` reads its configuration and exits
-      # without speaking the protocol. Only for the native architecture: this
-      # runner cannot execute an Intel binary.
-      - name: Start the MCP server from the bundle
+      # The two servers are the things in the bundle that can be started
+      # without a display, and `--check` reads their configuration and exits
+      # without speaking a protocol or listening. Only for the native
+      # architecture: this runner cannot execute an Intel binary.
+      - name: Start the MCP and PACS servers from the bundle
         if: matrix.arch == 'arm64'
         shell: bash
         run: |
           set -euo pipefail
           "packaging/macos/out/Rust DICOM Station.app/Contents/MacOS/rds-mcp" --check
+          "packaging/macos/out/Rust DICOM Station.app/Contents/MacOS/rds-pacs" --check
 
       - name: Upload the disk image
         uses: actions/upload-artifact@v4

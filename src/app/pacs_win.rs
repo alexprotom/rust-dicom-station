@@ -11,7 +11,9 @@
 //! Add DICOM folder*, with the same merging and the same progress.
 
 use crate::archive::{Archive, ImportSummary, PatientEntry};
+use crate::pacs::servers::Servers;
 
+use super::pacs_remote::{self, PairDialog, RemoteView, Source};
 use super::*;
 
 /// What the PACS window is showing and doing.
@@ -26,16 +28,28 @@ pub(super) struct PacsWindow {
     /// no study selected means "the whole patient".
     pub selected: Option<(usize, Option<usize>)>,
     pub status: Option<String>,
+    /// This station's archive, or a paired server (`pacs_remote.rs`).
+    pub source: Source,
+    /// The paired servers, as their file says.
+    pub servers: Servers,
+    /// What is shown of the selected server.
+    pub remote: Option<RemoteView>,
+    /// *Add server* / *Pair again*, while open.
+    pub pairing: Option<PairDialog>,
 }
 
 impl PacsWindow {
-    fn new(dir: String) -> PacsWindow {
+    fn new(dir: String, servers: Servers) -> PacsWindow {
         PacsWindow {
             dir,
             patients: None,
             expanded: None,
             selected: None,
             status: None,
+            source: Source::Local,
+            servers,
+            remote: None,
+            pairing: None,
         }
     }
 }
@@ -57,7 +71,8 @@ impl ViewerApp {
             } else {
                 self.archive_dir.clone()
             };
-            self.pacs = Some(PacsWindow::new(dir));
+            let servers = self.reload_servers();
+            self.pacs = Some(PacsWindow::new(dir, servers));
             self.start_pacs_scan();
         }
     }
@@ -224,6 +239,9 @@ impl ViewerApp {
         // four buttons on the first run.
         let targets = self.open_plus_new();
         let mut w = self.pacs.take().expect("checked above");
+        let mut ractions: Vec<pacs_remote::Action> = Vec::new();
+        let rbusy = self.pacs_remote_job.is_some();
+        let rprogress = self.pacs_remote_job.as_ref().map(|j| j.progress.clone());
 
         detach::tool_window(
             ctx,
@@ -232,6 +250,30 @@ impl ViewerApp {
             &mut open,
             detach::WinOpts::size(720.0, 520.0),
             |ui| {
+                let rctx = pacs_remote::Ctx {
+                    servers: &w.servers,
+                    busy: rbusy,
+                    progress: rprogress.as_deref(),
+                    loaded,
+                    targets: targets.clone(),
+                };
+                pacs_remote::source_row(ui, &w, &rctx, &mut ractions);
+                ui.separator();
+                if let Some(d) = w.pairing.as_mut() {
+                    pacs_remote::pairing_ui(ui, d, &rctx, &mut ractions);
+                    return;
+                }
+                if let Source::Remote(id) = &w.source {
+                    match (w.servers.get(id), w.remote.as_mut()) {
+                        (Some(entry), Some(v)) => {
+                            pacs_remote::remote_ui(ui, v, entry, &rctx, &mut ractions)
+                        }
+                        _ => {
+                            ui.weak("This server is no longer paired.");
+                        }
+                    }
+                    return;
+                }
                 ui.label(
                     "The local archive: every study filed here, ready to be taken into a \
                      workspace and given back the structures and segmentations drawn on it.",
@@ -463,6 +505,9 @@ impl ViewerApp {
         }
         if let Some((slot, dir)) = load {
             self.start_load(slot, dir);
+        }
+        if !ractions.is_empty() {
+            self.remote_actions(ractions);
         }
     }
 }

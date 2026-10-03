@@ -44,13 +44,13 @@ output="rust-dicom-station-$version-x86_64.AppImage"
 echo "rust-dicom-station $version, Linux x86_64 AppImage"
 
 # ---- 1. the executables ----------------------------------------------------
-# `--features mcp` adds the second executable, rds-mcp, which the AppImage
-# carries beside the viewer.
+# `--features mcp,pacs-server` adds the other two executables, rds-mcp and
+# rds-pacs, which the AppImage carries beside the viewer.
 if [ "$build" = 1 ]; then
-    (cd "$root" && cargo build --release --features mcp)
+    (cd "$root" && cargo build --release --features mcp,pacs-server)
 fi
 built="$root/target/release"
-for f in rust-dicom-station rds-mcp; do
+for f in rust-dicom-station rds-mcp rds-pacs; do
     [ -f "$built/$f" ] || { echo "$built/$f is missing - build it first" >&2; exit 1; }
 done
 
@@ -63,6 +63,7 @@ mkdir -p "$appdir/usr/bin" \
 
 cp "$built/rust-dicom-station" "$appdir/usr/bin/rust-dicom-station"
 cp "$built/rds-mcp" "$appdir/usr/bin/rds-mcp"
+cp "$built/rds-pacs" "$appdir/usr/bin/rds-pacs"
 cp "$root/assets/rust-dicom-station.png" \
    "$appdir/usr/share/icons/hicolor/256x256/apps/rust-dicom-station.png"
 cp "$here/rust-dicom-station.desktop" "$appdir/usr/share/applications/"
@@ -159,6 +160,12 @@ done
 # speaking the protocol, so it is safe to run here.
 if ! "$out/$output" mcp --check; then
     echo "the AppImage does not run the MCP server on 'mcp'" >&2
+    exit 1
+fi
+# The same for the PACS server on 'pacs'; `--check` prints the
+# configuration and exits without listening.
+if ! "$out/$output" pacs --check; then
+    echo "the AppImage does not run the PACS server on 'pacs'" >&2
     exit 1
 fi
 

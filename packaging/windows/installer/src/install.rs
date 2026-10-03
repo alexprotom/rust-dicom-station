@@ -111,6 +111,18 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
             ),
         ));
     }
+    // The PACS server keeps running when the viewer is closed, and a
+    // running executable cannot be replaced either.
+    if is_running(&opts.pacs_path()) {
+        return Err(failure(
+            EXIT_IN_USE,
+            format!(
+                "the PACS server is running from {} - stop it (Settings > PACS server > Stop, \
+                 or rds-pacs stop) and start the installer again",
+                opts.dir.display()
+            ),
+        ));
+    }
     // A setup program an earlier update had to move aside while it ran.
     let _ = std::fs::remove_file(opts.dir.join(SETUP_EXE_OLD));
 

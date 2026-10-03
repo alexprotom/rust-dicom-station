@@ -1846,8 +1846,8 @@ pub struct LoadFromArchive {
     pub archive: String,
     /// The patient's ID or name, or a pattern with `*`.
     pub patient: String,
-    /// Words of the study's description, or its date (YYYYMMDD); empty
-    /// takes the newest.
+    /// Words of the study's description, its date (YYYYMMDD) or its Study
+    /// Instance UID; empty takes the newest.
     pub study: String,
     pub workspace: Workspace,
 }

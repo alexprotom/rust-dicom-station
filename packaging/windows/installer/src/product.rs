@@ -13,6 +13,11 @@ pub const APP_EXE: &str = "rust-dicom-station.exe";
 /// station from an MCP client, and it is a second executable to trust and to
 /// keep up to date for everybody else.
 pub const MCP_EXE: &str = "rds-mcp.exe";
+/// The PACS server, shipped beside the viewer by `rds-pack` when it was
+/// built. Optional at install time and off by default: it serves this
+/// computer's archive to other stations, which a station that only views
+/// and works as a client does not want running or installed.
+pub const PACS_EXE: &str = "rds-pacs.exe";
 /// Shown in Apps & features, and matched by winget against the manifest's
 /// `AppsAndFeaturesEntries`.
 pub const PUBLISHER: &str = "Rust DICOM Station contributors";
