@@ -2304,7 +2304,7 @@ impl ViewerApp {
         pixels.par_chunks_mut(w).enumerate().for_each(|(py, row)| {
             for (px, out) in row.iter_mut().enumerate() {
                 let a_gray = wl(slice_buf[py * w + px] as f32);
-                let b_gray = samples[py * w + px].map(&wl).unwrap_or(0.0);
+                let b_gray = samples[py * w + px].map(wl).unwrap_or(0.0);
                 let g = a_gray + (b_gray - a_gray) * weight;
                 *out = Color32::from_rgb(a_gray as u8, g as u8, a_gray as u8);
             }
