@@ -24,8 +24,14 @@ name: CI
 #
 # `workflow_dispatch` stays as the manual way to run the whole thing against
 # any branch.
+#
+# Pull requests into `develop` (features) and `main` (the release candidate,
+# coming from `nightly`) only. A pull request into `nightly` gets the lighter
+# checks of nightly.yml instead; what it carries meets this suite again on
+# its way into main.
 on:
   pull_request:
+    branches: [develop, main]
   push:
     branches: [main]
   workflow_dispatch:

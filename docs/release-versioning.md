@@ -22,15 +22,15 @@ Each version can only be released once. The [release workflow](../.github/workfl
 
 ## Branch Workflow
 
-The repository uses three main branches:
+The repository uses three branches:
 
 ```text
-develop -> release -> main
+feature/* -> develop -> nightly -> main
 ```
 
-* `develop`: active development and feature integration.
-* `release`: release candidate testing and preparation.
-* `main`: production-ready code and release trigger.
+* `develop`: active development; feature branches merge into it by pull request, which runs the full CI.
+* `nightly`: the testing step. It is fast-forwarded from `develop` (`git push origin develop:nightly`); every push builds the Windows installer and the Android APK with lighter checks and updates the rolling [`nightly` pre-release](#nightly-builds).
+* `main`: production-ready code and the release trigger. The pull request `nightly -> main` is the release candidate and runs the full CI; the merge releases.
 
 ## Creating a Release
 
@@ -42,18 +42,18 @@ Develop features on feature branches and merge them into `develop`.
 
 When the code is ready:
 
-1. Merge the release-ready changes into `release`.
-2. Update the version in the root `Cargo.toml`:
+1. Update the version in the root `Cargo.toml` on `develop`:
 
 ```toml
 version = "0.2.0"
 ```
 
-3. Test the release candidate on the `release` branch.
+2. Push it to `nightly` (`git push origin develop:nightly`) and try the build it produces.
+3. Open the pull request `nightly -> main` and let the full CI run.
 
 ### 3. Release
 
-Once the release is approved, merge `release` into `main` and push the changes.
+Once the release is approved, merge the pull request into `main`.
 
 A push to `main` automatically triggers:
 
@@ -100,6 +100,17 @@ The installed program updates itself from these artifacts: *Start > Update Rust 
 * a release marked as a pre-release, or left as a draft, is never offered as an update.
 
 A newer setup run over an older installation updates it in place; nothing has to be uninstalled first ([packaging/windows/installer/README.md](../packaging/windows/installer/README.md#updating)).
+
+## Nightly builds
+
+Every push to the `nightly` branch runs [nightly.yml](../.github/workflows/nightly.yml), which builds the Windows installer and the Android APK and replaces the files of the one pre-release tagged `nightly`:
+
+```text
+https://github.com/alexprotom/rust-dicom-station/releases/download/nightly/rust-dicom-station-nightly-windows-x86_64.exe
+https://github.com/alexprotom/rust-dicom-station/releases/download/nightly/rust-dicom-station-nightly-android-arm64.apk
+```
+
+A nightly carries the version it is heading for with a pre-release suffix, `0.11.1-nightly.20261004T0930.g890dfc8` (the next version, the build time, the commit): it installs over the last release, the next release installs over it, and a later nightly over an earlier one. Being a pre-release it is never offered by the installed program's updater, winget or Homebrew; a newer nightly is installed by running it. The checks are fmt, clippy and the unit tests; the full test matrix runs on the pull request that takes `nightly` into `main`.
 
 ## winget
 

@@ -31,7 +31,12 @@ name: macOS
 on:
   # Pull requests only, for the same reason as ci.yml: the merge ref is what
   # lands, and branch protection sees to it that nothing lands unchecked.
+  # Into develop and main only - not into `nightly`, which gets nightly.yml's
+  # lighter checks (see ci.yml).
   pull_request:
+    branches:
+      - develop
+      - main
     paths:
       - "src/**"
       - "crates/**"
