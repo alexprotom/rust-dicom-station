@@ -13,10 +13,18 @@
 //! Keys are given in normalized form: the `.pt` wraps the state dict in a
 //! `"model"` entry, which [`crate::nn::pickle::PthReader`] unwraps on open, so
 //! what reaches here are the architecture's own names.
+//!
+//! Efficient MedSAM2 ([`super::vitdet`]) is derived the same way by
+//! [`expected_for`]: its own image encoder, and SAM 2's other parts without
+//! the three SAM 2.1 additions its configuration leaves out (the decoder's
+//! `conv_s0` / `conv_s1`, `obj_ptr_tpos_proj`, `no_obj_embed_spatial`).
+//! Its totals - 455 tensors, 17,866,274 elements tiny, 34,056,098 small -
+//! were read off EfficientTAM instantiated from its two configurations.
 
 use std::collections::BTreeMap;
 
 use super::config::*;
+use super::model::Arch;
 
 /// Total elements across the state dict, parameters plus the one buffer.
 pub const STATE_ELEMENTS: usize = 38_962_754;
@@ -27,6 +35,33 @@ pub const PARAMETERS: usize = 38_962_498;
 pub const TENSOR_COUNT: usize = 471;
 /// Bytes of tensor data in the fp32 checkpoint, `STATE_ELEMENTS * 4`.
 pub const PAYLOAD_BYTES: u64 = STATE_ELEMENTS as u64 * 4;
+/// Entries in an Efficient MedSAM2 state dict (either size).
+pub const EFF_TENSOR_COUNT: usize = 455;
+/// Elements of Efficient MedSAM2 tiny (ViT 192) and small (ViT 384).
+pub const EFF_TINY_ELEMENTS: usize = 17_866_274;
+pub const EFF_SMALL_ELEMENTS: usize = 34_056_098;
+
+/// The architecture a list of tensors describes: EfficientTAM when the
+/// patch embedding is a 3-channel convolution and there is no Hiera window
+/// embedding.
+pub fn arch_of(actual: &[TensorInfo]) -> Arch {
+    let find = |k: &str| actual.iter().find(|t| normalize_key(&t.name) == k);
+    match find("image_encoder.trunk.patch_embed.proj.weight") {
+        Some(t)
+            if t.shape.len() == 4
+                && t.shape[1] == 3
+                && find("image_encoder.trunk.pos_embed_window").is_none() =>
+        {
+            Arch::EfficientTam { dim: t.shape[0] }
+        }
+        _ => Arch::Sam21Tiny,
+    }
+}
+
+/// The element count an architecture's checkpoint must have.
+pub fn elements_of(arch: &Arch) -> usize {
+    expected_for(arch).values().map(|s| numel(s)).sum()
+}
 
 /// Strip prefixes a re-save might have added. The published files are already
 /// bare once `"model"` is unwrapped; `module.` appears if someone saves a
@@ -111,10 +146,44 @@ impl Builder {
     }
 }
 
-/// Every key the checkpoint must contain, with its exact shape.
+/// Every key the MedSAM2 checkpoint must contain, with its exact shape.
 pub fn expected() -> BTreeMap<String, Vec<usize>> {
-    let mut b = Builder(BTreeMap::new());
+    expected_for(&Arch::Sam21Tiny)
+}
 
+/// Every key a checkpoint of `arch` must contain, with its exact shape.
+pub fn expected_for(arch: &Arch) -> BTreeMap<String, Vec<usize>> {
+    let mut b = Builder(BTreeMap::new());
+    match arch {
+        Arch::Sam21Tiny => hiera_encoder(&mut b),
+        Arch::EfficientTam { dim } => vit_encoder(&mut b, *dim),
+    }
+    sam_parts(&mut b, *arch == Arch::Sam21Tiny);
+    b.0
+}
+
+/// EfficientTAM's ViT and one-level neck: twelve blocks, `dim` wide.
+fn vit_encoder(b: &mut Builder, dim: usize) {
+    let t = "image_encoder.trunk";
+    b.put(format!("{t}.pos_embed"), vec![1, 1 + 14 * 14, dim]);
+    b.conv(&format!("{t}.patch_embed.proj"), dim, 3, 16, 1);
+    for i in 0..12 {
+        let p = format!("{t}.blocks.{i}");
+        b.norm(&format!("{p}.norm1"), dim);
+        b.linear(&format!("{p}.attn.qkv"), 3 * dim, dim);
+        b.linear(&format!("{p}.attn.proj"), dim, dim);
+        b.norm(&format!("{p}.norm2"), dim);
+        b.mlp(&format!("{p}.mlp"), &[dim, 4 * dim, dim]);
+    }
+    let n = "image_encoder.neck.convs.0";
+    b.put(format!("{n}.conv_1x1.weight"), vec![D_MODEL, dim, 1, 1]);
+    b.norm(&format!("{n}.norm_0"), D_MODEL);
+    b.put(format!("{n}.conv_3x3.weight"), vec![D_MODEL, D_MODEL, 3, 3]);
+    b.norm(&format!("{n}.norm_1"), D_MODEL);
+}
+
+/// Hiera-T and the FPN neck.
+fn hiera_encoder(b: &mut Builder) {
     // ---- image encoder: trunk -------------------------------------------
     let t = "image_encoder.trunk";
     b.put(
@@ -157,7 +226,12 @@ pub fn expected() -> BTreeMap<String, Vec<usize>> {
             1,
         );
     }
+}
 
+/// Everything after the image encoder; `sam21` adds SAM 2.1's
+/// high-resolution projections, pointer temporal projection and spatial
+/// no-object embedding.
+fn sam_parts(b: &mut Builder, sam21: bool) {
     // ---- prompt encoder --------------------------------------------------
     let p = "sam_prompt_encoder";
     b.put(
@@ -234,8 +308,10 @@ pub fn expected() -> BTreeMap<String, Vec<usize>> {
         &format!("{d}.pred_obj_score_head"),
         &[D_MODEL, D_MODEL, D_MODEL, 1],
     );
-    b.conv(&format!("{d}.conv_s0"), HIGH_RES_S0_CH, D_MODEL, 1, 1);
-    b.conv(&format!("{d}.conv_s1"), HIGH_RES_S1_CH, D_MODEL, 1, 1);
+    if sam21 {
+        b.conv(&format!("{d}.conv_s0"), HIGH_RES_S0_CH, D_MODEL, 1, 1);
+        b.conv(&format!("{d}.conv_s1"), HIGH_RES_S1_CH, D_MODEL, 1, 1);
+    }
 
     // ---- memory attention -------------------------------------------------
     for i in 0..MEM_ATTN_LAYERS {
@@ -280,15 +356,17 @@ pub fn expected() -> BTreeMap<String, Vec<usize>> {
 
     // ---- top level --------------------------------------------------------
     b.mlp("obj_ptr_proj", &[D_MODEL, D_MODEL, D_MODEL, D_MODEL]);
-    b.linear("obj_ptr_tpos_proj", MEM_DIM, D_MODEL);
+    if sam21 {
+        b.linear("obj_ptr_tpos_proj", MEM_DIM, D_MODEL);
+    }
     b.conv("mask_downsample", 1, 1, 4, 1);
     b.put("maskmem_tpos_enc".into(), vec![NUM_MASKMEM, 1, 1, MEM_DIM]);
     b.put("no_mem_embed".into(), vec![1, 1, D_MODEL]);
     b.put("no_mem_pos_enc".into(), vec![1, 1, D_MODEL]);
     b.put("no_obj_ptr".into(), vec![1, D_MODEL]);
-    b.put("no_obj_embed_spatial".into(), vec![1, MEM_DIM]);
-
-    b.0
+    if sam21 {
+        b.put("no_obj_embed_spatial".into(), vec![1, MEM_DIM]);
+    }
 }
 
 /// Elements in a shape.
@@ -298,8 +376,13 @@ fn numel(shape: &[usize]) -> usize {
 
 /// Per-group element counts of [`expected`], for the probe's report.
 pub fn group_totals() -> BTreeMap<&'static str, usize> {
+    group_totals_for(&Arch::Sam21Tiny)
+}
+
+/// Per-group element counts of [`expected_for`].
+pub fn group_totals_for(arch: &Arch) -> BTreeMap<&'static str, usize> {
     let mut out: BTreeMap<&'static str, usize> = BTreeMap::new();
-    for (k, s) in expected() {
+    for (k, s) in expected_for(arch) {
         *out.entry(group_of(&k)).or_default() += numel(&s);
     }
     out
@@ -316,9 +399,11 @@ pub struct TensorInfo {
 /// Everything wrong with a checkpoint, or an empty list.
 ///
 /// Reported rather than returned as an error so the probe can print all of it
-/// at once instead of one problem per run.
+/// at once instead of one problem per run. The architecture is the one the
+/// tensors themselves describe ([`arch_of`]).
 pub fn problems(actual: &[TensorInfo]) -> Vec<String> {
-    let want = expected();
+    let arch = arch_of(actual);
+    let want = expected_for(&arch);
     let mut out = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for t in actual {
@@ -344,8 +429,9 @@ pub fn problems(actual: &[TensorInfo]) -> Vec<String> {
         }
     }
     let total: usize = actual.iter().map(|t| numel(&t.shape)).sum();
-    if out.is_empty() && total != STATE_ELEMENTS {
-        out.push(format!("{total} elements, expected {STATE_ELEMENTS}"));
+    let elements = elements_of(&arch);
+    if out.is_empty() && total != elements {
+        out.push(format!("{total} elements, expected {elements}"));
     }
     out
 }
@@ -443,6 +529,39 @@ mod tests {
         assert!(is_dead_weight("no_mem_pos_enc"));
         assert!(!is_dead_weight("no_mem_embed"));
         assert!(!is_dead_weight("mask_downsample.weight"));
+    }
+
+    #[test]
+    fn efficient_medsam2_matches_the_reference_totals() {
+        // Read off EfficientTAM built from `efficienttam_{ti,s}_512x512.yaml`.
+        for (dim, elements, trunk, neck) in [
+            (192, EFF_TINY_ELEMENTS, 5_523_840, 640_000),
+            (384, EFF_SMALL_ELEMENTS, 21_664_512, 689_152),
+        ] {
+            let arch = Arch::EfficientTam { dim };
+            let e = expected_for(&arch);
+            assert_eq!(e.len(), EFF_TENSOR_COUNT);
+            assert_eq!(elements_of(&arch), elements);
+            let g = group_totals_for(&arch);
+            assert_eq!(g["trunk"], trunk);
+            assert_eq!(g["neck"], neck);
+            assert_eq!(g["mask_decoder"], 4_190_437);
+            assert_eq!(g["memory_attention"], 5_922_304);
+            assert_eq!(g["memory_encoder"], 1_384_608);
+            assert_eq!(g["other"], 198_609);
+            // and a list of its own tensors is recognised as such
+            let actual: Vec<TensorInfo> = e
+                .into_iter()
+                .map(|(name, shape)| TensorInfo {
+                    name,
+                    shape,
+                    dtype: "f32",
+                })
+                .collect();
+            assert_eq!(arch_of(&actual), arch);
+            assert!(problems(&actual).is_empty(), "{:?}", problems(&actual));
+        }
+        assert_eq!(arch_of(&[]), Arch::Sam21Tiny);
     }
 
     #[test]

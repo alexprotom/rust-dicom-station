@@ -31,6 +31,11 @@ use rust_dicom_station::workflow::graph::exec::{self, Channel, Event, RunOptions
 use rust_dicom_station::workflow::graph::store;
 
 fn main() -> anyhow::Result<()> {
+    // The licence number and the user's nnU-Net folders, as in the viewer
+    // (a workflow may name a model of either).
+    for (dir, why) in models::apply_settings(&rust_dicom_station::settings::load()) {
+        eprintln!("nnU-Net folder {} not used: {why}", dir.display());
+    }
     let mut args = std::env::args().skip(1);
     let mut file: Option<PathBuf> = None;
     let mut inputs: Vec<(String, PathBuf)> = Vec::new();

@@ -401,7 +401,14 @@ impl ViewerApp {
             .iter()
             .zip(p.selected.iter())
             .filter(|(_, sel)| **sel)
-            .map(|(organ, _)| (organ.label, organ.name.to_string(), organ.color))
+            .map(|(organ, _)| {
+                let name = if p.tg263 {
+                    zoo::tg263_name(organ.name).unwrap_or_else(|| organ.name.to_string())
+                } else {
+                    organ.name.to_string()
+                };
+                (organ.label, name, organ.color)
+            })
             .collect();
         if classes.is_empty() {
             return;

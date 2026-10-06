@@ -126,6 +126,16 @@ pub struct SetupApp {
     done_at: Option<Instant>,
     /// Set once the user asks to close after a finished run.
     quit: bool,
+    /// The models the setup can fetch, with what is already in the model
+    /// folder they were listed for.
+    model_rows: Option<(PathBuf, Vec<models::Row>)>,
+    /// The TotalSegmentator licence number field, and whether it shows
+    /// its text.
+    licence_text: String,
+    licence_shown: bool,
+    /// A licence number is kept in the viewer's settings of this user.
+    has_licence: bool,
+    licence_note: Option<String>,
 }
 
 /// Show the install wizard. Returns `Err` when no window could be created
@@ -386,6 +396,11 @@ impl SetupApp {
             license,
             accepted: false,
             remove_models: false,
+            model_rows: None,
+            licence_text: String::new(),
+            licence_shown: false,
+            has_licence: models::licence_number().is_some(),
+            licence_note: None,
             payload_size,
             mcp_size,
             pacs_size: 0,
@@ -998,16 +1013,8 @@ impl SetupApp {
             );
 
             ui.add_space(10.0);
-            ui.label(RichText::new("Model folder and auto-segmentation weights").strong());
+            ui.label(RichText::new("Model folder and model weights").strong());
             if models::AVAILABLE {
-                egui::ComboBox::from_id_salt("models")
-                    .width(360.0)
-                    .selected_text(self.opts.models.label())
-                    .show_ui(ui, |ui| {
-                        for m in Models::ALL {
-                            ui.selectable_value(&mut self.opts.models, m, m.label());
-                        }
-                    });
                 ui.horizontal(|ui| {
                     ui.label("Model folder:");
                     let w = ui.available_width() - 10.0;
@@ -1021,21 +1028,11 @@ impl SetupApp {
                         self.opts.models_dir = PathBuf::from(self.models_dir_text.trim());
                     }
                 });
-                if self.opts.models != Models::None {
-                    let bytes = models::download_size(self.opts.models, &self.opts.models_dir);
-                    ui.label(
-                        RichText::new(format!(
-                            "{} still to download from the TotalSegmentator release - this can \
-                             take a while.",
-                            human_size(bytes)
-                        ))
-                        .weak(),
-                    );
-                }
+                self.models_choice(ui);
             } else {
                 ui.label(
                     RichText::new(
-                        "This build cannot pre-fetch weights; the viewer downloads them on \
+                        "This build cannot download weights; the viewer downloads them on \
                          first use.",
                     )
                     .weak(),
@@ -1061,6 +1058,145 @@ impl SetupApp {
                 ui.colored_label(RED, err);
             }
         });
+    }
+
+    /// The models to download now: a named set or a pick from the list,
+    /// each row with its licence, and the TotalSegmentator licence number
+    /// the licensed ones need.
+    fn models_choice(&mut self, ui: &mut egui::Ui) {
+        let stale = self
+            .model_rows
+            .as_ref()
+            .is_none_or(|(d, _)| *d != self.opts.models_dir);
+        if stale {
+            let rows = models::rows(&self.opts.models_dir);
+            self.model_rows = Some((self.opts.models_dir.clone(), rows));
+        }
+        let rows = self.model_rows.as_ref().map(|(_, r)| r.clone()).unwrap_or_default();
+        let has_licence = self.has_licence;
+        let wanted = |m: &Models, r: &models::Row| -> bool {
+            match m {
+                Models::None => false,
+                Models::Recommended => r.key == KEY_TOTAL_3MM,
+                Models::Open => r.open,
+                Models::Every => true,
+                Models::Pick(k) => k.iter().any(|k| k.eq_ignore_ascii_case(&r.key)),
+            }
+        };
+        egui::ComboBox::from_id_salt("models")
+            .width(360.0)
+            .selected_text(self.opts.models.label())
+            .show_ui(ui, |ui| {
+                for m in Models::presets() {
+                    let label = m.label();
+                    ui.selectable_value(&mut self.opts.models, m, label);
+                }
+                let picking = matches!(self.opts.models, Models::Pick(_));
+                if ui.selectable_label(picking, "Choose the models one by one").clicked()
+                    && !picking
+                {
+                    let keys = rows
+                        .iter()
+                        .filter(|r| wanted(&self.opts.models, r))
+                        .map(|r| r.key.clone())
+                        .collect();
+                    self.opts.models = Models::Pick(keys);
+                }
+            });
+        if let Models::Pick(keys) = &mut self.opts.models {
+            egui::ScrollArea::vertical()
+                .id_salt("model_pick")
+                .max_height(220.0)
+                .show(ui, |ui| {
+                    let mut engine = "";
+                    for r in &rows {
+                        if r.engine != engine {
+                            engine = r.engine;
+                            ui.add_space(3.0);
+                            ui.label(RichText::new(engine).strong());
+                        }
+                        let mut on = keys.iter().any(|k| k.eq_ignore_ascii_case(&r.key));
+                        let size = if r.ready {
+                            "on disk".to_string()
+                        } else {
+                            human_size(r.bytes)
+                        };
+                        let text = format!("{}  ({}, {size})", r.label, r.licence);
+                        let usable = !r.needs_licence || has_licence;
+                        let resp = ui.add_enabled(usable, egui::Checkbox::new(&mut on, text));
+                        let resp = if r.needs_licence && !has_licence {
+                            resp.on_disabled_hover_text(
+                                "Needs your TotalSegmentator licence number (below)",
+                            )
+                        } else {
+                            resp
+                        };
+                        if resp.changed() {
+                            keys.retain(|k| !k.eq_ignore_ascii_case(&r.key));
+                            if on {
+                                keys.push(r.key.clone());
+                            }
+                        }
+                    }
+                });
+        }
+        let chosen: Vec<&models::Row> = rows
+            .iter()
+            .filter(|r| wanted(&self.opts.models, r))
+            .filter(|r| !r.needs_licence || has_licence)
+            .collect();
+        if !chosen.is_empty() {
+            let bytes: u64 = chosen.iter().map(|r| r.bytes).sum();
+            let research = chosen.iter().filter(|r| r.research_only).count();
+            ui.label(
+                RichText::new(format!(
+                    "{} still to download for {} model(s) - this can take a while.",
+                    human_size(bytes),
+                    chosen.len()
+                ))
+                .weak(),
+            );
+            if research > 0 {
+                ui.label(
+                    RichText::new(format!(
+                        "{research} of them are licensed for non-commercial use only \
+                         (research); they are downloaded to this computer for that use \
+                         and never redistributed."
+                    ))
+                    .color(Color32::from_rgb(230, 170, 60)),
+                );
+            }
+        }
+        ui.horizontal(|ui| {
+            ui.label("TotalSegmentator licence number:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.licence_text)
+                    .password(!self.licence_shown)
+                    .desired_width(160.0)
+                    .hint_text(if has_licence { "kept" } else { "optional" }),
+            );
+            ui.checkbox(&mut self.licence_shown, "Show");
+            if ui
+                .add_enabled(!self.licence_text.trim().is_empty(), egui::Button::new("Keep"))
+                .on_hover_text(
+                    "Store the number in your own viewer settings; the licensed \
+                     TotalSegmentator models download with it",
+                )
+                .clicked()
+            {
+                match install::save_licence(&self.licence_text) {
+                    Ok(_) => {
+                        self.has_licence = true;
+                        self.licence_text.clear();
+                        self.licence_note = Some("Licence number kept in your settings.".into());
+                    }
+                    Err(e) => self.licence_note = Some(format!("{e:#}")),
+                }
+            }
+        });
+        if let Some(n) = &self.licence_note {
+            ui.label(RichText::new(n).weak());
+        }
     }
 
     /// The page this whole change exists for: which graphics API the viewer

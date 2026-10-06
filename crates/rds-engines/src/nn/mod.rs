@@ -15,7 +15,9 @@
 //! attention routine every part of a network shares. Convolutions specific
 //! to a U-Net remain in [`crate::autoseg::cpu`]; the MedSAM2 engine is
 //! written against `burn` tensors instead and has its own small operator set
-//! in [`crate::medsam2::ops`].
+//! in [`crate::medsam2::ops`]. The convolutional networks written against
+//! `burn` (lungmask, the SegResNets, VISTA-3D) convolve through
+//! [`fastconv`], which hands the CPU backend's work to the U-Net kernels.
 //!
 //! [`autoseg`]: crate::autoseg
 //! [`segvol`]: crate::segvol
@@ -24,8 +26,11 @@
 pub mod attention;
 pub mod cache;
 pub mod device;
+pub mod fastconv;
 pub mod half;
 pub mod linalg;
 pub mod params;
 pub mod pickle;
+pub mod pyobj;
+pub mod remote_zip;
 pub mod tensor;

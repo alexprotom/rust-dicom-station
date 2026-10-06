@@ -3,6 +3,11 @@
 //! A torch checkpoint is a ZIP archive containing `<prefix>/data.pkl` (a
 //! Python pickle, protocol 2, describing the object tree) plus one raw
 //! little-endian storage blob per tensor under `<prefix>/data/<key>`.
+//! Checkpoints written before PyTorch 1.6 use the older layout instead (the
+//! lungmask weights do): five pickles in a row - a magic number, the
+//! protocol version, system information, the object tree, the sorted list
+//! of storage keys - then, per key in that order, the storage's element
+//! count as a little-endian `i64` followed by its bytes.
 //!
 //! This module implements just enough of the pickle virtual machine to walk
 //! such a checkpoint and extract a state dict - every tensor's storage key,
@@ -143,6 +148,8 @@ struct Machine<'a> {
     pos: usize,
     stack: Vec<Value>,
     memo: HashMap<u32, Value>,
+    /// Every storage a persistent id named: key → dtype.
+    storages: HashMap<String, Dtype>,
 }
 
 impl<'a> Machine<'a> {
@@ -225,6 +232,24 @@ impl<'a> Machine<'a> {
                     stride: tuple_usizes(&args[3])?,
                 })))
             }
+            // `_rebuild_from_type_v2(func, type, args, state)`: how newer
+            // PyTorch saves a tensor whose class it records (a plain
+            // `torch.Tensor` here, as in the MONAI bundles' `model.pt`);
+            // the tensor itself is `func(*args)`.
+            ("torch._tensor", "_rebuild_from_type_v2") => {
+                let args = match args {
+                    Value::Tuple(t) if t.len() >= 3 => t,
+                    _ => bail!("_rebuild_from_type_v2: expected (func, type, args, state)"),
+                };
+                self.reduce(args[0].clone(), args[2].clone())
+            }
+            // `_rebuild_parameter(data, requires_grad, backward_hooks)`: an
+            // `nn.Parameter` saved as such is its data.
+            ("torch._utils", "_rebuild_parameter")
+            | ("torch._utils", "_rebuild_parameter_with_state") => match args {
+                Value::Tuple(t) if !t.is_empty() => Ok(t[0].clone()),
+                _ => bail!("_rebuild_parameter: no data"),
+            },
             ("torch", "device") => Ok(Value::Opaque),
             // numpy machinery in the training log - value never inspected.
             _ => Ok(Value::Opaque),
@@ -242,6 +267,14 @@ impl<'a> Machine<'a> {
                         let dtype = Dtype::from_storage_class(cls)
                             .with_context(|| format!("unsupported torch storage class {cls}"))?;
                         let numel = items[4].as_usize()?;
+                        // The legacy format's sixth entry describes a view
+                        // into another storage; no checkpoint read here has one.
+                        if items.len() > 5 && !matches!(items[5], Value::None) {
+                            bail!(
+                                "storage views of the legacy checkpoint format are not supported"
+                            );
+                        }
+                        self.storages.insert(key.to_string(), dtype);
                         return Ok(Value::Storage(key.clone(), dtype, numel));
                     }
                 }
@@ -506,15 +539,41 @@ impl<'a> Machine<'a> {
 
 // ---- public API ---------------------------------------------------------
 
+/// Where the storages are.
+enum Storages {
+    /// The ZIP layout: `<prefix>/data/<key>` entries.
+    Zip {
+        archive: zip::ZipArchive<std::fs::File>,
+        /// e.g. "checkpoint_final" - first path component inside the zip.
+        prefix: String,
+    },
+    /// The legacy layout, read whole: key → (byte offset, element count).
+    Legacy {
+        data: Vec<u8>,
+        at: HashMap<String, (usize, usize)>,
+    },
+}
+
 /// All tensors of one state dict inside a checkpoint, plus access to the
-/// raw storage bytes still inside the ZIP archive.
+/// raw storage bytes still inside the file.
 pub struct PthReader {
-    archive: zip::ZipArchive<std::fs::File>,
-    /// e.g. "checkpoint_final" - first path component inside the zip.
-    prefix: String,
+    storages: Storages,
     /// state-dict entries in file order: (parameter name, tensor meta).
     pub tensors: Vec<(String, TensorMeta)>,
 }
+
+fn machine(data: &[u8], pos: usize) -> Machine<'_> {
+    Machine {
+        data,
+        pos,
+        stack: Vec::new(),
+        memo: HashMap::new(),
+        storages: HashMap::new(),
+    }
+}
+
+/// The legacy layout's magic number, the first pickle of such a file.
+const LEGACY_MAGIC: i64 = 0x1950_a86a_20f9_469c_fc6c_u128 as i64;
 
 impl PthReader {
     /// Open a `.pth` checkpoint and extract the tensor table of the state
@@ -523,7 +582,26 @@ impl PthReader {
     pub fn open(path: &Path, top_key: &str) -> Result<PthReader> {
         let file = std::fs::File::open(path)
             .with_context(|| format!("open checkpoint {}", path.display()))?;
-        let mut archive = zip::ZipArchive::new(file).context("checkpoint is not a zip archive")?;
+        let (root, storages) = match zip::ZipArchive::new(file) {
+            Ok(archive) => Self::open_zip(archive)?,
+            Err(zip_err) => {
+                let data = std::fs::read(path)
+                    .with_context(|| format!("read checkpoint {}", path.display()))?;
+                // The legacy layout starts with a protocol-2 pickle of the
+                // magic number; anything else is not a checkpoint at all.
+                if data.len() < 2 || data[0] != 0x80 {
+                    return Err(
+                        anyhow::Error::new(zip_err).context("checkpoint is not a zip archive")
+                    );
+                }
+                Self::open_legacy(data)?
+            }
+        };
+        let tensors = Self::state_dict(root, top_key)?;
+        Ok(PthReader { storages, tensors })
+    }
+
+    fn open_zip(mut archive: zip::ZipArchive<std::fs::File>) -> Result<(Value, Storages)> {
         // find "<prefix>/data.pkl"
         let mut pkl_name = None;
         for i in 0..archive.len() {
@@ -544,14 +622,70 @@ impl PthReader {
             .by_name(&pkl_name)?
             .read_to_end(&mut pkl)
             .context("read data.pkl")?;
-        let mut m = Machine {
-            data: &pkl,
-            pos: 0,
-            stack: Vec::new(),
-            memo: HashMap::new(),
+        let root = machine(&pkl, 0).run().context("unpickle checkpoint")?;
+        Ok((root, Storages::Zip { archive, prefix }))
+    }
+
+    fn open_legacy(data: Vec<u8>) -> Result<(Value, Storages)> {
+        let mut pos = 0usize;
+        let mut next = |what: &str| -> Result<(Value, HashMap<String, Dtype>)> {
+            let mut m = machine(&data, pos);
+            let v = m
+                .run()
+                .with_context(|| format!("unpickle the legacy checkpoint's {what}"))?;
+            pos = m.pos;
+            Ok((v, m.storages))
         };
-        let root = m.run().context("unpickle checkpoint")?;
-        let state = if top_key.is_empty() {
+        match next("magic number")?.0 {
+            Value::Int(LEGACY_MAGIC) => {}
+            _ => bail!("not a torch checkpoint (bad magic number)"),
+        }
+        let _protocol = next("protocol version")?;
+        let _sys_info = next("system information")?;
+        let (root, dtypes) = next("object tree")?;
+        let (keys, _) = next("storage keys")?;
+        let Value::List(keys) = keys else {
+            bail!("legacy checkpoint: the storage keys are not a list");
+        };
+        let mut at = HashMap::new();
+        for k in keys.borrow().iter() {
+            let Value::Str(k) = k else {
+                bail!("legacy checkpoint: a storage key is not a string");
+            };
+            let dtype = *dtypes
+                .get(k.as_ref())
+                .with_context(|| format!("legacy checkpoint: storage {k} is never used"))?;
+            let n = data
+                .get(pos..pos + 8)
+                .context("legacy checkpoint: truncated storage header")?;
+            let numel = i64::from_le_bytes(n.try_into().unwrap());
+            if numel < 0 {
+                bail!("legacy checkpoint: negative storage size");
+            }
+            let numel = numel as usize;
+            let start = pos + 8;
+            pos = start + numel * dtype.size();
+            if pos > data.len() {
+                bail!("legacy checkpoint: storage {k} is truncated");
+            }
+            at.insert(k.to_string(), (start, numel));
+        }
+        Ok((root, Storages::Legacy { data, at }))
+    }
+
+    fn state_dict(root: Value, top_key: &str) -> Result<Vec<(String, TensorMeta)>> {
+        // `?key`: the entry `key` when the root has it, the root otherwise -
+        // for publishers that save either `state_dict()` or
+        // `{"model": state_dict()}`.
+        let (top_key, optional) = match top_key.strip_prefix('?') {
+            Some(k) => (k, true),
+            None => (top_key, false),
+        };
+        let wrapped = optional
+            && matches!(&root, Value::Dict(d) if d.borrow().iter().any(|(k, v)| {
+                matches!(k, Value::Str(s) if s.as_ref() == top_key) && matches!(v, Value::Dict(_))
+            }));
+        let state = if top_key.is_empty() || (optional && !wrapped) {
             root
         } else {
             let Value::Dict(d) = &root else {
@@ -575,11 +709,7 @@ impl PthReader {
         if tensors.is_empty() {
             bail!("state dict contains no tensors");
         }
-        Ok(PthReader {
-            archive,
-            prefix,
-            tensors,
-        })
+        Ok(tensors)
     }
 
     /// Read one tensor as f32 (converting from its storage dtype), honoring
@@ -588,20 +718,31 @@ impl PthReader {
         if !meta.is_contiguous() {
             bail!("non-contiguous tensor (storage {})", meta.storage_key);
         }
-        let entry = if self.prefix.is_empty() {
-            format!("data/{}", meta.storage_key)
-        } else {
-            format!("{}/data/{}", self.prefix, meta.storage_key)
-        };
-        let mut raw = Vec::new();
-        self.archive
-            .by_name(&entry)
-            .with_context(|| format!("storage entry {entry}"))?
-            .read_to_end(&mut raw)
-            .context("read storage")?;
         let esize = meta.dtype.size();
         let start = meta.storage_offset * esize;
         let need = meta.numel() * esize;
+        let mut owned = Vec::new();
+        let raw: &[u8] = match &mut self.storages {
+            Storages::Zip { archive, prefix } => {
+                let entry = if prefix.is_empty() {
+                    format!("data/{}", meta.storage_key)
+                } else {
+                    format!("{}/data/{}", prefix, meta.storage_key)
+                };
+                archive
+                    .by_name(&entry)
+                    .with_context(|| format!("storage entry {entry}"))?
+                    .read_to_end(&mut owned)
+                    .context("read storage")?;
+                &owned
+            }
+            Storages::Legacy { data, at } => {
+                let (s0, numel) = *at
+                    .get(&meta.storage_key)
+                    .with_context(|| format!("storage {} missing", meta.storage_key))?;
+                &data[s0..s0 + numel * esize]
+            }
+        };
         if raw.len() < start + need {
             bail!(
                 "storage {} too small: {} < {}",
@@ -808,6 +949,128 @@ mod tests {
         assert_eq!(r.read_f32(&meta).unwrap(), vals);
         let (_, meta1) = r.tensors[1].clone();
         assert_eq!(r.read_f32(&meta1).unwrap(), [9.0, -9.0]);
+    }
+
+    #[test]
+    fn reads_tensors_saved_with_their_type() {
+        // Newer PyTorch wraps each tensor as
+        // `_rebuild_from_type_v2(_rebuild_tensor_v2, torch.Tensor, (...), {})`
+        // (the MONAI whole-body bundle's `model.pt`), and an `nn.Parameter`
+        // saved as such as `_rebuild_parameter(data, requires_grad, hooks)`.
+        let e = contiguous("convInit.conv.weight", "0", &[2, 2]);
+        let p = contiguous("head.weight", "1", &[3]);
+        let mut pkl = vec![0x80, 0x02];
+        global_(&mut pkl, "collections", "OrderedDict");
+        pkl.push(b')');
+        pkl.push(b'R');
+        pkl.push(b'(');
+        unicode(&mut pkl, e.name);
+        global_(&mut pkl, "torch._tensor", "_rebuild_from_type_v2");
+        pkl.push(b'(');
+        global_(&mut pkl, "torch._utils", "_rebuild_tensor_v2");
+        global_(&mut pkl, "torch", "Tensor");
+        // The inner call's arguments: push_tensor emits GLOBAL ( args t R,
+        // so take its tuple only.
+        let mut inner = Vec::new();
+        push_tensor(&mut inner, &e);
+        let head = b"ctorch._utils\n_rebuild_tensor_v2\n".len();
+        pkl.extend_from_slice(&inner[head..inner.len() - 1]);
+        pkl.push(b'}');
+        pkl.push(b't');
+        pkl.push(b'R');
+        unicode(&mut pkl, p.name);
+        global_(&mut pkl, "torch._utils", "_rebuild_parameter");
+        pkl.push(b'(');
+        push_tensor(&mut pkl, &p);
+        pkl.push(0x88);
+        global_(&mut pkl, "collections", "OrderedDict");
+        pkl.push(b')');
+        pkl.push(b'R');
+        pkl.push(b't');
+        pkl.push(b'R');
+        pkl.push(b'u');
+        pkl.push(b'.');
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buf);
+            let opts: zip::write::FileOptions<()> = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("model/data.pkl", opts).unwrap();
+            std::io::Write::write_all(&mut zip, &pkl).unwrap();
+            zip.start_file("model/data/0", opts).unwrap();
+            std::io::Write::write_all(&mut zip, &f32_bytes(&[1.0, 2.0, 3.0, 4.0])).unwrap();
+            zip.start_file("model/data/1", opts).unwrap();
+            std::io::Write::write_all(&mut zip, &f32_bytes(&[5.0, 6.0, 7.0])).unwrap();
+            zip.finish().unwrap();
+        }
+        let path = write_temp("typed.pth", &buf.into_inner());
+        let mut r = PthReader::open(&path, "").unwrap();
+        assert_eq!(r.tensors.len(), 2);
+        let (n0, m0) = r.tensors[0].clone();
+        assert_eq!(n0, "convInit.conv.weight");
+        assert_eq!(r.read_f32(&m0).unwrap(), [1.0, 2.0, 3.0, 4.0]);
+        let (n1, m1) = r.tensors[1].clone();
+        assert_eq!(n1, "head.weight");
+        assert_eq!(r.read_f32(&m1).unwrap(), [5.0, 6.0, 7.0]);
+    }
+
+    #[test]
+    fn reads_the_legacy_layout() {
+        // torch.save before PyTorch 1.6 (the lungmask weights): five
+        // pickles, then each storage as an i64 element count and its bytes.
+        let mut f = vec![0x80, 0x02, 0x8a, 0x0a];
+        f.extend_from_slice(&0x1950_a86a_20f9_469c_fc6c_u128.to_le_bytes()[..10]);
+        f.push(b'.');
+        f.extend_from_slice(&[0x80, 0x02, b'M', 0xe9, 0x03, b'.']);
+        f.extend_from_slice(&[0x80, 0x02, b'}', b'.']);
+        // the state dict, persistent ids with the sixth (view) entry None
+        let entries = [
+            contiguous("conv.weight", "11", &[2, 2]),
+            contiguous("conv.bias", "7", &[2]),
+        ];
+        f.extend_from_slice(&[0x80, 0x02, b'}', b'(']);
+        for e in &entries {
+            unicode(&mut f, e.name);
+            global_(&mut f, "torch._utils", "_rebuild_tensor_v2");
+            f.push(b'(');
+            f.push(b'(');
+            unicode(&mut f, "storage");
+            global_(&mut f, "torch", e.storage_class);
+            unicode(&mut f, e.storage_key);
+            unicode(&mut f, "cpu");
+            int_(&mut f, e.storage_numel as u64);
+            f.push(b'N');
+            f.push(b't');
+            f.push(b'Q');
+            int_(&mut f, 0);
+            tuple_of(&mut f, &e.shape);
+            tuple_of(&mut f, &e.stride);
+            f.push(0x89);
+            f.push(b'}');
+            f.push(b't');
+            f.push(b'R');
+        }
+        f.extend_from_slice(b"u.");
+        // the sorted storage keys, then the storages in that order
+        f.extend_from_slice(&[0x80, 0x02, b']', b'(']);
+        unicode(&mut f, "11");
+        unicode(&mut f, "7");
+        f.extend_from_slice(b"e.");
+        for v in [vec![1.0f32, -2.0, 3.0, -4.0], vec![0.5, 0.25]] {
+            f.extend_from_slice(&(v.len() as i64).to_le_bytes());
+            f.extend_from_slice(&f32_bytes(&v));
+        }
+        let path = write_temp("legacy.pth", &f);
+        let mut r = PthReader::open(&path, "").unwrap();
+        assert_eq!(r.tensors.len(), 2);
+        let (n0, m0) = r.tensors[0].clone();
+        let (n1, m1) = r.tensors[1].clone();
+        assert_eq!((n0.as_str(), n1.as_str()), ("conv.weight", "conv.bias"));
+        assert_eq!(r.read_f32(&m0).unwrap(), [1.0, -2.0, 3.0, -4.0]);
+        assert_eq!(r.read_f32(&m1).unwrap(), [0.5, 0.25]);
+        // a cut-off storage is an error, not a short tensor
+        let path = write_temp("legacy_cut.pth", &f[..f.len() - 3]);
+        assert!(PthReader::open(&path, "").is_err());
     }
 
     #[test]

@@ -58,17 +58,34 @@ publisher" warning on first run.
   provides, so there is nothing to install for the GPU.
 * **Graphics backend** - its own page, because a handful of Windows machines
   advertise a Vulkan driver that cannot start (see below).
-* **Model weights, optionally** - pre-downloads and converts the
-  TotalSegmentator weights (6 mm, 3 mm, the 1.5 mm set, or everything) using
-  the viewer's own downloader, so the first auto-segmentation run does not
-  have to wait for a 135 MB … 1.3 GB download. Skipped by default. They go
-  where the viewer keeps every engine's weights: the `totalsegmentator/`
-  sub-folder of the model folder, by default
+* **Model weights, optionally** - downloads and converts any of the models
+  the viewer's model manager lists, with the viewer's own code, so the first
+  run of a model does not wait for its download. Nothing is fetched by
+  default. The options page offers *Recommended* (TotalSegmentator `total`
+  at 3 mm, 135 MB), *Every open-licence model* (Apache-2.0 and MIT), *Every
+  model* (the non-commercial ones too: nnInteractive, MedSAM2, SegVol, the
+  nnU-Net v1 tumour models, NV-Segment-CTMR, `brain_aneurysm`, and the
+  licensed TotalSegmentator models when a licence number is set) and *Choose
+  the models one by one*, a list grouped by engine with each model's
+  licence and size. What a choice still has to fetch, and how many of its
+  models are for non-commercial use only, is shown under it. Non-commercial
+  weights are downloaded only when chosen, to this computer, and never
+  redistributed. The weights go where the viewer keeps every engine's: the
+  engine's sub-folder of the model folder, by default
   `%LOCALAPPDATA%\RustDICOMStation\models` for either scope. A model folder
   chosen elsewhere is recorded as `models_dir` in the installing user's
-  `%LOCALAPPDATA%\RustDICOMStation\viewer_settings.txt`. The SegVol and
-  MedSAM2 weights are never pre-fetched - their licences allow only a
-  download by the user, which the viewer does on first use.
+  `%LOCALAPPDATA%\RustDICOMStation\viewer_settings.txt`. A model that fails
+  to download does not fail the installation: the log says which, and the
+  viewer fetches it on first use.
+* **TotalSegmentator licence number, optionally** - the licensed
+  TotalSegmentator models (heart chambers at 1.5 mm, coronary arteries,
+  tissue types and the others its licence server hands out) download with
+  the user's licence number. Typed on the options page and kept with
+  **Keep**, it is written to the installing user's `viewer_settings.txt`
+  (`totalsegmentator_licence`) and nowhere else: not to the machine-wide
+  defaults, not to the command line of the elevated re-launch, not to the
+  log. A number kept earlier, by the setup or by the viewer's model
+  manager, is found there and used.
 * **Integration** - Start-menu and desktop shortcuts, an
   "Open with Rust DICOM Station" verb on folders (the viewer takes a
   directory), a `.dcm`/`.dicom` entry that is *added* to `OpenWithProgids`
@@ -178,7 +195,10 @@ The same binary drives everything; `--silent` and `--console` skip the
 wizard, which is what you want for deployment.
 
 ```
-rds-setup --silent --dir "D:\Apps\RDS" --add-to-path --models 3mm
+rds-setup --silent --dir "D:\Apps\RDS" --add-to-path --models recommended
+rds-setup --silent --models every          # every model, non-commercial ones too
+rds-setup --silent --models totalsegmentator/total_3mm,nnunet_v1/msd_lung
+rds-setup --list-models                    # the keys, licences and sizes
 rds-setup --silent --all-users            # from an elevated prompt
 rds-setup --passive                       # progress window only
 rds-setup.exe --update --silent           # in the program folder: newest release
@@ -189,7 +209,12 @@ rds-setup --help
 Over an existing installation, the options on the command line override the
 ones it was made with; everything not mentioned stays as it was.
 
-`--models` takes `none | 6mm | 3mm | 1.5mm | all`, `--graphics` takes
+`--models` takes `none | recommended | open | every`, or model keys separated
+by commas (`--list-models` prints them); the older `3mm | 6mm | 1.5mm | all`
+still mean what they did (`all`: TotalSegmentator 3 mm and the 1.5 mm set).
+The licensed TotalSegmentator models are skipped unless a licence number is
+kept in the installing user's settings; there is deliberately no flag for
+it, so it never appears on a command line. `--graphics` takes
 `vulkan | dx12 | auto` (default `vulkan`); the other flags are `--just-me`,
 `--models-dir` (the model folder), `--no-start-menu`, `--no-desktop-shortcut`,
 `--no-file-association`, `--no-vcredist`, `--no-mcp`, `--pacs` / `--no-pacs`
@@ -262,7 +287,7 @@ See [docs/viewer.md](../../../docs/viewer.md#graphics-backend).
 | `src/update.rs` | the newest GitHub release: lookup, download, SHA-256 check, hand-over |
 | `src/uninstall.rs` | manifest-driven removal, self-deleting uninstaller |
 | `src/deps.rs` | Visual C++ runtime detection and installation |
-| `src/models.rs` | optional TotalSegmentator weight pre-fetch |
+| `src/models.rs` | optional model downloads (the viewer's inventory and first-use code) |
 | `src/ui.rs` | the egui wizard |
 | `src/console.rs` | text-mode / silent front end |
 | `src/win/` | shell links, registry, known folders, console attach |

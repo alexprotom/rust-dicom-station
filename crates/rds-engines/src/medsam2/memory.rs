@@ -100,12 +100,15 @@ pub struct MemoryEncoder<B: Backend> {
     /// Built once; it depends only on the grid.
     pos: Tensor<B, 4>,
     /// A model-root parameter, but this is the only place it is used: it
-    /// marks a memory as "the object was not here".
-    no_obj_embed_spatial: Tensor<B, 4>,
+    /// marks a memory as "the object was not here". SAM 2.1 has it;
+    /// EfficientTAM's configuration does not (`no_obj_embed_spatial`
+    /// unset), so Efficient MedSAM2 has `None`.
+    no_obj_embed_spatial: Option<Tensor<B, 4>>,
 }
 
 impl<B: Backend> MemoryEncoder<B> {
-    pub fn load(p: &Params, dev: &B::Device) -> Result<MemoryEncoder<B>> {
+    /// `no_obj_spatial`: whether the network has `no_obj_embed_spatial`.
+    pub fn load(p: &Params, no_obj_spatial: bool, dev: &B::Device) -> Result<MemoryEncoder<B>> {
         let e = "memory_encoder.mask_downsampler.encoder";
         let mut mask_convs = Vec::with_capacity(config::MASK_DOWN_LAYERS);
         let mut mask_norms = Vec::with_capacity(config::MASK_DOWN_LAYERS);
@@ -154,11 +157,15 @@ impl<B: Backend> MemoryEncoder<B> {
             fuser,
             out_proj: Conv::load_1x1(p, "memory_encoder.out_proj", MEM_DIM, D_MODEL, dev)?,
             pos: sine_pos_embed(config::EMBED_GRID, config::EMBED_GRID, MEM_DIM, dev),
-            no_obj_embed_spatial: ops::from_slice(
-                p.get("no_obj_embed_spatial", &[1, MEM_DIM])?,
-                [1, MEM_DIM, 1, 1],
-                dev,
-            ),
+            no_obj_embed_spatial: if no_obj_spatial {
+                Some(ops::from_slice(
+                    p.get("no_obj_embed_spatial", &[1, MEM_DIM])?,
+                    [1, MEM_DIM, 1, 1],
+                    dev,
+                ))
+            } else {
+                None
+            },
         })
     }
 
@@ -199,14 +206,9 @@ impl<B: Backend> MemoryEncoder<B> {
             x = block.forward(x);
         }
         let mut features = self.out_proj.apply(x);
-        if !object_present {
+        if let (false, Some(embed)) = (object_present, &self.no_obj_embed_spatial) {
             let [_, _, h, w] = features.dims();
-            features = features
-                + self
-                    .no_obj_embed_spatial
-                    .clone()
-                    .repeat_dim(2, h)
-                    .repeat_dim(3, w);
+            features = features + embed.clone().repeat_dim(2, h).repeat_dim(3, w);
         }
         Memory {
             features,

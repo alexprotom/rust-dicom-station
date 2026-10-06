@@ -20,9 +20,10 @@ Each page here covers one area.
 | [generators.md](generators.md) | Making a structure without drawing it: a grey-level window (in HU or SUV) with a limiting structure, the basic shapes, an isodose level, the reconstructed field of view |
 | [structure-algebra.md](structure-algebra.md) | Boolean operations, margins in patient directions, cropping, cleanup |
 | [body-contour.md](body-contour.md) | The body / EXTERNAL contour: the classical and the model-assisted method, CT and MR, verification |
-| [auto-segmentation.md](auto-segmentation.md) | The pure-Rust TotalSegmentator: models, pipeline, CPU/GPU engines, validation, the 117 classes, licensing |
+| [auto-segmentation.md](auto-segmentation.md) | Automatic segmentation: the 81 models of the registry (TotalSegmentator CT, MR, task and licensed models, the nnU-Net v1 tumour models, MRSegmentator, lungmask, MONAI, CT-FM, VISTA-3D, NV-Segment-CTMR) and your own nnU-Net folders, their pipelines, the CPU/GPU engines, validation, TG-263 names, licensing |
 | [segvol.md](segvol.md) | Prompt-driven segmentation: box / point / text, the SegVol re-implementation, weights and licensing |
 | [medsam2.md](medsam2.md) | Slice propagation: the MedSAM2 re-implementation, validation, weights and licensing |
+| [interactive-segmentation.md](interactive-segmentation.md) | Interactive segmentation: clicks, boxes, scribbles and lassos with nnInteractive, clicks with VISTA-3D's point mode; how each works, validation, licensing |
 | [pacs.md](pacs.md) | The local patient archive: the window, the on-disk layout, filing, loading, sending changes back |
 | [pacs-server.md](pacs-server.md) | The PACS server `rds-pacs`: serving one station's archive to others, setting it up on the local network and over the internet (VPN, forwarded port, reverse proxy), pairing a station, the mirror and the outbox, tasks run on the server, phones and tablets, security, the configuration and command line, the protocol |
 | [workflows.md](workflows.md) | Workflows: the program's steps wired into a graph in the editor, saved as a file and run again on other data - in the background or step by step in the viewer; the steps, the run folder, the heart-anchored example, the file format, adding a step |

@@ -474,8 +474,12 @@ impl ViewerApp {
         };
         let volume = study.volume.clone();
         let displayed = PhaseInfo::displayed(study);
-        let models_dir = self.engine_models_dir(models::Engine::TotalSegmentator);
-        let (slot, variant, device, parts) = (d.slot, d.variant, d.device, d.parts);
+        let root = self.models_root();
+        let (slot, model) = (d.slot, d.model);
+        let opts = zoo::RunOptions {
+            device: d.device,
+            parts: (!d.parts.is_empty()).then(|| d.parts.clone()),
+        };
         let phases = if d.output.phases {
             match self.phase_inputs(slot) {
                 Ok(p) => Some(p),
@@ -492,9 +496,7 @@ impl ViewerApp {
         progress.set("Starting auto-segmentation");
         self.autoseg_slot = slot;
         self.autoseg_job = Some(Job::spawn(progress, move |p| {
-            let run = |vol: &Volume, p: &Progress| {
-                autoseg::run(vol, variant, device, parts, &models_dir, p)
-            };
+            let run = |vol: &Volume, p: &Progress| model.run(vol, &opts, &root, p);
             let out = match phases {
                 Some((group, inputs)) => run_on_phases(&group, inputs, p, run),
                 None => run(&volume, p).map(|r| vec![(displayed, r)]),
@@ -570,12 +572,14 @@ impl ViewerApp {
             .as_ref()
             .map(|d| d.output.clone())
             .unwrap_or_default();
+        let tg263 = self.autoseg_pending_tg263;
         self.autoseg_pending = Some(AutosegPending {
             slot,
             phases: results,
             organs,
             selected,
             output,
+            tg263,
         });
     }
 

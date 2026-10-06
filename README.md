@@ -2,7 +2,7 @@
 
 [![rust-dicom-station](https://snapcraft.io/rust-dicom-station/badge.svg)](https://snapcraft.io/rust-dicom-station) [![CI](https://github.com/alexprotom/rust-dicom-station/actions/workflows/ci.yml/badge.svg)](https://github.com/alexprotom/rust-dicom-station/actions/workflows/ci.yml) 
 
-RDS (Rust DICOM Station) is open-source software for medical imaging and radiotherapy research, analysis, and QA, **written entirely in Rust**. It loads complete radiotherapy studies (CT, MR and PET series, RTSTRUCT, RTDOSE, photon and ion RTPLAN, DICOM SEG, planar images, spatial and deformable registrations, and treatment records) into an integrated environment for visualization, comparison and quantitative analysis. Beyond the classic linked MPR layout and multi-workspace comparison (up to four studies side by side), RDS provides image registration, structure propagation, DRR generation, dose-volume histograms, 4D motion analysis, interactive and AI-assisted segmentation, 3D visualization, and DICOM editing and export. The entire processing stack is native Rust: functionality normally provided through C/C++ or Python frameworks, including elastix- and plastimatch-style registration, ITK-style ray casting, TotalSegmentator, SegVol, and MedSAM2, is re-implemented directly in Rust without bindings to those frameworks.
+RDS (Rust DICOM Station) is open-source software for medical imaging and radiotherapy research, analysis, and QA, **written entirely in Rust**. It loads complete radiotherapy studies (CT, MR and PET series, RTSTRUCT, RTDOSE, photon and ion RTPLAN, DICOM SEG, planar images, spatial and deformable registrations, and treatment records) into an integrated environment for visualization, comparison and quantitative analysis. Beyond the classic linked MPR layout and multi-workspace comparison (up to four studies side by side), RDS provides image registration, structure propagation, DRR generation, dose-volume histograms, 4D motion analysis, interactive and AI-assisted segmentation, 3D visualization, and DICOM editing and export. The entire processing stack is native Rust: functionality normally provided through C/C++ or Python frameworks, including elastix- and plastimatch-style registration, ITK-style ray casting, TotalSegmentator, MRSegmentator, lungmask, MONAI SegResNet, CT-FM, VISTA-3D, nnInteractive, SegVol, and MedSAM2, is re-implemented directly in Rust without bindings to those frameworks.
 
 ![overview](docs/screenshot_overview.png)
 
@@ -107,15 +107,27 @@ engine.*
 * **Body contour** - the EXTERNAL structure without the couch, the chair or
   the mask, on CT and MR, classically or guided by TotalSegmentator's body
   network.
-* **Auto-segmentation** - TotalSegmentator v2 rebuilt natively (117
-  structures): official nnU-Net weights converted without Python, a SIMD CPU
-  engine or a wgpu GPU path (no CUDA), mean Dice 0.9995 against the
-  reference.
+* **Auto-segmentation** - 81 automatic models behind one model list, all
+  rebuilt natively: TotalSegmentator v2 and v3 (117 structures on CT), its
+  MR model, 26 task models (lung vessels and nodules, liver segments,
+  head and neck, vertebrae, teeth...) and its 17 licensed ones (heart
+  chambers, coronary arteries, tissue types... with your licence number),
+  the nnU-Net v1 tumour and organ models (MSD liver, lung, pancreas,
+  colon, KiTS, BTCV, SegTHOR), MRSegmentator, lungmask, MONAI's whole-body
+  SegResNet, CT-FM, VISTA-3D and NV-Segment-CTMR, plus any nnU-Net v2
+  model folder of your own; official weights converted without Python, a
+  SIMD CPU engine or a wgpu GPU path (no CUDA), TG-263 names on request;
+  mean Dice 0.9995 against TotalSegmentator, lungmask identical voxel for
+  voxel.
 * **Prompt segmentation** - SegVol rebuilt natively: box, click or free-text
   prompts ("liver", "tumor") for the structures no fixed-class model covers.
-* **Slice propagation** - MedSAM2 (SAM 2.1 with its memory bank) rebuilt
-  natively: box a structure on one slice, refine with include / exclude
-  clicks, follow it through the stack at native resolution.
+* **Slice propagation** - MedSAM2 (SAM 2.1 with its memory bank) and
+  Efficient MedSAM2 (EfficientTAM, lighter, for the CPU) rebuilt natively:
+  box a structure on one slice, refine with include / exclude clicks,
+  follow it through the stack at native resolution.
+* **Interactive segmentation** - nnInteractive and VISTA-3D's point mode
+  rebuilt natively: click, box, scribble or lasso in any view, positive or
+  negative, and every prompt refines the same 3-D object.
 * **Tools** - DICOM export with an editable tag table, a model manager for
   every downloadable weight, a folder anonymizer with consistent UID
   regeneration, a synthetic RT-study generator; every tool window can be
@@ -163,7 +175,8 @@ Windows, Linux, macOS, Android tablets, iPads and iPhones are supported; `--no-d
 CPU-only viewer without the GPU inference backend. Every push to `main`
 publishes a release: a Windows installer
 (`rust-dicom-station-<version>-windows-x86_64.exe` - shortcuts, "Open with"
-on folders, the VC++ runtime check, optional weight prefetch, uninstaller),
+on folders, the VC++ runtime check, optional download of any model's
+weights, uninstaller),
 a Linux AppImage, two macOS disk images
 (`rust-dicom-station-<version>-macos-arm64.dmg` and `-macos-x86_64.dmg`, both
 for macOS 12 Monterey and newer, [docs/macos.md](docs/macos.md)) and an
@@ -206,9 +219,10 @@ https://alexprotom.github.io/rust-dicom-station/
 | [docs/generators.md](docs/generators.md) | Structures without drawing: grey level (HU or SUV), shapes, isodose, field of view |
 | [docs/structure-algebra.md](docs/structure-algebra.md) | Boolean operations, margins, cropping, cleanup |
 | [docs/body-contour.md](docs/body-contour.md) | The body / EXTERNAL contour on CT and MR, verification |
-| [docs/auto-segmentation.md](docs/auto-segmentation.md) | The pure-Rust TotalSegmentator: models, pipeline, engines, validation, classes, licensing |
+| [docs/auto-segmentation.md](docs/auto-segmentation.md) | Automatic segmentation: the 81 models and your own nnU-Net folders, their pipelines, the CPU and GPU engines, validation, TG-263 names, licensing |
 | [docs/segvol.md](docs/segvol.md) | Prompt-driven segmentation: the SegVol re-implementation |
-| [docs/medsam2.md](docs/medsam2.md) | Propagating a prompt through a stack: the MedSAM2 re-implementation |
+| [docs/medsam2.md](docs/medsam2.md) | Propagating a prompt through a stack: the MedSAM2 and Efficient MedSAM2 re-implementation |
+| [docs/interactive-segmentation.md](docs/interactive-segmentation.md) | Interactive segmentation: nnInteractive and VISTA-3D's point mode, validation, licensing |
 | [docs/pacs.md](docs/pacs.md) | The local patient archive: window, on-disk layout, filing, loading, sending changes back |
 | [docs/pacs-server.md](docs/pacs-server.md) | The PACS server: setting it up on a network and over the internet, pairing stations, mirror and sync, tasks run on the server, security |
 | [docs/export-and-tools.md](docs/export-and-tools.md) | DICOM export, the model manager, anonymizer, test-data generator and download |
@@ -236,15 +250,19 @@ produced with RDS, a citation is appreciated: see
 
 The bundled example data is TCIA **4D-Lung**
 patient P102, redistributed under CC BY 3.0 (cite it as described in
-[docs/example-data.md](docs/example-data.md)). Auto-segmentation uses
-TotalSegmentator's Apache-2.0 "total"-task weights (cite Wasserthal et al.
-(Radiology AI 2023) and nnU-Net (Isensee et al., Nature Methods 2021) as
-described in [docs/auto-segmentation.md](docs/auto-segmentation.md)). Prompt
-segmentation re-implements SegVol (Du et al., NeurIPS 2024) and slice
-propagation MedSAM2 (Ma et al., 2025); their weights are only ever
-downloaded from Hugging Face to your own machine at your request and are
-never redistributed; see [docs/segvol.md](docs/segvol.md) and
-[docs/medsam2.md](docs/medsam2.md).
+[docs/example-data.md](docs/example-data.md)). Auto-segmentation downloads
+each model's published weights at your request - TotalSegmentator's open
+tasks, MRSegmentator, lungmask, MONAI and CT-FM under Apache-2.0, VISTA-3D
+under the NVIDIA Open Model License - and never redistributes them (cite the
+model you use as described in
+[docs/auto-segmentation.md](docs/auto-segmentation.md)). Prompt segmentation
+re-implements SegVol (Du et al., NeurIPS 2024), slice propagation MedSAM2
+(Ma et al., 2025) and interactive segmentation nnInteractive (Isensee et
+al., 2025, weights CC BY-NC-SA 4.0); their weights are only ever downloaded
+from Hugging Face to your own machine at your request and are never
+redistributed; see [docs/segvol.md](docs/segvol.md),
+[docs/medsam2.md](docs/medsam2.md) and
+[docs/interactive-segmentation.md](docs/interactive-segmentation.md).
 
 This software is a station for research and QA convenience. **Not a medical
 device, neither CE-marked nor FDA-cleared, and not for clinical

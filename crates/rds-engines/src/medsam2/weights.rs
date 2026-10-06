@@ -32,8 +32,14 @@ use crate::progress::ProgressSink;
 
 use super::layout;
 
-/// Which fine-tune to run. All of them are SAM 2.1-T at 512 with identical
-/// tensor layouts, so the choice costs nothing but a download.
+/// Which fine-tune to run. Five are SAM 2.1-T at 512 with identical tensor
+/// layouts; the two `Efficient*` ones are Efficient MedSAM2, EfficientTAM
+/// with a plain ViT encoder ([`super::vitdet`]), smaller and meant for the
+/// CPU. The network is told apart by the checkpoint itself
+/// ([`super::model::Arch::of`]).
+///
+/// The repository also holds `MedSAM2_US_Heart.pt` (echocardiography video,
+/// outside this engine's 3-D-images scope), which is not a `Variant`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Variant {
     /// The authors' recommended general model.
@@ -43,17 +49,34 @@ pub enum Variant {
     CtLesion,
     /// Fine-tuned for liver lesions on MRI.
     MriLiverLesion,
+    /// The FLARE 2025 pan-cancer baseline (July 2025): trained to turn a
+    /// RECIST-style box on a lesion's middle slice into the 3-D lesion on
+    /// CT, which is this tool's box-and-propagate workflow exactly.
+    Flare25Recist,
     /// The November 2024 base model.
     Base2411,
+    /// Efficient MedSAM2 with EfficientTAM-Tiny (ViT 192), the FLARE 2025
+    /// RECIST baseline: a quarter of MedSAM2's encoder cost.
+    EfficientTiny,
+    /// Efficient MedSAM2 with EfficientTAM-Small (ViT 384).
+    EfficientSmall,
 }
 
 impl Variant {
-    pub const ALL: [Variant; 4] = [
+    pub const ALL: [Variant; 7] = [
         Variant::Latest,
         Variant::CtLesion,
         Variant::MriLiverLesion,
+        Variant::Flare25Recist,
         Variant::Base2411,
+        Variant::EfficientTiny,
+        Variant::EfficientSmall,
     ];
+
+    /// An Efficient MedSAM2 (EfficientTAM) variant.
+    pub fn is_efficient(self) -> bool {
+        matches!(self, Variant::EfficientTiny | Variant::EfficientSmall)
+    }
 
     /// Name shown in the interface.
     pub fn label(self) -> &'static str {
@@ -61,7 +84,10 @@ impl Variant {
             Variant::Latest => "General (recommended)",
             Variant::CtLesion => "CT lesions",
             Variant::MriLiverLesion => "MRI liver lesions",
+            Variant::Flare25Recist => "CT lesions, RECIST box (FLARE25)",
             Variant::Base2411 => "Base (2024-11)",
+            Variant::EfficientTiny => "Efficient tiny, RECIST box (FLARE25, CPU)",
+            Variant::EfficientSmall => "Efficient small, RECIST box (FLARE25, CPU)",
         }
     }
 
@@ -71,7 +97,10 @@ impl Variant {
             Variant::Latest => "latest",
             Variant::CtLesion => "ct-lesion",
             Variant::MriLiverLesion => "mri-liver",
+            Variant::Flare25Recist => "flare25-recist",
             Variant::Base2411 => "2411",
+            Variant::EfficientTiny => "eff-tiny",
+            Variant::EfficientSmall => "eff-small",
         }
     }
 
@@ -85,7 +114,10 @@ impl Variant {
             Variant::Latest => "MedSAM2_latest.pt",
             Variant::CtLesion => "MedSAM2_CTLesion.pt",
             Variant::MriLiverLesion => "MedSAM2_MRI_LiverLesion.pt",
+            Variant::Flare25Recist => "medsam2_FLARE25_RECIST_baseline.pt",
             Variant::Base2411 => "MedSAM2_2411.pt",
+            Variant::EfficientTiny => "eff_medsam2_tiny_FLARE25_RECIST_baseline.pt",
+            Variant::EfficientSmall => "eff_medsam2_small_FLARE25_RECIST_baseline.pt",
         };
         let url = match self {
             Variant::Latest => {
@@ -97,16 +129,30 @@ impl Variant {
             Variant::MriLiverLesion => {
                 "https://huggingface.co/wanglab/MedSAM2/resolve/main/MedSAM2_MRI_LiverLesion.pt"
             }
+            Variant::Flare25Recist => {
+                "https://huggingface.co/wanglab/MedSAM2/resolve/main/medsam2_FLARE25_RECIST_baseline.pt"
+            }
             Variant::Base2411 => {
                 "https://huggingface.co/wanglab/MedSAM2/resolve/main/MedSAM2_2411.pt"
+            }
+            Variant::EfficientTiny => {
+                "https://huggingface.co/wanglab/MedSAM2/resolve/main/eff_medsam2_tiny_FLARE25_RECIST_baseline.pt"
+            }
+            Variant::EfficientSmall => {
+                "https://huggingface.co/wanglab/MedSAM2/resolve/main/eff_medsam2_small_FLARE25_RECIST_baseline.pt"
             }
         };
         RemoteFile {
             name,
             url,
-            // Tensor bytes; the ZIP container adds a little. Only a fallback
-            // for the progress bar when the server sends no Content-Length.
-            bytes: layout::PAYLOAD_BYTES,
+            // MedSAM2: tensor bytes, the ZIP container adds a little - only a
+            // fallback for the progress bar when the server sends no
+            // Content-Length. Efficient MedSAM2: the published file sizes.
+            bytes: match self {
+                Variant::EfficientTiny => 71_662_031,
+                Variant::EfficientSmall => 136_422_106,
+                _ => layout::PAYLOAD_BYTES,
+            },
         }
     }
 
@@ -174,7 +220,24 @@ mod tests {
                 f.url
             );
             assert!(f.url.ends_with(f.name), "{} vs {}", f.url, f.name);
-            assert_eq!(f.bytes, layout::PAYLOAD_BYTES);
+            if v.is_efficient() {
+                // A little over four bytes per element of the derived layout.
+                let dim = if v == Variant::EfficientTiny {
+                    192
+                } else {
+                    384
+                };
+                let tensors = layout::elements_of(&super::super::model::Arch::EfficientTam { dim })
+                    as u64
+                    * 4;
+                assert!(
+                    f.bytes > tensors && f.bytes < tensors + 500_000,
+                    "{}",
+                    f.name
+                );
+            } else {
+                assert_eq!(f.bytes, layout::PAYLOAD_BYTES);
+            }
             assert_eq!(Variant::from_key(v.key()), Some(v));
         }
         assert_eq!(Variant::from_key("nope"), None);

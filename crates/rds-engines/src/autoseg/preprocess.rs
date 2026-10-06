@@ -19,9 +19,11 @@
 
 use rayon::prelude::*;
 
-use crate::volume::Volume;
+use crate::volume::{AxisOrder, Volume};
 
-/// Mapping between the volume's index space and the model's [S,A,R] grid.
+/// Mapping between the volume's index space and the model's grid - [S,A,R]
+/// for TotalSegmentator, or whichever [`AxisOrder`] the model was trained
+/// in ([`SarMap::with_axes`]).
 #[derive(Clone, Debug)]
 pub struct SarMap {
     /// SAR axis → volume axis (0 = i/x, 1 = j/y, 2 = k/z).
@@ -39,7 +41,13 @@ impl SarMap {
     /// array rather than a scalar because not every nnU-Net model is
     /// isotropic - the MR body model plans 3.0 × 1.19 × 0.99 mm.
     pub fn new(vol: &Volume, target: [f64; 3]) -> SarMap {
-        let (perm, flip) = vol.canonical_axes();
+        Self::with_axes(vol, target, AxisOrder::Sar)
+    }
+
+    /// [`SarMap::new`] onto the axes of `order`: MRSegmentator's
+    /// [S, P, L], MONAI's [R, A, S]. `target` is in that order too.
+    pub fn with_axes(vol: &Volume, target: [f64; 3], order: AxisOrder) -> SarMap {
+        let (perm, flip) = vol.axes_toward(order);
         let dims = [vol.dims[0], vol.dims[1], vol.dims[2]];
         let spac = [vol.spacing[0], vol.spacing[1], vol.spacing[2]];
         let orig_dims = [dims[perm[0]], dims[perm[1]], dims[perm[2]]];

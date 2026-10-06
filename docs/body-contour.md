@@ -160,13 +160,14 @@ model-assisted method answers the rest.
 ## Method B - model-assisted
 
 TotalSegmentator publishes a **body-outline nnU-Net** under the same
-Apache-2.0 licence as its "total" task, in three flavours:
+Apache-2.0 licence as its "total" task, in four flavours:
 
 | Model | Workspace | Grid | Download |
 |---|---|---|---|
 | CT 6 mm | 300 | 6 mm isotropic | 124 MB |
 | CT 1.5 mm | 299 | 1.5 mm isotropic | 233 MB |
-| MR | 597 | 3.0 × 1.19 × 0.99 mm | 230 MB |
+| MR 6 mm | 598 | 6 mm isotropic | 43 MB |
+| MR 1.5 mm | 597 | 3.0 × 1.19 × 0.99 mm | 230 MB |
 
 They run through the *same* engine as the 117-class auto-segmentation -
 `autoseg::run_specs`, the same `PlainConvUNet` rebuilt from `plans.json`, the
@@ -219,9 +220,9 @@ of couch left out. It allocates about one byte per voxel per intermediate
 mask, plus four bytes per *set* voxel for the component lists.
 
 The model-assisted method adds one nnU-Net inference: 34 s for the 6 mm model
-on the same cores (50 s in total), minutes with the 1.5 mm or MR model. The
+on the same cores (50 s in total), minutes with the 1.5 mm models. The
 network only says which side of the skin a voxel is on, so **6 mm is the
-sensible default**.
+sensible default** - on CT and, with the MR 6 mm model, on MR.
 
 ## Verification
 
@@ -270,7 +271,7 @@ blur against a constant and a step.
 
 ```
 cargo run --release --example body_cli -- <dicom_dir> \
-    [--method classical|model] [--model ct6|ct15|mr] \
+    [--method classical|model] [--model ct6|ct15|mr6|mr] \
     [--hu -300] [--mr-fraction 0.12] [--mr-otsu] [--bias-sigma 40] \
     [--open 8] [--thin-shell 2] [--no-devices] [--window 150] [--frac 0.8] \
     [--min-cm3 50] [--no-thin] [--thin-extent 100] [--margin 6] \

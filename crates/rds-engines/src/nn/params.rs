@@ -46,6 +46,12 @@ impl Params {
         self.tensors.values().map(|t| t.numel()).sum()
     }
 
+    /// The shape of a tensor, if the checkpoint has it - for the few
+    /// dimensions a network reads from its weights rather than its config.
+    pub fn shape(&self, key: &str) -> Option<&[usize]> {
+        self.tensors.get(key).map(|t| t.shape.as_slice())
+    }
+
     /// Fetch a tensor and assert its shape.
     pub fn get(&self, key: &str, shape: &[usize]) -> Result<&[f32]> {
         let Some(t) = self.tensors.get(key) else {

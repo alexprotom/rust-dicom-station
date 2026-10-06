@@ -1,28 +1,32 @@
-//! *Modules ▶ Structure auto tools*: the four tools that find a structure
-//! by themselves, as one section of the modules panel.
+//! *Modules ▶ Structure auto tools*: the tools that find a structure by
+//! themselves or from a prompt, as one section of the modules panel.
 //!
 //! *Body contour* (threshold and morphology, or a network), *Auto-
-//! segmentation* (TotalSegmentator), *Prompt segmentation* (SegVol) and
+//! segmentation* (the model registry: TotalSegmentator, MRSegmentator,
+//! lungmask, MONAI, CT-FM, VISTA-3D), *Prompt segmentation* (SegVol) and
 //! *Slice propagation* (MedSAM2) used to be four windows with the same
 //! bones - a description, the tool's inputs, an *Options* fold with the
 //! compute device and the model folder, the licence line, a run button that
-//! turns into a progress row. Here they are four foldable sections under one
+//! turns into a progress row. Here they are foldable sections under one
 //! workspace row, drawn by the same code that drew the windows
 //! (`body_win.rs`, `dialogs.rs`, `prompt_seg.rs`, `box_seg.rs`), so the
 //! panel and the runs behave exactly as before; only the window is gone.
+//! *Interactive segmentation* (nnInteractive, `interactive_seg.rs`) joined
+//! them as a section from the start.
 //!
 //! The module works on one workspace; every section's state is re-targeted
 //! when that changes, unless a run on the old workspace is still in flight.
 
 use super::*;
 
-/// The four sections of the module.
+/// The sections of the module.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum AutoSection {
     Body,
     Autoseg,
     PromptSeg,
     SliceProp,
+    Interactive,
 }
 
 /// The module's state: the workspace the sections act on.
@@ -32,7 +36,7 @@ pub(super) struct AutoTools {
 }
 
 impl ViewerApp {
-    /// The whole module: the workspace row, then the four sections.
+    /// The whole module: the workspace row, then the sections.
     pub(super) fn auto_tools_section(&mut self, ui: &mut egui::Ui) {
         let title = egui::RichText::new("Structure auto tools").strong();
         if !self.any_volume() {
@@ -61,6 +65,7 @@ impl ViewerApp {
                     (AutoSection::Autoseg, &AUTOSEG),
                     (AutoSection::PromptSeg, &PROMPT_SEG),
                     (AutoSection::SliceProp, &SLICE_PROP),
+                    (AutoSection::Interactive, &INTERACTIVE_SEG),
                 ] {
                     egui::CollapsingHeader::new(info.menu_entry())
                         .default_open(false)
@@ -69,6 +74,7 @@ impl ViewerApp {
                             AutoSection::Autoseg => self.autoseg_section(ui),
                             AutoSection::PromptSeg => self.segvol_section(ui),
                             AutoSection::SliceProp => self.medsam2_section(ui),
+                            AutoSection::Interactive => self.nni_section(ui),
                         });
                 }
             });

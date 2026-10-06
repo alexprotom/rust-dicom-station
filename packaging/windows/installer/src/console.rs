@@ -50,10 +50,15 @@ pub fn run_install(
         println!(
             "Model weights       : {}{}",
             opts.models.label(),
-            if models::AVAILABLE {
-                ""
+            if !models::AVAILABLE {
+                "  (not available in this build)".to_string()
+            } else if opts.models == Models::None {
+                String::new()
             } else {
-                "  (not available in this build)"
+                format!(
+                    " ({} to download)",
+                    human_size(models::download_size(&opts.models, &opts.models_dir))
+                )
             }
         );
         println!(

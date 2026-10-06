@@ -55,6 +55,12 @@ const SESSION_SEP: char = '|';
 /// Settings key of the workflow files last saved or opened, newest first,
 /// separated like the session's paths.
 const RECENT_WORKFLOWS_KEY: &str = "recent_workflows";
+/// Settings key of the user's TotalSegmentator licence number. Only ever
+/// in the user's own settings file: the installer, asked for it, writes it
+/// there and nowhere else.
+pub const TS_LICENCE_KEY: &str = "totalsegmentator_licence";
+/// Settings key of an nnU-Net model folder the user added (one line each).
+const NNUNET_FOLDER_KEY: &str = "nnunet_model_folder";
 
 /// Settings keys of what each row of the central area shows, one per row.
 const VIEW_ROW_KEYS: [&str; MAX_WORKSPACES] =
@@ -231,6 +237,14 @@ pub struct Settings {
     /// The workflow files last saved or opened, newest first - what
     /// *Workflows ▸ Recent* lists (see `workflow::graph::store`).
     pub recent_workflows: Vec<PathBuf>,
+
+    /// The user's TotalSegmentator licence number, which the licensed
+    /// TotalSegmentator models are downloaded with.
+    pub ts_licence: Option<String>,
+
+    /// nnU-Net model folders added in the model manager, run like the
+    /// built-in models ([`crate::autoseg::custom`]).
+    pub nnunet_folders: Vec<PathBuf>,
 }
 
 impl Default for Settings {
@@ -258,6 +272,8 @@ impl Default for Settings {
             session: std::array::from_fn(|_| Vec::new()),
             view_rows: std::array::from_fn(|_| default_view_row()),
             recent_workflows: Vec::new(),
+            ts_licence: None,
+            nnunet_folders: Vec::new(),
             // Let wgpu choose. The installer writes an explicit value when
             // the person installing picks one.
             graphics_backend: Backend::Auto,
@@ -915,6 +931,14 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from)
                 .collect();
+        } else if key.eq_ignore_ascii_case(TS_LICENCE_KEY) {
+            let v = value.trim();
+            s.ts_licence = (!v.is_empty()).then(|| v.to_string());
+        } else if key.eq_ignore_ascii_case(NNUNET_FOLDER_KEY) {
+            let v = PathBuf::from(value.trim());
+            if !value.trim().is_empty() && !s.nnunet_folders.contains(&v) {
+                s.nnunet_folders.push(v);
+            }
         } else if key.eq_ignore_ascii_case(RECENT_WORKFLOWS_KEY) {
             s.recent_workflows = value
                 .split(SESSION_SEP)
@@ -1020,6 +1044,17 @@ fn render(s: &Settings) -> String {
     out.push_str("# up to three of axial, sagittal, coronal, 3d\n");
     for (key, row) in VIEW_ROW_KEYS.iter().zip(&s.view_rows) {
         out.push_str(&format!("{key} = {}\n", render_view_row(row)));
+    }
+    if !s.nnunet_folders.is_empty() {
+        out.push_str("# nnU-Net model folders added in the model manager, one per line\n");
+        for f in &s.nnunet_folders {
+            out.push_str(&format!("{NNUNET_FOLDER_KEY} = {}\n", f.display()));
+        }
+    }
+    if let Some(l) = &s.ts_licence {
+        out.push_str(&format!(
+            "# your TotalSegmentator licence number (for the licensed models)\n{TS_LICENCE_KEY} = {l}\n"
+        ));
     }
     if !s.recent_workflows.is_empty() {
         let joined: Vec<String> = s
@@ -1356,6 +1391,25 @@ mod tests {
         // Nothing usable leaves the default rather than an empty window.
         assert_eq!(parse_view_row(""), default_view_row());
         assert_eq!(parse_view_row("sideways, upside-down"), default_view_row());
+    }
+
+    #[test]
+    fn round_trips_the_licence_and_the_model_folders() {
+        let s = Settings {
+            ts_licence: Some("aca_TEST0000".to_string()),
+            nnunet_folders: vec![
+                PathBuf::from("D:/nnUNet_results/Dataset042_Liver"),
+                PathBuf::from("/data/models/Dataset7"),
+            ],
+            ..Settings::default()
+        };
+        let back = parse(&render(&s));
+        assert_eq!(back.ts_licence, s.ts_licence);
+        assert_eq!(back.nnunet_folders, s.nnunet_folders);
+        let none = parse(&render(&Settings::default()));
+        assert_eq!(none.ts_licence, None);
+        assert!(none.nnunet_folders.is_empty());
+        assert_eq!(parse("totalsegmentator_licence =  ").ts_licence, None);
     }
 
     #[test]

@@ -4,7 +4,7 @@
 use super::*;
 
 impl ViewerApp {
-    // -- Auto-segmentation (TotalSegmentator, see the `autoseg` module) ----
+    // -- Auto-segmentation (every automatic model of the `zoo` registry) ---
     /// Open the tool window for auto-segmenting the given slot.
     pub(super) fn open_autoseg_dialog(&mut self, slot: usize) {
         if !self.slots[slot].has_volume() {
@@ -15,11 +15,13 @@ impl ViewerApp {
             Some(d) if self.autoseg_job.is_none() => d.slot = slot,
             Some(_) => {}
             None => {
+                let model = zoo::AutoModel::default_for(&self.slot_modality(slot));
                 self.autoseg_dialog = Some(AutosegDialog {
                     slot,
-                    variant: autoseg::Variant::Fast3mm,
+                    model,
+                    total: autoseg::Variant::Fast3mm,
                     device: autoseg::DevicePref::Auto,
-                    parts: [true; 5],
+                    parts: vec![true; model.part_names().len()],
                     output: ToolOutput {
                         set: self.default_set_target(slot),
                         ..ToolOutput::default()
@@ -80,11 +82,17 @@ impl ViewerApp {
     }
 
     /// The *Auto-segmentation* section of the Structure auto tools module:
-    /// model variant, compute device and model folder, then the run - whose
-    /// progress replaces the button.
+    /// the model, its options, compute device and model folder, then the
+    /// run - whose progress replaces the button.
     pub(super) fn autoseg_section(&mut self, ui: &mut egui::Ui) {
         self.open_autoseg_dialog(self.auto.slot);
         let group = self.displayed_group(self.auto.slot);
+        let modality = self
+            .autoseg_dialog
+            .as_ref()
+            .map(|d| self.slot_modality(d.slot))
+            .unwrap_or_default();
+        let root = self.models_root();
         let Some(d) = &mut self.autoseg_dialog else {
             return;
         };
@@ -92,62 +100,196 @@ impl ViewerApp {
             .autoseg_job
             .as_ref()
             .filter(|_| self.autoseg_slot == d.slot);
+        let idle = running.is_none();
         let mut run = false;
         let mut browse = false;
         let mut cancel = false;
-        let models_dir = models::engine_dir(
-            &models::root_from_setting(&self.models_dir),
-            models::Engine::TotalSegmentator,
-        );
-        ui.label(
-            "Segments the CT into up to 117 anatomical structures with \
-             TotalSegmentator's nnU-Net models, re-implemented natively in Rust.",
-        );
+        let all = zoo::AutoModel::all();
+        ui.label(format!(
+            "Segments the scan with one of {} automatic models - TotalSegmentator's CT, \
+             MR, task and licensed models, MRSegmentator, the nnU-Net v1 tumour models, \
+             lungmask, MONAI's whole-body SegResNet, CT-FM, VISTA-3D, NV-Segment-CTMR and \
+             your own nnU-Net models - re-implemented natively in Rust.",
+            all.len()
+        ));
         ui.separator();
-        ui.label("Model:");
-        for (variant, name, hint) in [
-            (
-                autoseg::Variant::Fast3mm,
-                "3 mm - fast",
-                "Single model, all 117 structures. Good quality, \
-                 practical on any CPU.",
-            ),
-            (
-                autoseg::Variant::HighRes15mm,
-                "1.5 mm - high quality",
-                "Five sub-models at full resolution - the reference \
-                 quality. Slow without a GPU.",
-            ),
-            (
-                autoseg::Variant::Preview6mm,
-                "6 mm - preview",
-                "Coarse but very fast - a quick look.",
-            ),
-        ] {
-            let need = autoseg::download_needed(variant, d.parts, &models_dir);
-            let note = if need == 0 {
-                "weights cached ✔".to_string()
+        // The `total` CT family is one entry with its own three choices
+        // below; every other model is an entry of its own, under its group.
+        let total_ct = d.model.total_variant().is_some();
+        ui.horizontal(|ui| {
+            ui.label("Model:");
+            let shown = if total_ct {
+                "TotalSegmentator CT, 117 structures".to_string()
             } else {
-                format!("downloads {} MB once", need / 1_000_000)
-            };
-            if ui
-                .add_enabled(
-                    running.is_none(),
-                    egui::RadioButton::new(d.variant == variant, format!("{name}  ({note})")),
+                format!(
+                    "{} ({})",
+                    d.model.label(),
+                    structures(d.model.classes().len())
                 )
-                .on_hover_text(hint)
-                .clicked()
-            {
-                d.variant = variant;
-            }
-        }
-        if d.variant == autoseg::Variant::HighRes15mm {
+            };
+            ui.add_enabled_ui(idle, |ui| {
+                egui::ComboBox::from_id_salt("autoseg_model")
+                    .selected_text(shown)
+                    .height(480.0)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(total_ct, "TotalSegmentator CT, 117 structures")
+                            .clicked()
+                        {
+                            d.model = zoo::AutoModel::Nn(d.total.task());
+                        }
+                        let mut heading = "";
+                        for m in &all {
+                            if m.total_variant().is_some() {
+                                continue;
+                            }
+                            if m.group() != heading {
+                                heading = m.group();
+                                ui.label(egui::RichText::new(heading).weak().small());
+                            }
+                            let text = format!(
+                                "{} ({}, {})",
+                                m.label(),
+                                m.modality().label(),
+                                structures(m.classes().len())
+                            );
+                            if ui
+                                .selectable_label(*m == d.model, text)
+                                .on_hover_text(m.detail())
+                                .clicked()
+                            {
+                                d.model = *m;
+                            }
+                        }
+                    });
+            });
+        });
+        // The choice just made in the list decides what follows; the value
+        // read before it would put the `total` task back over another pick.
+        let total_ct = d.model.total_variant().is_some();
+        if total_ct {
+            // The variant is one value, shown as three choices: the
+            // weights' generation, the resolution, and (v3 only) the
+            // network size.
+            let (mut gen, mut res, mut small) = split_variant(d.total);
             ui.horizontal_wrapped(|ui| {
-                ui.label("Sub-models:");
-                for (i, name) in autoseg::classes::PART_NAMES.iter().enumerate() {
-                    ui.checkbox(&mut d.parts[i], *name);
+                ui.label("Weights:");
+                for (g, name, hint) in [
+                    (
+                        autoseg::Generation::V2,
+                        "v2",
+                        "TotalSegmentator's 'total' task of 2023 - still its default, trained \
+                         on 1559 subjects.",
+                    ),
+                    (
+                        autoseg::Generation::V3,
+                        "v3",
+                        "TotalSegmentator's 'total_v3' task: organs, cardiac and muscles \
+                         retrained on 1830 subjects. Same 117 structures; label 26 is \
+                         vertebrae_L6 instead of vertebrae_S1.",
+                    ),
+                ] {
+                    if ui
+                        .add_enabled(idle, egui::RadioButton::new(gen == g, name))
+                        .on_hover_text(hint)
+                        .clicked()
+                    {
+                        gen = g;
+                    }
                 }
             });
+            for (r, name, hint) in [
+                (
+                    Res::Fast3,
+                    "3 mm - fast",
+                    "Single model, all 117 structures. Good quality, practical on any CPU.",
+                ),
+                (
+                    Res::High15,
+                    "1.5 mm - high quality",
+                    "Five sub-models at full resolution - the reference quality. Slow \
+                     without a GPU.",
+                ),
+                (
+                    Res::Preview6,
+                    "6 mm - preview",
+                    "Coarse but very fast - a quick look.",
+                ),
+            ] {
+                let variant = join_variant(gen, r, small);
+                let need = zoo::AutoModel::Nn(variant.task()).download_needed(None, &root);
+                if ui
+                    .add_enabled(
+                        idle,
+                        egui::RadioButton::new(
+                            res == r,
+                            format!("{name}  ({})", download_note(need)),
+                        ),
+                    )
+                    .on_hover_text(hint)
+                    .clicked()
+                {
+                    res = r;
+                }
+            }
+            if gen == autoseg::Generation::V3 {
+                ui.add_enabled(
+                    idle && res != Res::Preview6,
+                    egui::Checkbox::new(&mut small, "small network (residual encoder)"),
+                )
+                .on_hover_text(
+                    "TotalSegmentator's 'small' model size: a residual-encoder nnU-Net with \
+                     8 base features instead of 32, from the same zip. Larger patches (128 \
+                     or 192 cubed), fewer weights. Not trained at 6 mm.",
+                );
+            }
+            d.total = join_variant(gen, res, small);
+            d.model = zoo::AutoModel::Nn(d.total.task());
+        } else {
+            ui.weak(d.model.detail());
+            let need = d.model.download_needed(Some(&d.parts), &root);
+            ui.weak(format!(
+                "{} · {} · {}",
+                d.model.family().label(),
+                d.model.licence().name(),
+                download_note(need)
+            ));
+        }
+        let names = d.model.part_names();
+        if d.parts.len() != names.len() {
+            d.parts = vec![true; names.len()];
+        }
+        if !names.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Sub-models:");
+                for (on, name) in d.parts.iter_mut().zip(&names) {
+                    ui.add_enabled(idle, egui::Checkbox::new(on, name.as_str()));
+                }
+            });
+        }
+        if !modality.is_empty() && !d.model.modality().accepts(&modality) {
+            ui.colored_label(
+                warn_color(ui.visuals()),
+                format!(
+                    "⚠ This model was trained on {}; the displayed series is {modality}.",
+                    d.model.modality().label()
+                ),
+            );
+        }
+        if d.model.licence().needs_licence_number() {
+            ui.colored_label(
+                warn_color(ui.visuals()),
+                "⚠ Licensed weights: free with a TotalSegmentator licence number for \
+                 non-commercial use; commercial use needs a paid licence.",
+            );
+        } else if d.model.licence().research_only() {
+            ui.colored_label(
+                warn_color(ui.visuals()),
+                format!(
+                    "⚠ Weights under {}: non-commercial use only.",
+                    d.model.licence().name()
+                ),
+            );
         }
         // What the result becomes is asked in the results window, with the
         // organs; how far the run reaches has to be known now.
@@ -155,30 +297,33 @@ impl ViewerApp {
         ui.separator();
         ui.collapsing("Options", |ui| {
             device_row(ui, &mut d.device);
-            browse = models_dir_row(ui, &mut self.models_dir, models::Engine::TotalSegmentator);
+            browse = models_root_row(ui, &mut self.models_dir);
         });
         ui.separator();
         licence_line(
             ui,
-            "Weights: TotalSegmentator 'total' task (Apache-2.0), downloaded once \
-             from the official GitHub release.",
-            false,
+            &format!(
+                "Weights: {} ({}), {}.",
+                d.model.label(),
+                d.model.licence().name(),
+                d.model.weights_origin()
+            ),
+            !d.model.licence().open(),
         );
         ui.separator();
         match running {
             Some(job) => cancel = progress_row(ui, &job.progress),
             None => {
                 ui.horizontal_wrapped(|ui| {
-                    let can_run =
-                        d.variant != autoseg::Variant::HighRes15mm || d.parts.iter().any(|p| *p);
+                    let can_run = d.parts.is_empty() || d.parts.iter().any(|p| *p);
                     if enabled_tip_button(
                         ui,
                         can_run,
                         "▶ Segment",
                         if d.output.phases {
-                            "Run the network on every phase of the group, one after another"
+                            "Run the model on every phase of the group, one after another"
                         } else {
-                            "Run the network on the whole volume"
+                            "Run the model on the whole volume"
                         },
                     ) {
                         run = true;
@@ -246,6 +391,9 @@ impl ViewerApp {
                     ("t, s", format!("{elapsed:.0}")),
                 ]);
                 run_report::facts(ui, "autoseg_facts", &facts);
+                for note in p.phases.iter().flat_map(|(_, r)| r.notes.iter()) {
+                    ui.colored_label(warn_color(ui.visuals()), format!("⚠ {note}"));
+                }
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     if ui.small_button("All").clicked() {
@@ -300,13 +448,27 @@ impl ViewerApp {
                                             organ.color[2],
                                         ),
                                     );
-                                    ui.label(organ.name);
+                                    let tg = zoo::tg263_name(organ.name);
+                                    match (&tg, p.tg263) {
+                                        (Some(t), true) => {
+                                            ui.label(t).on_hover_text(organ.name);
+                                        }
+                                        _ => {
+                                            ui.label(organ.name);
+                                        }
+                                    }
                                     ui.monospace(format!("{:.2} cm³", organ.cm3));
                                     ui.end_row();
                                 }
                             });
                     });
                 ui.add_space(4.0);
+                ui.checkbox(&mut p.tg263, "Name structures by AAPM TG-263")
+                    .on_hover_text(
+                        "Use the TG-263 standard name (Kidney_L, Lung_RUL, VB_T07, ...) for \
+                         every class that has one, so structure sets from different models \
+                         read as one. Classes without a TG-263 name keep the model's name.",
+                    );
                 output_rows(
                     ui,
                     &mut p.output,
@@ -331,6 +493,9 @@ impl ViewerApp {
                 });
             },
         );
+        if let Some(p) = &self.autoseg_pending {
+            self.autoseg_pending_tg263 = p.tg263;
+        }
         if apply_clicked && !close_clicked {
             self.apply_autoseg_selection();
         } else if !open || close_clicked {
@@ -762,5 +927,86 @@ impl ViewerApp {
         if do_apply {
             self.anon_start_apply();
         }
+    }
+}
+
+/// What a model still costs to download, as the section shows it.
+fn download_note(need: u64) -> String {
+    if need == 0 {
+        "weights cached ✔".to_string()
+    } else {
+        format!("downloads {} once", models::human_bytes(need))
+    }
+}
+
+/// A model's class count as the model list shows it.
+fn structures(n: usize) -> String {
+    if n == 1 {
+        "1 structure".to_string()
+    } else {
+        format!("{n} structures")
+    }
+}
+
+/// The resolution half of an auto-segmentation [`autoseg::Variant`], for
+/// the section's radio buttons.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Res {
+    Fast3,
+    High15,
+    Preview6,
+}
+
+/// A variant as the three choices the section shows: generation,
+/// resolution, and whether it is the v3 `small` network.
+fn split_variant(v: autoseg::Variant) -> (autoseg::Generation, Res, bool) {
+    use autoseg::{Generation, Variant};
+    match v {
+        Variant::Fast3mm => (Generation::V2, Res::Fast3, false),
+        Variant::HighRes15mm => (Generation::V2, Res::High15, false),
+        Variant::Preview6mm => (Generation::V2, Res::Preview6, false),
+        Variant::V3Fast3mm => (Generation::V3, Res::Fast3, false),
+        Variant::V3HighRes15mm => (Generation::V3, Res::High15, false),
+        Variant::V3Preview6mm => (Generation::V3, Res::Preview6, false),
+        Variant::V3Small3mm => (Generation::V3, Res::Fast3, true),
+        Variant::V3Small15mm => (Generation::V3, Res::High15, true),
+    }
+}
+
+/// The variant the three choices add up to. `small` only exists for v3 at
+/// 3 mm and 1.5 mm; elsewhere it is ignored.
+fn join_variant(gen: autoseg::Generation, res: Res, small: bool) -> autoseg::Variant {
+    use autoseg::{Generation, Variant};
+    match (gen, res, small) {
+        (Generation::V2, Res::Fast3, _) => Variant::Fast3mm,
+        (Generation::V2, Res::High15, _) => Variant::HighRes15mm,
+        (Generation::V2, Res::Preview6, _) => Variant::Preview6mm,
+        (Generation::V3, Res::Fast3, false) => Variant::V3Fast3mm,
+        (Generation::V3, Res::High15, false) => Variant::V3HighRes15mm,
+        (Generation::V3, Res::Preview6, _) => Variant::V3Preview6mm,
+        (Generation::V3, Res::Fast3, true) => Variant::V3Small3mm,
+        (Generation::V3, Res::High15, true) => Variant::V3Small15mm,
+    }
+}
+
+#[cfg(test)]
+mod variant_choice_tests {
+    use super::*;
+
+    #[test]
+    fn the_three_choices_round_trip_every_variant() {
+        for v in autoseg::Variant::ALL {
+            let (g, r, s) = split_variant(v);
+            assert_eq!(join_variant(g, r, s), v, "{v:?}");
+        }
+        // 'small' has no 6 mm model and no v2 model: the tick is ignored.
+        assert_eq!(
+            join_variant(autoseg::Generation::V3, Res::Preview6, true),
+            autoseg::Variant::V3Preview6mm
+        );
+        assert_eq!(
+            join_variant(autoseg::Generation::V2, Res::Fast3, true),
+            autoseg::Variant::Fast3mm
+        );
     }
 }

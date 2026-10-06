@@ -1908,20 +1908,58 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
         }
         Op::AutoSegment(p) => {
             f.row("Model", |ui| {
-                choice(
-                    ui,
-                    ("variant", id),
-                    &mut p.variant,
-                    &cat::AutosegVariant::ALL,
-                    |v| v.label(),
-                );
+                // TotalSegmentator's CT variants first (an empty `model`),
+                // then every other model of the registry by its key.
+                let shown = match p.auto_model() {
+                    Some(m) if m.total_variant().is_some() => {
+                        format!("TotalSegmentator CT, {}", p.variant.label())
+                    }
+                    Some(m) => m.label().to_string(),
+                    None => format!("unknown model '{}'", p.model.trim()),
+                };
+                egui::ComboBox::from_id_salt(("model", id))
+                    .selected_text(shown)
+                    .height(420.0)
+                    .show_ui(ui, |ui| {
+                        ui.label(egui::RichText::new("TotalSegmentator CT").weak().small());
+                        for v in cat::AutosegVariant::ALL {
+                            let on = p.model.trim().is_empty() && p.variant == v;
+                            if ui.selectable_label(on, v.label()).clicked() {
+                                p.model.clear();
+                                p.variant = v;
+                            }
+                        }
+                        let mut heading = "";
+                        for m in crate::zoo::AutoModel::all() {
+                            if m.total_variant().is_some() {
+                                continue;
+                            }
+                            if m.group() != heading {
+                                heading = m.group();
+                                ui.label(egui::RichText::new(heading).weak().small());
+                            }
+                            if ui
+                                .selectable_label(p.model == m.key(), m.label())
+                                .on_hover_text(m.detail())
+                                .clicked()
+                            {
+                                p.model = m.key().to_string();
+                            }
+                        }
+                    });
             });
+            // The chosen model's own class names (v3 calls label 26
+            // vertebrae_L6); either spelling, and the TG-263 name, is
+            // accepted when typed.
+            let class_names: &[&str] = p.auto_model().map_or(&[], |m| m.classes());
+            let checker = p.clone();
+            let p_label_known = |name: &str| checker.label_of(name).is_some();
             f.wide(|ui| {
                 ui.strong("Organs to keep, and their names");
                 let mut remove = None;
                 for (k, o) in p.organs.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
-                        let known = cat::organ_label(&o.organ).is_some();
+                        let known = p_label_known(&o.organ);
                         egui::ComboBox::from_id_salt(("organ", id, k))
                             .selected_text(if o.organ.trim().is_empty() {
                                 "organ"
@@ -1930,13 +1968,13 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
                             })
                             .width(120.0)
                             .show_ui(ui, |ui| {
-                                for name in crate::autoseg::classes::TOTAL_CLASS_NAMES {
-                                    ui.selectable_value(&mut o.organ, name.to_string(), name);
+                                for name in class_names.iter() {
+                                    ui.selectable_value(&mut o.organ, name.to_string(), *name);
                                 }
                             });
                         if !known {
                             ui.label(egui::RichText::new("✖").color(ui.visuals().error_fg_color))
-                                .on_hover_text("not a TotalSegmentator class");
+                                .on_hover_text("not a class of the chosen model");
                         }
                         ui.label("as");
                         text(ui, &mut o.name, &o.organ.clone(), 100.0);
@@ -1964,6 +2002,13 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             });
             output_rows(f, id, &mut p.output, &mut p.set, &mut p.set_label);
             names_row(f, id, &mut p.names);
+            f.row("", |ui| {
+                ui.checkbox(&mut p.tg263, "Name structures by AAPM TG-263")
+                    .on_hover_text(
+                        "Structures without a name of their own land under their TG-263 name \
+                         (Kidney_L, Lung_RUL) where the class has one",
+                    );
+            });
             f.row("Compute", |ui| {
                 choice(ui, ("dev", id), &mut p.device, &cat::Device::ALL, |v| {
                     v.label()

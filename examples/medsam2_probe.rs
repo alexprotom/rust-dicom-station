@@ -2,7 +2,8 @@
 //! layout the port is written for.
 //!
 //! Unlike its SegVol counterpart this one does not *discover* the layout -
-//! [`layout::expected`] derives all 471 tensors from the architecture, and
+//! [`layout::expected_for`] derives every tensor from the architecture (471
+//! for MedSAM2, 455 for Efficient MedSAM2), and
 //! the probe's job is to prove that a real file agrees, key for key and shape
 //! for shape. Run it whenever the upstream repository changes: it parses only
 //! `data.pkl`, so it is instant once the file is local, and it exits non-zero
@@ -13,9 +14,9 @@
 //! ```
 //!
 //! `MODELS_DIR` defaults to `medsam2/` in the viewer's model folder.
-//! `--variant` is one of `latest` (the default), `ct-lesion`, `mri-liver` or
-//! `2411`. `--keys` lists every tensor; `--csv` writes the inventory to a
-//! file.
+//! `--variant` is one of `latest` (the default), `ct-lesion`, `mri-liver`,
+//! `flare25-recist`, `2411`, `eff-tiny` or `eff-small`. `--keys` lists every
+//! tensor; `--csv` writes the inventory to a file.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -71,8 +72,9 @@ fn main() -> anyhow::Result<()> {
         .iter()
         .map(|t| t.shape.iter().product::<usize>())
         .sum();
-    println!("{} tensors, {elements} elements", actual.len());
-    for (group, total) in layout::group_totals() {
+    let arch = layout::arch_of(&actual);
+    println!("{} tensors, {elements} elements ({arch:?})", actual.len());
+    for (group, total) in layout::group_totals_for(&arch) {
         println!("  {group:18} {total:>12}");
     }
 
@@ -106,8 +108,8 @@ fn main() -> anyhow::Result<()> {
     if problems.is_empty() {
         println!(
             "layout matches: {} tensors, {} elements",
-            layout::TENSOR_COUNT,
-            layout::STATE_ELEMENTS
+            layout::expected_for(&arch).len(),
+            layout::elements_of(&arch)
         );
         Ok(())
     } else {

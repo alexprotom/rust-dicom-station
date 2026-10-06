@@ -82,11 +82,17 @@ registry! {
          the output folder; memory in use."),
 
     // ---- segment ------------------------------------------------------
+    "list_models" => (NoArgs, segment::list_models, false,
+        "Every automatic segmentation model segment_organs can run: key, what it segments \
+         (modality, class count, sub-models), its licence, and whether its weights are on \
+         this machine or how much there is to download."),
     "segment_organs" => (segment::OrgansArgs, segment::segment_organs, true,
-        "Run the TotalSegmentator re-implementation on one image series and file the organs as \
-         segments. variant: fast (3 mm), high (1.5 mm), preview (6 mm). For the high variant, \
-         parts chooses the sub-models: organs, vertebrae, cardiac, muscles, ribs. Weights must \
-         already be present unless downloads are allowed in the configuration."),
+        "Run an automatic segmentation model on one image series and file what it finds as \
+         segments. model: a key from list_models (TotalSegmentator CT, MR and task models, \
+         MRSegmentator, lungmask, MONAI whole body, CT-FM, VISTA-3D); without it, variant picks a TotalSegmentator CT model: \
+         fast (3 mm), high (1.5 mm), preview (6 mm). parts chooses the sub-models of a model \
+         that has them. tg263 names the structures by AAPM TG-263. Weights must already be \
+         present unless downloads are allowed in the configuration."),
     "segment_body" => (segment::BodyArgs, segment::segment_body, true,
         "Contour the patient outline (EXTERNAL) of one image series. method: classical or \
          model_assisted."),

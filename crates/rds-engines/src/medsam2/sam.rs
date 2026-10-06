@@ -58,10 +58,11 @@ pub struct SamHead<B: Backend> {
 }
 
 impl<B: Backend> SamHead<B> {
-    pub fn load(p: &Params, dev: &B::Device) -> Result<SamHead<B>> {
+    /// `high_res`: whether the decoder takes high-resolution features.
+    pub fn load(p: &Params, high_res: bool, dev: &B::Device) -> Result<SamHead<B>> {
         Ok(SamHead {
             prompt: PromptEncoder::load(p, dev)?,
-            decoder: MaskDecoder::load(p, dev)?,
+            decoder: MaskDecoder::load(p, high_res, dev)?,
             obj_ptr_proj: Mlp::load(
                 p,
                 "obj_ptr_proj",
@@ -98,13 +99,14 @@ impl<B: Backend> SamHead<B> {
     /// One prompt against one encoded slice.
     ///
     /// `pix_feat` is the neck's level-2 map `[1, 256, 32, 32]`; `high_res` are
-    /// the two projected high-resolution features. `points` are in pixels of
+    /// the two projected high-resolution features, if the network has them.
+    /// `points` are in pixels of
     /// the 512 x 512 input - empty means a tracked slice, which sends a single
     /// padding point.
     pub fn forward(
         &self,
         pix_feat: Tensor<B, 4>,
-        high_res: &[Tensor<B, 4>; 2],
+        high_res: Option<&[Tensor<B, 4>; 2]>,
         points: &[Point],
         mask_input: Option<Tensor<B, 4>>,
         multimask: bool,

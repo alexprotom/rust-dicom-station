@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use crate::autoseg::{self, classes};
+use crate::autoseg::classes;
 use crate::bodymask;
 use crate::dicom_export::ExportParams;
 use crate::export::{self, ExportPlan, Layout, ObjKind, StructFormat, UidMode};
@@ -33,6 +33,7 @@ use crate::segmentation::Segmentation;
 use crate::volume::Grid;
 use crate::workflow::session::{self, item, NameClash};
 use crate::workflow::{self, anchored, group, motion, select};
+use crate::zoo;
 
 use super::catalog::{self as cat, name_matches, split_names, Op};
 use super::exec::{Ctx, Done, RegEntry, Report, RunOptions, Scope, Table, Value};
@@ -806,6 +807,7 @@ pub(super) fn engine_node(
     Ok(out)
 }
 
+/// An engine's folder under the run's model root.
 pub(super) fn models_root(ctx: &Ctx, engine: Engine) -> PathBuf {
     models::engine_dir(&ctx.opts.models_dir, engine)
 }
@@ -817,55 +819,68 @@ fn auto_segment(
     prm: &cat::AutoSegment,
     p: &Progress,
 ) -> Result<Done> {
-    let variant = prm.variant.variant();
+    let model = prm
+        .auto_model()
+        .ok_or_else(|| anyhow!("'{}' is not a model this program has", prm.model.trim()))?;
     let wanted: Vec<(u8, String)> = prm
         .organs
         .iter()
         .map(|o| {
-            cat::organ_label(&o.organ)
-                .map(|l| (l, o.landed_name()))
-                .ok_or_else(|| anyhow!("'{}' is not a TotalSegmentator class", o.organ.trim()))
+            prm.label_of(&o.organ)
+                .map(|l| {
+                    let name = if o.name.trim().is_empty() {
+                        prm.default_name(model.classes()[l as usize - 1])
+                    } else {
+                        o.landed_name()
+                    };
+                    (l, name)
+                })
+                .ok_or_else(|| anyhow!("'{}' is not a class of {}", o.organ.trim(), model.label()))
         })
         .collect::<Result<_>>()?;
-    // The 1.5 mm models come in five parts; run only those holding an
-    // organ that was asked for.
-    let mut parts = [wanted.is_empty(); 5];
-    for (label, _) in &wanted {
-        let part = classes::PART_OFFSET
-            .iter()
-            .rposition(|&off| off < *label)
-            .unwrap_or(0);
-        parts[part] = true;
-    }
-    let dir = models_root(ctx, Engine::TotalSegmentator);
-    let need = autoseg::download_needed(variant, parts, &dir);
+    // A model in parts runs only the parts holding an organ asked for.
+    let labels: Vec<u8> = wanted.iter().map(|(l, _)| *l).collect();
+    let parts = model.parts_holding(&labels);
+    let root = ctx.opts.models_dir.clone();
+    let need = model.download_needed(parts.as_deref(), &root);
     if need > 0 && !ctx.opts.allow_download {
         bail!(
-            "the TotalSegmentator weights are not present ({} to download) and downloads are \
-             off for this run",
+            "the {} weights are not present ({} to download) and downloads are off for this run",
+            model.label(),
             models::human_bytes(need)
         );
     }
-    let device = prm.device.pref();
+    let opts = zoo::RunOptions {
+        device: prm.device.pref(),
+        parts,
+    };
+    let tg263 = prm.tg263;
     let run = move |vol: &crate::volume::Volume, p: &Progress| -> Result<Made> {
-        let r = autoseg::run(vol, variant, device, parts, &dir, p)?;
+        let r = model.run(vol, &opts, &root, p)?;
+        let name_of = |name: &str| -> String {
+            if tg263 {
+                zoo::tg263_name(name).unwrap_or_else(|| name.to_string())
+            } else {
+                name.to_string()
+            }
+        };
         let classes: Vec<(u8, String, [u8; 3])> = if wanted.is_empty() {
             r.organs
                 .iter()
-                .map(|o| (o.label, o.name.to_string(), o.color))
+                .map(|o| (o.label, name_of(o.name), o.color))
                 .collect()
         } else {
             let missing: Vec<&str> = wanted
                 .iter()
                 .filter(|(l, _)| !r.organs.iter().any(|o| o.label == *l))
-                .map(|(l, _)| classes::class_name(*l))
+                .map(|(l, _)| r.class_name(*l))
                 .collect();
             if !missing.is_empty() {
                 bail!("{} was not found", missing.join(", "));
             }
             wanted
                 .iter()
-                .map(|(l, name)| (*l, name.clone(), classes::class_color(*l)))
+                .map(|(l, name)| (*l, name.clone(), classes::color_of(r.class_name(*l), *l)))
                 .collect()
         };
         let segs = Segmentation::from_label_map_many(r.dims, &r.labels, &classes);
@@ -901,7 +916,7 @@ fn body_contour(
     prm: &cat::BodyContour,
     p: &Progress,
 ) -> Result<Done> {
-    let dir = models_root(ctx, Engine::TotalSegmentator);
+    let dir = ctx.opts.models_dir.clone();
     let (_, targets, _) = engine_targets(ctx, v)?;
     let modality = targets
         .first()

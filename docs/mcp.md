@@ -111,7 +111,8 @@ segmentation series added when a name repeats. Series are numbered as
 | Tool | Does |
 |---|---|
 | `open_dataset`, `describe_dataset`, `list_structures`, `list_4d_groups`, `close_dataset`, `describe_session` | Open a folder (or files) under a root; see its series, 4D groups, structure sets, segmentations, doses, plans |
-| `segment_organs` | TotalSegmentator on one series: `fast`, `high` (with `parts` such as `cardiac`) or `preview`; `keep` narrows to named organs |
+| `list_models` | Every automatic segmentation model: key, modality, classes, sub-models, licence, whether its weights are present or what is left to download |
+| `segment_organs` | Any of those models on one series by `model` (`total_mr`, `mrsegmentator`, `lung_vessels`, `lungmask_lobes`, `vista3d`, ...); without it, `variant` picks TotalSegmentator CT: `fast`, `high` (with `parts` such as `cardiac`) or `preview` for the v2 weights, `fast_v3`, `high_v3`, `preview_v3`, `small_v3`, `small_high_v3` for v3; `keep` narrows to named organs, `tg263` names them by AAPM TG-263 |
 | `segment_body` | The patient outline, classically or model-assisted |
 | `combine_structures` | Union / intersect / subtract with margins in mm (uniform or per patient direction) and cleanup |
 | `register`, `describe_registration` | Rigid, elastix B-spline or plastimatch B-spline; `region` makes a run local to a structure of the fixed workspace; `start` refines an earlier registration; `init` says where the search starts (automatic, the identity, the centres of gravity, or the centroids of a structure contoured on both) |

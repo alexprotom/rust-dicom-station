@@ -349,6 +349,11 @@ pub(super) const SLICE_PROP: ToolInfo = ToolInfo {
     glyph: "⏩",
     name: "Slice propagation",
 };
+/// The target: click on what you want, and again on what it got wrong.
+pub(super) const INTERACTIVE_SEG: ToolInfo = ToolInfo {
+    glyph: "🎯",
+    name: "Interactive segmentation",
+};
 /// The fourth tool. Its glyph is a person because that is what it outlines,
 /// and because it is one of the few figures egui's bundled emoji font
 /// actually carries.
@@ -451,7 +456,12 @@ pub(super) fn stale_result(tool: &ToolInfo) -> String {
 impl ViewerApp {
     /// The engine's folder under the model root the user chose.
     pub(super) fn engine_models_dir(&self, engine: Engine) -> PathBuf {
-        models::engine_dir(&models::root_from_setting(&self.models_dir), engine)
+        models::engine_dir(&self.models_root(), engine)
+    }
+
+    /// The model root the user chose (the engines' folders are below it).
+    pub(super) fn models_root(&self) -> PathBuf {
+        models::root_from_setting(&self.models_dir)
     }
 
     /// Does `slot` still show the volume a run started on?
@@ -827,6 +837,9 @@ impl ViewerApp {
         {
             return Some((&SLICE_PROP, &job.progress));
         }
+        if let Some(job) = self.nni_job.as_ref().filter(|_| self.nni.slot == slot) {
+            return Some((&INTERACTIVE_SEG, &job.progress));
+        }
         if let Some(job) = self.body_job.as_ref().filter(|_| self.body_slot == slot) {
             return Some((&BODY_CONTOUR, &job.progress));
         }
@@ -898,9 +911,17 @@ pub(super) fn models_dir_row(ui: &mut egui::Ui, models_dir: &mut String, engine:
 /// manager labels its rows with.
 pub(super) fn tool_of(engine: Engine) -> &'static ToolInfo {
     match engine {
-        Engine::TotalSegmentator => &AUTOSEG,
+        Engine::TotalSegmentator
+        | Engine::MrSegmentator
+        | Engine::NnUnetV1
+        | Engine::Custom
+        | Engine::Lungmask
+        | Engine::Monai
+        | Engine::CtFm
+        | Engine::Vista3d => &AUTOSEG,
         Engine::SegVol => &PROMPT_SEG,
         Engine::MedSam2 => &SLICE_PROP,
+        Engine::NnInteractive => &INTERACTIVE_SEG,
     }
 }
 
@@ -910,9 +931,48 @@ pub(super) fn tool_of(engine: Engine) -> &'static ToolInfo {
 pub(super) fn weights_licence(engine: Engine) -> (&'static str, bool) {
     match engine {
         Engine::TotalSegmentator => (
-            "Weights: TotalSegmentator 'total' task (Apache-2.0), downloaded once from the \
-             official GitHub release.",
+            "Weights: TotalSegmentator's open tasks (Apache-2.0; brain_aneurysm CC BY-NC \
+             4.0), downloaded once from the official GitHub releases; its licensed tasks \
+             come from the TotalSegmentator licence server for your licence number \
+             (free for non-commercial use).",
             false,
+        ),
+        Engine::NnUnetV1 => (
+            "Weights: nnU-Net v1 pretrained models (DKFZ, Zenodo), CC BY-NC 4.0 - \
+             non-commercial use only; one network of each 5 GB archive is downloaded, at \
+             your request.",
+            true,
+        ),
+        Engine::Custom => (
+            "Weights: nnU-Net model folders you added; their licence is whatever their \
+             training data and authors set.",
+            true,
+        ),
+        Engine::MrSegmentator => (
+            "Weights: MRSegmentator 1.2, published in the GitHub release of its Apache-2.0 \
+             repository, downloaded once.",
+            false,
+        ),
+        Engine::Lungmask => (
+            "Weights: lungmask (Apache-2.0), downloaded once from the official GitHub \
+             release.",
+            false,
+        ),
+        Engine::Monai => (
+            "Weights: MONAI model zoo wholeBody_ct_segmentation (Apache-2.0), downloaded once \
+             from its Hugging Face repository.",
+            false,
+        ),
+        Engine::CtFm => (
+            "Weights: CT-FM whole-body segmentation (Apache-2.0), downloaded once from its \
+             Hugging Face repository.",
+            false,
+        ),
+        Engine::Vista3d => (
+            "Weights: NVIDIA NV-Segment-CT (VISTA-3D) under the NVIDIA Open Model License - \
+             commercial use allowed with attribution and its conditions; NV-Segment-CTMR \
+             under NVIDIA's non-commercial licence; downloaded once from Hugging Face.",
+            true,
         ),
         Engine::SegVol => (
             "Weights: no licence declaration in the model repository, training corpus \
@@ -923,6 +983,12 @@ pub(super) fn weights_licence(engine: Engine) -> (&'static str, bool) {
         Engine::MedSam2 => (
             "Weights: CC-BY-SA-4.0 with a 'research and education only' model card - \
              downloaded to this machine at your request only, never redistributed.",
+            true,
+        ),
+        Engine::NnInteractive => (
+            "Weights: nnInteractive v1.0 (DKFZ), CC BY-NC-SA 4.0 - non-commercial use \
+             only; downloaded once from Hugging Face at your request, never \
+             redistributed.",
             true,
         ),
     }
@@ -970,13 +1036,14 @@ mod tests {
             AUTOSEG.glyph,
             PROMPT_SEG.glyph,
             SLICE_PROP.glyph,
+            INTERACTIVE_SEG.glyph,
             BODY_CONTOUR.glyph,
             COMBINE.glyph,
             MOTION.glyph,
         ];
         glyphs.sort();
         glyphs.dedup();
-        assert_eq!(glyphs.len(), 6, "every tool has its own glyph");
+        assert_eq!(glyphs.len(), 7, "every tool has its own glyph");
     }
 
     #[test]
@@ -990,5 +1057,9 @@ mod tests {
         assert_eq!(tool_of(Engine::SegVol).glyph, PROMPT_SEG.glyph);
         assert!(!weights_licence(Engine::TotalSegmentator).1, "Apache-2.0");
         assert!(weights_licence(Engine::MedSam2).1, "research-only weights");
+        assert!(
+            weights_licence(Engine::NnInteractive).1,
+            "non-commercial weights"
+        );
     }
 }

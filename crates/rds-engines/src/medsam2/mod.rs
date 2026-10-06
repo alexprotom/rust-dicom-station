@@ -29,6 +29,13 @@
 //! [`infer`]), preprocessing ([`preprocess`], [`resample`]) and the one
 //! entry point the application calls ([`engine`]). The user interface is
 //! `app::box_seg`.
+//!
+//! **Efficient MedSAM2** (the authors' FLARE 2025 RECIST baselines on
+//! EfficientTAM, tiny and small) is the same engine with another image
+//! encoder: a plain ViT and a one-level neck ([`vitdet`]) in place of Hiera
+//! and the FPN, no high-resolution features in the decoder, and object
+//! pointers without a temporal encoding. The checkpoint says which network
+//! it holds ([`model::Arch`]); everything else is shared.
 
 pub mod config;
 pub mod decoder;
@@ -47,4 +54,5 @@ pub mod prompt;
 pub mod resample;
 pub mod sam;
 pub mod track;
+pub mod vitdet;
 pub mod weights;

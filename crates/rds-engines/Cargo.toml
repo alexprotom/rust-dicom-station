@@ -2,7 +2,7 @@
 name = "rds-engines"
 version = "0.10.1"
 edition = "2021"
-description = "The native inference engines of rust-dicom-station: TotalSegmentator (nnU-Net), SegVol and MedSAM2, and the neural-network plumbing they share"
+description = "The native inference engines of rust-dicom-station: the nnU-Net family (TotalSegmentator, MRSegmentator, nnInteractive), lungmask, MONAI SegResNet, CT-FM, VISTA-3D, SegVol and MedSAM2, and the neural-network plumbing they share"
 license = "MIT"
 repository = "https://github.com/alexprotom/rust-dicom-station"
 publish = false
@@ -21,6 +21,10 @@ rayon = "1.12"
 gemm = "0.18"                       # pure-Rust SIMD GEMM kernels (CPU conv engine)
 serde_json = "1"                    # nnU-Net plans.json, CLIP vocab.json
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Members of a remote zip are read without the `zip` crate (which reads
+# every local header on opening): deflate and the checksum directly.
+flate2 = "1"
+crc32fast = "1"
 safetensors = "0.8"                 # converted-weight cache format
 # Neural-network backend. Always compiled: the MedSAM2 engine is written once
 # against a `burn` backend and falls back to the pure-Rust `ndarray` one when

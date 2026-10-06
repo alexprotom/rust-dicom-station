@@ -41,6 +41,7 @@ USAGE:
     rds-setup [OPTIONS]
     rds-setup --update [--silent | --console]
     rds-setup --uninstall [--remove-models] [--silent]
+    rds-setup --list-models
 
 Run over an existing installation, the setup updates it in place: same
 folder, same choices, downloaded models kept. Options given here override
@@ -50,7 +51,12 @@ INSTALL OPTIONS:
     --dir <PATH>          destination folder
     --all-users           install for all users (needs administrator rights)
     --just-me             install for the current user only (default)
-    --models <SET>        pre-download weights: none | 6mm | 3mm | 1.5mm | all
+    --models <SET>        model weights to download now: none (default) |
+                          recommended (TotalSegmentator total, 3 mm) |
+                          open (every Apache-2.0 / MIT model) |
+                          every (all of them, the non-commercial ones too) |
+                          keys separated by commas (--list-models prints
+                          them); the older 3mm | 6mm | 1.5mm | all still work
     --models-dir <PATH>   the model folder (every engine's weights go in it)
     --no-start-menu       skip the Start-menu shortcuts
     --no-desktop-shortcut skip the desktop shortcut
@@ -79,6 +85,13 @@ UNINSTALL OPTIONS:
     --from <PATH>         installation folder (default: the setup program's own)
     --remove-models       also delete the model folder with every downloaded model
 
+MODELS:
+    --list-models         print every model the setup can download: its key,
+                          licence and size
+    The licensed TotalSegmentator models download with the licence number
+    kept in the viewer's settings (the model manager, or the setup window,
+    puts it there); without one they are skipped.
+
 GENERAL:
     --silent              no window and no questions
     --passive             a progress window only: no questions, closes itself
@@ -102,6 +115,7 @@ struct Args {
     uninstall: bool,
     update: bool,
     remove_models: bool,
+    list_models: bool,
     allow_downgrade: bool,
     from: Option<PathBuf>,
     /// The install options given on the command line, in order. They are
@@ -158,6 +172,7 @@ fn parse_from(args: impl Iterator<Item = String>) -> Result<Args> {
             "--update" => a.update = true,
             "--allow-downgrade" => a.allow_downgrade = true,
             "--remove-models" => a.remove_models = true,
+            "--list-models" => a.list_models = true,
             "--from" => a.from = Some(PathBuf::from(next(&mut it, "--from")?)),
             flag if VALUE_FLAGS.contains(&flag) => {
                 let value = next(&mut it, flag)?;
@@ -204,14 +219,9 @@ fn apply_install_flags(opts: &mut Options, flags: &[String]) -> Result<()> {
             }
             "--models" => {
                 let v = value()?;
-                opts.models = match v.to_ascii_lowercase().as_str() {
-                    "none" => Models::None,
-                    "6mm" => Models::Preview6mm,
-                    "3mm" | "fast" => Models::Fast3mm,
-                    "1.5mm" | "15mm" | "highres" => Models::HighRes15mm,
-                    "all" | "everything" => Models::Everything,
-                    other => bail!("unknown --models value '{other}'"),
-                };
+                opts.models = Models::parse(v).ok_or_else(|| {
+                    anyhow::anyhow!("unknown --models value '{v}' (--list-models prints the keys)")
+                })?;
             }
             other => bail!("unknown option '{other}'"),
         }
@@ -274,14 +284,7 @@ pub fn args_for_relaunch(o: &Options) -> String {
     if !o.remove_others {
         s.push_str(" --keep-others");
     }
-    let models = match o.models {
-        Models::None => "none",
-        Models::Preview6mm => "6mm",
-        Models::Fast3mm => "3mm",
-        Models::HighRes15mm => "1.5mm",
-        Models::Everything => "all",
-    };
-    s.push_str(&format!(" --models {models}"));
+    s.push_str(&format!(" --models \"{}\"", o.models.arg()));
     // The elevated run writes the settings file, so it has to be told which
     // backend the user chose on the graphics page.
     s.push_str(&format!(" --graphics {}", o.graphics.key()));
@@ -307,6 +310,11 @@ fn main() -> ExitCode {
     if args.help {
         win::attach_console();
         println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    if args.list_models {
+        win::attach_console();
+        models::print_list();
         return ExitCode::SUCCESS;
     }
     let text_mode = args.silent || args.console;
@@ -350,6 +358,13 @@ fn do_install(args: &Args) -> Result<u8> {
     apply_install_flags(&mut opts, &args.install_flags)?;
     if !models::AVAILABLE {
         opts.models = Models::None;
+    }
+    let unknown = models::unknown_keys(&opts.models);
+    if !unknown.is_empty() {
+        bail!(
+            "unknown model key(s): {} (--list-models prints them)",
+            unknown.join(", ")
+        );
     }
     if args.passive {
         opts.launch_after = false;
@@ -470,7 +485,7 @@ mod tests {
 
     fn parse(line: &str) -> Args {
         // Good enough for the strings `args_for_relaunch` produces: the only
-        // quoted values are the two paths.
+        // quoted values are the two paths and the model list.
         let mut words: Vec<String> = Vec::new();
         let mut cur = String::new();
         let mut quoted = false;
@@ -498,7 +513,12 @@ mod tests {
     #[test]
     fn every_choice_survives_the_elevated_relaunch() {
         for graphics in Graphics::ALL {
-            for models in Models::ALL {
+            let mut sets = Models::presets().to_vec();
+            sets.push(Models::Pick(vec![
+                KEY_TOTAL_3MM.to_string(),
+                "nnunet_v1/msd_lung".to_string(),
+            ]));
+            for models in sets {
                 for (install_mcp, remove_others) in
                     [(false, true), (true, false), (true, true), (false, false)]
                 {
@@ -515,7 +535,7 @@ mod tests {
                         // The two optional servers go opposite ways.
                         install_pacs: !install_mcp,
                         launch_after: true,
-                        models,
+                        models: models.clone(),
                         graphics,
                         remove_others,
                     };
@@ -599,8 +619,35 @@ mod tests {
         assert!(base.add_to_path, "PATH stays on");
         assert_eq!(base.graphics, Graphics::Dx12, "the backend is kept");
         assert!(!base.start_menu_shortcut, "the flag was applied");
-        assert_eq!(base.models, Models::Fast3mm);
+        assert_eq!(base.models, Models::Recommended);
         assert!(a.silent, "general flags are not install flags");
+    }
+
+    #[test]
+    fn the_models_flag_takes_sets_older_names_and_keys() {
+        let m = |v: &str| {
+            parse_from(["--models".to_string(), v.to_string()].into_iter())
+                .map(|a| a.opts.unwrap().models)
+        };
+        assert_eq!(m("every").unwrap(), Models::Every);
+        assert_eq!(m("Open").unwrap(), Models::Open);
+        assert_eq!(m("3mm").unwrap(), Models::Recommended);
+        assert_eq!(
+            m("6mm").unwrap(),
+            Models::Pick(vec![KEY_TOTAL_6MM.to_string()])
+        );
+        match m("all").unwrap() {
+            Models::Pick(k) => assert_eq!(k.len(), 6, "3 mm and the five 1.5 mm parts"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            m("vista3d/weights, nnunet_v1/msd_lung").unwrap(),
+            Models::Pick(vec![
+                "vista3d/weights".to_string(),
+                "nnunet_v1/msd_lung".to_string()
+            ])
+        );
+        assert!(m("everything-please").is_err());
     }
 
     #[test]

@@ -379,7 +379,7 @@ fn a_model_folder_that_cannot_exist_is_an_error_not_a_panic() {
 /// default because it downloads 124 MB on first run:
 ///
 /// ```text
-/// RDS_BODY_MODELS=path/to/models/totalsegmentator \
+/// RDS_BODY_MODELS=path/to/models \
 ///   cargo test --release --test body -- --ignored
 /// ```
 #[test]

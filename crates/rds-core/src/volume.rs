@@ -57,6 +57,37 @@ pub struct Grid {
     pub frame_of_reference_uid: String,
 }
 
+/// The order and direction of a network's three spatial array axes, by
+/// the anatomical direction each one increases toward.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AxisOrder {
+    /// Superior, anterior, right: nibabel's `as_closest_canonical` (RAS)
+    /// seen through nnU-Net's axis transpose - TotalSegmentator, SegVol.
+    #[default]
+    Sar,
+    /// Superior, posterior, left: SimpleITK's array of an image oriented
+    /// `DICOMOrient("LPS")` - MRSegmentator, lungmask, CT-FM
+    /// (`Orientation("SPL")`).
+    Spl,
+    /// Right, anterior, superior: MONAI's `Orientation("RAS")` with no
+    /// transpose - the MONAI bundles, VISTA-3D.
+    Ras,
+}
+
+impl AxisOrder {
+    /// The three target directions in LPS patient space.
+    pub fn targets(self) -> [Vec3; 3] {
+        let s = Vec3::new(0.0, 0.0, 1.0);
+        let a = Vec3::new(0.0, -1.0, 0.0);
+        let r = Vec3::new(-1.0, 0.0, 0.0);
+        match self {
+            AxisOrder::Sar => [s, a, r],
+            AxisOrder::Spl => [s, a * -1.0, r * -1.0],
+            AxisOrder::Ras => [r, a, s],
+        }
+    }
+}
+
 /// Volume of one voxel of `spacing` (mm), in cm³.
 #[inline]
 pub fn voxel_cm3(spacing: [f64; 3]) -> f64 {
@@ -75,26 +106,20 @@ impl Grid {
     /// Volumes are not assumed to be axis-aligned; the best match is chosen by
     /// direction cosine.
     pub fn canonical_axes(&self) -> ([usize; 3], [bool; 3]) {
+        self.axes_toward(AxisOrder::Sar.targets())
+    }
+
+    /// [`Grid::canonical_axes`] for any target order: the permutation and
+    /// flips that carry the lattice's own axes onto `targets`, three
+    /// directions in LPS patient space, each the way one array axis must
+    /// increase. Networks disagree on the order they were trained in -
+    /// nnU-Net through nibabel sees `[S, A, R]`, nnU-Net through SimpleITK
+    /// after `DICOMOrient("LPS")` sees `[S, P, L]`, MONAI's
+    /// `Orientation("RAS")` sees `[R, A, S]` - and a 3-D convolution is not
+    /// symmetric under a change of axes, so each is fed its own.
+    pub fn axes_toward(&self, targets: [Vec3; 3]) -> ([usize; 3], [bool; 3]) {
         // LPS direction vectors of the three volume axes.
         let dirs: [Vec3; 3] = [self.row_dir, self.col_dir, self.normal];
-        // Canonical targets in LPS: S = +z, A = -y, R = -x.
-        let targets: [Vec3; 3] = [
-            Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 1.0,
-            },
-            Vec3 {
-                x: 0.0,
-                y: -1.0,
-                z: 0.0,
-            },
-            Vec3 {
-                x: -1.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        ];
         let mut perm = [0usize; 3];
         let mut flip = [false; 3];
         let mut used = [false; 3];
@@ -437,5 +462,118 @@ impl Volume {
     /// canonical `[S, A, R]` order - see [`Grid::canonical_axes`].
     pub fn canonical_axes(&self) -> ([usize; 3], [bool; 3]) {
         self.grid().canonical_axes()
+    }
+
+    /// [`Volume::canonical_axes`] for any [`AxisOrder`].
+    pub fn axes_toward(&self, order: AxisOrder) -> ([usize; 3], [bool; 3]) {
+        self.grid().axes_toward(order.targets())
+    }
+
+    /// The voxels `lo..hi` (per axis, `hi` exclusive, clamped to the
+    /// volume) as a volume of their own, at the same spacing and
+    /// orientation, its origin moved onto the first voxel kept - the crop a
+    /// model run on part of a scan sees. The bounds come back with it, as
+    /// [`paste_labels`] needs them.
+    pub fn crop(&self, lo: [usize; 3], hi: [usize; 3]) -> (Volume, [usize; 3], [usize; 3]) {
+        let hi: [usize; 3] = std::array::from_fn(|a| hi[a].min(self.dims[a]));
+        let lo: [usize; 3] = std::array::from_fn(|a| lo[a].min(hi[a]));
+        let dims: [usize; 3] = std::array::from_fn(|a| hi[a] - lo[a]);
+        let [nx, ny, _] = self.dims;
+        let mut data = Vec::with_capacity(dims[0] * dims[1] * dims[2]);
+        for k in lo[2]..hi[2] {
+            for j in lo[1]..hi[1] {
+                let row = k * nx * ny + j * nx;
+                data.extend_from_slice(&self.data[row + lo[0]..row + hi[0]]);
+            }
+        }
+        let (min_value, max_value) = data
+            .iter()
+            .fold((i16::MAX, i16::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+        let v = Volume {
+            data,
+            dims,
+            spacing: self.spacing,
+            origin: self.voxel_to_patient(lo[0] as f64, lo[1] as f64, lo[2] as f64),
+            row_dir: self.row_dir,
+            col_dir: self.col_dir,
+            normal: self.normal,
+            frame_of_reference_uid: self.frame_of_reference_uid.clone(),
+            min_value: if dims.contains(&0) { 0 } else { min_value },
+            max_value: if dims.contains(&0) { 0 } else { max_value },
+        };
+        (v, lo, hi)
+    }
+}
+
+/// Write labels computed on a [`Volume::crop`] of a volume with `dims` back
+/// into a zero label volume of the full size (`Volume::data` order).
+pub fn paste_labels(dims: [usize; 3], lo: [usize; 3], hi: [usize; 3], part: &[u8]) -> Vec<u8> {
+    let [nx, ny, nz] = dims;
+    let mut out = vec![0u8; nx * ny * nz];
+    let w = hi[0] - lo[0];
+    let h = hi[1] - lo[1];
+    for (kk, k) in (lo[2]..hi[2]).enumerate() {
+        for (jj, j) in (lo[1]..hi[1]).enumerate() {
+            let src = (kk * h + jj) * w;
+            let dst = k * nx * ny + j * nx + lo[0];
+            out[dst..dst + w].copy_from_slice(&part[src..src + w]);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn axial(nx: usize, ny: usize, nz: usize) -> Volume {
+        let mut v = Volume::empty();
+        v.dims = [nx, ny, nz];
+        v.spacing = [0.5, 0.75, 2.0];
+        v.origin = Vec3::new(-10.0, -20.0, 30.0);
+        v.data = (0..nx * ny * nz).map(|i| i as i16).collect();
+        v
+    }
+
+    #[test]
+    fn the_three_axis_orders_of_a_standard_axial_scan() {
+        // Axial DICOM in LPS: i toward the patient's left, j posterior, k
+        // superior.
+        let v = axial(4, 3, 2);
+        assert_eq!(v.canonical_axes(), ([2, 1, 0], [false, true, true]));
+        assert_eq!(v.axes_toward(AxisOrder::Sar), v.canonical_axes());
+        assert_eq!(v.axes_toward(AxisOrder::Spl), ([2, 1, 0], [false; 3]));
+        assert_eq!(
+            v.axes_toward(AxisOrder::Ras),
+            ([0, 1, 2], [true, true, false])
+        );
+    }
+
+    #[test]
+    fn a_crop_keeps_its_voxels_where_they_were_in_patient_space() {
+        let v = axial(5, 4, 3);
+        let (c, lo, hi) = v.crop([1, 2, 1], [9, 4, 3]);
+        assert_eq!((lo, hi, c.dims), ([1, 2, 1], [5, 4, 3], [4, 2, 2]));
+        for (k, j, i) in [(0, 0, 0), (1, 1, 3), (0, 1, 2)] {
+            assert_eq!(c.index(i, j, k), v.index(i + 1, j + 2, k + 1));
+            let p = c.voxel_to_patient(i as f64, j as f64, k as f64);
+            let q = v.voxel_to_patient((i + 1) as f64, (j + 2) as f64, (k + 1) as f64);
+            assert!((p - q).length() < 1e-9);
+        }
+        assert_eq!(
+            (c.min_value, c.max_value),
+            (v.index(1, 2, 1), v.index(4, 3, 2))
+        );
+        // Labels computed on the crop land back on the voxels they came from.
+        let labels: Vec<u8> = (0..c.data.len()).map(|n| n as u8 + 1).collect();
+        let full = paste_labels(v.dims, lo, hi, &labels);
+        assert_eq!(full.len(), v.data.len());
+        assert_eq!(full.iter().filter(|l| **l != 0).count(), labels.len());
+        // (i, j, k) = (1, 2, 1) and (4, 3, 2) in a 5 x 4 x 3 volume.
+        assert_eq!(full[31], 1);
+        assert_eq!(full[59], labels.len() as u8);
+        // An empty crop is a volume with no voxels, not a panic.
+        let (e, _, _) = v.crop([3, 0, 0], [3, 4, 3]);
+        assert!(e.is_empty());
     }
 }

@@ -68,9 +68,13 @@ fn main() {
     }
     // The inference backend reads the graphics API from the environment; the
     // viewer's setting is the sensible one to share.
-    let preferred = rust_dicom_station::gfx::from_env()
-        .unwrap_or_else(|| rust_dicom_station::settings::load().graphics_backend);
+    let prefs = rust_dicom_station::settings::load();
+    let preferred = rust_dicom_station::gfx::from_env().unwrap_or(prefs.graphics_backend);
     preferred.export();
+    // The licence number and the user's nnU-Net folders, as in the viewer.
+    for (dir, why) in rust_dicom_station::models::apply_settings(&prefs) {
+        eprintln!("rds-mcp: nnU-Net folder {} not used: {why}", dir.display());
+    }
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)

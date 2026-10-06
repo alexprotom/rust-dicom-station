@@ -137,6 +137,19 @@ pub fn download_with(
         .get(url)
         .call()
         .with_context(|| format!("download {url}"))?;
+    save_response(resp, dest, size_hint, label, sink)
+}
+
+/// Stream a response body to `dest`, reporting progress against its
+/// `Content-Length` (or `size_hint`) and honoring cancellation. A cancelled
+/// or failed download leaves no file behind.
+pub fn save_response(
+    resp: ureq::Response,
+    dest: &Path,
+    size_hint: u64,
+    label: &str,
+    sink: &dyn ProgressSink,
+) -> Result<()> {
     let total = resp
         .header("Content-Length")
         .and_then(|v| v.parse::<u64>().ok())
@@ -147,30 +160,35 @@ pub fn download_with(
     );
     let mut buf = vec![0u8; 256 * 1024];
     let mut done: u64 = 0;
-    loop {
-        if sink.cancelled() {
-            drop(out);
-            let _ = std::fs::remove_file(dest);
-            bail!(CANCELLED);
+    let res = (|| -> Result<()> {
+        loop {
+            if sink.cancelled() {
+                bail!(CANCELLED);
+            }
+            let n = reader.read(&mut buf).context("download read")?;
+            if n == 0 {
+                break;
+            }
+            out.write_all(&buf[..n]).context("write download")?;
+            done += n as u64;
+            let frac = (done as f32 / total.max(1) as f32).min(1.0);
+            sink.report(
+                frac,
+                &format!(
+                    "Downloading {label}: {} / {} MB",
+                    done / 1_000_000,
+                    total / 1_000_000
+                ),
+            );
         }
-        let n = reader.read(&mut buf).context("download read")?;
-        if n == 0 {
-            break;
-        }
-        out.write_all(&buf[..n]).context("write download")?;
-        done += n as u64;
-        let frac = (done as f32 / total.max(1) as f32).min(1.0);
-        sink.report(
-            frac,
-            &format!(
-                "Downloading {label}: {} / {} MB",
-                done / 1_000_000,
-                total / 1_000_000
-            ),
-        );
+        out.flush().context("write download")?;
+        Ok(())
+    })();
+    if res.is_err() {
+        drop(out);
+        let _ = std::fs::remove_file(dest);
     }
-    out.flush().ok();
-    Ok(())
+    res
 }
 
 /// Write named tensors to a `safetensors` file, atomically (write to a
@@ -254,7 +272,7 @@ pub fn load_safetensors(path: &Path) -> Result<HashMap<String, WTensor>> {
     // Decoding is a plain byte reinterpretation per tensor; the tensors are
     // independent, so the (up to 724 MB) cache is unpacked on every core.
     let views = st.tensors();
-    views
+    let decoded: Vec<Option<(String, WTensor)>> = views
         .into_par_iter()
         .map(|(name, view)| {
             let raw = view.data();
@@ -271,17 +289,22 @@ pub fn load_safetensors(path: &Path) -> Result<HashMap<String, WTensor>> {
                     .iter()
                     .map(|&c| f16_to_f32(u16::from_le_bytes(c)))
                     .collect(),
+                // Integer buffers a published safetensors file may carry
+                // beside the weights (`num_batches_tracked`) are not
+                // weights; nothing reads them.
+                Dtype::I64 | Dtype::I32 | Dtype::U8 | Dtype::BOOL => return Ok(None),
                 other => bail!("cached tensor {name} has unsupported dtype {other:?}"),
             };
-            Ok((
+            Ok(Some((
                 name.to_string(),
                 WTensor {
                     shape: view.shape().to_vec(),
                     data,
                 },
-            ))
+            )))
         })
-        .collect()
+        .collect::<Result<_>>()?;
+    Ok(decoded.into_iter().flatten().collect())
 }
 
 /// Which tensors of a checkpoint to convert, and under what names.

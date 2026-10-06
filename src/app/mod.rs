@@ -38,6 +38,7 @@ use crate::simulate::{self, SimParams};
 use crate::testdata;
 use crate::volume::{ViewPlane, Volume};
 use crate::workflow;
+use crate::zoo;
 
 use pick::{CSV_FILES, PROTOCOL_FILES};
 
@@ -60,6 +61,7 @@ mod form;
 mod glyphs;
 mod home;
 mod img_info;
+mod interactive_seg;
 mod jobs;
 mod livewire_app;
 mod matrix_edit;
@@ -170,11 +172,15 @@ enum FourDAction {
 /// The auto-segmentation window: its parameters, and the run they start.
 struct AutosegDialog {
     slot: usize,
-    variant: autoseg::Variant,
+    /// The model to run.
+    model: zoo::AutoModel,
+    /// The last choice within TotalSegmentator's 117-class CT family, kept
+    /// while another model is picked.
+    total: autoseg::Variant,
     device: autoseg::DevicePref,
-    /// Sub-model selection for the 1.5 mm variant
-    /// (organs, vertebrae, cardiac, muscles, ribs).
-    parts: [bool; 5],
+    /// Which sub-models of a model that has several to run (the `total`
+    /// 1.5 mm parts, the MR parts), one per [`zoo::AutoModel::part_names`].
+    parts: Vec<bool>,
     /// Where the result goes, and whether the run covers every phase of
     /// the displayed series' 4D group. The output part is asked again in
     /// the results window, where the organs are picked; the scope has to
@@ -193,6 +199,8 @@ struct AutosegPending {
     organs: Vec<autoseg::OrganHit>,
     selected: Vec<bool>,
     output: ToolOutput,
+    /// Name the structures by AAPM TG-263 where a class has a TG-263 name.
+    tg263: bool,
 }
 
 // Dose display settings
@@ -1659,6 +1667,15 @@ pub struct ViewerApp {
     /// A download / update batch in flight; its payload is the summary line.
     models_job: Option<Job<anyhow::Result<String>>>,
     models_result: Option<String>,
+    /// The TotalSegmentator licence number (persisted in the user's own
+    /// settings file; blank = none).
+    ts_licence: String,
+    /// The licence field shows its text.
+    ts_licence_shown: bool,
+    /// nnU-Net model folders the user added (persisted).
+    nnunet_folders: Vec<PathBuf>,
+    /// Why a model folder could not be used, by folder.
+    nnunet_folder_errors: Vec<(PathBuf, String)>,
 
     // Auto-segmentation (TotalSegmentator re-implementation, see `autoseg`).
     /// The payload carries the slot the volume came from.
@@ -1669,6 +1686,9 @@ pub struct ViewerApp {
     autoseg_dialog: Option<AutosegDialog>,
     /// Finished result awaiting organ selection.
     autoseg_pending: Option<AutosegPending>,
+    /// The results window's last TG-263 naming choice, carried to the next
+    /// run.
+    autoseg_pending_tg263: bool,
 
     // Body / External contouring (see `bodymask`) - the one tool that can
     // answer with no network at all.
@@ -1728,6 +1748,11 @@ pub struct ViewerApp {
     // box, the loaded engine and the prepared stack all live in one struct.
     medsam2_job: Option<SegJob<box_seg::Medsam2Done>>,
     medsam2: box_seg::Medsam2State,
+
+    // Interactive segmentation (nnInteractive): the prompts, the kept
+    // network and session, and the prompt in flight.
+    nni_job: Option<SegJob<interactive_seg::NniDone>>,
+    nni: interactive_seg::NniState,
 
     dose_mode: DoseMode,
     dose_opacity: f32,
@@ -1923,6 +1948,7 @@ impl ViewerApp {
         // Installations that predate the single `models/` root keep their
         // downloads; the folders are moved into place, never re-fetched.
         let moved = models::migrate_legacy_layout(&models::root_from_setting(&models_dir));
+        let folder_errors = models::apply_settings(&prefs);
         for engine in &moved {
             eprintln!(
                 "moved the {} weights into {}",
@@ -2061,10 +2087,15 @@ impl ViewerApp {
             models_scan_at: f64::NEG_INFINITY,
             models_job: None,
             models_result: None,
+            ts_licence: prefs.ts_licence.clone().unwrap_or_default(),
+            ts_licence_shown: false,
+            nnunet_folders: prefs.nnunet_folders.clone(),
+            nnunet_folder_errors: folder_errors,
             autoseg_job: None,
             autoseg_slot: 0,
             autoseg_dialog: None,
             autoseg_pending: None,
+            autoseg_pending_tg263: false,
             body_job: None,
             body_slot: 0,
             body_dialog: None,
@@ -2098,6 +2129,8 @@ impl ViewerApp {
             segvol_model: Arc::default(),
             medsam2_job: None,
             medsam2: Default::default(),
+            nni_job: None,
+            nni: Default::default(),
             seg_tool: SegTool::None,
             brush_radius_mm: 5.0,
             brush_band: contour_edit::EdgeBand::None,
@@ -2221,6 +2254,11 @@ impl ViewerApp {
             view_rows: self.view_rows.clone(),
             graphics_backend: self.graphics_backend,
             recent_workflows: self.recent_workflows.clone(),
+            ts_licence: {
+                let l = self.ts_licence.trim();
+                (!l.is_empty()).then(|| l.to_string())
+            },
+            nnunet_folders: self.nnunet_folders.clone(),
         }) {
             Ok(()) => self.settings_error = None,
             Err(e) => {
@@ -2521,6 +2559,21 @@ impl eframe::App for ViewerApp {
             poll_tool_job(&mut self.segvol_job, &ctx, PROMPT_SEG.name, &mut self.error)
         {
             self.on_segvol_done(slot, result);
+        }
+        let nni_busy = self.nni_job.is_some();
+        if let Some((slot, result)) = poll_tool_job(
+            &mut self.nni_job,
+            &ctx,
+            INTERACTIVE_SEG.name,
+            &mut self.error,
+        ) {
+            self.on_nni_done(slot, result);
+        } else if nni_busy && self.nni_job.is_none() {
+            // Failed or cancelled: the prompt's mark goes, the rest wait on.
+            if self.nni.inflight_mark {
+                self.nni.marks.pop();
+            }
+            self.nni_next();
         }
         if let Some((slot, result)) =
             poll_tool_job(&mut self.body_job, &ctx, BODY_CONTOUR.name, &mut self.error)
