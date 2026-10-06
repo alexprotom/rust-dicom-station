@@ -53,8 +53,10 @@ impl Predictor for Mock {
 fn f32s(t: &SafeTensors, name: &str) -> Vec<f32> {
     let v = t.tensor(name).unwrap();
     v.data()
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 
@@ -63,8 +65,10 @@ fn f64s(t: &SafeTensors, name: &str) -> (Vec<usize>, Vec<f64>) {
     (
         v.shape().to_vec(),
         v.data()
-            .chunks_exact(8)
-            .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| f64::from_le_bytes(*c))
             .collect(),
     )
 }
