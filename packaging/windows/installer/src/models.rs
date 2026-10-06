@@ -120,7 +120,8 @@ mod imp {
         let text = std::fs::read_to_string(path).ok()?;
         text.lines().find_map(|l| {
             let (k, v) = l.split_once('=')?;
-            (k.trim().eq_ignore_ascii_case(crate::plan::SETTINGS_LICENCE_KEY)
+            (k.trim()
+                .eq_ignore_ascii_case(crate::plan::SETTINGS_LICENCE_KEY)
                 && !v.trim().is_empty())
             .then(|| v.trim().to_string())
         })
@@ -206,10 +207,7 @@ mod imp {
     /// `--list-models`.
     pub fn print_list() {
         let root = crate::plan::Options::default().models_dir;
-        println!(
-            "{:46} {:28} {:>9}  label",
-            "key", "licence", "download"
-        );
+        println!("{:46} {:28} {:>9}  label", "key", "licence", "download");
         for r in rows(&root) {
             println!(
                 "{:46} {:28} {:>9}  {}",

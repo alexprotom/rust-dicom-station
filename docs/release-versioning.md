@@ -29,7 +29,7 @@ feature/* -> develop -> nightly -> main
 ```
 
 * `develop`: active development; feature branches merge into it by pull request, which runs the full CI.
-* `nightly`: the testing step. It is fast-forwarded from `develop` (`git push origin develop:nightly`); every push builds the Windows installer and the Android APK with lighter checks and updates the rolling [`nightly` pre-release](#nightly-builds).
+* `nightly`: the testing step. It is fast-forwarded from `develop` (`git push origin develop:refs/heads/nightly` - the full ref, because the rolling pre-release's tag is also called `nightly`); every push builds the Windows installer and the Android APK with lighter checks and updates the rolling [`nightly` pre-release](#nightly-builds).
 * `main`: production-ready code and the release trigger. The pull request `nightly -> main` is the release candidate and runs the full CI; the merge releases.
 
 ## Creating a Release
@@ -48,7 +48,7 @@ When the code is ready:
 version = "0.2.0"
 ```
 
-2. Push it to `nightly` (`git push origin develop:nightly`) and try the build it produces.
+2. Push it to `nightly` (`git push origin develop:refs/heads/nightly`) and try the build it produces.
 3. Open the pull request `nightly -> main` and let the full CI run.
 
 ### 3. Release

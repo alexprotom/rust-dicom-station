@@ -239,7 +239,12 @@ pub const KEYS_TOTAL_15MM: [&str; 5] = [
 impl Models {
     /// The named sets, in the order the window offers them.
     pub fn presets() -> [Models; 4] {
-        [Models::None, Models::Recommended, Models::Open, Models::Every]
+        [
+            Models::None,
+            Models::Recommended,
+            Models::Open,
+            Models::Every,
+        ]
     }
 
     pub fn label(&self) -> String {

@@ -1072,7 +1072,11 @@ impl SetupApp {
             let rows = models::rows(&self.opts.models_dir);
             self.model_rows = Some((self.opts.models_dir.clone(), rows));
         }
-        let rows = self.model_rows.as_ref().map(|(_, r)| r.clone()).unwrap_or_default();
+        let rows = self
+            .model_rows
+            .as_ref()
+            .map(|(_, r)| r.clone())
+            .unwrap_or_default();
         let has_licence = self.has_licence;
         let wanted = |m: &Models, r: &models::Row| -> bool {
             match m {
@@ -1092,7 +1096,9 @@ impl SetupApp {
                     ui.selectable_value(&mut self.opts.models, m, label);
                 }
                 let picking = matches!(self.opts.models, Models::Pick(_));
-                if ui.selectable_label(picking, "Choose the models one by one").clicked()
+                if ui
+                    .selectable_label(picking, "Choose the models one by one")
+                    .clicked()
                     && !picking
                 {
                     let keys = rows
@@ -1177,7 +1183,10 @@ impl SetupApp {
             );
             ui.checkbox(&mut self.licence_shown, "Show");
             if ui
-                .add_enabled(!self.licence_text.trim().is_empty(), egui::Button::new("Keep"))
+                .add_enabled(
+                    !self.licence_text.trim().is_empty(),
+                    egui::Button::new("Keep"),
+                )
                 .on_hover_text(
                     "Store the number in your own viewer settings; the licensed \
                      TotalSegmentator models download with it",
