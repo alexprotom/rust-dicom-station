@@ -5,6 +5,14 @@
 //! `no_mem_embed`, the seven temporal encodings of the memory bank, and the
 //! projection that gives an object pointer its temporal position.
 //!
+//! Two image encoders exist ([`Arch`]): MedSAM2's Hiera-T with its FPN neck,
+//! and Efficient MedSAM2's plain ViT ([`super::vitdet`]). The checkpoint says
+//! which it holds. The EfficientTAM configuration also leaves out three of
+//! SAM 2.1's additions, so its network has no high-resolution features for
+//! the decoder, no temporal encoding on object pointers
+//! (`add_tpos_enc_to_obj_ptrs: false`, so their positions are zeros) and no
+//! `no_obj_embed_spatial`; each is an `Option` here, `None` for it.
+//!
 //! The split that matters for performance is [`Medsam2::encode_slice`] versus
 //! everything else. Encoding is ~22 G multiply-accumulates and depends only on
 //! the image, so it can be done once per slice and reused across prompts and
@@ -29,6 +37,7 @@ use super::neck::{self, Neck};
 use super::ops;
 use super::resample;
 use super::sam::{SamHead, SamOutput};
+use super::vitdet::{VitDet, VitSpec};
 
 /// One slice, encoded. Independent of any prompt, so worth caching.
 #[derive(Clone)]
@@ -37,13 +46,38 @@ pub struct SliceFeatures<B: Backend> {
     /// and the SAM head consume, and what the memory encoder pairs with a
     /// mask.
     pub pix_feat: Tensor<B, 4>,
-    /// `conv_s0` and `conv_s1` of the two high-resolution levels.
-    pub high_res: [Tensor<B, 4>; 2],
+    /// `conv_s0` and `conv_s1` of the two high-resolution levels; `None`
+    /// for Efficient MedSAM2, whose single-scale encoder has none.
+    pub high_res: Option<[Tensor<B, 4>; 2]>,
+}
+
+/// Which network a checkpoint holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Arch {
+    /// MedSAM2: SAM 2.1 Hiera-T at 512.
+    Sam21Tiny,
+    /// Efficient MedSAM2: EfficientTAM with a ViT of this width (192 tiny,
+    /// 384 small).
+    EfficientTam { dim: usize },
+}
+
+impl Arch {
+    pub fn of(p: &Params) -> Arch {
+        match VitSpec::width_of(p) {
+            Some(dim) => Arch::EfficientTam { dim },
+            None => Arch::Sam21Tiny,
+        }
+    }
+}
+
+/// The image encoder.
+pub enum ImageEncoder<B: Backend> {
+    Hiera { trunk: Hiera<B>, neck: Neck<B> },
+    Vit(VitDet<B>),
 }
 
 pub struct Medsam2<B: Backend> {
-    pub trunk: Hiera<B>,
-    pub neck: Neck<B>,
+    pub encoder: ImageEncoder<B>,
     pub head: SamHead<B>,
     pub memory_encoder: MemoryEncoder<B>,
     pub memory_attention: MemoryAttention<B>,
@@ -52,7 +86,8 @@ pub struct Medsam2<B: Backend> {
     /// `[NUM_MASKMEM, MEM_DIM]`; row 0 is the most recent tracked slice and
     /// row 6 the conditioning slices.
     maskmem_tpos_enc: Tensor<B, 2>,
-    obj_ptr_tpos_proj: Lin<B>,
+    /// `None` when object pointers carry no temporal encoding.
+    obj_ptr_tpos_proj: Option<Lin<B>>,
     /// The sine encoding of the image tokens, `[1, tokens, 256]`.
     image_pos: Tensor<B, 3>,
     device: B::Device,
@@ -72,11 +107,21 @@ impl<B: Backend> Medsam2<B> {
         let image_pos = neck::sine_pos_embed::<B>(grid, grid, D_MODEL, dev)
             .reshape([1, D_MODEL, grid * grid])
             .swap_dims(1, 2);
+        let arch = Arch::of(p);
+        let encoder = match arch {
+            Arch::Sam21Tiny => ImageEncoder::Hiera {
+                trunk: Hiera::load(p, dev)?,
+                neck: Neck::load(p, dev)?,
+            },
+            Arch::EfficientTam { .. } => {
+                ImageEncoder::Vit(VitDet::load(p, config::IMAGE_SIZE, dev)?)
+            }
+        };
+        let sam21 = arch == Arch::Sam21Tiny;
         Ok(Medsam2 {
-            trunk: Hiera::load(p, dev)?,
-            neck: Neck::load(p, dev)?,
-            head: SamHead::load(p, dev)?,
-            memory_encoder: MemoryEncoder::load(p, dev)?,
+            encoder,
+            head: SamHead::load(p, sam21, dev)?,
+            memory_encoder: MemoryEncoder::load(p, sam21, dev)?,
             memory_attention: MemoryAttention::load(p, dev)?,
             no_mem_embed: ops::from_slice(
                 p.get("no_mem_embed", &[1, 1, D_MODEL])?,
@@ -88,7 +133,11 @@ impl<B: Backend> Medsam2<B> {
                 [config::NUM_MASKMEM, MEM_DIM],
                 dev,
             ),
-            obj_ptr_tpos_proj: Lin::load(p, "obj_ptr_tpos_proj", MEM_DIM, D_MODEL, dev)?,
+            obj_ptr_tpos_proj: if sam21 {
+                Some(Lin::load(p, "obj_ptr_tpos_proj", MEM_DIM, D_MODEL, dev)?)
+            } else {
+                None
+            },
             image_pos,
             device: dev.clone(),
             encodes: AtomicUsize::new(0),
@@ -105,19 +154,28 @@ impl<B: Backend> Medsam2<B> {
     }
 
     /// The image encoder: trunk, neck, and the two high-resolution
-    /// projections the decoder needs.
+    /// projections the decoder needs (MedSAM2 only).
     pub fn encode_slice(&self, image: Tensor<B, 4>) -> SliceFeatures<B> {
         self.encodes.fetch_add(1, Ordering::Relaxed);
-        let stages = self.trunk.forward(image);
-        let mut levels = self.neck.forward(&stages);
-        // `scalp`: the lowest-resolution level(s) are computed and dropped.
-        levels.truncate(config::USED_LEVELS);
-        let [level0, level1, level2] = <[_; config::USED_LEVELS]>::try_from(levels)
-            .unwrap_or_else(|v| panic!("the neck emitted {} levels", v.len()));
-        let high_res = self.head.decoder.project_high_res(level0, level1);
-        SliceFeatures {
-            pix_feat: level2,
-            high_res,
+        match &self.encoder {
+            ImageEncoder::Hiera { trunk, neck } => {
+                let stages = trunk.forward(image);
+                let mut levels = neck.forward(&stages);
+                // `scalp`: the lowest-resolution level(s) are computed and
+                // dropped.
+                levels.truncate(config::USED_LEVELS);
+                let [level0, level1, level2] = <[_; config::USED_LEVELS]>::try_from(levels)
+                    .unwrap_or_else(|v| panic!("the neck emitted {} levels", v.len()));
+                let high_res = self.head.decoder.project_high_res(level0, level1);
+                SliceFeatures {
+                    pix_feat: level2,
+                    high_res,
+                }
+            }
+            ImageEncoder::Vit(vit) => SliceFeatures {
+                pix_feat: vit.forward(image),
+                high_res: None,
+            },
         }
     }
 
@@ -172,7 +230,11 @@ impl<B: Backend> Medsam2<B> {
     /// for conditioning slices (`use_signed_tpos_enc_to_obj_ptrs`) and
     /// positive for tracked ones - normalized by `t_diff_max` and turned into
     /// a 256-wide sine encoding before the projection.
+    /// Zeros when the network has no such encoding.
     pub fn pointer_pos(&self, offsets: &[f32], t_diff_max: f32) -> Tensor<B, 3> {
+        let Some(proj) = &self.obj_ptr_tpos_proj else {
+            return Tensor::zeros([1, offsets.len(), MEM_DIM], &self.device);
+        };
         let mut data = Vec::with_capacity(offsets.len() * D_MODEL);
         let half = D_MODEL / 2;
         for off in offsets {
@@ -189,7 +251,7 @@ impl<B: Backend> Medsam2<B> {
             data.extend(cos);
         }
         let pe: Tensor<B, 3> = ops::from_slice(&data, [1, offsets.len(), D_MODEL], &self.device);
-        self.obj_ptr_tpos_proj.apply(pe)
+        proj.apply(pe)
     }
 
     /// `_use_mask_as_output`: a mask prompt bypasses the decoder entirely.
@@ -226,9 +288,13 @@ impl<B: Backend> Medsam2<B> {
         );
 
         // The head runs with the mask as its only prompt, for the pointer.
-        let head_out = self
-            .head
-            .forward(pix_feat.clone(), &feats.high_res, &[], Some(mask), false);
+        let head_out = self.head.forward(
+            pix_feat.clone(),
+            feats.high_res.as_ref(),
+            &[],
+            Some(mask),
+            false,
+        );
         let obj_ptr = if present {
             head_out.obj_ptr
         } else {

@@ -42,7 +42,7 @@ use anyhow::{bail, Result};
 use rayon::prelude::*;
 use std::path::Path;
 
-use crate::autoseg::weights::{ModelSpec, SPEC_BODY_15MM, SPEC_BODY_6MM, SPEC_BODY_MR};
+use crate::autoseg::{self, total, NnOptions, NnTask};
 use crate::morphology as morph;
 use crate::nn::device::DevicePref;
 use crate::progress::{Progress, ProgressSink, CANCELLED};
@@ -76,25 +76,39 @@ pub enum BodyModel {
     Ct6mm,
     /// Dataset299, 1.5 mm - 233 MB, minutes on a CPU.
     Ct15mm,
-    /// Dataset597, the MR body model - 230 MB.
+    /// Dataset597, the MR body model at 1.5 mm - 230 MB.
     Mr,
+    /// Dataset598, the MR body model at 6 mm - 43 MB, seconds.
+    Mr6mm,
 }
 
 impl BodyModel {
-    pub const ALL: [BodyModel; 3] = [BodyModel::Ct6mm, BodyModel::Ct15mm, BodyModel::Mr];
+    pub const ALL: [BodyModel; 4] = [
+        BodyModel::Ct6mm,
+        BodyModel::Ct15mm,
+        BodyModel::Mr6mm,
+        BodyModel::Mr,
+    ];
     pub fn label(&self) -> &'static str {
         match self {
             BodyModel::Ct6mm => "CT 6 mm (fast)",
             BodyModel::Ct15mm => "CT 1.5 mm",
-            BodyModel::Mr => "MR",
+            BodyModel::Mr6mm => "MR 6 mm (fast)",
+            BodyModel::Mr => "MR 1.5 mm",
         }
     }
-    pub fn spec(&self) -> ModelSpec {
+    /// The body-outline task this model is.
+    pub fn task(&self) -> &'static NnTask {
         match self {
-            BodyModel::Ct6mm => SPEC_BODY_6MM,
-            BodyModel::Ct15mm => SPEC_BODY_15MM,
-            BodyModel::Mr => SPEC_BODY_MR,
+            BodyModel::Ct6mm => &total::BODY_FAST,
+            BodyModel::Ct15mm => &total::BODY,
+            BodyModel::Mr6mm => &total::BODY_MR_FAST,
+            BodyModel::Mr => &total::BODY_MR,
         }
+    }
+    /// Trained on MR.
+    pub fn is_mr(&self) -> bool {
+        matches!(self, BodyModel::Mr | BodyModel::Mr6mm)
     }
     /// The model to reach for on a series of this modality.
     pub fn for_modality(modality: &str) -> BodyModel {
@@ -291,13 +305,9 @@ impl std::fmt::Debug for BodyResult {
 }
 
 /// Total download still needed for the model-assisted method, in bytes.
-pub fn download_needed(model: BodyModel, models_dir: &Path) -> u64 {
-    let spec = model.spec();
-    if crate::autoseg::weights::is_cached(&spec, models_dir) {
-        0
-    } else {
-        spec.zip_bytes
-    }
+/// `root` is the model folder.
+pub fn download_needed(model: BodyModel, root: &Path) -> u64 {
+    autoseg::download_needed(model.task(), None, root)
 }
 
 // ---------------------------------------------------------------------------
@@ -305,11 +315,11 @@ pub fn download_needed(model: BodyModel, models_dir: &Path) -> u64 {
 // ---------------------------------------------------------------------------
 
 /// Contour the patient. Blocking - call from a worker thread and watch it
-/// through `progress`.
+/// through `progress`. `root` is the model folder.
 pub fn contour_body(
     volume: &Volume,
     params: &BodyParams,
-    models_dir: &Path,
+    root: &Path,
     progress: &Progress,
 ) -> Result<BodyResult> {
     let t0 = std::time::Instant::now();
@@ -342,18 +352,19 @@ pub fn contour_body(
     let mut device = String::new();
     let mut guide: Option<Vec<u8>> = None;
     if params.method == Method::ModelAssisted {
-        let spec = params.model.spec();
-        let (labels, dev) = crate::autoseg::run_specs(
+        let out = autoseg::run_task_labels(
             volume,
-            &[spec],
-            "body outline",
-            params.device,
-            models_dir,
+            params.model.task(),
+            &NnOptions {
+                device: params.device,
+                parts: None,
+            },
+            root,
             (0.0, 0.70),
             progress,
         )?;
-        device = dev;
-        guide = Some(body_from_labels(&labels, dims, spacing, progress)?);
+        device = out.device;
+        guide = Some(body_from_labels(&out.labels, dims, spacing, progress)?);
     }
     progress.set_phase(fg_base, fg_span);
     progress.report(0.0, "Separating tissue from air");

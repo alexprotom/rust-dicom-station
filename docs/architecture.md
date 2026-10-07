@@ -143,15 +143,23 @@ rust-dicom-station
 │   │   a margin per operand and on the result (six patient directions, exact
 │   │   ellipsoids), crop, fill / smooth / prune
 │   ├── Surfaces: contour and mask ▶ meshes (scanline fill, surface nets, smoothing)
-│   ├── Auto-segmentation - TotalSegmentator (nnU-Net), 117 classes, 3 / 1.5 / 6 mm
-│   │   models, CPU (im2col + SIMD GEMM) or GPU (burn / wgpu)
+│   ├── Auto-segmentation - one registry of 81 models: TotalSegmentator (nnU-Net)
+│   │   CT v2 / v3, MR, body, 26 task models and 17 licensed ones (crop cascade,
+│   │   fold ensembles, post-processing), the nnU-Net v1 tumour models (one fold
+│   │   by HTTP range out of each archive), MRSegmentator, lungmask (2-D U-Net),
+│   │   MONAI whole body and CT-FM (SegResNet), VISTA-3D and NV-Segment-CTMR
+│   │   automatic, the user's own nnU-Net v2 folders; TG-263 naming; CPU (im2col
+│   │   + SIMD GEMM) or GPU (burn / wgpu)
 │   ├── Prompt segmentation - SegVol: box / point / text, 3-D ViT + SAM-style
 │   │   decoder + CLIP text tower, zoom-out / zoom-in passes
-│   └── Slice propagation - MedSAM2 (SAM 2.1 Hiera-T): box drawn in the view,
-│       include / exclude refinement, memory-bank propagation through the stack
+│   ├── Slice propagation - MedSAM2 (SAM 2.1 Hiera-T): box drawn in the view,
+│   │   include / exclude refinement, memory-bank propagation through the stack
+│   └── Interactive segmentation - nnInteractive (points, boxes, scribbles,
+│       lassos; AutoZoom and refinement) and VISTA-3D's point mode, prompts
+│       drawn in every view, one object refined prompt by prompt
 │
 ├── Neural-network infrastructure (shared by every engine)
-│   ├── Model folder: <data folder>/models/{totalsegmentator, segvol, medsam2},
+│   ├── Model folder: <data folder>/models/<engine>/ (nine engine folders),
 │   │   legacy migration; the model manager's inventory (state, size, download /
 │   │   update / remove / free)
 │   ├── Weights: download (rustls), torch pickle reader, safetensors cache, conversion
@@ -190,15 +198,21 @@ bending-energy penalty, and the `landmark_warp` kernels); mutual information
 follows Mattes et al. (IEEE TMI 2003). The DRR projectors follow
 plastimatch's exact Siddon tracer and ITK's
 `RayCastInterpolateImageFunction`. Auto-segmentation re-implements
-[TotalSegmentator](https://github.com/wasserth/TotalSegmentator) on its
-[nnU-Net](https://github.com/MIC-DKFZ/nnUNet) models; prompt segmentation
-re-implements [SegVol](https://github.com/BAAI-DCAI/SegVol); slice
-propagation re-implements [MedSAM2](https://github.com/bowang-lab/MedSAM2),
+[TotalSegmentator](https://github.com/wasserth/TotalSegmentator) and
+[MRSegmentator](https://github.com/hhaentze/MRSegmentator) on their
+[nnU-Net](https://github.com/MIC-DKFZ/nnUNet) models,
+[lungmask](https://github.com/JoHof/lungmask), and MONAI's `SegResNet`
+family as the MONAI whole-body bundle, [CT-FM](https://huggingface.co/project-lighter/whole_body_segmentation)
+and [VISTA-3D](https://github.com/Project-MONAI/VISTA) use it; prompt
+segmentation re-implements [SegVol](https://github.com/BAAI-DCAI/SegVol);
+slice propagation re-implements [MedSAM2](https://github.com/bowang-lab/MedSAM2),
 i.e. Meta's [SAM 2](https://github.com/facebookresearch/sam2) fine-tuned on
-medical images. Papers, weight licences and the numerical validation of each
+medical images; interactive segmentation re-implements
+[nnInteractive](https://github.com/MIC-DKFZ/nnInteractive) and VISTA-3D's
+point head. Papers, weight licences and the numerical validation of each
 port are in the per-feature documents ([registration.md](registration.md),
 [auto-segmentation.md](auto-segmentation.md), [segvol.md](segvol.md),
-[medsam2.md](medsam2.md)).
+[medsam2.md](medsam2.md), [interactive-segmentation.md](interactive-segmentation.md)).
 
 ## Module map
 
@@ -333,13 +347,18 @@ src/
                       workspace" check
     auto_tools.rs     the Structure auto tools module: one workspace row and
                       the body contour, auto-segmentation, prompt
-                      segmentation and slice propagation sections
+                      segmentation, slice propagation and interactive
+                      segmentation sections
     body_win.rs       the body-contour section
     combine.rs        the structure algebra as the editor's Combine structures
                       section: operands, margins, the recipe
     prompt_seg.rs     the prompt segmentation section and worker (SegVol)
     box_seg.rs        slice propagation: the box drawn in the viewport, the
                       preview / refine / propagate loop, the resident session (MedSAM2)
+    interactive_seg.rs interactive segmentation: prompts drawn in every view
+                      (point, box, scribble, lasso), the prompt queue, the
+                      resident session and network (nnInteractive, VISTA-3D
+                      points), undo, new object, refine an existing mask
     run_report.rs     what a run leaves behind, as two tables rather than a
                       paragraph: per destination the metric, the cost and the
                       anchor's Dice, per structure the three volumes and the
@@ -557,19 +576,47 @@ crates/            the workspace's two library crates; lib.rs re-exports their
       tensor.rs         Mat [rows, cols] and Act [c, d, h, w]; transposed conv
       linalg.rs         gemm-backed linear / matmul, layer norm, softmax, activations
       attention.rs      multi-head attention, optionally causally masked
+      fastconv.rs       burn convolutions that hand the CPU backend's work to the
+                        U-Net GEMM kernels (conv 2-D / 3-D, SegResNetDS's
+                        stride-2 transposed conv as eight sub-pixel convs)
 
-    autoseg/          automatic segmentation (pure-Rust TotalSegmentator)         Seg
-      mod.rs            public API: variants, run(), run_specs() (shared with the
-                        body contour), progress phases
-      classes.rs        117-class table, sub-model maps, organ colors
-      config.rs         nnU-Net plans.json parsing
+    zoo/              the registry of automatic models: AutoModel (every family
+                      behind one key, label, group, modality, licence, class
+                      table, download, run), Licence, Modality, Family, and the
+                      TG-263 name table                                            Seg
+    autoseg/          the nnU-Net family (pure-Rust TotalSegmentator,
+                      MRSegmentator)                                               Seg
+      mod.rs            public API: run(task), the result, organ hits
+      task.rs           a model as data (parts with label tables, folds, step,
+                        crop rule, post-processing); the crop cascade
+      total.rs          the total / total_v3 / total_mr / body / MRSegmentator tasks
+      tasks.rs          the 26 catalogue tasks, generated from upstream's tables
+      post.rs           body and vertebrae_pp post-processing
+      classes.rs        117-class tables (v2, v3), organ colours by name
+      config.rs         nnU-Net plans.json parsing, both formats, inherits_from
       weights.rs        which models exist, where they are published, the
-                        release-zip unpacking in front of the shared conversion
-      cpu.rs            CPU conv engine (im2col + SIMD GEMM conv3d, norms)
-      net.rs            PlainConvUNet assembly + CPU forward
+                        release-zip unpacking (folds, two trainings per zip)
+      cpu.rs            CPU conv engine (im2col + SIMD GEMM conv3d with any
+                        padding, transposed convs, norms)
+      net.rs            PlainConvUNet / ResidualEncoderUNet assembly (any input
+                        channel count) + CPU forward
       gpu.rs            wgpu forward via burn (cargo feature `gpu`)
       preprocess.rs     resampling to the model grid and back (scipy conventions)
-      infer.rs          Gaussian sliding window, streaming argmax
+      infer.rs          nnU-Net and MONAI sliding windows, streaming argmax in
+                        strips under a memory budget
+
+    unet2d/           lungmask: 2-D U-Net (burn, and a burn-free CPU path),
+                      body crop and slice preparation, 3-D clean-up             Seg
+    segresnet/        MONAI SegResNet and SegResNetDS (MONAI whole body, CT-FM),
+                      MONAI's transforms (Spacing, CropForeground, ...)          Seg
+    vista3d.rs        VISTA-3D automatic mode (class head over SegResNetDS2), the
+                      bundle's preprocessing; vista3d/points.rs the point head
+                      and the point-window pipeline, vista3d/session.rs the
+                      interactive session                                         Seg
+    nninteractive/    nnInteractive: model files and loading, the inference
+                      session (prompt channels, AutoZoom, refinement), the
+                      resampling / pooling / box-cover operations it is built
+                      from                                                       Seg
 
     segvol/           prompt segmentation (pure-Rust SegVol)                       Seg
       weights.rs        the checkpoint and tokenizer files, load(), licensing notes
@@ -586,23 +633,26 @@ crates/            the workspace's two library crates; lib.rs re-exports their
       clip.rs           CLIP text tower + dim_align, with a prompt cache
       gpu.rs            image encoder on wgpu via burn (cargo feature `gpu`)
 
-    medsam2/          slice propagation (pure-Rust MedSAM2); every module is
+    medsam2/          slice propagation (pure-Rust MedSAM2 and Efficient MedSAM2); every module is
                       generic over a `burn` backend, so one implementation runs
                       on GPU and CPU                                               Seg
-      weights.rs        the four published variants, load(), the research-only licence
-      layout.rs         the checkpoint's tensor layout and its checks
+      weights.rs        the seven published variants, load(), the research-only licence
+      layout.rs         the checkpoints' tensor layouts (both networks) and their checks
       config.rs         the fixed dimensions: 512 input, 7 memories, 16 pointers
       ops.rs            the tensor helpers the port needs on top of burn
       layers.rs         conv, layer norm, linear (kept transposed), MLP
       hiera.rs          Hiera-T image encoder: 4 stages, windowed attention
       neck.rs           FPN neck to 256 channels + the sine position encoding
+      vitdet.rs         Efficient MedSAM2's encoder: EfficientTAM's plain ViT
+                        (tiny / small) and its one-level neck
       prompt.rs         SAM's prompt encoder: points, boxes, mask prompts
       decoder.rs        two-way transformer, hypernetwork mask filters, IoU and
                         object-presence heads
       sam.rs            the SAM head assembled: prompt ▶ masks for one slice
       memory.rs         memory encoder: mask downsampler + ConvNeXt fuser
       memattn.rs        memory attention: 4 layers, 2-D axial RoPE
-      model.rs          the whole network, and the two ways a slice is conditioned
+      model.rs          the whole network (which one the checkpoint says), and the
+                        two ways a slice is conditioned
       track.rs          the memory bank and the slice-to-slice state machine
       infer.rs          one-slice preview, the two propagation passes, the slice
                         range, thresholding, largest-component cleanup
@@ -616,7 +666,8 @@ tests/             the integration suites (see Testing); common/ holds the
                    4D phantom fixture the workflow and MCP suites share, and
                    ops_ref.rs, the naive reference kernels behind the MedSAM2
                    op fixture
-examples/          autoseg_cli, autoseg_probe, body_cli, segvol_cli, segvol_probe,
+examples/          seg_cli (autoseg_cli its older name), interactive_cli,
+                   autoseg_probe, body_cli, segvol_cli, segvol_probe,
                    medsam2_cli, medsam2_probe, gen_ops_fixtures (writes the op
                    fixture), workflow_cli (runs a saved workflow headless);
                    common/ holds what the CLIs share
@@ -815,9 +866,17 @@ on Linux):
 
 ```
 <data folder>/models/
-  totalsegmentator/<model>/model.safetensors + plans.json
+  totalsegmentator/<model>/fold_k.safetensors + plans.json
+  mrsegmentator/<model>/fold_0..4.safetensors + plans.json
+  lungmask/unet_<model>.pth + .safetensors
+  monai_wholebody/model[_lowres].pt + .safetensors
+  ctfm/model.safetensors
+  vista3d/model.safetensors
   segvol/pytorch_model.bin, vocab.json, merges.txt, segvol.safetensors
-  medsam2/MedSAM2_<variant>.pt + .safetensors
+  medsam2/MedSAM2_<variant>.pt, eff_medsam2_<size>_FLARE25_RECIST_baseline.pt
+          + .safetensors
+  nninteractive/nnInteractive_v1.0/plans.json, inference_session_class.json,
+                                   fold_0.safetensors
 ```
 
 `models.rs` owns the layout and the inventory behind the model manager;
@@ -828,8 +887,15 @@ tensors and under what names. Installations that predate the single root are
 migrated at startup: the old `autoseg_models/`, `segvol_model/` and
 `medsam2_model/` folders beside the executable are renamed into place. The
 Windows installer uses the same default, records `models_dir` only when a
-different folder is chosen, and pre-fetches only the Apache-2.0
-TotalSegmentator weights.
+different folder is chosen, and downloads whatever the user picks from the
+same inventory (nothing by default; named sets for the recommended model,
+the open-licence ones and all of them), through the same `models::ensure`.
+The model manager's *Download open-licence only* is the rule for an
+unattended fetch: what the registry's `Licence` calls open (Apache-2.0,
+MIT) is fetched, everything else waits for a user's request. The
+TotalSegmentator licence number and the user's nnU-Net folders reach the
+engines through `models::apply_settings`, which every program that runs
+models calls once with the loaded settings.
 
 ## Geometry conventions
 
@@ -913,7 +979,16 @@ reruns, parallel rows against the serial run, and a batch
 engines assembled and run without a download - a miniature nnU-Net with the
 exact checkpoint naming (**autoseg**), and synthesized checkpoints with the
 real key names and shapes for **segvol** and **medsam2**, so genuine forward
-passes run in CI. The MedSAM2 kernels' arithmetic is held to PyTorch's by
+passes run in CI. The newer engines are held to their references by files
+the reference code wrote: `tests/data/zoo-nets.safetensors` (randomly
+initialised lungmask, MONAI SegResNet, SegResNetDS and VISTA-3D networks,
+their inputs and PyTorch's / MONAI's outputs), `tests/data/vista-points.safetensors`
+(VISTA-3D's point head and the bundle's point pipeline) and
+`tests/data/nninteractive-session.safetensors` (nine steps of the
+nnInteractive inference session with a stand-in network) and
+`tests/data/medsam2-vitdet.safetensors` (EfficientTAM's ViT and neck, built
+small, on weights a generator in the test reproduces); the engine unit
+tests read them. The MedSAM2 kernels' arithmetic is held to PyTorch's by
 `tests/data/medsam2-ops.safetensors`, a file PyTorch, PIL and SAM 2 wrote
 themselves: 74 small tensors recording what each primitive returns on a
 random input. **ops_fixtures** re-derives every output in that file from

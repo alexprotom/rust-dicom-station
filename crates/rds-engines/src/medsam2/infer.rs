@@ -228,7 +228,7 @@ pub fn preview<B: Backend>(
             let multimask = super::sam::SamHead::<B>::use_multimask(points.len());
             model
                 .head
-                .forward(pix_feat, &anchor.high_res, points, None, multimask)
+                .forward(pix_feat, anchor.high_res.as_ref(), points, None, multimask)
                 .low_res_masks
         }
         Prompt::Mask(mask) => {

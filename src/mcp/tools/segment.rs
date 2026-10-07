@@ -10,16 +10,16 @@ use serde_json::{json, Value};
 use super::super::phi::clean_text;
 use super::super::Core;
 use super::session::round2;
-use crate::autoseg;
 use crate::bodymask;
-use crate::models::{self, Engine};
+use crate::models;
 use crate::progress::Progress;
 use crate::structops::{self, BoolOp, Cleanup, Margin, Operand, Recipe};
+use crate::zoo::{self, AutoModel};
 
-/// The engine's model folder, and the check that stops a run from turning
-/// into a download when downloads are not allowed.
-fn models_dir(core: &Core, engine: Engine) -> PathBuf {
-    models::engine_dir(&core.session.config.models_dir(), engine)
+/// The model folder, and the check that stops a run from turning into a
+/// download when downloads are not allowed.
+fn models_root(core: &Core) -> PathBuf {
+    core.session.config.models_dir()
 }
 
 fn refuse_download(core: &Core, bytes: u64, what: &str) -> Result<()> {
@@ -43,65 +43,115 @@ pub struct OrgansArgs {
     /// omitted.
     #[serde(default)]
     pub series: Option<u32>,
-    /// `fast` (3 mm, all 117 classes), `high` (1.5 mm, choose `parts`) or
-    /// `preview` (6 mm).
+    /// The model to run, by its key from list_models (`total_fast`,
+    /// `total_mr`, `mrsegmentator`, `lung_vessels`, `lungmask_lobes`,
+    /// `monai_wholebody`, `ctfm_wholebody`, `vista3d`, ...).
+    /// When omitted, `variant` chooses among the TotalSegmentator CT
+    /// models.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Used when `model` is omitted: `fast` (3 mm, all 117 classes),
+    /// `high` (1.5 mm, choose `parts`) or `preview` (6 mm) run the v2
+    /// weights; `fast_v3`, `high_v3`, `preview_v3` the v3 weights, and
+    /// `small_v3` / `small_high_v3` the v3 residual-encoder ("small")
+    /// network at 3 mm / 1.5 mm. v3 names label 26 `vertebrae_L6` where v2
+    /// says `vertebrae_S1`.
     #[serde(default = "default_variant")]
     pub variant: String,
-    /// For `high`: any of organs, vertebrae, cardiac, muscles, ribs. Empty
-    /// means all five.
+    /// For a model with sub-models (list_models shows them; for `total`
+    /// at 1.5 mm: organs, vertebrae, cardiac, muscles, ribs): which to run.
+    /// Empty means all.
     #[serde(default)]
     pub parts: Vec<String>,
-    /// Keep only these organs (TotalSegmentator class names such as
-    /// `heart`, `aorta`, `lung_upper_lobe_left`). Empty keeps everything
-    /// found.
+    /// Keep only these structures (the model's class names, such as
+    /// `heart`, `aorta`, `lung_upper_lobe_left`, or their TG-263 names).
+    /// Empty keeps everything found.
     #[serde(default)]
     pub keep: Vec<String>,
+    /// Name the structures by AAPM TG-263 where a class has a TG-263 name
+    /// (Kidney_L, Lung_RUL, VB_T07); the others keep the model's name.
+    #[serde(default)]
+    pub tg263: bool,
 }
 
 fn default_variant() -> String {
     "fast".into()
 }
 
-pub fn segment_organs(core: &mut Core, a: OrgansArgs, p: &Progress) -> Result<Value> {
-    let variant = crate::workflow::params::AutosegVariant::from_name(&a.variant)?.variant();
-    let mut parts = [a.parts.is_empty(); 5];
-    for part in &a.parts {
-        let Some(i) = autoseg::classes::PART_NAMES
-            .iter()
-            .position(|n| n.eq_ignore_ascii_case(part))
-        else {
-            bail!(
-                "unknown part '{part}'; the parts are {}",
-                autoseg::classes::PART_NAMES.join(", ")
-            );
-        };
-        parts[i] = true;
+/// The model `a` names.
+fn chosen_model(a: &OrgansArgs) -> Result<AutoModel> {
+    match &a.model {
+        Some(key) => AutoModel::from_key(key)
+            .ok_or_else(|| anyhow::anyhow!("unknown model '{key}'; list_models names every model")),
+        None => Ok(AutoModel::Nn(
+            crate::workflow::params::AutosegVariant::from_name(&a.variant)?
+                .variant()
+                .task(),
+        )),
     }
-    let dir = models_dir(core, Engine::TotalSegmentator);
+}
+
+pub fn segment_organs(core: &mut Core, a: OrgansArgs, p: &Progress) -> Result<Value> {
+    let model = chosen_model(&a)?;
+    let names = model.part_names();
+    let parts = if a.parts.is_empty() || names.is_empty() {
+        None
+    } else {
+        let mut on = vec![false; names.len()];
+        for part in &a.parts {
+            let Some(i) = names
+                .iter()
+                .position(|n| n.eq_ignore_ascii_case(part.trim()))
+            else {
+                bail!(
+                    "unknown part '{part}'; the parts of {} are {}",
+                    model.key(),
+                    names.join(", ")
+                );
+            };
+            on[i] = true;
+        }
+        Some(on)
+    };
+    let root = models_root(core);
     refuse_download(
         core,
-        autoseg::download_needed(variant, parts, &dir),
-        "TotalSegmentator",
+        model.download_needed(parts.as_deref(), &root),
+        model.label(),
     )?;
     let ds = core.session.dataset(&a.dataset)?;
     let series = core.session.series_index(ds, a.series)?;
+    let modality = ds.study.series[series].modality.clone();
     let volume = core.session.volume(&a.dataset, series, p)?;
-    let device = core.session.config.device_pref();
-
-    let result = autoseg::run(&volume, variant, device, parts, &dir, p)?;
+    let opts = zoo::RunOptions {
+        device: core.session.config.device_pref(),
+        parts,
+    };
+    let result = model.run(&volume, &opts, &root, p)?;
     if result.organs.is_empty() {
-        bail!("no organs were found in this volume");
+        bail!("no structures were found in this volume");
     }
     let keep_lower: Vec<String> = a.keep.iter().map(|k| k.to_lowercase()).collect();
+    let named = |o: &crate::autoseg::OrganHit| -> String {
+        if a.tg263 {
+            zoo::tg263_name(o.name).unwrap_or_else(|| o.name.to_string())
+        } else {
+            o.name.to_string()
+        }
+    };
     let classes: Vec<(u8, String, [u8; 3])> = result
         .organs
         .iter()
-        .filter(|o| keep_lower.is_empty() || keep_lower.contains(&o.name.to_lowercase()))
-        .map(|o| (o.label, o.name.to_string(), o.color))
+        .filter(|o| {
+            keep_lower.is_empty()
+                || keep_lower.contains(&o.name.to_lowercase())
+                || zoo::tg263_name(o.name).is_some_and(|t| keep_lower.contains(&t.to_lowercase()))
+        })
+        .map(|o| (o.label, named(o), o.color))
         .collect();
     if classes.is_empty() {
         bail!(
-            "none of the requested organs was found; found: {}",
+            "none of the requested structures was found; found: {}",
             result
                 .organs
                 .iter()
@@ -126,15 +176,55 @@ pub fn segment_organs(core: &mut Core, a: OrgansArgs, p: &Progress) -> Result<Va
         .map(|s| (s.name.clone(), s.color, s.mask))
         .collect();
     let set = core.session.land_masks(&a.dataset, series, &grid, masks)?;
+    let mut notes = result.notes.clone();
+    if !model.modality().accepts(&modality) {
+        notes.push(format!(
+            "{} was trained on {}; this series is {}",
+            model.label(),
+            model.modality().label(),
+            clean_text(&modality)
+        ));
+    }
     Ok(json!({
         "dataset": a.dataset,
         "series": series + 1,
         "set": clean_text(&set),
-        "variant": variant.label(),
+        "model": model.key(),
+        "model_label": model.label(),
+        "licence": model.licence().name(),
         "device": result.device,
         "elapsed_s": (result.elapsed_secs * 10.0).round() / 10.0,
         "structures": organs,
+        "notes": notes,
     }))
+}
+
+/// Every automatic model, with what it needs.
+pub fn list_models(core: &mut Core, _: super::NoArgs, _: &Progress) -> Result<Value> {
+    let root = models_root(core);
+    let models: Vec<Value> = AutoModel::all()
+        .into_iter()
+        .map(|m| {
+            let need = m.download_needed(None, &root);
+            json!({
+                "key": m.key(),
+                "label": m.label(),
+                "group": m.group(),
+                "family": m.family().label(),
+                "modality": m.modality().label(),
+                "licence": m.licence().name(),
+                "research_only": m.licence().research_only(),
+                "classes": m.classes().len(),
+                "parts": m.part_names(),
+                "ready": need == 0,
+                "download_bytes": need,
+                "detail": m.detail(),
+            })
+        })
+        .collect();
+    Ok(
+        json!({ "models": models, "allow_model_download": core.session.config.allow_model_download }),
+    )
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -165,7 +255,7 @@ pub fn segment_body(core: &mut Core, a: BodyArgs, p: &Progress) -> Result<Value>
     let mut params = bodymask::BodyParams::for_modality(&modality);
     params.method = crate::workflow::params::BodyMethod::from_name(&a.method)?.method();
     params.device = core.session.config.device_pref();
-    let dir = models_dir(core, Engine::TotalSegmentator);
+    let dir = models_root(core);
     if params.method == bodymask::Method::ModelAssisted {
         refuse_download(
             core,

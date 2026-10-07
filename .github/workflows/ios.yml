@@ -19,9 +19,9 @@ name: iOS
 #     the same app for the simulator, starts it on a simulated iPad and a
 #     simulated iPhone, and attaches the screenshots and the program's logs
 #     as `ios-simulator`.
-#     A pull request from feature/ios-port therefore builds the app itself,
-#     which matters because *Run workflow* only exists for a workflow that
-#     is already on the default branch.
+#     A pull request that changes the packaging therefore builds the app
+#     itself, which matters because *Run workflow* only exists for a
+#     workflow that is already on the default branch.
 #
 # Signing. iOS runs nothing that no Apple certificate has signed, so what
 # the .ipa is good for depends on the secrets:
@@ -50,7 +50,12 @@ name: iOS
 on:
   # Pull requests only, for the same reason as ci.yml: the merge ref is what
   # lands, and branch protection sees to it that nothing lands unchecked.
+  # Into develop and main only - not into `nightly`, which gets nightly.yml's
+  # lighter checks (see ci.yml).
   pull_request:
+    branches:
+      - develop
+      - main
     paths:
       - "src/**"
       - "crates/**"

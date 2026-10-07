@@ -158,6 +158,7 @@ impl ViewerApp {
         // The MedSAM2 box is drawn in the views only while its section is
         // on screen; the section sets this again every frame it is drawn.
         self.medsam2.open = false;
+        self.nni.open = false;
         self.right_open = Self::edge_panel(
             ui,
             EdgePanel {

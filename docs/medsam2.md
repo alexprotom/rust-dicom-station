@@ -11,7 +11,9 @@ a click, or a contour you already drew - and it follows that structure
 through the rest of the stack at the slice's own resolution. It is a
 pure-Rust re-implementation of
 [MedSAM2](https://github.com/bowang-lab/MedSAM2) (Ma et al., 2025), SAM 2.1
-fine-tuned on medical images - no Python, no ONNX Runtime, no CUDA.
+fine-tuned on medical images - no Python, no ONNX Runtime, no CUDA - and of
+**Efficient MedSAM2**, the same authors' CPU-oriented variant on
+[EfficientTAM](https://github.com/yformer/EfficientTAM).
 
 For CT, whose slices are natively 512 x 512, the network's input resolution
 is the slice's own: nothing is resampled in-plane and the mask is as sharp
@@ -78,7 +80,7 @@ does too (it never uses more than one conditioning slice per run).
 | **Add to what is already there** | union this run with the current result instead of replacing it |
 | **Name** | what the segmentation is called |
 | **Options ▸ Window** | the intensity window the model sees - the viewport's own by default, so what you see is what it segments, plus the paper's presets |
-| **Options ▸ Model** | which fine-tune to run: general (default), CT lesions, MRI liver lesions, or the 2024-11 base |
+| **Options ▸ Model** | which fine-tune to run: general (default), CT lesions, MRI liver lesions, the FLARE25 RECIST baseline (a lesion from a box on its middle slice, CT), the 2024-11 base, or Efficient MedSAM2 tiny / small (the RECIST baseline on a lighter encoder, for the CPU) |
 | **Options ▸ Both directions** | off tracks only towards higher slice numbers |
 | **Options ▸ Largest connected component** | drop everything but the biggest 26-connected blob - usually right for a single lesion |
 | **Options ▸ Threshold** | the logit cut, 0 by default (probability 0.5) |
@@ -98,7 +100,7 @@ pays for loading.
 
 ```
 cargo run --release --example medsam2_cli -- <DICOM_DIR> \
-    [--models DIR] [--variant latest|ct-lesion|mri-liver|2411] \
+    [--models DIR] [--variant latest|ct-lesion|mri-liver|flare25-recist|2411|eff-tiny|eff-small] \
     [--device auto|gpu|cpu] [--slice N] [--box r0,c0,r1,c1] [--point r,c] \
     [--window LO,HI] [--preset Abdomen] [--range FIRST,LAST] \
     [--max-slices N] [--all-slices] [--forward-only] [--threshold F] \
@@ -147,6 +149,25 @@ feature (wgpu - Vulkan, DX12 or Metal, no CUDA toolkit), on a pure-Rust CPU
 backend otherwise; the panel reports which one it got. Expect roughly 48 G
 multiply-accumulates per slice, about half in the strictly sequential
 memory path - which is why the propagation range is bounded by default.
+
+### Efficient MedSAM2
+
+`eff_medsam2_tiny_FLARE25_RECIST_baseline.pt` (72 MB) and
+`eff_medsam2_small_FLARE25_RECIST_baseline.pt` (136 MB) are the FLARE 2025
+RECIST baseline on EfficientTAM (Xiong et al., *Efficient Track Anything*,
+2024): SAM 2 with the hierarchical Hiera trunk replaced by a **plain ViT**
+- ViT-Tiny (192 wide, three heads) or ViT-Small (384, six) on 16 x 16
+patches, blocks 2, 5, 8 and 11 global and the others in 14 x 14 windows,
+an absolute position embedding learned at 224 pixels and resized
+bicubically to the 32 x 32 grid - and a one-level neck (a 1 x 1 and a
+3 x 3 convolution, each followed by `LayerNorm2d`). Everything after the
+encoder is SAM 2's, with three things left out by EfficientTAM's
+configuration: the decoder fuses no high-resolution features (a plain ViT
+has one scale), object pointers carry no temporal position, and an absent
+object leaves no spatial marker in its memory. The engine reads which
+network a checkpoint holds from the checkpoint itself
+(`medsam2/vitdet.rs`, `model::Arch`); prompting, propagation and the panel
+are the same. The tiny encoder is about a quarter of Hiera-T's work.
 
 The interactive loop works because **a prompt is cheap and a slice is
 not**: encoding a slice is the expensive half, the prompt encoder and mask
@@ -199,11 +220,17 @@ port never does.
 
 ## Weights, and their licence
 
-The checkpoint (156 MB) is downloaded from
+The checkpoint (156 MB per MedSAM2 variant, 72 or 136 MB for Efficient
+MedSAM2) is downloaded from
 [huggingface.co/wanglab/MedSAM2](https://huggingface.co/wanglab/MedSAM2) on
 first use into `models/medsam2/` under the model folder and converted once
 into a `safetensors` cache beside it. The section says whether the
-chosen variant is cached or how much a run will download.
+chosen variant is cached or how much a run will download. The five MedSAM2
+variants (`MedSAM2_latest.pt`, `MedSAM2_CTLesion.pt`,
+`MedSAM2_MRI_LiverLesion.pt`, `medsam2_FLARE25_RECIST_baseline.pt`,
+`MedSAM2_2411.pt`) share one architecture and one tensor layout, the two
+Efficient MedSAM2 files another; the repository's `MedSAM2_US_Heart.pt`
+(echocardiography video) is not offered.
 
 **The MedSAM2 code is Apache-2.0, but the weights are tagged CC-BY-SA-4.0 and
 the model card adds that they "can only be used for research and education
@@ -235,6 +262,21 @@ ran Meta's own package is not kept, so the repository stays pure Rust; see
 [architecture.md](architecture.md#testing)). That is *fidelity to MedSAM2*,
 not MedSAM2 being right on your data; the authors' own limitations are worth
 knowing.
+
+Efficient MedSAM2 was checked the same way without its weights (Hugging
+Face was not reachable from the development machine): EfficientTAM tiny
+and small, built by the MedSAM2 repository's own code from its two
+configurations with random weights and saved as a checkpoint in the
+published format, ran the authors' npz video predictor on a synthetic
+six-slice stack - a box on one slice, propagation to the end - and this
+engine, loading that checkpoint, reproduced the image embedding and every
+slice's mask logits: the 32 x 32 x 256 embedding to 3 x 10⁻⁶ of its
+range, the prompted slice's logits to 3 x 10⁻⁶ and the three tracked
+slices' to 1.4 x 10⁻⁵ (tiny and small alike), with no logit changing
+sign.
+`tests/data/medsam2-vitdet.safetensors` keeps the encoder's part of that in
+CI: EfficientTAM's own ViT and neck, built small, with weights drawn from a
+generator the test reproduces.
 
 * Box prompts do not suit thin, branching structures - vessels, airways.
 * Nothing models 3-D continuity explicitly; a strongly curved or elongated

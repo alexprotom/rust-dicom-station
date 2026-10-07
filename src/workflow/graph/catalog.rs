@@ -18,7 +18,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::autoseg::classes::TOTAL_CLASS_NAMES;
+use crate::autoseg::classes;
+use crate::zoo::AutoModel;
 
 // The parameters every caller of an engine shares - the workflow file, the
 // MCP tools, the viewer's dialogs - are defined once, in `workflow::params`;
@@ -1029,10 +1030,14 @@ impl Op {
                         .collect::<Vec<_>>()
                         .join(", ")
                 };
-                vec![
-                    organs,
-                    format!("{}, {}", p.variant.label(), p.output.label()),
-                ]
+                let model = match p.auto_model() {
+                    Some(m) if m.total_variant().is_some() => {
+                        format!("TotalSegmentator {}", p.variant.label())
+                    }
+                    Some(m) => m.label().to_string(),
+                    None => format!("unknown model '{}'", p.model.trim()),
+                };
+                vec![organs, format!("{model}, {}", p.output.label())]
             }
             Op::BodyContour(p) => vec![
                 quoted(&p.name),
@@ -1239,16 +1244,24 @@ impl Op {
             Op::SelectStructures(p) if split_names(&p.names).is_empty() => {
                 v.push("no structure names are given".into());
             }
-            Op::AutoSegment(p) => {
-                for o in &p.organs {
-                    if organ_label(&o.organ).is_none() {
-                        v.push(format!(
-                            "'{}' is not a TotalSegmentator class (heart, liver or aorta, say)",
-                            o.organ.trim()
-                        ));
+            Op::AutoSegment(p) => match p.auto_model() {
+                None => v.push(format!(
+                    "'{}' is not a model this program has",
+                    p.model.trim()
+                )),
+                Some(m) => {
+                    for o in &p.organs {
+                        if p.label_of(&o.organ).is_none() {
+                            v.push(format!(
+                                "'{}' is not a class of {} ({}, say)",
+                                o.organ.trim(),
+                                m.label(),
+                                m.classes().first().copied().unwrap_or("")
+                            ));
+                        }
                     }
                 }
-            }
+            },
             Op::BodyContour(p) if p.name.trim().is_empty() => {
                 v.push("the outline needs a name".into());
             }
@@ -1314,13 +1327,25 @@ impl Op {
 }
 
 /// The TotalSegmentator class a name means (1-based global label), case
-/// and spaces forgiven: `Heart`, `lung upper lobe left`.
+/// and spaces forgiven: `Heart`, `lung upper lobe left`. Both generations'
+/// tables are consulted, so `vertebrae_S1` (v2) and `vertebrae_L6` (v3)
+/// both name label 26.
 pub fn organ_label(name: &str) -> Option<u8> {
     let want = name.trim().to_lowercase().replace([' ', '-'], "_");
-    TOTAL_CLASS_NAMES
+    classes::label_of(&want).or_else(|| class_label(&classes::TOTAL_CLASS_NAMES, name))
+}
+
+/// The label (1-based) of a class in `table`, by its name written the
+/// forgiving way (case, spaces for underscores) or by its TG-263 name.
+pub fn class_label(table: &[&str], name: &str) -> Option<u8> {
+    let want = name.trim().to_lowercase().replace([' ', '-'], "_");
+    table
         .iter()
-        .position(|n| *n == want)
-        .map(|i| (i + 1) as u8)
+        .position(|c| {
+            c.to_lowercase().replace([' ', '-'], "_") == want
+                || crate::zoo::tg263_name(c).is_some_and(|t| t.eq_ignore_ascii_case(name.trim()))
+        })
+        .map(|i| i as u8 + 1)
 }
 
 /// Names split on commas, semicolons and new lines, trimmed, empties dropped.
@@ -1551,6 +1576,10 @@ impl OrganRule {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AutoSegment {
+    /// The model, by its registry key (`zoo::AutoModel::key`). Empty: the
+    /// TotalSegmentator CT model `variant` names - what every workflow
+    /// saved before the registry means.
+    pub model: String,
     pub variant: AutosegVariant,
     /// The organs kept. Empty keeps every organ found.
     pub organs: Vec<OrganRule>,
@@ -1561,11 +1590,45 @@ pub struct AutoSegment {
     /// What happens when an organ's name is taken in the set it goes into.
     pub names: NameClash,
     pub device: Device,
+    /// Name the structures by AAPM TG-263 where a class has a TG-263 name
+    /// (an organ given a name of its own keeps that name).
+    pub tg263: bool,
+}
+
+impl AutoSegment {
+    /// The model the node runs; `None` for a key no model has.
+    pub fn auto_model(&self) -> Option<AutoModel> {
+        if self.model.trim().is_empty() {
+            Some(AutoModel::Nn(self.variant.variant().task()))
+        } else {
+            AutoModel::from_key(&self.model)
+        }
+    }
+
+    /// The label of a class of the node's model, the name written the
+    /// forgiving way (`Lung upper lobe left`), or by its TG-263 name.
+    pub fn label_of(&self, name: &str) -> Option<u8> {
+        let m = self.auto_model()?;
+        if m.total_variant().is_some() {
+            return organ_label(name);
+        }
+        class_label(m.classes(), name)
+    }
+
+    /// The name a class lands under when no name of its own was given.
+    pub fn default_name(&self, class: &str) -> String {
+        if self.tg263 {
+            crate::zoo::tg263_name(class).unwrap_or_else(|| class.to_string())
+        } else {
+            class.to_string()
+        }
+    }
 }
 
 impl Default for AutoSegment {
     fn default() -> Self {
         AutoSegment {
+            model: String::new(),
             variant: AutosegVariant::Fast,
             organs: vec![OrganRule {
                 organ: "heart".into(),
@@ -1576,6 +1639,7 @@ impl Default for AutoSegment {
             set_label: "Auto-segmentation".into(),
             names: NameClash::Counter,
             device: Device::Auto,
+            tg263: false,
         }
     }
 }
@@ -2295,6 +2359,7 @@ mod tests {
             organ_label("lung_upper_lobe_left")
         );
         assert!(organ_label("hearts").is_none());
+        assert_eq!(organ_label("vertebrae_L6"), organ_label("vertebrae S1"));
         let bad = Op::AutoSegment(AutoSegment {
             organs: vec![OrganRule {
                 organ: "hearts".into(),
@@ -2303,5 +2368,33 @@ mod tests {
             ..AutoSegment::default()
         });
         assert_eq!(bad.param_problems().len(), 1);
+        // A node on another model checks against that model's classes,
+        // by name or by TG-263 name.
+        let lobes = AutoSegment {
+            model: "lungmask_lobes".into(),
+            organs: vec![
+                OrganRule {
+                    organ: "lung upper lobe left".into(),
+                    name: String::new(),
+                },
+                OrganRule {
+                    organ: "Lung_RML".into(),
+                    name: String::new(),
+                },
+            ],
+            ..AutoSegment::default()
+        };
+        assert_eq!(lobes.label_of("lung upper lobe left"), Some(1));
+        assert_eq!(lobes.label_of("Lung_RML"), Some(4));
+        assert!(Op::AutoSegment(lobes.clone()).param_problems().is_empty());
+        let unknown = AutoSegment {
+            model: "nope".into(),
+            ..lobes
+        };
+        assert_eq!(Op::AutoSegment(unknown).param_problems().len(), 1);
+        // A workflow saved before the registry has no model and still runs
+        // its variant.
+        let old: AutoSegment = serde_json::from_str(r#"{"variant": "high_v3"}"#).unwrap();
+        assert_eq!(old.auto_model().map(|m| m.key()), Some("total_v3"));
     }
 }

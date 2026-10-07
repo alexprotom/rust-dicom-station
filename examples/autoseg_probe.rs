@@ -3,8 +3,8 @@
 //!
 //! cargo run --release --example autoseg_probe -- <dicom_dir> <models_dir> <spec_key> <out_prefix>
 //!
-//! `<models_dir>` is the engine's folder, normally `totalsegmentator/` in the
-//! viewer's model folder.
+//! `<models_dir>` is the model folder; the spec's engine folder
+//! (`totalsegmentator/`, `mrsegmentator/`) is below it.
 
 use rust_dicom_station::autoseg::{config::ModelConfig, cpu, net, preprocess, weights};
 use rust_dicom_station::loader;
@@ -17,25 +17,23 @@ fn main() -> anyhow::Result<()> {
     let models = PathBuf::from(a.next().unwrap());
     let key = a.next().unwrap();
     let out = a.next().unwrap();
-    let spec = [weights::SPEC_3MM, weights::SPEC_6MM]
-        .into_iter()
-        .chain(weights::SPECS_15MM)
-        .find(|s| s.key == key)
-        .expect("unknown spec key");
+    let spec = weights::spec_by_key(&key).expect("unknown spec key");
     let study = loader::load_directory(&dicom, &Progress::default())?;
     let vol = &study.volume;
-    let model = weights::ensure_model(&spec, &models, &Stderr)?;
-    let cfg: &ModelConfig = &model.config;
-    let unet = net::UNet::build(cfg.clone(), &model.tensors)?;
+    let model = weights::ensure_model_folds(&spec, &models.join(spec.home.subdir()), 1, &Stderr)?;
+    let mut cfg: ModelConfig = model.config.clone();
+
+    let map = preprocess::SarMap::with_axes(vol, cfg.spacing, spec.axes);
+    let vm = preprocess::resample_to_model(vol, &map);
+    cfg.apply_image_norm(&vm);
+    let unet = net::UNet::build(cfg.clone(), model.tensors())?;
+    let cfg = &cfg;
     eprintln!(
         "model {} classes={} stages={}",
         spec.key,
         unet.num_classes(),
         cfg.n_stages()
     );
-
-    let map = preprocess::SarMap::new(vol, cfg.spacing);
-    let vm = preprocess::resample_to_model(vol, &map);
     eprintln!("model grid {:?}", map.model_dims);
     // extract the corner patch (like the first sliding-window tile)
     let [p0, p1, p2] = cfg.patch_size;

@@ -45,6 +45,12 @@ pub const SETTINGS_MODELS_KEY: &str = "models_dir";
 /// `rust_dicom_station::settings::GRAPHICS_BACKEND_KEY` (asserted by a test
 /// when the viewer is linked in).
 pub const SETTINGS_GRAPHICS_KEY: &str = "graphics_backend";
+
+/// The viewer's settings key of the user's TotalSegmentator licence number.
+/// Must match `rust_dicom_station::settings::TS_LICENCE_KEY`. It is only
+/// ever written to the settings file of the user running the setup, never
+/// to the machine-wide defaults.
+pub const SETTINGS_LICENCE_KEY: &str = "totalsegmentator_licence";
 /// The viewer's model root folder name; each engine keeps its own sub-folder
 /// in it. Must match `rust_dicom_station::models::DIR_NAME`.
 pub const MODELS_DIR_NAME: &str = "models";
@@ -195,39 +201,108 @@ impl Graphics {
     }
 }
 
-/// Which auto-segmentation weights to fetch during installation.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// Which model weights to fetch during installation.
+///
+/// The viewer downloads every model on first use anyway; fetching here
+/// moves the wait into the installation, on a machine that is online now.
+/// A choice is either one of the named sets or a list of model keys as the
+/// model manager names them (`totalsegmentator/total_3mm`,
+/// `nnunet_v1/msd_lung`, ...; `rds-setup --list-models` prints them).
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub enum Models {
-    /// Leave the cache empty; the viewer downloads on first use.
+    /// Leave the model folder as it is.
+    #[default]
     None,
-    /// 6 mm preview model - ~135 MB.
-    Preview6mm,
-    /// 3 mm model, all 117 classes - ~135 MB.
-    Fast3mm,
-    /// The five 1.5 mm sub-models - ~1.2 GB.
-    HighRes15mm,
-    /// 3 mm plus the full 1.5 mm set - ~1.3 GB.
-    Everything,
+    /// TotalSegmentator's `total` at 3 mm: what most runs use (~135 MB).
+    Recommended,
+    /// Every model whose weights may be used for anything, commercial work
+    /// included (Apache-2.0, MIT).
+    Open,
+    /// Every model in the list, the non-commercial ones too (and the
+    /// licensed TotalSegmentator models when a licence number is set).
+    Every,
+    /// These models, by key.
+    Pick(Vec<String>),
 }
 
+/// The keys the TotalSegmentator sets of older installers stand for.
+pub const KEY_TOTAL_3MM: &str = "totalsegmentator/total_3mm";
+pub const KEY_TOTAL_6MM: &str = "totalsegmentator/total_6mm";
+pub const KEYS_TOTAL_15MM: [&str; 5] = [
+    "totalsegmentator/total_part1_organs",
+    "totalsegmentator/total_part2_vertebrae",
+    "totalsegmentator/total_part3_cardiac",
+    "totalsegmentator/total_part4_muscles",
+    "totalsegmentator/total_part5_ribs",
+];
+
 impl Models {
-    pub fn label(self) -> &'static str {
+    /// The named sets, in the order the window offers them.
+    pub fn presets() -> [Models; 4] {
+        [
+            Models::None,
+            Models::Recommended,
+            Models::Open,
+            Models::Every,
+        ]
+    }
+
+    pub fn label(&self) -> String {
         match self {
-            Models::None => "Download later, on first use",
-            Models::Preview6mm => "6 mm preview model (~135 MB)",
-            Models::Fast3mm => "3 mm model, all 117 structures (~135 MB)",
-            Models::HighRes15mm => "1.5 mm high-quality models (~1.2 GB)",
-            Models::Everything => "3 mm + 1.5 mm - everything (~1.3 GB)",
+            Models::None => "None now - each model downloads on first use".to_string(),
+            Models::Recommended => {
+                "Recommended: TotalSegmentator total, 3 mm (~135 MB)".to_string()
+            }
+            Models::Open => "Every open-licence model (Apache-2.0, MIT)".to_string(),
+            Models::Every => "Every model, the non-commercial ones too".to_string(),
+            Models::Pick(k) => format!("{} chosen model(s)", k.len()),
         }
     }
 
-    pub const ALL: [Models; 5] = [
-        Models::None,
-        Models::Fast3mm,
-        Models::Preview6mm,
-        Models::HighRes15mm,
-        Models::Everything,
-    ];
+    /// How the command line spells it.
+    pub fn arg(&self) -> String {
+        match self {
+            Models::None => "none".to_string(),
+            Models::Recommended => "recommended".to_string(),
+            Models::Open => "open".to_string(),
+            Models::Every => "every".to_string(),
+            Models::Pick(k) if k.is_empty() => "none".to_string(),
+            Models::Pick(k) => k.join(","),
+        }
+    }
+
+    /// Parse `--models`: a set's name, one of the older TotalSegmentator
+    /// sets (`3mm`, `6mm`, `1.5mm`, `all` = 3 mm and 1.5 mm), or model keys
+    /// separated by commas.
+    pub fn parse(v: &str) -> Option<Models> {
+        let lower = v.trim().to_ascii_lowercase();
+        Some(match lower.as_str() {
+            "" | "none" => Models::None,
+            "recommended" | "3mm" | "fast" => Models::Recommended,
+            "open" => Models::Open,
+            "every" => Models::Every,
+            "6mm" => Models::Pick(vec![KEY_TOTAL_6MM.to_string()]),
+            "1.5mm" | "15mm" | "highres" => {
+                Models::Pick(KEYS_TOTAL_15MM.iter().map(|k| k.to_string()).collect())
+            }
+            "all" | "everything" => {
+                let mut k = vec![KEY_TOTAL_3MM.to_string()];
+                k.extend(KEYS_TOTAL_15MM.iter().map(|k| k.to_string()));
+                Models::Pick(k)
+            }
+            _ => {
+                let keys: Vec<String> = v
+                    .split(',')
+                    .map(|k| k.trim().to_string())
+                    .filter(|k| !k.is_empty())
+                    .collect();
+                if keys.is_empty() || !keys.iter().all(|k| k.contains('/')) {
+                    return None;
+                }
+                Models::Pick(keys)
+            }
+        })
+    }
 }
 
 /// Everything the user can decide before the copy starts.
@@ -411,6 +486,25 @@ mod tests {
             super::DEFAULTS_FILE,
             rust_dicom_station::settings::DEFAULTS_FILE_NAME
         );
+        assert_eq!(
+            super::SETTINGS_LICENCE_KEY,
+            rust_dicom_station::settings::TS_LICENCE_KEY
+        );
+    }
+
+    /// The sets the setup offers name models the viewer has.
+    #[test]
+    fn the_named_models_exist() {
+        let keys: Vec<String> = rust_dicom_station::models::inventory()
+            .into_iter()
+            .map(|a| a.key)
+            .collect();
+        for k in std::iter::once(super::KEY_TOTAL_3MM)
+            .chain(std::iter::once(super::KEY_TOTAL_6MM))
+            .chain(super::KEYS_TOTAL_15MM)
+        {
+            assert!(keys.iter().any(|x| x == k), "{k}");
+        }
     }
 
     /// The installer writes a backend into the viewer's settings file; if the

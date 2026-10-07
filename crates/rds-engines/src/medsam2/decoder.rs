@@ -223,12 +223,15 @@ pub struct MaskDecoder<B: Backend> {
     hypernetworks: Vec<Mlp<B>>,
     iou_head: Mlp<B>,
     obj_score_head: Mlp<B>,
-    conv_s0: Conv<B>,
-    conv_s1: Conv<B>,
+    /// The high-resolution projections; `None` for a decoder built without
+    /// `use_high_res_features` (Efficient MedSAM2).
+    conv_s: Option<(Conv<B>, Conv<B>)>,
 }
 
 impl<B: Backend> MaskDecoder<B> {
-    pub fn load(p: &Params, dev: &B::Device) -> Result<MaskDecoder<B>> {
+    /// `high_res`: whether the decoder fuses the encoder's high-resolution
+    /// features (`use_high_res_features_in_sam`).
+    pub fn load(p: &Params, high_res: bool, dev: &B::Device) -> Result<MaskDecoder<B>> {
         let d = "sam_mask_decoder";
         let token = |key: &str, n: usize| -> Result<Tensor<B, 3>> {
             Ok(ops::from_slice(
@@ -280,31 +283,40 @@ impl<B: Backend> MaskDecoder<B> {
                 &[D_MODEL, D_MODEL, D_MODEL, 1],
                 dev,
             )?,
-            conv_s0: Conv::load_1x1(
-                p,
-                &format!("{d}.conv_s0"),
-                config::HIGH_RES_S0_CH,
-                D_MODEL,
-                dev,
-            )?,
-            conv_s1: Conv::load_1x1(
-                p,
-                &format!("{d}.conv_s1"),
-                config::HIGH_RES_S1_CH,
-                D_MODEL,
-                dev,
-            )?,
+            conv_s: if high_res {
+                Some((
+                    Conv::load_1x1(
+                        p,
+                        &format!("{d}.conv_s0"),
+                        config::HIGH_RES_S0_CH,
+                        D_MODEL,
+                        dev,
+                    )?,
+                    Conv::load_1x1(
+                        p,
+                        &format!("{d}.conv_s1"),
+                        config::HIGH_RES_S1_CH,
+                        D_MODEL,
+                        dev,
+                    )?,
+                ))
+            } else {
+                None
+            },
         })
     }
 
     /// Project the neck's two high-resolution levels for the upscaling path.
     /// This happens in `forward_image`, once per slice, not per prompt.
+    /// `None` for a decoder without them.
     pub fn project_high_res(
         &self,
         level0: Tensor<B, 4>,
         level1: Tensor<B, 4>,
-    ) -> [Tensor<B, 4>; 2] {
-        [self.conv_s0.apply(level0), self.conv_s1.apply(level1)]
+    ) -> Option<[Tensor<B, 4>; 2]> {
+        self.conv_s
+            .as_ref()
+            .map(|(s0, s1)| [s0.apply(level0), s1.apply(level1)])
     }
 
     pub fn forward(
@@ -313,7 +325,7 @@ impl<B: Backend> MaskDecoder<B> {
         image_pe: Tensor<B, 4>,
         sparse: Tensor<B, 3>,
         dense: Tensor<B, 4>,
-        high_res: &[Tensor<B, 4>; 2],
+        high_res: Option<&[Tensor<B, 4>; 2]>,
     ) -> Decoded<B> {
         let tokens = Tensor::cat(
             vec![
@@ -333,13 +345,19 @@ impl<B: Backend> MaskDecoder<B> {
         let mask_tokens_out = hs.clone().slice([0..b, 2..2 + NUM_MASK_TOKENS, 0..D_MODEL]);
         let obj_token_out = hs.slice([0..b, 0..1, 0..D_MODEL]);
 
-        // upscale, fusing the high-resolution features in between
+        // upscale, fusing the high-resolution features in between when
+        // there are any (`output_upscaling` as one sequence otherwise)
         let src = keys.swap_dims(1, 2).reshape([b, c, h, w]);
-        let up = gelu(
-            self.up_norm
-                .apply_2d(self.up0.apply(src) + high_res[1].clone()),
-        );
-        let up = gelu(self.up1.apply(up) + high_res[0].clone());
+        let up = match high_res {
+            Some(hr) => {
+                let up = gelu(self.up_norm.apply_2d(self.up0.apply(src) + hr[1].clone()));
+                gelu(self.up1.apply(up) + hr[0].clone())
+            }
+            None => {
+                let up = gelu(self.up_norm.apply_2d(self.up0.apply(src)));
+                gelu(self.up1.apply(up))
+            }
+        };
         let [_, uc, uh, uw] = up.dims();
 
         // one filter per mask token, applied as a matrix product

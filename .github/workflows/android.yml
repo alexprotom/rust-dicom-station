@@ -3,16 +3,21 @@ name: Android
 # The Android package: the viewer as a shared library for arm64-v8a, wrapped
 # in an APK by packaging/android/build-apk.sh (docs/android.md).
 #
-# Three ways in:
-#   * a pull request that touches the viewer's sources or the packaging/android/
-#     crate: `cargo ndk check` of the Android crate, which is the
-#     cross-compilation proof and takes a fraction of a release build. It is
-#     a job of its own here rather than a step of ci.yml because it is a
-#     fourth dependency graph, and one graph per job is what keeps CI fast.
+# Four ways in:
+#   * a pull request into develop or main that touches the viewer's sources
+#     or the packaging/android/ crate: `cargo ndk check` of the Android
+#     crate, which is the cross-compilation proof and takes a fraction of a
+#     release build. It is a job of its own here rather than a step of
+#     ci.yml because it is a fourth dependency graph, and one graph per job
+#     is what keeps CI fast.
 #   * Actions > Android > Run workflow: a full APK of any branch, attached to
 #     the run as the `android-apk` artifact.
 #   * the release workflow calls it on every push to main with the release's
 #     version; the APK it returns is attached to the GitHub release.
+#   * the nightly workflow calls it on every push to `nightly` with the
+#     nightly version and `write_version`: the version is written into
+#     Cargo.toml on the runner instead of being checked against it, and the
+#     APK goes onto the rolling `nightly` pre-release.
 #
 # Signing: with the four secrets ANDROID_KEYSTORE_BASE64 (the keystore file,
 # base64), ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and
@@ -25,6 +30,11 @@ on:
   # Pull requests only, for the same reason as ci.yml: the merge ref is what
   # lands, and branch protection sees to it that nothing lands unchecked.
   pull_request:
+    # Not on a pull request into `nightly`: that branch gets the lighter
+    # checks of nightly.yml, and this check again on its way into main.
+    branches:
+      - develop
+      - main
     paths:
       - "src/**"
       - "crates/**"
@@ -40,6 +50,10 @@ on:
         description: The version the APK must carry (from Cargo.toml)
         type: string
         default: ""
+      write_version:
+        description: Write `version` into Cargo.toml before building instead of checking that the tree carries it (nightly builds)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -70,8 +84,10 @@ jobs:
     # Also when the release calls this workflow (a version is passed): that
     # run is on `main`, and `main` is the one place a cache can be saved
     # that every pull request can restore - a PR's own cache is visible to
-    # that PR alone, so each new PR used to start this check cold.
-    if: github.event_name == 'pull_request' || inputs.version != ''
+    # that PR alone, so each new PR used to start this check cold. Not for
+    # a nightly (`write_version`): its APK build is the proof, and its cache
+    # is saved under the nightly branch anyway.
+    if: github.event_name == 'pull_request' || (inputs.version != '' && !inputs.write_version)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -122,7 +138,7 @@ jobs:
         run: cargo install cargo-ndk --locked
 
       - name: Check the version
-        if: inputs.version != ''
+        if: inputs.version != '' && !inputs.write_version
         shell: bash
         env:
           VERSION: ${{ inputs.version }}
@@ -133,6 +149,21 @@ jobs:
             echo "::error::Cargo.toml carries $have, the release expects $VERSION"
             exit 1
           fi
+
+      # A nightly: the caller computed the version (e.g.
+      # 0.11.1-nightly.20261004T0930.g890dfc8), and build-apk.sh takes it
+      # from Cargo.toml - versionName as is, versionCode from the numeric
+      # part before the first `-`. After the cache step: the cache key
+      # hashes Cargo.toml, and this edit is not meant to change it.
+      - name: Write the version into Cargo.toml
+        if: inputs.write_version
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          sed -i -E "0,/^version = \"[^\"]+\"/s//version = \"$VERSION\"/" Cargo.toml
+          grep -m1 '^version = ' Cargo.toml
 
       - name: Release keystore
         id: keystore

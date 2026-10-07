@@ -6,9 +6,18 @@
 //! ```text
 //! <data folder>/models/           (%LOCALAPPDATA%\RustDICOMStation on Windows,
 //!                                  ~/.local/share/RustDICOMStation on Linux)
-//!   totalsegmentator/   the nnU-Net models, one sub-folder per model
+//!   totalsegmentator/   TotalSegmentator's nnU-Net models, one sub-folder each
+//!   mrsegmentator/      MRSegmentator (five folds in one sub-folder)
+//!   lungmask/           lungmask's three 2-D U-Nets, each .pth with its cache
+//!   monai_wholebody/    the MONAI whole-body SegResNets (1.5 and 3 mm)
+//!   ctfm/               CT-FM's whole-body SegResNetDS (safetensors)
+//!   nnunet_v1/          nnU-Net v1 pretrained models, one fold each
+//!   custom/             converted weights of nnU-Net folders the user added
+//!   vista3d/            VISTA-3D (NV-Segment-CT, safetensors; ctmr/ holds
+//!                       NV-Segment-CTMR)
 //!   segvol/             pytorch_model.bin, vocab.json, merges.txt, cache
 //!   medsam2/            one .pt per fine-tune, with its cache beside it
+//!   nninteractive/      nnInteractive v1.0 (plans, metadata, converted fold 0)
 //! ```
 //!
 //! The root can be moved (the interface has one "Model folder" field, kept
@@ -24,42 +33,121 @@ use anyhow::{Context, Result};
 
 use crate::progress::ProgressSink;
 use crate::settings::{app_dir, default_models_dir};
-use crate::{autoseg, medsam2, segvol};
+use crate::zoo::{Licence, Modality};
+use crate::{autoseg, medsam2, nninteractive, segresnet, segvol, unet2d, vista3d};
 
 /// Name of the root folder.
 pub const DIR_NAME: &str = "models";
 
-/// The engines that download weights.
+/// The engines that download weights, each with its folder under the root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Engine {
-    /// Automatic multi-organ segmentation (nnU-Net models).
+    /// TotalSegmentator's nnU-Net models: `total`, MR, body, the catalogue.
     TotalSegmentator,
+    /// MRSegmentator (nnU-Net, five folds).
+    MrSegmentator,
+    /// The nnU-Net v1 pretrained models (MSD and other challenges).
+    NnUnetV1,
+    /// nnU-Net model folders the user added (their converted weights).
+    Custom,
+    /// lungmask's 2-D U-Nets.
+    Lungmask,
+    /// MONAI's whole-body SegResNet bundle.
+    Monai,
+    /// CT-FM's whole-body model.
+    CtFm,
+    /// VISTA-3D.
+    Vista3d,
     /// Prompt-driven segmentation.
     SegVol,
     /// Slice propagation.
     MedSam2,
+    /// Interactive segmentation.
+    NnInteractive,
 }
 
 impl Engine {
-    pub const ALL: [Engine; 3] = [Engine::TotalSegmentator, Engine::SegVol, Engine::MedSam2];
+    pub const ALL: [Engine; 11] = [
+        Engine::TotalSegmentator,
+        Engine::MrSegmentator,
+        Engine::NnUnetV1,
+        Engine::Custom,
+        Engine::Lungmask,
+        Engine::Monai,
+        Engine::CtFm,
+        Engine::Vista3d,
+        Engine::SegVol,
+        Engine::MedSam2,
+        Engine::NnInteractive,
+    ];
 
     /// Sub-folder of the root.
     pub fn subdir(self) -> &'static str {
         match self {
-            Engine::TotalSegmentator => "totalsegmentator",
+            Engine::TotalSegmentator => autoseg::weights::Home::TotalSegmentator.subdir(),
+            Engine::MrSegmentator => autoseg::weights::Home::MrSegmentator.subdir(),
+            Engine::NnUnetV1 => autoseg::weights::Home::NnUnetV1.subdir(),
+            Engine::Custom => autoseg::weights::Home::Custom.subdir(),
+            Engine::Lungmask => unet2d::DIR,
+            Engine::Monai => segresnet::DIR_MONAI,
+            Engine::CtFm => segresnet::DIR_CTFM,
+            Engine::Vista3d => vista3d::DIR,
             Engine::SegVol => "segvol",
             Engine::MedSam2 => "medsam2",
+            Engine::NnInteractive => nninteractive::DIR,
         }
     }
 
-    /// The folder the engine used before the layout was unified.
-    fn legacy_dir(self) -> &'static str {
-        match self {
-            Engine::TotalSegmentator => "autoseg_models",
-            Engine::SegVol => "segvol_model",
-            Engine::MedSam2 => "medsam2_model",
+    /// The engine an nnU-Net model's folder belongs to.
+    pub fn of_home(home: autoseg::weights::Home) -> Engine {
+        match home {
+            autoseg::weights::Home::TotalSegmentator => Engine::TotalSegmentator,
+            autoseg::weights::Home::MrSegmentator => Engine::MrSegmentator,
+            autoseg::weights::Home::NnUnetV1 => Engine::NnUnetV1,
+            autoseg::weights::Home::Custom => Engine::Custom,
         }
     }
+
+    /// How the model manager heads the engine's rows.
+    pub fn label(self) -> &'static str {
+        match self {
+            Engine::TotalSegmentator => "TotalSegmentator",
+            Engine::MrSegmentator => "MRSegmentator",
+            Engine::NnUnetV1 => "nnU-Net v1 (MSD and challenges)",
+            Engine::Custom => "Your nnU-Net models",
+            Engine::Lungmask => "lungmask",
+            Engine::Monai => "MONAI whole body",
+            Engine::CtFm => "CT-FM",
+            Engine::Vista3d => "VISTA-3D",
+            Engine::SegVol => "SegVol",
+            Engine::MedSam2 => "MedSAM2",
+            Engine::NnInteractive => "nnInteractive",
+        }
+    }
+
+    /// The folder the engine used before the layout was unified, for the
+    /// three that existed then.
+    fn legacy_dir(self) -> Option<&'static str> {
+        match self {
+            Engine::TotalSegmentator => Some("autoseg_models"),
+            Engine::SegVol => Some("segvol_model"),
+            Engine::MedSam2 => Some("medsam2_model"),
+            _ => None,
+        }
+    }
+}
+
+/// Hand the engines what the settings say about models: the
+/// TotalSegmentator licence number, and the nnU-Net model folders to
+/// register (whose refusals are returned, by folder). Every program that
+/// runs models calls this once with the loaded settings, and the viewer
+/// again whenever either changes.
+pub fn apply_settings(s: &crate::settings::Settings) -> Vec<(PathBuf, String)> {
+    autoseg::weights::set_ts_licence(s.ts_licence.as_deref());
+    autoseg::custom::register(&s.nnunet_folders)
+        .into_iter()
+        .filter_map(|(p, r)| r.err().map(|e| (p, format!("{e:#}"))))
+        .collect()
 }
 
 /// The default root: `models/` in the application's data folder
@@ -93,7 +181,10 @@ pub fn migrate_legacy_layout(root: &Path) -> Vec<Engine> {
     let app = app_dir();
     let mut moved = Vec::new();
     for engine in Engine::ALL {
-        let old = app.join(engine.legacy_dir());
+        let Some(legacy) = engine.legacy_dir() else {
+            continue;
+        };
+        let old = app.join(legacy);
         let new = engine_dir(root, engine);
         if !old.is_dir() || new.exists() {
             continue;
@@ -119,14 +210,25 @@ pub fn migrate_legacy_layout(root: &Path) -> Vec<Engine> {
 /// that owns it rather than re-implementing three download paths here.
 #[derive(Clone, Copy, Debug)]
 pub enum AssetKind {
-    /// One TotalSegmentator nnU-Net model, in its own sub-folder.
+    /// One nnU-Net model (TotalSegmentator, MRSegmentator), in its own
+    /// sub-folder.
     Autoseg(autoseg::weights::ModelSpec),
+    /// One lungmask model.
+    Lungmask(unet2d::Lungmask),
+    /// One SegResNet-family model.
+    SegRes(segresnet::SegResModel),
+    /// VISTA-3D's weights (one file for every prompt set).
+    Vista3d,
+    /// NV-Segment-CTMR's weights.
+    Vista3dCtmr,
     /// The SegVol network weights.
     SegVol,
     /// The CLIP byte-pair files SegVol's *text* prompts need.
     SegVolText,
     /// One MedSAM2 fine-tune.
     MedSam2(medsam2::weights::Variant),
+    /// nnInteractive's network.
+    NnInteractive,
 }
 
 /// One downloadable model as the model manager sees it.
@@ -140,7 +242,18 @@ pub struct ModelAsset {
     pub label: String,
     /// One line on what the model is for.
     pub detail: &'static str,
-    /// Published bytes to fetch when nothing is on disk yet.
+    /// The heading the model manager lists the row under, within its
+    /// engine.
+    pub group: &'static str,
+    /// What the weights may be used for.
+    pub licence: Licence,
+    /// What the model segments; `None` for the prompt engines, which take
+    /// whatever they are pointed at.
+    pub modality: Option<Modality>,
+    /// Published bytes to fetch when nothing is on disk yet (an estimate
+    /// for the licensed TotalSegmentator models and for the one network
+    /// taken out of an nnU-Net v1 archive; 0 for a model folder of the
+    /// user's, which is converted, not downloaded).
     pub download_bytes: u64,
     /// Folder holding the files, relative to the engine folder; empty means
     /// the engine folder itself.
@@ -182,40 +295,95 @@ pub struct AssetStatus {
 pub fn inventory() -> Vec<ModelAsset> {
     let mut out = Vec::new();
 
+    let tasks = autoseg::all_tasks();
     for spec in autoseg::weights::all_specs() {
-        let detail = if spec.key == autoseg::weights::SPEC_3MM.key {
-            "All 117 structures at 3 mm - the fast default."
-        } else if spec.key == autoseg::weights::SPEC_6MM.key {
-            "Coarse preview quality - the quickest look."
-        } else if spec.key == autoseg::weights::SPEC_BODY_6MM.key {
-            "Patient outline, 6 mm - what the body-contour tool's model-assisted \
-             method uses. Plenty, because it only decides which side of the skin \
-             a voxel is on."
-        } else if spec.key == autoseg::weights::SPEC_BODY_15MM.key {
-            "Patient outline at full resolution; slower, for the same decision."
-        } else if spec.key == autoseg::weights::SPEC_BODY_MR.key {
-            "Patient outline on MR - the body-contour tool's model for MR series."
-        } else {
-            "Full-resolution sub-model; the five together are the reference quality."
-        };
+        // The first task that runs the network says what it is for.
+        let task = tasks
+            .iter()
+            .find(|t| t.parts.iter().any(|p| p.spec.key == spec.key));
+        out.push(nn_asset(spec, task.copied()));
+    }
+
+    for m in unet2d::Lungmask::NETWORKS {
         out.push(ModelAsset {
-            kind: AssetKind::Autoseg(spec),
-            engine: Engine::TotalSegmentator,
-            key: format!("{}/{}", Engine::TotalSegmentator.subdir(), spec.key),
-            label: spec.label.to_string(),
-            detail,
-            download_bytes: spec.zip_bytes,
-            subdir: spec.key,
-            ready: vec![
-                autoseg::weights::CACHE_NAME.to_string(),
-                autoseg::weights::PLANS_NAME.to_string(),
-            ],
-            spare: vec![
-                autoseg::weights::CHECKPOINT_TMP.to_string(),
-                autoseg::weights::DOWNLOAD_TMP.to_string(),
-            ],
+            kind: AssetKind::Lungmask(m),
+            engine: Engine::Lungmask,
+            key: format!("{}/{}", Engine::Lungmask.subdir(), m.key()),
+            label: m.label().to_string(),
+            detail: m.detail(),
+            group: "",
+            licence: Licence::Apache2,
+            modality: Some(Modality::Ct),
+            download_bytes: m.file().bytes,
+            subdir: "",
+            ready: vec![m.cache_name().to_string()],
+            spare: vec![m.file().name.to_string()],
         });
     }
+
+    for m in segresnet::SegResModel::ALL {
+        let engine = if m == segresnet::SegResModel::CtFm {
+            Engine::CtFm
+        } else {
+            Engine::Monai
+        };
+        // CT-FM is published as safetensors and read as it is.
+        let ready = vec![if m == segresnet::SegResModel::CtFm {
+            m.file().name.to_string()
+        } else {
+            m.cache_name().to_string()
+        }];
+        let spare = if m == segresnet::SegResModel::CtFm {
+            Vec::new()
+        } else {
+            vec![m.file().name.to_string()]
+        };
+        out.push(ModelAsset {
+            kind: AssetKind::SegRes(m),
+            engine,
+            key: format!("{}/{}", engine.subdir(), m.key()),
+            label: m.label().to_string(),
+            detail: m.detail(),
+            group: "",
+            licence: Licence::Apache2,
+            modality: Some(Modality::Ct),
+            download_bytes: m.file().bytes,
+            subdir: "",
+            ready,
+            spare,
+        });
+    }
+
+    out.push(ModelAsset {
+        kind: AssetKind::Vista3d,
+        engine: Engine::Vista3d,
+        key: format!("{}/weights", Engine::Vista3d.subdir()),
+        label: "VISTA-3D (NV-Segment-CT)".to_string(),
+        detail: "One network for the automatic class prompts (127 classes, tumours among \
+                 them) and, later, point prompts.",
+        group: "",
+        licence: Licence::NvidiaOpenModel,
+        modality: Some(Modality::Ct),
+        download_bytes: vista3d::WEIGHTS.bytes,
+        subdir: "",
+        ready: vec![vista3d::WEIGHTS.name.to_string()],
+        spare: Vec::new(),
+    });
+    out.push(ModelAsset {
+        kind: AssetKind::Vista3dCtmr,
+        engine: Engine::Vista3d,
+        key: format!("{}/ctmr", Engine::Vista3d.subdir()),
+        label: "NV-Segment-CTMR".to_string(),
+        detail: "VISTA-3D trained on CT and MR: 345 classes, the brain parcellation \
+                 among them (CT body, MR body, MR brain).",
+        group: "",
+        licence: Licence::NvidiaNonCommercial,
+        modality: None,
+        download_bytes: vista3d::WEIGHTS_CTMR.bytes,
+        subdir: vista3d::DIR_CTMR,
+        ready: vec![vista3d::WEIGHTS_CTMR.name.to_string()],
+        spare: Vec::new(),
+    });
 
     out.push(ModelAsset {
         kind: AssetKind::SegVol,
@@ -224,6 +392,9 @@ pub fn inventory() -> Vec<ModelAsset> {
         label: "SegVol - network weights".to_string(),
         detail: "3-D ViT image encoder, SAM-style prompt encoder and mask decoder \
                  (box and point prompts).",
+        group: "",
+        licence: Licence::Undeclared,
+        modality: None,
         download_bytes: segvol::weights::CHECKPOINT.bytes,
         subdir: "",
         ready: vec![segvol::weights::CACHE_NAME.to_string()],
@@ -235,6 +406,9 @@ pub fn inventory() -> Vec<ModelAsset> {
         key: format!("{}/tokenizer", Engine::SegVol.subdir()),
         label: "SegVol - CLIP tokenizer".to_string(),
         detail: "Byte-pair vocabulary and merge table; only *text* prompts need it.",
+        group: "",
+        licence: Licence::Undeclared,
+        modality: None,
         download_bytes: segvol::weights::CLIP_FILES.iter().map(|f| f.bytes).sum(),
         subdir: "",
         ready: segvol::weights::CLIP_FILES
@@ -250,8 +424,16 @@ pub fn inventory() -> Vec<ModelAsset> {
             engine: Engine::MedSam2,
             key: format!("{}/{}", Engine::MedSam2.subdir(), v.key()),
             label: format!("MedSAM2 - {}", v.label()),
-            detail: "SAM 2.1-T fine-tune with the memory bank; one architecture, \
-                     one loader, a choice of training data.",
+            detail: if v.is_efficient() {
+                "Efficient MedSAM2: EfficientTAM (a plain ViT encoder, lighter on the CPU) \
+                 with SAM 2's memory bank, the FLARE 2025 RECIST baseline."
+            } else {
+                "SAM 2.1-T fine-tune with the memory bank; one architecture, \
+                 one loader, a choice of training data."
+            },
+            group: "",
+            licence: Licence::CcBySa4,
+            modality: None,
             download_bytes: v.file().bytes,
             subdir: "",
             ready: vec![v.cache_name()],
@@ -259,7 +441,61 @@ pub fn inventory() -> Vec<ModelAsset> {
         });
     }
 
+    out.push(ModelAsset {
+        kind: AssetKind::NnInteractive,
+        engine: Engine::NnInteractive,
+        key: format!(
+            "{}/{}",
+            Engine::NnInteractive.subdir(),
+            nninteractive::MODEL
+        ),
+        label: "nnInteractive v1.0".to_string(),
+        detail: "Interactive 3-D segmentation from clicks, boxes, scribbles and lassos, \
+                 on CT, MR or PET.",
+        group: "",
+        licence: Licence::CcByNcSa4,
+        modality: None,
+        download_bytes: nninteractive::CHECKPOINT.bytes
+            + nninteractive::PLANS.bytes
+            + nninteractive::SESSION_INFO.bytes,
+        subdir: nninteractive::MODEL,
+        ready: nninteractive::ready_files()
+            .iter()
+            .map(|f| f.to_string())
+            .collect(),
+        spare: vec![nninteractive::CHECKPOINT.name.to_string()],
+    });
+
     out
+}
+
+/// The row of one nnU-Net model; `task` is the first task that runs it.
+fn nn_asset(spec: autoseg::weights::ModelSpec, task: Option<&autoseg::NnTask>) -> ModelAsset {
+    let engine = Engine::of_home(spec.home);
+    ModelAsset {
+        kind: AssetKind::Autoseg(spec),
+        engine,
+        key: format!("{}/{}", engine.subdir(), spec.key),
+        label: spec.label.to_string(),
+        detail: spec.detail,
+        group: task.map_or("", |t| t.group),
+        licence: task.map_or(Licence::Apache2, |t| t.licence),
+        modality: task.map(|t| t.modality),
+        download_bytes: spec.download_bytes(),
+        subdir: spec.key,
+        ready: autoseg::weights::ready_files(&spec),
+        spare: autoseg::weights::spare_files(&spec),
+    }
+}
+
+/// [`inventory`] and the user's nnU-Net model folders, as registered now
+/// ([`autoseg::custom::register`]).
+pub fn inventory_with_custom() -> Vec<ModelAsset> {
+    let mut v = inventory();
+    for t in autoseg::custom::tasks() {
+        v.push(nn_asset(t.parts[0].spec, Some(t)));
+    }
+    v
 }
 
 /// Bytes of the named files that exist in `dir`.
@@ -302,6 +538,18 @@ pub fn ensure(asset: &ModelAsset, root: &Path, sink: &dyn ProgressSink) -> Resul
         AssetKind::Autoseg(spec) => {
             autoseg::weights::ensure_model(&spec, &dir, sink)?;
         }
+        AssetKind::Lungmask(m) => {
+            unet2d::load(m, root, sink)?;
+        }
+        AssetKind::SegRes(m) => {
+            segresnet::load(m, root, sink)?;
+        }
+        AssetKind::Vista3d => {
+            vista3d::WEIGHTS.ensure(&vista3d::Weights::Ct.dir(root), sink)?;
+        }
+        AssetKind::Vista3dCtmr => {
+            vista3d::WEIGHTS_CTMR.ensure(&vista3d::Weights::CtMr.dir(root), sink)?;
+        }
         AssetKind::SegVol => {
             // The converted tensors are dropped again straight away: what is
             // wanted here is the cache the conversion writes.
@@ -314,6 +562,9 @@ pub fn ensure(asset: &ModelAsset, root: &Path, sink: &dyn ProgressSink) -> Resul
         }
         AssetKind::MedSam2(v) => {
             medsam2::weights::load(v, &dir, sink)?;
+        }
+        AssetKind::NnInteractive => {
+            nninteractive::ensure(root, sink)?;
         }
     }
     Ok(())
@@ -394,9 +645,14 @@ mod tests {
             assert!(d.starts_with(&root));
         }
         let mut names: Vec<&str> = Engine::ALL.iter().map(|e| e.subdir()).collect();
+        names.sort();
         names.dedup();
-        assert_eq!(names.len(), 3);
-        assert_eq!(dirs[1], root.join("segvol"));
+        assert_eq!(names.len(), Engine::ALL.len());
+        assert_eq!(engine_dir(&root, Engine::SegVol), root.join("segvol"));
+        assert_eq!(
+            engine_dir(&root, Engine::MrSegmentator),
+            root.join("mrsegmentator")
+        );
     }
 
     #[test]
@@ -409,8 +665,9 @@ mod tests {
         keys.dedup();
         assert_eq!(keys.len(), n, "inventory keys are unique");
         for engine in Engine::ALL {
+            // The user's folders are not built in.
             assert!(
-                inv.iter().any(|a| a.engine == engine),
+                engine == Engine::Custom || inv.iter().any(|a| a.engine == engine),
                 "{} has no rows",
                 engine.subdir()
             );
@@ -420,6 +677,12 @@ mod tests {
             assert!(a.download_bytes > 0, "{} has no size", a.key);
             assert!(a.key.starts_with(a.engine.subdir()), "{}", a.key);
         }
+        // The licensed and the non-commercial models are listed too.
+        assert!(inv.iter().any(|a| a.licence == Licence::TsLicensed));
+        assert!(inv.iter().any(|a| a.engine == Engine::NnUnetV1
+            && a.licence == Licence::CcByNc4
+            && a.download_bytes < 1_000_000_000));
+        assert!(inv.iter().any(|a| matches!(a.kind, AssetKind::Vista3dCtmr)));
     }
 
     #[test]

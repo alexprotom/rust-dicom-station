@@ -36,12 +36,12 @@ pub(super) struct BodyDialog {
 /// Everything a run needs, snapshotted from the window when it starts.
 struct BodyRequest {
     params: BodyParams,
-    models_dir: PathBuf,
+    models_root: PathBuf,
 }
 
 impl ViewerApp {
     /// The modality of the series a slot is showing, upper-cased.
-    fn slot_modality(&self, slot: usize) -> String {
+    pub(super) fn slot_modality(&self, slot: usize) -> String {
         self.slots[slot]
             .study
             .as_ref()
@@ -103,7 +103,7 @@ impl ViewerApp {
         params.make_external = d.output.kind.structures();
         let req = BodyRequest {
             params,
-            models_dir: self.engine_models_dir(ModelsEngine::TotalSegmentator),
+            models_root: self.models_root(),
         };
         let phases = if d.output.phases {
             match self.phase_inputs(slot) {
@@ -122,7 +122,7 @@ impl ViewerApp {
         self.body_slot = slot;
         self.body_job = Some(Job::spawn(progress, move |p| {
             let run = |vol: &Volume, p: &Progress| {
-                bodymask::contour_body(vol, &req.params, &req.models_dir, p)
+                bodymask::contour_body(vol, &req.params, &req.models_root, p)
             };
             let out = match phases {
                 Some((group, inputs)) => run_on_phases(&group, inputs, p, run),
@@ -263,10 +263,7 @@ impl ViewerApp {
         let idle = self.body_job.is_none();
         let sets = self.structure_set_labels(slot);
         let group = self.displayed_group(slot);
-        let models_dir = models::engine_dir(
-            &models::root_from_setting(&self.models_dir),
-            ModelsEngine::TotalSegmentator,
-        );
+        let models_dir = self.models_root();
         let Some(d) = &mut self.body_dialog else {
             return;
         };
@@ -326,7 +323,7 @@ impl ViewerApp {
                     format!("{} MB to download once", need / 1_000_000)
                 });
             });
-            if matches!(d.params.model, BodyModel::Mr) != d.params.foreground.is_mr() {
+            if d.params.model.is_mr() != d.params.foreground.is_mr() {
                 ui.label(
                     egui::RichText::new("The chosen model was trained on the other modality.")
                         .small()
@@ -479,10 +476,12 @@ impl ViewerApp {
                 "No weights and no network: thresholding and morphology, computed here.",
                 false,
             ),
-            Method::ModelAssisted => {
-                let (note, warn) = weights_licence(ModelsEngine::TotalSegmentator);
-                licence_line(ui, note, warn)
-            }
+            Method::ModelAssisted => licence_line(
+                ui,
+                "Weights: TotalSegmentator's body models (Apache-2.0), downloaded once from \
+                 the official GitHub releases.",
+                false,
+            ),
         }
         ui.separator();
         match running {

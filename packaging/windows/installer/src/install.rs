@@ -423,14 +423,28 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
 
     // ---- optional model weights ------------------------------------------
     if opts.models != Models::None {
-        step(0.80, "Downloading the auto-segmentation weights");
-        crate::models::prefetch(
-            opts.models,
+        step(0.80, "Downloading the model weights");
+        let notes = crate::models::prefetch(
+            &opts.models,
             &opts.models_dir,
             &|f, msg| sink(Event::Progress(0.80 + 0.19 * f, msg.to_string())),
             cancel,
-        )?;
-        log("Auto-segmentation weights ready".into());
+        )
+        .map_err(|e| {
+            if cancel.load(Ordering::Relaxed) {
+                failure(EXIT_CANCELLED, "cancelled")
+            } else {
+                e
+            }
+        })?;
+        if notes.is_empty() {
+            log("Model weights ready".into());
+        } else {
+            for n in notes {
+                log(n);
+            }
+            log("The other model weights are ready".into());
+        }
     }
 
     step(1.0, "Installation complete");
@@ -660,6 +674,35 @@ fn is_running(exe: &Path) -> bool {
 /// heard of - written by a newer viewer, or by hand. Rewriting it wholesale
 /// would throw those away, so an existing line is replaced in place and a
 /// missing one is appended. Comments and blank lines are untouched.
+/// Keep the TotalSegmentator licence number in the viewer's settings file of
+/// the user running the setup (and nowhere else), as the viewer's model
+/// manager does; an empty number removes it. Returns the file.
+pub fn save_licence(number: &str) -> Result<PathBuf> {
+    let settings = viewer_settings_path().context("no folder for the viewer's settings")?;
+    if let Some(parent) = settings.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let text = std::fs::read_to_string(&settings).unwrap_or_else(|_| {
+        "# rust-dicom-station user settings\n\
+         # theme = dark | light | system\n\
+         theme = dark\n"
+            .to_string()
+    });
+    let text = if number.trim().is_empty() {
+        text.lines()
+            .filter(|l| {
+                l.split_once('=')
+                    .is_none_or(|(k, _)| !k.trim().eq_ignore_ascii_case(SETTINGS_LICENCE_KEY))
+            })
+            .map(|l| format!("{l}\n"))
+            .collect()
+    } else {
+        merge_setting(&text, SETTINGS_LICENCE_KEY, number.trim())
+    };
+    std::fs::write(&settings, text).with_context(|| format!("write {}", settings.display()))?;
+    Ok(settings)
+}
+
 fn merge_setting(text: &str, key: &str, value: &str) -> String {
     let mut out = String::with_capacity(text.len() + key.len() + value.len() + 2);
     let mut replaced = false;

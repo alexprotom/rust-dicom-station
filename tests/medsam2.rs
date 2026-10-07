@@ -6,13 +6,17 @@
 //! with no download and no network. What they do *not* check is arithmetic;
 //! that is the op fixture the unit tests in `src/medsam2` read
 //! (`tests/data/medsam2-ops.safetensors`, see `tests/ops_fixtures.rs`).
+//!
+//! Efficient MedSAM2 gets the same treatment from
+//! [`layout::expected_for`]: its synthetic checkpoint loads, is recognised
+//! as EfficientTAM, and propagates a box.
 
 use std::collections::HashMap;
 
 use burn::tensor::{Device, Tensor};
 use rust_dicom_station::medsam2::{
-    config, hiera::Hiera, layout, memattn::MemoryAttention, memory::MemoryEncoder, neck::Neck, ops,
-    prompt::Point, sam::SamHead,
+    config, hiera::Hiera, layout, memattn::MemoryAttention, memory::MemoryEncoder, model::Arch,
+    neck::Neck, ops, prompt::Point, sam::SamHead,
 };
 use rust_dicom_station::nn::cache::WTensor;
 use rust_dicom_station::nn::device::DevicePref;
@@ -26,6 +30,11 @@ type B = burn::backend::NdArray;
 /// forward pass through twelve residual blocks stays finite - the point is to
 /// exercise the plumbing, not to produce a mask.
 fn synthetic_params() -> Params {
+    synthetic_params_for(&Arch::Sam21Tiny)
+}
+
+/// [`synthetic_params`] for either network.
+fn synthetic_params_for(arch: &Arch) -> Params {
     let mut state = 0x2026_0825_u64;
     let mut noise = move || {
         state = state
@@ -34,7 +43,7 @@ fn synthetic_params() -> Params {
         ((state >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 0.05
     };
     let mut tensors: HashMap<String, WTensor> = HashMap::new();
-    for (key, shape) in layout::expected() {
+    for (key, shape) in layout::expected_for(arch) {
         let n: usize = shape.iter().product();
         let gain = shape.len() == 1 && key.ends_with(".weight");
         let data = (0..n)
@@ -56,8 +65,8 @@ fn every_module_loads_from_the_derived_inventory() {
     assert_eq!(p.len(), layout::TENSOR_COUNT);
     Hiera::<B>::load(&p, &d).expect("trunk");
     Neck::<B>::load(&p, &d).expect("neck");
-    SamHead::<B>::load(&p, &d).expect("prompt encoder, decoder and pointer projection");
-    MemoryEncoder::<B>::load(&p, &d).expect("memory encoder");
+    SamHead::<B>::load(&p, true, &d).expect("prompt encoder, decoder and pointer projection");
+    MemoryEncoder::<B>::load(&p, true, &d).expect("memory encoder");
     MemoryAttention::<B>::load(&p, &d).expect("memory attention");
 }
 
@@ -93,8 +102,8 @@ fn a_slice_flows_through_the_engine_with_the_documented_shapes() {
 
     let trunk = Hiera::<B>::load(&p, &d).unwrap();
     let neck = Neck::<B>::load(&p, &d).unwrap();
-    let head = SamHead::<B>::load(&p, &d).unwrap();
-    let mem_enc = MemoryEncoder::<B>::load(&p, &d).unwrap();
+    let head = SamHead::<B>::load(&p, true, &d).unwrap();
+    let mem_enc = MemoryEncoder::<B>::load(&p, true, &d).unwrap();
     let mem_attn = MemoryAttention::<B>::load(&p, &d).unwrap();
 
     // ---- encode one slice ------------------------------------------------
@@ -110,14 +119,15 @@ fn a_slice_flows_through_the_engine_with_the_documented_shapes() {
     assert_eq!(levels[2].dims(), [1, config::D_MODEL, grid, grid]);
     let high_res = head
         .decoder
-        .project_high_res(levels[0].clone(), levels[1].clone());
+        .project_high_res(levels[0].clone(), levels[1].clone())
+        .expect("MedSAM2's decoder takes high-resolution features");
     assert_eq!(high_res[0].dims(), [1, config::HIGH_RES_S0_CH, 128, 128]);
     assert_eq!(high_res[1].dims(), [1, config::HIGH_RES_S1_CH, 64, 64]);
 
     // ---- prompt it with a box -------------------------------------------
     let corners = Point::box_corners(100.0, 120.0, 300.0, 340.0);
     assert!(!SamHead::<B>::use_multimask(corners.len()));
-    let out = head.forward(levels[2].clone(), &high_res, &corners, None, false);
+    let out = head.forward(levels[2].clone(), Some(&high_res), &corners, None, false);
     assert_eq!(
         out.low_res_masks.dims(),
         [1, 1, config::LOW_RES, config::LOW_RES]
@@ -177,7 +187,7 @@ fn a_slice_flows_through_the_engine_with_the_documented_shapes() {
 fn the_engine_accepts_a_mask_prompt_at_either_resolution() {
     let p = synthetic_params();
     let d = device();
-    let head = SamHead::<B>::load(&p, &d).unwrap();
+    let head = SamHead::<B>::load(&p, true, &d).unwrap();
     let full: Tensor<B, 4> = Tensor::zeros([1, 1, config::IMAGE_SIZE, config::IMAGE_SIZE], &d);
     assert_eq!(
         head.downsample_mask(full).dims(),
@@ -275,6 +285,43 @@ fn a_box_prompt_propagates_through_a_small_stack() {
         seg.voxels,
         "mapping back onto the volume grid preserves the count"
     );
+}
+
+#[test]
+fn efficient_medsam2_loads_and_propagates_a_box() {
+    use rust_dicom_station::medsam2::engine::{Engine, EnginePrompt, PixelPrompt};
+    use rust_dicom_station::medsam2::infer::Config;
+    use rust_dicom_station::medsam2::model::Medsam2;
+    use rust_dicom_station::medsam2::preprocess::{Prepared, Window};
+    use rust_dicom_station::progress::Quiet;
+
+    let arch = Arch::EfficientTam { dim: 192 };
+    let p = synthetic_params_for(&arch);
+    assert_eq!(p.len(), layout::EFF_TENSOR_COUNT);
+    assert_eq!(Arch::of(&p), arch);
+    // The encoder alone: one 32 x 32 map, no high-resolution features.
+    let net = Medsam2::<B>::load(&p, &device()).expect("efficient network");
+    let size = config::IMAGE_SIZE;
+    let feats = net.encode_slice(Tensor::zeros([1, 3, size, size], &device()));
+    assert_eq!(
+        feats.pix_feat.dims(),
+        [1, config::D_MODEL, config::EMBED_GRID, config::EMBED_GRID]
+    );
+    assert!(feats.high_res.is_none());
+    // And through the engine, as the panel drives it.
+    let engine = Engine::load(&p, DevicePref::Cpu).expect("cpu engine");
+    let vol = phantom([48, 40, 5]);
+    let prepared = Prepared::prepare(&vol, Window::new(-100.0, 300.0));
+    let prompt = EnginePrompt::Points(PixelPrompt::box_corners(10.0, 12.0, 30.0, 36.0));
+    let cfg = Config {
+        max_slices: Some(1),
+        ..Config::default()
+    };
+    let seg = engine
+        .propagate(&prepared, 2, &prompt, &cfg, &Quiet)
+        .expect("propagate");
+    assert_eq!(seg.slices_visited, 3);
+    assert_eq!(seg.masks.iter().filter(|m| !m.is_empty()).count(), 3);
 }
 
 #[test]

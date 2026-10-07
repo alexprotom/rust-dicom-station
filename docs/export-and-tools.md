@@ -164,8 +164,13 @@ Each segmentation engine downloads its weights on first use; *Tools ▶ 📦
 Downloaded models…* is the one inventory of what is on this machine, what it
 costs in disk, and where to re-fetch a checkpoint after a bad download.
 
-Every model of every engine gets a row: its state (ready / partly downloaded /
-missing), its size on disk or to fetch, and the buttons that act on it.
+Every model of every engine gets a row, under its engine (TotalSegmentator,
+MRSegmentator, nnU-Net v1, your nnU-Net models, lungmask, MONAI, CT-FM,
+VISTA-3D with NV-Segment-CTMR, SegVol, MedSAM2, nnInteractive) and its
+group within it: its state (ready / partly
+downloaded / missing), what it segments and on which modality, its licence
+(in the warning colour when it is not an open one), its size on disk or to
+fetch, and the buttons that act on it.
 
 | | |
 |---|---|
@@ -174,10 +179,18 @@ missing), its size on disk or to fetch, and the buttons that act on it.
 | ♻ | delete the source checkpoint the converted cache was made from; the model keeps running |
 | 🗑 | delete every file of this model |
 
-and, over the whole inventory, **⬇ Download all missing**, **⟳ Update all**
-and **♻ Free …**, which reports what the redundant source checkpoints cost
+and, over the whole inventory, **⬇ Download all missing**, **⬇ Download
+open-licence only** (the Apache-2.0 and MIT models: everything a
+non-commercial or conditional licence does not cover), **⟳ Update all** and
+**♻ Free …**, which reports what the redundant source checkpoints cost
 before you drop them. The model folder is editable here (the setting the
-three tool windows show); the header counts ready models and total size.
+tool sections show); the header counts ready models and total size.
+
+Above the list, the **TotalSegmentator licence number** (a masked field
+and **Keep**; the licensed TotalSegmentator models download with it, and
+it is kept in your own settings file only) and **Your nnU-Net v2 models**
+(**➕ Add a model folder**: a trained nnU-Net v2 model joins the model
+list; see [auto-segmentation.md](auto-segmentation.md#the-model-manager)).
 
 Two details worth knowing:
 
@@ -189,8 +202,13 @@ Two details worth knowing:
   sub-folder is removed afterwards if it came out empty.
 
 Each engine's weight licence is stated above its rows: TotalSegmentator's
-are Apache-2.0, SegVol's carry no licence declaration, and MedSAM2's are
-CC-BY-SA-4.0 with a research-only model card. None is redistributed with the
+open tasks, MRSegmentator, lungmask, MONAI and CT-FM are Apache-2.0
+(TotalSegmentator's `brain_aneurysm` CC BY-NC 4.0); its licensed models
+come from its licence server for your licence number; the nnU-Net v1 models
+are CC BY-NC 4.0; VISTA-3D's are under the NVIDIA Open Model License and
+NV-Segment-CTMR's under NVIDIA's non-commercial licence; SegVol's carry no
+licence declaration; MedSAM2's are CC-BY-SA-4.0 with a research-only model
+card; nnInteractive's are CC BY-NC-SA 4.0. None is redistributed with the
 program.
 
 ## DICOM anonymizer

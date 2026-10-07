@@ -746,8 +746,8 @@ impl ViewerApp {
         let mut browse = false;
 
         ui.label(format!(
-            "Follows a structure boxed on one slice through the stack with MedSAM2, \
-             re-implemented natively in Rust. Drag a box around it in the {} view, on a \
+            "Follows a structure boxed on one slice through the stack with MedSAM2 or \
+             Efficient MedSAM2, re-implemented natively in Rust. Drag a box around it in the {} view, on a \
              slice where it is clear; the box stays - drag its corners to resize, its \
              middle to move it.",
             plane_name(plane)

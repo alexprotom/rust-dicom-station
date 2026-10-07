@@ -1,0 +1,421 @@
+name: Nightly
+
+# The testing step between `develop` and `main`:
+#
+#     feature/* -> develop -> nightly -> main
+#
+# Every push to `nightly` (normally a fast-forward of `develop`) builds the
+# Windows installer and the Android APK and puts them on ONE rolling GitHub
+# pre-release, tagged `nightly`, whose files are replaced each time - there
+# is never more than one nightly build on the Releases page, and the links
+#
+#     https://github.com/<repo>/releases/download/nightly/rust-dicom-station-nightly-windows-x86_64.exe
+#     https://github.com/<repo>/releases/download/nightly/rust-dicom-station-nightly-android-arm64.apk
+#
+# always point at the newest one. The pre-release flag keeps it out of
+# everything that follows "latest": the installed program's updater
+# (`rds-setup --update` follows GitHub's "latest release" link), winget,
+# Homebrew and the AppImage catalog never see it.
+#
+# Version. A nightly carries the version it is heading for, with a
+# pre-release suffix the app, the installer and the APK all show:
+#
+#     0.11.1-nightly.20261004T0930.g890dfc8
+#      |     |       |              |
+#      |     |       |              the commit
+#      |     |       the build time (UTC), so nightlies sort in build order
+#      |     "nightly"
+#      Cargo.toml's version if it was not released yet, else the last
+#      release's version with the patch bumped (0.11.0 released -> 0.11.1)
+#
+# That number sits strictly between the last release and the next one for
+# every consumer that compares versions: rds-setup installs a nightly over
+# the last release and the next release over a nightly (a pre-release
+# suffix sorts below the plain version), Android's versionCode is the
+# numeric part only (0.11.1 -> 1101: higher than the 0.11.0 release, equal
+# to the 0.11.1 release, which Android accepts), and a later nightly's
+# suffix compares higher than an earlier one's. The version is written
+# into Cargo.toml on the runner only - nothing is committed.
+#
+# Testing is deliberately lighter than the release's: fmt, clippy and the
+# unit tests on Linux (`check`), and the builds themselves. The full matrix
+# (ci.yml, the three platform workflows) runs on the pull request that
+# takes `nightly` into `main`, where it is the release candidate.
+
+on:
+  push:
+    branches:
+      - nightly
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # ==========================================================================
+  # Determine the nightly version
+  # ==========================================================================
+  version:
+    name: Determine version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      base: ${{ steps.version.outputs.base }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Compute the nightly version
+        id: version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          in_tree=$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -n 1)
+          if [ -z "$in_tree" ]; then
+            echo "::error::Could not determine version from Cargo.toml"
+            exit 1
+          fi
+          # A nightly built from a tree that already carries a suffix would
+          # otherwise nest them.
+          in_tree=${in_tree%%-*}
+
+          # The newest release that is neither a draft nor a pre-release -
+          # exactly what GitHub's "latest" means - or 0.0.0 before the first.
+          released=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || echo v0.0.0)
+          released=${released#v}
+
+          # Cargo.toml ahead of the last release: that is the version the
+          # tree is heading for. Otherwise bump the patch of the release.
+          if [ "$(printf '%s\n%s\n' "$in_tree" "$released" | sort -V | tail -n 1)" != "$released" ]; then
+            base=$in_tree
+          else
+            IFS=. read -r maj min pat <<<"$released"
+            base="$maj.$min.$((pat + 1))"
+          fi
+
+          # One alphanumeric identifier for the time stamp: a purely numeric
+          # one must not start with 0 (Cargo rejects "0930"), the T avoids
+          # that; `g` before the hash for the same reason.
+          stamp=$(date -u +%Y%m%dT%H%M)
+          version="$base-nightly.$stamp.g${GITHUB_SHA::7}"
+
+          echo "Cargo.toml:    $in_tree"
+          echo "last release:  $released"
+          echo "nightly:       $version"
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+
+  # ==========================================================================
+  # Light checks
+  # ==========================================================================
+  # fmt, clippy and the unit tests, on Linux only. The builds below do not
+  # wait for this job; the publish step does.
+  check:
+    name: fmt + clippy + unit tests
+    runs-on: ubuntu-latest
+    # Every build job cancels the one of a superseded push (job-level groups
+    # rather than one for the whole workflow, so that a `publish` already
+    # running is never cut off half-way - see its own group).
+    concurrency:
+      group: nightly-check
+      cancel-in-progress: true
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Linux GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev \
+            libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      # Unit tests only (`--lib`): the integration suites are the release
+      # candidate's business.
+      - name: cargo nextest (unit tests)
+        run: cargo nextest run --lib
+
+  # ==========================================================================
+  # Windows installer (same three jobs as release.yml, nightly version)
+  # ==========================================================================
+  windows-viewer:
+    name: Windows viewer
+    needs: version
+    runs-on: windows-latest
+    concurrency:
+      group: nightly-windows-viewer
+      cancel-in-progress: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      # After the cache step: its key hashes Cargo.toml and Cargo.lock, and
+      # this edit must not give every nightly a key of its own. Only the
+      # viewer crate itself recompiles for the new version; the
+      # dependencies come from the cache as before.
+      - name: Write the nightly version into Cargo.toml
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          sed -i -E "0,/^version = \"[^\"]+\"/s//version = \"$VERSION\"/" Cargo.toml
+          grep -m1 '^version = ' Cargo.toml
+
+      - name: Build viewer
+        run: cargo build --release --features mcp,pacs-server
+
+      - name: Upload viewer executables
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-windows-viewer-exe
+          path: |
+            target/release/rust-dicom-station.exe
+            target/release/rds-mcp.exe
+            target/release/rds-pacs.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  windows-setup:
+    name: Windows setup binaries
+    needs: version
+    runs-on: windows-latest
+    concurrency:
+      group: nightly-windows-setup
+      cancel-in-progress: true
+    defaults:
+      run:
+        working-directory: packaging/windows/installer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packaging/windows/installer
+
+      - name: Build installer
+        run: cargo build --release
+
+      - name: Upload setup binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-windows-setup-exe
+          path: |
+            packaging/windows/installer/target/release/rds-setup.exe
+            packaging/windows/installer/target/release/rds-pack.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  windows:
+    name: Windows installer
+    needs: [version, windows-viewer, windows-setup]
+    runs-on: windows-latest
+    concurrency:
+      group: nightly-windows
+      cancel-in-progress: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # rds-pack reads the version from Cargo.toml (`--repo .`) and writes
+      # it into the payload manifest, which is what the installed copy and
+      # Apps & features then report.
+      - name: Write the nightly version into Cargo.toml
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          sed -i -E "0,/^version = \"[^\"]+\"/s//version = \"$VERSION\"/" Cargo.toml
+          grep -m1 '^version = ' Cargo.toml
+
+      - name: Download viewer executables
+        uses: actions/download-artifact@v5
+        with:
+          name: nightly-windows-viewer-exe
+          path: built/viewer
+
+      - name: Download setup binaries
+        uses: actions/download-artifact@v5
+        with:
+          name: nightly-windows-setup-exe
+          path: built/setup
+
+      # No `--winget`: nightlies are never submitted anywhere.
+      - name: Package Windows installer
+        shell: pwsh
+        run: |
+          $out = "rust-dicom-station-nightly-windows-x86_64.exe"
+
+          & built/setup/rds-pack.exe `
+            --repo . `
+            --app built/viewer/rust-dicom-station.exe `
+            --mcp built/viewer/rds-mcp.exe `
+            --pacs built/viewer/rds-pacs.exe `
+            --setup built/setup/rds-setup.exe `
+            --out $out
+
+          if (!(Test-Path $out)) {
+            Write-Error "Expected installer not found: $out"
+            exit 1
+          }
+
+          Write-Host "Created $out"
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-windows
+          path: rust-dicom-station-nightly-windows-x86_64.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  # ==========================================================================
+  # Android
+  # ==========================================================================
+  # android.yml with `write_version`: it writes the nightly version into
+  # Cargo.toml instead of checking that the tree already carries it, and
+  # returns the APK as the `android-apk` artifact, signed with the release
+  # key when the ANDROID_KEYSTORE_* secrets are set.
+  android:
+    name: Android
+    needs: version
+    concurrency:
+      group: nightly-android
+      cancel-in-progress: true
+    uses: ./.github/workflows/android.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      write_version: true
+    secrets: inherit
+
+  # ==========================================================================
+  # Publish: the one rolling pre-release
+  # ==========================================================================
+  publish:
+    name: Update the nightly release
+    needs:
+      - version
+      - check
+      - windows
+      - android
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Never cancelled half-way: a superseding run waits for this one.
+    concurrency:
+      group: nightly-publish
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: nightly
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: nightly-windows
+          path: release
+
+      - name: Download Android artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: android-apk
+          path: release
+
+      # Fixed names, so the download links never change; the version is in
+      # the files themselves, in the notes and in SHA256SUMS' companion.
+      - name: Name the files and write the checksums
+        working-directory: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          mv rust-dicom-station-*-android-arm64.apk rust-dicom-station-nightly-android-arm64.apk
+          printf '%s\n' "$VERSION" > VERSION
+          sha256sum rust-dicom-station-nightly-*.exe rust-dicom-station-nightly-*.apk > SHA256SUMS
+          ls -lh
+          cat SHA256SUMS
+
+      # The tag follows the build: moved before the release is touched, so
+      # a release created below is created on this commit and not on the
+      # default branch's head.
+      - name: Move the nightly tag to this commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git tag -f "$TAG" "$GITHUB_SHA"
+          git push --force origin "refs/tags/$TAG"
+
+      - name: Create or update the release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          notes="Rolling testing build of the \`nightly\` branch - **not a release**.
+          Its files are replaced on every push to the branch; the previous build is gone.
+
+          | | |
+          |---|---|
+          | Version | \`$VERSION\` |
+          | Commit | $GITHUB_SHA |
+          | Built | $(date -u +'%Y-%m-%d %H:%M UTC') |
+
+          Installs over the last release and is replaced by the next one. The Windows
+          installer's own *Update* command never offers a nightly; a newer nightly is
+          installed by running it.
+
+          \`\`\`
+          $(cat release/SHA256SUMS)
+          \`\`\`"
+
+          title="Nightly build $VERSION"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" release/* --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --prerelease --latest=false --title "$title" --notes "$notes"
+          else
+            gh release create "$TAG" release/* --repo "$GITHUB_REPOSITORY" \
+              --prerelease --latest=false --title "$title" --notes "$notes"
+          fi
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY"

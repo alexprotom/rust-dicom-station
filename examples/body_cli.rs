@@ -2,13 +2,16 @@
 //!
 //! ```text
 //! cargo run --release --example body_cli -- <DICOM_DIR> \
-//!     [--method classical|model] [--model ct6|ct15|mr] \
+//!     [--method classical|model] [--model ct6|ct15|mr6|mr] \
 //!     [--hu -300] [--mr-fraction 0.12] [--mr-otsu] [--bias-sigma 40] \
 //!     [--open 8] [--no-devices] [--window 150] [--frac 0.8] \
 //!     [--min-cm3 50] [--no-thin] [--thin-extent 100] [--margin 6] \
 //!     [--thin-shell 3] [--no-fill] [--close 0] \
 //!     [--models DIR] [--device auto|gpu|cpu] [--out FILE]
 //! ```
+//!
+//! `--models` is the model folder (the engines' folders are below it); the
+//! viewer's by default.
 //!
 //! `--out` writes a raw `u8` mask on the original volume's grid, one byte
 //! per voxel in `Volume::data` order - the same convention as the other
@@ -22,7 +25,7 @@ use std::path::PathBuf;
 
 use rust_dicom_station::bodymask::{self, BodyModel, BodyParams, Foreground, Method};
 use rust_dicom_station::loader;
-use rust_dicom_station::models::{self, Engine};
+use rust_dicom_station::models;
 use rust_dicom_station::nn::device::DevicePref;
 use rust_dicom_station::progress::Progress;
 
@@ -55,8 +58,9 @@ fn main() -> anyhow::Result<()> {
                 p.model = match next().as_str() {
                     "ct6" => BodyModel::Ct6mm,
                     "ct15" => BodyModel::Ct15mm,
+                    "mr6" => BodyModel::Mr6mm,
                     "mr" => BodyModel::Mr,
-                    other => panic!("--model ct6|ct15|mr, not {other:?}"),
+                    other => panic!("--model ct6|ct15|mr6|mr, not {other:?}"),
                 }
             }
             "--hu" => foreground = Some(Foreground::Hu(next().parse().expect("number"))),
@@ -84,8 +88,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
     let dicom = dicom.expect("usage: body_cli <DICOM_DIR> [options]");
-    let models_dir = models_dir
-        .unwrap_or_else(|| models::engine_dir(&models::default_root(), Engine::TotalSegmentator));
+    let models_dir = models_dir.unwrap_or_else(models::default_root);
 
     let progress = Progress::default();
     let study = loader::load_directory(&dicom, &progress)?;

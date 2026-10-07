@@ -614,6 +614,10 @@ impl ViewerApp {
         // along, and while it is live the left button belongs to it.
         let medsam2_show = self.medsam2_showing_in(slot, plane);
         let medsam2_box = self.medsam2_drawing_in(slot, plane);
+        // Interactive segmentation prompts in every view of its workspace;
+        // the brush, when one is picked, keeps the left button.
+        let nni_show = self.nni_showing_in(slot);
+        let nni_live = self.nni_drawing_in(slot) && self.seg_tool == SegTool::None;
         let [w_px, h_px] = vol.plane_dims(plane);
         let [sx, sy] = vol.plane_spacing(plane);
         let vol_spacing = vol.spacing;
@@ -878,6 +882,53 @@ impl ViewerApp {
                             painter.circle_stroke(at, 4.5, Stroke::new(1.0, Color32::BLACK));
                         }
                     }
+                }
+            }
+        }
+
+        // The interactive segmentation prompts on this slice, bright, and
+        // the ones on other slices of this view, faint.
+        if nni_show {
+            let marks = self
+                .nni
+                .marks
+                .iter()
+                .chain(self.nni.queue.iter())
+                .chain(self.nni.drawing.iter());
+            for m in marks.filter(|m| m.plane == plane) {
+                let here = m.slice == view.slice;
+                let base = if m.include {
+                    Color32::from_rgb(90, 220, 130)
+                } else {
+                    Color32::from_rgb(240, 95, 95)
+                };
+                let col = if here { base } else { base.gamma_multiply(0.3) };
+                let pts: Vec<Pos2> = m.pts.iter().map(|p| px_to_screen(*p)).collect();
+                let stroke = Stroke::new(if here { 2.0 } else { 1.0 }, col);
+                match m.tool {
+                    interactive_seg::NniTool::Point => {
+                        if here {
+                            painter.circle_filled(pts[0], 4.5, col);
+                            painter.circle_stroke(pts[0], 4.5, Stroke::new(1.0, Color32::BLACK));
+                        } else {
+                            painter.circle_stroke(pts[0], 3.0, stroke);
+                        }
+                    }
+                    interactive_seg::NniTool::Box if pts.len() == 2 => {
+                        painter.rect_stroke(
+                            Rect::from_two_pos(pts[0], pts[1]),
+                            0.0,
+                            stroke,
+                            egui::StrokeKind::Middle,
+                        );
+                    }
+                    interactive_seg::NniTool::Scribble => {
+                        painter.add(egui::Shape::line(pts, stroke));
+                    }
+                    interactive_seg::NniTool::Lasso => {
+                        painter.add(egui::Shape::closed_line(pts, stroke));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1420,8 +1471,11 @@ impl ViewerApp {
         // draws the axis instead.
         // The editor's hands and axis follow the module, not the panel: a
         // hidden right panel must not drop them.
-        let editor_here =
-            self.module_structures && self.tools.slot == slot && !seg_active && !medsam2_box;
+        let editor_here = self.module_structures
+            && self.tools.slot == slot
+            && !seg_active
+            && !medsam2_box
+            && !nni_live;
         let hand_struct = editor_here && self.tools.hand_struct;
         let hand_axis = editor_here
             && struct_tools::axis_live(&self.tools)
@@ -1473,6 +1527,7 @@ impl ViewerApp {
         if self.show_crosshair
             && !seg_active
             && !medsam2_box
+            && !nni_live
             && !axis_draw
             && !hand_struct
             && !hand_axis
@@ -1624,6 +1679,25 @@ impl ViewerApp {
                 box_release = true;
             }
         }
+        // Interactive segmentation: press, drag and release make a point,
+        // a box, a stroke or an outline on this slice.
+        let mut nni_press: Option<[f32; 2]> = None;
+        let mut nni_drag: Option<[f32; 2]> = None;
+        let mut nni_release = false;
+        if nni_live && !over_buttons {
+            if resp.drag_started_by(egui::PointerButton::Primary) || resp.clicked() {
+                if let Some(mp) = resp.interact_pointer_pos() {
+                    nni_press = Some(screen_to_px(mp));
+                }
+            } else if resp.dragged_by(egui::PointerButton::Primary) {
+                if let Some(mp) = resp.interact_pointer_pos() {
+                    nni_drag = Some(screen_to_px(mp));
+                }
+            }
+            if resp.drag_stopped_by(egui::PointerButton::Primary) || resp.clicked() {
+                nni_release = true;
+            }
+        }
         if resp.dragged_by(egui::PointerButton::Secondary) {
             let d = resp.drag_delta();
             wl_delta = Some((d.x, d.y));
@@ -1638,6 +1712,7 @@ impl ViewerApp {
             && !over_buttons
             && !seg_active
             && !medsam2_box
+            && !nni_live
             && !axis_draw
             && !hand_struct
             && !hand_axis
@@ -1750,6 +1825,15 @@ impl ViewerApp {
         }
         if box_release {
             self.medsam2_release([w_px, h_px]);
+        }
+        if let Some(p) = nni_press {
+            self.nni_press(plane, cur_slice, p);
+        }
+        if let Some(p) = nni_drag {
+            self.nni_drag(p);
+        }
+        if nni_release {
+            self.nni_release();
         }
         if let Some((vxl, erase)) = paint_to {
             self.apply_brush(slot, plane, cur_slice, vxl, erase);

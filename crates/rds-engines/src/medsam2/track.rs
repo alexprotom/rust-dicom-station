@@ -258,7 +258,7 @@ impl<'a, B: Backend> Tracker<'a, B> {
                 let multimask = SamHead::<B>::use_multimask(points.len());
                 self.model
                     .head
-                    .forward(pix_feat, &feats.high_res, points, None, multimask)
+                    .forward(pix_feat, feats.high_res.as_ref(), points, None, multimask)
             }
             Prompt::Mask(mask) => self.model.mask_as_output(&pix_feat, feats, mask.clone()),
         };
@@ -285,7 +285,7 @@ impl<'a, B: Backend> Tracker<'a, B> {
         let out = self
             .model
             .head
-            .forward(pix_feat, &feats.high_res, &[], None, true);
+            .forward(pix_feat, feats.high_res.as_ref(), &[], None, true);
         self.finish(frame_idx, feats, out, false)
     }
 

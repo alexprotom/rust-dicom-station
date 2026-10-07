@@ -53,4 +53,6 @@ pub mod mcp;
 // they had here, `crate::volume::Volume` and `rust_dicom_station::medsam2`
 // alike.
 pub use rds_core::{geometry, progress, volume};
-pub use rds_engines::{autoseg, medsam2, nn, segvol};
+pub use rds_engines::{
+    autoseg, medsam2, nn, nninteractive, segresnet, segvol, unet2d, vista3d, zoo,
+};

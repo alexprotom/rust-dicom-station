@@ -30,7 +30,8 @@ fn by_name<T: Copy + Serialize>(all: &[T], name: &str, what: &str) -> anyhow::Re
     }
 }
 
-/// TotalSegmentator's three models.
+/// TotalSegmentator's models: the v2 `total` weights (the upstream default)
+/// and the v3 `total_v3` weights, plain or residual-encoder (`small`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AutosegVariant {
@@ -41,13 +42,28 @@ pub enum AutosegVariant {
     High,
     /// One 6 mm model.
     Preview,
+    /// v3 weights, one 3 mm model.
+    FastV3,
+    /// v3 weights, the 1.5 mm sub-models.
+    HighV3,
+    /// v3 weights, one 6 mm model.
+    PreviewV3,
+    /// v3 weights, the residual-encoder (`small`) 3 mm model.
+    SmallV3,
+    /// v3 weights, the residual-encoder (`small`) 1.5 mm sub-models.
+    SmallHighV3,
 }
 
 impl AutosegVariant {
-    pub const ALL: [AutosegVariant; 3] = [
+    pub const ALL: [AutosegVariant; 8] = [
         AutosegVariant::Fast,
         AutosegVariant::High,
         AutosegVariant::Preview,
+        AutosegVariant::FastV3,
+        AutosegVariant::HighV3,
+        AutosegVariant::PreviewV3,
+        AutosegVariant::SmallV3,
+        AutosegVariant::SmallHighV3,
     ];
 
     pub fn label(self) -> &'static str {
@@ -55,6 +71,11 @@ impl AutosegVariant {
             AutosegVariant::Fast => "3 mm",
             AutosegVariant::High => "1.5 mm",
             AutosegVariant::Preview => "6 mm",
+            AutosegVariant::FastV3 => "v3 3 mm",
+            AutosegVariant::HighV3 => "v3 1.5 mm",
+            AutosegVariant::PreviewV3 => "v3 6 mm",
+            AutosegVariant::SmallV3 => "v3 small 3 mm",
+            AutosegVariant::SmallHighV3 => "v3 small 1.5 mm",
         }
     }
 }
@@ -387,17 +408,24 @@ impl DeformMethod {
 // ---- names, for the callers that pass them as text (the MCP tools) --------
 
 impl AutosegVariant {
-    /// `fast`, `high` or `preview`.
+    /// `fast`, `high`, `preview`, `fast_v3`, `high_v3`, `preview_v3`,
+    /// `small_v3` or `small_high_v3`.
     pub fn from_name(name: &str) -> anyhow::Result<AutosegVariant> {
         by_name(&AutosegVariant::ALL, name, "variant")
     }
 
     /// The engine's own variant.
     pub fn variant(self) -> crate::autoseg::Variant {
+        use crate::autoseg::Variant;
         match self {
-            AutosegVariant::Fast => crate::autoseg::Variant::Fast3mm,
-            AutosegVariant::High => crate::autoseg::Variant::HighRes15mm,
-            AutosegVariant::Preview => crate::autoseg::Variant::Preview6mm,
+            AutosegVariant::Fast => Variant::Fast3mm,
+            AutosegVariant::High => Variant::HighRes15mm,
+            AutosegVariant::Preview => Variant::Preview6mm,
+            AutosegVariant::FastV3 => Variant::V3Fast3mm,
+            AutosegVariant::HighV3 => Variant::V3HighRes15mm,
+            AutosegVariant::PreviewV3 => Variant::V3Preview6mm,
+            AutosegVariant::SmallV3 => Variant::V3Small3mm,
+            AutosegVariant::SmallHighV3 => Variant::V3Small15mm,
         }
     }
 }
@@ -493,6 +521,19 @@ mod tests {
         );
         assert_eq!(Device::from_name(" GPU ").unwrap(), Device::Gpu);
         let e = format!("{:#}", AutosegVariant::from_name("slow").unwrap_err());
-        assert!(e.contains("fast, high, preview"), "{e}");
+        assert!(e.contains("fast, high, preview, fast_v3"), "{e}");
+        assert_eq!(
+            AutosegVariant::from_name("small-high-v3").unwrap(),
+            AutosegVariant::SmallHighV3
+        );
+        for v in AutosegVariant::ALL {
+            assert_eq!(
+                v.variant().has_parts(),
+                matches!(
+                    v,
+                    AutosegVariant::High | AutosegVariant::HighV3 | AutosegVariant::SmallHighV3
+                )
+            );
+        }
     }
 }

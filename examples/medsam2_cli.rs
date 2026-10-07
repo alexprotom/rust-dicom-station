@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! cargo run --release --example medsam2_cli -- <DICOM_DIR> \
-//!     [--models DIR] [--variant latest|ct-lesion|mri-liver|2411] \
+//!     [--models DIR] [--variant latest|ct-lesion|mri-liver|flare25-recist|2411|eff-tiny|eff-small] \
 //!     [--device auto|gpu|cpu] [--slice N] [--box r0,c0,r1,c1] [--point r,c] \
 //!     [--window LO,HI] [--preset NAME] [--range FIRST,LAST] [--max-slices N] \
 //!     [--all-slices] [--forward-only] [--threshold F] [--no-cleanup] [--out FILE]

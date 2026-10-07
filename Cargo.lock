@@ -6544,6 +6544,8 @@ dependencies = [
  "anyhow",
  "burn",
  "burn-ndarray",
+ "crc32fast",
+ "flate2",
  "gemm 0.18.2",
  "rayon",
  "rds-core",
@@ -6807,7 +6809,7 @@ dependencies = [
 
 [[package]]
 name = "rust-dicom-station"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "anyhow",
  "axum",

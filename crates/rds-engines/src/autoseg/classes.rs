@@ -129,13 +129,47 @@ pub const TOTAL_CLASS_NAMES: [&str; 117] = [
     "costal_cartilages",
 ];
 
-/// Name of a global label (1-based); empty string for 0 / out of range.
+/// The `total_v3` table: v2's with one rename. TotalSegmentator v3
+/// labels the vertebra below L5 as `vertebrae_L6` where v2 had
+/// `vertebrae_S1` (`class_map["total_v3"][26]` in `map_to_binary.py`).
+/// Everything else, the colours and the five-part offsets included, is
+/// the same.
+pub const TOTAL_V3_CLASS_NAMES: [&str; 117] = {
+    let mut t = TOTAL_CLASS_NAMES;
+    t[25] = "vertebrae_L6";
+    t
+};
+
+/// Name of a global label (1-based) in the v2 table; empty string for 0 /
+/// out of range. Variant-aware callers use [`class_name_in`] with the
+/// variant's table instead.
 pub fn class_name(label: u8) -> &'static str {
-    if label == 0 || label as usize > TOTAL_CLASS_NAMES.len() {
+    class_name_in(&TOTAL_CLASS_NAMES, label)
+}
+
+/// Name of a global label (1-based) in `table`; empty string for 0 / out
+/// of range.
+pub fn class_name_in(table: &[&'static str; 117], label: u8) -> &'static str {
+    if label == 0 || label as usize > table.len() {
         ""
     } else {
-        TOTAL_CLASS_NAMES[label as usize - 1]
+        table[label as usize - 1]
     }
+}
+
+/// The global label of a class name, in either generation's table
+/// (`vertebrae_S1` and `vertebrae_L6` are both label 26).
+pub fn label_of(name: &str) -> Option<u8> {
+    let want = name.trim();
+    TOTAL_CLASS_NAMES
+        .iter()
+        .position(|n| n.eq_ignore_ascii_case(want))
+        .or_else(|| {
+            TOTAL_V3_CLASS_NAMES
+                .iter()
+                .position(|n| n.eq_ignore_ascii_case(want))
+        })
+        .map(|i| i as u8 + 1)
 }
 
 /// Global-label offset for each of the five 1.5 mm sub-models:
@@ -151,9 +185,21 @@ pub const PART_NAMES: [&str; 5] = ["organs", "vertebrae", "cardiac", "muscles", 
 /// Display color for a global label: curated for the common organs, a
 /// golden-angle palette for the rest (stable across runs).
 pub fn class_color(label: u8) -> [u8; 3] {
-    match class_name(label) {
+    color_of(class_name(label), label)
+}
+
+/// Display color for a class of any model, by its name: curated for the
+/// common organs (so a liver is the same brown whichever model found it),
+/// and from the golden-angle palette, indexed by `label`, for the rest.
+/// Names are matched the way the models spell them - TotalSegmentator's
+/// `kidney_left`, MRSegmentator's `left_kidney`, MONAI's spaced variants.
+pub fn color_of(name: &str, label: u8) -> [u8; 3] {
+    let lower = name.to_ascii_lowercase().replace(' ', "_");
+    let n = lower.as_str();
+    let has = |w: &str| n.contains(w);
+    match n {
         "spleen" => [157, 108, 162],
-        "kidney_right" | "kidney_left" => [185, 102, 83],
+        _ if has("kidney") && !has("cyst") => [185, 102, 83],
         "gallbladder" => [139, 150, 98],
         "liver" => [221, 130, 101],
         "stomach" => [216, 132, 105],
@@ -173,20 +219,13 @@ pub fn class_color(label: u8) -> [u8; 3] {
         "skull" => [241, 213, 144],
         "sternum" => [244, 217, 154],
         "costal_cartilages" => [200, 200, 235],
-        n if n.starts_with("lung_") => [197, 165, 145],
-        n if n.starts_with("vertebrae_") || n == "sacrum" => [226, 202, 134],
-        n if n.starts_with("rib_") => [253, 232, 158],
-        n if n.contains("artery") || n.contains("trunk") => [216, 101, 79],
-        n if n.contains("vein") || n.contains("vena") || n.contains("atrial") => [0, 151, 206],
-        n if n.contains("gluteus") || n.contains("autochthon") || n.contains("iliopsoas") => {
-            [192, 104, 88]
-        }
-        n if n.contains("femur")
-            || n.contains("hip")
-            || n.contains("humerus")
-            || n.contains("scapula")
-            || n.contains("clavicula") =>
-        {
+        _ if has("arter") || has("trunk") => [216, 101, 79],
+        _ if has("vein") || has("vena") || has("atrial") => [0, 151, 206],
+        _ if n.starts_with("lung") || n.ends_with("_lung") => [197, 165, 145],
+        _ if n.starts_with("vertebrae") || n == "sacrum" || n == "spine" => [226, 202, 134],
+        _ if n.starts_with("rib_") => [253, 232, 158],
+        _ if has("gluteus") || has("autochthon") || has("iliopsoas") => [192, 104, 88],
+        _ if has("femur") || has("hip") || has("humerus") || has("scapula") || has("clavicula") => {
             [212, 188, 102]
         }
         _ => {
@@ -238,5 +277,21 @@ mod tests {
         assert_eq!(class_name(PART_OFFSET[2] + 1), "heart");
         assert_eq!(class_name(PART_OFFSET[3] + 1), "humerus_left");
         assert_eq!(class_name(PART_OFFSET[4] + 1), "rib_left_1");
+    }
+
+    #[test]
+    fn v3_renames_one_vertebra_and_nothing_else() {
+        assert_eq!(TOTAL_V3_CLASS_NAMES.len(), 117);
+        let diffs: Vec<usize> = (0..117)
+            .filter(|i| TOTAL_CLASS_NAMES[*i] != TOTAL_V3_CLASS_NAMES[*i])
+            .collect();
+        assert_eq!(diffs, vec![25]);
+        assert_eq!(class_name(26), "vertebrae_S1");
+        assert_eq!(class_name_in(&TOTAL_V3_CLASS_NAMES, 26), "vertebrae_L6");
+        assert_eq!(class_name_in(&TOTAL_V3_CLASS_NAMES, 0), "");
+        assert_eq!(label_of("vertebrae_S1"), Some(26));
+        assert_eq!(label_of("vertebrae_L6"), Some(26));
+        assert_eq!(label_of(" Liver "), Some(5));
+        assert_eq!(label_of("nothing"), None);
     }
 }
