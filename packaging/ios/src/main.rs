@@ -41,6 +41,8 @@
 
 #![cfg_attr(not(target_os = "ios"), allow(dead_code))]
 
+#[cfg(target_os = "ios")]
+mod clipboard;
 mod fit;
 mod gpu;
 #[cfg(target_os = "ios")]
@@ -76,6 +78,9 @@ fn main() {
 
     places::restore();
     settings::ios::set_places(Box::new(places::Files::new()));
+    // The system clipboard, which the window library cannot reach here:
+    // the viewer's Paste buttons read it, `Shell::ui` writes it.
+    settings::clipboard::set(Box::new(clipboard::Clipboard));
 
     // As on the desktop: the environment wins over the settings file, and
     // the inference backend reads the choice from the environment.
@@ -162,6 +167,24 @@ impl eframe::App for Shell {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         safe_area::reserve(ui);
         self.viewer.ui(ui, frame);
+        // What the viewer's copy buttons put on egui's own clipboard goes
+        // to the system's as well, so another app can paste it. The
+        // commands are still in the frame's output here; the window glue
+        // takes them after this returns.
+        let copied: Vec<String> = ui.ctx().output(|o| {
+            o.commands
+                .iter()
+                .filter_map(|c| match c {
+                    egui::OutputCommand::CopyText(t) => Some(t.clone()),
+                    _ => None,
+                })
+                .collect()
+        });
+        if let Some(text) = copied.last() {
+            if let Some(c) = settings::clipboard::get() {
+                c.set_text(text);
+            }
+        }
     }
 }
 

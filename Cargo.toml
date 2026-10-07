@@ -1,6 +1,6 @@
 [package]
 name = "rust-dicom-station"
-version = "0.11.1"
+version = "0.11.2"
 edition = "2021"
 description = "Fast, robust DICOM / RT DICOM viewer in pure Rust (CT/MR volumes, RTSTRUCT, RTDOSE, RTPLAN) with a three-view MPR layout"
 license = "MIT"
@@ -57,7 +57,10 @@ schemars = { version = "1", optional = true }
 # version and features `ureq` already compiles. `sha2` makes fingerprints
 # and token hashes, `getrandom` the tokens' bytes, `zip` the bundles studies
 # travel in, `toml` reads and writes `pacs.toml` (and the MCP server's
-# `mcp.toml`), `gethostname` names this device when it pairs.
+# `mcp.toml`), `gethostname` names this device when it pairs, `if-addrs`
+# lists this machine's network interfaces (the addresses the operator's
+# window shows other stations; `getifaddrs` on Unix, the IP helper API on
+# Windows, bindings only).
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 sha2 = "0.10"
 base64 = "0.22"
@@ -65,6 +68,7 @@ getrandom = "0.3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 toml = { version = "1", default-features = false, features = ["parse", "display", "serde", "std"] }
 gethostname = "1"
+if-addrs = "0.15"
 
 # ---- the PACS server (`rds-pacs`, feature `pacs-server`) ----
 # Optional, like the MCP server: a third executable that serves the archive

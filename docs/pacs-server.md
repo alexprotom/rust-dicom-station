@@ -84,9 +84,22 @@ sixteen groups of four characters:
 Certificate   3F2A 9C41 0B7E ... 77D0
 ```
 
-Windows asks once whether `rds-pacs.exe` may accept connections; allow it
-for *private* networks (and *public* ones only if the computer really is
-reached through one). macOS asks the same; *Allow*.
+**The firewall.** Windows may ask once, in a *Windows Security Alert*,
+whether `rds-pacs.exe` may accept connections: *Allow* it for *private*
+networks (and *public* ones only if the computer really is reached through
+one). The server window says what the Windows firewall currently does with
+`rds-pacs`: *allowed* on which kinds of network, *no rule* (nothing asked,
+or the alert was closed) or *blocked* (the alert was answered with
+*Cancel*, which makes a rule that blocks). **🔓 Allow through the Windows
+firewall** puts it right from the window: Windows asks for administrator
+permission, and a rule is made that lets `rds-pacs.exe` accept TCP
+connections on private and domain networks (tick *also on networks
+Windows calls public* when the computer's network is classed as public:
+Windows does that with an unknown network, and often with a home network
+until it is marked private in the network settings). Without such a rule
+other stations see *connection timed out*, however right the address is.
+macOS asks the same question when the server first starts; *Allow*. On
+Linux a firewall is the operator's own (`ufw allow 11443/tcp`).
 
 The same from a terminal: `rds-pacs serve` (or the command of the table
 above with `serve`) runs the server in the foreground and prints where it
@@ -124,15 +137,25 @@ last seen and from where; **Revoke** stops its key at once.
 
 ## Reaching it on the local network
 
-Nothing more is needed. The server window lists the addresses other
-machines can use (`192.168.1.20:11443`, the machine's name with the port),
-and the connection line carries the first of them. Give the server's
-computer a fixed address in the router (a *DHCP reservation*) so that the
-stations' saved address stays right.
+Nothing more is needed. The server window lists, under *How other
+stations reach it*, every address of the computer with the port
+(`192.168.1.20:11443`, the interface it belongs to beside it: *Ethernet*,
+*Wi-Fi*, *Tailscale*; the one marked *the usual one* is the address the
+computer sends from by default) and the machine's name with the port. The
+📋 beside an address copies a connection line with that address; *Copy
+connection details* takes the first. A computer with a wired and a
+wireless link, or a VPN, has several addresses, and the other station must
+be on the same network as the one it is given. The list is live: an
+address the router hands out can change (after a reboot, a new lease, a
+switch from cable to Wi-Fi), and a connection line copied before that
+points nowhere. Give the server's computer a fixed address in the router
+(a *DHCP reservation*) so that the stations' saved address stays right.
 
-If a station cannot connect: check that the server runs, that the
-firewall prompt was answered with *Allow*, and that both machines are on
-the same network (a guest Wi-Fi often keeps devices apart).
+If a station cannot connect (*connection timed out*): check that the
+server runs, that the address is one the window lists *now*, that the
+window says the firewall allows `rds-pacs` (above), and that both machines
+are on the same network (a guest Wi-Fi often keeps devices apart; so does
+*AP isolation* on some routers).
 
 ## Reaching it over the internet
 
@@ -290,6 +313,14 @@ data folder (on iOS the Files app shows it under *Rust DICOM Station*).
 Downloads run while the app is in the foreground. The server itself
 does not run on a phone or a tablet.
 
+On Android, the connection line and the pairing code fields have a
+**📋 Paste** button: the keyboard's own paste does not reach the app
+(the window library has no way to the system clipboard there), the
+button does. Copy the line from the mail or chat it came in, open *Add
+server*, press *Paste*. An invitation line pasted into the code field
+gives up its code. What the app's copy buttons copy reaches the system
+clipboard the same way.
+
 ## Security
 
 * **Encryption.** TLS (rustls) on every connection, loopback included.
@@ -401,7 +432,8 @@ every station's pairing.
 
 | Symptom | Cause, and what to do |
 |---|---|
-| *the server cannot be reached* | It does not run, a firewall blocks it, or the address is not one this station can reach. Check the server window; try the address from the station's browser as `https://address:11443/rds/v1/server` (a certificate warning there is expected and says the server answers). |
+| *the server cannot be reached: ... connection timed out* | Nothing answers at that address: the server's computer has another address now (the window's *How other stations reach it* lists the current ones), its firewall drops the connection (the window says whether `rds-pacs` is allowed; *Allow through the Windows firewall*), or the two machines are not on the same network. Try the address from the station's browser as `https://address:11443/rds/v1/server` (a certificate warning there is expected and says the server answers). |
+| *the server cannot be reached: ... connection refused* | The computer is there but nothing listens on that port: the server does not run, or runs on another port. |
 | *the server presented a different certificate* | The server's certificate was renewed (*New certificate*, `rds-pacs cert --regenerate`, or its state folder was lost), or this is not the server. Ask the operator for the new connection line and *Pair again*. |
 | *not let in: this station's token is not accepted* | The station was revoked, or the server's `clients.json` was reset. *Pair again* with a new code. |
 | *this pairing code is not valid* | Mistyped, already used, expired, or spoiled by wrong attempts. Make a new one. |

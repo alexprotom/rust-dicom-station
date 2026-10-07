@@ -1047,11 +1047,13 @@ pub fn spawn(config: Config, paths: Paths) -> Result<Running> {
     };
 
     // What other machines can try: this machine's addresses and name when
-    // it listens everywhere, the one address otherwise.
+    // it listens everywhere (only the family it listens on: a `0.0.0.0`
+    // listener has no IPv6 address worth showing), the one address
+    // otherwise.
     let shown: Vec<String> = if ip.is_unspecified() {
-        let mut v: Vec<String> = super::local::addresses()
+        let mut v: Vec<String> = super::local::addresses(ip.is_ipv4(), ip.is_ipv6())
             .into_iter()
-            .map(|a| SocketAddr::new(a, bound.port()).to_string())
+            .map(|a| a.with_port(bound.port()))
             .collect();
         let host = super::this_device_name();
         if host != "this computer" {

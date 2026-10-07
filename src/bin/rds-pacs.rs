@@ -155,6 +155,24 @@ fn serve(cfg: Config, paths: local::Paths) {
             );
         }
     }
+    // Windows: a listener nobody can reach is the usual first-day problem.
+    match local::firewall_state(&std::env::current_exe().unwrap_or_default()) {
+        Some(local::Firewall::Allowed(_)) | Some(local::Firewall::Off) | None => {}
+        Some(local::Firewall::Blocked) => eprintln!(
+            "  note: a Windows firewall rule BLOCKS this program (the Windows Security \
+             Alert was declined); other stations cannot reach it. Settings > PACS server > \
+             Allow through the Windows firewall in the viewer, or an administrator runs: \
+             netsh advfirewall firewall add rule name=\"{}\" dir=in action=allow \
+             program=\"{}\" protocol=TCP",
+            local::FIREWALL_RULE,
+            std::env::current_exe().unwrap_or_default().display()
+        ),
+        Some(local::Firewall::NoRule) => eprintln!(
+            "  note: the Windows firewall has no rule for this program; other stations \
+             cannot reach it until one allows it (answer Allow if Windows asks now, or \
+             Settings > PACS server > Allow through the Windows firewall in the viewer)"
+        ),
+    }
     eprintln!("  `rds-pacs pair` makes a pairing code; Ctrl+C stops the server");
     running.stop_on_ctrl_c();
     if let Err(e) = running.wait() {

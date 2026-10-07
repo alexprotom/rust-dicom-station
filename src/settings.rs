@@ -612,6 +612,40 @@ pub mod ios {
     }
 }
 
+/// The system clipboard on the platforms where the window library has no
+/// way to it. On the desktop, egui's window glue copies and pastes through
+/// the system clipboard itself (Ctrl+C, Ctrl+V, the copy buttons). On
+/// Android and iOS it only has a clipboard of its own, private to the
+/// program: a line copied in a mail app never arrives, and a copy button
+/// puts nothing where other apps look. The front ends that can reach the
+/// system clipboard (`packaging/android/src/clipboard.rs`, through the
+/// Java `ClipboardManager`) register themselves here at start-up; the
+/// viewer then shows a *Paste* button beside the fields a user would paste
+/// into, and the Android shell hands what the viewer copies on.
+pub mod clipboard {
+    use std::sync::OnceLock;
+
+    pub trait SystemClipboard: Send + Sync {
+        /// The text on the clipboard, if any.
+        fn text(&self) -> Option<String>;
+        /// Put `text` on the clipboard.
+        fn set_text(&self, text: &str);
+    }
+
+    static CLIPBOARD: OnceLock<Box<dyn SystemClipboard>> = OnceLock::new();
+
+    /// Register the front end's clipboard. The first call wins.
+    pub fn set(clipboard: Box<dyn SystemClipboard>) {
+        let _ = CLIPBOARD.set(clipboard);
+    }
+
+    /// The registered clipboard: `None` on the desktop, where the window
+    /// glue already does the job.
+    pub fn get() -> Option<&'static dyn SystemClipboard> {
+        CLIPBOARD.get().map(|c| c.as_ref())
+    }
+}
+
 /// Best-effort home directory lookup used only as a fallback for platforms
 /// where the relevant standard environment variable is not available.
 #[cfg(not(any(windows, target_os = "android")))]

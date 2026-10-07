@@ -14,9 +14,10 @@
 //! the next start) and the tail of its audit log.
 
 use crate::pacs::config::Config;
-use crate::pacs::local::{self, Paths, Running};
+use crate::pacs::local::{self, Address, Firewall, Paths, Running};
 use crate::pacs::protocol::{ClientInfo, PairingCode, Role};
 use crate::pacs::ConnectionLine;
+use std::net::{IpAddr, Ipv4Addr};
 
 use super::*;
 
@@ -45,20 +46,37 @@ pub(super) struct ServerWindow {
     pub start_asked: f64,
     /// Revoke asks once more.
     pub confirm_revoke: Option<String>,
+    /// This machine's addresses as of the last poll (a link that comes or
+    /// goes, a new lease from the router, show up within seconds).
+    pub addresses: Vec<Address>,
+    /// What the Windows firewall says about `rds-pacs.exe`; `None` on the
+    /// other systems. Read once a while (the registry listing is long), and
+    /// again after *Allow*.
+    pub firewall: Option<Firewall>,
+    pub firewall_read: Option<std::time::Instant>,
+    /// *Allow through the Windows firewall* also on networks Windows calls
+    /// public.
+    pub firewall_public: bool,
+}
+
+/// What a status poll answers with.
+pub(super) struct Status {
+    running: Option<Running>,
+    clients: Vec<ClientInfo>,
+    audit: Vec<String>,
+    addresses: Vec<Address>,
+    firewall: Option<Firewall>,
 }
 
 /// What a job for this window answers with.
 pub(super) enum ServerOutcome {
-    Status {
-        running: Option<Running>,
-        clients: Vec<ClientInfo>,
-        audit: Vec<String>,
-    },
+    Status(Box<Status>),
     Started,
     Stopped,
     Code(PairingCode),
     Revoked(String),
     Regenerated(String),
+    FirewallAllowed,
 }
 
 impl ViewerApp {
@@ -88,6 +106,10 @@ impl ViewerApp {
             starting: false,
             start_asked: 0.0,
             confirm_revoke: None,
+            addresses: Vec::new(),
+            firewall: None,
+            firewall_read: None,
+            firewall_public: false,
         });
     }
 
@@ -124,19 +146,39 @@ impl ViewerApp {
             return;
         }
         w.polled_at = now;
-        self.server_job("Asking the server", |_| {
+        let bind = w.config.bind.clone();
+        let read_firewall = w
+            .firewall_read
+            .is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(30));
+        self.server_job("Asking the server", move |_| {
             let paths = Paths::station();
+            let firewall = read_firewall
+                .then(|| local::firewall_state(&settings::pacs_exe_path()))
+                .flatten();
             match local::connect(&paths) {
-                Ok((remote, run)) => Ok(ServerOutcome::Status {
-                    running: Some(run),
-                    clients: remote.clients().unwrap_or_default(),
-                    audit: remote.audit(40).unwrap_or_default(),
-                }),
-                Err(_) => Ok(ServerOutcome::Status {
-                    running: None,
-                    clients: local::clients_offline(&paths),
-                    audit: crate::audit::tail_of(&paths.data, 40),
-                }),
+                Ok((remote, run)) => {
+                    let ip: IpAddr = run
+                        .bind
+                        .parse()
+                        .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+                    Ok(ServerOutcome::Status(Box::new(Status {
+                        clients: remote.clients().unwrap_or_default(),
+                        audit: remote.audit(40).unwrap_or_default(),
+                        addresses: live_addresses(ip),
+                        running: Some(run),
+                        firewall,
+                    })))
+                }
+                Err(_) => {
+                    let ip: IpAddr = bind.parse().unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+                    Ok(ServerOutcome::Status(Box::new(Status {
+                        running: None,
+                        clients: local::clients_offline(&paths),
+                        audit: crate::audit::tail_of(&paths.data, 40),
+                        addresses: live_addresses(ip),
+                        firewall,
+                    })))
+                }
             }
         });
     }
@@ -150,11 +192,14 @@ impl ViewerApp {
                 w.message = Some(format!("⚠ {e:#}"));
                 w.starting = false;
             }
-            Ok(ServerOutcome::Status {
-                running,
-                clients,
-                audit,
-            }) => {
+            Ok(ServerOutcome::Status(s)) => {
+                let Status {
+                    running,
+                    clients,
+                    audit,
+                    addresses,
+                    firewall,
+                } = *s;
                 if running.is_some() {
                     if w.starting {
                         w.message = Some("✔ the server runs".into());
@@ -164,6 +209,11 @@ impl ViewerApp {
                 w.running = running;
                 w.clients = clients;
                 w.audit = audit;
+                w.addresses = addresses;
+                if firewall.is_some() {
+                    w.firewall = firewall;
+                    w.firewall_read = Some(std::time::Instant::now());
+                }
             }
             Ok(ServerOutcome::Started) => {
                 w.starting = true;
@@ -188,6 +238,11 @@ impl ViewerApp {
                     crate::pacs::show_fingerprint(&fp)
                 ));
             }
+            Ok(ServerOutcome::FirewallAllowed) => {
+                w.message = Some("✔ the Windows firewall lets rds-pacs accept connections".into());
+                w.firewall_read = None;
+                w.polled_at = f64::NEG_INFINITY;
+            }
         }
     }
 
@@ -207,6 +262,7 @@ impl ViewerApp {
         let mut regenerate = false;
         let mut browse_archive = false;
         let mut copy: Option<String> = None;
+        let mut allow_firewall = false;
 
         detach::tool_window(
             ctx,
@@ -287,12 +343,60 @@ impl ViewerApp {
                 if let Some(r) = &w.running {
                     ui.separator();
                     ui.label(egui::RichText::new("How other stations reach it").strong());
-                    for a in &r.addresses {
-                        ui.monospace(a);
+                    // The live list, which notices a link that came or went
+                    // since the start; what the server wrote at its start
+                    // when there is none (a server bound to one address, or
+                    // an interface list that cannot be read).
+                    let line_for = |addr: &str| {
+                        ConnectionLine::parse(addr).ok().map(|l| ConnectionLine {
+                            fingerprint: Some(r.fingerprint.clone()),
+                            ..l
+                        })
+                    };
+                    let mut first: Option<String> = None;
+                    if w.addresses.is_empty() {
+                        for a in &r.addresses {
+                            ui.monospace(a);
+                        }
+                        first = r.addresses.first().cloned();
+                    } else {
+                        for a in &w.addresses {
+                            let with_port = a.with_port(r.port);
+                            if first.is_none() {
+                                first = Some(with_port.clone());
+                            }
+                            ui.horizontal(|ui| {
+                                ui.monospace(&with_port);
+                                if !a.interface.is_empty() {
+                                    ui.weak(&a.interface);
+                                }
+                                if a.default_route {
+                                    ui.weak("(the usual one)");
+                                }
+                                if let Some(l) = line_for(&with_port) {
+                                    if small_tip_button(
+                                        ui,
+                                        "📋",
+                                        "Copy the connection line with this address",
+                                    ) {
+                                        copy = Some(l.format());
+                                    }
+                                }
+                            });
+                        }
+                        let host = crate::pacs::this_device_name();
+                        if host != "this computer" {
+                            ui.horizontal(|ui| {
+                                ui.monospace(format!("{host}:{}", r.port));
+                                ui.weak("(the name, where the network resolves it)");
+                            });
+                        }
                     }
                     ui.weak(
-                        "A VPN's own address (Tailscale, WireGuard), a forwarded port or a \
-                         public name works as well: see the set-up guide.",
+                        "The other station must be on one of these networks (or reach it \
+                         through a VPN, a forwarded port or a public name: see the set-up \
+                         guide). An address the router hands out can change; a reservation \
+                         in the router keeps it.",
                     );
                     ui.horizontal(|ui| {
                         ui.label("Certificate");
@@ -301,23 +405,75 @@ impl ViewerApp {
                                 .monospace(),
                         );
                     });
-                    let line = r
-                        .addresses
-                        .first()
-                        .and_then(|a| ConnectionLine::parse(a).ok())
-                        .map(|l| ConnectionLine {
-                            fingerprint: Some(r.fingerprint.clone()),
-                            ..l
-                        });
+                    let line = first.as_deref().and_then(line_for);
                     if let Some(line) = &line {
                         if tip_button(
                             ui,
                             "📋 Copy connection details",
-                            "The address and the certificate's fingerprint in one line, for \
-                             Tools > PACS > Add server on the other station",
+                            "The first address and the certificate's fingerprint in one \
+                             line, for Tools > PACS > Add server on the other station",
                         ) {
                             copy = Some(line.format());
                         }
+                    }
+
+                    // ---- the firewall (Windows) ----------------------------
+                    if cfg!(windows) {
+                        ui.add_space(4.0);
+                        match &w.firewall {
+                            Some(Firewall::Allowed(profiles)) => {
+                                let on = if profiles.is_empty() {
+                                    "every kind of network".to_string()
+                                } else {
+                                    profiles.join(", ").to_lowercase() + " networks"
+                                };
+                                ui.weak(format!(
+                                    "✔ the Windows firewall lets rds-pacs accept connections on {on}"
+                                ));
+                            }
+                            Some(Firewall::Off) => {
+                                ui.weak("The Windows firewall is off: nothing to allow.");
+                            }
+                            other => {
+                                ui.colored_label(
+                                    ui.visuals().warn_fg_color,
+                                    match other {
+                                        Some(Firewall::Blocked) => {
+                                            "⚠ A Windows firewall rule blocks rds-pacs (the Windows \
+                                             Security Alert was answered with Cancel): no other \
+                                             station can reach it."
+                                        }
+                                        Some(Firewall::NoRule) => {
+                                            "⚠ The Windows firewall has no rule for rds-pacs: no \
+                                             other station can reach it until one allows it (answer \
+                                             Allow when Windows asks, or press the button)."
+                                        }
+                                        _ => "The Windows firewall's rules could not be read.",
+                                    },
+                                );
+                            }
+                        }
+                        ui.horizontal(|ui| {
+                            if enabled_tip_button(
+                                ui,
+                                !busy,
+                                "🔓 Allow through the Windows firewall",
+                                "Make a rule that lets rds-pacs.exe accept TCP connections, \
+                                 replacing any rule that blocks it. Windows asks for \
+                                 administrator permission.",
+                            ) {
+                                allow_firewall = true;
+                            }
+                            ui.checkbox(
+                                &mut w.firewall_public,
+                                "also on networks Windows calls public",
+                            )
+                            .on_hover_text(
+                                "Windows classes an unknown network, a hotel's or a cafe's, \
+                                 as public, and often a home network too until it is marked \
+                                 private. The server still answers nothing without a key.",
+                            );
+                        });
                     }
 
                     // ---- pairing -------------------------------------------
@@ -630,6 +786,13 @@ impl ViewerApp {
                 });
             }
         }
+        if allow_firewall {
+            let public = self.pacs_server.as_ref().is_some_and(|w| w.firewall_public);
+            self.server_job("Asking Windows for permission", move |_| {
+                local::firewall_allow(&Paths::station(), &settings::pacs_exe_path(), public)?;
+                Ok(ServerOutcome::FirewallAllowed)
+            });
+        }
         if browse_archive {
             self.ask_folder("The archive the server serves", |app, dir| {
                 if let Some(w) = app.pacs_server.as_mut() {
@@ -638,5 +801,15 @@ impl ViewerApp {
                 }
             });
         }
+    }
+}
+
+/// This machine's addresses for a listener bound to `ip`: both families
+/// for `::`, IPv4 only for `0.0.0.0`, and the one address otherwise.
+fn live_addresses(ip: IpAddr) -> Vec<Address> {
+    if ip.is_unspecified() {
+        local::addresses(ip.is_ipv4(), ip.is_ipv6())
+    } else {
+        Vec::new()
     }
 }

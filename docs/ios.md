@@ -197,6 +197,11 @@ it, and the desktop build graph does not change. It holds:
   what the file browser asks for places, for the picker, and for the name
   of the app's own folder (*On My iPad* or *On My iPhone*, from
   `UIDevice`'s idiom).
+* **`src/clipboard.rs`.** The general `UIPasteboard`, registered as
+  `settings::clipboard`: the window library reaches no clipboard on iOS,
+  so the viewer's *📋 Paste* buttons (the connection line and the pairing
+  code of *Tools ▶ PACS ▶ Add server*) read it through this, and
+  `Shell::ui` hands what the viewer's copy buttons copied to it.
 * **`Info.plist.in`.** iPad and iPhone (`UIDeviceFamily` 1 and 2), iOS 15,
   all four orientations on the iPad and landscape on the iPhone, the
   launch screen without a storyboard (`UILaunchScreen`), `Documents` shared

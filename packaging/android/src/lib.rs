@@ -36,6 +36,7 @@ use std::sync::Arc;
 use android_activity::AndroidApp;
 use rust_dicom_station::{app, gfx, settings};
 
+mod clipboard;
 mod insets;
 mod permission;
 
@@ -123,6 +124,9 @@ impl Shell {
             log::warn!("could not ask whether all files access is granted: {e}");
             true
         });
+        // The system clipboard, which the window library cannot reach here:
+        // the viewer's Paste buttons read it, `ui` below writes it.
+        settings::clipboard::set(Box::new(clipboard::Clipboard { app: app.clone() }));
         Self {
             viewer: app::ViewerApp::new(cc, None, None),
             insets: insets::system_insets(&app).unwrap_or_else(|e| {
@@ -206,6 +210,24 @@ impl eframe::App for Shell {
         self.reserve_system_insets(ui);
         self.viewer.ui(ui, frame);
         self.storage_prompt(ui.ctx());
+        // What the viewer's copy buttons put on egui's own clipboard goes
+        // to the system's as well, so another app can paste it. The
+        // commands are still in the frame's output here; the window glue
+        // takes them after this returns.
+        let copied: Vec<String> = ui.ctx().output(|o| {
+            o.commands
+                .iter()
+                .filter_map(|c| match c {
+                    egui::OutputCommand::CopyText(t) => Some(t.clone()),
+                    _ => None,
+                })
+                .collect()
+        });
+        if let Some(text) = copied.last() {
+            if let Some(c) = settings::clipboard::get() {
+                c.set_text(text);
+            }
+        }
     }
 }
 

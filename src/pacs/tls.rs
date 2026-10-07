@@ -46,8 +46,10 @@ pub fn names(config: &Config) -> Vec<String> {
     if host != "this computer" {
         out.push(host);
     }
-    for ip in super::local::addresses() {
-        out.push(ip.to_string());
+    // Every interface's address, both families: the pin ignores names, but
+    // a tool that checks them (a browser, curl) finds the one it used.
+    for a in super::local::addresses(true, true) {
+        out.push(a.ip.to_string());
     }
     for a in &config.advertise {
         let a = a.trim();
