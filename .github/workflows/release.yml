@@ -611,7 +611,14 @@ jobs:
 
       - name: Submit the new version to winget-pkgs
         if: env.WINGET_TOKEN != ''
-        uses: vedantmgoyal9/winget-releaser@main
+        # Pinned to the last commit before the action was rewritten on
+        # 2026-10-07 (#343): since then `main` - and the `v2` tag, which was
+        # moved onto it - carry a composite action the runner rejects
+        # (`run:` steps without `shell:`, their issue #345). A job fails
+        # while its actions are being fetched, before any `if` is looked
+        # at, so this broke the job with or without the token. Move the pin
+        # forward once upstream is fixed.
+        uses: vedantmgoyal9/winget-releaser@a8fff44b123f115ce4c21543edf8b677376fc7e0
         with:
           identifier: RDS.RustDICOMStation
           version: ${{ needs.version.outputs.version }}

@@ -234,7 +234,10 @@ src/
                     the inventory of every downloadable model                    NN
   settings.rs       persisted preferences and the config / data folders - the
                     machine-wide defaults the installer writes, then the user's
-                    own file on top                                              App
+                    own file on top; the hooks the mobile front ends register
+                    (settings::android dirs, settings::ios::Places, and
+                    settings::clipboard: the system clipboard where the window
+                    library has none, behind the viewer's Paste buttons)        App
   gfx.rs            which graphics backend to draw and compute with: the
                     settings key, the environment override, and the order to
                     fall back through when one will not start                    App

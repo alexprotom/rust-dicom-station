@@ -273,12 +273,23 @@ pub(super) fn pairing_ui(
         .spacing([8.0, 6.0])
         .show(ui, |ui| {
             ui.label("Connection line or address");
-            let resp = ui.add(
-                egui::TextEdit::singleline(&mut d.line)
-                    .desired_width(420.0)
-                    .hint_text("rds-pacs://192.168.1.20:11443/#sha256=... or pacs.example.org"),
-            );
-            if resp.changed() {
+            let mut changed = false;
+            ui.horizontal(|ui| {
+                changed |= ui
+                    .add(
+                        egui::TextEdit::singleline(&mut d.line)
+                            .desired_width(420.0)
+                            .hint_text(
+                                "rds-pacs://192.168.1.20:11443/#sha256=... or pacs.example.org",
+                            ),
+                    )
+                    .changed();
+                if let Some(text) = system_paste_button(ui) {
+                    d.line = text;
+                    changed = true;
+                }
+            });
+            if changed {
                 d.probed = None;
                 d.compared = false;
                 d.error = None;
@@ -377,11 +388,20 @@ pub(super) fn pairing_ui(
         .spacing([8.0, 6.0])
         .show(ui, |ui| {
             ui.label("Pairing code");
-            ui.add(
-                egui::TextEdit::singleline(&mut d.code)
-                    .desired_width(140.0)
-                    .hint_text("K7QM-3TXA"),
-            );
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut d.code)
+                        .desired_width(140.0)
+                        .hint_text("K7QM-3TXA"),
+                );
+                if let Some(text) = system_paste_button(ui) {
+                    // A whole invitation line pasted here: take its code.
+                    d.code = ConnectionLine::parse(&text)
+                        .ok()
+                        .and_then(|l| l.code)
+                        .unwrap_or(text);
+                }
+            });
             ui.end_row();
             ui.label("This station's name");
             if d.device_name.is_empty() {
@@ -1370,7 +1390,20 @@ impl ViewerApp {
             Err(e) => {
                 let text = format!("{e:#}");
                 if let Some(d) = self.pacs.as_mut().and_then(|w| w.pairing.as_mut()) {
-                    d.error = Some(text);
+                    d.error = Some(match failure_of(&e) {
+                        // Nothing answered at all: the two first-day causes,
+                        // before anyone suspects the program.
+                        Some(Failure::Unreachable(_)) => format!(
+                            "{text}\n\nNothing answers at that address. Check that it is one \
+                             the server's window lists now under \"How other stations reach \
+                             it\" (the router may have handed the server's computer a new \
+                             address since the line was copied), that both computers are on \
+                             the same network, and that the server's computer lets rds-pacs \
+                             through its firewall (on Windows: Settings > PACS server > Allow \
+                             through the Windows firewall)."
+                        ),
+                        _ => text,
+                    });
                     return;
                 }
                 if progress::is_cancellation(&e) {

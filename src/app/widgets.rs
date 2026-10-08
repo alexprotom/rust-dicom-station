@@ -21,6 +21,27 @@ pub(super) fn small_tip_button(
     ui.small_button(text).on_hover_text(tip).clicked()
 }
 
+/// A *Paste* button beside a text field, for the systems where the window
+/// library cannot read the system clipboard (Android, iOS: see
+/// [`crate::settings::clipboard`]). Draws nothing on the desktop, where
+/// Ctrl+V works. Returns the clipboard's text when pressed, trimmed, and
+/// `None` otherwise - also when the clipboard holds no text, which the
+/// tooltip says.
+pub(super) fn system_paste_button(ui: &mut egui::Ui) -> Option<String> {
+    let clipboard = crate::settings::clipboard::get()?;
+    let clicked = ui
+        .small_button("📋 Paste")
+        .on_hover_text("Put what was last copied in another app here")
+        .clicked();
+    if !clicked {
+        return None;
+    }
+    clipboard
+        .text()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+}
+
 /// [`tip_button`] that can be greyed out; the tooltip shows either way.
 pub(super) fn enabled_tip_button(
     ui: &mut egui::Ui,

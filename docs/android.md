@@ -120,12 +120,15 @@ build graph does not change. It holds:
   targeting Android 15 is laid out edge to edge, so the window library
   reports the whole screen) and draws the *All files access* question
   over the viewer.
-* **`src/permission.rs`, `src/insets.rs`.** The calls into the Java side,
-  over JNI: `Environment.isExternalStorageManager()`, the intent that
-  opens the settings page, and the window's system-bar and cut-out insets
-  (`getRootWindowInsets().getInsets(..)`, read again on a resize and once
-  a second). The package name is a constant in `permission.rs` and must
-  match the manifest.
+* **`src/permission.rs`, `src/insets.rs`, `src/clipboard.rs`.** The calls
+  into the Java side, over JNI: `Environment.isExternalStorageManager()`,
+  the intent that opens the settings page, the window's system-bar and
+  cut-out insets (`getRootWindowInsets().getInsets(..)`, read again on a
+  resize and once a second), and the system clipboard (`ClipboardManager`:
+  the window library reaches none on Android, so the viewer's *📋 Paste*
+  buttons read it through `settings::clipboard`, and `Shell::ui` hands what
+  the viewer's copy buttons copied to it). The package name is a constant
+  in `permission.rs` and must match the manifest.
 * **`AndroidManifest.xml`.** `minSdkVersion` 30 (Android 11, the first
   with all files access), `targetSdkVersion` 35, the `INTERNET` and
   `MANAGE_EXTERNAL_STORAGE` permissions, OpenGL ES 3 required and Vulkan
