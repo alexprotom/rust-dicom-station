@@ -139,23 +139,28 @@ last seen and from where; **Revoke** stops its key at once.
 
 Nothing more is needed. The server window lists, under *How other
 stations reach it*, every address of the computer with the port
-(`192.168.1.20:11443`, the interface it belongs to beside it: *Ethernet*,
-*Wi-Fi*, *Tailscale*; the one marked *the usual one* is the address the
-computer sends from by default) and the machine's name with the port. The
-📋 beside an address copies a connection line with that address; *Copy
-connection details* takes the first. A computer with a wired and a
-wireless link, or a VPN, has several addresses, and the other station must
-be on the same network as the one it is given. The list is live: an
-address the router hands out can change (after a reboot, a new lease, a
-switch from cable to Wi-Fi), and a connection line copied before that
-points nowhere. Give the server's computer a fixed address in the router
-(a *DHCP reservation*) so that the stations' saved address stays right.
+(`192.168.1.20:11443`) and the interface it belongs to (*Ethernet*,
+*Wi-Fi*), then the machine's name with the port. Addresses of a VPN
+(*OpenVPN TAP-Windows6*, *Tailscale*, *WireGuard*) are marked *VPN: for
+stations on the same VPN*: a station on the local network cannot use
+them, and a station on the same VPN can only when the VPN routes between
+its members (an office VPN usually does not). Addresses of virtual
+adapters (Hyper-V, WSL, VirtualBox, VMware) are marked as not for other
+computers. The real networks come first, so the 📋 beside an address
+copies a connection line with that address and *Copy connection details*
+takes the first, which is the one a station on the local network needs.
+The list is live: an address the router hands out can change (after a
+reboot, a new lease, a switch from cable to Wi-Fi), and a connection line
+copied before that points nowhere. Give the server's computer a fixed
+address in the router (a *DHCP reservation*) so that the stations' saved
+address stays right.
 
 If a station cannot connect (*connection timed out*): check that the
-server runs, that the address is one the window lists *now*, that the
-window says the firewall allows `rds-pacs` (above), and that both machines
-are on the same network (a guest Wi-Fi often keeps devices apart; so does
-*AP isolation* on some routers).
+server runs, that the address is one the window lists *now* and is a
+local-network one, not a VPN's, that the window says the firewall allows
+`rds-pacs` (above), and that both machines are on the same network (a
+guest Wi-Fi often keeps devices apart; so does *AP isolation* on some
+routers).
 
 ## Reaching it over the internet
 
@@ -349,9 +354,9 @@ clipboard the same way.
   *Tools ▶ Anonymize* before filing anything into a server that people
   outside the department reach.
 * **The local operator.** The viewer on the server's own computer talks
-  to the server with a key the server writes into its state folder on
-  every start, readable by its owner only. Only that key can stop the
-  server.
+  to the server with a key the server keeps in its state folder, readable
+  by its owner only (made on the first start; delete the file and the next
+  start makes a new one). Only that key can stop the server.
 
 ## The configuration file
 
@@ -432,7 +437,7 @@ every station's pairing.
 
 | Symptom | Cause, and what to do |
 |---|---|
-| *the server cannot be reached: ... connection timed out* | Nothing answers at that address: the server's computer has another address now (the window's *How other stations reach it* lists the current ones), its firewall drops the connection (the window says whether `rds-pacs` is allowed; *Allow through the Windows firewall*), or the two machines are not on the same network. Try the address from the station's browser as `https://address:11443/rds/v1/server` (a certificate warning there is expected and says the server answers). |
+| *the server cannot be reached: ... connection timed out* | Nothing answers at that address: it is a VPN's address and the station is not on that VPN (the window marks those), the server's computer has another address now (the window's *How other stations reach it* lists the current ones), its firewall drops the connection (the window says whether `rds-pacs` is allowed; *Allow through the Windows firewall*), or the two machines are not on the same network. Try the address from the station's browser as `https://address:11443/rds/v1/server` (a certificate warning there is expected and says the server answers). |
 | *the server cannot be reached: ... connection refused* | The computer is there but nothing listens on that port: the server does not run, or runs on another port. |
 | *the server presented a different certificate* | The server's certificate was renewed (*New certificate*, `rds-pacs cert --regenerate`, or its state folder was lost), or this is not the server. Ask the operator for the new connection line and *Pair again*. |
 | *not let in: this station's token is not accepted* | The station was revoked, or the server's `clients.json` was reset. *Pair again* with a new code. |

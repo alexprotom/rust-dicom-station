@@ -14,7 +14,7 @@
 //! the next start) and the tail of its audit log.
 
 use crate::pacs::config::Config;
-use crate::pacs::local::{self, Address, Firewall, Paths, Running};
+use crate::pacs::local::{self, Address, Firewall, Link, Paths, Running};
 use crate::pacs::protocol::{ClientInfo, PairingCode, Role};
 use crate::pacs::ConnectionLine;
 use std::net::{IpAddr, Ipv4Addr};
@@ -370,8 +370,17 @@ impl ViewerApp {
                                 if !a.interface.is_empty() {
                                     ui.weak(&a.interface);
                                 }
-                                if a.default_route {
-                                    ui.weak("(the usual one)");
+                                match a.link {
+                                    Link::Lan => {}
+                                    Link::Vpn => {
+                                        ui.colored_label(
+                                            ui.visuals().warn_fg_color,
+                                            format!("({})", a.link.label()),
+                                        );
+                                    }
+                                    Link::Virtual => {
+                                        ui.weak(format!("({})", a.link.label()));
+                                    }
                                 }
                                 if let Some(l) = line_for(&with_port) {
                                     if small_tip_button(
@@ -393,8 +402,9 @@ impl ViewerApp {
                         }
                     }
                     ui.weak(
-                        "The other station must be on one of these networks (or reach it \
-                         through a VPN, a forwarded port or a public name: see the set-up \
+                        "A station on the same local network uses the local-network address; \
+                         a VPN address works only for stations on that VPN. Over the \
+                         internet: a VPN, a forwarded port or a public name (the set-up \
                          guide). An address the router hands out can change; a reservation \
                          in the router keeps it.",
                     );

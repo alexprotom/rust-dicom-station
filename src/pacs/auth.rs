@@ -15,8 +15,9 @@
 //! costs nothing but a new code.
 //!
 //! The **local operator** is the viewer on the server's own machine: the
-//! server writes a token for it into its state folder (readable by its
-//! owner only) on every start, so *Settings ▶ PACS server* needs no pairing.
+//! server keeps a token for it in its state folder (readable by its owner
+//! only; made on the first start, kept across restarts so the viewer's
+//! copy never goes stale), so *Settings ▶ PACS server* needs no pairing.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -97,7 +98,8 @@ pub struct Auth {
 }
 
 impl Auth {
-    /// Read `clients.json` and write a fresh local operator token.
+    /// Read `clients.json` and the local operator token (made when there
+    /// is none, or none that looks like one).
     pub fn load(paths: &Paths) -> Result<Auth> {
         let path = paths.clients();
         let clients = match std::fs::read_to_string(&path) {
@@ -109,8 +111,22 @@ impl Auth {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
         };
-        let local = super::random_token(32)?;
-        write_private(&paths.local_token(), &local)?;
+        let kept = std::fs::read_to_string(paths.local_token())
+            .ok()
+            .map(|t| t.trim().to_string())
+            .filter(|t| {
+                t.len() >= 40
+                    && t.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            });
+        let local = match kept {
+            Some(t) => t,
+            None => {
+                let t = super::random_token(32)?;
+                write_private(&paths.local_token(), &t)?;
+                t
+            }
+        };
         Ok(Auth {
             path,
             clients,
@@ -362,13 +378,21 @@ mod tests {
         let mut again = Auth::load(&paths).unwrap();
         assert!(again.check(&token, "x").is_some());
 
-        // The local operator's token is new on every start.
+        // The local operator's token is kept across starts, so the
+        // viewer's copy of it never goes stale.
         let local = std::fs::read_to_string(paths.local_token()).unwrap();
         assert!(again.check(&local, "127.0.0.1").unwrap().local);
         assert!(
-            a.check(&local, "127.0.0.1").is_none(),
-            "the old start's token is void"
+            a.check(&local, "127.0.0.1").unwrap().local,
+            "the earlier start knows the same token"
         );
+        // A damaged file is replaced.
+        std::fs::write(paths.local_token(), "short").unwrap();
+        let mut third = Auth::load(&paths).unwrap();
+        let renewed = std::fs::read_to_string(paths.local_token()).unwrap();
+        assert_ne!(renewed.trim(), "short");
+        assert!(third.check(renewed.trim(), "127.0.0.1").unwrap().local);
+        assert!(third.check(&local, "127.0.0.1").is_none());
 
         assert!(again.revoke("laptop").unwrap());
         assert!(again.check(&token, "x").is_none());
