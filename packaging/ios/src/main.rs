@@ -181,7 +181,7 @@ impl eframe::App for Shell {
                 .collect()
         });
         if let Some(text) = copied.last() {
-            if let Some(c) = settings::clipboard::get() {
+            if let Some(c) = rust_dicom_station::settings::clipboard::get() {
                 c.set_text(text);
             }
         }
