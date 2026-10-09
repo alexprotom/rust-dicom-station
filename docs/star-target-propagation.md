@@ -173,6 +173,10 @@ At the optimum the surface of $A_M$, pulled back through $T$, lies on the
 surface of $A_F$, and since $D$ is linear near a surface with unit slope, $E$
 is the mean squared surface-to-surface distance in mm². Contrast agent,
 reconstruction kernel, cardiac phase and modality do not appear in $E$.
+The maps are made by `registration::shape::distance_volume`; the Image
+registration module's *Align by structures* fits the same surfaces directly,
+for any number of structures and between any two images
+([registration.md](registration.md#registration-by-structures)).
 With *Match the contours* off, $D_F$ and $D_M$ are replaced by the images
 themselves and $E$ is the ordinary mean squared HU difference (elastix's
 `AdvancedMeanSquares`); that is the right metric only when the two images are

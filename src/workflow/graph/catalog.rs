@@ -26,7 +26,8 @@ use crate::zoo::AutoModel;
 // the workflow file names them as it always did.
 pub use crate::workflow::params::{
     AnchorBy, AutosegVariant, BodyMethod, DeformMethod, Device, Effort, FinishParams, Landing,
-    NameClash, OutputKind, RegInit, RegMethodChoice, SetChoice,
+    NameClash, OutputKind, RegInit, RegMethodChoice, SetChoice, ShapeDofChoice, ShapeRefine,
+    ShapeRegParams,
 };
 
 /// What travels along a wire.
@@ -215,6 +216,7 @@ pub enum Kind {
     Combine,
     Rename,
     Register,
+    RegisterByStructures,
     Propagate,
     Transfer,
     PropagateToGroup,
@@ -229,7 +231,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 24] = [
+    pub const ALL: [Kind; 25] = [
         Kind::LoadFolder,
         Kind::LoadFolders,
         Kind::LoadFromArchive,
@@ -243,6 +245,7 @@ impl Kind {
         Kind::Combine,
         Kind::Rename,
         Kind::Register,
+        Kind::RegisterByStructures,
         Kind::Propagate,
         Kind::Transfer,
         Kind::PropagateToGroup,
@@ -386,6 +389,18 @@ impl Kind {
                 category: Category::Register,
                 blurb: "Register a moving image series onto a fixed one: rigid, or rigid \
                         plus B-spline (elastix or plastimatch style).",
+                ends_a_branch: false,
+                writes: false,
+            },
+            Kind::RegisterByStructures => &KindInfo {
+                name: "Register by structures",
+                glyph: "◎",
+                category: Category::Register,
+                blurb: "Register two image series by structures contoured on both, not by \
+                        their intensities: each surface laid onto its partner's distance \
+                        map (rigid or translation only), then optionally a local B-spline \
+                        per structure. For images whose contours agree but whose \
+                        intensities never will.",
                 ends_a_branch: false,
                 writes: false,
             },
@@ -636,6 +651,21 @@ impl Kind {
                 ];
                 P
             }
+            Kind::RegisterByStructures => {
+                const P: &[PortSpec] = &[
+                    PortSpec::one(
+                        "Fixed",
+                        &[T::Structures],
+                        "structures found on the image that stays put",
+                    ),
+                    PortSpec::one(
+                        "Moving",
+                        &[T::Structures],
+                        "the same structures found on the image that is moved onto it",
+                    ),
+                ];
+                P
+            }
             Kind::Propagate => {
                 const P: &[PortSpec] = &[
                     PortSpec::one(
@@ -817,6 +847,17 @@ impl Kind {
                 ];
                 P
             }
+            Kind::RegisterByStructures => {
+                const P: &[OutSpec] = &[
+                    out("Registration", T::Registration, "fixed onto moving"),
+                    out(
+                        "Report",
+                        T::Report,
+                        "what the registration did, per structure",
+                    ),
+                ];
+                P
+            }
             Kind::Propagate => {
                 const P: &[OutSpec] = &[
                     out("Structures", T::Structures, "the structures as they landed"),
@@ -869,6 +910,7 @@ impl Kind {
             Kind::AutoSegment => Op::AutoSegment(Default::default()),
             Kind::BodyContour => Op::BodyContour(Default::default()),
             Kind::Register => Op::Register(Default::default()),
+            Kind::RegisterByStructures => Op::RegisterByStructures(Default::default()),
             Kind::Propagate => Op::Propagate(Default::default()),
             Kind::PropagateToGroup => Op::PropagateToGroup(Default::default()),
             Kind::Motion => Op::Motion(Default::default()),
@@ -912,6 +954,7 @@ pub enum Op {
     AutoSegment(AutoSegment),
     BodyContour(BodyContour),
     Register(Register),
+    RegisterByStructures(RegisterByStructures),
     Propagate(Propagate),
     PropagateToGroup(PropagateToGroup),
     Motion(Motion),
@@ -941,6 +984,7 @@ impl Op {
             Op::AutoSegment(_) => Kind::AutoSegment,
             Op::BodyContour(_) => Kind::BodyContour,
             Op::Register(_) => Kind::Register,
+            Op::RegisterByStructures(_) => Kind::RegisterByStructures,
             Op::Propagate(_) => Kind::Propagate,
             Op::PropagateToGroup(_) => Kind::PropagateToGroup,
             Op::Motion(_) => Kind::Motion,
@@ -1044,6 +1088,22 @@ impl Op {
                 format!("{}, {}", p.method.label(), p.output.label()),
             ],
             Op::Register(p) => vec![p.method.label().to_string(), p.init.label().to_string()],
+            Op::RegisterByStructures(p) => {
+                let mut v = vec![
+                    format!("{}, {}", p.shape.dof.label(), p.shape.refine.label()),
+                    p.init.label().to_string(),
+                ];
+                let (hand, _) = p.hand_pairs();
+                if !hand.is_empty() {
+                    v.push(
+                        hand.iter()
+                            .map(|(f, m)| format!("{f} = {m}"))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                }
+                v
+            }
             Op::Propagate(p) => vec![format!("into the {}", p.landing.label())],
             Op::PropagateToGroup(p) => vec![
                 format!(
@@ -1244,6 +1304,7 @@ impl Op {
             Op::SelectStructures(p) if split_names(&p.names).is_empty() => {
                 v.push("no structure names are given".into());
             }
+            Op::RegisterByStructures(p) => v.extend(p.hand_pairs().1),
             Op::AutoSegment(p) => match p.auto_model() {
                 None => v.push(format!(
                     "'{}' is not a model this program has",
@@ -1676,6 +1737,42 @@ pub struct Register {
     pub method: RegMethodChoice,
     pub init: RegInit,
     pub effort: Effort,
+}
+
+/// Registration by structures: the structures that arrive on *Fixed* and on
+/// *Moving* pair by name (case-insensitive); `pairs` adds the ones named
+/// differently on the two images.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RegisterByStructures {
+    /// `fixed = moving`, one per line or separated by commas
+    /// (`Heart = heart_total`).
+    pub pairs: String,
+    pub init: RegInit,
+    pub shape: ShapeRegParams,
+}
+
+impl RegisterByStructures {
+    /// The pairs given by hand, and what could not be read of them.
+    pub fn hand_pairs(&self) -> (Vec<(String, String)>, Vec<String>) {
+        let mut pairs = Vec::new();
+        let mut problems = Vec::new();
+        for part in self.pairs.split([',', '\n', ';']) {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            match part.split_once('=') {
+                Some((f, m)) if !f.trim().is_empty() && !m.trim().is_empty() => {
+                    pairs.push((f.trim().to_string(), m.trim().to_string()))
+                }
+                _ => problems.push(format!(
+                    "'{part}' is not a pair: write it as fixed name = moving name"
+                )),
+            }
+        }
+        (pairs, problems)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

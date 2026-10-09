@@ -1396,11 +1396,13 @@ impl ViewerApp {
                         Some(Failure::Unreachable(_)) => format!(
                             "{text}\n\nNothing answers at that address. Check that it is one \
                              the server's window lists now under \"How other stations reach \
-                             it\" (the router may have handed the server's computer a new \
-                             address since the line was copied), that both computers are on \
-                             the same network, and that the server's computer lets rds-pacs \
-                             through its firewall (on Windows: Settings > PACS server > Allow \
-                             through the Windows firewall)."
+                             it\" and not one marked VPN (a VPN's address works only for \
+                             stations on that VPN; the router may also have handed the \
+                             server's computer a new address since the line was copied), \
+                             that both computers are on the same network, and that the \
+                             server's computer lets rds-pacs through its firewall (on \
+                             Windows: Settings > PACS server > Allow through the Windows \
+                             firewall)."
                         ),
                         _ => text,
                     });

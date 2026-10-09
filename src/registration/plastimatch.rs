@@ -212,7 +212,9 @@ impl Level<'_> {
         // and only the scalar s_k differs. That is what lets one scatter
         // loop serve the mean-squared and the mutual-information cost alike.
         let (cost, scalars) = match self.metric {
-            Metric::MeanSquares => {
+            // The surface distance never reaches an image engine
+            // (`register_with` refuses it); mean squares is the harmless arm.
+            Metric::MeanSquares | Metric::SurfaceDistance => {
                 let samples = &self.samples;
                 let (sum, cnt) = crate::par::ordered_fold(
                     &mapped,

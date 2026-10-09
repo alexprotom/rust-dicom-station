@@ -315,14 +315,91 @@ pub fn run_cli(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// What kind of link an address sits on, which decides who can reach it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Link {
+    /// A real network: Ethernet, Wi-Fi. Other machines on that network
+    /// reach it.
+    Lan,
+    /// A VPN or tunnel (OpenVPN, WireGuard, Tailscale, ZeroTier): only the
+    /// members of that VPN reach it, and only when the VPN routes between
+    /// its members. A VPN often carries the machine's default route, which
+    /// makes it look like "the" address while the office next door cannot
+    /// use it.
+    Vpn,
+    /// A virtual adapter of this computer (Hyper-V, WSL, VirtualBox,
+    /// VMware, Docker): reachable from the virtual machines on it, not
+    /// from other computers.
+    Virtual,
+}
+
+impl Link {
+    /// What the server window and `rds-pacs serve` say beside the address.
+    pub fn label(self) -> &'static str {
+        match self {
+            Link::Lan => "local network",
+            Link::Vpn => "VPN: for stations on the same VPN",
+            Link::Virtual => "virtual adapter of this computer, not for other computers",
+        }
+    }
+
+    /// From what the system knows: point-to-point links are tunnels; the
+    /// rest is read off the interface's name, which is how VPN and
+    /// virtualisation software is told apart on every system (a TAP
+    /// adapter presents itself as Ethernet).
+    fn of(name: &str, p2p: bool) -> Link {
+        let n = name.to_lowercase();
+        let has = |words: &[&str]| words.iter().any(|w| n.contains(w));
+        if has(&[
+            "vethernet",
+            "virtualbox",
+            "vmware",
+            "vmnet",
+            "hyper-v",
+            "docker",
+            "wsl",
+            "virbr",
+            "veth",
+            "npcap",
+            "bridge",
+        ]) {
+            Link::Virtual
+        } else if p2p
+            || has(&[
+                "vpn",
+                "tap",
+                "tun",
+                "wg",
+                "wireguard",
+                "tailscale",
+                "zerotier",
+                "hamachi",
+                "nordlynx",
+                "ppp",
+                "cisco",
+                "anyconnect",
+                "fortinet",
+                "fortissl",
+                "globalprotect",
+                "pangp",
+            ])
+        {
+            Link::Vpn
+        } else {
+            Link::Lan
+        }
+    }
+}
+
 /// One address other machines may reach this one at.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Address {
     pub ip: IpAddr,
     /// The interface it belongs to, as the system names it (`Ethernet`,
-    /// `Wi-Fi`, `Tailscale`, `eth0`, `wlan0`).
+    /// `Wi-Fi`, `OpenVPN TAP-Windows6`, `eth0`, `wlan0`, `tailscale0`).
     pub interface: String,
-    /// The address the system sends from by default: the one to try first.
+    pub link: Link,
+    /// The address the system sends from by default.
     pub default_route: bool,
 }
 
@@ -335,11 +412,12 @@ impl Address {
 
 /// The addresses other machines may reach this one at, the most likely
 /// first: every interface that is up and has an address that is not the
-/// loopback or link-local, IPv4 before IPv6, and among those the address
-/// the default route leaves by first (found without sending anything: a
-/// UDP socket is "connected" to a public address and asked which local
-/// address it got). A machine with a wired and a wireless link, or a VPN
-/// (Tailscale, WireGuard), has several; the operator picks the one the
+/// loopback or link-local. Real networks come first, then VPNs, then the
+/// virtual adapters of this computer ([`Link`]); within a kind IPv4 before
+/// IPv6, and the address the default route leaves by first (found without
+/// sending anything: a UDP socket is "connected" to a public address and
+/// asked which local address it got). A machine with a wired and a
+/// wireless link, or a VPN, has several; the operator picks the one the
 /// other station can reach.
 ///
 /// `v4` and `v6` say which families the listener answers: a server bound
@@ -372,6 +450,7 @@ pub fn addresses(v4: bool, v6: bool) -> Vec<Address> {
         }
         out.push(Address {
             ip,
+            link: Link::of(&i.name, i.is_p2p()),
             interface: i.name,
             default_route: Some(ip) == route4 || Some(ip) == route6,
         });
@@ -383,12 +462,14 @@ pub fn addresses(v4: bool, v6: bool) -> Vec<Address> {
             out.push(Address {
                 ip: r,
                 interface: String::new(),
+                link: Link::Lan,
                 default_route: true,
             });
         }
     }
     out.sort_by_key(|a| {
         (
+            a.link,
             a.ip.is_ipv6(),
             !a.default_route,
             a.interface.to_lowercase(),
@@ -666,6 +747,36 @@ mod tests {
         let mut ips: Vec<IpAddr> = all.iter().map(|a| a.ip).collect();
         ips.dedup();
         assert_eq!(ips.len(), all.len(), "no address twice");
+    }
+
+    #[test]
+    fn links_are_told_apart_by_name_and_kind() {
+        assert_eq!(Link::of("Ethernet", false), Link::Lan);
+        assert_eq!(Link::of("Wi-Fi", false), Link::Lan);
+        assert_eq!(Link::of("wlan0", false), Link::Lan);
+        assert_eq!(Link::of("OpenVPN TAP-Windows6", false), Link::Vpn);
+        assert_eq!(Link::of("Tailscale", false), Link::Vpn);
+        assert_eq!(Link::of("tun0", true), Link::Vpn);
+        assert_eq!(Link::of("utun3", true), Link::Vpn);
+        assert_eq!(Link::of("wg0", false), Link::Vpn);
+        assert_eq!(
+            Link::of("Ethernet 3", true),
+            Link::Vpn,
+            "point-to-point is a tunnel"
+        );
+        assert_eq!(
+            Link::of("vEthernet (WSL (Hyper-V firewall))", false),
+            Link::Virtual
+        );
+        assert_eq!(
+            Link::of("VirtualBox Host-Only Network", false),
+            Link::Virtual
+        );
+        assert_eq!(Link::of("docker0", false), Link::Virtual);
+        assert!(
+            Link::Lan < Link::Vpn && Link::Vpn < Link::Virtual,
+            "the listing order"
+        );
     }
 
     #[test]

@@ -299,6 +299,9 @@ src/
     reg_panel.rs      the Image registration module: method, region, parameters,
                       landmarks, the run (against another workspace or every
                       phase of a 4D group), the analytics, the vector field
+    reg_shape.rs      its Align by structures sub-section: the structures
+                      both images carry, paired and weighted, the run, the
+                      per-structure report
     matrix_edit.rs    the hand-typed 4 x 4 transform, as a planning system
                       shows one: the sixteen numbers, use
                       / identity / invert / from the result, clipboard in
@@ -471,6 +474,9 @@ src/
     landmark.rs       thin-plate / Gaussian / Wendland RBF warp, dense solve
     analysis.rs       6-DOF Procrustes fit, displacement and Jacobian statistics
     dvf.rs            vector-field sampling and its view-plane / 3-D glyphs
+    shape.rs          registration by structures: signed distance maps,
+                      surface points, the symmetric Gauss-Newton rigid fit,
+                      the per-structure B-spline refinement on the maps
   propagate.rs      structures across a registration: pull-back with a cached
                     mapping lattice                                              Reg
   fourd.rs          4D sub-studies: phase recognition, ordered groups

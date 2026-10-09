@@ -20,6 +20,11 @@
 //! * [`landmark`] - plastimatch's `landmark_warp`: a radial-basis
 //!   deformation interpolating paired points, with the thin-plate spline,
 //!   Gaussian and Wendland kernels.
+//! * [`shape`] - registration by structures: the surfaces of structures
+//!   contoured on both images laid onto each other's signed distance maps
+//!   (a rigid stage of its own, then optionally the B-spline engines on the
+//!   maps). The voxel values take no part, so it aligns what the contours
+//!   say whatever the two images measure.
 //!
 //! elastix and plastimatch are C++ / ITK toolboxes; nothing of either is
 //! linked here. Parameter names mirror their vocabularies
@@ -42,6 +47,7 @@ pub mod dvf;
 pub mod elastix;
 pub mod landmark;
 pub mod plastimatch;
+pub mod shape;
 
 use std::sync::Arc;
 
@@ -55,6 +61,7 @@ use crate::volume::Volume;
 pub use analysis::{RegAnalysis, VectorStats};
 pub use dvf::{FieldStyle, VectorField};
 pub use landmark::{LandmarkKernel, LandmarkPair, LandmarkParams, RbfWarp};
+pub use shape::{ShapeDof, ShapeLine, ShapeOutcome, ShapePair, ShapeReport, ShapeRequest};
 
 // ---------------------------------------------------------------------------
 // Methods, metrics and parameters
@@ -77,6 +84,13 @@ pub enum RegMethod {
     /// Nothing was optimized, so the metric numbers of a result carrying
     /// this method mean nothing and are not shown.
     Given,
+    /// Registration by structures ([`shape`]): a rigid fit of the surfaces
+    /// of structures contoured on both images. Not in [`RegMethod::ALL`]:
+    /// it is run from its own section, with structures rather than images.
+    ShapeRigid,
+    /// The same, then a local B-spline refinement per structure on the
+    /// distance maps.
+    ShapeDeformable,
 }
 
 impl RegMethod {
@@ -98,6 +112,8 @@ impl RegMethod {
             RegMethod::PlastimatchBSpline => "Deformable - B-spline (plastimatch, L-BFGS)",
             RegMethod::PlastimatchLandmark => "Deformable - landmark warp (plastimatch, RBF)",
             RegMethod::Given => "Given - a transform matrix, not a recovered one",
+            RegMethod::ShapeRigid => "Rigid - by structures (surface distance)",
+            RegMethod::ShapeDeformable => "Deformable - by structures + local B-spline",
         }
     }
 
@@ -109,6 +125,8 @@ impl RegMethod {
             RegMethod::PlastimatchBSpline => "B-spline (plastimatch)",
             RegMethod::PlastimatchLandmark => "Landmarks (plastimatch)",
             RegMethod::Given => "Given",
+            RegMethod::ShapeRigid => "Rigid (structures)",
+            RegMethod::ShapeDeformable => "B-spline (structures)",
         }
     }
 
@@ -143,6 +161,17 @@ impl RegMethod {
                  or read from a REG object. Nothing was optimized, so there is no \
                  metric to report - only what the matrix does."
             }
+            RegMethod::ShapeRigid => {
+                "Lays the surfaces of structures contoured on both images onto each \
+                 other: each fixed surface point onto the moving structure's distance \
+                 map and back. The voxel values are not used, so it works across \
+                 contrast, modality and scanner wherever the contours agree."
+            }
+            RegMethod::ShapeDeformable => {
+                "The rigid fit of the structures' surfaces, then a local B-spline \
+                 refinement on each structure's distance maps: every structure laid \
+                 onto its partner, the rest of the patient left on the rigid result."
+            }
         }
     }
 
@@ -152,17 +181,27 @@ impl RegMethod {
             RegMethod::ElastixRigid | RegMethod::ElastixBSpline => "elastix",
             RegMethod::PlastimatchBSpline | RegMethod::PlastimatchLandmark => "plastimatch",
             RegMethod::Given => "given",
+            RegMethod::ShapeRigid | RegMethod::ShapeDeformable => "structures",
         }
     }
 
     /// True when the result carries a deformation, not just a rigid body.
     pub fn is_deformable(self) -> bool {
-        !matches!(self, RegMethod::ElastixRigid | RegMethod::Given)
+        !matches!(
+            self,
+            RegMethod::ElastixRigid | RegMethod::Given | RegMethod::ShapeRigid
+        )
     }
 
     /// True when image intensities drive the result.
     pub fn is_intensity_based(self) -> bool {
-        !matches!(self, RegMethod::PlastimatchLandmark | RegMethod::Given)
+        !matches!(
+            self,
+            RegMethod::PlastimatchLandmark
+                | RegMethod::Given
+                | RegMethod::ShapeRigid
+                | RegMethod::ShapeDeformable
+        )
     }
 }
 
@@ -173,6 +212,10 @@ pub enum Metric {
     MeanSquares,
     /// Mattes mutual information - multi-modal (CT-MR, CT-CBCT).
     MutualInformation,
+    /// RMS signed distance between the surfaces of paired structures, mm:
+    /// what a registration by structures ([`shape`]) minimizes. Not in
+    /// [`Metric::ALL`]: no image engine can be asked for it.
+    SurfaceDistance,
 }
 
 impl Metric {
@@ -182,6 +225,7 @@ impl Metric {
         match self {
             Metric::MeanSquares => "Mean squares",
             Metric::MutualInformation => "Mutual information",
+            Metric::SurfaceDistance => "Surface distance",
         }
     }
 
@@ -190,6 +234,7 @@ impl Metric {
         match self {
             Metric::MeanSquares => "MSD",
             Metric::MutualInformation => "−MI",
+            Metric::SurfaceDistance => "RMS mm",
         }
     }
 
@@ -203,6 +248,11 @@ impl Metric {
                 "Mattes mutual information over a 32 × 32 joint histogram with cubic \
                  B-spline Parzen windows. Needs no intensity correspondence, so it is \
                  what CT-MR and CT-CBCT need. Slower and less sharply peaked."
+            }
+            Metric::SurfaceDistance => {
+                "RMS distance, mm, from each structure's surface to its partner's on \
+                 the other image, both ways. Says how well the contours agree; the \
+                 images are not looked at."
             }
         }
     }
@@ -1803,6 +1853,9 @@ fn register_with(
     pyramid: &mut PyramidFn,
 ) -> Result<RegistrationResult> {
     let t_start = std::time::Instant::now();
+    if params.metric == Metric::SurfaceDistance {
+        bail!("the surface distance is the metric of registration::shape, not of an image engine");
+    }
 
     // The landmark warp never looks at a voxel, so it skips the pyramids
     // entirely - building them for a geometric interpolation would be
@@ -1903,6 +1956,9 @@ fn register_with(
         // Not something anyone asks to run: a given matrix is installed
         // directly, never optimized towards.
         RegMethod::Given => bail!("a given transform matrix is not a registration to run"),
+        RegMethod::ShapeRigid | RegMethod::ShapeDeformable => {
+            bail!("a registration by structures runs through registration::shape::register")
+        }
     };
 
     // Whatever the engine minimized, the reported before/after pair is in
@@ -1921,6 +1977,11 @@ fn register_with(
             plastimatch::mi_value(&setup, &initial),
             plastimatch::mi_value(&setup, &out.transform),
         ),
+        Metric::SurfaceDistance => {
+            bail!(
+                "the surface distance is the metric of registration::shape, not of an image engine"
+            )
+        }
     };
 
     let transform = Arc::new(out.transform);

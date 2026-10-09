@@ -1197,6 +1197,7 @@ impl ViewerApp {
                             region,
                             fixed: fixed_img,
                             moving: moving_img,
+                            shape: None,
                         }));
                         t
                     }

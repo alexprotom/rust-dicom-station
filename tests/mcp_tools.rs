@@ -64,6 +64,7 @@ fn every_tool_has_a_schema_and_a_description() {
         "open_dataset",
         "segment_organs",
         "register",
+        "register_structures",
         "propagate",
         "propagate_to_group",
         "analyse_motion",
@@ -341,6 +342,114 @@ fn the_heart_sequence_runs_on_the_phantom() {
         0,
         "regs involving ds2 went with it"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn structures_register_the_target_without_the_images() {
+    let dir = common::target_dir("test_mcp_tools_structures");
+    let folder = common::fourd_folder(&dir, [0.0, 6.0, 3.0]);
+    let mut core = core_for(&dir);
+    let c = &mut core;
+    call(c, "open_dataset", json!({"path": folder}));
+    call(c, "open_dataset", json!({"path": folder}));
+
+    // The target of ds1 carried onto ds2's 50% phase (where the phantom's
+    // target sits 6 mm away) by an intensity registration, the way the
+    // heart sequence carries it: that gives the moving side a contour of
+    // its own.
+    call(
+        c,
+        "register",
+        json!({"fixed": {"dataset": "ds1"}, "moving": {"dataset": "ds2", "series": 2},
+               "method": "elastix_rigid", "levels": 2, "iterations": 80, "samples": 1500}),
+    );
+    call(
+        c,
+        "register",
+        json!({"fixed": {"dataset": "ds1"}, "moving": {"dataset": "ds2", "series": 2},
+               "method": "elastix_bspline", "start": "reg1", "levels": 2, "iterations": 80,
+               "samples": 1500, "grid_spacing_mm": 16.0,
+               "region": {"structure": "TARGET", "margin_mm": 15.0}}),
+    );
+    let pr = call(
+        c,
+        "propagate",
+        json!({"reg": "reg2", "structures": [{"structure": "TARGET"}], "to": "moving"}),
+    );
+    let landed = pr["structures"][0]["landed_as"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Now the two targets alone, as a translation: about the 6 mm.
+    let sr = call(
+        c,
+        "register_structures",
+        json!({"fixed": {"dataset": "ds1"}, "moving": {"dataset": "ds2", "series": 2},
+               "structures": [{"fixed": "TARGET", "moving": landed}],
+               "dof": "translation"}),
+    );
+    eprintln!("{sr}");
+    assert_eq!(sr["reg"], "reg3");
+    let t = sr["analysis"]["translation_mm"].as_array().unwrap();
+    let t: Vec<f64> = t.iter().map(|v| v.as_f64().unwrap()).collect();
+    let norm = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+    assert!((norm - 6.0).abs() < 2.0, "about the target's 6 mm: {t:?}");
+    assert_eq!(sr["analysis"]["metric"], "RMS mm");
+    let row = &sr["structures"][0];
+    // The centroids already put the two targets together; the fit is what
+    // least squares makes of the rest.
+    assert!(
+        row["rms_distance_mm"]["after"].as_f64().unwrap()
+            <= row["rms_distance_mm"]["before"].as_f64().unwrap(),
+        "{row}"
+    );
+    assert!(
+        row["mean_distance_mm"]["after"].as_f64().unwrap() < 1.0,
+        "{row}"
+    );
+    assert!(row["dice"]["after"].as_f64().unwrap() > 0.7, "{row}");
+
+    // The handle is an ordinary registration: describe it, carry the cord.
+    let d = call(c, "describe_registration", json!({"reg": "reg3"}));
+    assert_eq!(d["analysis"]["metric"], "RMS mm");
+    let pr = call(
+        c,
+        "propagate",
+        json!({"reg": "reg3", "structures": [{"structure": "CORD"}], "to": "moving"}),
+    );
+    assert!(pr["structures"][0]["voxels"].as_u64().unwrap() > 0, "{pr}");
+
+    // A local refinement of it on the same pair, and what is refused.
+    let refined = call(
+        c,
+        "register_structures",
+        json!({"fixed": {"dataset": "ds1"}, "moving": {"dataset": "ds2", "series": 2},
+               "structures": [{"fixed": "TARGET", "moving": landed}],
+               "refine": "elastix_bspline", "start": "reg3", "levels": 1,
+               "iterations": 60, "samples": 1500, "grid_spacing_mm": 12.0}),
+    );
+    assert_eq!(refined["reg"], "reg4");
+    assert_eq!(refined["rigid_iterations"], 0);
+    assert!(
+        refined["structures"][0]["refinement"].is_string(),
+        "{refined}"
+    );
+    let e = fail(
+        c,
+        "register_structures",
+        json!({"fixed": {"dataset": "ds1"}, "moving": {"dataset": "ds2", "series": 2},
+               "structures": [{"fixed": "TARGET"}], "start": "reg3"}),
+    );
+    assert!(e.contains("refine"), "{e}");
+    let e = fail(
+        c,
+        "register_structures",
+        json!({"fixed": {"dataset": "ds1"}, "moving": {"dataset": "ds2"},
+               "structures": [{"fixed": "NO_SUCH"}]}),
+    );
+    assert!(e.contains("NO_SUCH"), "{e}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

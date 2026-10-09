@@ -44,7 +44,6 @@
 use std::sync::Arc;
 
 use crate::loader::SeriesInfo;
-use crate::morphology;
 use crate::motion::{self, Overlap};
 use crate::progress::Progress;
 use crate::propagate::{self, Finish, Subject};
@@ -385,43 +384,11 @@ pub fn landed_anchor_name(anchor: &str) -> String {
     format!("{anchor}_prop")
 }
 
-/// How far a distance map reaches, mm: beyond this the value is clamped,
-/// so a sample far from the surface has no gradient to follow and cannot
-/// drag the fit.
-const DISTANCE_REACH_MM: f64 = 40.0;
-/// Distance-map units per millimetre (the maps are stored as i16).
-const DISTANCE_SCALE: f64 = 100.0;
-
 /// The signed distance map of a mask on the volume's lattice, as a volume
-/// the engines can register: millimetres to the surface, negative inside,
-/// clamped at [`DISTANCE_REACH_MM`] and scaled by [`DISTANCE_SCALE`].
-pub fn distance_volume(on: &Volume, mask: &[u8]) -> Volume {
-    let dims = on.dims;
-    let outside = morphology::dist2_to_foreground(mask, dims, on.spacing);
-    let inverted: Vec<u8> = mask.iter().map(|&v| (v == 0) as u8).collect();
-    let inside = morphology::dist2_to_foreground(&inverted, dims, on.spacing);
-    let data: Vec<i16> = outside
-        .iter()
-        .zip(&inside)
-        .map(|(&o, &i)| {
-            let d = (o.max(0.0) as f64).sqrt() - (i.max(0.0) as f64).sqrt();
-            (d.clamp(-DISTANCE_REACH_MM, DISTANCE_REACH_MM) * DISTANCE_SCALE).round() as i16
-        })
-        .collect();
-    let reach = (DISTANCE_REACH_MM * DISTANCE_SCALE) as i16;
-    Volume {
-        data,
-        dims,
-        spacing: on.spacing,
-        origin: on.origin,
-        row_dir: on.row_dir,
-        col_dir: on.col_dir,
-        normal: on.normal,
-        frame_of_reference_uid: on.frame_of_reference_uid.clone(),
-        min_value: -reach,
-        max_value: reach,
-    }
-}
+/// the engines can register. It lives with the registration by structures
+/// now ([`crate::registration::shape`]), which registers the same maps; the
+/// name stays here for the callers that have always found it here.
+pub use crate::registration::shape::distance_volume;
 
 /// The rigid parameters an anchored run uses unless told otherwise: the
 /// elastix rigid engine at the caller's settings, sampling the region.

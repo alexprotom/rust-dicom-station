@@ -80,6 +80,7 @@ mod prompt_seg;
 mod propagate_win;
 mod record;
 mod reg_panel;
+mod reg_shape;
 mod rename;
 mod run_report;
 mod seg;
@@ -1231,6 +1232,8 @@ struct ActiveRegistration {
     /// registration, so installing another one throws the scores away with
     /// the transform they belong to.
     struct_dice: Option<Vec<StructDice>>,
+    /// Per structure, when the registration was made by structures.
+    shape_report: Option<registration::ShapeReport>,
 }
 
 /// One structure scored against its namesake in the other workspace.
@@ -1442,6 +1445,8 @@ pub struct ViewerApp {
     reg_margin_mm: f64,
     /// Where the next run starts its search.
     reg_init: RegInit,
+    /// *Align by structures*: the pairs ticked and how they are fitted.
+    reg_shape: reg_shape::ShapeRegState,
 
     // The deformation vector field of the active registration.
     field_on: bool,
@@ -2008,6 +2013,7 @@ impl ViewerApp {
             reg_roi: RegRoi::Whole,
             reg_margin_mm: 10.0,
             reg_init: RegInit::Auto,
+            reg_shape: reg_shape::ShapeRegState::default(),
             field_on: false,
             field_warp_only: false,
             pending_phase_field: None,

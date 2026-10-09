@@ -136,8 +136,32 @@ fn serve(cfg: Config, paths: local::Paths) {
         running.archive.display()
     );
     eprintln!("  listening on {}", running.addr);
-    for a in &run.addresses {
-        eprintln!("  reachable at {a}");
+    let bind_ip = running.addr.ip();
+    let live = if bind_ip.is_unspecified() {
+        local::addresses(bind_ip.is_ipv4(), bind_ip.is_ipv6())
+    } else {
+        Vec::new()
+    };
+    if live.is_empty() {
+        for a in &run.addresses {
+            eprintln!("  reachable at {a}");
+        }
+    } else {
+        for a in &live {
+            let what = if a.interface.is_empty() {
+                String::new()
+            } else {
+                format!("  {}", a.interface)
+            };
+            let kind = match a.link {
+                local::Link::Lan => String::new(),
+                other => format!(" ({})", other.label()),
+            };
+            eprintln!(
+                "  reachable at {}{what}{kind}",
+                a.with_port(running.addr.port())
+            );
+        }
     }
     eprintln!(
         "  certificate  {}",

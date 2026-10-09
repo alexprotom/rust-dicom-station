@@ -54,7 +54,10 @@ engine.*
   stochastic sampling, ASGD), dense B-spline after **plastimatch** (analytic
   gradient, bending energy, L-BFGS, mean squares or Mattes mutual
   information) and plastimatch's **landmark warp**; any of them restricted to
-  one structure or refined on top of a previous result. Every run reports the
+  one structure or refined on top of a previous result. **Registration by
+  structures** aligns two images on the surfaces of structures contoured on
+  both (signed distance maps, a symmetric rigid fit, optionally a local
+  B-spline per structure), the voxel values left out. Every run reports the
   Dice of the two images before and after it, per-structure Dice on request,
   6 DOF, displacement statistics, Jacobian determinant and folding; the vector
   field draws in the views and in 3D; fusion overlay; DICOM REG and Deformable
@@ -208,7 +211,7 @@ https://alexprotom.github.io/rust-dicom-station/
 |---|---|
 | [docs/viewer.md](docs/viewer.md) | Loading folders and single files, workspaces with no volume, MPR views, workspace tree, the four workspaces and comparing them, interaction reference, the graphics backend |
 | [docs/rt-objects.md](docs/rt-objects.md) | RTSTRUCT, RTDOSE, RTPLAN, REG, RTRECORD, reference chains |
-| [docs/registration.md](docs/registration.md) | The four registration engines, local registration, analytics, vector fields, fusion, simulator, verification |
+| [docs/registration.md](docs/registration.md) | The four registration engines, registration by structures, local registration, analytics, vector fields, fusion, simulator, verification |
 | [docs/propagation.md](docs/propagation.md) | Carrying contours and segmentations across a registration |
 | [docs/volumes.md](docs/volumes.md) | How every volume is calculated: voxels-based, surface-based, planimetry, propagation - the exact formulas |
 | [docs/motion-4d.md](docs/motion-4d.md) | 4D groups, the motion / ITV workflow, results, structure comparison and transfer |
