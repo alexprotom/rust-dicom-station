@@ -111,6 +111,17 @@ registry! {
          images overlap, else their centres of gravity; or a structure contoured on both). \
          Returns a reg handle and the quality analysis. The transform maps fixed patient \
          coordinates to moving ones."),
+    "register_structures" => (register::ShapeRegisterArgs, register::register_structures, true,
+        "Register a moving series onto a fixed series by structures contoured on both, not by \
+         their intensities: each structure's surface is laid onto its partner's signed distance \
+         map, both ways (rigid or translation only, Gauss-Newton), then optionally a local \
+         B-spline refinement per structure on the distance maps (refine). structures pairs them \
+         by name (moving names a structure that is named differently on the moving dataset; \
+         weight says how much one counts). For two images whose contours agree but whose \
+         intensities never will: contrast against none, CT against MR or CBCT. Returns a reg \
+         handle like register (propagate, describe_registration and export_registration take \
+         it), the analysis, and per structure the mean surface distance and Dice before and \
+         after."),
     "describe_registration" => (register::RegArgs, register::describe_registration, false,
         "The numbers of an earlier registration again."),
     "propagate" => (register::PropagateArgs, register::propagate, true,

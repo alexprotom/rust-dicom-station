@@ -10,6 +10,7 @@
 //!   step reruns from itself on.
 //! * Parallel rows give exactly what one row after the other gives.
 //! * A batch runs once per matching subfolder and puts the tables together.
+//! * Register by structures: two studies aligned on their targets alone.
 
 mod common;
 
@@ -245,6 +246,90 @@ fn copy_to_phases_puts_one_structure_on_every_phase_under_one_name() {
             .collect();
         assert!(names.contains(&"CORD (2)"), "{label}: {names:?}");
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn register_by_structures_aligns_two_studies_on_their_targets() {
+    let dir = common::target_dir("test_workflow_steps_shape");
+    // The repeat scan's target sits 6 mm away from the plan's; the rest of
+    // the anatomy is where it was.
+    let plan = phantom(&dir, "plan", 0.0);
+    let repeat = phantom(&dir, "repeat", 6.0);
+    let mut wf = Workflow::new("by structures");
+    let a = wf.add(load(&plan), "Plan", [0.0, 0.0]);
+    let b = wf.add(load(&repeat), "Repeat", [0.0, 300.0]);
+    let ia = wf.add(Op::SelectImage(SelectImage::default()), "", [250.0, 0.0]);
+    let ib = wf.add(Op::SelectImage(SelectImage::default()), "", [250.0, 300.0]);
+    let ta = wf.add(select("TARGET"), "", [500.0, 0.0]);
+    let tb = wf.add(select("TARGET"), "", [500.0, 300.0]);
+    let reg = wf.add(
+        Op::RegisterByStructures(RegisterByStructures {
+            shape: ShapeRegParams {
+                dof: ShapeDofChoice::Translation,
+                ..ShapeRegParams::default()
+            },
+            ..RegisterByStructures::default()
+        }),
+        "",
+        [750.0, 150.0],
+    );
+    let cord = wf.add(select("CORD"), "", [750.0, 0.0]);
+    let prop = wf.add(Op::Propagate(Propagate::default()), "", [1000.0, 100.0]);
+    wf.link(a, 0, ia, 0);
+    wf.link(b, 0, ib, 0);
+    wf.link(ia, 0, ta, 0);
+    wf.link(ib, 0, tb, 0);
+    wf.link(ta, 0, reg, 0);
+    wf.link(tb, 0, reg, 1);
+    wf.link(ia, 0, cord, 0);
+    wf.link(reg, 0, prop, 0);
+    wf.link(cord, 0, prop, 1);
+    assert!(wf.check().ok(), "{:?}", wf.check().errors);
+    let wf = Workflow::from_json(&wf.to_json()).expect("reads back");
+    let out = run(&wf, &options(&dir, &wf));
+    assert!(out.ok(), "{:?}", out.error);
+
+    let rep = out
+        .reports
+        .iter()
+        .find(|r| r.title.starts_with("Registration by structures"))
+        .expect("a report");
+    let quantity = |name: &str| -> String {
+        rep.tables[0]
+            .rows
+            .iter()
+            .find(|r| r[0].starts_with(name))
+            .map(|r| r[1].clone())
+            .unwrap_or_else(|| panic!("{name} in {:?}", rep.tables[0].rows))
+    };
+    let t: Vec<f64> = quantity("Translation")
+        .split_whitespace()
+        .map(|v| v.parse().unwrap())
+        .collect();
+    let norm = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+    eprintln!("by structures: translation {t:?}, {:?}", rep.notes);
+    assert!((norm - 6.0).abs() < 1.0, "the target's 6 mm: {t:?}");
+    for r in quantity("Rotation").split_whitespace() {
+        assert!(r.parse::<f64>().unwrap().abs() < 0.01, "no rotation: {r}");
+    }
+    let row = &rep.tables[1].rows[0];
+    assert_eq!(row[0], "TARGET");
+    let after: f64 = row[2].parse().unwrap();
+    assert!(after < 1.0, "the targets meet: {row:?}");
+    // The registration goes on like any other: the cord crosses it.
+    let cords = names_of(&out, 1)
+        .into_iter()
+        .filter(|n| n.starts_with("CORD"))
+        .count();
+    assert!(cords >= 2, "the repeat's own cord and the plan's");
+
+    // A pair that cannot be read is a problem the editor shows.
+    let bad = Op::RegisterByStructures(RegisterByStructures {
+        pairs: "Heart heart_total".into(),
+        ..RegisterByStructures::default()
+    });
+    assert_eq!(bad.param_problems().len(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

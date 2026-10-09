@@ -3,7 +3,9 @@
 Intensity- and landmark-based registration between the two loaded workspaces:
 three independent engines, per-run analytics, a deformation vector field
 you can see and export, and the option to restrict any of it to a single
-structure. elastix and plastimatch are C++/ITK toolboxes; nothing of either
+structure. Beside them, a registration by structures aligns the two images on
+the surfaces of structures contoured on both, without looking at a voxel
+value (*Align by structures*, below). elastix and plastimatch are C++/ITK toolboxes; nothing of either
 is linked - the algorithms are **re-implemented natively in Rust**.
 
 ![registration](screenshot_registration.png)
@@ -14,16 +16,16 @@ anatomy in gray, residual respiratory mismatch as magenta/green fringes.*
 
 ## The three engines
 
-| | elastix rigid | elastix B-spline | plastimatch B-spline | plastimatch landmarks |
-|---|---|---|---|---|
-| transform | Euler 6-DOF | rigid + cubic FFD | centre-of-gravity + cubic FFD | RBF warp |
-| samples | ~3000 random, redrawn every iteration | same | every eligible voxel | none (geometric) |
-| gradient | stochastic estimate | stochastic estimate | exact analytic | closed form |
-| optimizer | ASGD | ASGD | L-BFGS + line search | direct solve |
-| metric | mean squares | mean squares | mean squares **or** Mattes MI | landmark residual |
-| regularizer | - | - | bending energy | stiffness |
-| deterministic | seeded | seeded | yes | yes |
-| multi-modal | no | no | yes (MI) | yes |
+| | elastix rigid | elastix B-spline | plastimatch B-spline | plastimatch landmarks | by structures |
+|---|---|---|---|---|---|
+| transform | Euler 6-DOF | rigid + cubic FFD | centre-of-gravity + cubic FFD | RBF warp | Euler 6-DOF or translation, then optionally a local FFD per structure |
+| samples | ~3000 random, redrawn every iteration | same | every eligible voxel | none (geometric) | up to 4000 surface points per structure and side |
+| gradient | stochastic estimate | stochastic estimate | exact analytic | closed form | exact analytic |
+| optimizer | ASGD | ASGD | L-BFGS + line search | direct solve | Gauss-Newton with Levenberg-Marquardt damping |
+| metric | mean squares | mean squares | mean squares **or** Mattes MI | landmark residual | RMS surface distance (mm) |
+| regularizer | - | - | bending energy | stiffness | - |
+| deterministic | seeded | seeded | yes | yes | yes |
+| multi-modal | no | no | yes (MI) | yes | yes (no intensities) |
 
 ### elastix - stochastic sampling and ASGD
 
@@ -257,6 +259,91 @@ moving image is sampled through the existing transform plus the new
 deformation, and the result is the two composed - typically a global
 registration, then a local refinement on the structure that matters, leaving
 the rest of the patient on the global result.
+
+## Registration by structures
+
+*Align by structures*, a sub-section of the Image registration section,
+aligns the same two picked images on structures contoured on both of them
+and on nothing else: the voxel values take no part. It is the registration
+to reach for when the contours are trusted more than the grey values - a
+contrast CT against a plain one, a CT against an MR or a CBCT, two scans
+whose anatomy agrees and whose intensities never will - or when the
+alignment must follow one set of organs (the heart and the great vessels
+for a cardiac target, the spine for a setup check) and nothing else.
+`src/registration/shape.rs` is the engine; the propagation module's
+anchored run aligns its anchor by the same distance maps
+([star-target-propagation.md](star-target-propagation.md)).
+
+**Which structures.** The table lists every structure drawn on the fixed
+image whose name (case-insensitive) is also drawn on the moving image: a
+structure set or segmentation series that references the series, or one
+that names no series of its workspace. Tick the ones to align on; *Pair by
+hand* adds a pair named differently on the two sides (`Heart` against
+`heart_total`). Each structure is normalised by its own number of surface
+points, so a large organ does not outvote a small one, and its **weight**
+(1 by default) then says how much it counts against the others: 0.1 for a
+structure that should only break a tie.
+
+**The rigid stage.** Each structure becomes a signed distance map on its own
+image's lattice - millimetres to the surface, negative inside, clamped at
+40 mm so a point far away has no gradient to follow - computed in a box
+around the structure. The surface points are the midpoints of the faces
+between a voxel inside and a neighbour outside (a face on the edge of the
+image is not surface: that is a structure cut by the field of view). The
+cost is
+
+```
+E(θ) = Σ_k w_k [ 1/n_k Σ_i ρ(D_k^moving(T x_i)) + 1/m_k Σ_j ρ(D_k^fixed(T⁻¹ y_j)) ]
+```
+
+the fixed surface points `x_i` laid onto the moving structure's map and, with
+*Both ways* on (the default), the moving surface points `y_j` laid back onto
+the fixed structure's map through the exact inverse. The second term is what
+keeps a structure contoured over a shorter length on one image (a spinal
+cord, an oesophagus) from sliding along its partner. `ρ` is the square, or
+with *Robust* Huber's function of the width given, so a slice contoured
+differently on one side counts linearly rather than squared. The six
+parameters (three with *Translation only*, the rotations kept at zero) are
+found by Gauss-Newton with Levenberg-Marquardt damping on the exact
+derivative of the trilinear maps, rotations about the centre of the fixed
+surfaces: deterministic, a few dozen iterations, well under a second after
+the maps. Every sum over points is taken in fixed pieces and in order, so a
+run gives the same numbers on any number of threads.
+
+**Where it starts.** The section's *Start from* row applies: *Automatic* and
+*Centres of gravity* match the centroids of the ticked structures (the
+contour analogue of the centres of gravity, and what lets two images in two
+frames of reference find each other), *Identity* keeps the identity, and a
+structure there matches that structure's own centroids.
+
+**Then refine.** Optionally, a local B-spline refinement (elastix or
+plastimatch) runs on each structure's distance maps, one structure at a time
+from the largest to the smallest: its region is the structure grown by the
+*Margin*, its start the transform so far, so each is a local correction
+composed onto the rigid result and the rest of the patient keeps that
+result exactly. The grid spacing is the sub-section's own *Grid*; the
+resolutions, iterations and samples are the ones under *Parameters*. **▶
+Refine active** skips the rigid stage and refines the active registration
+of the same two images instead - an intensity registration, say, corrected
+on the structures that matter.
+
+**What comes back** is an ordinary registration, installed as the active
+one: fusion, crosshair link, vector field, analysis, propagation and REG
+export work on it unchanged. Its metric is the RMS surface distance in
+millimetres before and after (`RMS mm 6.31 ▶ 0.42`), and *By structures*
+lists for every structure the mean surface distance and the Dice (the moving
+structure carried onto the fixed image, as *Score structures* carries it,
+against the fixed one) where the search started and where it ended, with each refinement's line, its 95th
+percentile displacement and folded fraction in the tooltip. A structure whose
+distance barely falls while the others meet is one whose two contours
+disagree: untick it, or lower its weight.
+
+The method aligns the contours it is given; a contouring difference becomes
+registration error by construction, which is what the per-structure table is
+there to show. One round structure alone does not fix the rotations (a
+sphere turns freely): use *Translation only*, or add a second structure.
+The same engine is the MCP tool `register_structures` ([mcp.md](mcp.md)) and
+the workflow step *Register by structures* ([workflows.md](workflows.md)).
 
 ## What the result says
 

@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use anyhow::{anyhow, bail, Context, Result};
 
 use super::super::catalog::{self as cat, name_matches, split_names};
-use super::super::exec::{Ctx, Done, Report, Scope, Table, Value};
+use super::super::exec::{Ctx, Done, RegEntry, Report, Scope, Table, Value};
 use super::super::safe_name;
 use super::super::Node;
 use super::{
@@ -840,6 +840,157 @@ pub(super) fn copy_to_phases(
     d.touched
         .push((dst_ds, ph.last().map(|(_, s)| s.uid.clone())));
     Ok(d)
+}
+
+// ---- registration by structures ---------------------------------------------------
+
+/// Register two images by the structures that arrived on *Fixed* and on
+/// *Moving*: paired by name, plus the pairs given by hand
+/// ([`crate::registration::shape`]).
+pub(super) fn register_by_structures(
+    ctx: &mut Ctx,
+    node: &Node,
+    fixed: &Value,
+    moving: &Value,
+    prm: &cat::RegisterByStructures,
+    p: &Progress,
+) -> Result<Done> {
+    let (fds, fnames, fon) = structures(fixed)?;
+    let Scope::Image(fuid) = fon else {
+        bail!("the fixed structures must be found on one image series");
+    };
+    let (mds, mnames, mon) = structures(moving)?;
+    let Scope::Image(muid) = mon else {
+        bail!("the moving structures must be found on one image series");
+    };
+    let (fuid, muid) = (fuid.clone(), muid.clone());
+    let (fnames, mnames) = (fnames.to_vec(), mnames.to_vec());
+    if fds == mds && fuid == muid {
+        bail!("the fixed and the moving structures are on the same image series");
+    }
+    let (hand, problems) = prm.hand_pairs();
+    if let Some(e) = problems.first() {
+        bail!("{e}");
+    }
+    let find =
+        |names: &[String], n: &str| names.iter().find(|x| x.eq_ignore_ascii_case(n)).cloned();
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for (f, m) in &hand {
+        let (Some(f), Some(m)) = (find(&fnames, f), find(&mnames, m)) else {
+            bail!("the pair '{f} = {m}' did not arrive: '{f}' on Fixed and '{m}' on Moving");
+        };
+        pairs.push((f, m));
+    }
+    for f in &fnames {
+        if pairs.iter().any(|(pf, _)| pf.eq_ignore_ascii_case(f)) {
+            continue;
+        }
+        if let Some(m) = find(&mnames, f) {
+            pairs.push((f.clone(), m));
+        }
+    }
+    if pairs.is_empty() {
+        bail!(
+            "no structure arrived on both images (pair the ones named differently under \
+             Pairs)"
+        );
+    }
+    let fv = ctx.volume(fds, &fuid, p)?;
+    let mv = ctx.volume(mds, &muid, p)?;
+    let (fgrid, mgrid) = (fv.grid(), mv.grid());
+    p.set("Rasterizing the structures");
+    let mut shape_pairs = Vec::with_capacity(pairs.len());
+    for (f, m) in &pairs {
+        let (fm, color) = mask_on(&ctx.ds(fds)?.study, f, &fuid, &fgrid)?;
+        let (mm, _) = mask_on(&ctx.ds(mds)?.study, m, &muid, &mgrid)?;
+        shape_pairs.push(crate::registration::ShapePair {
+            name: if f.eq_ignore_ascii_case(m) {
+                f.clone()
+            } else {
+                format!("{f} / {m}")
+            },
+            color,
+            weight: 1.0,
+            fixed: fm,
+            moving: mm,
+        });
+    }
+    let req = prm.shape.request(shape_pairs, prm.init.init());
+    p.set("Registering on the structures");
+    let out = crate::registration::shape::register(&fv, &mv, &req, p)?;
+    let r = &out.result;
+    let a = &r.analysis;
+    let mut t = Table::new("Registration", &["Quantity", "Value"]);
+    t.row(vec!["Method".into(), r.method.label().into()]);
+    t.row(vec![
+        format!("Metric ({})", r.metric.tag()),
+        format!("{} to {}", r2(r.initial_metric), r2(r.final_metric)),
+    ]);
+    t.row(vec!["Iterations".into(), r.iterations_run.to_string()]);
+    t.row(vec!["Time (s)".into(), r1(r.elapsed_secs)]);
+    t.row(vec![
+        "Translation (mm)".into(),
+        format!(
+            "{} {} {}",
+            r2(a.dof.translation.x),
+            r2(a.dof.translation.y),
+            r2(a.dof.translation.z)
+        ),
+    ]);
+    t.row(vec![
+        "Rotation (deg)".into(),
+        a.dof
+            .rotation_deg
+            .iter()
+            .map(|v| r2(*v))
+            .collect::<Vec<_>>()
+            .join(" "),
+    ]);
+    let mut per = Table::new(
+        "Structures",
+        &[
+            "Structure",
+            "Mean distance before (mm)",
+            "Mean distance after (mm)",
+            "Dice before",
+            "Dice after",
+            "Refinement",
+        ],
+    );
+    let dice = |d: Option<f64>| d.map(r2).unwrap_or_else(|| "-".into());
+    for l in &out.report.lines {
+        per.row(vec![
+            l.name.clone(),
+            r2(l.mean_before_mm),
+            r2(l.mean_after_mm),
+            dice(l.dice_before),
+            dice(l.dice_after),
+            l.refine_line.clone().unwrap_or_default(),
+        ]);
+    }
+    let line = r.metric_line();
+    let notes: Vec<String> = std::iter::once(line.clone())
+        .chain(out.report.lines.iter().map(|l| l.line()))
+        .collect();
+    let reg = ctx.add_reg(RegEntry::Pair {
+        fixed: (fds, fuid.clone()),
+        moving: (mds, muid),
+        result: std::sync::Arc::new(out.result),
+    });
+    let report = ctx.add_report(Report {
+        node: node.id,
+        title: format!("Registration by structures: {}", node.label()),
+        notes,
+        tables: vec![t, per],
+        motion: None,
+    });
+    let mut finished = done(
+        vec![Value::Registration(reg), Value::Report(report)],
+        vec![line],
+    );
+    finished.report = Some(report);
+    finished.touched.push((fds, Some(fuid)));
+    Ok(finished)
 }
 
 // ---- dose -----------------------------------------------------------------------------

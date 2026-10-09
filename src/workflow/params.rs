@@ -405,6 +405,125 @@ impl DeformMethod {
     }
 }
 
+/// How many degrees of freedom a registration by structures recovers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShapeDofChoice {
+    /// Three rotations and three translations.
+    #[default]
+    Rigid,
+    /// The translations alone.
+    Translation,
+}
+
+impl ShapeDofChoice {
+    pub const ALL: [ShapeDofChoice; 2] = [ShapeDofChoice::Rigid, ShapeDofChoice::Translation];
+
+    pub fn label(self) -> &'static str {
+        self.dof().label()
+    }
+
+    pub fn dof(self) -> crate::registration::ShapeDof {
+        use crate::registration::ShapeDof;
+        match self {
+            ShapeDofChoice::Rigid => ShapeDof::Rigid,
+            ShapeDofChoice::Translation => ShapeDof::Translation,
+        }
+    }
+}
+
+/// The local deformable stage after the rigid fit of a registration by
+/// structures.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShapeRefine {
+    /// Keep the rigid result.
+    #[default]
+    None,
+    ElastixBspline,
+    PlastimatchBspline,
+}
+
+impl ShapeRefine {
+    pub const ALL: [ShapeRefine; 3] = [
+        ShapeRefine::None,
+        ShapeRefine::ElastixBspline,
+        ShapeRefine::PlastimatchBspline,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ShapeRefine::None => "rigid only",
+            ShapeRefine::ElastixBspline => "then B-spline (elastix)",
+            ShapeRefine::PlastimatchBspline => "then B-spline (plastimatch)",
+        }
+    }
+
+    pub fn method(self) -> Option<crate::registration::RegMethod> {
+        use crate::registration::RegMethod;
+        match self {
+            ShapeRefine::None => None,
+            ShapeRefine::ElastixBspline => Some(RegMethod::ElastixBSpline),
+            ShapeRefine::PlastimatchBspline => Some(RegMethod::PlastimatchBSpline),
+        }
+    }
+}
+
+/// A registration by structures ([`crate::registration::shape`]) as the
+/// workflow step and the MCP tool take it: everything but the structures
+/// and the start.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShapeRegParams {
+    pub dof: ShapeDofChoice,
+    pub refine: ShapeRefine,
+    /// Dilation of each structure that bounds its refinement, mm.
+    pub margin_mm: f64,
+    /// Huber width, mm; 0 is plain least squares.
+    pub robust_mm: f64,
+    /// Also lay the moving surfaces onto the fixed structures.
+    pub symmetric: bool,
+    /// The refinement's effort; the rigid stage needs none.
+    pub effort: Effort,
+}
+
+impl Default for ShapeRegParams {
+    fn default() -> Self {
+        ShapeRegParams {
+            dof: ShapeDofChoice::Rigid,
+            refine: ShapeRefine::None,
+            margin_mm: 10.0,
+            robust_mm: 0.0,
+            symmetric: true,
+            effort: Effort {
+                grid_spacing_mm: 16.0,
+                ..Effort::default()
+            },
+        }
+    }
+}
+
+impl ShapeRegParams {
+    /// The engine's request for `pairs`, starting from `init`.
+    pub fn request(
+        &self,
+        pairs: Vec<crate::registration::ShapePair>,
+        init: crate::registration::Init,
+    ) -> crate::registration::ShapeRequest {
+        crate::registration::ShapeRequest {
+            pairs,
+            dof: self.dof.dof(),
+            symmetric: self.symmetric,
+            robust_mm: (self.robust_mm > 0.0).then(|| self.robust_mm.clamp(0.1, 50.0)),
+            init,
+            start: None,
+            refine: self.refine.method().map(|m| self.effort.params(m)),
+            margin_mm: self.margin_mm.clamp(0.0, 60.0),
+            ..crate::registration::ShapeRequest::default()
+        }
+    }
+}
+
 // ---- names, for the callers that pass them as text (the MCP tools) --------
 
 impl AutosegVariant {
@@ -448,6 +567,20 @@ impl RegMethodChoice {
     /// `elastix_rigid`, `elastix_bspline` or `plastimatch_bspline`.
     pub fn from_name(name: &str) -> anyhow::Result<RegMethodChoice> {
         by_name(&RegMethodChoice::ALL, name, "method")
+    }
+}
+
+impl ShapeDofChoice {
+    /// `rigid` or `translation`.
+    pub fn from_name(name: &str) -> anyhow::Result<ShapeDofChoice> {
+        by_name(&ShapeDofChoice::ALL, name, "dof")
+    }
+}
+
+impl ShapeRefine {
+    /// `none`, `elastix_bspline` or `plastimatch_bspline`.
+    pub fn from_name(name: &str) -> anyhow::Result<ShapeRefine> {
+        by_name(&ShapeRefine::ALL, name, "refine")
     }
 }
 
@@ -520,6 +653,14 @@ mod tests {
             Landing::StructureSet
         );
         assert_eq!(Device::from_name(" GPU ").unwrap(), Device::Gpu);
+        assert_eq!(
+            ShapeRefine::from_name("plastimatch_bspline").unwrap(),
+            ShapeRefine::PlastimatchBspline
+        );
+        assert_eq!(
+            ShapeDofChoice::from_name("translation").unwrap(),
+            ShapeDofChoice::Translation
+        );
         let e = format!("{:#}", AutosegVariant::from_name("slow").unwrap_err());
         assert!(e.contains("fast, high, preview, fast_v3"), "{e}");
         assert_eq!(

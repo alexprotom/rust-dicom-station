@@ -228,6 +228,24 @@ fn exercise(policy: PhiPolicy, tag: &str) {
         json!({"reg": "reg1", "step_mm": 10.0}),
     )
     .unwrap();
+    // By structures: an unknown one (the error lists what there is), then
+    // the target and the body of phase 0 laid onto the 50% phase.
+    let _ = call(
+        c,
+        l,
+        "register_structures",
+        json!({"fixed": {"dataset": "ds1"}, "moving": {"dataset": "ds1", "series": 2},
+               "structures": [{"fixed": "NO_SUCH"}]}),
+    );
+    let sr = call(
+        c,
+        l,
+        "register_structures",
+        json!({"fixed": {"dataset": "ds1", "series": 1}, "moving": {"dataset": "ds1", "series": 2},
+               "structures": [{"fixed": "TARGET"}, {"fixed": "BODY", "weight": 0.5}]}),
+    )
+    .unwrap();
+    assert_eq!(sr["structures"].as_array().unwrap().len(), 2, "{sr}");
 
     // Output: the export names folders after the patient under `allow`,
     // and the answer must still be clean.

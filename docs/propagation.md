@@ -208,6 +208,13 @@ group registration's, so a later plain propagation onto the same group
 reuses them. From the MCP server the same run is `propagate_to_group` with
 `anchor`.
 
+The distance maps it registers are made by
+`registration::shape::distance_volume`, the same maps *Align by structures*
+in the Image registration module refines on. That module is the way to align
+two single images on their contours - one structure or several, weighted,
+rigid or with a local refinement per structure - and to keep the result as
+the active registration ([registration.md](registration.md#registration-by-structures)).
+
 ## Using it
 
 1. Register the two images (any method; see

@@ -2049,6 +2049,68 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             });
             effort_ui(f, id, &mut p.effort);
         }
+        Op::RegisterByStructures(p) => {
+            f.row_tip(
+                "Pairs",
+                "The structures arriving on Fixed and on Moving pair by name. Write the \
+                 ones named differently here: fixed name = moving name, separated by commas \
+                 (Heart = heart_total).",
+                |ui| text(ui, &mut p.pairs, "Heart = heart_total", 160.0),
+            );
+            f.row("Transform", |ui| {
+                choice(
+                    ui,
+                    ("dof", id),
+                    &mut p.shape.dof,
+                    &cat::ShapeDofChoice::ALL,
+                    |v| v.label(),
+                );
+            });
+            f.row("Start", |ui| {
+                choice(ui, ("init", id), &mut p.init, &cat::RegInit::ALL, |v| {
+                    v.label()
+                });
+            });
+            f.row_tip(
+                "Robust",
+                "Huber width: distances beyond it count linearly, so a slice contoured \
+                 differently does not steer the fit; 0 is least squares",
+                |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut p.shape.robust_mm)
+                            .range(0.0..=20.0)
+                            .suffix(" mm"),
+                    );
+                },
+            );
+            f.row("", |ui| {
+                ui.checkbox(&mut p.shape.symmetric, "Both ways")
+                    .on_hover_text("Also lay the moving surfaces onto the fixed structures");
+            });
+            f.row("Refine", |ui| {
+                choice(
+                    ui,
+                    ("refine", id),
+                    &mut p.shape.refine,
+                    &cat::ShapeRefine::ALL,
+                    |v| v.label(),
+                );
+            });
+            if p.shape.refine != cat::ShapeRefine::None {
+                f.row_tip(
+                    "Margin",
+                    "Each structure grown by this much bounds its refinement",
+                    |ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut p.shape.margin_mm)
+                                .range(0.0..=60.0)
+                                .suffix(" mm"),
+                        );
+                    },
+                );
+                effort_ui(f, id, &mut p.shape.effort);
+            }
+        }
         Op::Propagate(p) => {
             f.row("File into", |ui| {
                 choice(ui, ("land", id), &mut p.landing, &cat::Landing::ALL, |v| {

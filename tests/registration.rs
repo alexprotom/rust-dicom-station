@@ -762,3 +762,396 @@ fn the_vector_field_reproduces_the_transform_it_was_sampled_from() {
     eprintln!("field: worst interpolation error {worst:.4} mm");
     assert!(worst < 0.05, "field interpolation off by {worst:.4} mm");
 }
+
+// ---------------------------------------------------------------------------
+// Registration by structures (registration::shape)
+// ---------------------------------------------------------------------------
+//
+// The images below hold nothing but zeros: whatever the engine recovers, it
+// recovered from the structures, which is the point of it.
+
+mod shapes {
+    use super::*;
+    use rust_dicom_station::registration::shape;
+    pub use rust_dicom_station::registration::{ShapeDof, ShapePair, ShapeRequest, Transform3};
+
+    /// An image of zeros: `n³` voxels at `spacing`, voxel 0 at `origin`.
+    pub fn blank(n: usize, spacing: f64, origin: Vec3) -> Volume {
+        Volume {
+            data: vec![0i16; n * n * n],
+            dims: [n, n, n],
+            spacing: [spacing; 3],
+            origin,
+            row_dir: Vec3::new(1.0, 0.0, 0.0),
+            col_dir: Vec3::new(0.0, 1.0, 0.0),
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            frame_of_reference_uid: String::new(),
+            min_value: 0,
+            max_value: 0,
+        }
+    }
+
+    /// A mask on `vol`'s lattice: the voxels whose centre `inside` accepts.
+    pub fn mask(vol: &Volume, inside: impl Fn(Vec3) -> bool) -> Vec<u8> {
+        let [nx, ny, nz] = vol.dims;
+        let mut m = vec![0u8; nx * ny * nz];
+        for k in 0..nz {
+            for j in 0..ny {
+                for i in 0..nx {
+                    m[k * nx * ny + j * nx + i] =
+                        inside(vol.voxel_to_patient(i as f64, j as f64, k as f64)) as u8;
+                }
+            }
+        }
+        m
+    }
+
+    /// An ellipsoid: centre and semi-axes, mm.
+    #[derive(Clone, Copy)]
+    pub struct Ell {
+        pub c: Vec3,
+        pub r: Vec3,
+    }
+
+    impl Ell {
+        pub fn holds(&self, p: Vec3) -> bool {
+            let d = p - self.c;
+            (d.x / self.r.x).powi(2) + (d.y / self.r.y).powi(2) + (d.z / self.r.z).powi(2) <= 1.0
+        }
+        /// Its centre and the six ends of its axes: where the error of a
+        /// transform is measured.
+        pub fn probes(&self) -> Vec<Vec3> {
+            let mut out = vec![self.c];
+            for s in [-1.0, 1.0] {
+                out.push(self.c + Vec3::new(s * self.r.x, 0.0, 0.0));
+                out.push(self.c + Vec3::new(0.0, s * self.r.y, 0.0));
+                out.push(self.c + Vec3::new(0.0, 0.0, s * self.r.z));
+            }
+            out
+        }
+    }
+
+    pub const A: Ell = Ell {
+        c: Vec3 {
+            x: 5.0,
+            y: -3.0,
+            z: 4.0,
+        },
+        r: Vec3 {
+            x: 22.0,
+            y: 15.0,
+            z: 18.0,
+        },
+    };
+    pub const B: Ell = Ell {
+        c: Vec3 {
+            x: -24.0,
+            y: 20.0,
+            z: -16.0,
+        },
+        r: Vec3 {
+            x: 9.0,
+            y: 8.0,
+            z: 10.0,
+        },
+    };
+    pub const C: Ell = Ell {
+        c: Vec3 {
+            x: 24.0,
+            y: 22.0,
+            z: -22.0,
+        },
+        r: Vec3 {
+            x: 7.0,
+            y: 7.0,
+            z: 7.0,
+        },
+    };
+
+    /// The transform the moving image was made with (fixed → moving).
+    pub fn truth(shift: Vec3) -> RigidTransform {
+        RigidTransform::new([0.05, -0.04, 0.08, shift.x, shift.y, shift.z], Vec3::ZERO)
+    }
+
+    /// The fixed image, a moving image on another lattice, and a pair per
+    /// ellipsoid: the fixed one as it is, the moving one carried by `t`,
+    /// with `extra[i]` added to where ellipsoid `i` sits on the moving side.
+    pub fn scene(
+        ells: &[Ell],
+        t: &RigidTransform,
+        moving_origin: Vec3,
+        extra: &[Vec3],
+    ) -> (Volume, Volume, Vec<ShapePair>) {
+        let fixed = blank(64, 1.5, Vec3::new(-47.25, -47.25, -47.25));
+        let moving = blank(76, 1.3, moving_origin);
+        let pairs = ells
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let off = extra.get(i).copied().unwrap_or(Vec3::ZERO);
+                ShapePair {
+                    name: format!("s{i}"),
+                    color: [200, 80, 40],
+                    weight: 1.0,
+                    fixed: mask(&fixed, |p| e.holds(p)),
+                    moving: mask(&moving, |q| e.holds(t.unmap(q - off))),
+                }
+            })
+            .collect();
+        (fixed, moving, pairs)
+    }
+
+    /// The largest distance between where `got` and `want` send the probes.
+    pub fn tre(got: &Transform3, want: &RigidTransform, probes: &[Vec3]) -> f64 {
+        probes
+            .iter()
+            .map(|&p| (got.map(p) - want.map(p)).length())
+            .fold(0.0, f64::max)
+    }
+
+    /// The angle between two rotations, rad.
+    pub fn angle_between(got: &Transform3, want: &RigidTransform) -> f64 {
+        let a = got.rigid.matrix();
+        let b = want.matrix();
+        // trace(A Bᵀ) = Σ a_ij b_ij.
+        let tr: f64 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
+        ((tr - 1.0) * 0.5).clamp(-1.0, 1.0).acos()
+    }
+
+    pub fn request(pairs: Vec<ShapePair>) -> ShapeRequest {
+        ShapeRequest {
+            pairs,
+            ..ShapeRequest::default()
+        }
+    }
+
+    pub fn run(fixed: &Volume, moving: &Volume, req: &ShapeRequest) -> shape::ShapeOutcome {
+        shape::register(fixed, moving, req, &Progress::default()).expect("registration runs")
+    }
+}
+
+#[test]
+fn structures_alone_recover_a_rigid_transform() {
+    use shapes::*;
+    let t = truth(Vec3::new(6.0, -4.0, 5.0));
+    let (fixed, moving, pairs) = scene(&[A, B], &t, Vec3::new(-50.0, -52.0, -46.0), &[]);
+    let out = run(&fixed, &moving, &request(pairs));
+    let res = &out.result;
+    let probes: Vec<Vec3> = [A, B].iter().flat_map(|e| e.probes()).collect();
+    let err = tre(&res.transform, &t, &probes);
+    let ang = angle_between(&res.transform, &t).to_degrees();
+    eprintln!(
+        "structures: {} · TRE {err:.3} mm · rotation off by {ang:.3} deg",
+        res.metric_line()
+    );
+    for l in &out.report.lines {
+        eprintln!("  {}", l.line());
+    }
+    assert_eq!(res.method, RegMethod::ShapeRigid);
+    assert_eq!(res.metric, Metric::SurfaceDistance);
+    assert!(err < 0.5, "probes land {err:.3} mm off");
+    assert!(ang < 0.3, "rotation off by {ang:.3} deg");
+    // What is left is the voxels: each surface is a staircase of 1.3 and
+    // 1.5 mm steps, so the two never meet closer than about half a voxel.
+    assert!(
+        res.final_metric < 0.9,
+        "surfaces meet: {}",
+        res.final_metric
+    );
+    assert!(res.final_metric < res.initial_metric);
+    assert!(res.transform.warp.is_none());
+    for l in &out.report.lines {
+        assert!(l.mean_after_mm < l.mean_before_mm, "{}", l.line());
+        assert!(l.dice_after.unwrap() > 0.9, "{}", l.line());
+    }
+    assert_eq!(res.region.as_deref(), Some("s0, s1"));
+}
+
+#[test]
+fn the_weights_decide_which_structures_the_fit_follows() {
+    use shapes::*;
+    let t = truth(Vec3::new(3.0, 2.0, -4.0));
+    // The third structure is 8 mm out of place on the moving image: a
+    // contour that disagrees with the other two.
+    let extra = [Vec3::ZERO, Vec3::ZERO, Vec3::new(8.0, 0.0, 0.0)];
+    let (fixed, moving, mut pairs) = scene(&[A, B, C], &t, Vec3::new(-50.0, -50.0, -50.0), &extra);
+    let probes: Vec<Vec3> = [A, B].iter().flat_map(|e| e.probes()).collect();
+
+    let equal = run(&fixed, &moving, &request(pairs.clone()));
+    let e_equal = tre(&equal.result.transform, &t, &probes);
+    pairs[2].weight = 0.1;
+    let light = run(&fixed, &moving, &request(pairs));
+    let e_light = tre(&light.result.transform, &t, &probes);
+    eprintln!("weights: equal {e_equal:.2} mm, the stray one at 0.1 {e_light:.2} mm");
+    assert!(
+        e_light < 1.0,
+        "the two heavy structures are followed: {e_light:.2}"
+    );
+    assert!(
+        e_light * 2.5 < e_equal,
+        "a light weight takes the stray structure out of it: {e_light:.2} vs {e_equal:.2}"
+    );
+}
+
+#[test]
+fn translation_only_leaves_the_rotations_at_zero() {
+    use shapes::*;
+    let t = truth(Vec3::new(6.0, -4.0, 5.0));
+    let (fixed, moving, pairs) = scene(&[A, B], &t, Vec3::new(-50.0, -52.0, -46.0), &[]);
+    let mut req = request(pairs);
+    req.dof = ShapeDof::Translation;
+    let out = run(&fixed, &moving, &req);
+    let prm = out.result.transform.rigid.params();
+    eprintln!("translation only: {:?} · {}", prm, out.result.metric_line());
+    assert_eq!(&prm[..3], &[0.0, 0.0, 0.0]);
+    assert_eq!(out.report.dof, ShapeDof::Translation);
+    // What is left is about the shift of the structures' centre.
+    let c = out.report.rigid_center.unwrap();
+    let want = t.map(c) - c;
+    let got = Vec3::new(prm[3], prm[4], prm[5]);
+    assert!(
+        (got - want).length() < 2.0,
+        "translation {got:?} against the centre's shift {want:?}"
+    );
+    assert!(out.result.final_metric < out.result.initial_metric);
+}
+
+#[test]
+fn structures_in_two_frames_of_reference_find_each_other() {
+    use shapes::*;
+    // 200 mm apart in patient coordinates: the moving image's lattice sits
+    // there too, so the two images do not overlap at all.
+    let t = truth(Vec3::new(206.0, -4.0, 5.0));
+    let (fixed, moving, pairs) = scene(&[A, B], &t, Vec3::new(150.0, -52.0, -46.0), &[]);
+    let probes: Vec<Vec3> = [A, B].iter().flat_map(|e| e.probes()).collect();
+    let out = run(&fixed, &moving, &request(pairs));
+    let err = tre(&out.result.transform, &t, &probes);
+    eprintln!("two frames: {} · TRE {err:.3} mm", out.result.metric_line());
+    assert!(err < 0.5, "found from the centroids: {err:.3} mm");
+    // The centroids closed the 206 mm before the search took a step.
+    assert!(
+        out.result.initial_metric < 5.0,
+        "the search started next to the answer: {}",
+        out.result.initial_metric
+    );
+}
+
+#[test]
+fn a_registration_by_structures_reproduces_itself_on_any_thread_count() {
+    use shapes::*;
+    let t = truth(Vec3::new(6.0, -4.0, 5.0));
+    let (fixed, moving, pairs) = scene(&[A, B], &t, Vec3::new(-50.0, -52.0, -46.0), &[]);
+    let mut req = request(pairs);
+    req.robust_mm = Some(2.0);
+    let on = |threads: usize| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+            .install(|| run(&fixed, &moving, &req))
+    };
+    let one = on(1);
+    let three = on(3);
+    assert_eq!(
+        one.result.transform.rigid.params(),
+        three.result.transform.rigid.params()
+    );
+    assert_eq!(one.result.final_metric, three.result.final_metric);
+    assert_eq!(one.report.rigid_iterations, three.report.rigid_iterations);
+}
+
+#[test]
+fn a_refinement_by_structures_follows_a_local_deformation() {
+    use shapes::*;
+    let t = truth(Vec3::new(4.0, -3.0, 2.0));
+    let fixed = blank(64, 1.5, Vec3::new(-47.25, -47.25, -47.25));
+    let moving = blank(76, 1.3, Vec3::new(-50.0, -52.0, -46.0));
+    // The moving structure is the fixed one carried by `t` with a 5 mm bump
+    // pushed out of its top: no rigid body fits that.
+    let bump_at = A.c + Vec3::new(6.0, 0.0, A.r.z);
+    let bump = |x: Vec3| Vec3::new(0.0, 0.0, 5.0) * (-(x - bump_at).length().powi(2) / 128.0).exp();
+    let pair = ShapePair {
+        name: "s0".into(),
+        color: [0, 0, 0],
+        weight: 1.0,
+        fixed: mask(&fixed, |p| A.holds(p)),
+        moving: mask(&moving, |q| {
+            let x = t.unmap(q);
+            A.holds(x - bump(x))
+        }),
+    };
+    let rigid = run(&fixed, &moving, &request(vec![pair.clone()]));
+    let mut req = request(vec![pair]);
+    req.refine = Some(RegParams {
+        method: RegMethod::ElastixBSpline,
+        levels: 2,
+        iterations: 200,
+        samples: 3000,
+        grid_spacing_mm: 10.0,
+        ..RegParams::default()
+    });
+    req.margin_mm = 8.0;
+    let out = run(&fixed, &moving, &req);
+    let (r, d) = (&rigid.report.lines[0], &out.report.lines[0]);
+    eprintln!(
+        "rigid: {}\nrefined: {} ({:?})",
+        r.line(),
+        d.line(),
+        d.refine_line
+    );
+    assert_eq!(out.result.method, RegMethod::ShapeDeformable);
+    assert!(d.refine_line.is_some());
+    // Down to the voxel floor the rigid case also reaches (about 0.6 mm on
+    // these lattices), which no rigid body gets to with the bump there.
+    assert!(
+        d.mean_after_mm < r.mean_after_mm - 0.25 && d.mean_after_mm < 0.7,
+        "the refinement lays the bump down: {:.2} against {:.2} mm",
+        d.mean_after_mm,
+        r.mean_after_mm
+    );
+    assert!(d.dice_after.unwrap() > r.dice_after.unwrap());
+    assert!(d.folded_fraction.unwrap() < 0.01);
+    // Far from the structure the lattice does not reach: the rigid result.
+    let tr = &out.result.transform;
+    for p in [Vec3::new(-44.0, -44.0, -44.0), Vec3::new(40.0, 40.0, -40.0)] {
+        assert!((tr.map(p) - tr.rigid.map(p)).length() < 1e-9);
+    }
+    // And a refinement of that result on its own (no rigid stage) starts
+    // where it ended.
+    let mut again = req.clone();
+    again.start = Some(out.result.transform.clone());
+    let twice = run(&fixed, &moving, &again);
+    assert_eq!(twice.report.rigid_iterations, 0);
+    assert!(twice.report.lines[0].mean_after_mm <= d.mean_after_mm + 0.05);
+}
+
+#[test]
+fn a_registration_by_structures_refuses_what_it_cannot_do() {
+    use rust_dicom_station::registration::shape;
+    use shapes::*;
+    let t = truth(Vec3::ZERO);
+    let (fixed, moving, mut pairs) = scene(&[A], &t, Vec3::new(-50.0, -50.0, -50.0), &[]);
+    let p = Progress::default();
+    let err = |req: &ShapeRequest| {
+        format!(
+            "{:#}",
+            shape::register(&fixed, &moving, req, &p)
+                .err()
+                .expect("refused")
+        )
+    };
+    assert!(err(&request(Vec::new())).contains("at least one structure"));
+    let mut req = request(pairs.clone());
+    req.start = Some(std::sync::Arc::new(Transform3::rigid_only(
+        RigidTransform::identity(Vec3::ZERO),
+    )));
+    assert!(err(&req).contains("deformable stage"));
+    let mut req = request(pairs.clone());
+    req.refine = Some(RegParams {
+        method: RegMethod::ElastixRigid,
+        ..RegParams::default()
+    });
+    assert!(err(&req).contains("B-spline"));
+    pairs[0].moving.iter_mut().for_each(|v| *v = 0);
+    assert!(err(&request(pairs)).contains("empty on the moving image"));
+}

@@ -49,6 +49,8 @@ pub(super) struct RegOutcome {
     /// The two images the run was on.
     pub fixed: RegImage,
     pub moving: RegImage,
+    /// What a registration by structures says per structure.
+    pub shape: Option<crate::registration::ShapeReport>,
 }
 
 /// One registered image: where it lives and its volume.
@@ -257,7 +259,7 @@ impl ViewerApp {
     /// Keep the two picks pointing at series that exist: a pick whose
     /// workspace went, or whose series is gone, falls back to the displayed
     /// series of its slot, and the moving image to the other workspace's.
-    fn settle_reg_picks(&mut self) {
+    pub(super) fn settle_reg_picks(&mut self) {
         let displayed = |slot: usize, slots: &[StudySlot; MAX_WORKSPACES]| -> Option<RegPick> {
             let st = slots[slot].study.as_ref()?;
             (!st.series.is_empty()).then(|| RegPick {
@@ -300,14 +302,14 @@ impl ViewerApp {
     }
 
     /// The series a pick names, and whether its slot displays it.
-    fn pick_series(&self, p: RegPick) -> Option<(loader::SeriesInfo, bool)> {
+    pub(super) fn pick_series(&self, p: RegPick) -> Option<(loader::SeriesInfo, bool)> {
         let st = self.slots[p.slot].study.as_ref()?;
         let se = st.series.get(p.series)?.clone();
         Some((se, st.has_volume() && st.active_series == p.series))
     }
 
     /// The volume of a pick when its slot displays it.
-    fn pick_displayed_volume(&self, p: RegPick) -> Option<Arc<Volume>> {
+    pub(super) fn pick_displayed_volume(&self, p: RegPick) -> Option<Arc<Volume>> {
         let (_, shown) = self.pick_series(p)?;
         shown.then(|| self.slots[p.slot].study.as_ref().unwrap().volume.clone())
     }
@@ -326,6 +328,7 @@ impl ViewerApp {
             region: out.region,
             group_phase: None,
             struct_dice: None,
+            shape_report: out.shape,
         });
         self.reg_gen += 1;
     }
@@ -572,6 +575,7 @@ impl ViewerApp {
                         uid: mseries.uid.clone(),
                         vol: moving,
                     },
+                    shape: None,
                 })
             };
             (fixed_slot, run())
@@ -662,6 +666,7 @@ impl ViewerApp {
             region: None,
             group_phase: None,
             struct_dice: None,
+            shape_report: None,
         });
         self.fusion_on = true;
         self.reg_gen += 1;
@@ -949,6 +954,7 @@ impl ViewerApp {
         let mut hide_field = false;
         let mut score_structs = false;
         let mut apply_matrix = false;
+        let mut shape_act: Option<reg_shape::ShapeAction> = None;
         // 4D groups either workspace offers, keyed the way `reg_group` is.
         let group_choices: Vec<((usize, usize), String)> = self
             .propagate_group_choices()
@@ -1301,6 +1307,14 @@ impl ViewerApp {
                     if !both {
                         ui.weak("Load two workspaces (comparison mode) first");
                     }
+                    // The same two images, aligned on structures contoured
+                    // on both instead of on their voxel values.
+                    egui::CollapsingHeader::new("Align by structures")
+                        .id_salt("reg_shape")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            shape_act = self.shape_section(ui, both);
+                        });
                     // A transform that is already known does not have to be
                     // recovered: type it in and apply it, and everything
                     // downstream - fusion, the crosshair link, propagation,
@@ -1492,7 +1506,14 @@ impl ViewerApp {
                             (
                                 "Metric ▶",
                                 m.map(|m| {
-                                    format!("{} {:.0} ▶ {:.0}", m.tag, m.initial, m.final_value)
+                                    // Millimetres of surface distance want
+                                    // their decimals; HU² and MI do not.
+                                    let d = if m.tag == Metric::SurfaceDistance.tag() {
+                                        2
+                                    } else {
+                                        0
+                                    };
+                                    format!("{} {:.d$} ▶ {:.d$}", m.tag, m.initial, m.final_value)
                                 })
                                 .unwrap_or_default(),
                             ),
@@ -1507,6 +1528,10 @@ impl ViewerApp {
                             ("Transform", res.transform.warp.describe()),
                         ],
                     );
+
+                    if let Some(rep) = &reg.shape_report {
+                        reg_shape::shape_report_rows(ui, rep);
+                    }
 
                     egui::CollapsingHeader::new("Analysis")
                         .id_salt("reg_analysis")
@@ -1681,6 +1706,9 @@ impl ViewerApp {
         }
         if let Some(refine) = run {
             self.start_registration(refine);
+        }
+        if let Some(a) = shape_act {
+            self.shape_action(a);
         }
         cancel_if(cancel, &self.reg_job);
         if apply_matrix {
@@ -1858,7 +1886,10 @@ impl ViewerApp {
                         },
                     );
                 }
-                RegMethod::PlastimatchLandmark => {}
+                // Not run from here: *Align by structures* has its own rows.
+                RegMethod::PlastimatchLandmark
+                | RegMethod::ShapeRigid
+                | RegMethod::ShapeDeformable => {}
             }
             if matches!(
                 method,

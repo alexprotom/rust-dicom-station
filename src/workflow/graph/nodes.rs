@@ -65,6 +65,9 @@ pub(super) fn run_node(
         Op::AutoSegment(p_) => auto_segment(ctx, node, need(0)?, p_, p),
         Op::BodyContour(p_) => body_contour(ctx, node, need(0)?, p_, p),
         Op::Register(p_) => register(ctx, node, need(0)?, need(1)?, p_, p),
+        Op::RegisterByStructures(p_) => {
+            more::register_by_structures(ctx, node, need(0)?, need(1)?, p_, p)
+        }
         Op::Propagate(p_) => propagate_pair(ctx, node, need(0)?, need(1)?, p_, p),
         Op::PropagateToGroup(p_) => {
             propagate_to_group(ctx, node, need(0)?, one(1), need(2)?, p_, p)
