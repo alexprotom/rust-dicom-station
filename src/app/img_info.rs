@@ -61,7 +61,8 @@ impl ViewerApp {
         let stale = !matches!(&self.info.cache[slot], Some((u, v, _)) if *u == uid && *v == vol);
         if stale {
             let series = study.series.get(study.active_series)?;
-            let report = describe(series, &study.volume);
+            let mut report = describe(series, &study.volume);
+            report.sections.push(crate::imginfo::study_section(study));
             self.info.cache[slot] = Some((uid, vol, report));
         }
         self.info.cache[slot].as_ref().map(|(_, _, r)| r)

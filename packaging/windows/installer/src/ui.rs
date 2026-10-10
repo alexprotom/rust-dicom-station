@@ -115,9 +115,13 @@ pub struct SetupApp {
     /// "cancelled": closing the wizard before it did anything is that.
     exit: Arc<Mutex<u8>>,
     /// Set when the wizard's own window had to fall back to another graphics
-    /// backend: the same machine will fail the same way for the viewer, so
-    /// the graphics page says so and preselects what actually worked.
+    /// backend, or the Vulkan probe failed: the same machine will fail the
+    /// same way for the viewer, so the graphics page says so and preselects
+    /// what actually worked.
     graphics_note: Option<String>,
+    /// The answer of the separate process that tries Vulkan while the
+    /// wizard runs on DirectX 12 ([`vulkan_probe`]), until it arrives.
+    vulkan_probe: Option<std::sync::mpsc::Receiver<bool>>,
     /// Begin immediately instead of showing the first page (used by the
     /// elevated re-launch, which inherits the options on the command line).
     autostart: bool,
@@ -230,15 +234,25 @@ pub fn run_uninstall(target: Target) -> Result<()> {
 /// The installer draws with the same library as the viewer, on the same
 /// machine - so the broken Vulkan driver that stops the viewer stops the
 /// setup program too, and the setup program is where the page that fixes it
-/// lives. The window is therefore *attempted* rather than opened: first
-/// whatever `wgpu` would pick on its own (which already honours
-/// `WGPU_BACKEND`), then Direct3D 12, then Vulkan. A backend that fails -
-/// by error or by panicking inside the driver - costs a line on standard
-/// error instead of the installation.
+/// lives. The window is therefore *attempted* rather than opened, on
+/// Direct3D 12 first and alone: a Vulkan driver that is broken does not
+/// fail politely, it takes the process down from inside `vkCreateInstance`
+/// or the device enumeration, which no `catch_unwind` sees, and the
+/// library's default (every backend at once) loads that driver even when
+/// it would then pick Direct3D 12. Direct3D 12 is on every Windows that
+/// runs this program, with Microsoft's software rasterizer behind it when
+/// there is no usable GPU at all. Then Vulkan, then the default, for the
+/// machine where Direct3D 12 of all things is the broken one. A backend
+/// that fails by error or by panicking costs a line on standard error
+/// instead of the installation. An explicit `WGPU_BACKEND` in the
+/// environment is an instruction and goes first.
 ///
-/// Falling back is also an answer: if this window only appeared on Direct3D
-/// 12, the viewer will need Direct3D 12 as well, so the graphics page says
-/// so and preselects it.
+/// Falling back is also an answer: if this window only appeared on the
+/// second attempt, the viewer will need that backend as well, so the
+/// graphics page says so and preselects it. And since the first attempt
+/// no longer tries Vulkan, a window that opened on Direct3D 12 asks a
+/// separate process to try Vulkan ([`vulkan_probe`]); if that process
+/// dies, the graphics page preselects Direct3D 12 for the viewer.
 fn launch(app: SetupApp, title: &str) -> Result<()> {
     // The same picture as the viewer's window icon and as both executables'
     // Windows icon resource (see the two `build.rs`), so the setup program
@@ -304,23 +318,105 @@ struct Attempt {
 
 fn attempts() -> Vec<Attempt> {
     use eframe::wgpu::Backends;
-    vec![
-        Attempt {
-            label: "the default backend",
-            bits: None,
-            choice: None,
-        },
-        Attempt {
-            label: "DirectX 12",
-            bits: Some(Backends::DX12),
-            choice: Some(Graphics::Dx12),
-        },
-        Attempt {
-            label: "Vulkan",
-            bits: Some(Backends::VULKAN),
-            choice: Some(Graphics::Vulkan),
-        },
-    ]
+    let default = Attempt {
+        label: "the default backend",
+        bits: None,
+        choice: None,
+    };
+    let dx12 = Attempt {
+        label: "DirectX 12",
+        bits: Some(Backends::DX12),
+        choice: Some(Graphics::Dx12),
+    };
+    let vulkan = Attempt {
+        label: "Vulkan",
+        bits: Some(Backends::VULKAN),
+        choice: Some(Graphics::Vulkan),
+    };
+    let forced = std::env::var_os("WGPU_BACKEND").is_some_and(|v| !v.is_empty());
+    if forced {
+        vec![default, dx12, vulkan]
+    } else {
+        vec![dx12, vulkan, default]
+    }
+}
+
+/// Exit codes of `rds-setup --probe-graphics`: the backend has a usable
+/// device, or not. A driver that crashes the process answers with neither,
+/// which is the point of asking in a process of its own.
+const PROBE_OK: u8 = 0;
+const PROBE_NO_ADAPTER: u8 = 2;
+const PROBE_NO_DEVICE: u8 = 3;
+
+/// `rds-setup --probe-graphics <vulkan|dx12>`: create the backend's
+/// instance, enumerate its adapters and open a device on the first that is
+/// not a software rasterizer - everything a start of the viewer does with
+/// the driver before a window shows - and say how it went in the exit
+/// code. Run by [`vulkan_probe`] in a process of its own, because a broken
+/// driver answers by taking the process down.
+pub fn probe_graphics(name: &str) -> u8 {
+    use eframe::wgpu;
+    let backends = match name {
+        "vulkan" => wgpu::Backends::VULKAN,
+        "dx12" => wgpu::Backends::DX12,
+        _ => return 1,
+    };
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends,
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+    let adapters = pollster::block_on(instance.enumerate_adapters(backends));
+    let Some(adapter) = adapters
+        .into_iter()
+        .find(|a| a.get_info().device_type != wgpu::DeviceType::Cpu)
+    else {
+        return PROBE_NO_ADAPTER;
+    };
+    match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())) {
+        Ok(_) => PROBE_OK,
+        Err(_) => PROBE_NO_DEVICE,
+    }
+}
+
+/// Ask a process of its own whether Vulkan starts on this machine, without
+/// risking this one. The answer arrives on the channel: `true` when the
+/// probe found a device, `false` when it reported none, died, or took
+/// longer than twenty seconds (a driver that hangs is as unusable as one
+/// that crashes). Nothing arrives when the probe could not be started.
+fn vulkan_probe() -> std::sync::mpsc::Receiver<bool> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let Ok(exe) = std::env::current_exe() else {
+            return;
+        };
+        let mut cmd = std::process::Command::new(exe);
+        cmd.args(["--probe-graphics", "vulkan"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let Ok(mut child) = cmd.spawn() else {
+            return;
+        };
+        let started = Instant::now();
+        let answer = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status.code() == Some(i32::from(PROBE_OK)),
+                Ok(None) if started.elapsed() > Duration::from_secs(20) => {
+                    let _ = child.kill();
+                    break false;
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+                Err(_) => break false,
+            }
+        };
+        let _ = tx.send(answer);
+    });
+    rx
 }
 
 impl Attempt {
@@ -350,6 +446,7 @@ impl Attempt {
             ..Default::default()
         };
         let slot = slot.clone();
+        let bits = self.bits;
         // `NativeOptions` holds boxed callbacks that are not `UnwindSafe`,
         // which is a fair warning in general and irrelevant here: nothing is
         // read back after a failed attempt - the next one builds its own.
@@ -359,11 +456,20 @@ impl Attempt {
                 options,
                 Box::new(move |cc| {
                     cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
-                    let app = slot
+                    let mut app = slot
                         .lock()
                         .unwrap()
                         .take()
                         .ok_or("the installer window was created twice")?;
+                    // This window never touched Vulkan: find out about it
+                    // for the graphics page, in a process that may die.
+                    if bits == Some(eframe::wgpu::Backends::DX12)
+                        && app.is_install()
+                        && !app.autostart
+                        && app.graphics_note.is_none()
+                    {
+                        app.vulkan_probe = Some(vulkan_probe());
+                    }
                     Ok(Box::new(app) as Box<dyn eframe::App>)
                 }),
             )
@@ -414,6 +520,7 @@ impl SetupApp {
             error: None,
             exit: Arc::new(Mutex::new(EXIT_CANCELLED)),
             graphics_note: None,
+            vulkan_probe: None,
             autostart: false,
             passive: false,
             done_at: None,
@@ -542,6 +649,32 @@ impl eframe::App for SetupApp {
         if self.autostart {
             self.autostart = false;
             self.begin(&ctx);
+        }
+        if let Some(rx) = &self.vulkan_probe {
+            match rx.try_recv() {
+                Ok(works) => {
+                    self.vulkan_probe = None;
+                    // Only while the choice is still ahead of the user.
+                    if !works
+                        && matches!(
+                            self.screen,
+                            Screen::Welcome | Screen::Options | Screen::Graphics
+                        )
+                    {
+                        self.opts.graphics = Graphics::Dx12;
+                        self.graphics_note = Some(
+                            "Vulkan could not start on this machine (tried in a separate \
+                             process, which did not survive it), so DirectX 12 is \
+                             preselected."
+                                .into(),
+                        );
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.vulkan_probe = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(250));
+                }
+            }
         }
         if self.screen == Screen::Working {
             let done = self.outcome.lock().unwrap().take();

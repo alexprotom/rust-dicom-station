@@ -253,14 +253,26 @@ Three details make the page do its job rather than merely exist:
 
 * **The installer draws with the same library, on the same machine**, so a
   broken Vulkan driver takes the setup program down too - and the setup
-  program is where the page that fixes it lives. Its window is therefore
-  attempted rather than opened: the default first, then Direct3D 12, then
-  Vulkan, each attempt catching a panic from inside the driver. If all three
+  program is where the page that fixes it lives. A broken driver does not
+  fail politely: it takes the process down from inside `vkCreateInstance`
+  or the device enumeration, which no panic handler sees, and the
+  library's default (every backend at once) loads that driver even when it
+  would then draw with Direct3D 12 - which is why the setup program used
+  to vanish without a word until `WGPU_BACKEND=dx12` was set by hand. Its
+  window is therefore attempted rather than opened, on Direct3D 12 first
+  and alone (on every Windows that runs this program, with Microsoft's
+  software rasterizer behind it when there is no usable GPU), then Vulkan,
+  then the default; an explicit `WGPU_BACKEND` goes first. If all of them
   fail the text interface takes over, as it already did for a head-less
   session.
-* **Falling back is itself an answer.** If the wizard's window only appeared
-  on Direct3D 12, the viewer will need Direct3D 12 too, so the page says so
-  and preselects it.
+* **Falling back is itself an answer, and so is a probe.** If the wizard's
+  window only appeared on the second attempt, the viewer will need that
+  backend too, so the page says so and preselects it. A window that opened
+  on Direct3D 12 learned nothing about Vulkan, so it runs
+  `rds-setup --probe-graphics vulkan` in a process of its own, which
+  creates a Vulkan instance, enumerates the adapters and opens a device;
+  if that process reports no device, dies or hangs, the page preselects
+  DirectX 12 and says why.
 * **The answer is written twice.** `viewer-defaults.txt` goes beside the
   installed executable and is read by every user of the machine before their
   own settings - the only thing that works for an all-users installation,

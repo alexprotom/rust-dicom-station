@@ -18,6 +18,14 @@
 //! already safe; only the patient folder is derived from free text and needs
 //! sanitizing.
 //!
+//! A study copied in by hand looks different: its folder is called whatever
+//! the person called it (`2025.10.31 CT Abdomen`), its files whatever the
+//! exporting system called them (`0142`, `IM000001`), often one folder per
+//! series below it. The archive takes that in its stride: the sidecar
+//! rebuilt from the headers carries the real UID, a study is found by that
+//! UID as well as by its folder name, and the files of a study are every
+//! DICOM file below its folder, however deep.
+//!
 //! ## Why the sidecars
 //!
 //! Listing the archive must stay instant however large it grows, and reading
@@ -137,29 +145,66 @@ pub fn is_uid(s: &str) -> bool {
         && !s.contains("..")
 }
 
+/// How deep below a study folder files are looked for: a study copied in
+/// by hand often keeps one folder per series, sometimes one more level.
+const STUDY_DEPTH: usize = 3;
+
+/// Every candidate file below a study folder, with its size: regular files
+/// at any depth up to [`STUDY_DEPTH`], the sidecars and half-written
+/// `.tmp` files left out. Sorted by path, so two walks agree.
+fn files_below(study_dir: &Path) -> Result<Vec<(PathBuf, u64)>> {
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<(PathBuf, u64)>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for f in entries.filter_map(|e| e.ok()) {
+            let Ok(kind) = f.file_type() else {
+                continue;
+            };
+            let name = f.file_name().to_string_lossy().into_owned();
+            if kind.is_dir() {
+                if depth < STUDY_DEPTH {
+                    walk(&f.path(), depth + 1, out);
+                }
+            } else if kind.is_file()
+                && name != STUDY_FILE
+                && name != PATIENT_FILE
+                && !name.ends_with(".tmp")
+            {
+                out.push((f.path(), f.metadata().map(|m| m.len()).unwrap_or(0)));
+            }
+        }
+    }
+    // The study folder itself must be readable; anything below that is
+    // best effort.
+    std::fs::read_dir(study_dir).with_context(|| format!("read {}", study_dir.display()))?;
+    let mut out = Vec::new();
+    walk(study_dir, 1, &mut out);
+    out.sort();
+    Ok(out)
+}
+
 /// The DICOM files of one study folder with their SOP Instance UIDs.
 ///
 /// A file the archive filed is called `<sop uid>.dcm`, so its name is its
 /// UID and no header is read; a file copied in by hand under another name
-/// has its header read once here. The sidecars and anything that is not
-/// DICOM are left out.
+/// has its header read once here. Files in folders below the study's (one
+/// per series, as exports often come) count too. The sidecars and anything
+/// that is not DICOM are left out.
 pub fn instances(study_dir: &Path) -> Result<Vec<Instance>> {
     let mut out = Vec::new();
-    for f in std::fs::read_dir(study_dir)
-        .with_context(|| format!("read {}", study_dir.display()))?
-        .filter_map(|e| e.ok())
-    {
-        if !f.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            continue;
-        }
-        let path = f.path();
-        let name = f.file_name().to_string_lossy().into_owned();
-        if name == STUDY_FILE || name == PATIENT_FILE || name.ends_with(".tmp") {
-            continue;
-        }
-        let bytes = f.metadata().map(|m| m.len()).unwrap_or(0);
-        let stem = name.strip_suffix(".dcm").unwrap_or(&name);
-        let sop_uid = if is_uid(stem) {
+    for (path, bytes) in files_below(study_dir)? {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        // The archive's own files are `<uid>.dcm`; a hand-copied file called
+        // `0142` is digits too, but no UID, so only a dotted name with the
+        // archive's extension is believed without reading the header.
+        let sop_uid = if let Some(stem) = name
+            .strip_suffix(".dcm")
+            .filter(|s| is_uid(s) && s.contains('.'))
+        {
             stem.to_string()
         } else {
             match crate::dicomfile::open_scan(&path) {
@@ -296,10 +341,16 @@ impl Archive {
     ///
     /// Only a direct `<patient>/<study>` folder is ever answered, so a UID
     /// that came over the network cannot name anything else: it is compared
-    /// with folder names, never joined onto a path.
+    /// with folder names and with the UID in the folder's sidecar, never
+    /// joined onto a path. The sidecar is what finds a study copied in by
+    /// hand, whose folder is called whatever the person called it.
     pub fn find_study(&self, study_uid: &str) -> Option<PathBuf> {
+        if study_uid.is_empty() {
+            return None;
+        }
         let want = sanitize(study_uid);
         let dirs = std::fs::read_dir(&self.root).ok()?;
+        let mut by_sidecar: Option<PathBuf> = None;
         for pd in dirs.filter_map(|e| e.ok()) {
             if !pd.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 continue;
@@ -308,14 +359,24 @@ impl Archive {
                 continue;
             };
             for sd in sdirs.filter_map(|e| e.ok()) {
-                if sd.file_type().map(|t| t.is_dir()).unwrap_or(false)
-                    && sd.file_name().to_str() == Some(want.as_str())
-                {
+                if !sd.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    continue;
+                }
+                if sd.file_name().to_str() == Some(want.as_str()) {
                     return Some(sd.path());
+                }
+                if by_sidecar.is_none() {
+                    let card = sd.path().join(STUDY_FILE);
+                    if !card.exists() {
+                        let _ = self.rebuild_sidecars(&sd.path());
+                    }
+                    if field(&read_sidecar(&card), "uid") == study_uid {
+                        by_sidecar = Some(sd.path());
+                    }
                 }
             }
         }
-        None
+        by_sidecar
     }
 
     /// The folder of the patient whose folder is called `key` (the name a
@@ -408,19 +469,15 @@ impl Archive {
     }
 
     /// Rebuild a study folder's sidecar (and its patient's) from the headers
-    /// of the files in it.
+    /// of the files in it, at any depth (a hand-copied study often keeps
+    /// one folder per series).
     fn rebuild_sidecars(&self, study_dir: &Path) -> Result<()> {
         let mut modalities: BTreeSet<String> = BTreeSet::new();
         let mut files = 0usize;
         let (mut uid, mut date, mut desc) = (String::new(), String::new(), String::new());
         let (mut pname, mut pid) = (String::new(), String::new());
-        for f in std::fs::read_dir(study_dir)?.filter_map(|e| e.ok()) {
-            if !f.file_type().map(|t| t.is_file()).unwrap_or(false)
-                || f.file_name().to_string_lossy().ends_with(".tmp")
-            {
-                continue;
-            }
-            let Ok(obj) = crate::dicomfile::open_scan(&f.path()) else {
+        for (path, _) in files_below(study_dir)? {
+            let Ok(obj) = crate::dicomfile::open_scan(&path) else {
                 continue;
             };
             files += 1;
@@ -480,6 +537,12 @@ impl Archive {
         let mut sum = ImportSummary::default();
         let mut touched: BTreeSet<PathBuf> = BTreeSet::new();
         let mut patients: BTreeSet<PathBuf> = BTreeSet::new();
+        // Where each study goes, resolved once: its own folder when the
+        // archive already holds it under another name (copied in by hand),
+        // with the SOP UIDs it holds so that duplicates are told by UID and
+        // not by the file name the archive never gave them.
+        let mut homes: std::collections::HashMap<String, (PathBuf, Option<BTreeSet<String>>)> =
+            std::collections::HashMap::new();
         for (n, path) in files.iter().enumerate() {
             if n % 25 == 0 {
                 progress.set(format!("Filing {}/{}", n + 1, files.len()));
@@ -501,9 +564,21 @@ impl Archive {
             } else {
                 pid.clone()
             };
-            let sdir = self.study_dir(&key, &study_uid);
+            let home = homes.entry(study_uid.clone()).or_insert_with(|| {
+                let own = self.study_dir(&key, &study_uid);
+                match self.find_study(&study_uid) {
+                    Some(dir) if dir != own => {
+                        let held = instances(&dir)
+                            .map(|v| v.into_iter().map(|i| i.sop_uid).collect())
+                            .unwrap_or_default();
+                        (dir, Some(held))
+                    }
+                    _ => (own, None),
+                }
+            });
+            let sdir = home.0.clone();
             let dest = sdir.join(format!("{}.dcm", sanitize(&sop)));
-            if dest.exists() {
+            if dest.exists() || home.1.as_ref().is_some_and(|h| h.contains(&sop)) {
                 sum.duplicates += 1;
                 touched.insert(sdir);
                 continue;
@@ -674,8 +749,15 @@ mod tests {
         assert_eq!(a.find_patient("P1"), Some(root.join("P1")));
         assert_eq!(a.find_patient(".."), None);
         assert_eq!(a.find_patient("P1/1.2.3"), None);
+        // A file called by digits alone is not believed to be its own UID:
+        // its header is read, and what is not DICOM is left out.
+        std::fs::write(root.join("P1").join("1.2.3").join("0142"), b"x").unwrap();
         let inst = instances(&root.join("P1").join("1.2.3")).unwrap();
-        assert_eq!(inst.len(), 1, "the sidecar is not an instance");
+        assert_eq!(
+            inst.len(),
+            1,
+            "the sidecar and the non-DICOM file are not instances"
+        );
         assert_eq!(inst[0].sop_uid, "1.2.3.4");
         assert_eq!(inst[0].bytes, 1);
         let _ = std::fs::remove_dir_all(&root);

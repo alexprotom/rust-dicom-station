@@ -143,11 +143,10 @@ winget upgrade RDS.RustDICOMStation
 
 ### Every later release (automatic)
 
-1. Fork `microsoft/winget-pkgs` to the GitHub account that owns the token.
-2. Create a classic personal access token with the `public_repo` scope.
-3. Save it as the repository secret `WINGET_TOKEN` (*Settings > Secrets and variables > Actions*).
+1. Create a classic personal access token with the `public_repo` scope (*Settings > Developer settings > Personal access tokens > Tokens (classic)*).
+2. Save it as the repository secret `WINGET_TOKEN` (*Settings > Secrets and variables > Actions*, or `gh secret set WINGET_TOKEN`).
 
-From then on the `winget` job of the release workflow opens the pull request for each new version itself. Add the secret only after the first version has been merged: the job updates an existing package and fails on one that does not exist yet. Without the secret the job is skipped.
+From then on the `winget` job of the release workflow submits the manifests zip of each new release with [winget-create](https://github.com/microsoft/winget-create): it pushes a branch to the fork of `winget-pkgs` under the token's account (creating the fork if there is none) and opens the pull request *New version: RDS.RustDICOMStation version X.Y.Z*, which goes through validation and is merged without the new-package review. Add the secret only after the first version has been merged, or the job opens a second new-package request. Without the secret the job is skipped. A release that went out before the secret existed is submitted by hand the same way as the first one, from its manifests zip.
 
 ## Snap Store
 
