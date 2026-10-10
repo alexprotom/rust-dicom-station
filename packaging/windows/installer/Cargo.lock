@@ -6231,6 +6231,7 @@ dependencies = [
  "anyhow",
  "eframe",
  "egui",
+ "pollster 1.0.1",
  "rfd",
  "rust-dicom-station",
  "sha2",
@@ -6440,7 +6441,7 @@ dependencies = [
 
 [[package]]
 name = "rust-dicom-station"
-version = "0.11.1"
+version = "0.11.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

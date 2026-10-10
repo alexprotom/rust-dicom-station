@@ -189,3 +189,124 @@ fn a_study_files_lists_loads_and_takes_back_what_was_drawn_on_it() {
     archive.remove(&p.dir).expect("removing a patient succeeds");
     assert!(archive.scan().expect("scan succeeds").is_empty());
 }
+
+/// A study that was not filed by the archive but copied into it by hand -
+/// the folder called whatever the person called it, the files whatever the
+/// exporting system called them, a folder per series below - is listed by
+/// its real UID, found by that UID, served file by file, and takes new
+/// objects into its own folder rather than into a second one.
+#[test]
+fn a_study_copied_in_by_hand_is_as_good_as_a_filed_one() {
+    let src = scratch("test_archive_hand_src");
+    let written = gen_test_data::generate(&src, &GenParams::default(), &Progress::default())
+        .expect("test data generation succeeds");
+
+    // What a person does: a patient folder, a study folder named by date and
+    // description, the files under two "series" folders with names of the
+    // exporting system's choosing.
+    let root = scratch("test_archive_hand_root");
+    let sdir = root.join("Doe, John").join("2026.10.09 CT Abdomen");
+    let series = [sdir.join("CT 1.0 Bf37"), sdir.join("other")];
+    for d in &series {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let mut n = 0usize;
+    for f in std::fs::read_dir(&src).unwrap().filter_map(|e| e.ok()) {
+        if !f.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let name = f.file_name().to_string_lossy().to_string();
+        let into = if name.starts_with("CT_") {
+            &series[0]
+        } else {
+            &series[1]
+        };
+        std::fs::copy(f.path(), into.join(format!("{:04}", n))).unwrap();
+        n += 1;
+    }
+    assert_eq!(n, written);
+
+    let archive = Archive::new(&root);
+    let patients = archive.scan().expect("scan succeeds");
+    assert_eq!(patients.len(), 1);
+    let entry = patients[0].studies[0].clone();
+    assert!(
+        rust_dicom_station::archive::is_uid(&entry.study_uid),
+        "the sidecar carries the UID from the headers: {:?}",
+        entry.study_uid
+    );
+    assert_eq!(
+        entry.files, written,
+        "the files in the series folders are counted"
+    );
+    assert_eq!(entry.dir, sdir);
+    assert!(
+        entry.modalities.iter().any(|m| m == "CT"),
+        "{:?}",
+        entry.modalities
+    );
+
+    // Found by UID although the folder is not called that: what a PACS
+    // server does for every request a station makes about the study.
+    assert_eq!(archive.find_study(&entry.study_uid), Some(sdir.clone()));
+    let inst = rust_dicom_station::archive::instances(&sdir).expect("instances");
+    assert_eq!(
+        inst.len(),
+        written,
+        "every file below the study folder, whatever its name"
+    );
+    assert!(inst
+        .iter()
+        .all(|i| rust_dicom_station::archive::is_uid(&i.sop_uid)));
+    assert!(inst.iter().all(|i| i.path.starts_with(&sdir)));
+
+    // New objects for the study go into its folder, and sending the
+    // originals again files nothing.
+    let mut study =
+        loader::load_directory(&sdir, &Progress::default()).expect("the hand-copied study loads");
+    let dims = study.volume.dims;
+    let mut ser = SegSeries::new(
+        "Hand QA".into(),
+        study.volume.grid(),
+        study.series[study.active_series].uid.clone(),
+        study.series[study.active_series].study_uid.clone(),
+    );
+    ser.segs.push(Segmentation::from_mask(
+        "Ball".into(),
+        [220, 40, 40],
+        dims,
+        ball(dims, 8.0),
+    ));
+    study.seg_series.push(ser);
+    let derived = scratch("test_archive_hand_derived");
+    let params = ExportParams::for_study(&study);
+    let made = dicom_export::export_derived(&study, &derived, &params, &Progress::default())
+        .expect("the derived export succeeds");
+    let up = archive
+        .import(&derived, &Progress::default())
+        .expect("upload");
+    assert_eq!(up.stored, made);
+    let again = archive
+        .import(&src, &Progress::default())
+        .expect("re-import");
+    assert_eq!(
+        (again.stored, again.duplicates),
+        (0, written),
+        "the originals are recognised by their SOP UIDs, not by file names"
+    );
+    let patients = archive.scan().expect("rescan");
+    assert_eq!(patients.len(), 1, "no second patient folder was made");
+    assert_eq!(
+        patients[0].studies.len(),
+        1,
+        "no second study folder was made"
+    );
+    assert_eq!(patients[0].studies[0].files, written + made);
+    assert!(patients[0].studies[0].modalities.iter().any(|m| m == "SEG"));
+    let back = loader::load_directory(&sdir, &Progress::default()).expect("loads again");
+    assert_eq!(
+        back.seg_series.len(),
+        1,
+        "the segmentation sits beside the CT"
+    );
+}

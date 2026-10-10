@@ -65,6 +65,19 @@ never the truth: a study folder that arrived without one - copied in by hand -
 has it rebuilt from the headers the first time it is listed, and deleting
 every sidecar rebuilds the whole archive.
 
+A study copied in by hand may look nothing like the layout above: a
+patient folder called `Doe, John`, a study folder called `2025.10.31 CT
+Abdomen`, the files called `0142` or `IM000001`, often one folder per
+series below the study's. That is fine. The sidecar rebuilt from the
+headers carries the real Study Instance UID, the study is found by that
+UID (which is how a PACS server serves it to other stations) as well as by
+its folder name, its files are every DICOM file up to three levels below
+the study folder, and new objects for it - a structure set sent back by a
+station - are filed into that folder, not into a second one. What stays
+the archive's own is the two-level `patient / study` arrangement: a deeper
+tree (a `My_Imaging` folder holding the patients, say) needs the archive
+root pointed at the folder that holds the patient folders.
+
 A sidecar is written whole into a temporary file and renamed over the old
 one, and a filed instance is copied beside its place and renamed into it,
 so a reader - the PACS server sending the study on while the viewer on the

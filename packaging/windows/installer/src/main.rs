@@ -96,6 +96,11 @@ GENERAL:
     --silent              no window and no questions
     --passive             a progress window only: no questions, closes itself
     --console             text interface instead of the wizard
+    --probe-graphics <vulkan|dx12>
+                          try that graphics backend and say in the exit code
+                          whether it has a usable device (0) or not; the
+                          wizard runs this in a process of its own, because
+                          a broken driver takes the process down
     -h, --help            show this help
 
 EXIT CODES:
@@ -118,6 +123,8 @@ struct Args {
     list_models: bool,
     allow_downgrade: bool,
     from: Option<PathBuf>,
+    /// `--probe-graphics <backend>`: not a setup run at all.
+    probe_graphics: Option<String>,
     /// The install options given on the command line, in order. They are
     /// applied on top of whatever the installation being updated was made
     /// with, so they cannot be resolved into [`Options`] until that is known.
@@ -174,6 +181,9 @@ fn parse_from(args: impl Iterator<Item = String>) -> Result<Args> {
             "--remove-models" => a.remove_models = true,
             "--list-models" => a.list_models = true,
             "--from" => a.from = Some(PathBuf::from(next(&mut it, "--from")?)),
+            "--probe-graphics" => {
+                a.probe_graphics = Some(next(&mut it, "--probe-graphics")?);
+            }
             flag if VALUE_FLAGS.contains(&flag) => {
                 let value = next(&mut it, flag)?;
                 a.install_flags.push(arg);
@@ -311,6 +321,9 @@ fn main() -> ExitCode {
         win::attach_console();
         println!("{USAGE}");
         return ExitCode::SUCCESS;
+    }
+    if let Some(backend) = &args.probe_graphics {
+        return ExitCode::from(ui::probe_graphics(backend));
     }
     if args.list_models {
         win::attach_console();

@@ -534,3 +534,110 @@ fn f64_of_first(
 ) -> Option<f64> {
     first.as_ref().and_then(|(o, _)| f64_of(o, tag))
 }
+
+/// The *Study* section: what else the loaded study holds, each object with
+/// the identifier that ties it to the rest - the Study Instance UID the
+/// whole thing shares, every image series with its Series Instance UID,
+/// and every structure set, segmentation, dose and plan with its SOP
+/// Instance UID and the series it refers to. These are the numbers a PACS
+/// query, a comparison of two copies of a study, or a question to the
+/// treatment planning system need, and nothing else in the viewer prints
+/// them side by side.
+pub fn study_section(study: &crate::loader::LoadedStudy) -> (String, Vec<Row>) {
+    let mut rows = Vec::new();
+    let active = study.series.get(study.active_series);
+    if let Some(s) = active {
+        rows.push(Row::new("Study UID", &s.study_uid));
+        if !s.study_date.is_empty() || !s.study_description.is_empty() {
+            rows.push(Row::new(
+                "Study",
+                [s.study_date.as_str(), s.study_description.as_str()]
+                    .iter()
+                    .filter(|v| !v.is_empty())
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(" · "),
+            ));
+        }
+        if !s.study_id.is_empty() {
+            rows.push(Row::new("Study ID", &s.study_id));
+        }
+    }
+    // Short names for the series the RT objects refer to: `CT 3` rather
+    // than sixty digits, with the digits on the series' own row.
+    let series_name = |uid: &str| -> String {
+        study
+            .series
+            .iter()
+            .find(|s| s.uid == uid)
+            .map(|s| match s.series_number {
+                Some(n) => format!("{} {n}", s.modality),
+                None => s.modality.clone(),
+            })
+            .unwrap_or_else(|| {
+                if uid.is_empty() {
+                    "no series named".into()
+                } else {
+                    "a series not loaded".into()
+                }
+            })
+    };
+    for s in &study.series {
+        let label = match s.series_number {
+            Some(n) => format!("{} {n}", s.modality),
+            None => s.modality.clone(),
+        };
+        let what = if s.description.is_empty() {
+            format!("{} files", s.files.len())
+        } else {
+            format!("{} · {} files", s.description, s.files.len())
+        };
+        let shown = active.is_some_and(|a| a.uid == s.uid);
+        rows.push(Row::new(
+            format!("Series {label}{}", if shown { " (shown)" } else { "" }),
+            format!("{} · {what}", s.uid),
+        ));
+    }
+    for ss in &study.structure_sets {
+        rows.push(Row::new(
+            format!("RTSTRUCT {}", ss.label),
+            format!(
+                "{} · for {}",
+                ss.sop_instance_uid,
+                series_name(&ss.referenced_series_uid)
+            ),
+        ));
+    }
+    for seg in &study.seg_series {
+        rows.push(Row::new(
+            format!("SEG {}", seg.label),
+            format!(
+                "{} · for {}",
+                if seg.sop_instance_uid.is_empty() {
+                    "not yet written".to_string()
+                } else {
+                    seg.sop_instance_uid.clone()
+                },
+                series_name(&seg.referenced_series_uid)
+            ),
+        ));
+    }
+    for (i, d) in study.doses.iter().enumerate() {
+        rows.push(Row::new(
+            format!("RTDOSE {}", i + 1),
+            format!(
+                "{} · {} {}",
+                d.sop_instance_uid, d.summation_type, d.dose_type
+            )
+            .trim()
+            .to_string(),
+        ));
+    }
+    for p in &study.plans {
+        rows.push(Row::new(
+            format!("RTPLAN {}", p.label),
+            p.sop_instance_uid.clone(),
+        ));
+    }
+    ("Study".to_string(), rows)
+}

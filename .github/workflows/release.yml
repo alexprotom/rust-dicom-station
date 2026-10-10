@@ -586,42 +586,61 @@ jobs:
   # winget
   # ==========================================================================
   # Opens the pull request that adds this version to microsoft/winget-pkgs,
-  # so `winget upgrade` offers it. Needs a classic personal access token with
-  # the `public_repo` scope, saved as the repository secret WINGET_TOKEN, and
-  # a fork of microsoft/winget-pkgs under the same account.
+  # so `winget upgrade` offers it: the three manifests rds-pack wrote for
+  # exactly this installer - the zip attached to the release, URL and
+  # SHA-256 filled in, the user- and machine-scope entries as submitted
+  # the first time - go in as they are, through Microsoft's own
+  # winget-create. No third-party action: the one used before broke on
+  # 2026-10-07 when its `main` was rewritten.
   #
-  # Without the secret the job only says so and succeeds, so a release is
-  # never held up by it. The action updates a package that already exists:
-  # the very first version is submitted by hand from the manifests zip
-  # attached to the release, and the secret is added once winget-pkgs has
-  # accepted it (docs/release-versioning.md).
+  # Needs a classic personal access token with the `public_repo` scope,
+  # saved as the repository secret WINGET_TOKEN. winget-create pushes a
+  # branch to the fork of winget-pkgs under that account (it creates the
+  # fork if there is none) and opens the pull request from it. Without the
+  # secret the job only says so and succeeds, so a release is never held up
+  # by it; add it once the first version is in winget-pkgs
+  # (docs/release-versioning.md).
   winget:
     name: Submit to winget
     needs:
       - version
       - release
-    runs-on: ubuntu-latest
+    # winget-create runs on Windows only.
+    runs-on: windows-latest
     env:
-      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+      # The variable winget-create reads the token from (aka.ms/winget-create-token).
+      WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
 
     steps:
       - name: No token, no submission
-        if: env.WINGET_TOKEN == ''
+        if: env.WINGET_CREATE_GITHUB_TOKEN == ''
         run: echo "WINGET_TOKEN is not set - skipping the winget submission."
 
+      - name: Download the manifests from the release
+        if: env.WINGET_CREATE_GITHUB_TOKEN != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          gh release download $env:TAG --repo $env:GITHUB_REPOSITORY `
+            --pattern "rust-dicom-station-$env:VERSION-winget-manifests.zip" --dir .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Expand-Archive "rust-dicom-station-$env:VERSION-winget-manifests.zip" -DestinationPath manifests
+          Get-ChildItem manifests
+
+      # `submit` validates the manifests first and fails on a schema error.
       - name: Submit the new version to winget-pkgs
-        if: env.WINGET_TOKEN != ''
-        # Pinned to the last commit before the action was rewritten on
-        # 2026-10-07 (#343): since then `main` - and the `v2` tag, which was
-        # moved onto it - carry a composite action the runner rejects
-        # (`run:` steps without `shell:`, their issue #345). A job fails
-        # while its actions are being fetched, before any `if` is looked
-        # at, so this broke the job with or without the token. Move the pin
-        # forward once upstream is fixed.
-        uses: vedantmgoyal9/winget-releaser@a8fff44b123f115ce4c21543edf8b677376fc7e0
-        with:
-          identifier: RDS.RustDICOMStation
-          version: ${{ needs.version.outputs.version }}
-          release-tag: ${{ needs.version.outputs.tag }}
-          installers-regex: '-windows-x86_64\.exe$'
-          token: ${{ secrets.WINGET_TOKEN }}
+        if: env.WINGET_CREATE_GITHUB_TOKEN != ''
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          curl.exe -JLO https://aka.ms/wingetcreate/latest
+          .\wingetcreate.exe submit --no-open `
+            --prtitle "New version: RDS.RustDICOMStation version $env:VERSION" `
+            .\manifests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
