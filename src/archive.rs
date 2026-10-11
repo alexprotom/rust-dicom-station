@@ -243,36 +243,71 @@ fn write_index(study_dir: &Path, entries: &[Indexed]) -> Result<()> {
     write_card(&study_dir.join(INDEX_FILE), &text)
 }
 
+/// A file's path below its study folder, `/`-separated, as `INDEX.txt`
+/// records it.
+fn rel_of(study_dir: &Path, path: &Path) -> Option<String> {
+    Some(
+        path.strip_prefix(study_dir)
+            .ok()?
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/"),
+    )
+}
+
 /// What one file below a study folder is, from its header.
 fn index_one(study_dir: &Path, path: &Path, bytes: u64) -> Option<Indexed> {
     let obj = crate::dicomfile::open_scan(path).ok()?;
-    let sop = str_of(&obj, tags::SOP_INSTANCE_UID).unwrap_or_default();
+    index_read(study_dir, path, bytes, &obj)
+}
+
+/// [`index_one`] for a header already read.
+fn index_read(
+    study_dir: &Path,
+    path: &Path,
+    bytes: u64,
+    obj: &dicom_object::DefaultDicomObject,
+) -> Option<Indexed> {
+    let sop = str_of(obj, tags::SOP_INSTANCE_UID).unwrap_or_default();
     if sop.is_empty() {
         return None;
     }
-    let rel = path
-        .strip_prefix(study_dir)
-        .ok()?
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-        .join("/");
     Some(Indexed {
         sop,
-        study: str_of(&obj, tags::STUDY_INSTANCE_UID).unwrap_or_default(),
-        modality: str_of(&obj, tags::MODALITY).unwrap_or_default(),
+        study: str_of(obj, tags::STUDY_INSTANCE_UID).unwrap_or_default(),
+        modality: str_of(obj, tags::MODALITY).unwrap_or_default(),
         bytes,
-        rel,
+        rel: rel_of(study_dir, path)?,
+    })
+}
+
+/// What one file the archive filed itself is, from its name: `<sop
+/// uid>.dcm` in a folder named by the study's UID. `None` for any other
+/// file, or any folder.
+fn index_by_name(
+    study_dir: &Path,
+    own_uid: Option<&str>,
+    path: &Path,
+    bytes: u64,
+) -> Option<Indexed> {
+    Some(Indexed {
+        sop: uid_named(path)?,
+        study: own_uid?.to_string(),
+        modality: String::new(),
+        bytes,
+        rel: rel_of(study_dir, path)?,
     })
 }
 
 /// Every DICOM file below a study folder with what it is.
 ///
-/// A folder the archive filed itself (named by the study's UID, files
-/// named by theirs) needs no header read: every file is that study's.
-/// Any other folder is read from its `INDEX.txt` when that still matches
-/// the files there, and from the headers otherwise - once, the index being
-/// written for the next time.
+/// A file the archive filed itself (named by its UID, in a folder named by
+/// the study's) needs no header read: it is that study's. A folder holding
+/// only such files is answered from the names alone. Any other folder is
+/// read from its `INDEX.txt` when that still matches the files there, and
+/// from the headers otherwise - once, the index being written for the next
+/// time; the files the archive filed are still known by name there.
 fn index_of(study_dir: &Path) -> Result<Vec<Indexed>> {
     let files = files_below(study_dir)?;
     let own_uid = study_dir
@@ -280,23 +315,12 @@ fn index_of(study_dir: &Path) -> Result<Vec<Indexed>> {
         .and_then(|n| n.to_str())
         .filter(|n| is_uid(n))
         .map(str::to_string);
-    if let Some(study) = &own_uid {
-        if files.iter().all(|(p, _)| uid_named(p).is_some()) {
-            return Ok(files
-                .into_iter()
-                .filter_map(|(p, bytes)| {
-                    let sop = uid_named(&p)?;
-                    let rel = p.file_name()?.to_string_lossy().into_owned();
-                    Some(Indexed {
-                        sop,
-                        study: study.clone(),
-                        modality: String::new(),
-                        bytes,
-                        rel,
-                    })
-                })
-                .collect());
-        }
+    let own_uid = own_uid.as_deref();
+    if own_uid.is_some() && files.iter().all(|(p, _)| uid_named(p).is_some()) {
+        return Ok(files
+            .iter()
+            .filter_map(|(p, bytes)| index_by_name(study_dir, own_uid, p, *bytes))
+            .collect());
     }
     let cached = read_index(study_dir);
     let fresh = cached.len() == files.len()
@@ -310,7 +334,9 @@ fn index_of(study_dir: &Path) -> Result<Vec<Indexed>> {
     }
     let entries: Vec<Indexed> = files
         .iter()
-        .filter_map(|(p, bytes)| index_one(study_dir, p, *bytes))
+        .filter_map(|(p, bytes)| {
+            index_by_name(study_dir, own_uid, p, *bytes).or_else(|| index_one(study_dir, p, *bytes))
+        })
         .collect();
     // Files that are not DICOM stay out of the index, which then never
     // matches the folder's file count; written anyway, read again next
@@ -632,7 +658,7 @@ impl Archive {
             let Ok(obj) = crate::dicomfile::open_scan(&path) else {
                 continue;
             };
-            let Some(e) = index_one(study_dir, &path, bytes) else {
+            let Some(e) = index_read(study_dir, &path, bytes, &obj) else {
                 continue;
             };
             if pname.is_empty() && pid.is_empty() {
