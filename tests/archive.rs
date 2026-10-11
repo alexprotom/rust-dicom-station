@@ -310,3 +310,86 @@ fn a_study_copied_in_by_hand_is_as_good_as_a_filed_one() {
         "the segmentation sits beside the CT"
     );
 }
+
+/// A patient's CD: one folder, the files of two studies in it. The archive
+/// lists two studies for the folder, serves each by its own files, and
+/// removes one without touching the other.
+#[test]
+fn a_folder_holding_two_studies_is_listed_and_served_as_two() {
+    use rust_dicom_station::archive::{instances, instances_of};
+
+    let src_a = scratch("test_archive_two_src_a");
+    let n_a = gen_test_data::generate(&src_a, &GenParams::default(), &Progress::default())
+        .expect("generation A");
+    let src_b = scratch("test_archive_two_src_b");
+    let params = GenParams {
+        plan_label: "SecondVisit".into(),
+        ..GenParams::default()
+    };
+    let n_b = gen_test_data::generate(&src_b, &params, &Progress::default()).expect("generation B");
+
+    let root = scratch("test_archive_two_root");
+    let sdir = root.join("Doe, John").join("CD 2026");
+    let (dir_a, dir_b) = (sdir.join("1"), sdir.join("2"));
+    for (src, into) in [(&src_a, &dir_a), (&src_b, &dir_b)] {
+        std::fs::create_dir_all(into).unwrap();
+        for (i, f) in std::fs::read_dir(src)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .enumerate()
+        {
+            std::fs::copy(f.path(), into.join(format!("IM{i:05}"))).unwrap();
+        }
+    }
+
+    let archive = Archive::new(&root);
+    let patients = archive.scan().expect("scan");
+    assert_eq!(patients.len(), 1);
+    let studies = &patients[0].studies;
+    assert_eq!(studies.len(), 2, "two studies, one folder: {studies:?}");
+    assert!(studies.iter().all(|s| s.dir == sdir));
+    assert_ne!(studies[0].study_uid, studies[1].study_uid);
+    let total: usize = studies.iter().map(|s| s.files).sum();
+    assert_eq!(
+        total,
+        n_a + n_b,
+        "every file is counted once, under its study"
+    );
+    assert_eq!(patients[0].files(), n_a + n_b);
+
+    // Each study is found and served by its own files only.
+    for s in studies {
+        assert_eq!(archive.find_study(&s.study_uid), Some(sdir.clone()));
+        let mine = instances_of(&sdir, &s.study_uid).expect("instances of the study");
+        assert_eq!(mine.len(), s.files);
+        let loaded = loader::load_directory(&sdir, &Progress::default()).expect("the folder loads");
+        assert!(loaded.series.iter().any(|ser| ser.study_uid == s.study_uid));
+    }
+    assert_eq!(instances(&sdir).expect("all").len(), n_a + n_b);
+    let index = sdir.join("INDEX.txt");
+    assert!(index.is_file(), "a hand-copied folder keeps its index");
+    assert_eq!(
+        std::fs::read_to_string(&index).unwrap().lines().count(),
+        n_a + n_b
+    );
+
+    // Removing one study leaves the other, its index and its listing whole.
+    let gone = studies[1].study_uid.clone();
+    let kept = studies[0].study_uid.clone();
+    archive.remove_study(&gone).expect("remove one study");
+    assert!(sdir.is_dir(), "the folder stays for the other study");
+    assert_eq!(archive.find_study(&gone), None);
+    assert_eq!(archive.find_study(&kept), Some(sdir.clone()));
+    let patients = archive.scan().expect("rescan");
+    assert_eq!(patients[0].studies.len(), 1);
+    assert_eq!(patients[0].studies[0].study_uid, kept);
+    assert_eq!(patients[0].studies[0].files, studies[0].files);
+    assert_eq!(
+        instances_of(&sdir, &kept).unwrap().len(),
+        studies[0].files,
+        "the kept study's files are all there"
+    );
+    archive.remove_study(&kept).expect("remove the last study");
+    assert!(!sdir.exists(), "an emptied folder goes");
+}

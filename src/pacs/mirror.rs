@@ -49,6 +49,11 @@ pub struct PullSummary {
     /// Instances that were here already.
     pub present: usize,
     pub studies: usize,
+    /// Fetched files whose own header names another study than the one
+    /// they were listed under (a server's hand-copied folder holding
+    /// several studies): filed here under their own, where the loader
+    /// finds them, but not under the study that was pulled.
+    pub elsewhere: usize,
 }
 
 impl PullSummary {
@@ -56,20 +61,39 @@ impl PullSummary {
         self.fetched += o.fetched;
         self.present += o.present;
         self.studies += o.studies;
+        self.elsewhere += o.elsewhere;
     }
 
     pub fn describe(&self) -> String {
         format!(
-            "{} file(s) fetched from {} study(ies){}",
+            "{} file(s) fetched from {} study(ies){}{}",
             self.fetched,
             self.studies,
             if self.present > 0 {
                 format!(", {} here already", self.present)
             } else {
                 String::new()
+            },
+            if self.elsewhere > 0 {
+                format!(
+                    ", {} of them belong to other studies and were filed under those",
+                    self.elsewhere
+                )
+            } else {
+                String::new()
             }
         )
     }
+}
+
+/// The SOP Instance UIDs of the DICOM files in a folder (a bundle just
+/// unpacked), read from their headers.
+fn sops_in(dir: &Path) -> BTreeSet<String> {
+    files_under(dir)
+        .iter()
+        .filter_map(|p| crate::dicomfile::open_scan(p).ok())
+        .filter_map(|o| crate::loader::str_of(&o, dicom_dictionary_std::tags::SOP_INSTANCE_UID))
+        .collect()
 }
 
 /// How sending something to the server ended.
@@ -181,7 +205,7 @@ impl Mirror {
     pub fn local_sops(&self, study_uid: &str) -> BTreeSet<String> {
         self.archive()
             .find_study(study_uid)
-            .and_then(|d| archive::instances(&d).ok())
+            .and_then(|d| archive::instances_of(&d, study_uid).ok())
             .map(|v| v.into_iter().map(|i| i.sop_uid).collect())
             .unwrap_or_default()
     }
@@ -232,7 +256,7 @@ impl Mirror {
         let a = self.archive();
         match a.find_study(study_uid) {
             Some(dir) => {
-                a.remove(&dir)?;
+                a.remove_study(study_uid)?;
                 // A patient left without studies goes too.
                 if let Some(pdir) = dir.parent() {
                     let empty = std::fs::read_dir(pdir)
@@ -324,6 +348,7 @@ pub fn pull_study(
         fetched: 0,
         present: manifest.instances.len() - total,
         studies: 1,
+        elsewhere: 0,
     };
     let scratch = mirror.scratch("pull");
     let result = (|| -> Result<()> {
@@ -341,20 +366,27 @@ pub fn pull_study(
             if n == 0 {
                 bail!("the server sent nothing of what it listed");
             }
+            // What arrived, by the files' own UIDs: that is what was pulled,
+            // wherever the import files it. A file whose header names
+            // another study (a server folder holding several) lands under
+            // that study here and is counted, not asked for again.
+            let arrived = sops_in(&scratch);
+            let before_here = mirror.local_sops(study_uid).len();
             mirror.archive().import(&scratch, &Progress::default())?;
             let _ = std::fs::remove_dir_all(&scratch);
-            let now = mirror.local_sops(study_uid);
+            let here_now = mirror.local_sops(study_uid).len();
             let before = missing.len();
-            missing.retain(|s| !now.contains(s));
+            missing.retain(|s| !arrived.contains(s));
             let got = before - missing.len();
             if got == 0 {
                 bail!(
-                    "the files the server sent do not file under this study; {} file(s) not \
+                    "the server sent files other than the ones it listed; {} file(s) not \
                      pulled",
                     missing.len()
                 );
             }
             sum.fetched += got;
+            sum.elsewhere += got.saturating_sub(here_now.saturating_sub(before_here));
         }
         Ok(())
     })();
@@ -510,6 +542,7 @@ mod tests {
                 fetched: 3,
                 present: 2,
                 studies: 1,
+                elsewhere: 0,
             },
             outbox_sent: 1,
             gone: vec!["1.2".into()],

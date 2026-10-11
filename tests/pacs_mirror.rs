@@ -389,3 +389,72 @@ fn a_task_runs_on_the_server_and_its_result_comes_back() {
     assert!(list.iter().all(|t| t.log.is_empty()));
     running.shutdown().unwrap();
 }
+
+/// The server's archive as a person made it: a folder per patient named
+/// by hand, a CD's files of two studies in one folder, the files named by
+/// the exporting system. A station sees two studies, pulls each, and gets
+/// each study's own files - the case of the first real-world test, where
+/// one folder answered for every request and the files of the other
+/// study came back for the one that was asked for.
+#[test]
+fn a_hand_copied_server_folder_with_two_studies_pulls_as_two() {
+    let root = scratch("pacs_mirror_hand_copied");
+    let src_a = root.join("gen_a");
+    let n_a = gen_test_data::generate(&src_a, &GenParams::default(), &Progress::default()).unwrap();
+    let src_b = root.join("gen_b");
+    let params = GenParams {
+        plan_label: "SecondVisit".into(),
+        ..GenParams::default()
+    };
+    let n_b = gen_test_data::generate(&src_b, &params, &Progress::default()).unwrap();
+    let folder = root.join("archive").join("Doe, John").join("CD 2026");
+    for (src, sub) in [(&src_a, "1"), (&src_b, "2")] {
+        let into = folder.join(sub);
+        std::fs::create_dir_all(&into).unwrap();
+        for (i, f) in std::fs::read_dir(src)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .enumerate()
+        {
+            std::fs::copy(f.path(), into.join(format!("IM{i:05}"))).unwrap();
+        }
+    }
+
+    let running =
+        server::spawn(config_for(&root, 0, false), Paths::at(&root.join("server"))).unwrap();
+    let remote = station(&root, &running, Role::View);
+    let m = Mirror::at(root.join("mirror"));
+
+    let pts = remote.patients().unwrap();
+    assert_eq!(pts.len(), 1);
+    assert_eq!(
+        pts[0].studies.len(),
+        2,
+        "the folder is listed as two studies"
+    );
+    let total: usize = pts[0].studies.iter().map(|s| s.files).sum();
+    assert_eq!(total, n_a + n_b);
+    for s in &pts[0].studies {
+        let man = remote.manifest(&s.study_uid).unwrap();
+        assert_eq!(man.instances.len(), s.files, "each study's own files");
+    }
+
+    let got = mirror::pull_patient(&remote, &m, &pts[0], &Progress::default()).unwrap();
+    assert_eq!(
+        (got.fetched, got.present, got.studies, got.elsewhere),
+        (n_a + n_b, 0, 2, 0)
+    );
+    let local = m.archive().scan().unwrap();
+    assert_eq!(local.len(), 1);
+    assert_eq!(local[0].studies.len(), 2, "two studies here too");
+    for s in &pts[0].studies {
+        assert_eq!(m.local_sops(&s.study_uid).len(), s.files);
+        let dir = m.archive().find_study(&s.study_uid).unwrap();
+        let study = loader::load_directory(&dir, &Progress::default()).unwrap();
+        assert_eq!(study.series[study.active_series].study_uid, s.study_uid);
+    }
+    let again = mirror::pull_patient(&remote, &m, &pts[0], &Progress::default()).unwrap();
+    assert_eq!((again.fetched, again.present), (0, n_a + n_b));
+    running.shutdown().unwrap();
+}

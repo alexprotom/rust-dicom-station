@@ -78,6 +78,15 @@ the archive's own is the two-level `patient / study` arrangement: a deeper
 tree (a `My_Imaging` folder holding the patients, say) needs the archive
 root pointed at the folder that holds the patient folders.
 
+A patient's CD often puts the files of several studies into one folder.
+Such a folder is listed as several studies (the sidecar names the one with
+most files and the others on `also` lines), each is served to a station
+with its own files only, and *Remove this study* removes one study's
+files and leaves the rest. A hand-copied folder keeps a third sidecar,
+`INDEX.txt`, with one line per file (SOP Instance UID, Study Instance UID,
+modality, size, path), so that its headers are read once rather than on
+every request; it is rebuilt whenever the files no longer match it.
+
 A sidecar is written whole into a temporary file and renamed over the old
 one, and a filed instance is copied beside its place and renamed into it,
 so a reader - the PACS server sending the study on while the viewer on the

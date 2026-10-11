@@ -378,16 +378,17 @@ async fn manifest(
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
+        let instances = archive::instances_of(&dir, &uid)?
+            .into_iter()
+            .map(|i| InstanceInfo {
+                sop_uid: i.sop_uid,
+                bytes: i.bytes,
+            })
+            .collect();
         Ok(Manifest {
             study_uid: uid,
             patient_key: key,
-            instances: archive::instances(&dir)?
-                .into_iter()
-                .map(|i| InstanceInfo {
-                    sop_uid: i.sop_uid,
-                    bytes: i.bytes,
-                })
-                .collect(),
+            instances,
         })
     })
     .await?;
@@ -407,7 +408,7 @@ async fn instance(
     let (bytes, uid2) = blocking(move || {
         let _r = st.archive_lock.read().unwrap_or_else(|e| e.into_inner());
         let dir = study_dir(&st, &uid)?;
-        let inst = archive::instances(&dir)?
+        let inst = archive::instances_of(&dir, &uid)?
             .into_iter()
             .find(|i| i.sop_uid == sop)
             .ok_or_else(|| not_found("the study has no such instance"))?;
@@ -445,7 +446,7 @@ async fn bundle(
             req.sops.iter().map(String::as_str).collect();
         let mut picked = Vec::new();
         let mut size = 0u64;
-        for i in archive::instances(&dir)? {
+        for i in archive::instances_of(&dir, &uid2)? {
             if !wanted.contains(i.sop_uid.as_str()) {
                 continue;
             }
@@ -597,8 +598,8 @@ async fn delete_study(
     let u = uid.clone();
     blocking(move || {
         let _w = st.archive_lock.write().unwrap_or_else(|e| e.into_inner());
-        let dir = study_dir(&st, &u)?;
-        Archive::new(&st.archive_root).remove(&dir)?;
+        study_dir(&st, &u)?;
+        Archive::new(&st.archive_root).remove_study(&u)?;
         Ok(())
     })
     .await?;

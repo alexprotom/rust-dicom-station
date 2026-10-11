@@ -21,10 +21,15 @@
 //! A study copied in by hand looks different: its folder is called whatever
 //! the person called it (`2025.10.31 CT Abdomen`), its files whatever the
 //! exporting system called them (`0142`, `IM000001`), often one folder per
-//! series below it. The archive takes that in its stride: the sidecar
-//! rebuilt from the headers carries the real UID, a study is found by that
-//! UID as well as by its folder name, and the files of a study are every
-//! DICOM file below its folder, however deep.
+//! series below it, and - a patient's CD being what it is - often the
+//! files of several studies in one folder. The archive takes that in its
+//! stride: the sidecar rebuilt from the headers carries the real UIDs, a
+//! study is found by its UID as well as by its folder name, the files of a
+//! study are every DICOM file below its folder, however deep, and a folder
+//! holding several studies is listed as several. For such a folder a third
+//! sidecar, `INDEX.txt`, records what each file is (SOP UID, study,
+//! modality, size, path), so that its headers are read once and not on
+//! every request a station makes.
 //!
 //! ## Why the sidecars
 //!
@@ -51,6 +56,8 @@ use crate::settings;
 
 const PATIENT_FILE: &str = "PATIENT.txt";
 const STUDY_FILE: &str = "STUDY.txt";
+/// Per-file index of a hand-copied study folder (see the module doc).
+const INDEX_FILE: &str = "INDEX.txt";
 
 /// One study of the archive, as its sidecar describes it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -169,6 +176,7 @@ fn files_below(study_dir: &Path) -> Result<Vec<(PathBuf, u64)>> {
             } else if kind.is_file()
                 && name != STUDY_FILE
                 && name != PATIENT_FILE
+                && name != INDEX_FILE
                 && !name.ends_with(".tmp")
             {
                 out.push((f.path(), f.metadata().map(|m| m.len()).unwrap_or(0)));
@@ -184,43 +192,171 @@ fn files_below(study_dir: &Path) -> Result<Vec<(PathBuf, u64)>> {
     Ok(out)
 }
 
+/// `<sop uid>.dcm`, the name the archive gives a file it files: the UID
+/// can be read off the name. A hand-copied file called `0142` is digits
+/// too, but no UID, so only a dotted name with the archive's extension
+/// counts.
+fn uid_named(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let stem = name.strip_suffix(".dcm")?;
+    (is_uid(stem) && stem.contains('.')).then(|| stem.to_string())
+}
+
+/// One file of a study folder, as `INDEX.txt` records it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Indexed {
+    sop: String,
+    study: String,
+    modality: String,
+    bytes: u64,
+    /// Below the study folder, `/`-separated.
+    rel: String,
+}
+
+/// Read `INDEX.txt`: one file per line, tab-separated, the path last.
+fn read_index(study_dir: &Path) -> Vec<Indexed> {
+    let Ok(text) = std::fs::read_to_string(study_dir.join(INDEX_FILE)) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|l| {
+            let mut it = l.splitn(5, '\t');
+            Some(Indexed {
+                sop: it.next()?.to_string(),
+                study: it.next()?.to_string(),
+                modality: it.next()?.to_string(),
+                bytes: it.next()?.parse().ok()?,
+                rel: it.next()?.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn write_index(study_dir: &Path, entries: &[Indexed]) -> Result<()> {
+    let mut text = String::new();
+    for e in entries {
+        text.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\n",
+            e.sop, e.study, e.modality, e.bytes, e.rel
+        ));
+    }
+    write_card(&study_dir.join(INDEX_FILE), &text)
+}
+
+/// What one file below a study folder is, from its header.
+fn index_one(study_dir: &Path, path: &Path, bytes: u64) -> Option<Indexed> {
+    let obj = crate::dicomfile::open_scan(path).ok()?;
+    let sop = str_of(&obj, tags::SOP_INSTANCE_UID).unwrap_or_default();
+    if sop.is_empty() {
+        return None;
+    }
+    let rel = path
+        .strip_prefix(study_dir)
+        .ok()?
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/");
+    Some(Indexed {
+        sop,
+        study: str_of(&obj, tags::STUDY_INSTANCE_UID).unwrap_or_default(),
+        modality: str_of(&obj, tags::MODALITY).unwrap_or_default(),
+        bytes,
+        rel,
+    })
+}
+
+/// Every DICOM file below a study folder with what it is.
+///
+/// A folder the archive filed itself (named by the study's UID, files
+/// named by theirs) needs no header read: every file is that study's.
+/// Any other folder is read from its `INDEX.txt` when that still matches
+/// the files there, and from the headers otherwise - once, the index being
+/// written for the next time.
+fn index_of(study_dir: &Path) -> Result<Vec<Indexed>> {
+    let files = files_below(study_dir)?;
+    let own_uid = study_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|n| is_uid(n))
+        .map(str::to_string);
+    if let Some(study) = &own_uid {
+        if files.iter().all(|(p, _)| uid_named(p).is_some()) {
+            return Ok(files
+                .into_iter()
+                .filter_map(|(p, bytes)| {
+                    let sop = uid_named(&p)?;
+                    let rel = p.file_name()?.to_string_lossy().into_owned();
+                    Some(Indexed {
+                        sop,
+                        study: study.clone(),
+                        modality: String::new(),
+                        bytes,
+                        rel,
+                    })
+                })
+                .collect());
+        }
+    }
+    let cached = read_index(study_dir);
+    let fresh = cached.len() == files.len()
+        && cached.iter().all(|e| {
+            files
+                .binary_search_by(|(p, _)| p.cmp(&study_dir.join(&e.rel)))
+                .is_ok()
+        });
+    if fresh {
+        return Ok(cached);
+    }
+    let entries: Vec<Indexed> = files
+        .iter()
+        .filter_map(|(p, bytes)| index_one(study_dir, p, *bytes))
+        .collect();
+    // Files that are not DICOM stay out of the index, which then never
+    // matches the folder's file count; written anyway, read again next
+    // time. That is the price of a stray file, not a correctness problem.
+    let _ = write_index(study_dir, &entries);
+    Ok(entries)
+}
+
 /// The DICOM files of one study folder with their SOP Instance UIDs.
 ///
 /// A file the archive filed is called `<sop uid>.dcm`, so its name is its
 /// UID and no header is read; a file copied in by hand under another name
-/// has its header read once here. Files in folders below the study's (one
-/// per series, as exports often come) count too. The sidecars and anything
-/// that is not DICOM are left out.
+/// has its header read once and is remembered in `INDEX.txt`. Files in
+/// folders below the study's (one per series, as exports often come) count
+/// too. The sidecars and anything that is not DICOM are left out. Every
+/// file is listed, whatever study it belongs to: [`instances_of`] is the
+/// one that knows about a folder holding several.
 pub fn instances(study_dir: &Path) -> Result<Vec<Instance>> {
-    let mut out = Vec::new();
-    for (path, bytes) in files_below(study_dir)? {
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        // The archive's own files are `<uid>.dcm`; a hand-copied file called
-        // `0142` is digits too, but no UID, so only a dotted name with the
-        // archive's extension is believed without reading the header.
-        let sop_uid = if let Some(stem) = name
-            .strip_suffix(".dcm")
-            .filter(|s| is_uid(s) && s.contains('.'))
-        {
-            stem.to_string()
-        } else {
-            match crate::dicomfile::open_scan(&path) {
-                Ok(obj) => str_of(&obj, tags::SOP_INSTANCE_UID).unwrap_or_default(),
-                Err(_) => continue,
-            }
-        };
-        if sop_uid.is_empty() {
-            continue;
-        }
-        out.push(Instance {
-            sop_uid,
-            path,
-            bytes,
-        });
+    let mut out: Vec<Instance> = index_of(study_dir)?
+        .into_iter()
+        .map(|e| Instance {
+            sop_uid: e.sop,
+            path: study_dir.join(&e.rel),
+            bytes: e.bytes,
+        })
+        .collect();
+    out.sort_by(|a, b| a.sop_uid.cmp(&b.sop_uid));
+    Ok(out)
+}
+
+/// The files of `study_uid` in a folder: all of them for a folder the
+/// archive filed, the ones whose header names that study for a folder
+/// copied in by hand (which may hold several studies).
+pub fn instances_of(study_dir: &Path, study_uid: &str) -> Result<Vec<Instance>> {
+    if study_dir.file_name().and_then(|n| n.to_str()) == Some(study_uid) {
+        return instances(study_dir);
     }
+    let mut out: Vec<Instance> = index_of(study_dir)?
+        .into_iter()
+        .filter(|e| e.study == study_uid)
+        .map(|e| Instance {
+            sop_uid: e.sop,
+            path: study_dir.join(&e.rel),
+            bytes: e.bytes,
+        })
+        .collect();
     out.sort_by(|a, b| a.sop_uid.cmp(&b.sop_uid));
     Ok(out)
 }
@@ -370,7 +506,12 @@ impl Archive {
                     if !card.exists() {
                         let _ = self.rebuild_sidecars(&sd.path());
                     }
-                    if field(&read_sidecar(&card), "uid") == study_uid {
+                    let pairs = read_sidecar(&card);
+                    if field(&pairs, "uid") == study_uid
+                        || also_studies(&pairs)
+                            .iter()
+                            .any(|s| s.study_uid == study_uid)
+                    {
                         by_sidecar = Some(sd.path());
                     }
                 }
@@ -448,14 +589,15 @@ impl Archive {
                     study_uid: field(&s, "uid"),
                     date: field(&s, "date"),
                     description: field(&s, "description"),
-                    modalities: field(&s, "modalities")
-                        .split(',')
-                        .map(|m| m.trim().to_string())
-                        .filter(|m| !m.is_empty())
-                        .collect(),
+                    modalities: modalities_of(&field(&s, "modalities")),
                     files: field(&s, "files").parse().unwrap_or(0),
-                    dir: sdir,
+                    dir: sdir.clone(),
                 });
+                // A hand-copied folder holding several studies lists each.
+                for mut extra in also_studies(&s) {
+                    extra.dir = sdir.clone();
+                    patient.studies.push(extra);
+                }
             }
             if patient.studies.is_empty() {
                 continue;
@@ -470,39 +612,93 @@ impl Archive {
 
     /// Rebuild a study folder's sidecar (and its patient's) from the headers
     /// of the files in it, at any depth (a hand-copied study often keeps
-    /// one folder per series).
+    /// one folder per series). A folder holding files of several studies
+    /// gets the one with most files as its study and the others as `also`
+    /// lines; a folder the archive did not file itself gets `INDEX.txt`.
     fn rebuild_sidecars(&self, study_dir: &Path) -> Result<()> {
-        let mut modalities: BTreeSet<String> = BTreeSet::new();
-        let mut files = 0usize;
-        let (mut uid, mut date, mut desc) = (String::new(), String::new(), String::new());
+        struct Stat {
+            uid: String,
+            date: String,
+            desc: String,
+            modalities: BTreeSet<String>,
+            files: usize,
+        }
+        let mut stats: Vec<Stat> = Vec::new();
+        let mut entries: Vec<Indexed> = Vec::new();
         let (mut pname, mut pid) = (String::new(), String::new());
-        for (path, _) in files_below(study_dir)? {
+        let mut own_names = true;
+        for (path, bytes) in files_below(study_dir)? {
+            own_names &= uid_named(&path).is_some();
             let Ok(obj) = crate::dicomfile::open_scan(&path) else {
                 continue;
             };
-            files += 1;
-            if let Some(m) = str_of(&obj, tags::MODALITY) {
-                modalities.insert(m);
-            }
-            if uid.is_empty() {
-                uid = str_of(&obj, tags::STUDY_INSTANCE_UID).unwrap_or_default();
-                date = str_of(&obj, tags::STUDY_DATE).unwrap_or_default();
-                desc = str_of(&obj, tags::STUDY_DESCRIPTION).unwrap_or_default();
+            let Some(e) = index_one(study_dir, &path, bytes) else {
+                continue;
+            };
+            if pname.is_empty() && pid.is_empty() {
                 pname = str_of(&obj, tags::PATIENT_NAME).unwrap_or_default();
                 pid = str_of(&obj, tags::PATIENT_ID).unwrap_or_default();
             }
+            let stat = match stats.iter_mut().find(|s| s.uid == e.study) {
+                Some(s) => s,
+                None => {
+                    stats.push(Stat {
+                        uid: e.study.clone(),
+                        date: str_of(&obj, tags::STUDY_DATE).unwrap_or_default(),
+                        desc: str_of(&obj, tags::STUDY_DESCRIPTION).unwrap_or_default(),
+                        modalities: BTreeSet::new(),
+                        files: 0,
+                    });
+                    stats.last_mut().expect("just pushed")
+                }
+            };
+            stat.files += 1;
+            if !e.modality.is_empty() {
+                stat.modalities.insert(e.modality.clone());
+            }
+            entries.push(e);
         }
-        if files == 0 {
+        if entries.is_empty() {
             return Ok(());
         }
+        // The study with most files is the folder's; ties go to the first
+        // seen, which is the first file by path.
+        let most = stats
+            .iter()
+            .enumerate()
+            .max_by_key(|(i, s)| (s.files, usize::MAX - i))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        let primary = stats.remove(most);
+        let also: Vec<StudyEntry> = stats
+            .into_iter()
+            .map(|s| StudyEntry {
+                study_uid: s.uid,
+                date: s.date,
+                description: s.desc,
+                modalities: s.modalities.into_iter().collect(),
+                files: s.files,
+                dir: PathBuf::new(),
+            })
+            .collect();
         write_study_card(
             study_dir,
-            &uid,
-            &date,
-            &desc,
-            &modalities.iter().cloned().collect::<Vec<_>>(),
-            files,
+            &primary.uid,
+            &primary.date,
+            &primary.desc,
+            &primary.modalities.iter().cloned().collect::<Vec<_>>(),
+            primary.files,
+            &also,
         )?;
+        let own_folder = study_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(is_uid);
+        if own_folder && own_names && also.is_empty() {
+            let _ = std::fs::remove_file(study_dir.join(INDEX_FILE));
+        } else {
+            write_index(study_dir, &entries)?;
+        }
         if let Some(pdir) = study_dir.parent() {
             let card = pdir.join(PATIENT_FILE);
             if !card.exists() {
@@ -510,6 +706,44 @@ impl Archive {
             }
         }
         Ok(())
+    }
+
+    /// Remove one study: its folder, or - when the folder holds other
+    /// studies too, as a hand-copied one may - only its files, the folder
+    /// and the sidecars staying for the rest.
+    pub fn remove_study(&self, study_uid: &str) -> Result<()> {
+        let dir = self
+            .find_study(study_uid)
+            .with_context(|| format!("the archive has no study {study_uid}"))?;
+        let pairs = read_sidecar(&dir.join(STUDY_FILE));
+        let shared = !also_studies(&pairs).is_empty()
+            && (field(&pairs, "uid") == study_uid
+                || also_studies(&pairs)
+                    .iter()
+                    .any(|s| s.study_uid == study_uid));
+        if !shared {
+            return self.remove(&dir);
+        }
+        let root = self
+            .root
+            .canonicalize()
+            .unwrap_or_else(|_| self.root.clone());
+        for i in instances_of(&dir, study_uid)? {
+            let target = i.path.canonicalize().unwrap_or_else(|_| i.path.clone());
+            anyhow::ensure!(
+                target.starts_with(&root),
+                "{} is not inside the archive",
+                i.path.display()
+            );
+            std::fs::remove_file(&target)
+                .with_context(|| format!("remove {}", target.display()))?;
+        }
+        let _ = std::fs::remove_file(dir.join(STUDY_FILE));
+        let _ = std::fs::remove_file(dir.join(INDEX_FILE));
+        if files_below(&dir)?.is_empty() {
+            return self.remove(&dir);
+        }
+        self.rebuild_sidecars(&dir)
     }
 
     /// Where a patient's study lives, creating neither.
@@ -662,15 +896,58 @@ fn write_study_card(
     description: &str,
     modalities: &[String],
     files: usize,
+    also: &[StudyEntry],
 ) -> Result<()> {
-    write_card(
-        &dir.join(STUDY_FILE),
-        &format!(
-            "uid = {uid}\ndate = {date}\ndescription = {description}\n\
-             modalities = {}\nfiles = {files}\n",
-            modalities.join(",")
-        ),
-    )
+    let mut text = format!(
+        "uid = {uid}\ndate = {date}\ndescription = {description}\n\
+         modalities = {}\nfiles = {files}\n",
+        modalities.join(",")
+    );
+    // The other studies a hand-copied folder holds, one line each:
+    // `also = uid|date|files|modalities|description` (the description
+    // last, since it may hold anything).
+    for s in also {
+        text.push_str(&format!(
+            "also = {}|{}|{}|{}|{}\n",
+            s.study_uid,
+            s.date,
+            s.files,
+            s.modalities.join(","),
+            s.description.replace(['\n', '\r'], " ")
+        ));
+    }
+    write_card(&dir.join(STUDY_FILE), &text)
+}
+
+/// `CT,RTSTRUCT` as the sidecar spells it.
+fn modalities_of(text: &str) -> Vec<String> {
+    text.split(',')
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty())
+        .collect()
+}
+
+/// The `also` lines of a study sidecar (`dir` left empty).
+fn also_studies(pairs: &[(String, String)]) -> Vec<StudyEntry> {
+    pairs
+        .iter()
+        .filter(|(k, _)| k == "also")
+        .filter_map(|(_, v)| {
+            let mut it = v.splitn(5, '|');
+            let study_uid = it.next()?.trim().to_string();
+            if study_uid.is_empty() {
+                return None;
+            }
+            Some(StudyEntry {
+                study_uid,
+                date: it.next().unwrap_or("").trim().to_string(),
+                files: it.next().and_then(|f| f.trim().parse().ok()).unwrap_or(0),
+                modalities: modalities_of(it.next().unwrap_or("")),
+                description: it.next().unwrap_or("").trim().to_string(),
+                dir: PathBuf::new(),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -709,6 +986,7 @@ mod tests {
             "Planning",
             &["CT".into(), "RTSTRUCT".into()],
             214,
+            &[],
         )
         .unwrap();
 

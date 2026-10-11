@@ -155,7 +155,9 @@ impl ViewerApp {
         }));
     }
 
-    fn start_pacs_remove(&mut self, dir: std::path::PathBuf) {
+    /// Remove a patient folder, or (with `study`) one study by UID, which
+    /// leaves a hand-copied folder's other studies in place.
+    fn start_pacs_remove(&mut self, dir: std::path::PathBuf, study: Option<String>) {
         if self.pacs_job.is_some() {
             return;
         }
@@ -163,9 +165,12 @@ impl ViewerApp {
         let progress = Arc::new(Progress::default());
         progress.set("Removing");
         self.pacs_job = Some(Job::spawn(progress, move |_| {
-            Archive::new(root)
-                .remove(&dir)
-                .map(|()| PacsOutcome::Removed)
+            let a = Archive::new(root);
+            match study {
+                Some(uid) => a.remove_study(&uid),
+                None => a.remove(&dir),
+            }
+            .map(|()| PacsOutcome::Removed)
         }));
     }
 
@@ -228,6 +233,7 @@ impl ViewerApp {
         let mut load: Option<(usize, std::path::PathBuf)> = None;
         let mut upload: Option<usize> = None;
         let mut remove: Option<std::path::PathBuf> = None;
+        let mut remove_study: Option<String> = None;
         let mut expand: Option<Option<usize>> = None;
         let mut select: Option<(usize, Option<usize>)> = None;
         let mut commit_dir = false;
@@ -403,7 +409,7 @@ impl ViewerApp {
                                     ));
                                     resp.context_menu(|ui| {
                                         if ui.button("🗑 Remove this study").clicked() {
-                                            remove = Some(st.dir.clone());
+                                            remove_study = Some(st.study_uid.clone());
                                             ui.close();
                                         }
                                     });
@@ -501,7 +507,10 @@ impl ViewerApp {
             self.start_pacs_upload(slot);
         }
         if let Some(dir) = remove {
-            self.start_pacs_remove(dir);
+            self.start_pacs_remove(dir, None);
+        }
+        if let Some(uid) = remove_study {
+            self.start_pacs_remove(std::path::PathBuf::new(), Some(uid));
         }
         if let Some((slot, dir)) = load {
             self.start_load(slot, dir);
