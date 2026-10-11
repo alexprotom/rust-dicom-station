@@ -28,6 +28,25 @@ impl ViewerApp {
         self.persist_settings();
     }
 
+    /// [`ViewerApp::remember_source`] for many paths at once, the settings
+    /// written once.
+    pub(super) fn remember_sources(&mut self, slot: usize, paths: &[PathBuf]) {
+        let slot = slot.min(MAX_WORKSPACES - 1);
+        let mut known: std::collections::HashSet<PathBuf> =
+            self.session[slot].iter().cloned().collect();
+        let mut changed = false;
+        for p in paths {
+            let p = p.canonicalize().unwrap_or_else(|_| p.clone());
+            if known.insert(p.clone()) {
+                self.session[slot].push(p);
+                changed = true;
+            }
+        }
+        if changed {
+            self.persist_settings();
+        }
+    }
+
     /// A workspace was emptied: it is no longer part of the session.
     pub(super) fn forget_sources(&mut self, slot: usize) {
         if self.session[slot.min(MAX_WORKSPACES - 1)].is_empty() {
@@ -69,15 +88,27 @@ impl ViewerApp {
     /// files merge into the workspace and appear in the tree exactly as a
     /// folder's contents would. Nothing downstream knows the difference.
     pub(super) fn start_load_files(&mut self, slot: usize, paths: Vec<PathBuf>) {
+        self.start_load_files_noting(slot, paths, None);
+    }
+
+    /// [`ViewerApp::start_load_files`], the session remembering `sources`
+    /// (the folders a selection of the PACS covers) instead of every file.
+    pub(super) fn start_load_files_noting(
+        &mut self,
+        slot: usize,
+        paths: Vec<PathBuf>,
+        sources: Option<Vec<PathBuf>>,
+    ) {
         if paths.is_empty() {
             return;
         }
         if self.loading.is_some() {
-            self.pending_load_files = Some((slot, paths));
+            self.pending_load_files = Some((slot, paths, sources));
             return;
         }
-        for p in &paths {
-            self.remember_source(slot, p);
+        match &sources {
+            Some(src) => self.remember_sources(slot, src),
+            None => self.remember_sources(slot, &paths),
         }
         let origin = match paths.len() {
             1 => paths[0].display().to_string(),
@@ -212,12 +243,15 @@ impl ViewerApp {
         // Whatever was played from this workspace belongs to the study that
         // is being replaced.
         self.drop_phase_cache(slot);
-        let other_loaded = (0..MAX_WORKSPACES).any(|s| s != slot && self.slots[s].study.is_some());
-        // Shared W/L: adopt the study default unless another study is already up.
-        if !other_loaded {
-            self.window_center = study.default_window.0;
-            self.window_width = study.default_window.1;
-        }
+        // The window: another workspace's showing the same modality, so a
+        // comparison stays comparable, else the series' own.
+        let modality = study
+            .series
+            .get(study.active_series)
+            .map(|s| s.modality.clone())
+            .unwrap_or_default();
+        self.adopt_window(slot, &modality, study.default_window);
+        self.series_window[slot] = study.default_window;
         if !study.doses.is_empty() && self.dose_mode == DoseMode::Off {
             self.dose_mode = DoseMode::Both;
         }
@@ -301,11 +335,16 @@ impl ViewerApp {
         window: (f32, f32),
         idx: usize,
     ) {
-        let other_loaded = (0..MAX_WORKSPACES).any(|s| s != slot && self.slots[s].study.is_some());
-        if !other_loaded {
-            self.window_center = window.0;
-            self.window_width = window.1;
+        let modality = self.slots[slot]
+            .study
+            .as_ref()
+            .and_then(|st| st.series.get(idx))
+            .map(|s| s.modality.clone())
+            .unwrap_or_default();
+        if modality != self.shown_modality(slot) {
+            self.adopt_window(slot, &modality, window);
         }
+        self.series_window[slot] = window;
         let s = &mut self.slots[slot];
         if let Some(study) = &mut s.study {
             study.volume = vol;

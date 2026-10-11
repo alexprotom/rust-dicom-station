@@ -633,8 +633,9 @@ impl ViewerApp {
         // The window follows the phase only when nothing else could have
         // set it, the same rule a series switch uses.
         if !other_loaded {
-            self.window_center = window.0;
-            self.window_width = window.1;
+            self.window_center[slot] = window.0;
+            self.window_width[slot] = window.1;
+            self.series_window[slot] = window;
         }
         self.rebind_seg_series(slot);
     }

@@ -589,7 +589,8 @@ impl ViewerApp {
         };
         let window = match self.medsam2.window {
             WindowSource::Viewport => {
-                Window::from_width_level(self.window_width, self.window_center)
+                let (c, w) = self.window_of(slot);
+                Window::from_width_level(w, c)
             }
             WindowSource::Preset(i) => {
                 let (_, w, l) = Window::PRESETS[i];

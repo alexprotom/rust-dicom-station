@@ -84,8 +84,8 @@ pub fn run(target: &Target, remove_models: bool, sink: Sink) -> Result<()> {
         return Err(failure(
             EXIT_IN_USE,
             format!(
-                "the PACS server is still running from {} - stop it (Settings > PACS server \
-                 > Stop, or rds-pacs stop) and try again",
+                "the PACS server is still running from {} - stop it (Tools > PACS > \
+                 Settings > PACS server > Stop, or rds-pacs stop) and try again",
                 dir.display()
             ),
         ));

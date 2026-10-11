@@ -249,7 +249,9 @@ fn a_study_copied_in_by_hand_is_as_good_as_a_filed_one() {
     // Found by UID although the folder is not called that: what a PACS
     // server does for every request a station makes about the study.
     assert_eq!(archive.find_study(&entry.study_uid), Some(sdir.clone()));
-    let inst = rust_dicom_station::archive::instances(&sdir).expect("instances");
+    let inst = archive
+        .study_instances(&entry.study_uid)
+        .expect("instances");
     assert_eq!(
         inst.len(),
         written,
@@ -316,8 +318,6 @@ fn a_study_copied_in_by_hand_is_as_good_as_a_filed_one() {
 /// removes one without touching the other.
 #[test]
 fn a_folder_holding_two_studies_is_listed_and_served_as_two() {
-    use rust_dicom_station::archive::{instances, instances_of};
-
     let src_a = scratch("test_archive_two_src_a");
     let n_a = gen_test_data::generate(&src_a, &GenParams::default(), &Progress::default())
         .expect("generation A");
@@ -348,7 +348,10 @@ fn a_folder_holding_two_studies_is_listed_and_served_as_two() {
     assert_eq!(patients.len(), 1);
     let studies = &patients[0].studies;
     assert_eq!(studies.len(), 2, "two studies, one folder: {studies:?}");
-    assert!(studies.iter().all(|s| s.dir == sdir));
+    assert!(
+        studies.iter().all(|s| s.dir == dir_a || s.dir == dir_b),
+        "each study's folder is the one holding its files"
+    );
     assert_ne!(studies[0].study_uid, studies[1].study_uid);
     let total: usize = studies.iter().map(|s| s.files).sum();
     assert_eq!(
@@ -360,36 +363,274 @@ fn a_folder_holding_two_studies_is_listed_and_served_as_two() {
 
     // Each study is found and served by its own files only.
     for s in studies {
-        assert_eq!(archive.find_study(&s.study_uid), Some(sdir.clone()));
-        let mine = instances_of(&sdir, &s.study_uid).expect("instances of the study");
+        assert_eq!(archive.find_study(&s.study_uid), Some(s.dir.clone()));
+        let mine = archive
+            .study_instances(&s.study_uid)
+            .expect("instances of the study");
         assert_eq!(mine.len(), s.files);
-        let loaded = loader::load_directory(&sdir, &Progress::default()).expect("the folder loads");
-        assert!(loaded.series.iter().any(|ser| ser.study_uid == s.study_uid));
+        let files: Vec<_> = mine.into_iter().map(|i| i.path).collect();
+        let loaded =
+            loader::load_files(&files, "test", &Progress::default()).expect("the study loads");
+        assert!(loaded.series.iter().all(|ser| ser.study_uid == s.study_uid));
     }
-    assert_eq!(instances(&sdir).expect("all").len(), n_a + n_b);
-    let index = sdir.join("INDEX.txt");
-    assert!(index.is_file(), "a hand-copied folder keeps its index");
-    assert_eq!(
-        std::fs::read_to_string(&index).unwrap().lines().count(),
-        n_a + n_b
-    );
+    // One catalog for the PACS, nothing written into the folders.
+    assert!(root
+        .join(rust_dicom_station::archive::CATALOG_FILE)
+        .is_file());
+    for d in [&sdir, &dir_a, &dir_b] {
+        for name in ["STUDY.txt", "PATIENT.txt", "INDEX.txt"] {
+            assert!(!d.join(name).exists(), "{name} in {}", d.display());
+        }
+    }
 
     // Removing one study leaves the other, its index and its listing whole.
     let gone = studies[1].study_uid.clone();
     let kept = studies[0].study_uid.clone();
+    let kept_dir = studies[0].dir.clone();
     archive.remove_study(&gone).expect("remove one study");
     assert!(sdir.is_dir(), "the folder stays for the other study");
     assert_eq!(archive.find_study(&gone), None);
-    assert_eq!(archive.find_study(&kept), Some(sdir.clone()));
+    assert_eq!(archive.find_study(&kept), Some(kept_dir));
     let patients = archive.scan().expect("rescan");
     assert_eq!(patients[0].studies.len(), 1);
     assert_eq!(patients[0].studies[0].study_uid, kept);
     assert_eq!(patients[0].studies[0].files, studies[0].files);
     assert_eq!(
-        instances_of(&sdir, &kept).unwrap().len(),
+        archive.study_instances(&kept).unwrap().len(),
         studies[0].files,
         "the kept study's files are all there"
     );
     archive.remove_study(&kept).expect("remove the last study");
     assert!(!sdir.exists(), "an emptied folder goes");
+}
+
+/// A DICOM file with nothing but what the catalog reads.
+fn tiny(
+    path: &std::path::Path,
+    patient: (&str, &str),
+    study: &str,
+    series: &str,
+    sop: &str,
+    modality: &str,
+) {
+    use dicom_core::{DataElement, PrimitiveValue, VR};
+    use dicom_dictionary_std::tags;
+    use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
+    let class = "1.2.840.10008.5.1.4.1.1.2";
+    let mut obj = InMemDicomObject::new_empty();
+    for (tag, vr, v) in [
+        (tags::SOP_CLASS_UID, VR::UI, class),
+        (tags::SOP_INSTANCE_UID, VR::UI, sop),
+        (tags::STUDY_INSTANCE_UID, VR::UI, study),
+        (tags::SERIES_INSTANCE_UID, VR::UI, series),
+        (tags::PATIENT_ID, VR::LO, patient.0),
+        (tags::PATIENT_NAME, VR::PN, patient.1),
+        (tags::MODALITY, VR::CS, modality),
+        (tags::STUDY_DATE, VR::DA, "20260102"),
+    ] {
+        obj.put(DataElement::new(tag, vr, PrimitiveValue::from(v)));
+    }
+    let file = obj
+        .with_meta(
+            FileMetaTableBuilder::new()
+                .transfer_syntax("1.2.840.10008.1.2.1")
+                .media_storage_sop_class_uid(class)
+                .media_storage_sop_instance_uid(sop),
+        )
+        .expect("meta");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    file.write_to_file(path).expect("write");
+}
+
+/// The PACS as a person lays it out: cohort folders of patients, a patient
+/// folder outside any, a further storage folder. Cohorts and names live in
+/// the catalog (no file is touched for them, and a rescan keeps them);
+/// moving files is its own act, within one storage folder.
+#[test]
+fn cohorts_names_and_moves_live_in_the_one_catalog() {
+    use rust_dicom_station::archive::{Pick, UNSORTED};
+
+    let root = scratch("test_archive_cohorts");
+    let x24 = ("X24", "GC");
+    tiny(
+        &root.join("Trial/X24/CT/a"),
+        x24,
+        "1.1",
+        "1.1.1",
+        "9.1",
+        "CT",
+    );
+    tiny(
+        &root.join("Trial/X24/CT/b"),
+        x24,
+        "1.1",
+        "1.1.1",
+        "9.2",
+        "CT",
+    );
+    tiny(
+        &root.join("Trial/X24/RT/c"),
+        x24,
+        "1.1",
+        "1.1.2",
+        "9.3",
+        "RTSTRUCT",
+    );
+    tiny(
+        &root.join("Trial/X31/d"),
+        ("X31", "HM"),
+        "1.2",
+        "1.2.1",
+        "9.4",
+        "MR",
+    );
+    tiny(
+        &root.join("P79/2020/e"),
+        ("P79", "ND"),
+        "1.3",
+        "1.3.1",
+        "9.5",
+        "CT",
+    );
+    tiny(
+        &root.join("Personal/Visit/f"),
+        ("RP-1", "DOE^JOHN"),
+        "1.4",
+        "1.4.1",
+        "9.6",
+        "CT",
+    );
+    // A sidecar an older version wrote goes; a person's own note stays.
+    std::fs::write(root.join("Trial/X24/STUDY.txt"), "uid = 1.1\nfiles = 3\n").unwrap();
+    std::fs::write(root.join("Trial/notes.txt"), "my notes\n").unwrap();
+
+    let archive = Archive::new(&root);
+    let tree = archive.scan_tree(&Progress::default()).expect("scan");
+    let names: Vec<&str> = tree.cohorts.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["Personal", "Trial", "Unsorted"], "Unsorted last");
+    let trial = tree
+        .cohorts
+        .iter()
+        .find(|c| c.name == "Trial")
+        .unwrap()
+        .clone();
+    assert_eq!(trial.patients.len(), 2);
+    let gc = trial.patients.iter().find(|p| p.key == "X24").unwrap();
+    assert_eq!(gc.studies.len(), 1);
+    assert_eq!(gc.studies[0].series.len(), 2, "CT and RTSTRUCT");
+    assert_eq!(gc.studies[0].files, 3);
+    assert_eq!(gc.studies[0].date, "20260102");
+    let unsorted = tree.cohorts.iter().find(|c| c.id == UNSORTED).unwrap();
+    assert_eq!(
+        unsorted.patients[0].key, "P79",
+        "a patient's own folder is Unsorted"
+    );
+    assert!(!root.join("Trial/X24/STUDY.txt").exists());
+    assert!(root.join("Trial/notes.txt").exists());
+
+    // Names: the catalog's, not the files'.
+    archive
+        .rename(&Pick::Cohort(trial.id.clone()), "Compassionate")
+        .unwrap();
+    archive
+        .rename(&Pick::Patient("X24".into()), "Case 24")
+        .unwrap();
+    archive
+        .rename(&Pick::Series("1.1.2".into()), "Clinical contours")
+        .unwrap();
+    // Cohorts: a new one, X24 moved into it, X31 copied.
+    let sel = archive.new_cohort("Selected").unwrap();
+    archive
+        .put_in_cohort(&["X24".into()], Some(&trial.id), &sel, false)
+        .unwrap();
+    archive
+        .put_in_cohort(&["X31".into()], Some(&trial.id), &sel, true)
+        .unwrap();
+    // A rescan keeps all of it.
+    let tree = archive.scan_tree(&Progress::default()).expect("rescan");
+    let by = |name: &str| tree.cohorts.iter().find(|c| c.name == name).cloned();
+    let comp = by("Compassionate").expect("renamed cohort");
+    let selected = by("Selected").expect("new cohort");
+    let keys = |c: &rust_dicom_station::archive::CohortEntry| {
+        c.patients.iter().map(|p| p.key.clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(keys(&comp), ["X31"], "X24 was moved out");
+    assert_eq!(keys(&selected), ["X24", "X31"], "X31 copied, X24 moved");
+    let case = &selected.patients[0];
+    assert_eq!(case.title(), "Case 24");
+    assert_eq!(case.dicom_title(), "GC (X24)");
+    assert!(case.studies[0]
+        .series
+        .iter()
+        .any(|s| s.title() == "Clinical contours"));
+    assert!(
+        root.join("Trial/X24/CT/a").is_file(),
+        "no file moved for any of it"
+    );
+
+    // What a selection stands for.
+    assert_eq!(archive.files_of(&[Pick::Series("1.1.2".into())]).len(), 1);
+    assert_eq!(archive.files_of(&[Pick::Cohort(sel.clone())]).len(), 4);
+    assert_eq!(
+        archive
+            .files_of(&[Pick::Study("1.1".into()), Pick::Series("1.1.1".into())])
+            .len(),
+        3,
+        "a series inside a chosen study is not counted twice"
+    );
+
+    // Moving files: a study into a new folder, its series folders kept.
+    let rel = archive.new_folder(0, "", "Moved").unwrap();
+    let sum = archive
+        .move_into(&[Pick::Study("1.1".into())], 0, &rel)
+        .expect("move");
+    assert_eq!(sum.moved, 3);
+    assert!(root.join("Moved/CT/a").is_file() && root.join("Moved/RT/c").is_file());
+    assert!(!root.join("Trial/X24").exists(), "the emptied folder went");
+    assert_eq!(archive.find_study("1.1"), Some(root.join("Moved")));
+    assert!(
+        archive
+            .move_into(&[Pick::Study("1.2".into())], 0, "Moved")
+            .is_ok(),
+        "a second move into the same folder"
+    );
+    assert!(
+        archive
+            .move_into(&[Pick::Study("1.2".into())], 0, "Trial")
+            .is_ok(),
+        "and back"
+    );
+
+    // A second storage folder is read where it is; the catalog stays in
+    // the main one, and files do not move between the two.
+    let more = scratch("test_archive_cohorts_more");
+    tiny(
+        &more.join("Q1/x"),
+        ("Q1", "QQ"),
+        "1.9",
+        "1.9.1",
+        "9.9",
+        "CT",
+    );
+    let both = Archive::with_roots(vec![root.clone(), more.clone()]);
+    let tree = both.scan_tree(&Progress::default()).expect("scan both");
+    assert_eq!(tree.patients().len(), 5);
+    assert!(!more
+        .join(rust_dicom_station::archive::CATALOG_FILE)
+        .exists());
+    assert_eq!(both.storage_of(&[Pick::Study("1.9".into())]), Some(1));
+    assert!(both
+        .move_into(&[Pick::Study("1.9".into())], 0, "Moved")
+        .is_err());
+    // The one-folder view of the main folder still sees its own files.
+    assert_eq!(Archive::new(&root).scan().unwrap().len(), 4);
+
+    // Removing deletes the files and the folders they leave empty.
+    let n = both.remove_picks(&[Pick::Patient("X31".into())]).unwrap();
+    assert_eq!(n, 1);
+    assert!(!root.join("Trial/X31").exists());
+    assert!(
+        root.join("Trial/notes.txt").exists(),
+        "a person's file stays, and its folder"
+    );
 }

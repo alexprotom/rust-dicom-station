@@ -440,6 +440,27 @@ fn a_hand_copied_server_folder_with_two_studies_pulls_as_two() {
         assert_eq!(man.instances.len(), s.files, "each study's own files");
     }
 
+    // One series of a study, not the whole of it.
+    let st = &pts[0].studies[0];
+    assert!(!st.series.is_empty(), "the listing names the series");
+    let ct = st
+        .series
+        .iter()
+        .find(|s| s.modality == "CT")
+        .expect("a CT series");
+    let one = std::collections::BTreeSet::from([ct.series_uid.clone()]);
+    let m1 = Mirror::at(root.join("mirror_one"));
+    let got = mirror::pull_series(
+        &remote,
+        &m1,
+        &st.study_uid,
+        Some(&one),
+        &Progress::default(),
+    )
+    .unwrap();
+    assert_eq!(got.fetched, ct.files, "the series' files and no more");
+    assert_eq!(m1.local_series_of(&st.study_uid), one);
+
     let got = mirror::pull_patient(&remote, &m, &pts[0], &Progress::default()).unwrap();
     assert_eq!(
         (got.fetched, got.present, got.studies, got.elsewhere),

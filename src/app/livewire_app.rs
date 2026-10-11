@@ -36,7 +36,7 @@ impl ViewerApp {
     /// Build (or reuse) the cost image for this slice. `false` when there
     /// is nothing to build it from.
     fn ensure_wire(&mut self, slot: usize, plane: ViewPlane, slice: usize) -> bool {
-        let window = (self.window_center, self.window_width);
+        let window = self.window_of(slot);
         let fresh = self.wire.as_ref().is_some_and(|w| {
             w.slot == slot && w.plane == plane && w.slice == slice && w.window == window
         });

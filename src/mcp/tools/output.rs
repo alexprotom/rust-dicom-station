@@ -200,17 +200,11 @@ pub struct ImportArgs {
 
 pub fn import_to_archive(core: &mut Core, a: ImportArgs, p: &Progress) -> Result<Value> {
     let src = readable_folder(core, &a.path)?;
-    let settings = settings::load();
-    let root = archive::root_from_setting(
-        &settings
-            .archive_dir
-            .as_deref()
-            .map(|d| d.to_string_lossy().to_string())
-            .unwrap_or_default(),
-    );
-    let ar = archive::Archive::new(root.clone());
+    let ar = archive::Archive::station();
     let sum = ar.import(&src, p)?;
-    core.session.add_root(&root, "archive");
+    for root in ar.roots() {
+        core.session.add_root(root, "archive");
+    }
     Ok(json!({
         "imported_from": src.to_string_lossy(),
         "summary": clean_text(&sum.describe()),

@@ -204,22 +204,35 @@ impl Mirror {
     /// The SOP Instance UIDs of a study held here.
     pub fn local_sops(&self, study_uid: &str) -> BTreeSet<String> {
         self.archive()
-            .find_study(study_uid)
-            .and_then(|d| archive::instances_of(&d, study_uid).ok())
+            .study_instances(study_uid)
             .map(|v| v.into_iter().map(|i| i.sop_uid).collect())
+            .unwrap_or_default()
+    }
+
+    /// The series of a study held here (any file of them), by UID.
+    pub fn local_series_of(&self, study_uid: &str) -> BTreeSet<String> {
+        self.archive()
+            .study_instances(study_uid)
+            .map(|v| v.into_iter().map(|i| i.series_uid).collect())
             .unwrap_or_default()
     }
 
     /// The studies held here, by UID.
     pub fn local_studies(&self) -> BTreeSet<String> {
-        self.archive()
-            .scan()
-            .map(|ps| {
-                ps.into_iter()
-                    .flat_map(|p| p.studies.into_iter().map(|s| s.study_uid))
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.local_held().0
+    }
+
+    /// The studies and the series held here, by UID.
+    pub fn local_held(&self) -> (BTreeSet<String>, BTreeSet<String>) {
+        let mut studies = BTreeSet::new();
+        let mut series = BTreeSet::new();
+        for p in self.archive().scan().unwrap_or_default() {
+            for st in p.studies {
+                series.extend(st.series.into_iter().map(|s| s.series_uid));
+                studies.insert(st.study_uid);
+            }
+        }
+        (studies, series)
     }
 
     /// The batches waiting in the outbox, oldest first.
@@ -251,28 +264,23 @@ impl Mirror {
             .sum()
     }
 
-    /// Drop a study from this copy. The server is not touched.
+    /// Drop a study from this copy (the folders it leaves empty go too).
+    /// The server is not touched.
     pub fn remove_study(&self, study_uid: &str) -> Result<()> {
         let a = self.archive();
-        match a.find_study(study_uid) {
-            Some(dir) => {
-                a.remove_study(study_uid)?;
-                // A patient left without studies goes too.
-                if let Some(pdir) = dir.parent() {
-                    let empty = std::fs::read_dir(pdir)
-                        .map(|rd| {
-                            !rd.filter_map(|e| e.ok())
-                                .any(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-                        })
-                        .unwrap_or(false);
-                    if empty {
-                        let _ = a.remove(pdir);
-                    }
-                }
-                Ok(())
-            }
-            None => bail!("this study is not held here"),
+        if a.study_instances(study_uid)?.is_empty() {
+            bail!("this study is not held here");
         }
+        a.remove_study(study_uid)
+    }
+
+    /// Drop series from this copy. The server is not touched.
+    pub fn remove_series(&self, series: &[String]) -> Result<usize> {
+        let picks: Vec<archive::Pick> = series
+            .iter()
+            .map(|s| archive::Pick::Series(s.clone()))
+            .collect();
+        self.archive().remove_picks(&picks)
     }
 
     /// Put a folder of files into the outbox (moved when it can be, copied
@@ -335,10 +343,30 @@ pub fn pull_study(
     study_uid: &str,
     p: &Progress,
 ) -> Result<PullSummary> {
+    pull_series(remote, mirror, study_uid, None, p)
+}
+
+/// [`pull_study`] for some of the study's series only (`None`: all). A
+/// server of an earlier version names no series in its manifest; then the whole
+/// study comes.
+pub fn pull_series(
+    remote: &Remote,
+    mirror: &Mirror,
+    study_uid: &str,
+    series: Option<&BTreeSet<String>>,
+    p: &Progress,
+) -> Result<PullSummary> {
     let manifest = remote.manifest(study_uid)?;
     let have = mirror.local_sops(study_uid);
-    let mut missing: Vec<String> = manifest
+    let wanted: Vec<&super::protocol::InstanceInfo> = manifest
         .instances
+        .iter()
+        .filter(|i| match series {
+            Some(set) if !i.series_uid.is_empty() => set.contains(&i.series_uid),
+            _ => true,
+        })
+        .collect();
+    let mut missing: Vec<String> = wanted
         .iter()
         .map(|i| i.sop_uid.clone())
         .filter(|s| !have.contains(s))
@@ -346,7 +374,7 @@ pub fn pull_study(
     let total = missing.len();
     let mut sum = PullSummary {
         fetched: 0,
-        present: manifest.instances.len() - total,
+        present: wanted.len() - total,
         studies: 1,
         elsewhere: 0,
     };
@@ -478,14 +506,34 @@ pub fn sync(remote: &Remote, mirror: &Mirror, p: &Progress) -> Result<SyncSummar
             out.gone.push(uid);
             continue;
         }
-        out.pulled.add(&pull_study(remote, mirror, &uid, p)?);
+        // A study held in part (some of its series pulled) stays in part:
+        // its own series are completed and what others drew on it comes
+        // along, the image series not pulled stay on the server.
+        let listed = listing
+            .iter()
+            .flat_map(|pt| pt.studies.iter())
+            .find(|s| s.study_uid == uid);
+        let held = mirror.local_series_of(&uid);
+        let only: Option<BTreeSet<String>> = listed.and_then(|st| {
+            if st.series.is_empty() || st.series.iter().all(|s| held.contains(&s.series_uid)) {
+                return None;
+            }
+            Some(
+                st.series
+                    .iter()
+                    .filter(|s| held.contains(&s.series_uid) || is_derived(&s.modality))
+                    .map(|s| s.series_uid.clone())
+                    .collect(),
+            )
+        });
+        out.pulled
+            .add(&pull_series(remote, mirror, &uid, only.as_ref(), p)?);
         // What is here and not there: objects whose earlier send broke off.
         let manifest = remote.manifest(&uid)?;
         let there: BTreeSet<String> = manifest.instances.into_iter().map(|i| i.sop_uid).collect();
         let extra: Vec<PathBuf> = mirror
             .archive()
-            .find_study(&uid)
-            .and_then(|d| archive::instances(&d).ok())
+            .study_instances(&uid)
             .unwrap_or_default()
             .into_iter()
             .filter(|i| !there.contains(&i.sop_uid))
@@ -498,6 +546,15 @@ pub fn sync(remote: &Remote, mirror: &Mirror, p: &Progress) -> Result<SyncSummar
         }
     }
     Ok(out)
+}
+
+/// Objects drawn or computed on images (structures, segmentations, doses,
+/// plans, registrations), which a sync brings along with the images held.
+fn is_derived(modality: &str) -> bool {
+    matches!(
+        modality,
+        "RTSTRUCT" | "SEG" | "RTDOSE" | "RTPLAN" | "RTRECORD" | "REG" | "SR"
+    )
 }
 
 /// The last eight characters of a UID, for a progress line.

@@ -70,6 +70,7 @@ mod motion_results;
 mod motion_win;
 mod pacs_remote;
 mod pacs_server_win;
+mod pacs_tree;
 mod pacs_win;
 mod panels;
 mod pick;
@@ -281,6 +282,22 @@ fn default_iso_levels() -> Vec<IsoLevel> {
         },
     ]
 }
+
+/// A volume (held weakly, so the cache does not keep it alive) and the
+/// windows of [`RELATIVE_PRESETS`] worked out for it.
+type RelativeWindows = (std::sync::Weak<Volume>, Vec<(f32, f32)>);
+
+/// The window presets of a modality without a fixed scale (MR, PET, ...):
+/// (name, low, high percentile of the image's values, the padding value
+/// left out). The first is the series' own window, not a percentile pair.
+const RELATIVE_PRESETS: &[(&str, f32, f32)] = &[
+    ("Series default", 0.0, 0.0),
+    ("Auto, 1 - 99 %", 1.0, 99.0),
+    ("Wide, 0.5 - 99.9 %", 0.5, 99.9),
+    ("Narrow, 5 - 95 %", 5.0, 95.0),
+    ("Dark tissue, 0 - 60 %", 0.0, 60.0),
+    ("Bright tissue, 30 - 99.9 %", 30.0, 99.9),
+];
 
 /// Common CT window presets: (name, center, width) in HU.
 const WL_PRESETS: &[(&str, f32, f32)] = &[
@@ -1394,7 +1411,7 @@ pub struct ViewerApp {
     archive_checked_at: f64,
     pending_load: Option<(usize, PathBuf)>,
     /// The same, for an explicit file selection (slot, files).
-    pending_load_files: Option<(usize, Vec<PathBuf>)>,
+    pending_load_files: Option<(usize, Vec<PathBuf>, Option<Vec<PathBuf>>)>,
     /// A series to put on display once the current read finishes (slot,
     /// series UID): asked for while something else was loading. By UID,
     /// not index, since the study may gain series in between.
@@ -1575,8 +1592,16 @@ pub struct ViewerApp {
     /// Invert REG matrices before applying them as the active registration.
     reg_apply_invert: bool,
 
-    window_center: f32,
-    window_width: f32,
+    /// Each workspace's display window (centre, width). Workspaces that
+    /// show the same modality move together ([`ViewerApp::set_window`]).
+    window_center: [f32; MAX_WORKSPACES],
+    window_width: [f32; MAX_WORKSPACES],
+    /// The window each workspace's series came with (its DICOM window, or
+    /// one worked out from its values), the *Series default* preset.
+    series_window: [(f32, f32); MAX_WORKSPACES],
+    /// The relative presets of a volume (MR, PET...): its percentile
+    /// windows, worked out once per volume.
+    wl_relative: Option<RelativeWindows>,
 
     show_contours: bool,
     show_crosshair: bool,
@@ -1649,17 +1674,21 @@ pub struct ViewerApp {
     /// engines (persisted in the settings file; blank = the default).
     models_dir: String,
 
-    /// Root of the local patient archive (persisted; blank = the default).
+    /// The main PACS storage folder (persisted; blank = the default).
     archive_dir: String,
+    /// The PACS's other storage folders (persisted).
+    archive_more: Vec<PathBuf>,
 
-    // Tools ▶ PACS: the patient archive window.
+    // Tools ▶ PACS: the Picture Archiving and Communication System window.
     /// The window, when open.
     pacs: Option<PacsWindow>,
-    /// The archive job in flight - a scan, an import, an upload or a removal.
+    /// The PACS job in flight - a scan, an import, an upload, a name, a
+    /// cohort, a move or a removal.
     pacs_job: Option<Job<anyhow::Result<PacsOutcome>>>,
     /// A call to a paired PACS server in flight (`pacs_remote.rs`).
     pacs_remote_job: Option<Job<anyhow::Result<pacs_remote::RemoteOutcome>>>,
-    // Settings ▶ PACS server: the server on this machine (`pacs_server_win.rs`).
+    // PACS ▶ Settings ▶ PACS server: the server on this machine
+    // (`pacs_server_win.rs`), while that page is shown.
     pacs_server: Option<pacs_server_win::ServerWindow>,
     pacs_server_job: Option<Job<anyhow::Result<pacs_server_win::ServerOutcome>>>,
 
@@ -1778,9 +1807,10 @@ pub struct ViewerApp {
     /// section is open cost milliseconds for a body outline.
     edit_summary_cache: Option<(EditSummaryKey, (f64, usize))>,
 
-    /// The CT window preset last picked from the toolbar list (an index into
-    /// [`WL_PRESETS`]), so the closed combo can name it instead of reading
-    /// "CT presets". Dropped as soon as the window no longer matches it.
+    /// The window preset last picked from the toolbar list (an index into
+    /// [`WL_PRESETS`] for a CT, into [`RELATIVE_PRESETS`] otherwise), so
+    /// the closed combo can name it instead of reading "CT presets".
+    /// Dropped as soon as the window no longer matches it.
     wl_preset: Option<usize>,
 
     /// *Modules ▶ Image registration*: the registration section is part of
@@ -1950,6 +1980,7 @@ impl ViewerApp {
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
+        let archive_more = prefs.archive_more.clone();
         // Installations that predate the single `models/` root keep their
         // downloads; the folders are moved into place, never re-fetched.
         let moved = models::migrate_legacy_layout(&models::root_from_setting(&models_dir));
@@ -2075,14 +2106,17 @@ impl ViewerApp {
             tick_anchor: None,
             maximized: None,
             reg_apply_invert: false,
-            window_center: 40.0,
-            window_width: 400.0,
+            window_center: [40.0; MAX_WORKSPACES],
+            window_width: [400.0; MAX_WORKSPACES],
+            series_window: [(40.0, 400.0); MAX_WORKSPACES],
+            wl_relative: None,
             show_contours: true,
             show_crosshair: true,
             show_labels: true,
             show_isocenters: true,
             models_dir,
             archive_dir,
+            archive_more,
             pacs: None,
             pacs_job: None,
             pacs_remote_job: None,
@@ -2246,6 +2280,7 @@ impl ViewerApp {
             theme: self.theme,
             models_dir,
             archive_dir,
+            archive_more: self.archive_more.clone(),
             module_registration: self.module_registration,
             module_simulation: self.module_simulation,
             module_propagation: self.module_propagation,
@@ -2305,6 +2340,104 @@ impl ViewerApp {
         self.sync_views_to_cursor(slot, None);
     }
 
+    /// The modality of the series a workspace shows; empty when none.
+    pub(super) fn shown_modality(&self, slot: usize) -> String {
+        self.slots
+            .get(slot)
+            .and_then(|s| s.study.as_ref())
+            .and_then(|st| st.series.get(st.active_series))
+            .map(|s| s.modality.trim().to_uppercase())
+            .unwrap_or_default()
+    }
+
+    /// The window (centre, width) a workspace is drawn with.
+    pub(super) fn window_of(&self, slot: usize) -> (f32, f32) {
+        let s = slot.min(MAX_WORKSPACES - 1);
+        (self.window_center[s], self.window_width[s])
+    }
+
+    /// Set a workspace's window, and that of every other workspace showing
+    /// the same modality: two CTs side by side are read with one window, a
+    /// CT beside an MR each with its own.
+    pub(super) fn set_window(&mut self, slot: usize, centre: f32, width: f32) {
+        let slot = slot.min(MAX_WORKSPACES - 1);
+        let m = self.shown_modality(slot);
+        for s in 0..MAX_WORKSPACES {
+            if s == slot || (!m.is_empty() && self.shown_modality(s) == m) {
+                self.window_center[s] = centre;
+                self.window_width[s] = width.max(1.0);
+            }
+        }
+    }
+
+    /// The window a workspace takes when a series of `modality` comes up in
+    /// it: another workspace's showing that modality, so a comparison stays
+    /// comparable, otherwise `default` (the series' own).
+    pub(super) fn adopt_window(&mut self, slot: usize, modality: &str, default: (f32, f32)) {
+        let slot = slot.min(MAX_WORKSPACES - 1);
+        let m = modality.trim().to_uppercase();
+        let other = (0..MAX_WORKSPACES)
+            .find(|s| *s != slot && !m.is_empty() && self.shown_modality(*s) == m);
+        let (c, w) = match other {
+            Some(o) => self.window_of(o),
+            None => default,
+        };
+        self.window_center[slot] = c;
+        self.window_width[slot] = w.max(1.0);
+    }
+
+    /// The windows of [`RELATIVE_PRESETS`] for a workspace's volume: the
+    /// series' own first, then the percentile pairs, worked out once per
+    /// volume.
+    pub(super) fn relative_windows(&mut self, slot: usize) -> Vec<(f32, f32)> {
+        let slot = slot.min(MAX_WORKSPACES - 1);
+        let own = self.series_window[slot];
+        let Some(vol) = self.slots[slot].study.as_ref().map(|s| s.volume.clone()) else {
+            return vec![own; RELATIVE_PRESETS.len()];
+        };
+        let cached = self.wl_relative.as_ref().and_then(|(w, v)| {
+            w.upgrade()
+                .filter(|x| Arc::ptr_eq(x, &vol))
+                .map(|_| v.clone())
+        });
+        let mut out = match cached {
+            Some(v) => v,
+            None => {
+                let pairs: Vec<(f32, f32)> = RELATIVE_PRESETS
+                    .iter()
+                    .map(|(_, lo, hi)| (*lo, *hi))
+                    .collect();
+                let v = loader::percentile_windows(&vol.data, &pairs);
+                self.wl_relative = Some((Arc::downgrade(&vol), v.clone()));
+                v
+            }
+        };
+        if let Some(first) = out.first_mut() {
+            *first = own;
+        }
+        out
+    }
+
+    /// The workspace the toolbar's window acts on: the one last pointed
+    /// at, or the first that shows something.
+    pub(super) fn wl_slot(&self) -> usize {
+        let here = self.hovered_slot.min(MAX_WORKSPACES - 1);
+        if self.slots[here].has_volume() {
+            return here;
+        }
+        (0..MAX_WORKSPACES)
+            .find(|s| self.slots[*s].has_volume())
+            .unwrap_or(here)
+    }
+
+    /// This station's PACS: the storage folders the settings name.
+    pub(super) fn station_pacs(&self) -> crate::archive::Archive {
+        crate::archive::Archive::with_roots(crate::archive::station_roots(
+            &self.archive_dir,
+            &self.archive_more,
+        ))
+    }
+
     /// Does the local archive hold any patient? Re-read at most twice a
     /// second, since the start screen asks every frame.
     pub(super) fn archive_has_data(&mut self, now: f64) -> bool {
@@ -2312,9 +2445,8 @@ impl ViewerApp {
             return self.archive_has_data;
         }
         self.archive_checked_at = now;
-        let root = crate::archive::root_from_setting(&self.archive_dir);
-        // The local archive, or a paired PACS server to take a study from.
-        self.archive_has_data = crate::archive::Archive::new(root).has_patients()
+        // This station's PACS, or a paired PACS server to take a study from.
+        self.archive_has_data = self.station_pacs().has_patients()
             || crate::pacs::servers::Servers::load(&crate::pacs::servers::default_path())
                 .is_ok_and(|s| !s.servers.is_empty());
         self.archive_has_data
@@ -2490,8 +2622,8 @@ impl eframe::App for ViewerApp {
                 }
             } else if let Some((slot, path)) = self.pending_load.take() {
                 self.start_load(slot, path);
-            } else if let Some((slot, paths)) = self.pending_load_files.take() {
-                self.start_load_files(slot, paths);
+            } else if let Some((slot, paths, sources)) = self.pending_load_files.take() {
+                self.start_load_files_noting(slot, paths, sources);
             } else if !self.restore_queue.is_empty() {
                 // One source of the session being restored at a time.
                 let (slot, path) = self.restore_queue.remove(0);

@@ -1101,12 +1101,13 @@ impl SetupApp {
                     format!("Install the PACS server ({})", human_size(self.pacs_size)),
                 )
                 .on_hover_text(
-                    "rds-pacs.exe serves this computer's archive to other stations - on \
+                    "rds-pacs.exe serves this computer's PACS to other stations - on \
                      the local network or over the internet - which can then download \
                      studies, work on them, send results back and hand it tasks to run. \
-                     It does nothing until it is started in Settings > PACS server. \
-                     Every station is a client without it; install it only on the \
-                     computer whose archive the others are to reach.",
+                     It does nothing until it is started in the PACS window under \
+                     Settings > PACS server. Every station is a client without it; \
+                     install it only on the computer whose PACS the others are to \
+                     reach.",
                 );
             }
 
@@ -1441,8 +1442,9 @@ impl SetupApp {
                 if self.pacs_size > 0 && self.opts.install_pacs {
                     ui.add_space(4.0);
                     ui.label(
-                        "PACS server - start it in the viewer under Settings > PACS server; \
-                         Windows asks once whether it may accept connections.",
+                        "PACS server - start it in the viewer under Tools > PACS > \
+                         Settings > PACS server; Windows asks once whether it may accept \
+                         connections.",
                     );
                 }
                 if self.passive {

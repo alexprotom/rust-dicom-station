@@ -101,7 +101,7 @@ itself, as on any other installation ([viewer.md](viewer.md#graphics-backend));
 The PACS server ([pacs-server.md](pacs-server.md)) is the snap's third
 command, `rust-dicom-station.rds-pacs`, with the `network-bind` interface
 it needs to listen (connected automatically, as are the others it uses).
-*Settings ▶ PACS server ▶ Start* runs it from the viewer, under the
+*Tools ▶ PACS ▶ Settings ▶ PACS server ▶ Start* runs it from the viewer, under the
 viewer's own confinement, which plugs `network-bind` for that reason; from
 a terminal it is `rust-dicom-station.rds-pacs serve`. `pacs.toml` and the
 server's state go into `~/snap/rust-dicom-station/common/config`, its tasks

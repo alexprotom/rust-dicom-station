@@ -1,4 +1,5 @@
-//! *Settings ▶ PACS server*: the server on this machine, for its operator.
+//! *PACS ▶ Settings ▶ PACS server*: the server on this machine, for its
+//! operator, as a page of the PACS window.
 //!
 //! The viewer does not run the server itself. It starts `rds-pacs serve`
 //! as a process of its own (so the server keeps running when the viewer
@@ -246,491 +247,16 @@ impl ViewerApp {
         }
     }
 
-    pub(super) fn pacs_server_window(&mut self, ctx: &egui::Context) {
-        if self.pacs_server.is_none() {
+    /// Carry out what the server page asked for.
+    pub(super) fn server_clicks(&mut self, ctx: &egui::Context, k: ServerClicks) {
+        let Some(w) = self.pacs_server.as_mut() else {
             return;
-        }
-        let mut w = self.pacs_server.take().expect("checked above");
-        let mut open = true;
-        let busy = self.pacs_server_job.is_some();
-        let installed = local::installed();
-        let mut start = false;
-        let mut stop = false;
-        let mut new_code = false;
-        let mut revoke: Option<String> = None;
-        let mut save = false;
-        let mut regenerate = false;
-        let mut browse_archive = false;
-        let mut copy: Option<String> = None;
-        let mut allow_firewall = false;
-
-        detach::tool_window(
-            ctx,
-            "pacs_server",
-            "🖥 PACS server",
-            &mut open,
-            detach::WinOpts::size(700.0, 620.0),
-            |ui| {
-                ui.label(
-                    "Serve this station's archive to other stations over HTTPS, on the local \
-                     network or (through a VPN, a forwarded port or a reverse proxy) the \
-                     internet. The set-up guide is docs/pacs-server.md.",
-                );
-                ui.separator();
-                if !installed {
-                    ui.colored_label(
-                        ui.visuals().warn_fg_color,
-                        format!(
-                            "⚠ The PACS server is not installed: {} was not found. It is an \
-                             optional component of the installer (Install the PACS server), \
-                             or cargo build --release --features pacs-server.",
-                            settings::pacs_exe_path().display()
-                        ),
-                    );
-                }
-                ui.weak(format!(
-                    "Configuration: {}",
-                    settings::pacs_config_path().display()
-                ));
-
-                // ---- state ------------------------------------------------
-                ui.horizontal(|ui| match &w.running {
-                    Some(r) => {
-                        ui.colored_label(egui::Color32::from_rgb(60, 160, 80), "●");
-                        ui.label(format!(
-                            "running since {} on port {} (version {})",
-                            r.started, r.port, r.version
-                        ));
-                    }
-                    None if w.starting => {
-                        ui.spinner();
-                        ui.label("starting");
-                    }
-                    None => {
-                        ui.weak("● not running");
-                    }
-                });
-                ui.horizontal(|ui| {
-                    if enabled_tip_button(
-                        ui,
-                        installed && !busy && w.running.is_none() && !w.starting,
-                        "▶ Start",
-                        "Start rds-pacs as a program of its own: it keeps serving when this \
-                         window, and the viewer, are closed",
-                    ) {
-                        start = true;
-                    }
-                    if enabled_tip_button(
-                        ui,
-                        !busy && w.running.is_some(),
-                        "⏹ Stop",
-                        "Stop the server; paired stations keep their pairing",
-                    ) {
-                        stop = true;
-                    }
-                });
-                if let Some(m) = &w.message {
-                    ui.weak(m);
-                }
-                if let Some(job) = &self.pacs_server_job {
-                    let msg = job.progress.get();
-                    if !msg.is_empty() && msg != "Asking the server" {
-                        ui.weak(msg);
-                    }
-                }
-
-                // ---- how to reach it -----------------------------------------
-                if let Some(r) = &w.running {
-                    ui.separator();
-                    ui.label(egui::RichText::new("How other stations reach it").strong());
-                    // The live list, which notices a link that came or went
-                    // since the start; what the server wrote at its start
-                    // when there is none (a server bound to one address, or
-                    // an interface list that cannot be read).
-                    let line_for = |addr: &str| {
-                        ConnectionLine::parse(addr).ok().map(|l| ConnectionLine {
-                            fingerprint: Some(r.fingerprint.clone()),
-                            ..l
-                        })
-                    };
-                    let mut first: Option<String> = None;
-                    if w.addresses.is_empty() {
-                        for a in &r.addresses {
-                            ui.monospace(a);
-                        }
-                        first = r.addresses.first().cloned();
-                    } else {
-                        for a in &w.addresses {
-                            let with_port = a.with_port(r.port);
-                            if first.is_none() {
-                                first = Some(with_port.clone());
-                            }
-                            ui.horizontal(|ui| {
-                                ui.monospace(&with_port);
-                                if !a.interface.is_empty() {
-                                    ui.weak(&a.interface);
-                                }
-                                match a.link {
-                                    Link::Lan => {}
-                                    Link::Vpn => {
-                                        ui.colored_label(
-                                            ui.visuals().warn_fg_color,
-                                            format!("({})", a.link.label()),
-                                        );
-                                    }
-                                    Link::Virtual => {
-                                        ui.weak(format!("({})", a.link.label()));
-                                    }
-                                }
-                                if let Some(l) = line_for(&with_port) {
-                                    if small_tip_button(
-                                        ui,
-                                        "📋",
-                                        "Copy the connection line with this address",
-                                    ) {
-                                        copy = Some(l.format());
-                                    }
-                                }
-                            });
-                        }
-                        let host = crate::pacs::this_device_name();
-                        if host != "this computer" {
-                            ui.horizontal(|ui| {
-                                ui.monospace(format!("{host}:{}", r.port));
-                                ui.weak("(the name, where the network resolves it)");
-                            });
-                        }
-                    }
-                    ui.weak(
-                        "A station on the same local network uses the local-network address; \
-                         a VPN address works only for stations on that VPN. Over the \
-                         internet: a VPN, a forwarded port or a public name (the set-up \
-                         guide). An address the router hands out can change; a reservation \
-                         in the router keeps it.",
-                    );
-                    ui.horizontal(|ui| {
-                        ui.label("Certificate");
-                        ui.label(
-                            egui::RichText::new(crate::pacs::show_fingerprint(&r.fingerprint))
-                                .monospace(),
-                        );
-                    });
-                    let line = first.as_deref().and_then(line_for);
-                    if let Some(line) = &line {
-                        if tip_button(
-                            ui,
-                            "📋 Copy connection details",
-                            "The first address and the certificate's fingerprint in one \
-                             line, for Tools > PACS > Add server on the other station",
-                        ) {
-                            copy = Some(line.format());
-                        }
-                    }
-
-                    // ---- the firewall (Windows) ----------------------------
-                    if cfg!(windows) {
-                        ui.add_space(4.0);
-                        match &w.firewall {
-                            Some(Firewall::Allowed(profiles)) => {
-                                let on = if profiles.is_empty() {
-                                    "every kind of network".to_string()
-                                } else {
-                                    profiles.join(", ").to_lowercase() + " networks"
-                                };
-                                ui.weak(format!(
-                                    "✔ the Windows firewall lets rds-pacs accept connections on {on}"
-                                ));
-                            }
-                            Some(Firewall::Off) => {
-                                ui.weak("The Windows firewall is off: nothing to allow.");
-                            }
-                            other => {
-                                ui.colored_label(
-                                    ui.visuals().warn_fg_color,
-                                    match other {
-                                        Some(Firewall::Blocked) => {
-                                            "⚠ A Windows firewall rule blocks rds-pacs (the Windows \
-                                             Security Alert was answered with Cancel): no other \
-                                             station can reach it."
-                                        }
-                                        Some(Firewall::NoRule) => {
-                                            "⚠ The Windows firewall has no rule for rds-pacs: no \
-                                             other station can reach it until one allows it (answer \
-                                             Allow when Windows asks, or press the button)."
-                                        }
-                                        _ => "The Windows firewall's rules could not be read.",
-                                    },
-                                );
-                            }
-                        }
-                        ui.horizontal(|ui| {
-                            if enabled_tip_button(
-                                ui,
-                                !busy,
-                                "🔓 Allow through the Windows firewall",
-                                "Make a rule that lets rds-pacs.exe accept TCP connections, \
-                                 replacing any rule that blocks it. Windows asks for \
-                                 administrator permission.",
-                            ) {
-                                allow_firewall = true;
-                            }
-                            ui.checkbox(
-                                &mut w.firewall_public,
-                                "also on networks Windows calls public",
-                            )
-                            .on_hover_text(
-                                "Windows classes an unknown network, a hotel's or a cafe's, \
-                                 as public, and often a home network too until it is marked \
-                                 private. The server still answers nothing without a key.",
-                            );
-                        });
-                    }
-
-                    // ---- pairing -------------------------------------------
-                    ui.separator();
-                    ui.label(egui::RichText::new("Pair a station").strong());
-                    ui.horizontal(|ui| {
-                        ui.label("Role");
-                        egui::ComboBox::from_id_salt("pacs_code_role")
-                            .selected_text(w.code_role.label())
-                            .show_ui(ui, |ui| {
-                                for r in Role::ALL {
-                                    ui.selectable_value(&mut w.code_role, r, r.describe());
-                                }
-                            });
-                        ui.label("good for");
-                        ui.add(
-                            egui::DragValue::new(&mut w.code_minutes)
-                                .range(1..=1440)
-                                .suffix(" min"),
-                        );
-                        if enabled_tip_button(
-                            ui,
-                            !busy,
-                            "New pairing code",
-                            "A code for one station, used once; tell it to the person \
-                             pairing, with the connection details",
-                        ) {
-                            new_code = true;
-                        }
-                    });
-                    if let Some(c) = &w.code {
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(&c.code).monospace().size(22.0).strong());
-                            ui.weak(format!(
-                                "{} role, good until {}, for one station",
-                                c.role.label(),
-                                c.expires
-                            ));
-                        });
-                        if let Some(line) = &line {
-                            if tip_button(
-                                ui,
-                                "📋 Copy invitation",
-                                "The connection details with this code in them: everything \
-                                 the other station needs, in one line. Send it only to the \
-                                 person who is to pair.",
-                            ) {
-                                copy = Some(
-                                    ConnectionLine {
-                                        code: Some(c.code.clone()),
-                                        ..line.clone()
-                                    }
-                                    .format(),
-                                );
-                            }
-                        }
-                    }
-                }
-
-                // ---- clients ------------------------------------------------
-                ui.separator();
-                ui.label(egui::RichText::new("Paired stations").strong());
-                if w.clients.is_empty() {
-                    ui.weak("none yet");
-                }
-                egui::Grid::new("pacs_clients")
-                    .striped(true)
-                    .num_columns(5)
-                    .show(ui, |ui| {
-                        for c in &w.clients {
-                            ui.label(&c.name);
-                            ui.label(c.role.label());
-                            ui.weak(format!("last seen {}", c.last_seen));
-                            ui.weak(&c.address);
-                            let asked = w.confirm_revoke.as_deref() == Some(c.name.as_str());
-                            if ui
-                                .add_enabled(
-                                    !busy,
-                                    egui::Button::new(if asked {
-                                        "Really revoke?"
-                                    } else {
-                                        "Revoke"
-                                    })
-                                    .small(),
-                                )
-                                .on_hover_text("This station's key stops working at once")
-                                .clicked()
-                            {
-                                revoke = Some(c.name.clone());
-                            }
-                            ui.end_row();
-                        }
-                    });
-
-                // ---- settings ------------------------------------------------
-                ui.separator();
-                ui.collapsing("Settings (applied at the next start)", |ui| {
-                    let c = &mut w.config;
-                    let mut dirty = false;
-                    egui::Grid::new("pacs_cfg")
-                        .num_columns(2)
-                        .spacing([8.0, 4.0])
-                        .show(ui, |ui| {
-                            ui.label("Name");
-                            dirty |= ui
-                                .add(
-                                    egui::TextEdit::singleline(&mut c.name)
-                                        .hint_text(crate::pacs::this_device_name())
-                                        .desired_width(260.0),
-                                )
-                                .changed();
-                            ui.end_row();
-                            ui.label("Port");
-                            dirty |= ui
-                                .add(egui::DragValue::new(&mut c.port).range(1..=65535))
-                                .changed();
-                            ui.end_row();
-                            ui.label("Listen on");
-                            egui::ComboBox::from_id_salt("pacs_bind")
-                                .selected_text(match c.bind.as_str() {
-                                    "0.0.0.0" => "every network (0.0.0.0)",
-                                    "127.0.0.1" => "this computer only (behind a proxy)",
-                                    other => other,
-                                })
-                                .show_ui(ui, |ui| {
-                                    for (v, l) in [
-                                        ("0.0.0.0", "every network (0.0.0.0)"),
-                                        ("127.0.0.1", "this computer only (behind a proxy)"),
-                                    ] {
-                                        if ui.selectable_label(c.bind == v, l).clicked() {
-                                            c.bind = v.into();
-                                            c.behind_proxy = v == "127.0.0.1";
-                                            dirty = true;
-                                        }
-                                    }
-                                });
-                            ui.end_row();
-                            ui.label("Archive");
-                            ui.horizontal(|ui| {
-                                dirty |= ui
-                                    .add(
-                                        egui::TextEdit::singleline(&mut c.archive_dir)
-                                            .hint_text("the station's archive (Tools > PACS)")
-                                            .desired_width(300.0),
-                                    )
-                                    .changed();
-                                if ui.button("📂").on_hover_text("Choose a folder").clicked() {
-                                    browse_archive = true;
-                                }
-                            });
-                            ui.end_row();
-                            ui.label("Extra names");
-                            dirty |= ui
-                                .add(
-                                    egui::TextEdit::singleline(&mut w.advertise)
-                                        .hint_text("pacs.example.org, 100.64.0.7")
-                                        .desired_width(300.0),
-                                )
-                                .on_hover_text(
-                                    "Names and addresses put into the server's certificate \
-                                     (a dynamic DNS name, a VPN address); takes effect with a \
-                                     new certificate",
-                                )
-                                .changed();
-                            ui.end_row();
-                            ui.label("Uploads up to");
-                            dirty |= ui
-                                .add(
-                                    egui::DragValue::new(&mut c.max_upload_mb)
-                                        .range(1..=1_000_000)
-                                        .suffix(" MB"),
-                                )
-                                .changed();
-                            ui.end_row();
-                        });
-                    dirty |= ui
-                        .checkbox(&mut c.tasks, "Run the workflows paired stations hand in")
-                        .changed();
-                    dirty |= ui
-                        .checkbox(
-                            &mut c.allow_model_download,
-                            "Tasks may download model weights they need",
-                        )
-                        .changed();
-                    w.config_dirty |= dirty;
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(w.config_dirty, egui::Button::new("💾 Save"))
-                            .on_hover_text(
-                                "Write pacs.toml; a running server takes it at its next start",
-                            )
-                            .clicked()
-                        {
-                            save = true;
-                        }
-                        if enabled_tip_button(
-                            ui,
-                            !busy && w.running.is_none() && w.config.own_certificate().is_none(),
-                            "New certificate",
-                            "Make a new self-signed certificate (with the extra names). Every \
-                             paired station must pair again. Only while the server is stopped.",
-                        ) {
-                            regenerate = true;
-                        }
-                    });
-                });
-
-                // ---- audit ------------------------------------------------------
-                ui.collapsing("Recent activity", |ui| {
-                    if w.audit.is_empty() {
-                        ui.weak("nothing logged yet");
-                    }
-                    egui::ScrollArea::vertical()
-                        .max_height(160.0)
-                        .stick_to_bottom(true)
-                        .show(ui, |ui| {
-                            for l in &w.audit {
-                                ui.monospace(l);
-                            }
-                        });
-                });
-            },
-        );
-
-        if let Some(text) = copy {
+        };
+        if let Some(text) = k.copy {
             ctx.copy_text(text);
             w.message = Some("✔ copied to the clipboard".into());
         }
-        if let Some(name) = revoke {
-            if w.confirm_revoke.as_deref() == Some(name.as_str()) {
-                w.confirm_revoke = None;
-                let running = w.running.is_some();
-                self.server_job("Revoking", move |_| {
-                    let paths = Paths::station();
-                    if running {
-                        let (remote, _) = local::connect(&paths)?;
-                        remote.revoke(&name)?;
-                    } else {
-                        local::revoke_offline(&paths, &name)?;
-                    }
-                    Ok(ServerOutcome::Revoked(name))
-                });
-            } else {
-                w.confirm_revoke = Some(name);
-            }
-        }
-        if save {
+        if k.save {
             w.config.advertise = w
                 .advertise
                 .split([',', ' '])
@@ -750,27 +276,42 @@ impl ViewerApp {
                 Err(e) => w.message = Some(format!("⚠ {e:#}")),
             }
         }
-        if open {
-            self.pacs_server = Some(w);
+        if let Some(name) = k.revoke {
+            if w.confirm_revoke.as_deref() == Some(name.as_str()) {
+                w.confirm_revoke = None;
+                let running = w.running.is_some();
+                self.server_job("Revoking", move |_| {
+                    let paths = Paths::station();
+                    if running {
+                        let (remote, _) = local::connect(&paths)?;
+                        remote.revoke(&name)?;
+                    } else {
+                        local::revoke_offline(&paths, &name)?;
+                    }
+                    Ok(ServerOutcome::Revoked(name))
+                });
+            } else {
+                w.confirm_revoke = Some(name);
+            }
         }
         let role = self
             .pacs_server
             .as_ref()
             .map(|w| (w.code_role, w.code_minutes));
-        if start {
+        if k.start {
             self.server_job("Starting the server", |_| {
                 local::start(&Paths::station())?;
                 Ok(ServerOutcome::Started)
             });
         }
-        if stop {
+        if k.stop {
             self.server_job("Stopping the server", |_| {
                 let (remote, _) = local::connect(&Paths::station())?;
                 remote.shutdown()?;
                 Ok(ServerOutcome::Stopped)
             });
         }
-        if new_code {
+        if k.new_code {
             if let Some((role, minutes)) = role {
                 self.server_job("Making a pairing code", move |_| {
                     let (remote, _) = local::connect(&Paths::station())?;
@@ -778,7 +319,7 @@ impl ViewerApp {
                 });
             }
         }
-        if regenerate {
+        if k.regenerate {
             let unsaved = self.pacs_server.as_ref().is_some_and(|w| w.config_dirty);
             if unsaved {
                 if let Some(w) = self.pacs_server.as_mut() {
@@ -796,15 +337,15 @@ impl ViewerApp {
                 });
             }
         }
-        if allow_firewall {
+        if k.allow_firewall {
             let public = self.pacs_server.as_ref().is_some_and(|w| w.firewall_public);
             self.server_job("Asking Windows for permission", move |_| {
                 local::firewall_allow(&Paths::station(), &settings::pacs_exe_path(), public)?;
                 Ok(ServerOutcome::FirewallAllowed)
             });
         }
-        if browse_archive {
-            self.ask_folder("The archive the server serves", |app, dir| {
+        if k.browse_archive {
+            self.ask_folder("The folder the server serves", |app, dir| {
                 if let Some(w) = app.pacs_server.as_mut() {
                     w.config.archive_dir = dir.display().to_string();
                     w.config_dirty = true;
@@ -812,6 +353,457 @@ impl ViewerApp {
             });
         }
     }
+}
+
+/// What the server page's clicks asked for; carried out by
+/// [`ViewerApp::server_clicks`] once the page is drawn.
+#[derive(Default)]
+pub(super) struct ServerClicks {
+    start: bool,
+    stop: bool,
+    new_code: bool,
+    revoke: Option<String>,
+    save: bool,
+    regenerate: bool,
+    browse_archive: bool,
+    copy: Option<String>,
+    allow_firewall: bool,
+}
+
+/// The server on this machine, drawn as a page of the PACS window
+/// (*Settings ▶ PACS server*). `job_msg`: what the server job in flight
+/// says, if one is.
+pub(super) fn server_body(
+    ui: &mut egui::Ui,
+    w: &mut ServerWindow,
+    busy: bool,
+    job_msg: Option<String>,
+) -> ServerClicks {
+    let installed = local::installed();
+    let mut k = ServerClicks::default();
+    ui.label(
+        "Serve this station's PACS to other stations over HTTPS, on the local \
+         network or (through a VPN, a forwarded port or a reverse proxy) the \
+         internet. The set-up guide is docs/pacs-server.md.",
+    );
+    ui.separator();
+    if !installed {
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            format!(
+                "⚠ The PACS server is not installed: {} was not found. It is an \
+                 optional component of the installer (Install the PACS server), \
+                 or cargo build --release --features pacs-server.",
+                settings::pacs_exe_path().display()
+            ),
+        );
+    }
+    ui.weak(format!(
+        "Configuration: {}",
+        settings::pacs_config_path().display()
+    ));
+
+    // ---- state ------------------------------------------------
+    ui.horizontal(|ui| match &w.running {
+        Some(r) => {
+            ui.colored_label(egui::Color32::from_rgb(60, 160, 80), "●");
+            ui.label(format!(
+                "running since {} on port {} (version {})",
+                r.started, r.port, r.version
+            ));
+        }
+        None if w.starting => {
+            ui.spinner();
+            ui.label("starting");
+        }
+        None => {
+            ui.weak("● not running");
+        }
+    });
+    ui.horizontal(|ui| {
+        if enabled_tip_button(
+            ui,
+            installed && !busy && w.running.is_none() && !w.starting,
+            "▶ Start",
+            "Start rds-pacs as a program of its own: it keeps serving when this \
+             window, and the viewer, are closed",
+        ) {
+            k.start = true;
+        }
+        if enabled_tip_button(
+            ui,
+            !busy && w.running.is_some(),
+            "⏹ Stop",
+            "Stop the server; paired stations keep their pairing",
+        ) {
+            k.stop = true;
+        }
+    });
+    if let Some(m) = &w.message {
+        ui.weak(m);
+    }
+    if let Some(msg) = job_msg {
+        if !msg.is_empty() && msg != "Asking the server" {
+            ui.weak(msg);
+        }
+    }
+
+    // ---- how to reach it -----------------------------------------
+    if let Some(r) = &w.running {
+        ui.separator();
+        ui.label(egui::RichText::new("How other stations reach it").strong());
+        // The live list, which notices a link that came or went
+        // since the start; what the server wrote at its start
+        // when there is none (a server bound to one address, or
+        // an interface list that cannot be read).
+        let line_for = |addr: &str| {
+            ConnectionLine::parse(addr).ok().map(|l| ConnectionLine {
+                fingerprint: Some(r.fingerprint.clone()),
+                ..l
+            })
+        };
+        let mut first: Option<String> = None;
+        if w.addresses.is_empty() {
+            for a in &r.addresses {
+                ui.monospace(a);
+            }
+            first = r.addresses.first().cloned();
+        } else {
+            for a in &w.addresses {
+                let with_port = a.with_port(r.port);
+                if first.is_none() {
+                    first = Some(with_port.clone());
+                }
+                ui.horizontal(|ui| {
+                    ui.monospace(&with_port);
+                    if !a.interface.is_empty() {
+                        ui.weak(&a.interface);
+                    }
+                    match a.link {
+                        Link::Lan => {}
+                        Link::Vpn => {
+                            ui.colored_label(
+                                ui.visuals().warn_fg_color,
+                                format!("({})", a.link.label()),
+                            );
+                        }
+                        Link::Virtual => {
+                            ui.weak(format!("({})", a.link.label()));
+                        }
+                    }
+                    if let Some(l) = line_for(&with_port) {
+                        if small_tip_button(ui, "📋", "Copy the connection line with this address")
+                        {
+                            k.copy = Some(l.format());
+                        }
+                    }
+                });
+            }
+            let host = crate::pacs::this_device_name();
+            if host != "this computer" {
+                ui.horizontal(|ui| {
+                    ui.monospace(format!("{host}:{}", r.port));
+                    ui.weak("(the name, where the network resolves it)");
+                });
+            }
+        }
+        ui.weak(
+            "A station on the same local network uses the local-network address; \
+             a VPN address works only for stations on that VPN. Over the \
+             internet: a VPN, a forwarded port or a public name (the set-up \
+             guide). An address the router hands out can change; a reservation \
+             in the router keeps it.",
+        );
+        ui.horizontal(|ui| {
+            ui.label("Certificate");
+            ui.label(
+                egui::RichText::new(crate::pacs::show_fingerprint(&r.fingerprint)).monospace(),
+            );
+        });
+        let line = first.as_deref().and_then(line_for);
+        if let Some(line) = &line {
+            if tip_button(
+                ui,
+                "📋 Copy connection details",
+                "The first address and the certificate's fingerprint in one \
+                 line, for Tools > PACS > Add server on the other station",
+            ) {
+                k.copy = Some(line.format());
+            }
+        }
+
+        // ---- the firewall (Windows) ----------------------------
+        if cfg!(windows) {
+            ui.add_space(4.0);
+            match &w.firewall {
+                Some(Firewall::Allowed(profiles)) => {
+                    let on = if profiles.is_empty() {
+                        "every kind of network".to_string()
+                    } else {
+                        profiles.join(", ").to_lowercase() + " networks"
+                    };
+                    ui.weak(format!(
+                        "✔ the Windows firewall lets rds-pacs accept connections on {on}"
+                    ));
+                }
+                Some(Firewall::Off) => {
+                    ui.weak("The Windows firewall is off: nothing to allow.");
+                }
+                other => {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        match other {
+                            Some(Firewall::Blocked) => {
+                                "⚠ A Windows firewall rule blocks rds-pacs (the Windows \
+                                 Security Alert was answered with Cancel): no other \
+                                 station can reach it."
+                            }
+                            Some(Firewall::NoRule) => {
+                                "⚠ The Windows firewall has no rule for rds-pacs: no \
+                                 other station can reach it until one allows it (answer \
+                                 Allow when Windows asks, or press the button)."
+                            }
+                            _ => "The Windows firewall's rules could not be read.",
+                        },
+                    );
+                }
+            }
+            ui.horizontal(|ui| {
+                if enabled_tip_button(
+                    ui,
+                    !busy,
+                    "🔓 Allow through the Windows firewall",
+                    "Make a rule that lets rds-pacs.exe accept TCP connections, \
+                     replacing any rule that blocks it. Windows asks for \
+                     administrator permission.",
+                ) {
+                    k.allow_firewall = true;
+                }
+                ui.checkbox(
+                    &mut w.firewall_public,
+                    "also on networks Windows calls public",
+                )
+                .on_hover_text(
+                    "Windows classes an unknown network, a hotel's or a cafe's, \
+                     as public, and often a home network too until it is marked \
+                     private. The server still answers nothing without a key.",
+                );
+            });
+        }
+
+        // ---- pairing -------------------------------------------
+        ui.separator();
+        ui.label(egui::RichText::new("Pair a station").strong());
+        ui.horizontal(|ui| {
+            ui.label("Role");
+            egui::ComboBox::from_id_salt("pacs_code_role")
+                .selected_text(w.code_role.label())
+                .show_ui(ui, |ui| {
+                    for r in Role::ALL {
+                        ui.selectable_value(&mut w.code_role, r, r.describe());
+                    }
+                });
+            ui.label("good for");
+            ui.add(
+                egui::DragValue::new(&mut w.code_minutes)
+                    .range(1..=1440)
+                    .suffix(" min"),
+            );
+            if enabled_tip_button(
+                ui,
+                !busy,
+                "New pairing code",
+                "A code for one station, used once; tell it to the person \
+                 pairing, with the connection details",
+            ) {
+                k.new_code = true;
+            }
+        });
+        if let Some(c) = &w.code {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(&c.code).monospace().size(22.0).strong());
+                ui.weak(format!(
+                    "{} role, good until {}, for one station",
+                    c.role.label(),
+                    c.expires
+                ));
+            });
+            if let Some(line) = &line {
+                if tip_button(
+                    ui,
+                    "📋 Copy invitation",
+                    "The connection details with this code in them: everything \
+                     the other station needs, in one line. Send it only to the \
+                     person who is to pair.",
+                ) {
+                    k.copy = Some(
+                        ConnectionLine {
+                            code: Some(c.code.clone()),
+                            ..line.clone()
+                        }
+                        .format(),
+                    );
+                }
+            }
+        }
+    }
+
+    // ---- clients ------------------------------------------------
+    ui.separator();
+    ui.label(egui::RichText::new("Paired stations").strong());
+    if w.clients.is_empty() {
+        ui.weak("none yet");
+    }
+    egui::Grid::new("pacs_clients")
+        .striped(true)
+        .num_columns(5)
+        .show(ui, |ui| {
+            for c in &w.clients {
+                ui.label(&c.name);
+                ui.label(c.role.label());
+                ui.weak(format!("last seen {}", c.last_seen));
+                ui.weak(&c.address);
+                let asked = w.confirm_revoke.as_deref() == Some(c.name.as_str());
+                if ui
+                    .add_enabled(
+                        !busy,
+                        egui::Button::new(if asked { "Really revoke?" } else { "Revoke" }).small(),
+                    )
+                    .on_hover_text("This station's key stops working at once")
+                    .clicked()
+                {
+                    k.revoke = Some(c.name.clone());
+                }
+                ui.end_row();
+            }
+        });
+
+    // ---- settings ------------------------------------------------
+    ui.separator();
+    ui.collapsing("Settings (applied at the next start)", |ui| {
+        let c = &mut w.config;
+        let mut dirty = false;
+        egui::Grid::new("pacs_cfg")
+            .num_columns(2)
+            .spacing([8.0, 4.0])
+            .show(ui, |ui| {
+                ui.label("Name");
+                dirty |= ui
+                    .add(
+                        egui::TextEdit::singleline(&mut c.name)
+                            .hint_text(crate::pacs::this_device_name())
+                            .desired_width(260.0),
+                    )
+                    .changed();
+                ui.end_row();
+                ui.label("Port");
+                dirty |= ui
+                    .add(egui::DragValue::new(&mut c.port).range(1..=65535))
+                    .changed();
+                ui.end_row();
+                ui.label("Listen on");
+                egui::ComboBox::from_id_salt("pacs_bind")
+                    .selected_text(match c.bind.as_str() {
+                        "0.0.0.0" => "every network (0.0.0.0)",
+                        "127.0.0.1" => "this computer only (behind a proxy)",
+                        other => other,
+                    })
+                    .show_ui(ui, |ui| {
+                        for (v, l) in [
+                            ("0.0.0.0", "every network (0.0.0.0)"),
+                            ("127.0.0.1", "this computer only (behind a proxy)"),
+                        ] {
+                            if ui.selectable_label(c.bind == v, l).clicked() {
+                                c.bind = v.into();
+                                c.behind_proxy = v == "127.0.0.1";
+                                dirty = true;
+                            }
+                        }
+                    });
+                ui.end_row();
+                ui.label("PACS folders");
+                ui.horizontal(|ui| {
+                    dirty |= ui
+                        .add(
+                            egui::TextEdit::singleline(&mut c.archive_dir)
+                                .hint_text("the station's PACS (every storage folder)")
+                                .desired_width(300.0),
+                        )
+                        .changed();
+                    if ui.button("📂").on_hover_text("Choose a folder").clicked() {
+                        k.browse_archive = true;
+                    }
+                });
+                ui.end_row();
+                ui.label("Extra names");
+                dirty |= ui
+                    .add(
+                        egui::TextEdit::singleline(&mut w.advertise)
+                            .hint_text("pacs.example.org, 100.64.0.7")
+                            .desired_width(300.0),
+                    )
+                    .on_hover_text(
+                        "Names and addresses put into the server's certificate \
+                         (a dynamic DNS name, a VPN address); takes effect with a \
+                         new certificate",
+                    )
+                    .changed();
+                ui.end_row();
+                ui.label("Uploads up to");
+                dirty |= ui
+                    .add(
+                        egui::DragValue::new(&mut c.max_upload_mb)
+                            .range(1..=1_000_000)
+                            .suffix(" MB"),
+                    )
+                    .changed();
+                ui.end_row();
+            });
+        dirty |= ui
+            .checkbox(&mut c.tasks, "Run the workflows paired stations hand in")
+            .changed();
+        dirty |= ui
+            .checkbox(
+                &mut c.allow_model_download,
+                "Tasks may download model weights they need",
+            )
+            .changed();
+        w.config_dirty |= dirty;
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(w.config_dirty, egui::Button::new("💾 Save"))
+                .on_hover_text("Write pacs.toml; a running server takes it at its next start")
+                .clicked()
+            {
+                k.save = true;
+            }
+            if enabled_tip_button(
+                ui,
+                !busy && w.running.is_none() && w.config.own_certificate().is_none(),
+                "New certificate",
+                "Make a new self-signed certificate (with the extra names). Every \
+                 paired station must pair again. Only while the server is stopped.",
+            ) {
+                k.regenerate = true;
+            }
+        });
+    });
+
+    // ---- audit ------------------------------------------------------
+    ui.collapsing("Recent activity", |ui| {
+        if w.audit.is_empty() {
+            ui.weak("nothing logged yet");
+        }
+        egui::ScrollArea::vertical()
+            .max_height(160.0)
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                for l in &w.audit {
+                    ui.monospace(l);
+                }
+            });
+    });
+    k
 }
 
 /// This machine's addresses for a listener bound to `ip`: both families

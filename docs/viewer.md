@@ -202,14 +202,33 @@ colours and relative to the same reference dose, with their own opacity
 slider; they follow a change of dose, reference or lines by themselves.
 
 **Window/level.** Right-drag on any view adjusts interactively
-(x = width, y = center); the toolbar offers numeric fields and the common CT
-presets: brain, subdural, stroke, head/neck soft tissue, temporal bone, lungs,
-mediastinum, abdomen, liver, spine, bone, CT angio, full range. The list
-shows each preset's center and width; the closed list carries only the chosen
-name, and any other window - a drag or the full range - leaves it nameless.
-Window/level is shared between workspaces A and B.
+(x = width, y = center); the toolbar offers numeric fields and the presets of
+the modality shown, read off the active series of the workspace last pointed
+at (the toolbar names it, *W/L A:*, when several are open):
 
-**Every tool has its own window.** The archive, the model manager, the DRR,
+* **CT** - Hounsfield windows: brain, subdural, stroke, head/neck soft tissue,
+  temporal bone, lungs, mediastinum, abdomen, liver, spine, bone, CT angio.
+* **MR, PET and any other modality** - their values have no fixed scale (an
+  MR's are the scanner's arbitrary signal, not Hounsfield units), so the
+  presets are read off the image itself: *Series default* (the window the
+  DICOM files carry, or the one below), *Auto* (the 1st to the 99th
+  percentile of the image's values), *Wide* (0.5 - 99.9 %), *Narrow*
+  (5 - 95 %), *Dark tissue* (0 - 60 %) and *Bright tissue* (30 - 99.9 %). The
+  padding outside the field of view is left out of the count.
+
+*Full range* closes either list. The list shows each preset's center and
+width; the closed list carries only the chosen name, and any other window - a
+drag or the full range - leaves it nameless.
+
+A series comes up with the window its files carry; without one, a CT with the
+soft tissue window (C 40 / W 400) and anything else with the *Auto* window.
+**Each workspace has its own window, and workspaces showing the same modality
+share it**: two CTs side by side (two phases, a planning CT and a re-scan) are
+read with one window and a change to it moves both, while a CT beside an MR
+keeps a window of its own for each. A series that comes up in a workspace
+takes the window of another workspace showing its modality, if one does.
+
+**Every tool has its own window.** The PACS, the model manager, the DRR,
 the 3D scenes, the segmentation, motion and DVH tools, the export and
 anonymizer dialogs - none of them float inside the main window. Each opens as
 a window of the operating system in its own right, with its own title bar and
@@ -223,11 +242,13 @@ main window (and everything else) while it is open. It is off whenever a
 window opens and is not remembered between runs.
 
 Every window of the program is titled the same way: **Rust DICOM Station:**
-followed by what the window is - *Viewer* for the main one, then *PACS -
-patient archive*, *Downloaded models*, *DRR - workspace A*, and so on.
+followed by what the window is - *Viewer* for the main one, then *Picture
+Archiving and Communication System (PACS)*, *Downloaded models*, *DRR -
+workspace A*, and so on.
 
-**Status bar.** Patient coordinates, voxel indices, HU and dose (Gy and % of
-the reference dose) at the crosshair; with more than one workspace open each
+**Status bar.** Patient coordinates, voxel indices, the image value (in HU
+for a CT; *MR value 812* for an MR, whose values have no unit) and dose (Gy
+and % of the reference dose) at the crosshair; with more than one workspace open each
 reports the full set side by side, at its own crosshair. Hover the **?** at the
 right end to read the active tool's mouse bindings.
 
@@ -680,7 +701,8 @@ command line) and the window splits into two rows - workspace A on top,
 workspace B below, each showing whatever *Settings ▸ View layout* gives it.
 A third and a fourth stack the same way, up to **four workspaces A - D**.
 Each workspace keeps its own structures, dose and plan panels in the
-sidebar; window/level and dose display are shared.
+sidebar; the dose display is shared, and window/level is shared by the
+workspaces that show the same modality (above).
 
 **Sync** (the toolbar button, or *View ▸ Sync the workspaces*; both appear
 whenever two or more workspaces are loaded - it carries far more than the
@@ -695,8 +717,9 @@ the other workspaces' panes of the same plane, and the **players** (see
 below). Zoom is screen pixels per millimetre and pan is millimetres off the
 image centre, so copying them puts every row at the same scale and the same
 offset whatever their matrices are; what cannot be carried across unrelated
-images is not pretended. Window/level is shared by every workspace either
-way. Off, each workspace is navigated on its own.
+images is not pretended. Window/level follows the modality either way (one
+window for the workspaces showing the same one). Off, each workspace is
+navigated on its own.
 
 With the bundled data: load `data-test/`, and the patient's two studies
 appear with their ten 4DFBCT and ten 4DCBCT phases grouped as two 4D sets.

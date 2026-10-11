@@ -1,7 +1,7 @@
 //! The server's configuration: `config_dir()/pacs.toml`.
 //!
-//! Written by the operator, by hand or through the viewer's *Settings ▶ PACS
-//! server* window, and read by `rds-pacs` when it starts. Nothing in it can
+//! Written by the operator, by hand or through the viewer's *PACS ▶
+//! Settings ▶ PACS server*, and read by `rds-pacs` when it starts. Nothing in it can
 //! be changed by a client. A missing file is a working configuration: the
 //! default port on every interface, the station's own archive, tasks on,
 //! no model downloads.
@@ -10,7 +10,9 @@
 //! name = ""                  # what clients see; empty: this machine's name
 //! bind = "0.0.0.0"           # 127.0.0.1 behind a reverse proxy
 //! port = 11443
-//! archive_dir = ""           # empty: the viewer's archive (Tools > PACS)
+//! archive_dir = ""           # empty: the station's PACS, every storage folder
+//!                            #   (PACS > Settings > Storage folders); or one
+//!                            #   folder, or several joined by |
 //! advertise = []             # extra names the certificate carries
 //! tls_cert = ""              # PEM files of a certificate of your own;
 //! tls_key = ""               #   empty: a self-signed one, made once
@@ -181,17 +183,16 @@ impl Config {
         }
     }
 
-    /// The archive folder served.
+    /// The PACS served: the station's (every storage folder its settings
+    /// name) when `archive_dir` is empty, else the folder it names (or
+    /// several, joined by `|`).
+    pub fn archive(&self) -> crate::archive::Archive {
+        crate::archive::Archive::from_setting(&self.archive_dir)
+    }
+
+    /// The main storage folder of the PACS served.
     pub fn archive_root(&self) -> PathBuf {
-        if self.archive_dir.trim().is_empty() {
-            let prefs = settings::load();
-            prefs
-                .archive_dir
-                .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or_else(crate::archive::default_root)
-        } else {
-            PathBuf::from(self.archive_dir.trim())
-        }
+        self.archive().root().to_path_buf()
     }
 
     pub fn models_dir(&self) -> PathBuf {
