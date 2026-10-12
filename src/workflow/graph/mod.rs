@@ -551,6 +551,8 @@ pub fn absolute_outputs(wf: &Workflow) -> Vec<String> {
             Op::SaveReport(p) => &p.folder,
             Op::Anonymize(p) => &p.folder,
             Op::Drr(p) => &p.folder,
+            Op::SynthesizeCt(p) => &p.folder,
+            Op::EvaluateSct(p) => &p.folder,
             _ => continue,
         };
         if std::path::Path::new(folder.trim()).is_absolute() {

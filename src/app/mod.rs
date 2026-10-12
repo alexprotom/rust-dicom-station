@@ -91,6 +91,7 @@ mod sets;
 mod snapshot;
 mod stats_win;
 mod struct_tools;
+mod synth_win;
 mod testdata_win;
 mod theme;
 mod transfer_win;
@@ -1708,7 +1709,10 @@ pub struct ViewerApp {
     ts_licence_shown: bool,
     /// nnU-Net model folders the user added (persisted).
     nnunet_folders: Vec<PathBuf>,
-    /// Why a model folder could not be used, by folder.
+    /// Folders of TotalSynth checkpoints the user added (persisted).
+    synth_folders: Vec<PathBuf>,
+    /// Why a model folder (nnU-Net or TotalSynth) could not be used, by
+    /// folder.
     nnunet_folder_errors: Vec<(PathBuf, String)>,
 
     // Auto-segmentation (TotalSegmentator re-implementation, see `autoseg`).
@@ -1723,6 +1727,13 @@ pub struct ViewerApp {
     /// The results window's last TG-263 naming choice, carried to the next
     /// run.
     autoseg_pending_tg263: bool,
+
+    // Synthetic CT (see `sct`, `synth`): the run and the evaluation, one at
+    // a time, on the workspace of the Image synthesis module.
+    synth: synth_win::SynthState,
+    synth_job: Option<SegJob<synth_win::SynthDone>>,
+    synth_eval_job: Option<SegJob<synth_win::EvalDone>>,
+    synth_slot: usize,
 
     // Body / External contouring (see `bodymask`) - the one tool that can
     // answer with no network at all.
@@ -1819,6 +1830,8 @@ pub struct ViewerApp {
     /// *Modules ▶ Image simulation*: the simulation section is part of the
     /// modules panel. Persisted between runs.
     module_simulation: bool,
+    /// *Modules ▶ Image synthesis*: the synthetic CT section. Persisted.
+    module_synthesis: bool,
     /// *Modules ▶ Structure propagation*: the propagation section is part
     /// of the modules panel. Persisted between runs.
     module_propagation: bool,
@@ -1926,6 +1939,7 @@ impl ViewerApp {
     pub(super) fn any_module(&self) -> bool {
         self.module_registration
             || self.module_simulation
+            || self.module_synthesis
             || self.module_propagation
             || self.module_structures
             || self.module_auto
@@ -2130,7 +2144,12 @@ impl ViewerApp {
             ts_licence: prefs.ts_licence.clone().unwrap_or_default(),
             ts_licence_shown: false,
             nnunet_folders: prefs.nnunet_folders.clone(),
+            synth_folders: prefs.synth_folders.clone(),
             nnunet_folder_errors: folder_errors,
+            synth: synth_win::SynthState::default(),
+            synth_job: None,
+            synth_eval_job: None,
+            synth_slot: 0,
             autoseg_job: None,
             autoseg_slot: 0,
             autoseg_dialog: None,
@@ -2208,6 +2227,7 @@ impl ViewerApp {
             wl_preset: None,
             module_registration: prefs.module_registration,
             module_simulation: prefs.module_simulation,
+            module_synthesis: prefs.module_synthesis,
             module_propagation: prefs.module_propagation,
             module_structures: prefs.module_structures,
             module_auto: prefs.module_auto,
@@ -2283,6 +2303,7 @@ impl ViewerApp {
             archive_more: self.archive_more.clone(),
             module_registration: self.module_registration,
             module_simulation: self.module_simulation,
+            module_synthesis: self.module_synthesis,
             module_propagation: self.module_propagation,
             module_structures: self.module_structures,
             module_auto: self.module_auto,
@@ -2300,6 +2321,7 @@ impl ViewerApp {
                 (!l.is_empty()).then(|| l.to_string())
             },
             nnunet_folders: self.nnunet_folders.clone(),
+            synth_folders: self.synth_folders.clone(),
         }) {
             Ok(()) => self.settings_error = None,
             Err(e) => {
@@ -2717,6 +2739,22 @@ impl eframe::App for ViewerApp {
             poll_tool_job(&mut self.body_job, &ctx, BODY_CONTOUR.name, &mut self.error)
         {
             self.on_body_done(slot, result);
+        }
+        if let Some((slot, done)) = poll_tool_job(
+            &mut self.synth_job,
+            &ctx,
+            synth_win::SYNTHESIS.name,
+            &mut self.error,
+        ) {
+            self.on_synthesis_done(slot, done);
+        }
+        if let Some((slot, done)) = poll_tool_job(
+            &mut self.synth_eval_job,
+            &ctx,
+            "Synthetic CT evaluation",
+            &mut self.error,
+        ) {
+            self.on_sct_eval_done(slot, done);
         }
         if let Some((slot, result)) =
             poll_tool_job(&mut self.combine_job, &ctx, COMBINE.name, &mut self.error)

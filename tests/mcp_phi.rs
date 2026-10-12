@@ -247,6 +247,31 @@ fn exercise(policy: PhiPolicy, tag: &str) {
     .unwrap();
     assert_eq!(sr["structures"].as_array().unwrap().len(), 2, "{sr}");
 
+    // A synthetic CT of phase 0 (the miniature network as a checkpoint
+    // folder of the user's), and its evaluation against the 50% phase.
+    let key = sct_app();
+    let _ = call(
+        c,
+        l,
+        "synthesize_ct",
+        json!({"dataset": "ds1", "app": "nope"}),
+    );
+    let sct = call(
+        c,
+        l,
+        "synthesize_ct",
+        json!({"dataset": "ds1", "series": 1, "app": key, "mask": "BODY"}),
+    )
+    .unwrap();
+    let n = sct["series"].as_u64().unwrap();
+    call(
+        c,
+        l,
+        "evaluate_sct",
+        json!({"dataset": "ds1", "sct": n, "reference": 2, "mask": "covered"}),
+    )
+    .unwrap();
+
     // Output: the export names folders after the patient under `allow`,
     // and the answer must still be clean.
     let ex = call(
@@ -279,6 +304,21 @@ fn exercise(policy: PhiPolicy, tag: &str) {
     assert!(contains_secret(&all).is_none());
     assert!(all.len() > 2000, "the tools did answer");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The engine tests' miniature TotalSynth as a checkpoint folder, made and
+/// registered once for every test of this file (the registry is the
+/// process's).
+fn sct_app() -> String {
+    static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        let dir = common::target_dir("test_mcp_phi_checkpoints");
+        let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+        std::fs::copy(data.join("synth-unetpp-cv0.pt"), dir.join("CV_0.pt")).unwrap();
+        let reg = rust_dicom_station::synth::custom::register(&[dir]);
+        (*reg[0].1.as_ref().unwrap()).to_string()
+    })
+    .clone()
 }
 
 #[test]

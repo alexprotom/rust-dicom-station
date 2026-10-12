@@ -140,6 +140,8 @@ pub enum Category {
     Input,
     Select,
     Segment,
+    /// Steps that make an image series: a synthetic CT.
+    Image,
     Edit,
     Register,
     FourD,
@@ -148,10 +150,11 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Category; 8] = [
+    pub const ALL: [Category; 9] = [
         Category::Input,
         Category::Select,
         Category::Segment,
+        Category::Image,
         Category::Edit,
         Category::Register,
         Category::FourD,
@@ -164,6 +167,7 @@ impl Category {
             Category::Input => "Input",
             Category::Select => "Find in the data",
             Category::Segment => "Segment",
+            Category::Image => "Make images",
             Category::Edit => "Edit structures",
             Category::Register => "Register and propagate",
             Category::FourD => "4D",
@@ -178,6 +182,7 @@ impl Category {
             Category::Input => [70, 85, 110],
             Category::Select => [40, 110, 115],
             Category::Segment => [55, 115, 60],
+            Category::Image => [120, 60, 150],
             Category::Edit => [95, 110, 45],
             Category::Register => [50, 80, 140],
             Category::FourD => [140, 95, 35],
@@ -228,10 +233,12 @@ pub enum Kind {
     SaveReport,
     ArchiveImport,
     Drr,
+    SynthesizeCt,
+    EvaluateSct,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 25] = [
+    pub const ALL: [Kind; 27] = [
         Kind::LoadFolder,
         Kind::LoadFolders,
         Kind::LoadFromArchive,
@@ -257,6 +264,8 @@ impl Kind {
         Kind::SaveReport,
         Kind::ArchiveImport,
         Kind::Drr,
+        Kind::SynthesizeCt,
+        Kind::EvaluateSct,
     ];
 
     pub fn info(self) -> &'static KindInfo {
@@ -481,7 +490,8 @@ impl Kind {
                 category: Category::Output,
                 blurb: "Write the structures of the studies it is given - as RTSTRUCT or \
                         SEG, only what the run made or changed, or all of them - and \
-                        optionally the images, into a folder of the run.",
+                        optionally the images, into a folder of the run. Image series the \
+                        run made (a synthetic CT) are always written.",
                 ends_a_branch: true,
                 writes: true,
             },
@@ -502,6 +512,28 @@ impl Kind {
                         exported of them, or the folders they were read from (an anonymized \
                         copy, say).",
                 ends_a_branch: true,
+                writes: true,
+            },
+            Kind::SynthesizeCt => &KindInfo {
+                name: "Synthetic CT",
+                glyph: "🔮",
+                category: Category::Image,
+                blurb: "A CT synthesized from an MR or a CBCT series with TotalSynth (the \
+                        ImpactSynth apps, CC BY-NC weights), written as a new CT series of \
+                        the same study and frame of reference, which every later step takes \
+                        like any image: segment it, register to it, export it.",
+                ends_a_branch: false,
+                writes: true,
+            },
+            Kind::EvaluateSct => &KindInfo {
+                name: "Evaluate synthetic CT",
+                glyph: "⚖",
+                category: Category::Measure,
+                blurb: "Compare a synthetic CT with a CT of the same patient: MAE, mean \
+                        error, PSNR and SSIM inside a mask, per class of tissue, optionally \
+                        the water-equivalent thickness and the Dice of TotalSegmentator's \
+                        structures; the difference as a series.",
+                ends_a_branch: false,
                 writes: true,
             },
             Kind::Drr => &KindInfo {
@@ -618,6 +650,39 @@ impl Kind {
                     &[T::Image],
                     "the image series to project",
                 )];
+                P
+            }
+            Kind::SynthesizeCt => {
+                const P: &[PortSpec] = &[PortSpec::one(
+                    "Image",
+                    &[T::Image],
+                    "the MR or CBCT series to synthesize a CT from",
+                )];
+                P
+            }
+            Kind::EvaluateSct => {
+                const P: &[PortSpec] = &[
+                    PortSpec::one("sCT", &[T::Image], "the synthetic CT"),
+                    PortSpec::one(
+                        "Reference",
+                        &[T::Image],
+                        "a CT of the same patient: on the same frame of reference, or \
+                         registered on the next input",
+                    ),
+                    PortSpec::one(
+                        "Registration",
+                        &[T::Registration],
+                        "a registration of the two, either way round",
+                    )
+                    .optional(),
+                    PortSpec::one(
+                        "Mask",
+                        &[T::Structures],
+                        "where to compare, on the synthetic CT; the reference's body when \
+                         left free",
+                    )
+                    .optional(),
+                ];
                 P
             }
             Kind::SelectImage => {
@@ -809,6 +874,25 @@ impl Kind {
                 const P: &[OutSpec] = &[out("Report", T::Report, "the images written")];
                 P
             }
+            Kind::SynthesizeCt => {
+                const P: &[OutSpec] = &[
+                    out(
+                        "sCT",
+                        T::Image,
+                        "the synthetic CT, a new series of the study",
+                    ),
+                    out("Report", T::Report, "what was averaged, on what, how long"),
+                ];
+                P
+            }
+            Kind::EvaluateSct => {
+                const P: &[OutSpec] = &[out(
+                    "Report",
+                    T::Report,
+                    "HU errors, PSNR, SSIM, WET and Dice",
+                )];
+                P
+            }
             Kind::ArchiveImport => &[],
             Kind::SelectImage => {
                 const P: &[OutSpec] = &[out("Image", T::Image, "the image series found")];
@@ -904,6 +988,8 @@ impl Kind {
             Kind::DoseMetrics => Op::DoseMetrics(Default::default()),
             Kind::ArchiveImport => Op::ArchiveImport(Default::default()),
             Kind::Drr => Op::Drr(Default::default()),
+            Kind::SynthesizeCt => Op::SynthesizeCt(Default::default()),
+            Kind::EvaluateSct => Op::EvaluateSct(Default::default()),
             Kind::SelectImage => Op::SelectImage(Default::default()),
             Kind::SelectGroup => Op::SelectGroup(Default::default()),
             Kind::SelectStructures => Op::SelectStructures(Default::default()),
@@ -948,6 +1034,8 @@ pub enum Op {
     DoseMetrics(DoseMetrics),
     ArchiveImport(ArchiveImport),
     Drr(Drr),
+    SynthesizeCt(SynthesizeCt),
+    EvaluateSct(EvaluateSct),
     SelectImage(SelectImage),
     SelectGroup(SelectGroup),
     SelectStructures(SelectStructures),
@@ -978,6 +1066,8 @@ impl Op {
             Op::DoseMetrics(_) => Kind::DoseMetrics,
             Op::ArchiveImport(_) => Kind::ArchiveImport,
             Op::Drr(_) => Kind::Drr,
+            Op::SynthesizeCt(_) => Kind::SynthesizeCt,
+            Op::EvaluateSct(_) => Kind::EvaluateSct,
             Op::SelectImage(_) => Kind::SelectImage,
             Op::SelectGroup(_) => Kind::SelectGroup,
             Op::SelectStructures(_) => Kind::SelectStructures,
@@ -1281,6 +1371,37 @@ impl Op {
                     quoted(&p.archive)
                 },
             ],
+            Op::SynthesizeCt(p) => vec![
+                crate::synth::App::from_key(&p.app)
+                    .map(|a| a.label().to_string())
+                    .unwrap_or_else(|| format!("unknown model {}", quoted(&p.app))),
+                format!(
+                    "{}, {} mirror{}, air outside: {}",
+                    if p.all_checkpoints {
+                        "every checkpoint"
+                    } else {
+                        "CV_0"
+                    },
+                    p.tta,
+                    if p.tta == 1 { "" } else { "s" },
+                    p.mask.trim()
+                ),
+            ],
+            Op::EvaluateSct(p) => {
+                let mut v = vec!["MAE, ME, PSNR, SSIM".to_string()];
+                let extra: Vec<&str> = [
+                    p.wet.then_some("WET"),
+                    p.structures.then_some("organ Dice"),
+                    p.difference.then_some("difference series"),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                if !extra.is_empty() {
+                    v.push(extra.join(", "));
+                }
+                v
+            }
             Op::Drr(p) => vec![
                 if p.plan_beams {
                     "at the plan's beams".to_string()
@@ -1371,6 +1492,37 @@ impl Op {
                     if crate::dvh::Metric::parse(&m).is_none() {
                         v.push(format!("'{m}' is not a metric (D95%, D2cc, V20Gy, Dmean)"));
                     }
+                }
+            }
+            Op::SynthesizeCt(p) => {
+                if crate::synth::App::from_key(&p.app).is_none() {
+                    v.push(format!(
+                        "'{}' is not a synthesis model (sct_mr, sct_cbct, sct_mr_cbct, \
+                         sct_mr_dixon, or a checkpoint folder's)",
+                        p.app.trim()
+                    ));
+                }
+                if p.tta > crate::synth::TTA_MAX {
+                    v.push("the mirrors are 0, 1 or 2".into());
+                }
+                if p.mask.trim().is_empty() {
+                    v.push(
+                        "say what sets the air outside: network, classical, none or a structure"
+                            .into(),
+                    );
+                }
+                if p.folder.trim().is_empty() {
+                    v.push("no folder is given".into());
+                }
+            }
+            Op::EvaluateSct(p) => {
+                if p.wet {
+                    if let Err(e) = crate::sct::eval::Hlut::parse(&p.hlut) {
+                        v.push(format!("the HU to RSP table: {e}"));
+                    }
+                }
+                if p.difference && p.folder.trim().is_empty() {
+                    v.push("no folder is given".into());
                 }
             }
             Op::Drr(p) => {
@@ -2407,6 +2559,73 @@ impl Default for Drr {
             size_px: 512,
             folder: "drr/{input}".into(),
             file_into_study: true,
+        }
+    }
+}
+
+/// A synthetic CT from an MR or CBCT series.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SynthesizeCt {
+    /// The app's key: `sct_mr`, `sct_cbct`, `sct_mr_cbct`, `sct_mr_dixon`,
+    /// or a checkpoint folder's.
+    pub app: String,
+    /// Every checkpoint of the app (the published recipe) rather than
+    /// CV_0 alone.
+    pub all_checkpoints: bool,
+    /// Test-time mirrors besides the plain pass, 0 to 2.
+    pub tta: usize,
+    /// Also the members' spread as a second series.
+    pub uncertainty: bool,
+    /// What sets the air outside: `network`, `classical`, `none`, or the
+    /// name of a structure on the image.
+    pub mask: String,
+    pub device: Device,
+    /// Where the series' files go: inside the run folder, or absolute;
+    /// `{input}` is the study's title.
+    pub folder: String,
+}
+
+impl Default for SynthesizeCt {
+    fn default() -> Self {
+        SynthesizeCt {
+            app: "sct_mr".into(),
+            all_checkpoints: false,
+            tta: 0,
+            uncertainty: false,
+            mask: "network".into(),
+            device: Device::default(),
+            folder: "sct/{input}".into(),
+        }
+    }
+}
+
+/// A synthetic CT against a CT of the same patient.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EvaluateSct {
+    /// The water-equivalent thickness rows.
+    pub wet: bool,
+    /// HU to relative stopping power, `HU:RSP` pairs.
+    pub hlut: String,
+    /// TotalSegmentator on both, and the Dice of what it finds.
+    pub structures: bool,
+    /// The difference (sCT minus CT) as a series of the sCT's study.
+    pub difference: bool,
+    pub device: Device,
+    /// Where the difference series' files go.
+    pub folder: String,
+}
+
+impl Default for EvaluateSct {
+    fn default() -> Self {
+        EvaluateSct {
+            wet: false,
+            hlut: crate::sct::eval::Hlut::default().text(),
+            structures: false,
+            difference: false,
+            device: Device::default(),
+            folder: "sct/{input}".into(),
         }
     }
 }

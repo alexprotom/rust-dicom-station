@@ -854,6 +854,38 @@ pub fn templates() -> Vec<Workflow> {
     wf.link(g, 0, e, 0);
     out.push(wf);
 
+    let mut wf = Workflow::new("Synthetic CT from MR, then organs");
+    wf.description = "A CT synthesized from the largest MR of a study (TotalSynth, the quick \
+                      look: one checkpoint, no mirrors; CC BY-NC weights), TotalSegmentator's \
+                      organs on it, both filed back: the sCT as a new CT series, the organs \
+                      as an RT structure set. Needs the models on the server."
+        .into();
+    let a = wf.add(Op::LoadFromArchive(Default::default()), "Study", [0.0, 0.0]);
+    let s = wf.add(
+        Op::SelectImage(cat::SelectImage {
+            modality: "MR".into(),
+            ..Default::default()
+        }),
+        "",
+        [220.0, 0.0],
+    );
+    let c = wf.add(Op::SynthesizeCt(Default::default()), "", [440.0, 0.0]);
+    let g = wf.add(
+        Op::AutoSegment(cat::AutoSegment {
+            organs: Vec::new(),
+            set: SetChoice::New,
+            ..Default::default()
+        }),
+        "",
+        [660.0, 0.0],
+    );
+    let e = wf.add(Op::ExportDicom(Default::default()), "", [880.0, 0.0]);
+    wf.link(a, 0, s, 0);
+    wf.link(s, 0, c, 0);
+    wf.link(c, 0, g, 0);
+    wf.link(g, 0, e, 0);
+    out.push(wf);
+
     let mut wf = Workflow::new("Heart on every phase of a 4DCT");
     wf.description = "TotalSegmentator's heart on every phase of the study's 4D group, \
                       each phase's structures filed back on that phase. Needs the model \

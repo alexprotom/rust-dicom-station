@@ -1371,3 +1371,297 @@ pub fn export_derived(
     }
     Ok(n_files)
 }
+
+// ---------------------------------------------------------------------------
+// Derived image series (a synthetic CT, its uncertainty, a difference)
+// ---------------------------------------------------------------------------
+
+/// What a derived image series says about itself.
+pub struct DerivedImage<'a> {
+    /// Series Instance UID of the new series ([`new_uid`]).
+    pub series_uid: &'a str,
+    /// SeriesDescription.
+    pub description: &'a str,
+    /// DerivationDescription (0008,2111): how the images were made.
+    pub derivation: &'a str,
+    pub series_number: i64,
+    /// Window centre and width the series comes up with.
+    pub window: (f32, f32),
+    /// ManufacturerModelName: what made it ("Synthetic CT").
+    pub made_by: &'a str,
+}
+
+/// The series' own identity as written.
+pub struct DerivedSeries {
+    pub series_uid: String,
+    pub files: Vec<std::path::PathBuf>,
+}
+
+/// The patient, study and equipment attributes a derived series carries:
+/// its source's, read from the source's first file (the series in memory
+/// when it has none), the equipment naming this application.
+fn derived_params(
+    source: &crate::loader::SeriesInfo,
+    made_by: &str,
+) -> (ExportParams, Option<InMemDicomObject>) {
+    let header = source
+        .files
+        .first()
+        .and_then(|f| crate::dicomfile::open_header(f).ok())
+        .map(|o| o.into_inner());
+    let get = |tag: Tag, fallback: &str| -> String {
+        header
+            .as_ref()
+            .and_then(|h| crate::loader::str_of(h, tag))
+            .unwrap_or_else(|| fallback.to_string())
+    };
+    let f = |tag, name, vr, value: String| ExportField {
+        tag,
+        name,
+        vr,
+        suggested: value.clone(),
+        value,
+        enabled: true,
+    };
+    // The study's date and time as the source has them, empty where it
+    // has none: one made up here would make the series another study's.
+    let params = ExportParams {
+        fields: vec![
+            f(
+                tags::PATIENT_NAME,
+                "PatientName",
+                VR::PN,
+                get(tags::PATIENT_NAME, &source.patient_name),
+            ),
+            f(
+                tags::PATIENT_ID,
+                "PatientID",
+                VR::LO,
+                get(tags::PATIENT_ID, &source.patient_id),
+            ),
+            f(
+                tags::PATIENT_BIRTH_DATE,
+                "PatientBirthDate",
+                VR::DA,
+                get(tags::PATIENT_BIRTH_DATE, ""),
+            ),
+            f(
+                tags::PATIENT_SEX,
+                "PatientSex",
+                VR::CS,
+                get(tags::PATIENT_SEX, ""),
+            ),
+            f(
+                tags::STUDY_ID,
+                "StudyID",
+                VR::SH,
+                get(tags::STUDY_ID, &source.study_id),
+            ),
+            f(
+                tags::STUDY_DESCRIPTION,
+                "StudyDescription",
+                VR::LO,
+                get(tags::STUDY_DESCRIPTION, &source.study_description),
+            ),
+            f(
+                tags::STUDY_DATE,
+                "StudyDate",
+                VR::DA,
+                get(tags::STUDY_DATE, &source.study_date),
+            ),
+            f(
+                tags::STUDY_TIME,
+                "StudyTime",
+                VR::TM,
+                get(tags::STUDY_TIME, ""),
+            ),
+            f(
+                tags::ACCESSION_NUMBER,
+                "AccessionNumber",
+                VR::SH,
+                get(tags::ACCESSION_NUMBER, ""),
+            ),
+            f(
+                tags::REFERRING_PHYSICIAN_NAME,
+                "ReferringPhysicianName",
+                VR::PN,
+                get(tags::REFERRING_PHYSICIAN_NAME, ""),
+            ),
+            f(
+                tags::INSTITUTION_NAME,
+                "InstitutionName",
+                VR::LO,
+                get(tags::INSTITUTION_NAME, ""),
+            ),
+            f(
+                tags::MANUFACTURER,
+                "Manufacturer",
+                VR::LO,
+                "rust-dicom-station".into(),
+            ),
+            f(
+                tags::MANUFACTURER_MODEL_NAME,
+                "ManufacturerModelName",
+                VR::LO,
+                made_by.to_string(),
+            ),
+        ],
+        keep_frame_of_reference: true,
+    };
+    (params, header)
+}
+
+/// The source image each slice of `vol` lies on: SOP Class and Instance
+/// UIDs of the source file at that position, by slice (`None` where no
+/// file is there, as for a series the application made).
+fn source_slices(
+    vol: &crate::volume::Volume,
+    files: &[std::path::PathBuf],
+) -> Vec<Option<(String, String)>> {
+    use rayon::prelude::*;
+    let nz = vol.dims[2];
+    let mut out = vec![None; nz];
+    let found: Vec<Option<(f64, String, String, bool)>> = files
+        .par_iter()
+        .map(|f| {
+            let o = crate::dicomfile::open_header(f).ok()?;
+            let class = crate::loader::str_of(&o, tags::SOP_CLASS_UID)?;
+            let uid = crate::loader::str_of(&o, tags::SOP_INSTANCE_UID)?;
+            let frames = crate::loader::i32_of(&o, tags::NUMBER_OF_FRAMES).unwrap_or(1) > 1;
+            let k = match crate::loader::f64s_of(&o, tags::IMAGE_POSITION_PATIENT) {
+                Some(p) if p.len() == 3 => vol.patient_to_voxel(Vec3::new(p[0], p[1], p[2]))[2],
+                _ => f64::NAN,
+            };
+            Some((k, class, uid, frames))
+        })
+        .collect();
+    for (k, class, uid, multiframe) in found.into_iter().flatten() {
+        if multiframe {
+            // One file holds every slice: it is the source of all of them.
+            for s in out.iter_mut().filter(|s| s.is_none()) {
+                *s = Some((class.clone(), uid.clone()));
+            }
+            continue;
+        }
+        let r = k.round();
+        if k.is_finite() && (k - r).abs() < 0.25 && r >= 0.0 && (r as usize) < nz {
+            out[r as usize] = Some((class, uid));
+        }
+    }
+    out
+}
+
+/// Write `vol` as a new CT image series of `source`'s study: the same
+/// patient, study and Frame of Reference, a new Series Instance UID, Image
+/// Type `DERIVED\SECONDARY`, a DerivationDescription, and a Source Image
+/// Sequence naming the source slice each image lies on. One file per slice
+/// in `dir` (created). `vol` must be on `source`'s grid for the source
+/// references to mean anything; they are matched by slice position.
+pub fn write_derived_image_series(
+    vol: &crate::volume::Volume,
+    source: &crate::loader::SeriesInfo,
+    dir: &Path,
+    d: &DerivedImage,
+    progress: &Progress,
+) -> Result<DerivedSeries> {
+    use crate::progress::ProgressSink;
+    use rayon::prelude::*;
+    std::fs::create_dir_all(dir).with_context(|| format!("create directory {}", dir.display()))?;
+    progress.set("Writing the series");
+    let (params, header) = derived_params(source, d.made_by);
+    let (date, time) = today();
+    let study_uid = header
+        .as_ref()
+        .and_then(|h| crate::loader::str_of(h, tags::STUDY_INSTANCE_UID))
+        .unwrap_or_else(|| source.study_uid.clone());
+    let for_uid = if vol.frame_of_reference_uid.is_empty() {
+        header
+            .as_ref()
+            .and_then(|h| crate::loader::str_of(h, tags::FRAME_OF_REFERENCE_UID))
+            .unwrap_or_else(new_uid)
+    } else {
+        vol.frame_of_reference_uid.clone()
+    };
+    // Attributes of the acquisition that still describe the image.
+    let copied: Vec<(Tag, VR, String)> = [
+        (tags::PATIENT_POSITION, VR::CS),
+        (tags::BODY_PART_EXAMINED, VR::CS),
+        (tags::PATIENT_AGE, VR::AS),
+    ]
+    .iter()
+    .filter_map(|&(tag, vr)| {
+        header
+            .as_ref()
+            .and_then(|h| crate::loader::str_of(h, tag))
+            .map(|v| (tag, vr, v))
+    })
+    .collect();
+    let ctx = Ctx {
+        study_uid,
+        for_uid,
+        date: date.clone(),
+        time: time.clone(),
+        params: &params,
+    };
+    let series_uid = d.series_uid.to_string();
+    let sources = source_slices(vol, &source.files);
+    let nz = vol.dims[2];
+    let files: Vec<std::path::PathBuf> = (0..nz)
+        .map(|k| dir.join(format!("CT_{:04}.dcm", k + 1)))
+        .collect();
+    let done = std::sync::atomic::AtomicUsize::new(0);
+    (0..nz).into_par_iter().try_for_each(|k| -> Result<()> {
+        let mut o = build_image_slice(
+            vol,
+            k,
+            &ctx,
+            "CT",
+            &new_uid(),
+            &series_uid,
+            d.series_number,
+            Some(d.description),
+            d.window,
+        );
+        put_strs(
+            &mut o,
+            tags::IMAGE_TYPE,
+            VR::CS,
+            &["DERIVED".to_string(), "SECONDARY".to_string()],
+        );
+        put_str(
+            &mut o,
+            tags::DERIVATION_DESCRIPTION,
+            VR::ST,
+            truncate(d.derivation, 1024),
+        );
+        put_str(&mut o, tags::SERIES_DATE, VR::DA, date.clone());
+        put_str(&mut o, tags::SERIES_TIME, VR::TM, time.clone());
+        put_str(&mut o, tags::CONTENT_DATE, VR::DA, date.clone());
+        put_str(&mut o, tags::CONTENT_TIME, VR::TM, time.clone());
+        apply(&mut o, &copied);
+        if let Some((class, uid)) = &sources[k] {
+            let mut item = InMemDicomObject::new_empty();
+            put_str(
+                &mut item,
+                tags::REFERENCED_SOP_CLASS_UID,
+                VR::UI,
+                class.clone(),
+            );
+            put_str(
+                &mut item,
+                tags::REFERENCED_SOP_INSTANCE_UID,
+                VR::UI,
+                uid.clone(),
+            );
+            put_seq(&mut o, tags::SOURCE_IMAGE_SEQUENCE, vec![item]);
+        }
+        write_object(o, SOP_CT, &files[k])?;
+        let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        progress.report(
+            n as f32 / nz as f32,
+            &format!("Writing the series: slice {n}/{nz}"),
+        );
+        Ok(())
+    })?;
+    Ok(DerivedSeries { series_uid, files })
+}

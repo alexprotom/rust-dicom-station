@@ -2007,6 +2007,87 @@ fn register_with(
     })
 }
 
+/// Which way a [`Transform3`] is followed from the grid being filled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    /// The grid is the fixed image's: sample the moving image at `map(p)`.
+    FixedToMoving,
+    /// The grid is the moving image's: sample the fixed image at `unmap(p)`.
+    MovingToFixed,
+}
+
+/// Trilinear value of `vol` at patient point `p`, the outermost voxel
+/// centres included (where [`Volume::sample_patient`] stops one short);
+/// `None` outside.
+fn sample_closed(vol: &Volume, p: Vec3) -> Option<f32> {
+    let c = vol.patient_to_voxel(p);
+    let mut i0 = [0usize; 3];
+    let mut f = [0f32; 3];
+    for a in 0..3 {
+        let n = vol.dims[a];
+        let u = c[a];
+        if n == 0 || u < -1e-4 || u > (n - 1) as f64 + 1e-4 {
+            return None;
+        }
+        let u = u.clamp(0.0, (n - 1) as f64);
+        let lo = (u.floor() as usize).min(n.saturating_sub(2));
+        i0[a] = lo;
+        f[a] = if n == 1 { 0.0 } else { (u - lo as f64) as f32 };
+    }
+    let at = |di: usize, dj: usize, dk: usize| -> f32 {
+        let i = (i0[0] + di).min(vol.dims[0] - 1);
+        let j = (i0[1] + dj).min(vol.dims[1] - 1);
+        let k = (i0[2] + dk).min(vol.dims[2] - 1);
+        vol.index(i, j, k) as f32
+    };
+    let x00 = at(0, 0, 0) + (at(1, 0, 0) - at(0, 0, 0)) * f[0];
+    let x10 = at(0, 1, 0) + (at(1, 1, 0) - at(0, 1, 0)) * f[0];
+    let x01 = at(0, 0, 1) + (at(1, 0, 1) - at(0, 0, 1)) * f[0];
+    let x11 = at(0, 1, 1) + (at(1, 1, 1) - at(0, 1, 1)) * f[0];
+    let y0 = x00 + (x10 - x00) * f[1];
+    let y1 = x01 + (x11 - x01) * f[1];
+    Some(y0 + (y1 - y0) * f[2])
+}
+
+/// `vol` resampled (trilinear) onto `grid` through a registration: every
+/// voxel of `grid` is a patient point of the image on that grid, carried by
+/// `t` into `vol`'s frame (`None`: the two share a frame). `NaN` where the
+/// point falls outside `vol`. `Volume::data` order of `grid`.
+///
+/// What comparing two images voxel by voxel needs - a synthetic CT against
+/// the planning CT it stands in for, on the synthetic CT's own lattice.
+pub fn resample_through(
+    vol: &Volume,
+    grid: &crate::volume::Grid,
+    t: Option<(&Transform3, Direction)>,
+) -> Vec<f32> {
+    let [nx, ny, nz] = grid.dims;
+    let mut out = vec![f32::NAN; nx * ny * nz];
+    let du = grid.row_dir * grid.spacing[0];
+    let dv = grid.col_dir * grid.spacing[1];
+    let dw = grid.normal * grid.spacing[2];
+    out.par_chunks_mut((nx * ny).max(1))
+        .enumerate()
+        .for_each(|(k, plane)| {
+            let p0 = grid.origin + dw * k as f64;
+            for (j, row) in plane.chunks_exact_mut(nx.max(1)).enumerate() {
+                let mut p = p0 + dv * j as f64;
+                for o in row.iter_mut() {
+                    let q = match t {
+                        None => p,
+                        Some((t, Direction::FixedToMoving)) => t.map(p),
+                        Some((t, Direction::MovingToFixed)) => t.unmap(p),
+                    };
+                    if let Some(v) = sample_closed(vol, q) {
+                        *o = v;
+                    }
+                    p = p + du;
+                }
+            }
+        });
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2024,6 +2105,29 @@ mod tests {
             min_value: 0,
             max_value: 1,
         }
+    }
+
+    #[test]
+    fn resampling_through_a_shift_reads_the_shifted_voxels() {
+        let mut vol = cube([6, 5, 4]);
+        for (n, v) in vol.data.iter_mut().enumerate() {
+            *v = n as i16;
+        }
+        let grid = vol.grid();
+        // Same frame: every voxel, the edges included, comes back as it is.
+        let same = resample_through(&vol, &grid, None);
+        assert!(same.iter().zip(&vol.data).all(|(a, &b)| *a == b as f32));
+        // Fixed point p is moving point p + 2 mm in x: one voxel along i.
+        let t = Transform3::rigid_only(RigidTransform::new(
+            [0.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+            Vec3::ZERO,
+        ));
+        let r = resample_through(&vol, &grid, Some((&t, Direction::FixedToMoving)));
+        assert_eq!(r[0], vol.index(1, 0, 0) as f32);
+        assert!(r[5].is_nan(), "past the last column");
+        let back = resample_through(&vol, &grid, Some((&t, Direction::MovingToFixed)));
+        assert!(back[0].is_nan());
+        assert_eq!(back[1], vol.index(0, 0, 0) as f32);
     }
 
     #[test]

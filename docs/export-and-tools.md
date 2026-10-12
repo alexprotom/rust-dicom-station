@@ -188,9 +188,12 @@ tool sections show); the header counts ready models and total size.
 
 Above the list, the **TotalSegmentator licence number** (a masked field
 and **Keep**; the licensed TotalSegmentator models download with it, and
-it is kept in your own settings file only) and **Your nnU-Net v2 models**
+it is kept in your own settings file only), **Your nnU-Net v2 models**
 (**➕ Add a model folder**: a trained nnU-Net v2 model joins the model
-list; see [auto-segmentation.md](auto-segmentation.md#the-model-manager)).
+list; see [auto-segmentation.md](auto-segmentation.md#the-model-manager))
+and **Your TotalSynth checkpoints** (**➕ Add a checkpoint folder**: fine-tuned
+synthetic-CT checkpoints join the Image synthesis models; see
+[synthetic-ct.md](synthetic-ct.md#your-own-checkpoints)).
 
 Two details worth knowing:
 

@@ -2,7 +2,7 @@
 
 [![rust-dicom-station](https://snapcraft.io/rust-dicom-station/badge.svg)](https://snapcraft.io/rust-dicom-station) [![CI](https://github.com/alexprotom/rust-dicom-station/actions/workflows/ci.yml/badge.svg)](https://github.com/alexprotom/rust-dicom-station/actions/workflows/ci.yml) 
 
-RDS (Rust DICOM Station) is open-source software for medical imaging and radiotherapy research, analysis, and QA, **written entirely in Rust**. It loads complete radiotherapy studies (CT, MR and PET series, RTSTRUCT, RTDOSE, photon and ion RTPLAN, DICOM SEG, planar images, spatial and deformable registrations, and treatment records) into an integrated environment for visualization, comparison and quantitative analysis. Beyond the classic linked MPR layout and multi-workspace comparison (up to four studies side by side), RDS provides image registration, structure propagation, contouring, DRR generation, dose-volume histograms, 4D motion analysis, interactive and AI-assisted segmentation, 3D visualization, DICOM editing and export, a PACS of its own that an optional server shares with other stations, and workflows that run a whole pipeline again on other data, from the viewer or from an AI assistant over MCP. The same program runs on Windows, Linux, macOS, Android tablets, iPad and iPhone. The entire processing stack is native Rust: functionality normally provided through C/C++ or Python frameworks, including elastix- and plastimatch-style registration, ITK-style ray casting, TotalSegmentator, MRSegmentator, lungmask, MONAI SegResNet, CT-FM, VISTA-3D, nnInteractive, SegVol, and MedSAM2, is re-implemented directly in Rust without bindings to those frameworks.
+RDS (Rust DICOM Station) is open-source software for medical imaging and radiotherapy research, analysis, and QA, **written entirely in Rust**. It loads complete radiotherapy studies (CT, MR and PET series, RTSTRUCT, RTDOSE, photon and ion RTPLAN, DICOM SEG, planar images, spatial and deformable registrations, and treatment records) into an integrated environment for visualization, comparison and quantitative analysis. Beyond the classic linked MPR layout and multi-workspace comparison (up to four studies side by side), RDS provides image registration, structure propagation, contouring, DRR generation, dose-volume histograms, 4D motion analysis, interactive and AI-assisted segmentation, 3D visualization, DICOM editing and export, a PACS of its own that an optional server shares with other stations, and workflows that run a whole pipeline again on other data, from the viewer or from an AI assistant over MCP. The same program runs on Windows, Linux, macOS, Android tablets, iPad and iPhone. The entire processing stack is native Rust: functionality normally provided through C/C++ or Python frameworks, including elastix- and plastimatch-style registration, ITK-style ray casting, TotalSegmentator, MRSegmentator, lungmask, MONAI SegResNet, CT-FM, VISTA-3D, nnInteractive, SegVol, MedSAM2, and TotalSynth's synthetic CT, is re-implemented directly in Rust without bindings to those frameworks.
 
 ![overview](docs/screenshot_overview.png)
 
@@ -237,6 +237,12 @@ See [Building from source](#building-from-source) below.
 * **Interactive segmentation** - nnInteractive and VISTA-3D's point mode
   rebuilt natively: click, box, scribble or lasso in any view, positive or
   negative, and every prompt refines the same 3-D object.
+* **Synthetic CT** - TotalSynth (the ImpactSynth apps) rebuilt natively
+  with KonfAI's prediction recipe: a CT from MR or CBCT, brain to pelvis,
+  written as a new CT series of the study on the same frame of reference,
+  then judged against a CT of the patient (HU errors per tissue class, SSIM,
+  water-equivalent thickness, organ Dice); folders of your own fine-tuned
+  checkpoints run the same way.
 * **Tools** - DICOM export with an editable tag table, a model manager for
   every downloadable weight, a folder anonymizer with consistent UID
   regeneration, a synthetic RT-study generator; every tool window can be
@@ -319,6 +325,7 @@ https://alexprotom.github.io/rust-dicom-station/
 | [docs/segvol.md](docs/segvol.md) | Prompt-driven segmentation: the SegVol re-implementation |
 | [docs/medsam2.md](docs/medsam2.md) | Propagating a prompt through a stack: the MedSAM2 and Efficient MedSAM2 re-implementation |
 | [docs/interactive-segmentation.md](docs/interactive-segmentation.md) | Interactive segmentation: nnInteractive and VISTA-3D's point mode, validation, licensing |
+| [docs/synthetic-ct.md](docs/synthetic-ct.md) | Synthetic CT from MR or CBCT: TotalSynth, the module, the recipe, the evaluation against a CT, validation, licensing |
 | [docs/pacs.md](docs/pacs.md) | This station's PACS: the window, where and how the studies are stored, filing, loading, sending changes back |
 | [docs/pacs-server.md](docs/pacs-server.md) | The PACS server: setting it up on a network and over the internet, pairing stations, mirror and sync, tasks run on the server, security |
 | [docs/export-and-tools.md](docs/export-and-tools.md) | DICOM export, the model manager, anonymizer, test-data generator and download |
@@ -359,6 +366,9 @@ from Hugging Face to your own machine at your request and are never
 redistributed; see [docs/segvol.md](docs/segvol.md),
 [docs/medsam2.md](docs/medsam2.md) and
 [docs/interactive-segmentation.md](docs/interactive-segmentation.md).
+Synthetic CT re-implements TotalSynth (Boussot et al., 2026; weights CC
+BY-NC 4.0), downloaded the same way; see
+[docs/synthetic-ct.md](docs/synthetic-ct.md).
 
 This software is a station for research and QA convenience. **Not a medical
 device, neither CE-marked nor FDA-cleared, and not for clinical

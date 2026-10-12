@@ -18,6 +18,9 @@
 //!   segvol/             pytorch_model.bin, vocab.json, merges.txt, cache
 //!   medsam2/            one .pt per fine-tune, with its cache beside it
 //!   nninteractive/      nnInteractive v1.0 (plans, metadata, converted fold 0)
+//!   synth/              TotalSynth synthetic CT: mr/, cbct/, mr_cbct/, finetune/
+//!                       (five checkpoints each, with their caches), custom/
+//!                       for the converted checkpoints of folders the user added
 //! ```
 //!
 //! The root can be moved (the interface has one "Model folder" field, kept
@@ -34,7 +37,7 @@ use anyhow::{Context, Result};
 use crate::progress::ProgressSink;
 use crate::settings::{app_dir, default_models_dir};
 use crate::zoo::{Licence, Modality};
-use crate::{autoseg, medsam2, nninteractive, segresnet, segvol, unet2d, vista3d};
+use crate::{autoseg, medsam2, nninteractive, segresnet, segvol, synth, unet2d, vista3d};
 
 /// Name of the root folder.
 pub const DIR_NAME: &str = "models";
@@ -64,10 +67,12 @@ pub enum Engine {
     MedSam2,
     /// Interactive segmentation.
     NnInteractive,
+    /// Synthetic CT from MR or CBCT (TotalSynth).
+    Synth,
 }
 
 impl Engine {
-    pub const ALL: [Engine; 11] = [
+    pub const ALL: [Engine; 12] = [
         Engine::TotalSegmentator,
         Engine::MrSegmentator,
         Engine::NnUnetV1,
@@ -79,6 +84,7 @@ impl Engine {
         Engine::SegVol,
         Engine::MedSam2,
         Engine::NnInteractive,
+        Engine::Synth,
     ];
 
     /// Sub-folder of the root.
@@ -95,6 +101,7 @@ impl Engine {
             Engine::SegVol => "segvol",
             Engine::MedSam2 => "medsam2",
             Engine::NnInteractive => nninteractive::DIR,
+            Engine::Synth => synth::DIR,
         }
     }
 
@@ -122,6 +129,7 @@ impl Engine {
             Engine::SegVol => "SegVol",
             Engine::MedSam2 => "MedSAM2",
             Engine::NnInteractive => "nnInteractive",
+            Engine::Synth => "Synthetic CT (TotalSynth)",
         }
     }
 
@@ -138,16 +146,19 @@ impl Engine {
 }
 
 /// Hand the engines what the settings say about models: the
-/// TotalSegmentator licence number, and the nnU-Net model folders to
-/// register (whose refusals are returned, by folder). Every program that
-/// runs models calls this once with the loaded settings, and the viewer
-/// again whenever either changes.
+/// TotalSegmentator licence number, and the nnU-Net model folders and
+/// TotalSynth checkpoint folders to register (whose refusals are returned,
+/// by folder). Every program that runs models calls this once with the
+/// loaded settings, and the viewer again whenever any of them changes.
 pub fn apply_settings(s: &crate::settings::Settings) -> Vec<(PathBuf, String)> {
     autoseg::weights::set_ts_licence(s.ts_licence.as_deref());
-    autoseg::custom::register(&s.nnunet_folders)
+    let nn = autoseg::custom::register(&s.nnunet_folders)
         .into_iter()
-        .filter_map(|(p, r)| r.err().map(|e| (p, format!("{e:#}"))))
-        .collect()
+        .filter_map(|(p, r)| r.err().map(|e| (p, format!("{e:#}"))));
+    let sct = synth::custom::register(&s.synth_folders)
+        .into_iter()
+        .filter_map(|(p, r)| r.err().map(|e| (p, format!("{e:#}"))));
+    nn.chain(sct).collect()
 }
 
 /// The default root: `models/` in the application's data folder
@@ -229,6 +240,8 @@ pub enum AssetKind {
     MedSam2(medsam2::weights::Variant),
     /// nnInteractive's network.
     NnInteractive,
+    /// The checkpoints of one TotalSynth app.
+    Synth(synth::App),
 }
 
 /// One downloadable model as the model manager sees it.
@@ -466,7 +479,37 @@ pub fn inventory() -> Vec<ModelAsset> {
         spare: vec![nninteractive::CHECKPOINT.name.to_string()],
     });
 
+    for app in synth::App::BUILTIN {
+        out.push(synth_asset(app));
+    }
+
     out
+}
+
+/// The row of one TotalSynth app: its checkpoints as one model.
+fn synth_asset(app: synth::App) -> ModelAsset {
+    let n = app.checkpoint_count();
+    ModelAsset {
+        kind: AssetKind::Synth(app),
+        engine: Engine::Synth,
+        key: format!("{}/{}", Engine::Synth.subdir(), app.key()),
+        label: app.label().to_string(),
+        detail: app.detail(),
+        group: if app.is_custom() {
+            "Your TotalSynth checkpoints"
+        } else {
+            ""
+        },
+        licence: app.licence(),
+        modality: Some(app.modality()),
+        download_bytes: (0..n).filter_map(|k| app.file(k)).map(|f| f.bytes).sum(),
+        subdir: app.subdir(),
+        ready: (0..n).map(synth::App::cache_name).collect(),
+        spare: (0..n)
+            .filter_map(|k| app.file(k))
+            .map(|f| f.name.to_string())
+            .collect(),
+    }
 }
 
 /// The row of one nnU-Net model; `task` is the first task that runs it.
@@ -494,6 +537,9 @@ pub fn inventory_with_custom() -> Vec<ModelAsset> {
     let mut v = inventory();
     for t in autoseg::custom::tasks() {
         v.push(nn_asset(t.parts[0].spec, Some(t)));
+    }
+    for app in synth::custom::apps() {
+        v.push(synth_asset(app));
     }
     v
 }
@@ -565,6 +611,9 @@ pub fn ensure(asset: &ModelAsset, root: &Path, sink: &dyn ProgressSink) -> Resul
         }
         AssetKind::NnInteractive => {
             nninteractive::ensure(root, sink)?;
+        }
+        AssetKind::Synth(app) => {
+            synth::ensure(app, root, sink)?;
         }
     }
     Ok(())
@@ -683,6 +732,17 @@ mod tests {
             && a.licence == Licence::CcByNc4
             && a.download_bytes < 1_000_000_000));
         assert!(inv.iter().any(|a| matches!(a.kind, AssetKind::Vista3dCtmr)));
+        // The four TotalSynth apps, five checkpoints each, CC BY-NC.
+        let sct: Vec<&ModelAsset> = inv.iter().filter(|a| a.engine == Engine::Synth).collect();
+        assert_eq!(sct.len(), 4);
+        for a in &sct {
+            assert_eq!(a.licence, Licence::CcByNc4);
+            assert_eq!((a.ready.len(), a.spare.len()), (5, 5));
+            assert!(a.download_bytes > 500_000_000 && a.download_bytes < 530_000_000);
+        }
+        let mr = sct.iter().find(|a| a.key == "synth/sct_mr").unwrap();
+        assert_eq!(mr.dir(Path::new("/m")), Path::new("/m/synth/mr"));
+        assert_eq!(mr.ready[4], "CV_4.safetensors");
     }
 
     #[test]

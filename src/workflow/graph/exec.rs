@@ -242,6 +242,9 @@ pub struct Dataset {
     pub touched_sets: BTreeSet<usize>,
     /// Segmentation series (by index) this run made or added to.
     pub touched_segs: BTreeSet<usize>,
+    /// Image series (by UID) this run made: a synthetic CT, its spread, a
+    /// difference. *Export DICOM* writes them with what the run made.
+    pub touched_series: BTreeSet<String>,
     /// Folders an Export DICOM step of this run wrote the study into.
     pub exported: Vec<PathBuf>,
 }
@@ -603,6 +606,7 @@ impl Ctx<'_> {
             study,
             touched_sets: BTreeSet::new(),
             touched_segs: BTreeSet::new(),
+            touched_series: BTreeSet::new(),
             exported: Vec::new(),
         }));
         self.datasets.len() - 1

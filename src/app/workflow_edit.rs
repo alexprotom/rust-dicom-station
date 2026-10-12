@@ -2547,6 +2547,92 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
                 |ui| text(ui, &mut p.archive, "the station's", 150.0),
             );
         }
+        Op::SynthesizeCt(p) => {
+            f.row("Model", |ui| {
+                let shown = crate::synth::App::from_key(&p.app)
+                    .map(|a| a.label().to_string())
+                    .unwrap_or_else(|| format!("'{}' (unknown)", p.app.trim()));
+                egui::ComboBox::from_id_salt(("sct_app", id))
+                    .selected_text(shown)
+                    .show_ui(ui, |ui| {
+                        for a in crate::synth::App::all() {
+                            if ui
+                                .selectable_label(p.app == a.key(), a.label())
+                                .on_hover_text(a.detail())
+                                .clicked()
+                            {
+                                p.app = a.key().to_string();
+                            }
+                        }
+                    });
+            });
+            f.row("", |ui| {
+                ui.checkbox(&mut p.all_checkpoints, "Every checkpoint (else CV_0)")
+                    .on_hover_text("The published recipe averages all five");
+            });
+            f.row_tip(
+                "Mirrors",
+                "Test-time mirrors besides the plain pass: 2 is the published recipe",
+                |ui| {
+                    ui.add(egui::DragValue::new(&mut p.tta).range(0..=crate::synth::TTA_MAX));
+                },
+            );
+            f.row("", |ui| {
+                ui.checkbox(&mut p.uncertainty, "The members' spread as a second series");
+            });
+            f.row_tip(
+                "Air outside",
+                "network (TotalSegmentator's body network, 6 mm), classical (threshold), \
+                 none, or the name of a structure on the image",
+                |ui| text(ui, &mut p.mask, "network", 120.0),
+            );
+            f.row("Compute", |ui| {
+                choice(ui, ("dev", id), &mut p.device, &cat::Device::ALL, |v| {
+                    v.label()
+                });
+            });
+            f.row_tip(
+                "Folder",
+                "Where the series' files go: inside the run folder, or an absolute path; \
+                 {input} is the study's title",
+                |ui| text(ui, &mut p.folder, "sct/{input}", 150.0),
+            );
+        }
+        Op::EvaluateSct(p) => {
+            f.row("", |ui| {
+                ui.checkbox(&mut p.wet, "Water-equivalent thickness (protons)");
+            });
+            if p.wet {
+                f.row_tip(
+                    "HU:RSP",
+                    "HU to relative stopping power, pairs separated by commas; the default \
+                     is a generic curve, not a scanner's calibration",
+                    |ui| text(ui, &mut p.hlut, "-1000:0.001, 0:1, 1000:1.55", 200.0),
+                );
+            }
+            f.row("", |ui| {
+                ui.checkbox(&mut p.structures, "Dice of TotalSegmentator's structures")
+                    .on_hover_text("TotalSegmentator (total, 3 mm) on both images: minutes");
+            });
+            f.row("", |ui| {
+                ui.checkbox(
+                    &mut p.difference,
+                    "The difference (sCT minus CT) as a series",
+                );
+            });
+            if p.difference {
+                f.row_tip(
+                    "Folder",
+                    "Where the difference series' files go; {input} is the study's title",
+                    |ui| text(ui, &mut p.folder, "sct/{input}", 150.0),
+                );
+            }
+            f.row("Compute", |ui| {
+                choice(ui, ("dev", id), &mut p.device, &cat::Device::ALL, |v| {
+                    v.label()
+                });
+            });
+        }
         Op::Drr(p) => {
             f.row("", |ui| {
                 ui.checkbox(&mut p.plan_beams, "At the plan's beams");
