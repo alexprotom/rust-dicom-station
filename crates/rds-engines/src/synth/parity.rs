@@ -91,8 +91,10 @@ fn case() -> Case {
         let v = t.tensor(name).unwrap();
         assert_eq!(v.dtype(), Dtype::I16);
         v.data()
-            .chunks_exact(2)
-            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&c| i16::from_le_bytes(c))
             .collect()
     };
     let u8s = |name: &str| -> Vec<u8> {
@@ -104,8 +106,10 @@ fn case() -> Case {
         let v = t.tensor(name).unwrap();
         assert_eq!(v.dtype(), Dtype::F64);
         v.data()
-            .chunks_exact(8)
-            .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|&c| f64::from_le_bytes(c))
             .collect()
     };
     let shape = t.tensor("scan").unwrap().shape().to_vec();
