@@ -117,8 +117,8 @@ pub fn run(opts: &Options, payload: &Payload, sink: Sink, cancel: &AtomicBool) -
         return Err(failure(
             EXIT_IN_USE,
             format!(
-                "the PACS server is running from {} - stop it (Settings > PACS server > Stop, \
-                 or rds-pacs stop) and start the installer again",
+                "the PACS server is running from {} - stop it (Tools > PACS > Settings > \
+                 PACS server > Stop, or rds-pacs stop) and start the installer again",
                 opts.dir.display()
             ),
         ));

@@ -2,7 +2,7 @@
 
 [![rust-dicom-station](https://snapcraft.io/rust-dicom-station/badge.svg)](https://snapcraft.io/rust-dicom-station) [![CI](https://github.com/alexprotom/rust-dicom-station/actions/workflows/ci.yml/badge.svg)](https://github.com/alexprotom/rust-dicom-station/actions/workflows/ci.yml) 
 
-RDS (Rust DICOM Station) is open-source software for medical imaging and radiotherapy research, analysis, and QA, **written entirely in Rust**. It loads complete radiotherapy studies (CT, MR and PET series, RTSTRUCT, RTDOSE, photon and ion RTPLAN, DICOM SEG, planar images, spatial and deformable registrations, and treatment records) into an integrated environment for visualization, comparison and quantitative analysis. Beyond the classic linked MPR layout and multi-workspace comparison (up to four studies side by side), RDS provides image registration, structure propagation, DRR generation, dose-volume histograms, 4D motion analysis, interactive and AI-assisted segmentation, 3D visualization, and DICOM editing and export. The entire processing stack is native Rust: functionality normally provided through C/C++ or Python frameworks, including elastix- and plastimatch-style registration, ITK-style ray casting, TotalSegmentator, MRSegmentator, lungmask, MONAI SegResNet, CT-FM, VISTA-3D, nnInteractive, SegVol, and MedSAM2, is re-implemented directly in Rust without bindings to those frameworks.
+RDS (Rust DICOM Station) is open-source software for medical imaging and radiotherapy research, analysis, and QA, **written entirely in Rust**. It loads complete radiotherapy studies (CT, MR and PET series, RTSTRUCT, RTDOSE, photon and ion RTPLAN, DICOM SEG, planar images, spatial and deformable registrations, and treatment records) into an integrated environment for visualization, comparison and quantitative analysis. Beyond the classic linked MPR layout and multi-workspace comparison (up to four studies side by side), RDS provides image registration, structure propagation, contouring, DRR generation, dose-volume histograms, 4D motion analysis, interactive and AI-assisted segmentation, 3D visualization, DICOM editing and export, a PACS of its own that an optional server shares with other stations, and workflows that run a whole pipeline again on other data, from the viewer or from an AI assistant over MCP. The same program runs on Windows, Linux, macOS, Android tablets, iPad and iPhone. The entire processing stack is native Rust: functionality normally provided through C/C++ or Python frameworks, including elastix- and plastimatch-style registration, ITK-style ray casting, TotalSegmentator, MRSegmentator, lungmask, MONAI SegResNet, CT-FM, VISTA-3D, nnInteractive, SegVol, and MedSAM2, is re-implemented directly in Rust without bindings to those frameworks.
 
 ![overview](docs/screenshot_overview.png)
 
@@ -10,6 +10,106 @@ RDS (Rust DICOM Station) is open-source software for medical imaging and radioth
 MPR views with their RTSTRUCT contours, and the 3D window showing the RTSTRUCT
 surfaces together with organs auto-segmented by the built-in TotalSegmentator
 engine.*
+
+## Installation
+
+Every push to `main` publishes a release on the
+[releases page](https://github.com/alexprotom/rust-dicom-station/releases/latest),
+with one package per platform; the project page,
+<https://alexprotom.github.io/rust-dicom-station/>, links the newest files
+directly.
+
+| Platform | Package | Package manager |
+|---|---|---|
+| Windows x64 | Installer, `rust-dicom-station-<version>-windows-x86_64.exe` | winget, `RDS.RustDICOMStation` |
+| Linux x64 | AppImage, `rust-dicom-station-<version>-x86_64.AppImage` | Snap Store, `rust-dicom-station`; Flathub, `io.github.alexprotom.rust-dicom-station` |
+| macOS 12 and newer | Disk images, `-macos-arm64.dmg` (Apple Silicon) and `-macos-x86_64.dmg` (Intel) | Homebrew cask `rust-dicom-station.rb`, attached to every release |
+| Android 11 and newer, tablets | APK, `rust-dicom-station-<version>-android-arm64.apk` | none (not in Google Play) |
+| iPad and iPhone, iOS / iPadOS 15 and newer | `rust-dicom-station-<version>-ios.ipa` | TestFlight, when a release was uploaded there |
+
+### Windows
+
+Download the installer from the releases page and run it: shortcuts,
+"Open with" on folders, the Visual C++ runtime check, an optional download
+of any model's weights, and an uninstaller. Or install it with winget:
+
+```
+winget install RDS.RustDICOMStation
+```
+
+and update it with
+
+```
+winget upgrade RDS.RustDICOMStation
+```
+
+A newer installer updates an existing installation in place (no second
+copy, nothing to uninstall first), and *Start ▸ Update Rust DICOM Station*
+fetches the newest release. The installer is not code-signed, so SmartScreen
+warns on its first run. Its options, silent switches and the winget details
+are in [packaging/windows/installer/README.md](packaging/windows/installer/README.md).
+
+### Linux
+
+* **AppImage** - no installation: download it, make it executable and run
+  it.
+* **Snap Store** ([docs/snap.md](docs/snap.md)):
+
+  ```
+  sudo snap install rust-dicom-station
+  ```
+
+  Updates arrive by themselves. USB drives and mounted shares under
+  `/media`, `/run/media` or `/mnt` need
+  `sudo snap connect rust-dicom-station:removable-media` once.
+* **Flathub** ([docs/flatpak.md](docs/flatpak.md)):
+
+  ```
+  flatpak install flathub io.github.alexprotom.rust-dicom-station
+  flatpak run io.github.alexprotom.rust-dicom-station
+  ```
+
+### macOS
+
+Two disk images, both for macOS 12 Monterey and newer:
+`rust-dicom-station-<version>-macos-arm64.dmg` for Apple Silicon and
+`-macos-x86_64.dmg` for Intel (*Apple menu ▸ About This Mac* says which).
+Open the image and drag **Rust DICOM Station** onto *Applications*. Until a
+release is notarised, the first launch has to be Finder's right-click ▸
+*Open*. Every release also carries a Homebrew cask, `rust-dicom-station.rb`,
+for both architectures; where the project's Homebrew tap is set up,
+`brew install --cask rust-dicom-station` installs it and
+`brew upgrade --cask rust-dicom-station` updates it. See
+[docs/macos.md](docs/macos.md).
+
+### Android
+
+The APK is for tablets with Android 11 or later on 64-bit ARM. Download it
+on the tablet, open it and allow the installation from this source, or
+install it from a computer with `adb install
+rust-dicom-station-<version>-android-arm64.apk`. On the first start the
+program asks for *All files access*, which is why it is not in Google Play.
+See [docs/android.md](docs/android.md).
+
+### iPad and iPhone
+
+One `.ipa` for both, iOS / iPadOS 15 or later (a 4DCT study wants a device
+with 4 GB of memory or more). iOS runs only signed apps, so there are three
+ways onto a device: **TestFlight** when a release was uploaded there and you
+were invited, an **ad hoc** build for devices registered in its profile, or
+the release's `.ipa` **re-signed with your own Apple ID** by AltStore,
+Sideloadly or Xcode. See [docs/ios.md](docs/ios.md#installing).
+
+### Nightly builds
+
+The rolling [`nightly` pre-release](https://github.com/alexprotom/rust-dicom-station/releases/tag/nightly)
+carries the Windows installer and the Android APK of the development branch.
+It is never offered as an update by the installed program, winget or
+Homebrew ([docs/release-versioning.md](docs/release-versioning.md#nightly-builds)).
+
+### From source
+
+See [Building from source](#building-from-source) below.
 
 ## What it does
 
@@ -39,11 +139,17 @@ engine.*
   the selection down the group in the tree; the phases are read into memory
   once (under a budget you set) so it runs as a cine rather than a
   slideshow, and the 3D window breathes with it.
-* **Patient archive** - a local PACS on plain folders and text sidecars:
-  file a study, list patients without opening a DICOM file, load into either
-  workspace, and send the structures and segmentations you drew back as derived
-  objects under the original Study and Frame of Reference UIDs.
-* **PACS server** (optional) - `rds-pacs` serves one station's archive to the
+* **PACS** - *Tools ▸ PACS* shows this station's PACS as cohorts ▸
+  patients ▸ studies ▸ series, listed without opening a DICOM file. Several
+  rows can be selected with the mouse and the keyboard (Ctrl and Shift
+  clicks, the arrow keys, Ctrl+A) to load them into a workspace, rename
+  them, move patients between cohorts (no file moves) or move the files into
+  other folders. The PACS can span several storage folders, the first being
+  the main one where new data is written, and keeps one catalog file,
+  `rds-pacs-catalog.json`, in it. Import folders into it, and send the
+  structures and segmentations you drew back as derived objects under the
+  original Study and Frame of Reference UIDs.
+* **PACS server** (optional) - `rds-pacs` serves this station's PACS to the
   others over HTTPS, on the local network or over the internet (through a
   VPN, a forwarded port or a reverse proxy): stations pair with a one-time
   code and the server's pinned certificate, then pull studies into a local
@@ -146,7 +252,7 @@ progress and cancellation. The module map, threading model, geometry
 conventions and test suites are in
 [docs/architecture.md](docs/architecture.md).
 
-## Quick start
+## Building from source
 
 Requires a Rust toolchain (<https://rustup.rs>).
 
@@ -156,6 +262,22 @@ cargo run --release -- data-test/TCIA_4D-LUNG/P102/4DFBCT+RTS
 cargo run --release -- data-test/TCIA_4D-LUNG/P102/4DFBCT+RTS data-test/TCIA_4D-LUNG/P102/4DCBCT
 cargo test --release
 ```
+
+`--no-default-features` builds a CPU-only viewer without the GPU inference
+backend; `--features mcp` adds the MCP server `rds-mcp` and
+`--features pacs-server` the PACS server `rds-pacs`, both written beside the
+viewer in `target/release/`. The packages of every platform are built from
+[packaging/](packaging/README.md), one folder per platform; the Windows
+installer is its own crate in
+[packaging/windows/installer/](packaging/windows/installer/README.md).
+
+### First steps
+
+No data at hand? *Tools ▶ 📐 Generate test data* writes a complete synthetic
+RT study, `data-test/` ships a real patient - a ten-phase 4DFBCT with an RT
+Structure Set per phase and the matching ten-phase 4DCBCT
+([docs/example-data.md](docs/example-data.md)) - and *Tools ▶ 📥 Download
+test data* fetches that folder from GitHub into an installed copy.
 
 To try prompt segmentation on the bundled patient: put the crosshair on the
 tumor, unfold *💬 Prompt segmentation* in the Structure auto tools module
@@ -173,35 +295,6 @@ Windows machine advertising a Vulkan driver that cannot create a device. It
 now falls back to Direct3D 12 by itself, the installer asks which backend to
 use, and *View ▸ Graphics backend* changes it afterwards - see
 [docs/viewer.md](docs/viewer.md#graphics-backend).
-
-Windows, Linux, macOS, Android tablets, iPads and iPhones are supported; `--no-default-features` builds a
-CPU-only viewer without the GPU inference backend. Every push to `main`
-publishes a release: a Windows installer
-(`rust-dicom-station-<version>-windows-x86_64.exe` - shortcuts, "Open with"
-on folders, the VC++ runtime check, optional download of any model's
-weights, uninstaller),
-a Linux AppImage, two macOS disk images
-(`rust-dicom-station-<version>-macos-arm64.dmg` and `-macos-x86_64.dmg`, both
-for macOS 12 Monterey and newer, [docs/macos.md](docs/macos.md)) and an
-Android APK (`rust-dicom-station-<version>-android-arm64.apk`,
-the same viewer on a tablet, [docs/android.md](docs/android.md)) and an
-iOS package (`rust-dicom-station-<version>-ios.ipa`, iPad and iPhone, iOS 15 and newer,
-also to TestFlight when configured, [docs/ios.md](docs/ios.md)), and puts the snap into the Snap Store (`sudo snap
-install rust-dicom-station`, [docs/snap.md](docs/snap.md)); the same program
-is on Flathub as `io.github.alexprotom.rust-dicom-station`
-([docs/flatpak.md](docs/flatpak.md)) and, with a tap configured, in Homebrew
-as the cask `rust-dicom-station`. A newer
-installer updates an existing installation in place (no second copy,
-nothing to uninstall first), *Start ▸ Update Rust
-DICOM Station* fetches the newest release, and the package is published to
-winget as `RDS.RustDICOMStation` (`winget install` / `winget
-upgrade`). The installer is its own crate in
-[packaging/windows/installer/](packaging/windows/installer/README.md). No data at hand? *Tools ▶ 📐 Generate test
-data* writes a complete synthetic RT study, `data-test/` ships a real
-patient - a ten-phase 4DFBCT with an RT Structure Set per phase and the
-matching ten-phase 4DCBCT ([docs/example-data.md](docs/example-data.md)) -
-and *Tools ▶ 📥 Download test data* fetches that folder from GitHub into an
-installed copy.
 
 ## Documentation
 
@@ -226,13 +319,13 @@ https://alexprotom.github.io/rust-dicom-station/
 | [docs/segvol.md](docs/segvol.md) | Prompt-driven segmentation: the SegVol re-implementation |
 | [docs/medsam2.md](docs/medsam2.md) | Propagating a prompt through a stack: the MedSAM2 and Efficient MedSAM2 re-implementation |
 | [docs/interactive-segmentation.md](docs/interactive-segmentation.md) | Interactive segmentation: nnInteractive and VISTA-3D's point mode, validation, licensing |
-| [docs/pacs.md](docs/pacs.md) | The local patient archive: window, on-disk layout, filing, loading, sending changes back |
+| [docs/pacs.md](docs/pacs.md) | This station's PACS: the window, where and how the studies are stored, filing, loading, sending changes back |
 | [docs/pacs-server.md](docs/pacs-server.md) | The PACS server: setting it up on a network and over the internet, pairing stations, mirror and sync, tasks run on the server, security |
 | [docs/export-and-tools.md](docs/export-and-tools.md) | DICOM export, the model manager, anonymizer, test-data generator and download |
 | [docs/workflows.md](docs/workflows.md) | Workflows: the node editor, the steps, running in the background or step by step, reruns, batches, the run folder, the heart-anchored example |
 | [docs/mcp.md](docs/mcp.md) | The MCP server: tools, the heart workflow prompt, patient-identity safety, configuration |
 | [docs/architecture.md](docs/architecture.md) | Design, functional overview, module map, threading, the model folder, conventions, testing |
-| [docs/release-versioning.md](docs/release-versioning.md) | How versions and releases are produced |
+| [docs/release-versioning.md](docs/release-versioning.md) | How versions and releases are produced: the branch flow, nightly builds, winget, the Snap Store, Homebrew, the Android and iOS packages |
 | [docs/snap.md](docs/snap.md) | The Linux snap: confinement, where its files are, the MCP server in it, building and publishing |
 | [docs/flatpak.md](docs/flatpak.md) | The Flatpak: the sandbox, where its files are, the MCP server in it, building and submitting to Flathub |
 | [docs/macos.md](docs/macos.md) | The macOS package: the two disk images, the first launch, Metal, where its files are, building, signing, notarisation, Homebrew |

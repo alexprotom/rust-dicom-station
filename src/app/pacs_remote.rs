@@ -1,17 +1,19 @@
 //! *Tools ▶ 🏥 PACS* on a paired server: the remote half of the window.
 //!
 //! The PACS window has a row of sources at the top: this station's own
-//! archive (drawn by `pacs_win.rs`, unchanged) and every server this device
-//! has paired with. Picking a server shows its archive here, in the two
-//! ways of working:
+//! PACS (drawn by `pacs_win.rs`) and every server this device has paired
+//! with. Picking a server shows its PACS here, in the two ways of working:
 //!
-//! * **Studies** (the mirror): the server's patients and studies, each
-//!   marked with what this device holds of it. *Pull* copies a study into
-//!   the local mirror ([`crate::pacs::mirror`]), *Load into workspace* pulls
-//!   if needed and loads the mirrored folder with the ordinary loader, *Send
-//!   workspace* gives back the structure sets and segmentations drawn on it
-//!   (or keeps them in the outbox while the server cannot be reached),
-//!   *Sync* does both directions for everything mirrored.
+//! * **Studies** (the mirror): the server's cohorts, patients, studies and
+//!   series, as a tree like the local one (`pacs_tree.rs`: one row or many,
+//!   with the mouse or the keyboard), each marked with what this device
+//!   holds of it. *Pull* copies the selection - whole patients, studies or
+//!   single series - into the local mirror ([`crate::pacs::mirror`]), *Load
+//!   into workspace* pulls if needed and loads the mirrored files with the
+//!   ordinary loader, *Send workspace* gives back the structure sets and
+//!   segmentations drawn on it (or keeps them in the outbox while the
+//!   server cannot be reached), *Sync* does both directions for everything
+//!   mirrored.
 //! * **Tasks**: the workflows the server offers, bound to its studies, run
 //!   there; the queue with progress, log and cancel; *Pull results* for a
 //!   finished task.
@@ -30,6 +32,7 @@ use crate::pacs::protocol::*;
 use crate::pacs::servers::{self, ServerEntry, Servers};
 use crate::pacs::ConnectionLine;
 
+use super::pacs_tree::{self, NodeId, TNode, TreeView};
 use super::pacs_win::PacsWindow;
 use super::*;
 
@@ -65,10 +68,13 @@ pub(super) struct RemoteView {
     pub role: Option<Role>,
     /// Studies held in the mirror.
     pub local: BTreeSet<String>,
+    /// Series held in the mirror.
+    pub local_series: BTreeSet<String>,
     pub pending: usize,
     pub mirror_bytes: u64,
-    pub expanded: Option<usize>,
-    pub selected: Option<(usize, Option<usize>)>,
+    /// The listing as rows, and what is unfolded and selected in it.
+    pub nodes: Vec<TNode>,
+    pub view: TreeView,
     pub status: Option<String>,
     /// Asked once more before the server is forgotten.
     pub confirm_forget: bool,
@@ -131,13 +137,17 @@ pub(super) enum RemoteOutcome {
         /// Why the live listing could not be had.
         failed: Option<anyhow::Error>,
         role: Option<Role>,
-        /// What the mirror holds, its outbox and its size: read in the job,
-        /// since a large mirror takes a moment to walk.
+        /// What the mirror holds (studies, series), its outbox and its
+        /// size: read in the job, since a large mirror takes a moment to
+        /// walk.
         local: BTreeSet<String>,
+        local_series: BTreeSet<String>,
         pending: usize,
         bytes: u64,
     },
-    Pulled(PullSummary, Option<(usize, PathBuf)>),
+    /// Then load into a workspace: the files, and the folders the session
+    /// remembers for them.
+    Pulled(PullSummary, Option<(usize, Vec<PathBuf>, Vec<PathBuf>)>),
     Sent(Sent),
     Synced(SyncSummary),
     Uploaded(UploadSummary),
@@ -153,8 +163,187 @@ pub(super) enum RemoteOutcome {
     Paired(ServerEntry),
 }
 
-/// A pick in the listing: a patient, or one of their studies.
-type Pick = (usize, Option<usize>);
+/// What a selection on a server stands for.
+#[derive(Clone, Debug, Default)]
+struct Wants {
+    /// Patients chosen whole, by key.
+    patients: BTreeSet<String>,
+    /// Studies: whole (`None`) or some of their series. A whole patient's
+    /// studies are here too.
+    studies: BTreeMap<String, Option<BTreeSet<String>>>,
+}
+
+impl Wants {
+    /// The same selection in the mirror's PACS.
+    fn picks(&self) -> Vec<crate::archive::Pick> {
+        use crate::archive::Pick;
+        let mut out = Vec::new();
+        for (uid, series) in &self.studies {
+            match series {
+                None => out.push(Pick::Study(uid.clone())),
+                Some(set) => out.extend(set.iter().map(|s| Pick::Series(s.clone()))),
+            }
+        }
+        out
+    }
+}
+
+/// What rows of a server's tree stand for.
+fn wants_of(listing: &[RemotePatient], nodes: &[TNode], ids: &[NodeId]) -> Wants {
+    let mut w = Wants::default();
+    for id in ids {
+        match id.len() {
+            1 => {
+                if let Some(c) = pacs_tree::node_at(nodes, id) {
+                    w.patients.extend(c.children.iter().map(|p| p.key.clone()));
+                }
+            }
+            2 => {
+                w.patients.insert(id[1].clone());
+            }
+            3 => {
+                w.studies.insert(id[2].clone(), None);
+            }
+            4 => {
+                if let Some(set) = w
+                    .studies
+                    .entry(id[2].clone())
+                    .or_insert_with(|| Some(BTreeSet::new()))
+                {
+                    set.insert(id[3].clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    for p in listing.iter().filter(|p| w.patients.contains(&p.key)) {
+        for st in &p.studies {
+            w.studies.insert(st.study_uid.clone(), None);
+        }
+    }
+    w
+}
+
+/// A server's listing as rows: its cohorts (by name; a server of an earlier
+/// version names none, and its patients come as one group), their patients,
+/// studies and series, marked with what this device holds.
+pub(super) fn remote_nodes(
+    listing: &[RemotePatient],
+    held: &BTreeSet<String>,
+    held_series: &BTreeSet<String>,
+) -> Vec<TNode> {
+    let mut by_cohort: BTreeMap<(bool, String), Vec<&RemotePatient>> = BTreeMap::new();
+    for p in listing {
+        if p.cohorts.is_empty() {
+            by_cohort
+                .entry((false, "Patients".into()))
+                .or_default()
+                .push(p);
+        }
+        for c in &p.cohorts {
+            by_cohort
+                .entry((c == "Unsorted", c.clone()))
+                .or_default()
+                .push(p);
+        }
+    }
+    let n = |k: usize, one: &str, many: &str| format!("{k} {}", if k == 1 { one } else { many });
+    by_cohort
+        .into_iter()
+        .map(|((_, name), mut patients)| {
+            patients.sort_by_key(|p| p.title().to_lowercase());
+            let files: usize = patients.iter().map(|p| p.files()).sum();
+            TNode {
+                key: name.clone(),
+                icon: "📁",
+                text: name.clone(),
+                right: format!(
+                    "{} · {}",
+                    n(patients.len(), "patient", "patients"),
+                    n(files, "file", "files")
+                ),
+                hover: "A cohort of the server's PACS".into(),
+                files,
+                children: patients
+                    .into_iter()
+                    .map(|p| {
+                        let here = p
+                            .studies
+                            .iter()
+                            .filter(|s| held.contains(&s.study_uid))
+                            .count();
+                        TNode {
+                            key: p.key.clone(),
+                            icon: "👤",
+                            text: p.title(),
+                            right: format!(
+                                "{} · {}{}",
+                                n(p.studies.len(), "study", "studies"),
+                                n(p.files(), "file", "files"),
+                                if here > 0 {
+                                    format!(" · {here} held here")
+                                } else {
+                                    String::new()
+                                }
+                            ),
+                            hover: format!("Patient key {}", p.key),
+                            files: p.files(),
+                            children: p
+                                .studies
+                                .iter()
+                                .map(|st| TNode {
+                                    key: st.study_uid.clone(),
+                                    icon: "📂",
+                                    text: format!(
+                                        "{}{}",
+                                        held_mark(held, &st.study_uid),
+                                        st.title()
+                                    ),
+                                    right: format!(
+                                        "{}{}",
+                                        if st.series.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!("{} · ", n(st.series.len(), "series", "series"))
+                                        },
+                                        n(st.files, "file", "files")
+                                    ),
+                                    hover: format!(
+                                        "Study UID {}\n{}",
+                                        st.study_uid,
+                                        if held.contains(&st.study_uid) {
+                                            "✔ held on this device (all or part of it)"
+                                        } else {
+                                            "on the server only"
+                                        }
+                                    ),
+                                    files: st.files,
+                                    children: st
+                                        .series
+                                        .iter()
+                                        .map(|se| TNode {
+                                            key: se.series_uid.clone(),
+                                            icon: "🎞",
+                                            text: format!(
+                                                "{}{}",
+                                                held_mark(held_series, &se.series_uid),
+                                                se.title()
+                                            ),
+                                            right: n(se.files, "file", "files"),
+                                            hover: format!("Series UID {}", se.series_uid),
+                                            files: se.files,
+                                            children: Vec::new(),
+                                        })
+                                        .collect(),
+                                })
+                                .collect(),
+                        }
+                    })
+                    .collect(),
+            }
+        })
+        .collect()
+}
 
 /// What a click in the window asks for; carried out after the window is
 /// drawn, with the app at hand.
@@ -163,12 +352,12 @@ pub(super) enum Action {
     AddServer,
     Refresh,
     Sync,
-    Pull(Pick),
-    Load(usize, Pick),
+    Pull(Vec<NodeId>),
+    Load(usize, Vec<NodeId>),
     Send(usize),
     UploadFolder,
-    RemoveLocal(Pick),
-    RemoveRemote(Pick),
+    RemoveLocal(Vec<NodeId>),
+    RemoveRemote(Vec<NodeId>),
     PairAgain,
     Forget,
     Tab(Tab),
@@ -212,13 +401,13 @@ fn size_text(b: u64) -> String {
 /// its buttons asked for.
 pub(super) fn source_row(ui: &mut egui::Ui, w: &PacsWindow, c: &Ctx, actions: &mut Vec<Action>) {
     ui.horizontal_wrapped(|ui| {
-        ui.label(egui::RichText::new("Archive").strong());
+        ui.label(egui::RichText::new("Source").strong());
         if ui
             .add(egui::Button::selectable(
                 w.source == Source::Local,
                 "🏥 This station",
             ))
-            .on_hover_text("The archive on this computer")
+            .on_hover_text("The PACS on this computer")
             .clicked()
         {
             actions.push(Action::Select(Source::Local));
@@ -423,8 +612,8 @@ pub(super) fn pairing_ui(
 }
 
 /// One study's mark: what this device holds of it.
-fn held_mark(v: &RemoteView, uid: &str) -> &'static str {
-    if v.local.contains(uid) {
+fn held_mark(held: &BTreeSet<String>, uid: &str) -> &'static str {
+    if held.contains(uid) {
         "✔ "
     } else {
         ""
@@ -450,7 +639,7 @@ pub(super) fn remote_ui(
         ui.weak(format!("· this device holds {}", size_text(v.mirror_bytes)));
     });
     ui.horizontal_wrapped(|ui| {
-        if enabled_tip_button(ui, !c.busy, "⟲ Refresh", "Read the server's archive again") {
+        if enabled_tip_button(ui, !c.busy, "⟲ Refresh", "Read the server's PACS again") {
             actions.push(Action::Refresh);
         }
         if enabled_tip_button(
@@ -466,7 +655,7 @@ pub(super) fn remote_ui(
             ui,
             !c.busy && role.allows(Role::Edit),
             "📤 Upload folder",
-            "Send every DICOM file of a folder of this computer into the server's archive",
+            "Send every DICOM file of a folder of this computer into the server's PACS",
         ) {
             actions.push(Action::UploadFolder);
         }
@@ -537,147 +726,103 @@ fn studies_ui(
     c: &Ctx,
     actions: &mut Vec<Action>,
 ) {
-    let Some(patients) = &v.listing else {
+    if v.listing.is_none() {
         ui.weak("reading");
         return;
-    };
+    }
     if v.offline {
-        ui.weak("The server cannot be reached: its archive as last seen. What is held here works as usual.");
+        ui.weak("The server cannot be reached: its PACS as last seen. What is held here works as usual.");
     }
-    if patients.is_empty() {
-        ui.weak("The server's archive is empty.");
+    if v.nodes.is_empty() {
+        ui.weak("The server's PACS is empty.");
     }
-    let mut expand: Option<Option<usize>> = None;
-    let mut select: Option<Pick> = None;
-    egui::ScrollArea::vertical()
-        .max_height(300.0)
-        .id_salt("pacs_remote_list")
-        .show(ui, |ui| {
-            for (pi, p) in patients.iter().enumerate() {
-                let open = v.expanded == Some(pi);
-                let held = p
-                    .studies
-                    .iter()
-                    .filter(|s| v.local.contains(&s.study_uid))
-                    .count();
-                ui.horizontal(|ui| {
-                    if ui.small_button(if open { "▼" } else { "▶" }).clicked() {
-                        expand = Some(if open { None } else { Some(pi) });
-                    }
-                    let resp = ui.add(
-                        egui::Button::selectable(
-                            v.selected == Some((pi, None)),
-                            format!(
-                                "{}   {} study(ies) · {} file(s){}",
-                                p.title(),
-                                p.studies.len(),
-                                p.files(),
-                                if held > 0 {
-                                    format!(" · {held} held here")
-                                } else {
-                                    String::new()
-                                }
-                            ),
-                        )
-                        .wrap(),
-                    );
-                    if resp.clicked() {
-                        select = Some((pi, None));
-                        expand = Some(Some(pi));
-                    }
-                    resp.context_menu(|ui| {
-                        if ui.button("🗑 Remove the local copy").clicked() {
-                            actions.push(Action::RemoveLocal((pi, None)));
-                            ui.close();
-                        }
-                        if role.allows(Role::Admin)
-                            && ui.button("🗑 Remove this patient from the server").clicked()
-                        {
-                            actions.push(Action::RemoveRemote((pi, None)));
-                            ui.close();
-                        }
-                    });
-                });
-                if !open {
-                    continue;
-                }
-                for (si, st) in p.studies.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.add_space(24.0);
-                        let resp = ui.add(
-                            egui::Button::selectable(
-                                v.selected == Some((pi, Some(si))),
-                                format!("{}{}", held_mark(v, &st.study_uid), st.describe()),
-                            )
-                            .wrap(),
-                        );
-                        if resp.clicked() {
-                            select = Some((pi, Some(si)));
-                        }
-                        let resp = resp.on_hover_text(format!(
-                            "Study UID …{}{}",
-                            tail(&st.study_uid),
-                            if v.local.contains(&st.study_uid) {
-                                "\n✔ held on this device"
-                            } else {
-                                "\non the server only"
-                            }
-                        ));
-                        resp.context_menu(|ui| {
-                            if ui.button("🗑 Remove the local copy").clicked() {
-                                actions.push(Action::RemoveLocal((pi, Some(si))));
-                                ui.close();
-                            }
-                            if role.allows(Role::Admin)
-                                && ui.button("🗑 Remove this study from the server").clicked()
-                            {
-                                actions.push(Action::RemoveRemote((pi, Some(si))));
-                                ui.close();
-                            }
-                        });
-                    });
-                }
-            }
-        });
-    if let Some(e) = expand {
-        v.expanded = e;
-    }
-    if let Some(s) = select {
-        v.selected = Some(s);
+    ui.add(
+        egui::TextEdit::singleline(&mut v.view.filter)
+            .hint_text("🔍 find a patient, study or series")
+            .desired_width(240.0),
+    );
+    let height = (ui.available_height() - 70.0).max(140.0);
+    let offline = v.offline;
+    let RemoteView { nodes, view, .. } = v;
+    let nodes_ref: &[TNode] = nodes;
+    let mut menu = |ui: &mut egui::Ui, id: &NodeId, view: &TreeView| {
+        let targets: Vec<NodeId> = if view.selected.contains(id) {
+            view.tops()
+        } else {
+            vec![id.clone()]
+        };
+        if ui
+            .add_enabled(!c.busy, egui::Button::new("📥 Pull"))
+            .on_hover_text("Copy into this device's mirror what it does not hold yet")
+            .clicked()
+        {
+            actions.push(Action::Pull(targets.clone()));
+            ui.close();
+        }
+        if ui
+            .add_enabled(!c.busy, egui::Button::new("🗑 Remove the local copy"))
+            .on_hover_text("Delete what this device holds of it; the server keeps it")
+            .clicked()
+        {
+            actions.push(Action::RemoveLocal(targets.clone()));
+            ui.close();
+        }
+        if role.allows(Role::Admin)
+            && targets.iter().all(|t| t.len() == 2 || t.len() == 3)
+            && ui
+                .add_enabled(!c.busy, egui::Button::new("🗑 Remove from the server"))
+                .on_hover_text("Delete it from the server's PACS, for every station")
+                .clicked()
+        {
+            actions.push(Action::RemoveRemote(targets));
+            ui.close();
+        }
+    };
+    let ev = pacs_tree::tree_ui(
+        ui,
+        nodes_ref,
+        view,
+        "pacs_remote_tree",
+        height,
+        true,
+        &mut menu,
+    );
+    if let Some(id) = ev.opened {
+        view.select_only(id);
     }
     ui.separator();
-    let picked = v.selected.filter(|(pi, si)| {
-        patients
-            .get(*pi)
-            .is_some_and(|p| si.is_none_or(|si| si < p.studies.len()))
-    });
+    let picked = view.tops();
+    let any = !picked.is_empty();
     ui.horizontal_wrapped(|ui| {
         if enabled_tip_button(
             ui,
-            !c.busy && picked.is_some() && !v.offline,
+            !c.busy && any && !offline,
             "📥 Pull",
             "Copy the selection into this device's mirror (only what it does not hold yet)",
         ) {
-            if let Some(p) = picked {
-                actions.push(Action::Pull(p));
-            }
+            actions.push(Action::Pull(picked.clone()));
         }
         for slot in c.targets.iter().copied() {
             if ui
                 .add_enabled(
-                    !c.busy && picked.is_some(),
+                    !c.busy && any,
                     egui::Button::new(format!("📩 Load into workspace {}", SLOT_NAMES[slot])),
                 )
                 .on_hover_text(
                     "Pull what is missing, then read the selection into this workspace \
-                     from the mirror, like any folder",
+                     from the mirror, like any files",
                 )
                 .clicked()
             {
-                if let Some(p) = picked {
-                    actions.push(Action::Load(slot, p));
-                }
+                actions.push(Action::Load(slot, picked.clone()));
             }
+        }
+        if any {
+            ui.weak(format!(
+                "{} selected · {} file(s)",
+                picked.len(),
+                pacs_tree::selected_files(nodes_ref, view)
+            ));
         }
     });
     ui.horizontal_wrapped(|ui| {
@@ -953,7 +1098,7 @@ impl ViewerApp {
             .current_entry()
             .map(|e| e.server_id)
             .unwrap_or_default();
-        self.remote_job("Reading the server's archive", move |remote, mirror, _| {
+        self.remote_job("Reading the server's PACS", move |remote, mirror, _| {
             let (listing, failed, role) = match remote.patients() {
                 Ok(l) => {
                     mirror.save_listing(&l);
@@ -962,27 +1107,25 @@ impl ViewerApp {
                 }
                 Err(e) => (Some(mirror.cached_listing()), Some(e), None),
             };
+            let (local, local_series) = mirror.local_held();
             Ok(RemoteOutcome::Refreshed {
                 server_id: id,
                 listing,
                 failed,
                 role,
-                local: mirror.local_studies(),
+                local,
+                local_series,
                 pending: mirror.pending_files(),
                 bytes: mirror.size_bytes(),
             })
         });
     }
 
-    /// The patient and study a pick names in the current listing.
-    fn resolve_pick(&self, pick: Pick) -> Option<(RemotePatient, Option<String>)> {
+    /// What rows of the shown server's tree stand for.
+    fn resolve(&self, ids: &[NodeId]) -> Option<(Wants, Vec<RemotePatient>)> {
         let v = self.pacs.as_ref()?.remote.as_ref()?;
-        let p = v.listing.as_ref()?.get(pick.0)?.clone();
-        let study = match pick.1 {
-            Some(si) => Some(p.studies.get(si)?.study_uid.clone()),
-            None => None,
-        };
-        Some((p, study))
+        let listing = v.listing.as_ref()?;
+        Some((wants_of(listing, &v.nodes, ids), listing.clone()))
     }
 
     /// Carry out what the window's clicks asked for.
@@ -1149,20 +1292,20 @@ impl ViewerApp {
                     },
                 );
             }
-            Action::Pull(pick) => {
-                let Some((patient, study)) = self.resolve_pick(pick) else {
+            Action::Pull(ids) => {
+                let Some((wants, _)) = self.resolve(&ids) else {
                     return;
                 };
                 self.remote_job("Pulling", move |r, m, p| {
-                    let sum = match study {
-                        Some(uid) => mirror::pull_study(r, m, &uid, p)?,
-                        None => mirror::pull_patient(r, m, &patient, p)?,
-                    };
+                    let mut sum = PullSummary::default();
+                    for (uid, series) in &wants.studies {
+                        sum.add(&mirror::pull_series(r, m, uid, series.as_ref(), p)?);
+                    }
                     Ok(RemoteOutcome::Pulled(sum, None))
                 });
             }
-            Action::Load(slot, pick) => {
-                let Some((patient, study)) = self.resolve_pick(pick) else {
+            Action::Load(slot, ids) => {
+                let Some((wants, _)) = self.resolve(&ids) else {
                     return;
                 };
                 let offline = self
@@ -1171,36 +1314,25 @@ impl ViewerApp {
                     .and_then(|w| w.remote.as_ref())
                     .is_some_and(|v| v.offline);
                 self.remote_job("Pulling, then loading", move |r, m, p| {
-                    let uids: Vec<String> = match &study {
-                        Some(u) => vec![u.clone()],
-                        None => patient
-                            .studies
-                            .iter()
-                            .map(|s| s.study_uid.clone())
-                            .collect(),
-                    };
                     let mut sum = PullSummary::default();
                     if !offline {
-                        for u in &uids {
-                            sum.add(&mirror::pull_study(r, m, u, p)?);
+                        for (uid, series) in &wants.studies {
+                            sum.add(&mirror::pull_series(r, m, uid, series.as_ref(), p)?);
                         }
                     }
                     let a = m.archive();
-                    let dir = match &study {
-                        Some(u) => a.find_study(u),
-                        // The patient's folder in the mirror: the parent
-                        // of any of their studies.
-                        None => uids
-                            .iter()
-                            .find_map(|u| a.find_study(u))
-                            .and_then(|d| d.parent().map(Path::to_path_buf)),
-                    }
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
+                    let files: Vec<PathBuf> = a
+                        .files_of(&wants.picks())
+                        .into_iter()
+                        .map(|i| i.path)
+                        .collect();
+                    if files.is_empty() {
+                        anyhow::bail!(
                             "this device holds none of it, and the server cannot be reached"
-                        )
-                    })?;
-                    Ok(RemoteOutcome::Pulled(sum, Some((slot, dir))))
+                        );
+                    }
+                    let sources = a.sources_of(&files);
+                    Ok(RemoteOutcome::Pulled(sum, Some((slot, files, sources))))
                 });
             }
             Action::Send(slot) => {
@@ -1249,34 +1381,43 @@ impl ViewerApp {
                     Ok(RemoteOutcome::Synced(mirror::sync(r, m, p)?))
                 });
             }
-            Action::RemoveLocal(pick) => {
-                let Some((patient, study)) = self.resolve_pick(pick) else {
+            Action::RemoveLocal(ids) => {
+                let Some((wants, _)) = self.resolve(&ids) else {
                     return;
                 };
                 self.remote_job("Removing the local copy", move |_, m, _| {
-                    let uids: Vec<String> = match study {
-                        Some(u) => vec![u],
-                        None => patient
-                            .studies
-                            .iter()
-                            .map(|s| s.study_uid.clone())
-                            .collect(),
-                    };
                     let held = m.local_studies();
-                    for u in uids.iter().filter(|u| held.contains(*u)) {
-                        m.remove_study(u)?;
+                    for (uid, series) in &wants.studies {
+                        if !held.contains(uid) {
+                            continue;
+                        }
+                        match series {
+                            None => m.remove_study(uid)?,
+                            Some(set) => {
+                                m.remove_series(&set.iter().cloned().collect::<Vec<_>>())?;
+                            }
+                        }
                     }
                     Ok(RemoteOutcome::RemovedLocal)
                 });
             }
-            Action::RemoveRemote(pick) => {
-                let Some((patient, study)) = self.resolve_pick(pick) else {
+            Action::RemoveRemote(ids) => {
+                let Some((wants, listing)) = self.resolve(&ids) else {
                     return;
                 };
                 self.remote_job("Removing from the server", move |r, _, _| {
-                    match study {
-                        Some(u) => r.delete_study(&u)?,
-                        None => r.delete_patient(&patient.key)?,
+                    for key in &wants.patients {
+                        r.delete_patient(key)?;
+                    }
+                    let of_patients: BTreeSet<&str> = listing
+                        .iter()
+                        .filter(|p| wants.patients.contains(&p.key))
+                        .flat_map(|p| p.studies.iter().map(|s| s.study_uid.as_str()))
+                        .collect();
+                    for (uid, series) in &wants.studies {
+                        if series.is_none() && !of_patients.contains(uid.as_str()) {
+                            r.delete_study(uid)?;
+                        }
                     }
                     Ok(RemoteOutcome::RemovedRemote)
                 });
@@ -1383,7 +1524,7 @@ impl ViewerApp {
     /// A remote job finished.
     pub(super) fn on_remote_done(&mut self, r: anyhow::Result<RemoteOutcome>) {
         let mut refresh = false;
-        let mut load: Option<(usize, PathBuf)> = None;
+        let mut load: Option<(usize, Vec<PathBuf>, Vec<PathBuf>)> = None;
         let mut select: Option<String> = None;
         let mut reload_tasks = false;
         match r {
@@ -1401,8 +1542,8 @@ impl ViewerApp {
                              server's computer a new address since the line was copied), \
                              that both computers are on the same network, and that the \
                              server's computer lets rds-pacs through its firewall (on \
-                             Windows: Settings > PACS server > Allow through the Windows \
-                             firewall)."
+                             Windows: PACS > Settings > PACS server > Allow through the \
+                             Windows firewall)."
                         ),
                         _ => text,
                     });
@@ -1458,6 +1599,7 @@ impl ViewerApp {
                     failed,
                     role,
                     local,
+                    local_series,
                     pending,
                     bytes,
                 } => {
@@ -1466,6 +1608,7 @@ impl ViewerApp {
                             return;
                         }
                         v.local = local;
+                        v.local_series = local_series;
                         v.pending = pending;
                         v.mirror_bytes = bytes;
                         v.listing = listing;
@@ -1501,8 +1644,16 @@ impl ViewerApp {
                                 if v.offline { " (as last seen)" } else { "" }
                             ));
                         }
-                        if v.selected.is_some_and(|(pi, _)| pi >= p) {
-                            v.selected = None;
+                        v.nodes = remote_nodes(
+                            v.listing.as_deref().unwrap_or_default(),
+                            &v.local,
+                            &v.local_series,
+                        );
+                        v.view.retain_known(&v.nodes);
+                        if v.view.expanded.is_empty() {
+                            for c in &v.nodes {
+                                v.view.expanded.insert(vec![c.key.clone()]);
+                            }
                         }
                         if v.tab == Tab::Tasks {
                             reload_tasks = true;
@@ -1583,8 +1734,8 @@ impl ViewerApp {
             self.remote_action(Action::Select(Source::Remote(id)));
             return;
         }
-        if let Some((slot, dir)) = load {
-            self.start_load(slot, dir);
+        if let Some((slot, files, sources)) = load {
+            self.start_load_files_noting(slot, files, Some(sources));
         }
         if refresh {
             self.remote_refresh();

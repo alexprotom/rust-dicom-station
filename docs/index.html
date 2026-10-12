@@ -107,7 +107,8 @@
         align-items: center;
     }
 
-    main { overflow: hidden; }
+    /* clip, unlike hidden, leaves sticky positioning inside main working. */
+    main { overflow: hidden; overflow: clip; }
 
     .hero {
       max-width: var(--max);
@@ -327,11 +328,15 @@
     .doc-item strong { color: var(--accent); font-size: 13px; }
     .doc-item span { color: var(--muted); font-size: 13px; }
 
+    /* The quick start stays in view beside the long document list. */
     .docs-side {
       border: 1px solid var(--border);
       background: var(--panel);
       border-radius: var(--radius);
       padding: 25px;
+      align-self: start;
+      position: sticky;
+      top: 86px;
     }
 
     .docs-side h3 { margin-top: 0; font-size: 17px; }
@@ -370,32 +375,146 @@
       gap: 12px;
     }
 
+    /* Every card has the same three rows (mark, name, button) and the
+       button row is pushed to the bottom, so the marks and the names line
+       up across the row whether a card has one button or two. */
     .download-card {
       border: 1px solid var(--border);
       background: linear-gradient(145deg, var(--panel), #191919);
       border-radius: var(--radius);
-      padding: 30px;
-      min-height: 310px;
+      padding: 28px 20px 24px;
+      min-height: 300px;
       display: flex;
       flex-direction: column;
       align-items: center;
       text-align: center;
-      justify-content: space-between;
     }
 
-    .download-card h3 { margin: 0; font-size: 21px; }
-    .download-card p { margin: 3px 0 24px; color: var(--muted); font-size: 13px; }
-    .download-card .button { min-width: min(205px, 100%); }
+    .download-card h3 { margin: 0; font-size: 21px; line-height: 1.3; }
+    .download-card p { margin: 4px 0 24px; color: var(--muted); font-size: 13px; }
+    .download-card .button { min-width: min(180px, 100%); white-space: nowrap; }
 
     /* macOS ships one image per architecture, so its card offers two. */
-    .download-choices {
+    .download-actions {
+      margin-top: auto;
       display: flex;
       flex-direction: column;
+      align-items: center;
       gap: 8px;
       width: 100%;
     }
 
-    .download-note { color: #777; font-size: 14px; text-align: center; margin: 17px 0 0; }
+    /* The platform marks: the platforms' own logos, one size and one
+       colour (the text colour) so that they read as one set, each on the
+       same tile. */
+    .platform-mark {
+      width: 64px;
+      height: 64px;
+      flex: none;
+      display: grid;
+      place-items: center;
+      margin-bottom: 22px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: #151515;
+      color: var(--text);
+    }
+
+    .platform-mark img {
+      width: 38px;
+      height: 38px;
+      object-fit: contain;
+      display: block;
+      filter: brightness(0) invert(1);
+      opacity: .92;
+    }
+
+    /* iPad and iPhone: the Apple mark on a device outline, so the card is
+       not a second macOS card. */
+    .platform-mark .device {
+      width: 30px;
+      height: 40px;
+      box-sizing: border-box;
+      border: 2.5px solid var(--text);
+      border-radius: 7px;
+      display: grid;
+      place-items: center;
+      opacity: .92;
+    }
+
+    .platform-mark .device img { width: 16px; height: 16px; opacity: 1; }
+
+    /* Package managers: the same terminal blocks as the quick start, one
+       command per line, each with its own copy button. */
+    .install-heading { margin: 44px 0 4px; font-size: 17px; }
+    .install-intro { margin: 0 0 14px; color: var(--muted); font-size: 14px; }
+
+    .install-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .install-grid .terminal { margin-top: 0; }
+    .cmd-list { padding: 8px 0; }
+
+    .cmd {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 0 8px 0 16px;
+      font-size: 12px;
+      line-height: 1.75;
+    }
+
+    .cmd .prompt { flex: none; padding: 6px 0; }
+
+    .cmd code {
+      flex: 1;
+      min-width: 0;
+      padding: 6px 0;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      color: #cfcfcf;
+    }
+
+    .copy {
+      flex: none;
+      display: inline-grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border: 1px solid #333;
+      margin-top: 2.5px;
+      border-radius: 5px;
+      background: #151515;
+      color: var(--muted);
+      cursor: pointer;
+    }
+
+    .copy:hover, .copy:focus-visible { color: var(--text); border-color: #555; }
+    .copy svg { width: 14px; height: 14px; display: block; }
+    .copy .done { display: none; }
+    .copy.copied { color: var(--green); border-color: var(--green); }
+    .copy.copied .idle { display: none; }
+    .copy.copied .done { display: block; }
+
+    .download-notes {
+      list-style: none;
+      margin: 26px 0 0;
+      padding: 0;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 28px;
+      color: #8c8c8c;
+      font-size: 13px;
+    }
+
+    .download-notes .latest { grid-column: 1 / -1; }
+    .download-notes strong { color: #bdbdbd; font-weight: 600; }
+    .download-notes a { color: #bdbdbd; text-decoration: underline; text-underline-offset: 2px; }
+    .download-notes code { font-size: 12px; color: #bdbdbd; }
 
     /* Embedded architecture workflow */
     .architecture-frame {
@@ -548,13 +667,6 @@
       font-size: 12px;
     }
 
-    .download-logo {
-    width: 80px;
-    height: 80px;
-    object-fit: contain;
-    margin-bottom: 20px;
-    }
-
     .footer-inner {
       max-width: var(--max);
       margin: auto;
@@ -567,6 +679,7 @@
 
     @media (max-width: 1100px) {
       .download-grid { grid-template-columns: repeat(2, 1fr); }
+      .install-grid, .download-notes { grid-template-columns: minmax(0, 1fr); }
     }
 
     @media (max-width: 900px) {
@@ -578,7 +691,8 @@
 
       .features { grid-template-columns: 1fr 1fr; }
       .download-grid { grid-template-columns: 1fr; }
-      .docs-grid, .about-grid, .contribute { grid-template-columns: 1fr; }
+      .docs-grid, .about-grid, .contribute { grid-template-columns: minmax(0, 1fr); }
+      .docs-side { position: static; }
       .architecture-frame iframe { height: 680px; }
     }
 
@@ -586,7 +700,8 @@
       .nav-links a:not(.github-link) { display: none; }
       .hero, .section { padding-left: 18px; padding-right: 18px; }
       .features { grid-template-columns: 1fr; }
-      .download-card { min-height: 285px; }
+      .download-card { min-height: 0; }
+      .cmd { padding-left: 12px; }
       .architecture-frame iframe { height: 600px; }
       .gallery { grid-template-columns: 1fr; }
       .gallery .large { grid-row: auto; }
@@ -624,8 +739,11 @@
       <div>
         <h1>Rust DICOM<br><span>Station</span></h1>
         <p class="hero-lead">
-          A native DICOM and radiotherapy viewer for research, analysis and QA,
-          written entirely in Rust.
+          A native DICOM and radiotherapy station for research, analysis and QA,
+          written entirely in Rust. View and compare complete RT studies, register
+          images and propagate structures, contour and auto-segment, analyse dose
+          and 4D motion, keep your own PACS, and automate it all with workflows or
+          an AI assistant, on Windows, Linux, macOS, Android tablets, iPad and iPhone.
         </p>
 
         <div class="buttons">
@@ -648,43 +766,75 @@
         <div class="section-kicker">What it does</div>
         <h2>A complete workspace for DICOM and radiotherapy data.</h2>
         <p>
-          Load studies, inspect image geometry, compare workspaces, work with
-          radiotherapy objects and run analysis workflows from one native application.
+          Load complete studies, inspect image geometry, compare workspaces, work with
+          radiotherapy objects, keep patients in a PACS and run analysis workflows
+          from one native application. Every engine, from registration to the
+          segmentation networks, is re-implemented in Rust, with no Python or C++
+          framework behind it.
         </p>
       </div>
 
       <div class="features">
         <article class="feature">
           <div class="feature-number mono">01</div>
-          <h3>DICOM & RT-DICOM</h3>
-          <p>CT, MR and PET series, RTSTRUCT, RTDOSE, RTPLAN, SEG, registrations and treatment records.</p>
+          <h3>DICOM &amp; RT-DICOM</h3>
+          <p>CT, MR and PET series, RTSTRUCT, RTDOSE, photon and ion RTPLAN, DICOM SEG, planar images, spatial and deformable registrations and treatment records, from folders or single files, with or without a volume.</p>
         </article>
         <article class="feature">
           <div class="feature-number mono">02</div>
-          <h3>Linked MPR & comparison</h3>
-          <p>Patient-space axial, sagittal and coronal views with linked navigation and multi-workspace comparison.</p>
+          <h3>Linked MPR &amp; comparison</h3>
+          <p>Patient-space axial, sagittal and coronal views in rows you lay out yourself, the 3D scene among them, and up to four workspaces side by side with the crosshair, slice and zoom synced.</p>
         </article>
         <article class="feature">
           <div class="feature-number mono">03</div>
           <h3>Registration</h3>
-          <p>Rigid, B-spline and landmark-based workflows with displacement statistics, vector fields and fusion.</p>
+          <p>Rigid and B-spline after elastix, dense B-spline and landmark warp after plastimatch, and registration by structures, with Dice, displacement statistics, Jacobian, vector fields and fusion.</p>
         </article>
         <article class="feature">
           <div class="feature-number mono">04</div>
-          <h3>4D & motion analysis</h3>
-          <p>Phase grouping, registration, structure propagation, motion metrics, ITV generation and CSV export.</p>
+          <h3>4D &amp; motion analysis</h3>
+          <p>Phase grouping, registration, structure propagation, motion metrics, ITV generation, structure comparison and CSV export, and cine playback through the phases of a 4D group.</p>
         </article>
         <article class="feature">
           <div class="feature-number mono">05</div>
-          <h3>Segmentation</h3>
-          <p>Brush and region growing, 81 automatic models (TotalSegmentator CT, MR and licensed, nnU-Net v1 tumour models, MRSegmentator, lungmask, MONAI, CT-FM, VISTA-3D, NV-Segment-CTMR) and your own nnU-Net models and the prompt engines SegVol, MedSAM2 and nnInteractive, all native.</p>
+          <h3>Contouring &amp; structures</h3>
+          <p>Polygon, spline, freehand, brush and live-wire tools with interpolation, Boolean operations with margins in patient directions, generators from grey levels or isodose, and the body contour on CT and MR.</p>
         </article>
         <article class="feature">
           <div class="feature-number mono">06</div>
-          <h3>MCP support</h3>
-          <p>Through Model Context Protocol (MCP), assistants can load, segment, register, propagate, analyse and export DICOM data programmatically - including automated processing across entire cohorts.</p>
+          <h3>Segmentation</h3>
+          <p>81 automatic models (TotalSegmentator, the nnU-Net v1 tumour models, MRSegmentator, lungmask, MONAI, CT-FM, VISTA-3D, NV-Segment-CTMR), your own nnU-Net models, and the prompt engines SegVol, MedSAM2 and nnInteractive, all rebuilt natively for the CPU or any GPU.</p>
         </article>
-        
+        <article class="feature">
+          <div class="feature-number mono">07</div>
+          <h3>Dose, DVH &amp; DRR</h3>
+          <p>Dose colorwash and isodose lines, cumulative and differential DVHs with D95%, D2cc and V20Gy metrics and protocol constraints, and DRRs with a beam's-eye view from an RTPLAN beam.</p>
+        </article>
+        <article class="feature">
+          <div class="feature-number mono">08</div>
+          <h3>Workflows</h3>
+          <p>The program's own steps wired into a graph in a node editor, saved as a small file and run again on other data: in the background, step by step in the viewer, or as a batch over a folder of patients.</p>
+        </article>
+        <article class="feature">
+          <div class="feature-number mono">09</div>
+          <h3>PACS &amp; PACS server</h3>
+          <p>This station's PACS shows cohorts, patients, studies and series from one or more storage folders with one catalog; select several rows to load, rename, move between cohorts or into other folders. The optional <code>rds-pacs</code> server shares it with other stations over HTTPS.</p>
+        </article>
+        <article class="feature">
+          <div class="feature-number mono">10</div>
+          <h3>MCP support</h3>
+          <p>Through the Model Context Protocol (MCP), assistants can load, segment, register, propagate, analyse and export DICOM data programmatically, including saved workflows and processing across entire cohorts, with patient identifiers kept out.</p>
+        </article>
+        <article class="feature">
+          <div class="feature-number mono">11</div>
+          <h3>Export &amp; tools</h3>
+          <p>DICOM export with an editable tag table, a folder anonymizer with consistent UID regeneration, a model manager for every downloadable weight and a synthetic RT-study generator.</p>
+        </article>
+        <article class="feature">
+          <div class="feature-number mono">12</div>
+          <h3>One program, every platform</h3>
+          <p>The same viewer on Windows, Linux, macOS, Android tablets, iPad and iPhone, drawing through wgpu (Vulkan, DirectX 12, Metal or OpenGL); a CPU-only build runs without the GPU inference backend.</p>
+        </article>
       </div>
     </section>
 
@@ -705,154 +855,126 @@
     <hr class="divider">
 
     <section class="section" id="downloads">
-    <div class="section-header">
+      <div class="section-header">
         <div class="section-kicker">Download</div>
         <h2>Get Rust DICOM Station.</h2>
-        <p>Choose your platform and download the latest release directly.</p>
-    </div>
+        <p>
+          Download the latest release for your platform, or install it with
+          winget on Windows and from the Snap Store or Flathub on Linux.
+        </p>
+      </div>
 
-    <div class="download-grid">
-
-        <article class="download-card">
-        <div class="download-logo" aria-hidden="true">
-            <img
-            src="https://upload.wikimedia.org/wikipedia/commons/8/87/Windows_logo_-_2021.svg?utm_source=commons.wikimedia.org&utm_campaign=index&utm_content=original"
-            alt="Windows logo"
-            >
-        </div>
-
-        <div>
-            <h3>Windows</h3>
-            <p>Windows x64 · Installer</p>
-        </div>
-
-        <a
-            class="button primary"
-            id="windows-download"
-            href="#"
-        >
-            Download for Windows
-        </a>
-        </article>
-
+      <div class="download-grid">
 
         <article class="download-card">
-        <div class="download-logo" aria-hidden="true">
-            <img
-            src="https://upload.wikimedia.org/wikipedia/commons/3/35/Tux.svg"
-            alt="Linux Tux logo"
-            >
-        </div>
-
-        <div>
-            <h3>Linux</h3>
-            <p>Linux x64 · AppImage</p>
-        </div>
-
-        <a
-            class="button primary"
-            id="linux-download"
-            href="#"
-        >
-            Download for Linux
-        </a>
+          <div class="platform-mark">
+            <img src="https://upload.wikimedia.org/wikipedia/commons/8/87/Windows_logo_-_2021.svg" alt="" width="38" height="38" loading="lazy">
+          </div>
+          <h3>Windows</h3>
+          <p>Windows x64 · Installer</p>
+          <div class="download-actions">
+            <a class="button primary" id="windows-download"
+               href="https://github.com/alexprotom/rust-dicom-station/releases/latest"
+               aria-label="Download the Windows installer">Download .exe</a>
+          </div>
         </article>
-
 
         <article class="download-card">
-        <div class="download-logo" aria-hidden="true">
-            <img
-            src="https://upload.wikimedia.org/wikipedia/commons/3/31/Apple_logo_white.svg"
-            alt="Apple logo"
-            >
-        </div>
-
-        <div>
-            <h3>macOS</h3>
-            <p>macOS 12+ · Disk image</p>
-        </div>
-
-        <div class="download-choices">
-            <a
-            class="button primary"
-            id="macos-arm-download"
-            href="#"
-            >
-            Apple Silicon
-            </a>
-
-            <a
-            class="button"
-            id="macos-intel-download"
-            href="#"
-            >
-            Intel
-            </a>
-        </div>
+          <div class="platform-mark">
+            <img src="https://upload.wikimedia.org/wikipedia/commons/3/35/Tux.svg" alt="" width="38" height="38" loading="lazy">
+          </div>
+          <h3>Linux</h3>
+          <p>Linux x64 · AppImage</p>
+          <div class="download-actions">
+            <a class="button primary" id="linux-download"
+               href="https://github.com/alexprotom/rust-dicom-station/releases/latest"
+               aria-label="Download the Linux AppImage">Download AppImage</a>
+          </div>
         </article>
-
 
         <article class="download-card">
-        <div class="download-logo" aria-hidden="true">
-            <img
-            src="https://upload.wikimedia.org/wikipedia/commons/d/d7/Android_robot.svg"
-            alt="Android logo"
-            >
-        </div>
-
-        <div>
-            <h3>Android</h3>
-            <p>Tablets, ARM64 · APK</p>
-        </div>
-
-        <a
-            class="button primary"
-            id="android-download"
-            href="#"
-        >
-            Download for Android
-        </a>
+          <div class="platform-mark">
+            <img src="https://upload.wikimedia.org/wikipedia/commons/3/31/Apple_logo_white.svg" alt="" width="38" height="38" loading="lazy">
+          </div>
+          <h3>macOS</h3>
+          <p>macOS 12+ · Disk image</p>
+          <div class="download-actions">
+            <a class="button primary" id="macos-arm-download"
+               href="https://github.com/alexprotom/rust-dicom-station/releases/latest"
+               aria-label="Download the macOS disk image for Apple Silicon">Apple Silicon</a>
+            <a class="button" id="macos-intel-download"
+               href="https://github.com/alexprotom/rust-dicom-station/releases/latest"
+               aria-label="Download the macOS disk image for Intel Macs">Intel</a>
+          </div>
         </article>
-
 
         <article class="download-card">
-        <div class="download-logo" aria-hidden="true">
-            <img
-            src="https://upload.wikimedia.org/wikipedia/commons/3/31/Apple_logo_white.svg"
-            alt="Apple logo"
-            >
-        </div>
-
-        <div>
-            <h3>iPad &amp; iPhone</h3>
-            <p>iOS 15+ · IPA</p>
-        </div>
-
-        <a
-            class="button primary"
-            id="ios-download"
-            href="#"
-        >
-            Download for iOS
-        </a>
+          <div class="platform-mark">
+            <img src="https://upload.wikimedia.org/wikipedia/commons/d/d7/Android_robot.svg" alt="" width="38" height="38" loading="lazy">
+          </div>
+          <h3>Android</h3>
+          <p>Tablets, Android 11+ · APK</p>
+          <div class="download-actions">
+            <a class="button primary" id="android-download"
+               href="https://github.com/alexprotom/rust-dicom-station/releases/latest"
+               aria-label="Download the Android APK">Download .apk</a>
+          </div>
         </article>
 
-    </div>
+        <article class="download-card">
+          <div class="platform-mark">
+            <span class="device"><img src="https://upload.wikimedia.org/wikipedia/commons/3/31/Apple_logo_white.svg" alt="" width="16" height="16" loading="lazy"></span>
+          </div>
+          <h3>iPad &amp; iPhone</h3>
+          <p>iOS / iPadOS 15+ · IPA</p>
+          <div class="download-actions">
+            <a class="button primary" id="ios-download"
+               href="https://github.com/alexprotom/rust-dicom-station/releases/latest"
+               aria-label="Download the iOS and iPadOS package">Download .ipa</a>
+          </div>
+        </article>
 
-    <p class="download-note">
-        Latest release: <strong id="latest-version">Loading...</strong>.
-        Downloads are provided through GitHub Releases.
-        On Windows, a newer installer updates the installed version in place,
-        and <em>Update Rust DICOM Station</em> in the Start menu fetches the newest release.
-        On macOS, <em>About This Mac</em> says which of the two images to take,
-        and the first launch of an unsigned build needs right-click &#9656; <em>Open</em>.
-        On an iPad or iPhone the <code>.ipa</code> installs through TestFlight or a tool that signs it
-        with your Apple ID (<a href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/ios.md#installing">how</a>).
-        On Linux it is also in the <a href="https://snapcraft.io/rust-dicom-station">Snap Store</a>
-        (<code>sudo snap install rust-dicom-station</code>) and on
-        <a href="https://flathub.org/apps/io.github.alexprotom.rust-dicom-station">Flathub</a>
-        (<code>flatpak install flathub io.github.alexprotom.rust-dicom-station</code>).
-    </p>
+      </div>
+
+      <h3 class="install-heading">Or install it with a package manager</h3>
+      <p class="install-intro">The same release, kept up to date by the package manager.</p>
+
+      <div class="install-grid">
+        <div class="terminal">
+          <div class="terminal-bar mono">Windows · winget</div>
+          <div class="cmd-list">
+            <div class="cmd mono"><span class="prompt">&gt;</span><code>winget install RDS.RustDICOMStation</code><button class="copy" type="button" aria-label="Copy the command" title="Copy"><svg class="idle" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5v-.5A1.5 1.5 0 0 0 9 1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.5"/></svg><svg class="done" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3 3 7-7"/></svg></button></div>
+            <div class="cmd mono"><span class="prompt">&gt;</span><code>winget upgrade RDS.RustDICOMStation</code><button class="copy" type="button" aria-label="Copy the command" title="Copy"><svg class="idle" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5v-.5A1.5 1.5 0 0 0 9 1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.5"/></svg><svg class="done" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3 3 7-7"/></svg></button></div>
+          </div>
+        </div>
+
+        <div class="terminal">
+          <div class="terminal-bar mono">Linux · Snap Store or Flathub</div>
+          <div class="cmd-list">
+            <div class="cmd mono"><span class="prompt">$</span><code>sudo snap install rust-dicom-station</code><button class="copy" type="button" aria-label="Copy the command" title="Copy"><svg class="idle" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5v-.5A1.5 1.5 0 0 0 9 1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.5"/></svg><svg class="done" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3 3 7-7"/></svg></button></div>
+            <div class="cmd mono"><span class="prompt">$</span><code>flatpak install flathub io.github.alexprotom.rust-dicom-station</code><button class="copy" type="button" aria-label="Copy the command" title="Copy"><svg class="idle" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5v-.5A1.5 1.5 0 0 0 9 1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.5"/></svg><svg class="done" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3 3 7-7"/></svg></button></div>
+          </div>
+        </div>
+      </div>
+
+      <ul class="download-notes">
+        <li class="latest"><strong>Latest release: <span id="latest-version">loading</span>.</strong>
+          Every file comes from <a href="https://github.com/alexprotom/rust-dicom-station/releases/latest">GitHub Releases</a>.</li>
+        <li><strong>Windows:</strong> a newer installer updates the installed version in place,
+          and <em>Update Rust DICOM Station</em> in the Start menu fetches the newest release.</li>
+        <li><strong>Linux:</strong> the AppImage needs no installation; the
+          <a href="https://snapcraft.io/rust-dicom-station">snap</a> and the
+          <a href="https://flathub.org/apps/io.github.alexprotom.rust-dicom-station">Flatpak</a> update by themselves.</li>
+        <li><strong>macOS:</strong> <em>About This Mac</em> says which of the two images to take;
+          until a build is notarised, its first launch needs right-click &#9656; <em>Open</em>
+          (<a href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/macos.md">macOS notes</a>).</li>
+        <li><strong>Android:</strong> 64-bit ARM tablets with Android 11 or later; allow the
+          installation from this source when Android asks. It is not in Google Play
+          (<a href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/android.md">why</a>).</li>
+        <li><strong>iPad and iPhone:</strong> the <code>.ipa</code> installs through TestFlight,
+          an ad hoc profile, or a tool that re-signs it with your own Apple ID
+          (<a href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/ios.md#installing">how</a>).</li>
+      </ul>
     </section>
 
     <hr class="divider">
@@ -870,13 +992,16 @@
       <div class="docs-grid">
         <aside class="docs-side">
           <h3>Quick start</h3>
-          <p>Build the release version and launch it with the bundled example study.</p>
+          <p>
+            From source, with a Rust toolchain (<a href="https://rustup.rs">rustup.rs</a>):
+            build the release version and open the bundled example patient.
+          </p>
 
           <div class="terminal">
             <div class="terminal-bar mono">shell</div>
             <pre><span class="prompt">$</span> cargo build --release
 <span class="prompt">$</span> cargo run --release -- \
-    data-test/lung_p1_4DCT_phase_000</pre>
+    data-test/TCIA_4D-LUNG/P102/4DFBCT+RTS</pre>
           </div>
 
           <p>
@@ -932,6 +1057,26 @@
             <strong>Interactive segmentation</strong>
             <span>nnInteractive and VISTA-3D clicks, boxes, scribbles and lassos.</span>
           </a>
+          <a class="doc-item" href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/contours.md">
+            <strong>Contours</strong>
+            <span>Drawing and editing structures: live wire, smart brush, interpolation, POIs, templates and the set lock.</span>
+          </a>
+          <a class="doc-item" href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/workflows.md">
+            <strong>Workflows</strong>
+            <span>The node editor, the steps, runs in the background or step by step, reruns and batches.</span>
+          </a>
+          <a class="doc-item" href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/pacs.md">
+            <strong>PACS</strong>
+            <span>This station's PACS: the window, storage folders, filing, loading and sending changes back.</span>
+          </a>
+          <a class="doc-item" href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/pacs-server.md">
+            <strong>PACS server</strong>
+            <span>Serving the PACS to other stations over HTTPS: setup, pairing, mirror and sync, tasks, security.</span>
+          </a>
+          <a class="doc-item" href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/mcp.md">
+            <strong>MCP server</strong>
+            <span>Driving the station from an AI assistant: tools, prompts, patient-identity safety, configuration.</span>
+          </a>
           <a class="doc-item" href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/architecture.md">
             <strong>Architecture</strong>
             <span>Module map, threading model, geometry conventions and testing.</span>
@@ -939,6 +1084,10 @@
           <a class="doc-item" href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/example-data.md">
             <strong>Example data</strong>
             <span>Bundled 4D-Lung data, source, contents and licensing information.</span>
+          </a>
+          <a class="doc-item" href="https://github.com/alexprotom/rust-dicom-station/blob/main/docs/release-versioning.md">
+            <strong>Releases &amp; packages</strong>
+            <span>Versions, nightly builds, winget, the Snap Store, Flathub, Homebrew, Android and iOS packages.</span>
           </a>
         </div>
 
@@ -1038,6 +1187,7 @@
         <a href="https://github.com/alexprotom/rust-dicom-station/releases">Releases</a>
         ·
         <a href="#downloads">Download</a>
+        ·
         <a href="#documentation">Documentation</a>
         ·
         <a href="#about">About</a>
@@ -1142,28 +1292,32 @@
   </script>
   
   <script>
-  async function loadLatestRelease() {
-    const versionElement = document.getElementById("latest-version");
-
-    try {
-      const response = await fetch(
-        "https://api.github.com/repos/alexprotom/rust-dicom-station/releases/latest"
-      );
-
-      if (!response.ok) {
-        throw new Error("GitHub API request failed");
+  /*
+   * The copy buttons of the package-manager commands. The clipboard API
+   * needs a secure context (GitHub Pages is one); where it is missing or
+   * refused, the command is selected instead, ready for Ctrl+C.
+   */
+  document.querySelectorAll(".cmd .copy").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const code = button.parentElement.querySelector("code");
+      const text = code.textContent.trim();
+      try {
+        await navigator.clipboard.writeText(text);
+        button.classList.add("copied");
+        button.setAttribute("aria-label", "Copied");
+        setTimeout(() => {
+          button.classList.remove("copied");
+          button.setAttribute("aria-label", "Copy the command");
+        }, 1600);
+      } catch (error) {
+        const range = document.createRange();
+        range.selectNodeContents(code);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
       }
-
-      const release = await response.json();
-
-      versionElement.textContent = release.tag_name;
-    } catch (error) {
-      console.error("Unable to fetch latest release:", error);
-      versionElement.textContent = "latest";
-    }
-  }
-
-  loadLatestRelease();
+    });
+  });
 </script>
 
   <script>

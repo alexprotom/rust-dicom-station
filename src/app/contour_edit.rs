@@ -629,11 +629,8 @@ impl ViewerApp {
             return None;
         }
         let (bw, bh) = (u1 - u0 + 1, v1 - v0 + 1);
-        let (lo_v, hi_v) = band.limits(
-            self.window_center,
-            self.window_width,
-            self.brush_sensitivity,
-        );
+        let (wc, ww) = self.window_of(slot);
+        let (lo_v, hi_v) = band.limits(wc, ww, self.brush_sensitivity);
         let value = |u: usize, v: usize| -> f32 {
             let mut idx = [0usize; 3];
             idx[ua] = u;
@@ -1234,7 +1231,7 @@ impl ViewerApp {
         }
         let [ua, va] = contours::plane_axes(axis);
         let (nu, nv) = (vol.dims[ua], vol.dims[va]);
-        let window = (self.window_center, self.window_width);
+        let window = self.window_of(slot);
         let margin = REACH_PX.ceil() as usize + 2;
         for s in stack.slices.iter_mut() {
             if s.region.is_empty() || s.level >= vol.dims[axis] {

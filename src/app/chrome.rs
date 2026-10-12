@@ -13,7 +13,6 @@ impl ViewerApp {
         let mut open_save_img = false;
         let mut open_models = false;
         let mut open_pacs = false;
-        let mut open_pacs_server = false;
         let mut open_drr = false;
         let mut open_export = false;
         let mut wf_menu: Option<workflow_edit::WfPending> = None;
@@ -401,10 +400,11 @@ impl ViewerApp {
                     }
                     if tip_button(
                         ui,
-                        "🏥 PACS - patient archive",
-                        "The local archive, and the PACS servers this station is paired \
-                         with: every study filed there, ready to be taken into a workspace \
-                         and given back the structures and segmentations drawn on it",
+                        "🏥 PACS",
+                        "Picture Archiving and Communication System: this station's \
+                         cohorts, patients, studies and series, and the PACS servers it is \
+                         paired with; load into a workspace, organise, give back what was \
+                         drawn",
                     ) {
                         open_pacs = true;
                         ui.close();
@@ -597,39 +597,6 @@ impl ViewerApp {
                             ui.close();
                         }
                     });
-                    // The server runs on a PC or a Mac; a tablet or a phone is
-                    // always a client (Tools > PACS > Add server).
-                    if cfg!(not(any(target_os = "android", target_os = "ios"))) {
-                        ui.menu_button("PACS server", |ui| {
-                            if crate::pacs::local::installed() {
-                                ui.weak(format!(
-                                    "PACS server installed: {}",
-                                    crate::settings::pacs_launch().display()
-                                ));
-                            } else {
-                                ui.weak(format!(
-                                    "PACS server not installed: {} was not found. It is an \
-                                     optional component of the installer, or cargo build \
-                                     --release --features pacs-server.",
-                                    crate::settings::pacs_exe_path().display()
-                                ));
-                            }
-                            ui.weak(format!(
-                                "Configuration: {}",
-                                crate::settings::pacs_config_path().display()
-                            ));
-                            ui.add_space(4.0);
-                            if tip_button(
-                                ui,
-                                "🖥 Open the server window",
-                                "Start and stop the server, copy what other stations need to \
-                                 connect, make pairing codes, see and revoke paired stations",
-                            ) {
-                                open_pacs_server = true;
-                                ui.close();
-                            }
-                        });
-                    }
                     if let Some(msg) = &self.settings_error {
                         ui.weak(msg);
                     }
@@ -709,9 +676,6 @@ impl ViewerApp {
         if open_pacs {
             self.open_pacs_window();
         }
-        if open_pacs_server {
-            self.open_pacs_server_window();
-        }
         if open_models {
             self.open_models_window();
         }
@@ -757,41 +721,88 @@ impl ViewerApp {
         egui::Panel::top(egui::Id::new("top_bar")).show(ui, |ui| {
             ui.horizontal(|ui| {
                 {
-                    ui.label("W/L:");
-                    ui.add(
-                        egui::DragValue::new(&mut self.window_center)
-                            .speed(2.0)
-                            .prefix("C "),
+                    // The window of the workspace last pointed at; the
+                    // others showing the same modality follow it.
+                    let slot = self.wl_slot();
+                    let modality = self.shown_modality(slot);
+                    let is_ct = modality == "CT" || modality.is_empty();
+                    let (mut c, mut w) = self.window_of(slot);
+                    let several = self.open_slots().len() > 1;
+                    ui.label(if several {
+                        format!("W/L {}:", SLOT_NAMES[slot])
+                    } else {
+                        "W/L:".to_string()
+                    })
+                    .on_hover_text(
+                        "The display window of the workspace last pointed at. Workspaces \
+                         showing the same modality share it; a CT and an MR each keep \
+                         their own. Right-drag in a view changes it too.",
                     );
-                    ui.add(
-                        egui::DragValue::new(&mut self.window_width)
-                            .speed(4.0)
-                            .range(1.0..=20000.0)
-                            .prefix("W "),
-                    );
-                    let mut full_range = false;
+                    let mut changed = ui
+                        .add(egui::DragValue::new(&mut c).speed(2.0).prefix("C "))
+                        .changed();
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut w)
+                                .speed(4.0)
+                                .range(1.0..=20000.0)
+                                .prefix("W "),
+                        )
+                        .changed();
+                    if changed {
+                        self.set_window(slot, c, w);
+                    }
+                    // The presets of the modality shown: Hounsfield windows
+                    // for a CT; for an MR or a PET, whose values have no
+                    // fixed scale, windows read off the image's own values.
+                    let presets: Vec<(String, f32, f32)> = if is_ct {
+                        WL_PRESETS
+                            .iter()
+                            .map(|(n, c, w)| (n.to_string(), *c, *w))
+                            .collect()
+                    } else {
+                        let windows = self.relative_windows(slot);
+                        RELATIVE_PRESETS
+                            .iter()
+                            .zip(windows)
+                            .map(|((n, ..), (c, w))| (n.to_string(), c, w))
+                            .collect()
+                    };
                     // The closed combo carries the name of the preset in
                     // force. Its numbers are dropped there - the two drag
                     // values to the left already show them - but kept in the
                     // list, where they are what tells the presets apart.
                     // Any other window (a drag, a right-drag in a view, the
                     // full range) is nameless again.
+                    let (cur_c, cur_w) = self.window_of(slot);
                     self.wl_preset = self.wl_preset.filter(|i| {
-                        WL_PRESETS.get(*i).is_some_and(|(_, c, w)| {
-                            *c == self.window_center && *w == self.window_width
+                        presets.get(*i).is_some_and(|(_, c, w)| {
+                            (*c - cur_c).abs() < 0.01 && (*w - cur_w).abs() < 0.01
                         })
                     });
+                    let title = if is_ct {
+                        "CT presets".to_string()
+                    } else {
+                        format!("{modality} presets")
+                    };
                     let selected = self
                         .wl_preset
-                        .and_then(|i| WL_PRESETS.get(i))
-                        .map_or("CT presets", |(name, ..)| *name);
+                        .and_then(|i| presets.get(i))
+                        .map_or(title.clone(), |(name, ..)| name.clone());
                     let mut pick: Option<usize> = None;
+                    let mut full_range = false;
                     let current = self.wl_preset;
                     egui::ComboBox::from_id_salt("wl_preset")
                         .selected_text(selected)
-                        .width(150.0)
+                        .width(170.0)
                         .show_ui(ui, |ui| {
-                            for (i, (name, c, w)) in WL_PRESETS.iter().enumerate() {
+                            if !is_ct {
+                                ui.weak(format!(
+                                    "{modality} values have no fixed scale: these windows are \
+                                     read off this image"
+                                ));
+                            }
+                            for (i, (name, c, w)) in presets.iter().enumerate() {
                                 if ui
                                     .selectable_label(
                                         current == Some(i),
@@ -808,24 +819,24 @@ impl ViewerApp {
                             }
                         });
                     if let Some(i) = pick {
-                        let (_, c, w) = WL_PRESETS[i];
-                        self.window_center = c;
-                        self.window_width = w;
+                        let (_, c, w) = presets[i];
+                        self.set_window(slot, c, w);
                         self.wl_preset = Some(i);
                     }
                     if full_range {
-                        // Read the range off a workspace that has one; an empty
-                        // volume would otherwise set the shared window to the
-                        // degenerate C 0 / W 1 and blank the other workspace.
-                        let here = self.hovered_slot.min(MAX_WORKSPACES - 1);
-                        let src = std::iter::once(here)
-                            .chain(self.volume_slot_list())
-                            .find(|s| self.slots[*s].has_volume());
-                        if let Some(study) = src.and_then(|s| self.slots[s].study.as_ref()) {
+                        // Read the range off the workspace itself; an empty
+                        // volume would otherwise set the window to the
+                        // degenerate C 0 / W 1.
+                        if let Some(study) = self.slots[slot]
+                            .study
+                            .as_ref()
+                            .filter(|_| self.slots[slot].has_volume())
+                        {
                             self.wl_preset = None;
                             let v = &study.volume;
-                            self.window_center = (v.min_value as f32 + v.max_value as f32) * 0.5;
-                            self.window_width = (v.max_value as f32 - v.min_value as f32).max(1.0);
+                            let c = (v.min_value as f32 + v.max_value as f32) * 0.5;
+                            let w = (v.max_value as f32 - v.min_value as f32).max(1.0);
+                            self.set_window(slot, c, w);
                         }
                     }
 
@@ -1008,7 +1019,17 @@ impl ViewerApp {
                         c[1].round() as i64,
                         c[2].round() as i64,
                     ) {
-                        ui.monospace(format!("{hu:5} HU"));
+                        // Hounsfield units are a CT's; an MR's or a PET's
+                        // values are the scanner's, with no unit to name.
+                        let m = study
+                            .series
+                            .get(study.active_series)
+                            .map(|s| s.modality.trim().to_uppercase())
+                            .unwrap_or_default();
+                        ui.monospace(match m.as_str() {
+                            "CT" | "" => format!("{hu:5} HU"),
+                            other => format!("{other} value {hu}"),
+                        });
                     }
                     if let Some(d) = study.doses.get(s.active_dose).and_then(|d| d.sample(p)) {
                         ui.monospace(format!(

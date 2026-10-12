@@ -357,8 +357,8 @@ mod tests {
             "Rust DICOM Station: Downloaded models"
         );
         assert_eq!(
-            window_title("🏥 PACS - patient archive"),
-            "Rust DICOM Station: PACS - patient archive"
+            window_title("🏥 Picture Archiving and Communication System (PACS)"),
+            "Rust DICOM Station: Picture Archiving and Communication System (PACS)"
         );
         assert_eq!(
             window_title("⇄ Propagate structures - A ▶ B"),

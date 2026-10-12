@@ -19,8 +19,12 @@ pub const APP_NAME: &str = "RustDICOMStation";
 /// Settings key of the model root; the installer writes it too.
 pub const MODELS_DIR_KEY: &str = "models_dir";
 
-/// Settings key of the patient archive root.
+/// Settings key of the main PACS storage folder (where new data is
+/// written).
 pub const ARCHIVE_DIR_KEY: &str = "archive_dir";
+
+/// Settings key of a further PACS storage folder; one line per folder.
+pub const ARCHIVE_MORE_KEY: &str = "archive_more";
 
 /// Settings key of the graphics backend; the installer writes it from the
 /// page it asks on, and the View menu changes it afterwards.
@@ -167,11 +171,15 @@ pub struct Settings {
     /// [`default_models_dir`].
     pub models_dir: Option<PathBuf>,
 
-    /// Root of the local patient archive.
+    /// The main PACS storage folder: where new data is written and the
+    /// catalog lives.
     ///
     /// `None` means the platform-specific default,
     /// [`crate::archive::default_root`].
     pub archive_dir: Option<PathBuf>,
+
+    /// The PACS's other storage folders, read and listed like the main one.
+    pub archive_more: Vec<PathBuf>,
 
     /// *Modules ▶ Image registration*: the registration section is shown in
     /// the modules panel.
@@ -255,6 +263,7 @@ impl Default for Settings {
             theme: ThemePreference::Dark,
             models_dir: None,
             archive_dir: None,
+            archive_more: Vec::new(),
             // Every module off on a fresh installation: the right panel is
             // not there at all until one is asked for, so a first run opens
             // on the images and nothing else. The Modules menu says what
@@ -968,6 +977,11 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
         } else if key.eq_ignore_ascii_case(TS_LICENCE_KEY) {
             let v = value.trim();
             s.ts_licence = (!v.is_empty()).then(|| v.to_string());
+        } else if key.eq_ignore_ascii_case(ARCHIVE_MORE_KEY) {
+            let v = PathBuf::from(value.trim());
+            if !value.trim().is_empty() && !s.archive_more.contains(&v) {
+                s.archive_more.push(v);
+            }
         } else if key.eq_ignore_ascii_case(NNUNET_FOLDER_KEY) {
             let v = PathBuf::from(value.trim());
             if !value.trim().is_empty() && !s.nnunet_folders.contains(&v) {
@@ -1044,6 +1058,9 @@ fn render(s: &Settings) -> String {
     }
     if let Some(dir) = &s.archive_dir {
         out.push_str(&format!("{ARCHIVE_DIR_KEY} = {}\n", dir.display()));
+    }
+    for dir in &s.archive_more {
+        out.push_str(&format!("{ARCHIVE_MORE_KEY} = {}\n", dir.display()));
     }
     out.push_str(&format!(
         "# optional modules-panel sections (Modules menu) = on | off\n\

@@ -65,7 +65,7 @@ apps:
       - home
       - removable-media
       - network
-      # Settings > PACS server starts rds-pacs from the viewer, under the
+      # PACS > Settings > PACS server starts rds-pacs from the viewer, under the
       # viewer's confinement, and it listens.
       - network-bind
 
@@ -90,7 +90,7 @@ apps:
       - x11
 
   # The PACS server: `rust-dicom-station.rds-pacs serve` from a terminal,
-  # or started from the viewer's Settings > PACS server. A server that
+  # or started from the viewer's PACS > Settings > PACS server. A server that
   # listens needs network-bind; its tasks run the engines, hence the GPU
   # wrapper.
   rds-pacs:

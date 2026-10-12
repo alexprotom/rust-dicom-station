@@ -1781,8 +1781,9 @@ impl ViewerApp {
             self.carry_view(slot, idx, Some(0.0), Some(Vec2::ZERO));
         }
         if let Some((dx, dy)) = wl_delta {
-            self.window_width = (self.window_width * (1.0 + dx * 0.005)).clamp(1.0, 30000.0);
-            self.window_center += dy * self.window_width * 0.002;
+            let (c, w) = self.window_of(slot);
+            let w = (w * (1.0 + dx * 0.005)).clamp(1.0, 30000.0);
+            self.set_window(slot, c + dy * w * 0.002, w);
         }
         if let Some(c) = new_cursor {
             self.set_cursor(slot, c, idx);
@@ -2014,8 +2015,7 @@ impl ViewerApp {
             .then(|| self.slots[slot].seg_series_idx())
             .flatten();
         let grow_here = self.grow.as_ref().is_some_and(|g| g.slot == slot);
-        let wc = self.window_center;
-        let ww = self.window_width;
+        let (wc, ww) = self.window_of(slot);
         let dose_on = self.dose_mode != DoseMode::Off;
         let contours_on = self.show_contours && self.slots[slot].structs_shown;
 
@@ -2304,8 +2304,8 @@ impl ViewerApp {
             reg.moving_vol.clone()
         };
         let fixed_slot = reg.fixed_slot;
-        let wc = self.window_center;
-        let ww = self.window_width.max(1.0);
+        let (wc, ww) = self.window_of(slot);
+        let ww = ww.max(1.0);
         let weight = self.fusion_weight.clamp(0.0, 1.0);
 
         let a = &mut self.slots[slot];

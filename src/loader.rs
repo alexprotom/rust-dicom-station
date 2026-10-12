@@ -988,7 +988,7 @@ pub fn load_series_volume(
 
     let default_window = first
         .window
-        .unwrap_or_else(|| default_window_for(&series.modality, min_v, max_v));
+        .unwrap_or_else(|| default_window_for(&series.modality, &volume.data));
 
     Ok((volume, default_window, warnings))
 }
@@ -1104,20 +1104,82 @@ pub fn merge_study(dest: &mut LoadedStudy, src: LoadedStudy) -> Vec<String> {
     notes
 }
 
-fn default_window_for(modality: &str, min_v: i16, max_v: i16) -> (f32, f32) {
+/// The window a series comes up with when its files name none: the soft
+/// tissue window for a CT (Hounsfield units are a fixed scale), and for a
+/// modality without one (MR, PET) the 1st to the 99th percentile of its
+/// values, which leaves out the odd bright voxel that would otherwise
+/// darken the whole image.
+fn default_window_for(modality: &str, data: &[i16]) -> (f32, f32) {
     match modality {
         "CT" => (40.0, 400.0),
-        _ => {
-            let c = (min_v as f32 + max_v as f32) * 0.5;
-            let w = (max_v as f32 - min_v as f32).max(1.0);
-            (c, w)
-        }
+        _ => percentile_windows(data, &[(1.0, 99.0)])[0],
     }
+}
+
+/// Windows (centre, width) spanning the `lo`-th to the `hi`-th percentile
+/// of a volume's values, one per pair. The volume's minimum is left out
+/// when anything else is there: it is the padding outside the field of
+/// view (or the empty air of an MR), and counting it would make every low
+/// percentile that value.
+pub fn percentile_windows(data: &[i16], pairs: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    if data.is_empty() {
+        return vec![(0.0, 1.0); pairs.len()];
+    }
+    let mut hist = vec![0u64; 1 << 16];
+    let mut min = i16::MAX;
+    for &v in data {
+        hist[(v as i32 + 32768) as usize] += 1;
+        min = min.min(v);
+    }
+    let pad = (min as i32 + 32768) as usize;
+    let mut total = data.len() as u64;
+    if total > hist[pad] {
+        total -= hist[pad];
+        hist[pad] = 0;
+    }
+    // The value at percentile p: the first whose running count reaches it.
+    let value_at = |p: f32| -> f32 {
+        let target = ((p.clamp(0.0, 100.0) as f64 / 100.0) * total as f64)
+            .ceil()
+            .max(1.0) as u64;
+        let mut acc = 0u64;
+        for (i, &c) in hist.iter().enumerate() {
+            acc += c;
+            if acc >= target {
+                return i as f32 - 32768.0;
+            }
+        }
+        32767.0
+    };
+    pairs
+        .iter()
+        .map(|&(lo, hi)| {
+            let a = value_at(lo);
+            let b = value_at(hi).max(a + 1.0);
+            ((a + b) * 0.5, b - a)
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn percentile_windows_leave_the_padding_and_the_outliers_out() {
+        // 1000 voxels of padding at the minimum, 1000 of tissue from 100 to
+        // 1099, one outlier.
+        let mut data: Vec<i16> = vec![-2000; 1000];
+        data.extend((0..1000).map(|i| 100 + i as i16));
+        data.push(30000);
+        let w = percentile_windows(&data, &[(1.0, 99.0), (0.0, 100.0)]);
+        let (c, width) = w[0];
+        assert!((c - 600.0).abs() < 15.0, "centred on the tissue: {c}");
+        assert!((width - 980.0).abs() < 15.0, "1 to 99 %: {width}");
+        assert_eq!(w[1].0 + w[1].1 / 2.0, 30000.0, "100 % is the outlier");
+        assert_eq!(default_window_for("CT", &data), (40.0, 400.0));
+        assert_eq!(percentile_windows(&[], &[(1.0, 99.0)]), vec![(0.0, 1.0)]);
+    }
 
     #[test]
     fn a_dicom_time_is_seconds_since_midnight() {

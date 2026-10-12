@@ -124,6 +124,33 @@ pub struct WhoAmI {
     pub role: Role,
 }
 
+/// One series of a study, as a listing gives it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RemoteSeries {
+    pub series_uid: String,
+    pub modality: String,
+    pub number: String,
+    pub description: String,
+    /// The name given on the server; empty: none.
+    pub label: String,
+    pub files: usize,
+}
+
+impl RemoteSeries {
+    pub fn title(&self) -> String {
+        crate::archive::SeriesEntry {
+            series_uid: self.series_uid.clone(),
+            modality: self.modality.clone(),
+            number: self.number.clone(),
+            description: self.description.clone(),
+            label: self.label.clone(),
+            ..Default::default()
+        }
+        .title()
+    }
+}
+
 /// One study of the archive, as a listing gives it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -133,21 +160,34 @@ pub struct RemoteStudy {
     pub description: String,
     pub modalities: Vec<String>,
     pub files: usize,
+    /// The name given on the server; empty: none.
+    pub label: String,
+    /// Its series (empty from a server of an earlier version).
+    pub series: Vec<RemoteSeries>,
 }
 
 impl RemoteStudy {
-    /// `20260827 - Planning · CT, RTSTRUCT · 214 files`, as the local
-    /// archive describes its studies.
-    pub fn describe(&self) -> String {
+    fn entry(&self) -> crate::archive::StudyEntry {
         crate::archive::StudyEntry {
             study_uid: self.study_uid.clone(),
             date: self.date.clone(),
             description: self.description.clone(),
             modalities: self.modalities.clone(),
             files: self.files,
-            dir: Default::default(),
+            label: self.label.clone(),
+            ..Default::default()
         }
-        .describe()
+    }
+
+    /// `2026-08-27 - Planning · CT, RTSTRUCT`, as the local PACS names its
+    /// studies.
+    pub fn title(&self) -> String {
+        self.entry().title()
+    }
+
+    /// The title and the number of files.
+    pub fn describe(&self) -> String {
+        self.entry().describe()
     }
 }
 
@@ -155,11 +195,16 @@ impl RemoteStudy {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RemotePatient {
-    /// The patient's folder name: what routes name the patient by.
+    /// What routes name the patient by ([`crate::archive::patient_key`]).
     pub key: String,
     pub name: String,
     pub id: String,
     pub studies: Vec<RemoteStudy>,
+    /// The name given on the server; empty: none.
+    pub label: String,
+    /// The cohorts the server puts them in, by name (empty from a server
+    /// of an earlier version).
+    pub cohorts: Vec<String>,
 }
 
 impl RemotePatient {
@@ -167,6 +212,7 @@ impl RemotePatient {
         crate::archive::PatientEntry {
             name: self.name.clone(),
             id: self.id.clone(),
+            label: self.label.clone(),
             ..Default::default()
         }
         .title()
@@ -190,6 +236,9 @@ pub struct Listing {
 pub struct InstanceInfo {
     pub sop_uid: String,
     pub bytes: u64,
+    /// Its series (empty from a server of an earlier version), so that a client
+    /// can pull one series of a study.
+    pub series_uid: String,
 }
 
 /// `GET /studies/{uid}`.

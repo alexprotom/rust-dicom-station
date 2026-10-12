@@ -241,10 +241,16 @@ src/
   gfx.rs            which graphics backend to draw and compute with: the
                     settings key, the environment override, and the order to
                     fall back through when one will not start                    App
-  archive.rs        the local patient archive: on-disk layout, sidecars,
-                    scanning, importing, index rebuild, removal; files and
-                    sidecars renamed into place, lookups by UID that compare
-                    folder names (what the PACS server answers through)        DICOM
+  archive.rs        the station's PACS: storage folders (the first the main
+                    one), the tree of cohorts / patients / studies / series,
+                    importing, selections (Pick) as files, names, cohorts,
+                    moving files within a storage folder, removal; lookups
+                    by UID through the catalog (what the PACS server
+                    answers through)                                           DICOM
+    catalog.rs      rds-pacs-catalog.json: one file per PACS, every file read
+                    once (header -> patient / study / series), the cohort
+                    rule for folders, the person's names and memberships;
+                    lock file + rename for two writers; old sidecars removed DICOM
   audit.rs          the call log both servers write (data/<server>/audit-*.log)
                                                                                  App
   pacs/             the PACS server and its client: the archive served to
@@ -403,11 +409,17 @@ src/
                       the ticked structures against one dose (physical /
                       effective), recomputed whenever they change
     drr_win.rs        the DRR window: geometry, projectors, comparison
-    pacs_win.rs       the PACS window: the row of sources, archive root,
-                      patient / study list, import, load, send back
-    pacs_remote.rs    the PACS window on a paired server: pull, load, send,
-                      sync, upload, the Tasks tab, Add server / pairing
-    pacs_server_win.rs  Settings ▶ PACS server: start / stop rds-pacs, the
+    pacs_win.rs       the PACS window: menu bar (Settings: storage folders,
+                      PACS server page), the row of sources, the local tree
+                      and its context menu (rename, cohorts, move files,
+                      remove), import, load, send back
+    pacs_remote.rs    the PACS window on a paired server: its tree, pull
+                      (patients, studies, single series), load, send, sync,
+                      upload, the Tasks tab, Add server / pairing
+    pacs_tree.rs      the tree both draw: rows drawn only where visible,
+                      selection with Ctrl / Shift and the keyboard, filter
+    pacs_server_win.rs  PACS ▶ Settings ▶ PACS server (a page of the PACS
+                      window): start / stop rds-pacs, the
                       connection details, pairing codes, paired stations,
                       pacs.toml, the activity log
     models_win.rs     the model manager window

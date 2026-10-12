@@ -88,24 +88,21 @@ fn structures(v: &Value) -> Result<(usize, &[String], &Scope)> {
 
 // ---- input ---------------------------------------------------------------------
 
-/// The archive a step names, or the station's.
+/// The PACS a step names (one folder, or several joined by `|`), or the
+/// station's.
 fn archive_of(archive: &str) -> crate::archive::Archive {
-    let root = if archive.trim().is_empty() {
-        crate::archive::root_from_setting(
-            &crate::settings::load()
-                .archive_dir
-                .map(|p| p.display().to_string())
-                .unwrap_or_default(),
-        )
-    } else {
-        PathBuf::from(archive.trim())
-    };
-    crate::archive::Archive::new(root)
+    crate::archive::Archive::from_setting(archive)
 }
 
-/// The study folder an archive step reads: its patient, and of that
-/// patient's studies the one the step names, or the newest.
+/// The study folder an archive step reads (see [`archive_study`]).
 pub(super) fn archive_study_dir(prm: &cat::LoadFromArchive) -> Result<PathBuf> {
+    archive_study(prm).map(|(dir, _)| dir)
+}
+
+/// The study an archive step reads: its folder, and its files (a folder
+/// copied in by hand may hold other studies too). Its patient, and of that
+/// patient's studies the one the step names, or the newest.
+pub(super) fn archive_study(prm: &cat::LoadFromArchive) -> Result<(PathBuf, Vec<PathBuf>)> {
     let arch = archive_of(&prm.archive);
     let patients = arch.scan()?;
     let want = prm.patient.trim();
@@ -139,8 +136,13 @@ pub(super) fn archive_study_dir(prm: &cat::LoadFromArchive) -> Result<PathBuf> {
                 || name_matches(&study, &s.description)
         })
     };
-    pick.map(|s| s.dir.clone())
-        .ok_or_else(|| anyhow!("the patient has no study like '{}'", prm.study.trim()))
+    let st = pick.ok_or_else(|| anyhow!("the patient has no study like '{}'", prm.study.trim()))?;
+    let files = arch
+        .study_instances(&st.study_uid)?
+        .into_iter()
+        .map(|i| i.path)
+        .collect();
+    Ok((st.dir.clone(), files))
 }
 
 pub(super) fn load_from_archive(
@@ -149,9 +151,9 @@ pub(super) fn load_from_archive(
     prm: &cat::LoadFromArchive,
     p: &Progress,
 ) -> Result<Done> {
-    let dir = archive_study_dir(prm)?;
+    let (dir, files) = archive_study(prm)?;
     p.set(format!("Reading {}", dir.display()));
-    let study = loader::load_directory(&dir, p)?;
+    let study = loader::load_files(&files, &dir.display().to_string(), p)?;
     Ok(study_loaded(ctx, node, dir, prm.workspace, study))
 }
 

@@ -16,7 +16,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rust_dicom_station::archive::{self, Archive};
+use rust_dicom_station::archive::Archive;
 use rust_dicom_station::gen_test_data::{self, GenParams};
 use rust_dicom_station::pacs::client::{failure_of, Failure, Remote, Trust};
 use rust_dicom_station::pacs::config::Config;
@@ -125,10 +125,14 @@ fn a_paired_station_lists_fetches_and_sends_no_more_than_its_role_allows() {
     assert_eq!(m.instances.len(), n);
     assert_eq!(m.patient_key, pts[0].key);
 
-    let dir = Archive::new(root.join("archive"))
-        .find_study(&study.study_uid)
+    assert!(
+        m.instances.iter().all(|i| !i.series_uid.is_empty()),
+        "the manifest names each instance's series"
+    );
+    let served = Archive::new(root.join("archive"))
+        .study_instances(&study.study_uid)
         .unwrap();
-    let first = &archive::instances(&dir).unwrap()[0];
+    let first = &served[0];
     let got = root.join("one.dcm");
     viewer
         .instance(&study.study_uid, &first.sop_uid, &got)
@@ -147,11 +151,7 @@ fn a_paired_station_lists_fetches_and_sends_no_more_than_its_role_allows() {
     );
 
     // ---- a role is a ceiling ---------------------------------------------
-    let files: Vec<PathBuf> = archive::instances(&dir)
-        .unwrap()
-        .into_iter()
-        .map(|i| i.path)
-        .collect();
+    let files: Vec<PathBuf> = served.iter().map(|i| i.path.clone()).collect();
     let e = viewer
         .upload_files(&files, &root.join("up"), &Progress::default())
         .unwrap_err();

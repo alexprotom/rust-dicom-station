@@ -110,7 +110,7 @@ else about the server - the tools, the PHI gate, `mcp.toml` - is in
 
 ## The PACS server
 
-`rds-pacs` ships inside the bundle too, so *Settings ▸ PACS server ▸ Start*
+`rds-pacs` ships inside the bundle too, so *Tools ▸ PACS ▸ Settings ▸ PACS server ▸ Start*
 finds it beside the viewer, and the Homebrew cask links it into the prefix
 (`rds-pacs serve` from a terminal). macOS asks once whether it may accept
 incoming connections; allow it. Everything else is in

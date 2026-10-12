@@ -58,7 +58,8 @@ const BUNDLE_BYTES: u64 = super::client::BUNDLE_MB * 1024 * 1024;
 struct AppState {
     config: Config,
     paths: Paths,
-    archive_root: PathBuf,
+    /// The PACS served: its storage folders.
+    archive: Archive,
     info: ServerInfo,
     auth: Mutex<Auth>,
     audit: Audit,
@@ -321,14 +322,24 @@ async fn patients(
     let st = s.clone();
     let listing = blocking(move || {
         let _r = st.archive_lock.read().unwrap_or_else(|e| e.into_inner());
-        let found = Archive::new(&st.archive_root).scan()?;
+        let tree = st.archive.scan_tree(&Progress::default())?;
+        // Each patient once, with the names of the cohorts they are in.
+        let mut cohorts_of: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        for c in &tree.cohorts {
+            for p in &c.patients {
+                cohorts_of.entry(p.key()).or_default().push(c.name.clone());
+            }
+        }
         Ok(Listing {
-            patients: found
+            patients: tree
+                .patients()
                 .into_iter()
                 .map(|p| RemotePatient {
                     key: p.key(),
                     name: p.name.clone(),
                     id: p.id.clone(),
+                    label: p.label.clone(),
+                    cohorts: cohorts_of.remove(&p.key()).unwrap_or_default(),
                     studies: p
                         .studies
                         .iter()
@@ -338,6 +349,19 @@ async fn patients(
                             description: st.description.clone(),
                             modalities: st.modalities.clone(),
                             files: st.files,
+                            label: st.label.clone(),
+                            series: st
+                                .series
+                                .iter()
+                                .map(|se| RemoteSeries {
+                                    series_uid: se.series_uid.clone(),
+                                    modality: se.modality.clone(),
+                                    number: se.number.clone(),
+                                    description: se.description.clone(),
+                                    label: se.label.clone(),
+                                    files: se.files,
+                                })
+                                .collect(),
                         })
                         .collect(),
                 })
@@ -354,11 +378,13 @@ async fn patients(
     Ok(Json(listing))
 }
 
-/// The study's folder, or 404.
-fn study_dir(s: &AppState, uid: &str) -> ApiResult<PathBuf> {
-    Archive::new(&s.archive_root)
-        .find_study(uid)
-        .ok_or_else(|| not_found("the archive has no such study"))
+/// The study's files, or 404.
+fn study_files(s: &AppState, uid: &str) -> ApiResult<Vec<archive::Instance>> {
+    let inst = s.archive.study_instances(uid)?;
+    if inst.is_empty() {
+        return Err(not_found("the archive has no such study"));
+    }
+    Ok(inst)
 }
 
 async fn manifest(
@@ -372,22 +398,20 @@ async fn manifest(
     let st = s.clone();
     let m = blocking(move || {
         let _r = st.archive_lock.read().unwrap_or_else(|e| e.into_inner());
-        let dir = study_dir(&st, &uid)?;
-        let key = dir
-            .parent()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let files = study_files(&st, &uid)?;
+        let key = st.archive.patient_of_study(&uid).unwrap_or_default();
+        let instances = files
+            .into_iter()
+            .map(|i| InstanceInfo {
+                sop_uid: i.sop_uid,
+                bytes: i.bytes,
+                series_uid: i.series_uid,
+            })
+            .collect();
         Ok(Manifest {
             study_uid: uid,
             patient_key: key,
-            instances: archive::instances(&dir)?
-                .into_iter()
-                .map(|i| InstanceInfo {
-                    sop_uid: i.sop_uid,
-                    bytes: i.bytes,
-                })
-                .collect(),
+            instances,
         })
     })
     .await?;
@@ -406,8 +430,7 @@ async fn instance(
     let st = s.clone();
     let (bytes, uid2) = blocking(move || {
         let _r = st.archive_lock.read().unwrap_or_else(|e| e.into_inner());
-        let dir = study_dir(&st, &uid)?;
-        let inst = archive::instances(&dir)?
+        let inst = study_files(&st, &uid)?
             .into_iter()
             .find(|i| i.sop_uid == sop)
             .ok_or_else(|| not_found("the study has no such instance"))?;
@@ -440,12 +463,12 @@ async fn bundle(
     let uid2 = uid.clone();
     let (zip, n) = blocking(move || {
         let _r = st.archive_lock.read().unwrap_or_else(|e| e.into_inner());
-        let dir = study_dir(&st, &uid2)?;
+        let files = study_files(&st, &uid2)?;
         let wanted: std::collections::BTreeSet<&str> =
             req.sops.iter().map(String::as_str).collect();
         let mut picked = Vec::new();
         let mut size = 0u64;
-        for i in archive::instances(&dir)? {
+        for i in files {
             if !wanted.contains(i.sop_uid.as_str()) {
                 continue;
             }
@@ -579,7 +602,7 @@ async fn receive_and_file(
                 .map_err(|e| anyhow!("keep the upload: {e}"))?;
         }
         let _w = st.archive_lock.write().unwrap_or_else(|e| e.into_inner());
-        let sum = Archive::new(&st.archive_root).import(&files, &Progress::default())?;
+        let sum = st.archive.import(&files, &Progress::default())?;
         Ok(UploadSummary::from(sum))
     })
     .await
@@ -597,8 +620,8 @@ async fn delete_study(
     let u = uid.clone();
     blocking(move || {
         let _w = st.archive_lock.write().unwrap_or_else(|e| e.into_inner());
-        let dir = study_dir(&st, &u)?;
-        Archive::new(&st.archive_root).remove(&dir)?;
+        study_files(&st, &u)?;
+        st.archive.remove_study(&u)?;
         Ok(())
     })
     .await?;
@@ -622,11 +645,10 @@ async fn delete_patient(
     let k = key.clone();
     blocking(move || {
         let _w = st.archive_lock.write().unwrap_or_else(|e| e.into_inner());
-        let a = Archive::new(&st.archive_root);
-        let dir = a
-            .find_patient(&k)
-            .ok_or_else(|| not_found("the archive has no such patient"))?;
-        a.remove(&dir)?;
+        if st.archive.find_patient(&k).is_none() {
+            return Err(not_found("the archive has no such patient"));
+        }
+        st.archive.remove_patient(&k)?;
         Ok(())
     })
     .await?;
@@ -935,7 +957,8 @@ pub fn spawn(config: Config, paths: Paths) -> Result<Running> {
     let tls = super::tls::server_config(&cert)?;
     let id = identity(&paths)?;
     let auth = Auth::load(&paths)?;
-    let archive_root = config.archive_root();
+    let archive = config.archive();
+    let archive_root = archive.root().to_path_buf();
     std::fs::create_dir_all(&archive_root)
         .with_context(|| format!("create {}", archive_root.display()))?;
     let archive_lock = Arc::new(RwLock::new(()));
@@ -943,7 +966,7 @@ pub fn spawn(config: Config, paths: Paths) -> Result<Running> {
         Tasks::start(
             config.clone(),
             paths.clone(),
-            archive_root.clone(),
+            archive.clone(),
             archive_lock.clone(),
         )
     });
@@ -972,7 +995,7 @@ pub fn spawn(config: Config, paths: Paths) -> Result<Running> {
     let state = Arc::new(AppState {
         config: config.clone(),
         paths: paths.clone(),
-        archive_root: archive_root.clone(),
+        archive: archive.clone(),
         info,
         auth: Mutex::new(auth),
         audit,
@@ -1072,7 +1095,7 @@ pub fn spawn(config: Config, paths: Paths) -> Result<Running> {
         port: bound.port(),
         fingerprint: cert.fingerprint.clone(),
         started: super::stamp(),
-        archive: archive_root.display().to_string(),
+        archive: archive.setting(),
         addresses: shown,
     }
     .write(&paths)?;

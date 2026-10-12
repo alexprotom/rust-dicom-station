@@ -141,17 +141,15 @@ fn outside_reads(core: &Core, wf: &Workflow) -> Result<()> {
     for n in &wf.nodes {
         match &n.op {
             Op::LoadFromArchive(p) => {
-                let root = if p.archive.trim().is_empty() {
-                    crate::archive::default_root()
-                } else {
-                    PathBuf::from(p.archive.trim())
-                };
-                core.session.config.resolve_input(&root).map_err(|_| {
-                    anyhow!(
-                        "'{}' reads the archive, which is not under a configured root",
-                        n.label()
-                    )
-                })?;
+                for root in crate::archive::Archive::from_setting(&p.archive).roots() {
+                    core.session.config.resolve_input(root).map_err(|_| {
+                        anyhow!(
+                            "'{}' reads the PACS, whose folder {} is not under a configured root",
+                            n.label(),
+                            root.display()
+                        )
+                    })?;
+                }
             }
             Op::Dvh(p) if !p.protocol_file.trim().is_empty() => {
                 core.session

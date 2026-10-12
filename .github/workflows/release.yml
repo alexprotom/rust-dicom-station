@@ -616,6 +616,31 @@ jobs:
         if: env.WINGET_CREATE_GITHUB_TOKEN == ''
         run: echo "WINGET_TOKEN is not set - skipping the winget submission."
 
+      # winget-create syncs the fork with GitHub's merge-upstream API before
+      # it pushes, and that call refuses a fork thousands of commits behind -
+      # winget-pkgs takes some 450 a day, and the month between the first
+      # submission and the next release was enough (2026-10-10). A
+      # fast-forward of the fork's master through the refs API has no such
+      # limit, so it is done here first. No fork yet: nothing to do,
+      # winget-create creates one.
+      - name: Fast-forward the fork of winget-pkgs
+        if: env.WINGET_CREATE_GITHUB_TOKEN != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          FORK: ${{ github.repository_owner }}/winget-pkgs
+        run: |
+          $ErrorActionPreference = 'Stop'
+          gh api "repos/$env:FORK" --silent 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "no fork $env:FORK yet - winget-create will create it"
+            exit 0
+          }
+          $sha = gh api repos/microsoft/winget-pkgs/git/ref/heads/master --jq .object.sha
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          gh api -X PATCH "repos/$env:FORK/git/refs/heads/master" -f sha=$sha -F force=false --jq .object.sha
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Download the manifests from the release
         if: env.WINGET_CREATE_GITHUB_TOKEN != ''
         shell: pwsh

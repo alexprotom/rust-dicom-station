@@ -49,6 +49,11 @@ pub struct PullSummary {
     /// Instances that were here already.
     pub present: usize,
     pub studies: usize,
+    /// Fetched files whose own header names another study than the one
+    /// they were listed under (a server's hand-copied folder holding
+    /// several studies): filed here under their own, where the loader
+    /// finds them, but not under the study that was pulled.
+    pub elsewhere: usize,
 }
 
 impl PullSummary {
@@ -56,20 +61,39 @@ impl PullSummary {
         self.fetched += o.fetched;
         self.present += o.present;
         self.studies += o.studies;
+        self.elsewhere += o.elsewhere;
     }
 
     pub fn describe(&self) -> String {
         format!(
-            "{} file(s) fetched from {} study(ies){}",
+            "{} file(s) fetched from {} study(ies){}{}",
             self.fetched,
             self.studies,
             if self.present > 0 {
                 format!(", {} here already", self.present)
             } else {
                 String::new()
+            },
+            if self.elsewhere > 0 {
+                format!(
+                    ", {} of them belong to other studies and were filed under those",
+                    self.elsewhere
+                )
+            } else {
+                String::new()
             }
         )
     }
+}
+
+/// The SOP Instance UIDs of the DICOM files in a folder (a bundle just
+/// unpacked), read from their headers.
+fn sops_in(dir: &Path) -> BTreeSet<String> {
+    files_under(dir)
+        .iter()
+        .filter_map(|p| crate::dicomfile::open_scan(p).ok())
+        .filter_map(|o| crate::loader::str_of(&o, dicom_dictionary_std::tags::SOP_INSTANCE_UID))
+        .collect()
 }
 
 /// How sending something to the server ended.
@@ -180,22 +204,35 @@ impl Mirror {
     /// The SOP Instance UIDs of a study held here.
     pub fn local_sops(&self, study_uid: &str) -> BTreeSet<String> {
         self.archive()
-            .find_study(study_uid)
-            .and_then(|d| archive::instances(&d).ok())
+            .study_instances(study_uid)
             .map(|v| v.into_iter().map(|i| i.sop_uid).collect())
+            .unwrap_or_default()
+    }
+
+    /// The series of a study held here (any file of them), by UID.
+    pub fn local_series_of(&self, study_uid: &str) -> BTreeSet<String> {
+        self.archive()
+            .study_instances(study_uid)
+            .map(|v| v.into_iter().map(|i| i.series_uid).collect())
             .unwrap_or_default()
     }
 
     /// The studies held here, by UID.
     pub fn local_studies(&self) -> BTreeSet<String> {
-        self.archive()
-            .scan()
-            .map(|ps| {
-                ps.into_iter()
-                    .flat_map(|p| p.studies.into_iter().map(|s| s.study_uid))
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.local_held().0
+    }
+
+    /// The studies and the series held here, by UID.
+    pub fn local_held(&self) -> (BTreeSet<String>, BTreeSet<String>) {
+        let mut studies = BTreeSet::new();
+        let mut series = BTreeSet::new();
+        for p in self.archive().scan().unwrap_or_default() {
+            for st in p.studies {
+                series.extend(st.series.into_iter().map(|s| s.series_uid));
+                studies.insert(st.study_uid);
+            }
+        }
+        (studies, series)
     }
 
     /// The batches waiting in the outbox, oldest first.
@@ -227,28 +264,23 @@ impl Mirror {
             .sum()
     }
 
-    /// Drop a study from this copy. The server is not touched.
+    /// Drop a study from this copy (the folders it leaves empty go too).
+    /// The server is not touched.
     pub fn remove_study(&self, study_uid: &str) -> Result<()> {
         let a = self.archive();
-        match a.find_study(study_uid) {
-            Some(dir) => {
-                a.remove(&dir)?;
-                // A patient left without studies goes too.
-                if let Some(pdir) = dir.parent() {
-                    let empty = std::fs::read_dir(pdir)
-                        .map(|rd| {
-                            !rd.filter_map(|e| e.ok())
-                                .any(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-                        })
-                        .unwrap_or(false);
-                    if empty {
-                        let _ = a.remove(pdir);
-                    }
-                }
-                Ok(())
-            }
-            None => bail!("this study is not held here"),
+        if a.study_instances(study_uid)?.is_empty() {
+            bail!("this study is not held here");
         }
+        a.remove_study(study_uid)
+    }
+
+    /// Drop series from this copy. The server is not touched.
+    pub fn remove_series(&self, series: &[String]) -> Result<usize> {
+        let picks: Vec<archive::Pick> = series
+            .iter()
+            .map(|s| archive::Pick::Series(s.clone()))
+            .collect();
+        self.archive().remove_picks(&picks)
     }
 
     /// Put a folder of files into the outbox (moved when it can be, copied
@@ -311,10 +343,30 @@ pub fn pull_study(
     study_uid: &str,
     p: &Progress,
 ) -> Result<PullSummary> {
+    pull_series(remote, mirror, study_uid, None, p)
+}
+
+/// [`pull_study`] for some of the study's series only (`None`: all). A
+/// server of an earlier version names no series in its manifest; then the whole
+/// study comes.
+pub fn pull_series(
+    remote: &Remote,
+    mirror: &Mirror,
+    study_uid: &str,
+    series: Option<&BTreeSet<String>>,
+    p: &Progress,
+) -> Result<PullSummary> {
     let manifest = remote.manifest(study_uid)?;
     let have = mirror.local_sops(study_uid);
-    let mut missing: Vec<String> = manifest
+    let wanted: Vec<&super::protocol::InstanceInfo> = manifest
         .instances
+        .iter()
+        .filter(|i| match series {
+            Some(set) if !i.series_uid.is_empty() => set.contains(&i.series_uid),
+            _ => true,
+        })
+        .collect();
+    let mut missing: Vec<String> = wanted
         .iter()
         .map(|i| i.sop_uid.clone())
         .filter(|s| !have.contains(s))
@@ -322,8 +374,9 @@ pub fn pull_study(
     let total = missing.len();
     let mut sum = PullSummary {
         fetched: 0,
-        present: manifest.instances.len() - total,
+        present: wanted.len() - total,
         studies: 1,
+        elsewhere: 0,
     };
     let scratch = mirror.scratch("pull");
     let result = (|| -> Result<()> {
@@ -341,20 +394,27 @@ pub fn pull_study(
             if n == 0 {
                 bail!("the server sent nothing of what it listed");
             }
+            // What arrived, by the files' own UIDs: that is what was pulled,
+            // wherever the import files it. A file whose header names
+            // another study (a server folder holding several) lands under
+            // that study here and is counted, not asked for again.
+            let arrived = sops_in(&scratch);
+            let before_here = mirror.local_sops(study_uid).len();
             mirror.archive().import(&scratch, &Progress::default())?;
             let _ = std::fs::remove_dir_all(&scratch);
-            let now = mirror.local_sops(study_uid);
+            let here_now = mirror.local_sops(study_uid).len();
             let before = missing.len();
-            missing.retain(|s| !now.contains(s));
+            missing.retain(|s| !arrived.contains(s));
             let got = before - missing.len();
             if got == 0 {
                 bail!(
-                    "the files the server sent do not file under this study; {} file(s) not \
+                    "the server sent files other than the ones it listed; {} file(s) not \
                      pulled",
                     missing.len()
                 );
             }
             sum.fetched += got;
+            sum.elsewhere += got.saturating_sub(here_now.saturating_sub(before_here));
         }
         Ok(())
     })();
@@ -446,14 +506,34 @@ pub fn sync(remote: &Remote, mirror: &Mirror, p: &Progress) -> Result<SyncSummar
             out.gone.push(uid);
             continue;
         }
-        out.pulled.add(&pull_study(remote, mirror, &uid, p)?);
+        // A study held in part (some of its series pulled) stays in part:
+        // its own series are completed and what others drew on it comes
+        // along, the image series not pulled stay on the server.
+        let listed = listing
+            .iter()
+            .flat_map(|pt| pt.studies.iter())
+            .find(|s| s.study_uid == uid);
+        let held = mirror.local_series_of(&uid);
+        let only: Option<BTreeSet<String>> = listed.and_then(|st| {
+            if st.series.is_empty() || st.series.iter().all(|s| held.contains(&s.series_uid)) {
+                return None;
+            }
+            Some(
+                st.series
+                    .iter()
+                    .filter(|s| held.contains(&s.series_uid) || is_derived(&s.modality))
+                    .map(|s| s.series_uid.clone())
+                    .collect(),
+            )
+        });
+        out.pulled
+            .add(&pull_series(remote, mirror, &uid, only.as_ref(), p)?);
         // What is here and not there: objects whose earlier send broke off.
         let manifest = remote.manifest(&uid)?;
         let there: BTreeSet<String> = manifest.instances.into_iter().map(|i| i.sop_uid).collect();
         let extra: Vec<PathBuf> = mirror
             .archive()
-            .find_study(&uid)
-            .and_then(|d| archive::instances(&d).ok())
+            .study_instances(&uid)
             .unwrap_or_default()
             .into_iter()
             .filter(|i| !there.contains(&i.sop_uid))
@@ -466,6 +546,15 @@ pub fn sync(remote: &Remote, mirror: &Mirror, p: &Progress) -> Result<SyncSummar
         }
     }
     Ok(out)
+}
+
+/// Objects drawn or computed on images (structures, segmentations, doses,
+/// plans, registrations), which a sync brings along with the images held.
+fn is_derived(modality: &str) -> bool {
+    matches!(
+        modality,
+        "RTSTRUCT" | "SEG" | "RTDOSE" | "RTPLAN" | "RTRECORD" | "REG" | "SR"
+    )
 }
 
 /// The last eight characters of a UID, for a progress line.
@@ -510,6 +599,7 @@ mod tests {
                 fetched: 3,
                 present: 2,
                 studies: 1,
+                elsewhere: 0,
             },
             outbox_sent: 1,
             gone: vec!["1.2".into()],

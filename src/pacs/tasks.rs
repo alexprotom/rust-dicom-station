@@ -81,7 +81,8 @@ pub struct Tasks {
     wake: Condvar,
     config: Config,
     paths: Paths,
-    archive_root: PathBuf,
+    /// The PACS the tasks read from and file into.
+    archive: Archive,
     /// Taken for writing while the results are filed, as the server's
     /// upload and remove routes do.
     archive_lock: Arc<RwLock<()>>,
@@ -98,7 +99,7 @@ impl Tasks {
     pub fn start(
         config: Config,
         paths: Paths,
-        archive_root: PathBuf,
+        archive: Archive,
         archive_lock: Arc<RwLock<()>>,
     ) -> Arc<Tasks> {
         let mut tasks = Vec::new();
@@ -122,7 +123,7 @@ impl Tasks {
             wake: Condvar::new(),
             config,
             paths,
-            archive_root,
+            archive,
             archive_lock,
         });
         let runner = t.clone();
@@ -189,9 +190,8 @@ impl Tasks {
                 .ok_or_else(|| anyhow!("the server has no workflow '{}'", req.workflow))?;
             (o.workflow, false)
         };
-        let archive = Archive::new(&self.archive_root);
-        let patients = archive.scan()?;
-        let wf = bind(&wf, &req.bindings, &patients, &self.archive_root, inline)?;
+        let patients = self.archive.scan()?;
+        let wf = bind(&wf, &req.bindings, &patients, &self.archive, inline)?;
         let problems = wf.check();
         if !problems.ok() {
             bail!(
@@ -485,7 +485,7 @@ impl Tasks {
             })
         };
 
-        let archive = Archive::new(&self.archive_root);
+        let archive = self.archive.clone();
         let before = counts(&archive);
         let channel = Channel::new(tx, None);
         let out = exec::run(&plan.wf, &opts, progress, &channel);
@@ -713,7 +713,7 @@ pub fn bind(
     wf: &Workflow,
     bindings: &[Binding],
     patients: &[PatientEntry],
-    archive_root: &Path,
+    archive: &Archive,
     inline: bool,
 ) -> Result<Workflow> {
     let abs = crate::workflow::graph::absolute_outputs(wf);
@@ -730,7 +730,7 @@ pub fn bind(
         }
     }
     let mut out = wf.clone();
-    let root = archive_root.display().to_string();
+    let root = archive.setting();
     for n in &mut out.nodes {
         let label = n.label();
         let bound = bindings.iter().find(|b| b.node == n.id);
@@ -907,6 +907,7 @@ mod tests {
                 dir: root.join("P1").join("1.2.3"),
                 ..Default::default()
             }],
+            ..Default::default()
         }]
     }
 
@@ -914,6 +915,7 @@ mod tests {
     fn inputs_are_bound_to_the_server_archive_and_nothing_else() {
         let root = PathBuf::from("/srv/archive");
         let pts = patients(&root);
+        let pacs = Archive::new(root.clone());
         let mut wf = Workflow::new("t");
         let f = wf.add(Op::LoadFolder(Default::default()), "CT", [0.0, 0.0]);
         let i = wf.add(Op::ArchiveImport(Default::default()), "", [200.0, 0.0]);
@@ -924,7 +926,7 @@ mod tests {
             study_uid: study.into(),
         };
 
-        let bound = bind(&wf, &[b(f, "1.2.3")], &pts, &root, false).unwrap();
+        let bound = bind(&wf, &[b(f, "1.2.3")], &pts, &pacs, false).unwrap();
         match &bound.node(f).unwrap().op {
             Op::LoadFolder(p) => assert_eq!(PathBuf::from(&p.path), root.join("P1").join("1.2.3")),
             _ => unreachable!(),
@@ -934,21 +936,21 @@ mod tests {
             _ => unreachable!(),
         }
         // The whole patient.
-        let whole = bind(&wf, &[b(f, "")], &pts, &root, false).unwrap();
+        let whole = bind(&wf, &[b(f, "")], &pts, &pacs, false).unwrap();
         match &whole.node(f).unwrap().op {
             Op::LoadFolder(p) => assert_eq!(PathBuf::from(&p.path), root.join("P1")),
             _ => unreachable!(),
         }
         assert!(
-            bind(&wf, &[], &pts, &root, false).is_err(),
+            bind(&wf, &[], &pts, &pacs, false).is_err(),
             "unbound folder"
         );
         assert!(
-            bind(&wf, &[b(f, "9.9")], &pts, &root, false).is_err(),
+            bind(&wf, &[b(f, "9.9")], &pts, &pacs, false).is_err(),
             "no such study"
         );
         assert!(
-            bind(&wf, &[b(99, "1.2.3")], &pts, &root, false).is_err(),
+            bind(&wf, &[b(99, "1.2.3")], &pts, &pacs, false).is_err(),
             "no such input"
         );
 
@@ -968,15 +970,15 @@ mod tests {
             [0.0, 200.0],
         );
         out.link(f, 0, e, 0);
-        assert!(bind(&out, &[b(f, "1.2.3")], &pts, &root, false).is_err());
+        assert!(bind(&out, &[b(f, "1.2.3")], &pts, &pacs, false).is_err());
 
         // A batch takes a patient; the archive step the patient's id and the
         // study's UID.
         let mut wf2 = Workflow::new("t2");
         let l = wf2.add(Op::LoadFolders(Default::default()), "", [0.0, 0.0]);
         let r = wf2.add(Op::LoadFromArchive(Default::default()), "", [0.0, 100.0]);
-        assert!(bind(&wf2, &[b(l, "1.2.3"), b(r, "1.2.3")], &pts, &root, false).is_err());
-        let ok = bind(&wf2, &[b(l, ""), b(r, "1.2.3")], &pts, &root, false).unwrap();
+        assert!(bind(&wf2, &[b(l, "1.2.3"), b(r, "1.2.3")], &pts, &pacs, false).is_err());
+        let ok = bind(&wf2, &[b(l, ""), b(r, "1.2.3")], &pts, &pacs, false).unwrap();
         match &ok.node(r).unwrap().op {
             Op::LoadFromArchive(p) => {
                 assert_eq!((p.patient.as_str(), p.study.as_str()), ("P1", "1.2.3"));

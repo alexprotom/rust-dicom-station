@@ -1,6 +1,6 @@
 # The PACS server: `rds-pacs`
 
-Every station keeps its own archive (*Tools ▶ 🏥 PACS*, [pacs.md](pacs.md)).
+Every station keeps its own PACS (*Tools ▶ 🏥 PACS*, [pacs.md](pacs.md)).
 The PACS server puts a door on one station's archive so that other stations
 can reach it: list its patients, copy studies down, work on them with every
 tool the viewer has, send back what they drew, and hand the server
@@ -43,7 +43,7 @@ only, and nothing listens on the network until someone starts the server.
 
 | | |
 |---|---|
-| **Serve the archive** | The station's own archive folder, the same one *Tools ▶ PACS* shows on that machine, listed and downloadable by paired stations |
+| **Serve the PACS** | The station's own PACS, every storage folder of it, the same one *Tools ▶ PACS* shows on that machine (cohorts, patients, studies, series), listed and downloadable by paired stations |
 | **Mirror mode** | A station pulls studies into a local copy (its *mirror* of that server), works on them with or without a connection, and syncs back the structure sets and segmentations it made |
 | **Task mode** | A station hands the server a workflow bound to studies of its archive; the server runs it on its own hardware and files the results, which the station then pulls |
 | **Pairing** | A station is let in by a one-time pairing code from the server's operator, then by its own key; the operator sees every paired station and can revoke any of them |
@@ -68,14 +68,15 @@ The server is the program `rds-pacs`, installed beside the viewer:
 | **Flatpak** | `flatpak run --command=rds-pacs io.github.alexprotom.rust-dicom-station`. |
 | **From source** | `cargo build --release --features pacs-server` writes `target/release/rds-pacs` beside the viewer. |
 
-The viewer's *Settings ▶ PACS server* says whether it is installed.
+The PACS window's *⚙ Settings ▶ PACS server* page says whether it is installed.
 
 ### 2. Start it
 
-Open *Settings ▶ PACS server ▶ Open the server window* and press
-**▶ Start**. The viewer starts `rds-pacs` as a program of its own: it
-keeps serving when the window, and the viewer, are closed. **⏹ Stop** in
-the same window stops it.
+Open *Tools ▶ 🏥 PACS*, then *⚙ Settings ▶ PACS server* in its menu bar,
+and press **▶ Start**. The viewer starts `rds-pacs` as a program of its
+own: it keeps serving when the window, and the viewer, are closed.
+**⏹ Stop** on the same page stops it. (In earlier versions this was a window
+of its own under the viewer's *Settings* menu.)
 
 The first start makes the server's certificate and shows its fingerprint,
 sixteen groups of four characters:
@@ -87,7 +88,7 @@ Certificate   3F2A 9C41 0B7E ... 77D0
 **The firewall.** Windows may ask once, in a *Windows Security Alert*,
 whether `rds-pacs.exe` may accept connections: *Allow* it for *private*
 networks (and *public* ones only if the computer really is reached through
-one). The server window says what the Windows firewall currently does with
+one). The server page says what the Windows firewall currently does with
 `rds-pacs`: *allowed* on which kinds of network, *no rule* (nothing asked,
 or the alert was closed) or *blocked* (the alert was answered with
 *Cancel*, which makes a rule that blocks). **🔓 Allow through the Windows
@@ -110,11 +111,11 @@ running `rds-pacs serve`.
 
 ### 3. Choose what it serves (optional)
 
-The window's *Settings* section writes `pacs.toml`
+The page's *Settings* section writes `pacs.toml`
 ([the configuration file](#the-configuration-file)); a running server
 takes changes at its next start. By default it serves the station's own
-archive on port 11443 on every network, runs tasks, and downloads no
-model weights.
+PACS (every storage folder of *⚙ Settings ▶ Storage folders*) on port
+11443 on every network, runs tasks, and downloads no model weights.
 
 ### 4. Pair the stations
 
@@ -137,7 +138,7 @@ last seen and from where; **Revoke** stops its key at once.
 
 ## Reaching it on the local network
 
-Nothing more is needed. The server window lists, under *How other
+Nothing more is needed. The server page lists, under *How other
 stations reach it*, every address of the computer with the port
 (`192.168.1.20:11443`) and the interface it belongs to (*Ethernet*,
 *Wi-Fi*), then the machine's name with the port. Addresses of a VPN
@@ -254,18 +255,22 @@ was copied down stays in the mirror folder until removed by hand).
 
 ## Working on a server's studies
 
-Select the server at the top of the PACS window. The **Studies** tab lists
-its patients and studies like the local archive, with a ✔ on every study
-this station holds a copy of.
+Select the server at the top of the PACS window. The **Studies** tab shows
+its cohorts, patients, studies and series as a tree like the local one
+([pacs.md](pacs.md#the-window)), with a ✔ on every study and series this
+station holds a copy of (all or part of it). Rows are selected the same
+way: one or many, with the mouse (Ctrl, Shift) or the keyboard. A server
+of an earlier version names neither cohorts nor series: its patients come as one
+group and a study is pulled whole.
 
 | Button | What happens |
 |---|---|
-| **📥 Pull** | Copies the selected study (or the whole patient) into this station's mirror of the server. Only what the mirror does not hold yet is fetched, in bundles; a pull that breaks off keeps what arrived. |
-| **📩 Load into workspace A / B** | Pulls what is missing, then loads the mirrored folder into the workspace, exactly like *File ▶ Add DICOM folder*. Every tool of the viewer works on it from here on, connected or not. |
+| **📥 Pull** | Copies the selection - whole patients, studies, or single series of a study - into this station's mirror of the server. Only what the mirror does not hold yet is fetched, in bundles; a pull that breaks off keeps what arrived. |
+| **📩 Load into workspace A / B** | Pulls what is missing, then loads the selection's files from the mirror into the workspace, exactly like *File ▶ Add DICOM file(s)*. Every tool of the viewer works on it from here on, connected or not. |
 | **📤 Send workspace A / B** | Gives the server the workspace's structure sets and segmentation series (new SOP Instance UIDs, the original Study and Frame of Reference UIDs, a reference to the image series), filed under the study they were drawn on, and files them into the mirror as well. Images are never sent again. If the server cannot be reached, the objects wait in the **outbox**. |
-| **⟲ Sync** | Both directions for every study held here: delivers the outbox, fetches what others filed into those studies meanwhile, and sends what the server lacks. Studies never pulled are not fetched. |
-| **📤 Upload folder** | Sends every DICOM file of a folder on this computer into the server's archive (a new study for the server, say). |
-| right-click | *Remove the local copy* (the server keeps the study); with the admin role also *Remove from the server*. |
+| **⟲ Sync** | Both directions for every study held here: delivers the outbox, fetches what others filed into those studies meanwhile, and sends what the server lacks. Studies never pulled are not fetched, and a study held in part stays in part: its own series are completed and the objects drawn on it (structures, segmentations, doses, plans, registrations) come along, its other image series stay on the server. |
+| **📤 Upload folder** | Sends every DICOM file of a folder on this computer into the server's PACS (a new study for the server, say). |
+| right-click | *Pull*; *Remove the local copy* (the server keeps it); with the admin role also *Remove from the server* (whole patients or studies). |
 
 Nothing is ever overwritten, on either side: both archives only grow,
 files are named by their SOP Instance UIDs, and every object the station
@@ -273,7 +278,7 @@ makes gets UIDs of its own. Two people who send structures for the same
 study both find theirs there afterwards, as two structure sets. Sending
 the same objects twice files them once.
 
-When the server cannot be reached, the window shows its archive as last
+When the server cannot be reached, the window shows its PACS as last
 seen, everything held here loads and works as usual, and sends go to the
 outbox. The next **Sync** delivers them.
 
@@ -344,7 +349,8 @@ clipboard the same way.
 * **Guessing.** One pairing attempt per second per address; a code that
   has seen five wrong attempts is void.
 * **What a request can reach.** Nothing is built from the URL: UIDs are
-  checked to be UIDs and then compared with the archive's folder names;
+  checked to be UIDs and then looked up in the PACS catalog, a patient key
+  likewise;
   an upload is streamed to disk, cut off past `max_upload_mb`, and
   unpacked under numbered names, never under its entries' own.
 * **The activity log** (`audit-YYYY-MM-DD.log` in the server's data
@@ -360,14 +366,16 @@ clipboard the same way.
 
 ## The configuration file
 
-`pacs.toml` in the station's configuration folder (the server window
+`pacs.toml` in the station's configuration folder (the server page
 shows the path). Every key may be left out:
 
 ```toml
 name = ""                  # what stations see; empty: this computer's name
 bind = "0.0.0.0"           # 127.0.0.1 behind a reverse proxy
 port = 11443
-archive_dir = ""           # empty: the viewer's archive (Tools > PACS)
+archive_dir = ""           # empty: the station's PACS, every storage folder
+                           #   (PACS > Settings > Storage folders); or one
+                           #   folder, or several joined by |
 advertise = []             # extra names the certificate carries
 tls_cert = ""              # PEM files of a certificate of your own;
 tls_key = ""               #   empty: the self-signed one
@@ -418,18 +426,20 @@ Flatpak under `~/.var/app/io.github.alexprotom.rust-dicom-station/`.)
     clients.json                          paired stations, keys as hashes only
     local-admin.token                     the local operator's key (owner only)
     running.json                          while it listens: port, fingerprint
-<data folder>/archive/                    the archive it serves (by default)
+<data folder>/archive/                    the main storage folder it serves (by
+                                          default), rds-pacs-catalog.json in it
 <data folder>/pacs/                       its work
     audit-YYYY-MM-DD.log                  the activity log
     server.log                            what it printed when the viewer started it
     tasks/<id>/TASK.json, run/            one folder per task
 <configuration folder>/pacs-servers.json  a station's paired servers (a secret)
 <data folder>/pacs-mirror/<server id>/    a station's copy of one server
-    archive/                              the copy, in the archive's layout
+    archive/                              the copy, a PACS of its own (with its catalog)
     outbox/                               what waits to be sent
 ```
 
-Backing up a server means the archive folder and `<configuration
+Backing up a server means its storage folders (the catalog in the main
+one keeps the cohorts and names given there) and `<configuration
 folder>/pacs/`. Moving the server to another computer with both keeps
 every station's pairing.
 
