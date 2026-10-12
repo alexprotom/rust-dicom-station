@@ -291,8 +291,9 @@ off. One task runs at a time, the rest wait in order.
 
 1. Choose a workflow. The server offers its operator's saved workflows,
    the examples the program ships, and a few one-step templates: *Body
-   contour*, *Organs (TotalSegmentator, fast)*, *Heart on every phase of
-   a 4DCT*.
+   contour*, *Organs (TotalSegmentator, fast)*, *Synthetic CT from MR,
+   then organs* ([synthetic-ct.md](synthetic-ct.md)), *Heart on every
+   phase of a 4DCT*.
 2. For each input of the workflow choose a study of the server's archive
    (a *DICOM folder* input can also take a whole patient; a *DICOM
    folders* batch takes a patient and runs once per study).

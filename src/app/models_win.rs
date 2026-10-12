@@ -42,6 +42,10 @@ enum ModelAction {
     AddFolder,
     /// Forget one of the added folders.
     RemoveFolder(usize),
+    /// Add a folder of TotalSynth checkpoints (asks for it).
+    AddSynthFolder,
+    /// Forget one of the added checkpoint folders.
+    RemoveSynthFolder(usize),
 }
 
 impl ViewerApp {
@@ -165,7 +169,7 @@ impl ViewerApp {
             detach::WinOpts::width(680.0),
             |ui| {
                 ui.label(
-                    "Every model the segmentation tools can fetch. Weights are \
+                    "Every model the segmentation and synthesis tools can fetch. Weights are \
                      downloaded once, converted to a cache beside them, and never touched \
                      again - this window is where that inventory is managed.",
                 );
@@ -260,7 +264,16 @@ impl ViewerApp {
                 );
                 folders_rows(
                     ui,
+                    &FolderKind::NNUNET,
                     &self.nnunet_folders,
+                    &self.nnunet_folder_errors,
+                    running,
+                    &mut action,
+                );
+                folders_rows(
+                    ui,
+                    &FolderKind::SYNTH,
+                    &self.synth_folders,
                     &self.nnunet_folder_errors,
                     running,
                     &mut action,
@@ -346,9 +359,14 @@ impl ViewerApp {
     /// refused.
     fn apply_model_folders(&mut self) {
         let regs = autoseg::custom::register(&self.nnunet_folders);
+        let sct = crate::synth::custom::register(&self.synth_folders);
         self.nnunet_folder_errors = regs
             .into_iter()
             .filter_map(|(p, r)| r.err().map(|e| (p, format!("{e:#}"))))
+            .chain(
+                sct.into_iter()
+                    .filter_map(|(p, r)| r.err().map(|e| (p, format!("{e:#}")))),
+            )
             .collect();
         self.persist_settings();
         self.models_scan.clear();
@@ -410,6 +428,20 @@ impl ViewerApp {
                     self.apply_model_folders();
                 }
             }
+            ModelAction::AddSynthFolder => {
+                self.ask_folder("Folder of TotalSynth checkpoints", |app, dir| {
+                    if !app.synth_folders.contains(&dir) {
+                        app.synth_folders.push(dir);
+                    }
+                    app.apply_model_folders();
+                });
+            }
+            ModelAction::RemoveSynthFolder(i) => {
+                if i < self.synth_folders.len() {
+                    self.synth_folders.remove(i);
+                    self.apply_model_folders();
+                }
+            }
             ModelAction::FetchMissingOpen => {
                 let want: Vec<ModelAsset> = assets
                     .iter()
@@ -458,7 +490,8 @@ fn model_row(
     has_licence: bool,
     action: &mut Option<ModelAction>,
 ) {
-    let local = a.engine == models::Engine::Custom;
+    // A folder of the user's: converted, never downloaded.
+    let local = a.download_bytes == 0;
     let blocked = a.licence.needs_licence_number() && !has_licence;
     let (glyph, tint) = if s.ready {
         ("✔", Color32::from_rgb(120, 200, 120))
@@ -481,7 +514,7 @@ fn model_row(
             .weak()
             .small(),
     )
-    .on_hover_text("What the model segments");
+    .on_hover_text("The modality the model takes");
     let lic = egui::RichText::new(a.licence.name()).small();
     ui.label(if a.licence.open() {
         lic.weak()
@@ -599,25 +632,52 @@ fn licence_row(
 }
 
 /// The nnU-Net model folders the user added, each with what became of it.
+/// One kind of folder the user can add: what the row says and does.
+struct FolderKind {
+    title: &'static str,
+    button: &'static str,
+    hint: &'static str,
+    add: fn() -> ModelAction,
+    remove: fn(usize) -> ModelAction,
+}
+
+impl FolderKind {
+    const NNUNET: FolderKind = FolderKind {
+        title: "Your nnU-Net v2 models:",
+        button: "➕ Add a model folder",
+        hint: "A trained nnU-Net v2 model: a training folder with plans.json, \
+               dataset.json and fold_<k>/checkpoint_final.pth (or the dataset folder \
+               above it). It is then listed with the other automatic models.",
+        add: || ModelAction::AddFolder,
+        remove: ModelAction::RemoveFolder,
+    };
+    const SYNTH: FolderKind = FolderKind {
+        title: "Your TotalSynth checkpoints:",
+        button: "➕ Add a checkpoint folder",
+        hint: "A folder of TotalSynth checkpoints fine-tuned with KonfAI (CV_0.pt, CV_1.pt, \
+               ... or any .pt of the same network). It is then offered by Image synthesis \
+               beside the published models, its checkpoints averaged like theirs.",
+        add: || ModelAction::AddSynthFolder,
+        remove: ModelAction::RemoveSynthFolder,
+    };
+}
+
 fn folders_rows(
     ui: &mut egui::Ui,
+    kind: &FolderKind,
     folders: &[std::path::PathBuf],
     errors: &[(std::path::PathBuf, String)],
     running: bool,
     action: &mut Option<ModelAction>,
 ) {
     ui.horizontal(|ui| {
-        ui.label("Your nnU-Net v2 models:");
+        ui.label(kind.title);
         if ui
-            .add_enabled(!running, egui::Button::new("➕ Add a model folder"))
-            .on_hover_text(
-                "A trained nnU-Net v2 model: a training folder with plans.json, \
-                 dataset.json and fold_<k>/checkpoint_final.pth (or the dataset folder \
-                 above it). It is then listed with the other automatic models.",
-            )
+            .add_enabled(!running, egui::Button::new(kind.button))
+            .on_hover_text(kind.hint)
             .clicked()
         {
-            *action = Some(ModelAction::AddFolder);
+            *action = Some((kind.add)());
         }
     });
     for (i, f) in folders.iter().enumerate() {
@@ -627,7 +687,7 @@ fn folders_rows(
                 .on_hover_text("Forget this folder (its files are not touched)")
                 .clicked()
             {
-                *action = Some(ModelAction::RemoveFolder(i));
+                *action = Some((kind.remove)(i));
             }
             ui.label(
                 egui::RichText::new(f.display().to_string())

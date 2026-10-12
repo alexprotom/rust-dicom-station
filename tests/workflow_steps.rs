@@ -602,3 +602,85 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
     }
     out
 }
+
+#[test]
+fn a_synthetic_ct_step_makes_an_image_the_next_steps_take() {
+    let dir = common::target_dir("test_workflow_steps_sct");
+    let folder = phantom(&dir, "plan", 0.0);
+    // The engine tests' miniature TotalSynth, as a checkpoint folder of the
+    // user's (the phantom is a CT, which a folder's app accepts).
+    let cps = dir.join("checkpoints");
+    std::fs::create_dir_all(&cps).unwrap();
+    let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+    std::fs::copy(data.join("synth-unetpp-cv0.pt"), cps.join("CV_0.pt")).unwrap();
+    let reg = rust_dicom_station::synth::custom::register(std::slice::from_ref(&cps));
+    let key = (*reg[0].1.as_ref().unwrap()).to_string();
+
+    let mut wf = Workflow::new("sct");
+    let a = wf.add(load(&folder), "Plan", [0.0, 0.0]);
+    let s = wf.add(Op::SelectImage(SelectImage::default()), "", [200.0, 0.0]);
+    let c = wf.add(
+        Op::SynthesizeCt(SynthesizeCt {
+            app: key,
+            tta: 1,
+            mask: "BODY".into(),
+            ..SynthesizeCt::default()
+        }),
+        "",
+        [400.0, 0.0],
+    );
+    let e = wf.add(
+        Op::EvaluateSct(EvaluateSct {
+            wet: true,
+            difference: true,
+            ..EvaluateSct::default()
+        }),
+        "",
+        [600.0, 0.0],
+    );
+    let x = wf.add(Op::ExportDicom(ExportDicom::default()), "", [800.0, 0.0]);
+    wf.link(a, 0, s, 0);
+    wf.link(s, 0, c, 0);
+    wf.link(c, 0, e, 0);
+    wf.link(s, 0, e, 1);
+    wf.link(c, 0, x, 0);
+    assert!(wf.check().ok(), "{:?}", wf.check().errors);
+    let wf = Workflow::from_json(&wf.to_json()).expect("reads back");
+    let out = run(&wf, &options(&dir, &wf));
+    assert!(out.ok(), "{:?}", out.error);
+
+    // The study holds the sCT and the difference, both CT series.
+    let study = &out.studies[0].study;
+    let scts: Vec<_> = study
+        .series
+        .iter()
+        .filter(|s| s.description.starts_with("sCT"))
+        .collect();
+    assert_eq!(scts.len(), 2, "the sCT and the difference");
+    assert!(scts.iter().all(|s| s.modality == "CT"));
+    let report = out
+        .reports
+        .iter()
+        .find(|r| r.title.starts_with("Synthetic CT evaluation"))
+        .expect("the evaluation's report");
+    let hu = report.tables.iter().find(|t| t.title == "HU").unwrap();
+    assert_eq!(hu.rows[0][1], "all");
+    let mae: f64 = hu.rows[0][2].parse().unwrap();
+    assert!(mae > 0.0);
+    assert!(report
+        .tables
+        .iter()
+        .any(|t| t.title == "Water-equivalent thickness"));
+    // The export wrote the series the run made, images not asked for.
+    let files = walk(&out.run_dir);
+    let written_ct = files
+        .iter()
+        .filter(|p| {
+            p.components().any(|c| c.as_os_str() == "Plan")
+                && p.extension().is_some_and(|x| x == "dcm")
+        })
+        .count();
+    assert!(written_ct >= 2 * 40, "{written_ct} files exported");
+    rust_dicom_station::synth::custom::register(&[]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

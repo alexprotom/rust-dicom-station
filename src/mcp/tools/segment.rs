@@ -18,11 +18,11 @@ use crate::zoo::{self, AutoModel};
 
 /// The model folder, and the check that stops a run from turning into a
 /// download when downloads are not allowed.
-fn models_root(core: &Core) -> PathBuf {
+pub(super) fn models_root(core: &Core) -> PathBuf {
     core.session.config.models_dir()
 }
 
-fn refuse_download(core: &Core, bytes: u64, what: &str) -> Result<()> {
+pub(super) fn refuse_download(core: &Core, bytes: u64, what: &str) -> Result<()> {
     if bytes > 0 && !core.session.config.allow_model_download {
         bail!(
             "the {what} weights are not present ({} to download) and allow_model_download is off; \

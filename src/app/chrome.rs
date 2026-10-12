@@ -257,6 +257,12 @@ impl ViewerApp {
                             )
                             .changed();
                         modules_changed |= ui
+                            .checkbox(&mut self.module_synthesis, "Image synthesis")
+                            .on_hover_text(
+                                "A synthetic CT from an MR or a CBCT (TotalSynth), added to                                  the study as a CT series, and its evaluation against a CT of                                  the same patient: HU errors, SSIM, water-equivalent                                  thickness.",
+                            )
+                            .changed();
+                        modules_changed |= ui
                             .checkbox(&mut self.module_structures, "Structure editor")
                             .on_hover_text(
                                 "Insert, edit and combine structures: empty structures and \

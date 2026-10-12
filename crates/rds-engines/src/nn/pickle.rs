@@ -578,7 +578,10 @@ const LEGACY_MAGIC: i64 = 0x1950_a86a_20f9_469c_fc6c_u128 as i64;
 impl PthReader {
     /// Open a `.pth` checkpoint and extract the tensor table of the state
     /// dict found under `top_key` (e.g. `"network_weights"`). If `top_key` is
-    /// empty the checkpoint root itself must be the state dict.
+    /// empty the checkpoint root itself must be the state dict. A `?` in
+    /// front makes the key optional (the root when it is not there); `.*`
+    /// after it also takes the tensors of dicts nested in it, under
+    /// `name.` (KonfAI: `{"Model": {"UNetPlusPlus": {...}}}`).
     pub fn open(path: &Path, top_key: &str) -> Result<PthReader> {
         let file = std::fs::File::open(path)
             .with_context(|| format!("open checkpoint {}", path.display()))?;
@@ -674,6 +677,10 @@ impl PthReader {
     }
 
     fn state_dict(root: Value, top_key: &str) -> Result<Vec<(String, TensorMeta)>> {
+        let (top_key, nested) = match top_key.strip_suffix(".*") {
+            Some(k) => (k, true),
+            None => (top_key, false),
+        };
         // `?key`: the entry `key` when the root has it, the root otherwise -
         // for publishers that save either `state_dict()` or
         // `{"model": state_dict()}`.
@@ -701,15 +708,30 @@ impl PthReader {
             bail!("state dict is not a dict");
         };
         let mut tensors = Vec::new();
-        for (k, v) in state.borrow().iter() {
-            if let (Value::Str(name), Value::Tensor(meta)) = (k, v) {
-                tensors.push((name.to_string(), (**meta).clone()));
-            }
-        }
+        Self::collect(state, "", if nested { 0 } else { usize::MAX }, &mut tensors);
         if tensors.is_empty() {
             bail!("state dict contains no tensors");
         }
         Ok(tensors)
+    }
+
+    /// The tensors of a state dict in file order. With `depth` below the
+    /// limit, a dict nested under a string key contributes its own under
+    /// `key.` - KonfAI keeps one state dict per network (`{"Model":
+    /// {"UNetPlusPlus": {...}}}`); entries under any other key (an
+    /// optimizer's per-parameter state is keyed by integers) are not
+    /// weights. `usize::MAX` reads the one level only.
+    fn collect(dict: &Dict, prefix: &str, depth: usize, out: &mut Vec<(String, TensorMeta)>) {
+        for (k, v) in dict.borrow().iter() {
+            let Value::Str(name) = k else { continue };
+            match v {
+                Value::Tensor(meta) => out.push((format!("{prefix}{name}"), (**meta).clone())),
+                Value::Dict(inner) if depth < 8 => {
+                    Self::collect(inner, &format!("{prefix}{name}."), depth + 1, out)
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Read one tensor as f32 (converting from its storage dtype), honoring
@@ -1095,6 +1117,12 @@ mod tests {
         assert!(PthReader::open(&path, "").is_err());
         // and a key that is not there is an error, not a silent empty result
         assert!(PthReader::open(&path, "optimizer_state").is_err());
+        // Asked to, the root's nested dicts are read under their key.
+        let r = PthReader::open(&path, "?Model.*").unwrap();
+        assert_eq!(
+            r.tensors[0].0,
+            "network_weights.encoder.stages.0.0.convs.0.conv.weight"
+        );
     }
 
     #[test]

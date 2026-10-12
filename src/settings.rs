@@ -33,6 +33,7 @@ pub const GRAPHICS_BACKEND_KEY: &str = "graphics_backend";
 /// Settings keys of the two optional side-panel modules.
 const MODULE_REG_KEY: &str = "module_image_registration";
 const MODULE_SIM_KEY: &str = "module_image_simulation";
+const MODULE_SYNTH_KEY: &str = "module_image_synthesis";
 const MODULE_PROP_KEY: &str = "module_structures_propagation";
 const MODULE_TOOLS_KEY: &str = "module_structure_editor";
 const MODULE_AUTO_KEY: &str = "module_structure_auto_tools";
@@ -65,6 +66,9 @@ const RECENT_WORKFLOWS_KEY: &str = "recent_workflows";
 pub const TS_LICENCE_KEY: &str = "totalsegmentator_licence";
 /// Settings key of an nnU-Net model folder the user added (one line each).
 const NNUNET_FOLDER_KEY: &str = "nnunet_model_folder";
+/// Settings key of a folder of TotalSynth checkpoints the user added (one
+/// line each).
+const SYNTH_FOLDER_KEY: &str = "synth_model_folder";
 
 /// Settings keys of what each row of the central area shows, one per row.
 const VIEW_ROW_KEYS: [&str; MAX_WORKSPACES] =
@@ -189,6 +193,10 @@ pub struct Settings {
     /// modules panel.
     pub module_simulation: bool,
 
+    /// *Modules ▶ Image synthesis*: the synthetic CT section is shown in
+    /// the modules panel.
+    pub module_synthesis: bool,
+
     /// *Modules ▶ Structure propagation*: the propagation section is shown
     /// in the modules panel.
     pub module_propagation: bool,
@@ -253,6 +261,10 @@ pub struct Settings {
     /// nnU-Net model folders added in the model manager, run like the
     /// built-in models ([`crate::autoseg::custom`]).
     pub nnunet_folders: Vec<PathBuf>,
+
+    /// Folders of fine-tuned TotalSynth checkpoints added in the model
+    /// manager, run like the published apps ([`crate::synth::custom`]).
+    pub synth_folders: Vec<PathBuf>,
 }
 
 impl Default for Settings {
@@ -270,6 +282,7 @@ impl Default for Settings {
             // there is, and what is switched on is remembered.
             module_registration: false,
             module_simulation: false,
+            module_synthesis: false,
             module_propagation: false,
             module_structures: false,
             module_auto: false,
@@ -283,6 +296,7 @@ impl Default for Settings {
             recent_workflows: Vec::new(),
             ts_licence: None,
             nnunet_folders: Vec::new(),
+            synth_folders: Vec::new(),
             // Let wgpu choose. The installer writes an explicit value when
             // the person installing picks one.
             graphics_backend: Backend::Auto,
@@ -987,6 +1001,11 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
             if !value.trim().is_empty() && !s.nnunet_folders.contains(&v) {
                 s.nnunet_folders.push(v);
             }
+        } else if key.eq_ignore_ascii_case(SYNTH_FOLDER_KEY) {
+            let v = PathBuf::from(value.trim());
+            if !value.trim().is_empty() && !s.synth_folders.contains(&v) {
+                s.synth_folders.push(v);
+            }
         } else if key.eq_ignore_ascii_case(RECENT_WORKFLOWS_KEY) {
             s.recent_workflows = value
                 .split(SESSION_SEP)
@@ -997,6 +1016,10 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
         } else if key.eq_ignore_ascii_case(MODULE_SIM_KEY) {
             if let Some(b) = bool_from_str(value) {
                 s.module_simulation = b;
+            }
+        } else if key.eq_ignore_ascii_case(MODULE_SYNTH_KEY) {
+            if let Some(b) = bool_from_str(value) {
+                s.module_synthesis = b;
             }
         } else if key.eq_ignore_ascii_case(MODULE_PROP_KEY) {
             if let Some(b) = bool_from_str(value) {
@@ -1066,6 +1089,7 @@ fn render(s: &Settings) -> String {
         "# optional modules-panel sections (Modules menu) = on | off\n\
          {MODULE_REG_KEY} = {}\n\
          {MODULE_SIM_KEY} = {}\n\
+         {MODULE_SYNTH_KEY} = {}\n\
          {MODULE_PROP_KEY} = {}\n\
          {MODULE_TOOLS_KEY} = {}\n\
          {MODULE_AUTO_KEY} = {}\n\
@@ -1081,6 +1105,7 @@ fn render(s: &Settings) -> String {
          {GRAPHICS_BACKEND_KEY} = {}\n",
         bool_to_str(s.module_registration),
         bool_to_str(s.module_simulation),
+        bool_to_str(s.module_synthesis),
         bool_to_str(s.module_propagation),
         bool_to_str(s.module_structures),
         bool_to_str(s.module_auto),
@@ -1100,6 +1125,14 @@ fn render(s: &Settings) -> String {
         out.push_str("# nnU-Net model folders added in the model manager, one per line\n");
         for f in &s.nnunet_folders {
             out.push_str(&format!("{NNUNET_FOLDER_KEY} = {}\n", f.display()));
+        }
+    }
+    if !s.synth_folders.is_empty() {
+        out.push_str(
+            "# folders of TotalSynth checkpoints added in the model manager, one per line\n",
+        );
+        for f in &s.synth_folders {
+            out.push_str(&format!("{SYNTH_FOLDER_KEY} = {}\n", f.display()));
         }
     }
     if let Some(l) = &s.ts_licence {
@@ -1452,14 +1485,16 @@ mod tests {
                 PathBuf::from("D:/nnUNet_results/Dataset042_Liver"),
                 PathBuf::from("/data/models/Dataset7"),
             ],
+            synth_folders: vec![PathBuf::from("D:/konfai/Pelvis MR-Linac")],
             ..Settings::default()
         };
         let back = parse(&render(&s));
         assert_eq!(back.ts_licence, s.ts_licence);
         assert_eq!(back.nnunet_folders, s.nnunet_folders);
+        assert_eq!(back.synth_folders, s.synth_folders);
         let none = parse(&render(&Settings::default()));
         assert_eq!(none.ts_licence, None);
-        assert!(none.nnunet_folders.is_empty());
+        assert!(none.nnunet_folders.is_empty() && none.synth_folders.is_empty());
         assert_eq!(parse("totalsegmentator_licence =  ").ts_licence, None);
     }
 
@@ -1541,7 +1576,7 @@ mod tests {
 
     #[test]
     fn round_trips_the_module_flags() {
-        for bits in 0..64u8 {
+        for bits in 0..128u8 {
             let s = Settings {
                 module_registration: bits & 1 != 0,
                 module_simulation: bits & 2 != 0,
@@ -1549,6 +1584,7 @@ mod tests {
                 module_structures: bits & 8 != 0,
                 module_auto: bits & 16 != 0,
                 module_dose: bits & 32 != 0,
+                module_synthesis: bits & 64 != 0,
                 modules_open: if bits & 1 != 0 {
                     vec!["editor".into(), "dose".into()]
                 } else {
@@ -1556,7 +1592,7 @@ mod tests {
                 },
                 ..Settings::default()
             };
-            assert_eq!(parse(&render(&s)), s, "round trip of {bits:06b}");
+            assert_eq!(parse(&render(&s)), s, "round trip of {bits:07b}");
         }
         assert!(
             parse(&format!("{MODULE_REG_KEY} = TRUE")).module_registration,
@@ -1579,6 +1615,7 @@ mod tests {
                 && !fresh.module_dose
                 && !fresh.module_registration
                 && !fresh.module_simulation
+                && !fresh.module_synthesis
                 && !fresh.module_propagation,
             "a fresh installation starts with every module switched off"
         );

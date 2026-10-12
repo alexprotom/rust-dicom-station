@@ -3,8 +3,9 @@
 //! lungmask's 2-D U-Net ([`unet2d`]), MONAI's SegResNet family
 //! ([`segresnet`]: the whole-body bundle, CT-FM), VISTA-3D ([`vista3d`]),
 //! SegVol ([`segvol`]), MedSAM2 ([`medsam2`]) and nnInteractive
-//! ([`nninteractive`]); the registry in front of
-//! the automatic ones ([`zoo`]); and the neural-network plumbing they share
+//! ([`nninteractive`]); TotalSynth's synthetic CT ([`synth`]); the
+//! registry in front of the automatic ones ([`zoo`]); and the
+//! neural-network plumbing they share
 //! ([`nn`]): checkpoint download and conversion, device choice, tensors,
 //! GEMM-backed linear algebra and attention. No Python, no libtorch, no
 //! ONNX Runtime.
@@ -23,6 +24,7 @@ pub mod nn;
 pub mod nninteractive;
 pub mod segresnet;
 pub mod segvol;
+pub mod synth;
 pub mod unet2d;
 pub mod vista3d;
 pub mod zoo;

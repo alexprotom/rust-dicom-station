@@ -922,6 +922,7 @@ pub(super) fn tool_of(engine: Engine) -> &'static ToolInfo {
         Engine::SegVol => &PROMPT_SEG,
         Engine::MedSam2 => &SLICE_PROP,
         Engine::NnInteractive => &INTERACTIVE_SEG,
+        Engine::Synth => &super::synth_win::SYNTHESIS,
     }
 }
 
@@ -989,6 +990,13 @@ pub(super) fn weights_licence(engine: Engine) -> (&'static str, bool) {
             "Weights: nnInteractive v1.0 (DKFZ), CC BY-NC-SA 4.0 - non-commercial use \
              only; downloaded once from Hugging Face at your request, never \
              redistributed.",
+            true,
+        ),
+        Engine::Synth => (
+            "Weights: TotalSynth (the ImpactSynth apps, Boussot et al. 2026), CC BY-NC 4.0 \
+             like their training data - non-commercial use only; downloaded once from \
+             Hugging Face at your request, never redistributed. Folders of your own \
+             checkpoints carry whatever licence their data allows.",
             true,
         ),
     }

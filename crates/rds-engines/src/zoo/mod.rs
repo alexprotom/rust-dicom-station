@@ -13,8 +13,10 @@
 //!
 //! The prompt engines (SegVol, MedSAM2, and the point modes of VISTA-3D
 //! and nnInteractive) are not rows here: they answer a question the user
-//! draws, not a fixed class list. [`Family`] names them so the model
-//! manager can group every download the same way.
+//! draws, not a fixed class list. Nor are the synthetic-CT apps
+//! ([`crate::synth::App`]), whose output is an image, not labels. [`Family`]
+//! names them all so the model manager can group every download the same
+//! way.
 
 mod auto;
 mod tg263;
@@ -138,6 +140,8 @@ pub enum Family {
     SegVol,
     /// MedSAM2, slice propagation ([`crate::medsam2`]).
     MedSam2,
+    /// TotalSynth's UNet++, synthetic CT ([`crate::synth`]).
+    UnetPlusPlus,
 }
 
 impl Family {
@@ -149,6 +153,7 @@ impl Family {
             Family::Vista3d => "VISTA-3D",
             Family::SegVol => "SegVol",
             Family::MedSam2 => "MedSAM2",
+            Family::UnetPlusPlus => "UNet++",
         }
     }
 }

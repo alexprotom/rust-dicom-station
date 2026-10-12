@@ -36,6 +36,7 @@ pub mod rt_surface;
 pub mod rtdose;
 pub mod rtplan;
 pub mod rtstruct;
+pub mod sct;
 pub mod segmentation;
 pub mod settings;
 pub mod simulate;
@@ -54,5 +55,5 @@ pub mod mcp;
 // alike.
 pub use rds_core::{geometry, progress, volume};
 pub use rds_engines::{
-    autoseg, medsam2, nn, nninteractive, segresnet, segvol, unet2d, vista3d, zoo,
+    autoseg, medsam2, nn, nninteractive, segresnet, segvol, synth, unet2d, vista3d, zoo,
 };

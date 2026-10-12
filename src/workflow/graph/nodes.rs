@@ -40,6 +40,7 @@ use super::exec::{Ctx, Done, RegEntry, Report, RunOptions, Scope, Table, Value};
 use super::{safe_name, Node};
 
 mod more;
+mod synth;
 
 /// Run one node on its inputs (one list of values per input port).
 pub(super) fn run_node(
@@ -89,6 +90,10 @@ pub(super) fn run_node(
         Op::DoseMetrics(p_) => more::dose_metrics(ctx, node, &inputs[0], p_, p),
         Op::ArchiveImport(p_) => more::archive_import(&mut *ctx, &inputs[0], p_, p),
         Op::Drr(p_) => more::drr(ctx, node, need(0)?, p_, p),
+        Op::SynthesizeCt(p_) => synth::synthesize_ct(ctx, node, need(0)?, p_, p),
+        Op::EvaluateSct(p_) => {
+            synth::evaluate_sct(ctx, node, need(0)?, need(1)?, one(2), one(3), p_, p)
+        }
     }
 }
 
@@ -1856,7 +1861,9 @@ fn export_dicom(
         });
         for st in plan.studies_mut() {
             for se in &mut st.series {
-                se.selected = prm.images;
+                // The images when asked for; a series the run made always,
+                // since it is what the run produced.
+                se.selected = prm.images || d.touched_series.contains(&se.source_uid);
             }
             for ob in &mut st.objects {
                 ob.selected = match ob.kind {

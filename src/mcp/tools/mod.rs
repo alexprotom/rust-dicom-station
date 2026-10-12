@@ -14,6 +14,7 @@ pub mod output;
 pub mod register;
 pub mod segment;
 pub mod session;
+pub mod synthesis;
 pub mod workflows;
 
 use anyhow::{bail, Context, Result};
@@ -101,6 +102,23 @@ registry! {
          the rest), each operand optionally expanded or shrunk by a margin in mm (uniform or per \
          patient direction), an optional margin and cleanup on the result. Files the result as a \
          new segment."),
+
+    // ---- synthetic CT -------------------------------------------------
+    "synthesize_ct" => (synthesis::SynthArgs, synthesis::synthesize_ct, true,
+        "Synthesize a CT from an MR or CBCT series with TotalSynth (a 2.5-D UNet++, trained on \
+         SynthRAD 2023 and 2025, brain to pelvis) and add it to the dataset as a new CT series \
+         on the same frame of reference, written under the output folder. app: sct_mr, \
+         sct_cbct, sct_mr_cbct, sct_mr_dixon (default by modality); checkpoints / \
+         all_checkpoints and tta (0 to 2) choose between the quick look (CV_0, no mirrors) and \
+         the published recipe (all five, two mirrors); mask sets the air outside the patient. \
+         The weights are CC BY-NC 4.0 (non-commercial use). Returns the new series number."),
+    "evaluate_sct" => (synthesis::EvalArgs, synthesis::evaluate_sct, true,
+        "Compare a synthetic CT with a reference CT of the same patient: MAE, mean error and RMSE \
+         in HU inside a mask (overall and for air, soft tissue and bone by the reference), PSNR \
+         and SSIM over -1024 to 3071 HU, optionally the water-equivalent thickness difference \
+         along the three axes (wet, hlut) and the Dice of TotalSegmentator's structures \
+         (structures). The reference is resampled onto the synthetic CT through reg, or \
+         directly when the two share a frame of reference. Returns the numbers and a CSV."),
 
     // ---- register and propagate -------------------------------------
     "register" => (register::RegisterArgs, register::register, true,

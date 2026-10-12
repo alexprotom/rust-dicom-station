@@ -43,8 +43,9 @@ rust-dicom-station
 ├── Application (GUI, egui over wgpu)
 │   ├── Window chrome: menu bar, toolbar (W/L, presets, 3D, crosshair, reset, the draw row), status bar
 │   ├── Modules panel: the Image information, Playback, registration, simulation,
-│   │   Structure editor (insert, edit, combine), Structure auto tools (body contour
-│   │   and the three engines), propagation and Dose estimation sections
+│   │   image synthesis (synthetic CT and its evaluation), Structure editor
+│   │   (insert, edit, combine), Structure auto tools (body contour and the
+│   │   three engines), propagation and Dose estimation sections
 │   ├── Side panel: per workspace a DICOM tree - patient ▶ study ▶ modality ▶ series, with RT
 │   │   structures, segmentations, 4D groups, dose and plans inside their study -
 │   │   plus dose display, planar images, spatial registrations, records,
@@ -176,7 +177,7 @@ rust-dicom-station
 │   ├── Render: window / level, dose colorwash, marching-squares isodose, contour ∩ plane
 │   └── Progress: message, fraction, device, cancel, phase window
 │
-├── Tests: 15 integration suites + in-module unit tests, synthetic phantom, reference dumps
+├── Tests: 27 integration suites + in-module unit tests, synthetic phantom, reference dumps
 ├── Examples: headless CLIs and probes for the engines (shared examples/common)
 ├── Tools: the two PyTorch scripts that produce the MedSAM2 reference fixtures
 ├── Installer: Windows setup (shortcuts, VC++ runtime, optional weight prefetch, uninstall,
@@ -520,6 +521,11 @@ src/
                     crop, fill / smooth / prune, over masks on one lattice       Seg
   bodymask.rs       the body / EXTERNAL contour, classically or guided by the
                     body network                                                 Seg
+  sct/              synthetic CT as a series of the study: the body mask, the
+                    engine, the DICOM files (dicom_export::
+                    write_derived_image_series) read back for merging; eval.rs
+                    the comparison with a CT (MAE / ME / RMSE per HU class,
+                    PSNR, SSIM, WET through an HU-to-RSP table, organ Dice)     Sim
 
   workflow/         the pipelines without a window around them, shared by the
                     viewer's tool windows and the MCP server                     4D
@@ -638,6 +644,12 @@ crates/            the workspace's two library crates; lib.rs re-exports their
                       session (prompt channels, AutoZoom, refinement), the
                       resampling / pooling / box-cover operations it is built
                       from                                                       Seg
+    synth/            synthetic CT (pure-Rust TotalSynth / ImpactSynth): the
+                      apps and their checkpoints (mod.rs), the checkpoint's
+                      three namings and the batch-norm fold (layout.rs), the
+                      UNet++ on the CPU (cpu.rs) and over burn for the GPU
+                      (net.rs), KonfAI's prediction recipe to the rounding
+                      (pre.rs), folders of the user's checkpoints (custom.rs) Sim
 
     segvol/           prompt segmentation (pure-Rust SegVol)                       Seg
       weights.rs        the checkpoint and tokenizer files, load(), licensing notes
@@ -898,6 +910,8 @@ on Linux):
           + .safetensors
   nninteractive/nnInteractive_v1.0/plans.json, inference_session_class.json,
                                    fold_0.safetensors
+  synth/{mr,cbct,mr_cbct,finetune}/CV_0..4.pt + CV_0..4.safetensors
+  synth/custom/<key>/CV_k.safetensors    (your checkpoint folders, converted)
 ```
 
 `models.rs` owns the layout and the inventory behind the model manager;
@@ -914,9 +928,9 @@ the open-licence ones and all of them), through the same `models::ensure`.
 The model manager's *Download open-licence only* is the rule for an
 unattended fetch: what the registry's `Licence` calls open (Apache-2.0,
 MIT) is fetched, everything else waits for a user's request. The
-TotalSegmentator licence number and the user's nnU-Net folders reach the
-engines through `models::apply_settings`, which every program that runs
-models calls once with the loaded settings.
+TotalSegmentator licence number, the user's nnU-Net folders and folders of
+TotalSynth checkpoints reach the engines through `models::apply_settings`,
+which every program that runs models calls once with the loaded settings.
 
 ## Geometry conventions
 
@@ -981,7 +995,7 @@ cargo feature `pacs-server` (off by default) adds `axum`, `axum-server`
 
 ## Testing
 
-Twenty-five integration suites plus in-module unit tests run against the same
+Twenty-seven integration suites plus in-module unit tests run against the same
 code paths the GUI uses, with no external data or tooling: the analytic
 phantom round trip (**synthetic_study**), simulate → export → reload
 (**simulate_export**), rigid and B-spline recovery of known transforms
@@ -995,8 +1009,9 @@ against an analytic
 Gaussian phantom (**dvh**), structure algebra (**structops**), the shipped
 workflow example rebuilt on the 4D phantom and run end to end, in the
 background and step by step (**workflow_graph**), the other workflow steps,
-reruns, parallel rows against the serial run, and a batch
-(**workflow_steps**), and the three
+reruns, parallel rows against the serial run, a batch and the synthetic-CT
+steps (**workflow_steps**), a synthetic CT written into its study, read
+back and evaluated (**sct**), and the three
 engines assembled and run without a download - a miniature nnU-Net with the
 exact checkpoint naming (**autoseg**), and synthesized checkpoints with the
 real key names and shapes for **segvol** and **medsam2**, so genuine forward
@@ -1008,8 +1023,11 @@ their inputs and PyTorch's / MONAI's outputs), `tests/data/vista-points.safetens
 `tests/data/nninteractive-session.safetensors` (nine steps of the
 nnInteractive inference session with a stand-in network) and
 `tests/data/medsam2-vitdet.safetensors` (EfficientTAM's ViT and neck, built
-small, on weights a generator in the test reproduces); the engine unit
-tests read them. The MedSAM2 kernels' arithmetic is held to PyTorch's by
+small, on weights a generator in the test reproduces) and the
+`tests/data/synth-*` files (a miniature TotalSynth saved by KonfAI, its
+outputs, and `konfai PREDICTION` runs of the ImpactSynth recipe on a CT
+block, matched to the voxel but for half-precision rounding steps); the
+engine unit tests read them. The MedSAM2 kernels' arithmetic is held to PyTorch's by
 `tests/data/medsam2-ops.safetensors`, a file PyTorch, PIL and SAM 2 wrote
 themselves: 74 small tensors recording what each primitive returns on a
 random input. **ops_fixtures** re-derives every output in that file from

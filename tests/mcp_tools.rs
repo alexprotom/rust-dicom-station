@@ -73,6 +73,8 @@ fn every_tool_has_a_schema_and_a_description() {
         "anonymize",
         "list_workflows",
         "run_workflow",
+        "synthesize_ct",
+        "evaluate_sct",
     ] {
         assert!(names.contains(&must), "{must} is a tool");
     }
@@ -726,5 +728,65 @@ fn saved_workflows_are_listed_and_run() {
     let cases = run["cases"].as_array().unwrap();
     assert_eq!(cases.len(), 2, "{run}");
     assert!(cases.iter().all(|k| k["result"] == "every step ran"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_synthetic_ct_is_made_and_evaluated() {
+    let dir = common::target_dir("test_mcp_tools_sct");
+    let folder = common::fourd_folder(&dir, [0.0, 6.0, 3.0]);
+    // The user's checkpoints: the miniature TotalSynth of the engine's
+    // parity tests, as a folder added in the model manager.
+    let cps = dir.join("checkpoints");
+    std::fs::create_dir_all(&cps).unwrap();
+    let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+    std::fs::copy(data.join("synth-unetpp-cv0.pt"), cps.join("CV_0.pt")).unwrap();
+    let reg = rust_dicom_station::synth::custom::register(std::slice::from_ref(&cps));
+    let key = (*reg[0].1.as_ref().unwrap()).to_string();
+    let mut core = core_for(&dir);
+    let c = &mut core;
+    call(c, "open_dataset", json!({"path": folder}));
+    let before = call(c, "describe_dataset", json!({"dataset": "ds1"}))["series"]
+        .as_array()
+        .unwrap()
+        .len();
+    // An MR app refuses a CT; an unknown app is named.
+    let e = fail(
+        c,
+        "synthesize_ct",
+        json!({"dataset": "ds1", "app": "sct_mr"}),
+    );
+    assert!(e.contains("turns MR into a CT"), "{e}");
+    let e = fail(c, "synthesize_ct", json!({"dataset": "ds1", "app": "nope"}));
+    assert!(e.contains("unknown app"), "{e}");
+    let r = call(
+        c,
+        "synthesize_ct",
+        json!({"dataset": "ds1", "app": key, "tta": 1, "uncertainty": true, "mask": "classical"}),
+    );
+    assert_eq!(r["members"], 2, "{r}");
+    let n = r["series"].as_u64().unwrap();
+    assert_eq!(n as usize, before + 1);
+    assert_eq!(r["uncertainty_series"].as_u64().unwrap(), n + 1);
+    assert!(r["description"].as_str().unwrap().starts_with("sCT ("));
+    let d = call(c, "describe_dataset", json!({"dataset": "ds1"}));
+    assert_eq!(d["series"].as_array().unwrap().len(), before + 2);
+    // Against the CT it came from, same frame of reference.
+    let ev = call(
+        c,
+        "evaluate_sct",
+        json!({"dataset": "ds1", "sct": n, "reference": 1, "wet": true}),
+    );
+    assert!(ev["overall"]["voxels"].as_u64().unwrap() > 1000, "{ev}");
+    assert!(ev["overall"]["mae_hu"].as_f64().unwrap() > 0.0);
+    assert_eq!(ev["wet"].as_array().unwrap().len(), 3);
+    assert!(ev["csv"].as_str().unwrap().contains("psnr_db"));
+    let e = fail(
+        c,
+        "evaluate_sct",
+        json!({"dataset": "ds1", "sct": n, "reference": n}),
+    );
+    assert!(e.contains("same series"), "{e}");
+    rust_dicom_station::synth::custom::register(&[]);
     let _ = std::fs::remove_dir_all(&dir);
 }
