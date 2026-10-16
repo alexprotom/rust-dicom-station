@@ -388,7 +388,14 @@ where
         progress,
         label: model.label(),
     };
-    infer::predict_plan(data, dims, net.classes(), &plan, infer::ACC_BUDGET, &hooks)
+    infer::predict_plan(
+        data,
+        dims,
+        net.classes(),
+        &plan,
+        infer::acc_budget(),
+        &hooks,
+    )
 }
 
 /// Run a SegResNet-family model on a CT volume. Blocking; observe and

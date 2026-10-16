@@ -965,7 +965,7 @@ fn windows<B: Backend>(
         dims,
         prompts.len() + 1,
         &plan_for(dims, patch),
-        infer::ACC_BUDGET,
+        infer::acc_budget(),
         &hooks,
     )
 }

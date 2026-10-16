@@ -596,8 +596,9 @@ crates/            the workspace's two library crates; lib.rs re-exports their
       cache.rs          RemoteFile download, torch checkpoint ▶ safetensors
                         conversion (ConvertSpec), the converted-weight cache
       pickle.rs         native PyTorch checkpoint (.pth / .pt / .bin) reader
-      device.rs         DevicePref (Auto / GPU / CPU), the validated wgpu
-                        context, the backend-panic guard
+      device.rs         DevicePref (Auto / GPU / CPU), the inference device
+                        opened adapter by adapter and self-tested, the
+                        backend-panic guard
       params.rs         shape-checked view of a loaded state dict
       half.rs           binary16 ↔ binary32 conversion
       tensor.rs         Mat [rows, cols] and Act [c, d, h, w]; transposed conv

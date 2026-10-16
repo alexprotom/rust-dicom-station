@@ -13,8 +13,12 @@
 //! * the activity's two folders become the settings and data folders (see
 //!   `settings::android`), since Android has no home directory;
 //! * standard output and error are read back into logcat, where a crash
-//!   can actually be seen; a panic is also written to a file in the app's
-//!   folder, so a tablet without a debug cable still keeps the evidence;
+//!   can actually be seen, and into `rds-log.txt` in the app's data folder,
+//!   with every change of a job's progress and the memory in use; the log
+//!   of the run before is kept as `rds-log.previous.txt`, so a tablet
+//!   without a debug cable still keeps the evidence when Android ends the
+//!   program without a word (it does that when memory runs out). A panic is
+//!   also written to `last_panic.txt`, in both folders;
 //! * the one platform question is asked: *all files access*, without
 //!   which the shared storage - the DICOM folders on the device or a USB
 //!   stick - cannot be read. Android grants it on a system settings page;
@@ -40,8 +44,20 @@ mod clipboard;
 mod insets;
 mod permission;
 
-/// Written into the app's private folder when the program panics.
+/// Written into the app's folders when the program panics.
 const PANIC_FILE: &str = "last_panic.txt";
+
+/// This run's log, in the data folder (readable over USB and in the
+/// program's own file browser under *App data*).
+const LOG_FILE: &str = "rds-log.txt";
+
+/// The run before's log, kept at start: after Android has stopped the
+/// program, this is the file that says where it was.
+const PREVIOUS_LOG: &str = "rds-log.previous.txt";
+
+/// The log stops growing here; a run that writes this much is not one
+/// whose end anybody will look for in the middle.
+const LOG_MAX_BYTES: u64 = 8 << 20;
 
 /// The tag every logcat line carries: `adb logcat -s rds`.
 const LOG_TAG: &str = "rds";
@@ -54,7 +70,6 @@ fn android_main(app: AndroidApp) {
             .with_max_level(log::LevelFilter::Info)
             .with_tag(LOG_TAG),
     );
-    redirect_stdio_to_logcat();
 
     let internal = app
         .internal_data_path()
@@ -65,14 +80,18 @@ fn android_main(app: AndroidApp) {
             log::warn!("could not create {}: {e}", d.display());
         }
     }
-    install_panic_hook(internal.join(PANIC_FILE));
+    let _ = std::fs::rename(external.join(LOG_FILE), external.join(PREVIOUS_LOG));
+    redirect_stdio_to_logcat(Some(external.join(LOG_FILE)));
+    install_panic_hook(vec![internal.join(PANIC_FILE), external.join(PANIC_FILE)]);
     settings::android::set_dirs(internal.clone(), external.clone());
-    log::info!(
-        "rust-dicom-station {} starting; settings in {}, data in {}",
-        env!("CARGO_PKG_VERSION"),
+    eprintln!(
+        "rust-dicom-station {} starting; settings in {}, data in {}; {}",
+        rust_dicom_station::VERSION,
         internal.display(),
-        external.display()
+        external.display(),
+        memory::line()
     );
+    memory::trail_progress();
 
     // As on the desktop: the environment wins over the settings file, and
     // the inference backend reads the choice from the environment.
@@ -83,7 +102,7 @@ fn android_main(app: AndroidApp) {
     } else {
         gfx::Backend::Auto
     };
-    log::info!("graphics backend: {}", backend.label());
+    eprintln!("graphics backend: {}", backend.label());
 
     let mut wgpu_options = eframe::WgpuConfiguration::default();
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
@@ -300,14 +319,17 @@ impl Shell {
     }
 }
 
-/// Send everything written to standard output and error to logcat.
+/// Send everything written to standard output and error to logcat, and to
+/// `file` when there is one.
 ///
 /// Android connects both to `/dev/null`. The viewer reports a failed
 /// backend, a rejected settings file and a good deal else with `eprintln!`,
 /// and a panic message goes to standard error before the hook runs - so a
 /// pipe replaces the two descriptors and a thread copies it, line by line,
-/// into the log.
-fn redirect_stdio_to_logcat() {
+/// into the log. The file gets each line with the seconds since start, and
+/// is flushed line by line: a process that is killed loses nothing it had
+/// already written.
+fn redirect_stdio_to_logcat(file: Option<PathBuf>) {
     let mut fds = [0 as libc::c_int; 2];
     // SAFETY: `fds` is a valid two-element array for `pipe`; the descriptors
     // it returns are owned by this function until moved into the reader.
@@ -328,29 +350,100 @@ fn redirect_stdio_to_logcat() {
             use std::os::fd::FromRawFd as _;
             // SAFETY: `read_end` is the read side of the pipe created above
             // and is owned by nothing else.
-            let file = unsafe { std::fs::File::from_raw_fd(read_end) };
-            for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+            let pipe = unsafe { std::fs::File::from_raw_fd(read_end) };
+            let mut out = file.and_then(|p| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&p)
+                    .map_err(|e| log::warn!("could not open {}: {e}", p.display()))
+                    .ok()
+            });
+            let start = std::time::Instant::now();
+            let mut written = 0u64;
+            for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
                 log::info!("{line}");
+                if let Some(f) = out.as_mut() {
+                    use std::io::Write as _;
+                    let text = format!("{:9.1} {line}\n", start.elapsed().as_secs_f64());
+                    written += text.len() as u64;
+                    if written > LOG_MAX_BYTES || f.write_all(text.as_bytes()).is_err() {
+                        let _ = f.write_all(b"(the log stops here: it is full)\n");
+                        out = None;
+                    }
+                }
             }
         })
         .ok();
 }
 
-/// Log a panic and keep it in a file, since the log is gone with the
-/// process and a tablet rarely has a debug cable attached.
-fn install_panic_hook(file: PathBuf) {
-    let file = Arc::new(file);
+/// Log a panic and keep it in files, since the log is gone with the
+/// process and a tablet rarely has a debug cable attached. The private
+/// folder's copy survives everything; the data folder's can be read over
+/// USB.
+fn install_panic_hook(files: Vec<PathBuf>) {
+    let files = Arc::new(files);
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let text = format!(
             "rust-dicom-station {} panicked: {info}\n{}",
-            env!("CARGO_PKG_VERSION"),
+            rust_dicom_station::VERSION,
             std::backtrace::Backtrace::force_capture()
         );
         log::error!("{text}");
-        if let Err(e) = std::fs::write(file.as_path(), &text) {
-            log::error!("could not write {}: {e}", file.display());
+        for file in files.iter() {
+            if let Err(e) = std::fs::write(file, &text) {
+                log::error!("could not write {}: {e}", file.display());
+            }
         }
         previous(info);
     }));
+}
+
+/// The memory picture, which is what decides whether Android lets a long
+/// job finish: it ends a program that takes too much of it without a
+/// message, so the log has to say how close each step came.
+mod memory {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    /// Kilobytes on the line of a `/proc` file that starts with `key`.
+    fn kb(text: &str, key: &str) -> Option<u64> {
+        text.lines()
+            .find(|l| l.starts_with(key))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|v| v.parse().ok())
+    }
+
+    /// "memory: this program 812 MB (peak 1630 MB), free 2410 of 7480 MB".
+    pub fn line() -> String {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+        let info = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+        let mb = |v: Option<u64>| v.map_or("?".to_string(), |k| (k / 1024).to_string());
+        format!(
+            "memory: this program {} MB (peak {} MB), free {} of {} MB",
+            mb(kb(&status, "VmRSS:")),
+            mb(kb(&status, "VmHWM:")),
+            mb(kb(&info, "MemAvailable:")),
+            mb(kb(&info, "MemTotal:")),
+        )
+    }
+
+    /// Log every new step of every job, with the memory beside it. A step
+    /// is a message whose words change ("Resampling", "Segmenting (total,
+    /// 3 mm): tile 3/8" after "Downloading"); one that only counts on is logged
+    /// again after a few seconds, so the last line before a silent end is
+    /// never far from it.
+    pub fn trail_progress() {
+        let last = Mutex::new((String::new(), Instant::now()));
+        rust_dicom_station::progress::set_trail(Box::new(move |msg: &str| {
+            let words: String = msg.chars().filter(|c| !c.is_ascii_digit()).collect();
+            let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
+            if words != last.0 || last.1.elapsed() >= Duration::from_secs(5) {
+                last.0 = words;
+                last.1 = Instant::now();
+                eprintln!("progress: {msg} ({})", line());
+            }
+        }));
+    }
 }

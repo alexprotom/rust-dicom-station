@@ -158,8 +158,56 @@ pub trait InferHooks: Sync {
 }
 
 /// Memory the logit accumulator may take before the volume is split into
-/// strips (bytes).
+/// strips (bytes), on a machine with memory to spare.
 pub const ACC_BUDGET: usize = 3 << 30;
+
+/// The least the accumulator is given however short memory is: below this
+/// the strips grow so many that the time, not the memory, decides.
+const ACC_MIN_BUDGET: usize = 256 << 20;
+
+/// The accumulator's budget for this run: [`ACC_BUDGET`], or a quarter of
+/// the memory the system has free when that is less. A phone or tablet
+/// with a few GB free (Android ends a program that takes too much, without
+/// a word) gets strips where a workstation keeps one ring; a strip costs
+/// time - the windows across a strip edge run once per strip - and never
+/// changes the answer: every voxel sums the same windows in the same order.
+pub fn acc_budget() -> usize {
+    budget_for(available_memory())
+}
+
+fn budget_for(free: Option<u64>) -> usize {
+    match free {
+        Some(f) => usize::try_from(f / 4)
+            .unwrap_or(usize::MAX)
+            .clamp(ACC_MIN_BUDGET, ACC_BUDGET),
+        None => ACC_BUDGET,
+    }
+}
+
+/// Bytes the system could give this process now (`MemAvailable` on Linux
+/// and Android); `None` where it does not say.
+pub fn available_memory() -> Option<u64> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        mem_available(&std::fs::read_to_string("/proc/meminfo").ok()?)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        None
+    }
+}
+
+/// `MemAvailable` of a `/proc/meminfo` text, in bytes. Only Linux and
+/// Android have the file; the parser is tested everywhere.
+#[cfg(any(target_os = "linux", target_os = "android", test))]
+fn mem_available(meminfo: &str) -> Option<u64> {
+    meminfo
+        .lines()
+        .find(|l| l.starts_with("MemAvailable:"))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|kb| kb.parse::<u64>().ok())
+        .map(|kb| kb * 1024)
+}
 
 /// Run nnU-Net sliding-window inference over a resampled volume.
 ///
@@ -180,7 +228,7 @@ pub fn predict(
         .map(|&v| (v.clamp(cfg.clip_lo, cfg.clip_hi) - cfg.mean) * inv_std)
         .collect();
     let plan = nnunet_plan(dims, cfg.patch_size, step_frac);
-    predict_plan(&normalized, dims, classes, &plan, ACC_BUDGET, hooks)
+    predict_plan(&normalized, dims, classes, &plan, acc_budget(), hooks)
 }
 
 /// Run a sliding-window pass described by `plan` over an already
@@ -642,6 +690,22 @@ mod tests {
     /// The sliding window covers every voxel and the argmax label lands
     /// where the "model" put it - under nnU-Net's plan, MONAI's, and with
     /// the volume cut into strips.
+    #[test]
+    fn the_budget_follows_free_memory_within_its_bounds() {
+        assert_eq!(budget_for(None), ACC_BUDGET);
+        assert_eq!(budget_for(Some(64 << 30)), ACC_BUDGET, "a workstation");
+        assert_eq!(budget_for(Some(3 << 30)), 768 << 20, "a tablet");
+        assert_eq!(
+            budget_for(Some(100 << 20)),
+            ACC_MIN_BUDGET,
+            "nearly nothing"
+        );
+        let meminfo = "MemTotal:        7660000 kB\nMemFree:          812344 kB\n\
+                       MemAvailable:    3145728 kB\nBuffers:            1024 kB\n";
+        assert_eq!(mem_available(meminfo), Some(3 << 30));
+        assert_eq!(mem_available("MemTotal: 1 kB\n"), None);
+    }
+
     #[test]
     fn sliding_window_covers_and_labels() {
         let cfg = ModelConfig {

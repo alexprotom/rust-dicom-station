@@ -57,3 +57,8 @@ pub use rds_core::{geometry, progress, volume};
 pub use rds_engines::{
     autoseg, medsam2, nn, nninteractive, segresnet, segvol, synth, unet2d, vista3d, zoo,
 };
+
+/// The viewer's version, for the front ends whose own crate has another
+/// (the Android and iOS packages): their log lines and panic files carry
+/// this one.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");

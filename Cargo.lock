@@ -6562,6 +6562,7 @@ dependencies = [
  "safetensors 0.8.0",
  "serde_json",
  "ureq",
+ "wgpu 29.0.4",
  "zip 2.4.2",
 ]
 

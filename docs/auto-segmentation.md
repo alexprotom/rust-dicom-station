@@ -275,7 +275,10 @@ resolved - as a `PlainConvUNet` or a `ResidualEncoderUNet`.
    ensemble: their logits are summed in the accumulator. The accumulator is
    a ring buffer along the leading axis, and for models with many classes
    at fine resolution also split into strips across the second axis, so its
-   memory stays under 3 GB whatever the scan.
+   memory stays under 3 GB whatever the scan - or under a quarter of the
+   memory the system has free, when that is less (a tablet: the 3 mm
+   `total` model then runs in two or three strips, a little slower, with
+   the same labels).
 6. **Label merging** of sub-models into the task's table, later sub-models
    winning at overlaps (TotalSegmentator's order).
 7. **Post-processing** where the task has it: `body` keeps the largest trunk
@@ -537,13 +540,26 @@ Nature Methods 2021 (<https://doi.org/10.1038/s41592-020-01323-z>).
 
 ## Troubleshooting
 
-* **"no usable wgpu adapter found"** - no Vulkan/DX12/Metal device
-  (headless machine, missing driver). *Auto* silently uses the CPU;
-  forcing *GPU* reports the error. If the whole program will not start,
-  that is the related and more common failure - a Windows machine
-  advertising a Vulkan driver that cannot create a device; see
-  [viewer.md](viewer.md#graphics-backend). The backend chosen there governs
-  inference too.
+* **"no usable GPU (...)"** - no graphics adapter could run the networks.
+  The inference device is opened by the program itself
+  (`crates/rds-engines/src/nn/device.rs`), not left to `burn`: every
+  adapter of every backend the platform has is tried in turn (the backend
+  of *Settings > Graphics backend* first, then Vulkan and DirectX 12 on
+  Windows, Vulkan on Linux and Android, Metal on macOS and iOS), each is
+  proved with a small convolution and matrix product, and the message
+  names every adapter tried and what stopped it (no adapter, a refused
+  device request, the panic text of the driver, the shader compiler or
+  burn's kernels). OpenGL, when it is the backend chosen, fails that test:
+  burn's reductions need float atomics it does not have. *Auto*
+  silently uses the CPU; forcing *GPU* reports the message. If the whole
+  program will not start, that is the related and more common failure - a
+  Windows machine advertising a Vulkan driver that cannot create a device;
+  see [viewer.md](viewer.md#graphics-backend).
+* **"GPU inference failed (backend panic: ...)"** - the device opened but a
+  network did not run on it; the text after the colon is what the backend
+  said (often a buffer larger than the GPU allows: a phone or tablet GPU
+  binds far less memory at once than a desktop one). The CPU runs the same
+  networks.
 * **Download fails behind a proxy** - the downloader uses the OS trust
   store, so an inspection proxy's CA installed system-wide is honoured;
   Hugging Face also rate-limits anonymous downloads now and then: retry, or

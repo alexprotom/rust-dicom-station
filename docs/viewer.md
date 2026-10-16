@@ -831,9 +831,24 @@ program.
 
 The program creates two independent `wgpu` instances: `eframe` draws the
 interface with one, and `burn` runs the networks on another. The first takes
-its backends as a typed argument; the second is several layers down inside
-`cubecl` and takes them only from the environment. So the chosen backend is
-also exported as `WGPU_BACKEND` for this process - once, at the very top of
-`main` before any thread exists, which is both the documented contract for
-writing the environment and exactly the workaround that was already known to
-work. A value the user set themselves is never overwritten.
+its backends as a typed argument; the second is opened by the engines
+themselves (`crates/rds-engines/src/nn/device.rs`), which read the choice
+from the environment. So the chosen backend is also exported as
+`WGPU_BACKEND` for this process - once, at the very top of `main` before any
+thread exists, which is both the documented contract for writing the
+environment and exactly the workaround that was already known to work. A
+value the user set themselves is never overwritten.
+
+The inference device falls back too, and further than the window: left to
+itself, `burn`'s `cubecl` would ask one graphics API per platform (Metal on
+macOS, Vulkan everywhere else, iOS included) for one adapter, and report any
+failure as a panic whose text never reached the user. The engines instead
+try the exported backend first, then the platform's own (Vulkan and Direct3D
+12 on Windows, Vulkan on Linux and Android, Metal on Apple), every adapter of
+each, discrete before integrated before software; the device is requested
+exactly as `cubecl` requests it and proved with a small convolution and
+matrix product. OpenGL draws but does not compute: burn's reductions need
+float atomics it lacks, and the test says so.
+The first that passes runs the networks, and the job's device line names it
+(`GPU (Adreno (TM) 650, Vulkan)`); when none passes, forcing *GPU* reports
+each adapter and what stopped it.

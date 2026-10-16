@@ -67,7 +67,12 @@ between the picker and the loader, and this project is pure Rust.
 | Installer, updater | `rds-setup.exe` | Android's own installer; a newer APK from the releases page |
 
 The inference engines are built exactly as on the desktop, with the `gpu`
-feature on, and the same rules decide what runs: MedSAM2 fits a tablet
+feature on. They compute through Vulkan (OpenGL ES only when it is the
+*Graphics backend* chosen, and then it fails: the networks' reductions need
+float atomics OpenGL does not have), and when the tablet's GPU cannot run
+them, forcing *GPU* says what the adapter answered (see
+[auto-segmentation.md](auto-segmentation.md#troubleshooting)). The same
+rules decide what runs: MedSAM2 fits a tablet
 well, the 3 mm TotalSegmentator needs a device with 12 GB or more, the
 1.5 mm models and SegVol do not fit ([auto-segmentation.md](auto-segmentation.md)).
 A job of minutes is at the mercy of Android, which may stop a program in
@@ -94,9 +99,27 @@ backup.
 
 ## Logs
 
+Android ends a program that takes too much memory without a message and
+without a crash report of its own, so the program keeps its own record.
 Standard output and error, which Android throws away, are copied into the
-system log with the tag `rds`, and a panic is also written to
-`last_panic.txt` in the settings folder above. With a debug cable:
+system log with the tag `rds` and into `rds-log.txt` in the data folder
+above: each line with the seconds since start, written as it comes, so
+nothing already written is lost when the process is killed. Every job adds
+a line for each new step of its progress (*Resampling*, *Segmenting
+(total, 3 mm): tile 3/8*; one that only counts on is repeated every few
+seconds), each with the memory beside it:
+
+```text
+   212.4 progress: Segmenting (total, 3 mm): tile 3/8 (memory: this program 2630 MB (peak 2840 MB), free 1210 of 7480 MB)
+```
+
+At start the previous run's log becomes `rds-log.previous.txt`, so after
+the program has vanished, starting it again and reading that file (over
+USB: *Android/data/io.github.alexprotom.rustdicomstation/files*, or in the
+program's own file browser under *App data*) shows the step it was on and
+how much memory it had. A panic is written to `last_panic.txt` in both
+folders above; the data folder's copy is the one that can be read without
+a cable. With a debug cable:
 
 ```text
 adb logcat -s rds

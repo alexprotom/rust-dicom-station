@@ -26,8 +26,9 @@
 //! One subtlety worth stating. The program creates two independent `wgpu`
 //! instances: `eframe` draws the interface with one, and `burn` runs the
 //! networks on another. The first takes its backends as a typed argument;
-//! the second is several layers down inside `cubecl` and takes them only
-//! from the environment. So [`Backend::export`] sets `WGPU_BACKEND` for this
+//! the second is opened by the engines (`rds_engines::nn::device`), which
+//! take the choice only from the environment and try it before the
+//! platform's own. So [`Backend::export`] sets `WGPU_BACKEND` for this
 //! process, once, before anything has started a thread - which is both the
 //! documented contract and exactly the workaround that was already known to
 //! work.
@@ -170,8 +171,8 @@ impl Backend {
     }
 
     /// Publish the choice to `wgpu` through the environment, for the parts
-    /// of the program that can only be reached that way - `burn`'s compute
-    /// backend, several layers down inside `cubecl`.
+    /// of the program that can only be reached that way - the engines'
+    /// compute device (`rds_engines::nn::device`), opened far from here.
     ///
     /// A value the user set themselves is never overwritten: it is the
     /// documented escape hatch, and someone who typed it is debugging.
