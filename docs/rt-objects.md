@@ -110,6 +110,34 @@ Registration (*Image registration ▶ Vector field ▶ 💾 Save as DICOM…*); 
 IOD's pre- and post-deformation matrices are written as the identity and the
 grid carries the whole mapping. See [registration.md](registration.md).
 
+A 2D/3D registration is written as a **rigid Spatial Registration**: the
+object in the planning CT's frame of reference, the identity for that frame
+and the correction (room to CT, row-major) for the radiographs' frame of
+reference - or a new one, named in the object's description, when they share
+the CT's. Read back, it is the same transform to a micrometre (tested). See
+[registration-2d3d.md](registration-2d3d.md).
+
+## RT Image - radiographs, portal images and DRRs
+
+RT Images, DX, CR, XA and RF images are planar images: the pixels after the
+Modality LUT (MONOCHROME1 inverted), the pixel spacing, a window, and the
+first frame of a cine with the frame count. An RT Image that states its
+geometry - *Radiation Machine SAD*, *RT Image SID*, *Gantry Angle*, *Patient
+Support Angle*, *Table Top Pitch / Roll* and *Beam Limiting Device Angle*
+(from the first *Exposure Sequence* item when present, which supersedes the
+top level), *X-Ray Image Receptor Translation* (the receptor's absolute
+position in gantry coordinates, `(0, 0, SAD − SID)` when absent) and
+*Angle*, *RT Image Position* and *Orientation*, *Isocenter Position*,
+*Patient Position* - is placed: its exact camera in patient coordinates
+(`extras::rt_image_geometry`), which the DRR section renders and the 2D/3D
+registration registers through. One missing an attribute says which.
+*Primary Dosimeter Unit* `MU` marks a megavoltage image.
+
+The DRRs of a 2D/3D registration are written back out as RT Images with
+those attributes, 16 bits with the rescale that gives the values back
+(`dicom_export::write_rt_image`); loaded again they place themselves to a
+micrometre.
+
 ## RTRECORD - treatment records
 
 RT (Ion) Beams Treatment Records are summarized per session: fraction number,

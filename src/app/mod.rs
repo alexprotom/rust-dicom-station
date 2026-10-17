@@ -60,6 +60,7 @@ mod export_win;
 mod form;
 mod glyphs;
 mod home;
+mod image_gen;
 mod img_info;
 mod interactive_seg;
 mod jobs;
@@ -80,6 +81,7 @@ mod poi;
 mod prompt_seg;
 mod propagate_win;
 mod record;
+mod reg2d3d;
 mod reg_panel;
 mod reg_shape;
 mod rename;
@@ -102,7 +104,7 @@ mod workflow_edit;
 mod workflow_run;
 mod workspace_pick;
 
-use drr_win::DrrDialog;
+use drr_win::{DrrRun, DrrState};
 use pacs_win::{PacsOutcome, PacsWindow};
 use propagate_win::{GroupRegistration, PropOutcome, PropagateDialog};
 use reg_panel::{RegImage, RegInit, RegOutcome, RegRoi};
@@ -521,6 +523,90 @@ fn plane_index(plane: ViewPlane) -> usize {
     }
 }
 
+/// One planar pane of a row ([`PaneKind::Planar`]): which of the
+/// workspace's planar images it shows and how.
+///
+/// A pane shows one image or several, stacked: the scrubber along its
+/// bottom edge moves through the stack, and the two images either side of
+/// it are compared the way [`Compare`] says - faded into each other, in a
+/// checkerboard, as a difference or one's edges over the other. Images are
+/// named by their index in `study.planar_images`; removing one renumbers the
+/// panes ([`ViewerApp::planar_removed`]). Zoom and pan are in the units of an
+/// MPR view (screen pixels per millimetre, millimetres off the centre) and
+/// every image of the stack is drawn at that scale about the same centre, so
+/// two renderings of one geometry lie exactly on each other.
+#[derive(Default)]
+struct PlanarView {
+    /// The stack, bottom first. Empty: nothing given to the pane yet.
+    layers: Vec<PlanarLayer>,
+    /// Where the scrubber stands in the stack: 0 is the first image, 1 the
+    /// second, and a fraction is between the two.
+    blend: f32,
+    compare: Compare,
+    /// Screen pixels per mm; 0 means auto-fit.
+    zoom: f32,
+    pan: Vec2,
+    /// Fractional mouse-wheel line accumulator for stepping through the
+    /// stack.
+    scroll_accum: f32,
+    /// The difference or edge image of the pair being compared, and what it
+    /// was made from.
+    cmp_tex: Option<TextureHandle>,
+    cmp_key: Option<u64>,
+}
+
+/// One image of a planar pane's stack, with the window it is shown with.
+///
+/// The window is the image's own in this pane: two planar images of one
+/// workspace - a kV image and its DRR - have nothing like a shared modality
+/// window.
+struct PlanarLayer {
+    /// Index into `study.planar_images`.
+    image: usize,
+    /// (centre, width), and the identity of the image it was set for: an
+    /// image replaced under the same index starts from its own window.
+    wl: (f32, f32),
+    wl_for: Option<PlanarKey>,
+    tex: Option<TextureHandle>,
+    /// What `tex` was made from: the image and the window.
+    tex_key: Option<(PlanarKey, u32, u32)>,
+}
+
+impl PlanarLayer {
+    fn new(image: usize) -> Self {
+        PlanarLayer {
+            image,
+            wl: (0.0, 1.0),
+            wl_for: None,
+            tex: None,
+            tex_key: None,
+        }
+    }
+}
+
+/// How a planar pane compares the two images either side of its scrubber.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum Compare {
+    /// The upper one over the lower, as opaque as the scrubber is far
+    /// towards it.
+    #[default]
+    Fade,
+    /// Alternate squares of the two.
+    Checker,
+    /// The signed difference of what the two show, mid-grey where they
+    /// agree (same raster only).
+    Difference,
+    /// The lower one, with the edges of the upper drawn over it.
+    Edges,
+    /// The two in turn, twice a second.
+    Flicker,
+}
+
+/// Identity of one planar image's pixels: the buffer and its shape. The
+/// label can be renamed and the index shifts when an earlier image is
+/// removed; neither changes what the texture has to show.
+type PlanarKey = (usize, usize, usize);
+
 fn fresh_views() -> [ViewState; 3] {
     [
         ViewState::new(ViewPlane::Axial),
@@ -566,6 +652,12 @@ struct StudySlot {
     /// The active structure set's ROIs mapped into the displayed volume's
     /// voxel space, for the image views' contours.
     roi_prep: RoiPrep,
+    /// The row's two planar panes.
+    planar: [PlanarView; settings::PLANAR_PANES],
+    /// The planar pane that was given an image last: Ctrl-click in the
+    /// tree adds to it, and a plain click with both panes on screen goes to
+    /// the other one.
+    planar_last: usize,
 }
 
 /// The ROIs of one structure set prepared for drawing on one volume
@@ -709,6 +801,8 @@ impl StudySlot {
             active_seg: 0,
             active_roi: usize::MAX,
             roi_prep: RoiPrep::default(),
+            planar: Default::default(),
+            planar_last: 1,
         }
     }
 }
@@ -1044,6 +1138,7 @@ enum ObjKind {
     Planar,
     Registration,
     Record,
+    Setup,
 }
 
 /// Which object, in which workspace.
@@ -1202,16 +1297,6 @@ struct SubsetMasks {
     /// Planar images / REG objects / treatment records are only carried when
     /// the selection covers the whole slot content.
     take_extras: bool,
-}
-
-/// A floating viewer window for a planar image (DX / CR / RTIMAGE).
-struct PlanarWindow {
-    slot: usize,
-    idx: usize,
-    open: bool,
-    wl: (f32, f32),
-    tex: Option<TextureHandle>,
-    tex_wl: (f32, f32),
 }
 
 /// A completed registration plus the two images it was run on.
@@ -1482,9 +1567,16 @@ pub struct ViewerApp {
     /// A re-sampling of the field after the lattice step changed.
     field_job: Option<Job<VectorField>>,
 
-    // Tools ▶ DRR.
-    drr_dialog: Option<DrrDialog>,
-    drr_job: Option<Job<anyhow::Result<Vec<crate::drr::DrrImage>>>>,
+    // Modules ▶ Image generation: the module's workspace, and the DRR
+    // section's state (made the first time the section is drawn) and run.
+    gen: image_gen::ImageGen,
+    drr: Option<DrrState>,
+    drr_job: Option<Job<anyhow::Result<DrrRun>>>,
+    /// *Image registration ▶ 2D/3D registration*: its state, and its run.
+    r2d: Option<reg2d3d::Reg2d3dState>,
+    r2d_job: Option<Job<reg2d3d::Reg2d3dJobOut>>,
+    /// The 2D/3D section's remembered choices (persisted).
+    r2d_prefs: settings::Reg2d3dPrefs,
 
     // Tools ▶ Propagate structures.
     /// The window, when open.
@@ -1557,8 +1649,6 @@ pub struct ViewerApp {
     anon_apply_job: Option<Job<anyhow::Result<usize>>>,
     anon_result: Option<String>,
 
-    /// Open floating viewers for planar images.
-    planar_windows: Vec<PlanarWindow>,
     /// Open 3D structure-rendering windows.
     d3_windows: Vec<D3Window>,
     /// Deferred right-click action from the study tree.
@@ -1830,8 +1920,9 @@ pub struct ViewerApp {
     /// *Modules ▶ Image simulation*: the simulation section is part of the
     /// modules panel. Persisted between runs.
     module_simulation: bool,
-    /// *Modules ▶ Image synthesis*: the synthetic CT section. Persisted.
-    module_synthesis: bool,
+    /// *Modules ▶ Image generation*: the synthetic CT and the DRR, two
+    /// sections of one module. Persisted.
+    module_generation: bool,
     /// *Modules ▶ Structure propagation*: the propagation section is part
     /// of the modules panel. Persisted between runs.
     module_propagation: bool,
@@ -1939,7 +2030,7 @@ impl ViewerApp {
     pub(super) fn any_module(&self) -> bool {
         self.module_registration
             || self.module_simulation
-            || self.module_synthesis
+            || self.module_generation
             || self.module_propagation
             || self.module_structures
             || self.module_auto
@@ -2067,8 +2158,12 @@ impl ViewerApp {
             field_scale: 3.0,
             field_color: true,
             field_job: None,
-            drr_dialog: None,
+            gen: Default::default(),
+            drr: None,
             drr_job: None,
+            r2d: None,
+            r2d_job: None,
+            r2d_prefs: prefs.reg2d3d.clone(),
             propagate_dialog: None,
             propagate_job: None,
             phases_job: None,
@@ -2107,7 +2202,6 @@ impl ViewerApp {
             anon_scan_job: None,
             anon_apply_job: None,
             anon_result: None,
-            planar_windows: Vec::new(),
             d3_windows: Vec::new(),
             tree_action: None,
             set_action: None,
@@ -2227,7 +2321,7 @@ impl ViewerApp {
             wl_preset: None,
             module_registration: prefs.module_registration,
             module_simulation: prefs.module_simulation,
-            module_synthesis: prefs.module_synthesis,
+            module_generation: prefs.module_generation,
             module_propagation: prefs.module_propagation,
             module_structures: prefs.module_structures,
             module_auto: prefs.module_auto,
@@ -2303,7 +2397,7 @@ impl ViewerApp {
             archive_more: self.archive_more.clone(),
             module_registration: self.module_registration,
             module_simulation: self.module_simulation,
-            module_synthesis: self.module_synthesis,
+            module_generation: self.module_generation,
             module_propagation: self.module_propagation,
             module_structures: self.module_structures,
             module_auto: self.module_auto,
@@ -2322,6 +2416,7 @@ impl ViewerApp {
             },
             nnunet_folders: self.nnunet_folders.clone(),
             synth_folders: self.synth_folders.clone(),
+            reg2d3d: self.r2d_prefs.clone(),
         }) {
             Ok(()) => self.settings_error = None,
             Err(e) => {
@@ -2527,7 +2622,6 @@ impl ViewerApp {
         if self.hovered_slot == slot {
             self.hovered_slot = 0;
         }
-        self.planar_windows.retain(|w| w.slot != slot);
         self.d3_windows.retain(|w| w.slot != slot);
         if self.maximized.map(|(s, _)| s == slot).unwrap_or(false) {
             self.maximized = None;
@@ -2828,9 +2922,19 @@ impl eframe::App for ViewerApp {
         }
         self.poll_server_status(ctx.input(|i| i.time));
 
+        // Poll a 2D/3D registration (or its DRRs, its nudge, its copy).
+        if let Some(out) = poll_job(
+            &mut self.r2d_job,
+            &ctx,
+            "2D/3D registration",
+            &mut self.error,
+        ) {
+            self.on_reg2d3d_done(out);
+        }
+
         // Poll a DRR rendering.
         match poll_job(&mut self.drr_job, &ctx, "DRR", &mut self.error) {
-            Some(Ok(images)) => self.on_drr_done(images),
+            Some(Ok(run)) => self.on_drr_done(run),
             // A cancelled render is what the user asked for, not a failure.
             Some(Err(e)) if !progress::is_cancellation(&e) => {
                 self.error = Some(format!("DRR failed: {e:#}"));
@@ -2971,7 +3075,6 @@ impl eframe::App for ViewerApp {
         self.modules_panel(ui);
         self.status_bar(ui);
         self.central_views(ui);
-        self.planar_windows_ui(&ctx);
         self.d3_windows_ui(&ctx);
         if let Some(action) = self.tree_action.take() {
             self.apply_tree_action(action);

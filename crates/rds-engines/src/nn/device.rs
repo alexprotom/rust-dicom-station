@@ -179,35 +179,50 @@ pub mod panics {
 /// A validated wgpu device (Vulkan / DX12 / Metal / OpenGL - no vendor
 /// toolkit).
 #[cfg(feature = "gpu")]
+#[derive(Clone)]
 pub struct GpuContext {
     device: burn::backend::wgpu::WgpuDevice,
     /// The adapter and its backend, as the user should read it.
     adapter: String,
+    /// The same device as wgpu has it, for the kernels written in WGSL
+    /// rather than through burn (the 2D/3D registration's projector).
+    raw: (wgpu::Device, wgpu::Queue),
+    /// A renderer in software (llvmpipe, WARP, SwiftShader): it runs the
+    /// networks, but a kernel the CPU path already does well is faster
+    /// there.
+    software: bool,
 }
 
 /// The one inference device of the process, or why there is none. Made on
 /// first use and kept: wgpu allows one device per adapter, and an attempt
 /// that failed by panicking inside a driver is not one to repeat per run.
 #[cfg(feature = "gpu")]
-static GPU: std::sync::OnceLock<
-    std::result::Result<(burn::backend::wgpu::WgpuDevice, String), String>,
-> = std::sync::OnceLock::new();
+static GPU: std::sync::OnceLock<std::result::Result<GpuContext, String>> =
+    std::sync::OnceLock::new();
 
 #[cfg(feature = "gpu")]
 impl GpuContext {
     /// The inference device, opened on first use (see [`open`]).
     pub fn try_new() -> Result<GpuContext> {
         match GPU.get_or_init(open::first_working) {
-            Ok((device, adapter)) => Ok(GpuContext {
-                device: device.clone(),
-                adapter: adapter.clone(),
-            }),
+            Ok(ctx) => Ok(ctx.clone()),
             Err(why) => anyhow::bail!("{why}"),
         }
     }
 
     pub fn device(&self) -> &burn::backend::wgpu::WgpuDevice {
         &self.device
+    }
+
+    /// The device and its queue for a compute shader of one's own. Shared
+    /// with burn: wgpu serialises the submissions.
+    pub fn wgpu(&self) -> (&wgpu::Device, &wgpu::Queue) {
+        (&self.raw.0, &self.raw.1)
+    }
+
+    /// Whether the adapter is a renderer in software.
+    pub fn is_software(&self) -> bool {
+        self.software
     }
 
     /// What to show the user for a GPU run.
@@ -303,7 +318,7 @@ mod open {
         }
     }
 
-    pub(super) fn first_working() -> Result<(WgpuDevice, String), String> {
+    pub(super) fn first_working() -> Result<super::GpuContext, String> {
         // burn runs kernels on threads of its own; when one of those fails,
         // the caller only learns that "a call" did. The first panic of any
         // thread during an attempt is the reason it reports.
@@ -328,12 +343,17 @@ mod open {
                 let attempt = try_adapter(&instance, adapter, backend)
                     .map_err(|why| super::panics::cause(mark, why));
                 match attempt {
-                    Ok(device) => {
+                    Ok((device, raw)) => {
                         eprintln!(
                             "inference GPU: {name} ({} {})",
                             info.driver, info.driver_info
                         );
-                        return Ok((device, name));
+                        return Ok(super::GpuContext {
+                            device,
+                            adapter: name,
+                            raw,
+                            software: info.device_type == wgpu::DeviceType::Cpu,
+                        });
                     }
                     Err(why) => {
                         eprintln!("inference GPU {name} not usable: {why}");
@@ -350,7 +370,7 @@ mod open {
         instance: &wgpu::Instance,
         adapter: wgpu::Adapter,
         backend: wgpu::Backend,
-    ) -> Result<WgpuDevice, String> {
+    ) -> Result<(WgpuDevice, (wgpu::Device, wgpu::Queue)), String> {
         // `cubecl`'s own request (cubecl-wgpu, backend/wgsl.rs): it reads
         // the adapter's features to decide which shader types to emit, so the
         // device must have all of them.
@@ -368,6 +388,7 @@ mod open {
         });
         let (device, queue) =
             block_on(request).map_err(|e| format!("the device request was refused ({e})"))?;
+        let raw = (device.clone(), queue.clone());
         let setup = WgpuSetup {
             instance: instance.clone(),
             adapter,
@@ -388,12 +409,14 @@ mod open {
                 let _ = tx.send(made.unwrap_or_else(|p| Err(super::panic_text(p.as_ref()))));
             })
             .map_err(|e| format!("the self-test could not start ({e})"))?;
-        rx.recv_timeout(SELF_TEST_LIMIT).unwrap_or_else(|_| {
-            Err(format!(
-                "the self-test did not finish in {} s",
-                SELF_TEST_LIMIT.as_secs()
-            ))
-        })
+        rx.recv_timeout(SELF_TEST_LIMIT)
+            .unwrap_or_else(|_| {
+                Err(format!(
+                    "the self-test did not finish in {} s",
+                    SELF_TEST_LIMIT.as_secs()
+                ))
+            })
+            .map(|device| (device, raw))
     }
 
     /// How long the self-test may take: its first run also autotunes
@@ -463,6 +486,7 @@ pub fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
 /// The type exists in every build so callers can name it; without the `gpu`
 /// feature no value of it can be made.
 #[cfg(not(feature = "gpu"))]
+#[derive(Clone)]
 pub struct GpuContext {
     _never: std::convert::Infallible,
 }
@@ -474,6 +498,9 @@ impl GpuContext {
     }
     /// A value of this type cannot exist, so a match arm holding one is dead.
     pub fn unreachable<T>(&self) -> T {
+        match self._never {}
+    }
+    pub fn is_software(&self) -> bool {
         match self._never {}
     }
 }

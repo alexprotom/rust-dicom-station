@@ -33,6 +33,10 @@ pub const GRAPHICS_BACKEND_KEY: &str = "graphics_backend";
 /// Settings keys of the two optional side-panel modules.
 const MODULE_REG_KEY: &str = "module_image_registration";
 const MODULE_SIM_KEY: &str = "module_image_simulation";
+const MODULE_GEN_KEY: &str = "module_image_generation";
+/// What the Image generation module was called while it held only the
+/// synthetic CT: read, so a station that had it on keeps it on, and never
+/// written again.
 const MODULE_SYNTH_KEY: &str = "module_image_synthesis";
 const MODULE_PROP_KEY: &str = "module_structures_propagation";
 const MODULE_TOOLS_KEY: &str = "module_structure_editor";
@@ -69,6 +73,11 @@ const NNUNET_FOLDER_KEY: &str = "nnunet_model_folder";
 /// Settings key of a folder of TotalSynth checkpoints the user added (one
 /// line each).
 const SYNTH_FOLDER_KEY: &str = "synth_model_folder";
+/// The 2D/3D registration's remembered choices ([`Reg2d3dPrefs`]).
+const REG2D3D_METRIC_KEY: &str = "reg2d3d_metric";
+const REG2D3D_OPTIMIZER_KEY: &str = "reg2d3d_optimizer";
+const REG2D3D_TOLERANCE_KEY: &str = "reg2d3d_tolerance";
+const REG2D3D_ROOM_KEY: &str = "reg2d3d_room";
 
 /// Settings keys of what each row of the central area shows, one per row.
 const VIEW_ROW_KEYS: [&str; MAX_WORKSPACES] =
@@ -87,22 +96,33 @@ pub enum PaneKind {
     /// the same one the *3D* button opens in a window, drawn in the row
     /// instead.
     Scene3d,
+    /// One of the workspace's planar images - a DX / CR / RTIMAGE it came
+    /// with, or a DRR made from its CT - in a pane of the row rather than
+    /// in a window of its own. There are [`PLANAR_PANES`] of them, `0` and
+    /// `1`, so a radiograph and the DRR it is compared with sit side by
+    /// side; each picks its image for itself.
+    Planar(u8),
 }
 
+/// How many planar panes a row can carry.
+pub const PLANAR_PANES: usize = 2;
+
 /// How many panes one row may show: every kind there is, so a row can carry
-/// the three planes and the surface scene at once. The layout would divide
-/// by more perfectly happily; what stops it is the width each pane is left
-/// with, and four across a wide screen is about where a CT stops being
-/// readable.
+/// the three planes, the surface scene and both planar panes at once. The
+/// layout would divide by more perfectly happily; what stops it is the
+/// width each pane is left with, and six across is already narrow - which
+/// is why the planar panes are not in the standard row.
 pub const MAX_PANES: usize = PaneKind::ALL.len();
 
 impl PaneKind {
     /// Every kind a row can be given, in the order the tick boxes list them.
-    pub const ALL: [PaneKind; 4] = [
+    pub const ALL: [PaneKind; 6] = [
         PaneKind::Plane(crate::volume::ViewPlane::Axial),
         PaneKind::Plane(crate::volume::ViewPlane::Sagittal),
         PaneKind::Plane(crate::volume::ViewPlane::Coronal),
         PaneKind::Scene3d,
+        PaneKind::Planar(0),
+        PaneKind::Planar(1),
     ];
 
     /// What the tick box and the pane's own corner call it.
@@ -110,6 +130,8 @@ impl PaneKind {
         match self {
             PaneKind::Plane(p) => p.title(),
             PaneKind::Scene3d => "3D",
+            PaneKind::Planar(0) => "Planar 1",
+            PaneKind::Planar(_) => "Planar 2",
         }
     }
 
@@ -119,6 +141,8 @@ impl PaneKind {
             PaneKind::Plane(crate::volume::ViewPlane::Sagittal) => "sagittal",
             PaneKind::Plane(crate::volume::ViewPlane::Coronal) => "coronal",
             PaneKind::Scene3d => "3d",
+            PaneKind::Planar(0) => "planar1",
+            PaneKind::Planar(_) => "planar2",
         }
     }
 
@@ -141,7 +165,7 @@ pub fn default_view_row() -> Vec<PaneKind> {
 ///
 /// A row that names nothing the program knows, or nothing at all, keeps the
 /// default rather than leaving the user with an empty window; anything past
-/// the third pane and any repeat is dropped.
+/// [`MAX_PANES`] and any repeat is dropped.
 fn parse_view_row(value: &str) -> Vec<PaneKind> {
     let mut out: Vec<PaneKind> = Vec::new();
     for word in value.split(',') {
@@ -161,6 +185,31 @@ fn parse_view_row(value: &str) -> Vec<PaneKind> {
 
 fn render_view_row(row: &[PaneKind]) -> String {
     row.iter().map(|k| k.key()).collect::<Vec<_>>().join(",")
+}
+
+/// What the 2D/3D registration section remembers between runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reg2d3dPrefs {
+    /// The measure and the search, by their keys (`gc`, `powell`).
+    pub metric: String,
+    pub optimizer: String,
+    /// The tolerances the correction is coloured against: tenths of a
+    /// millimetre and of a degree.
+    pub tolerance_tenths: [u16; 2],
+    /// The room of `imaging-rooms.json` last chosen for an image; empty
+    /// for none.
+    pub room: String,
+}
+
+impl Default for Reg2d3dPrefs {
+    fn default() -> Self {
+        Reg2d3dPrefs {
+            metric: "gc".into(),
+            optimizer: "powell".into(),
+            tolerance_tenths: [20, 10],
+            room: String::new(),
+        }
+    }
 }
 
 /// User preferences that survive a restart.
@@ -193,9 +242,9 @@ pub struct Settings {
     /// modules panel.
     pub module_simulation: bool,
 
-    /// *Modules ▶ Image synthesis*: the synthetic CT section is shown in
-    /// the modules panel.
-    pub module_synthesis: bool,
+    /// *Modules ▶ Image generation*: the synthetic CT and the DRR, as two
+    /// sections of one module in the modules panel.
+    pub module_generation: bool,
 
     /// *Modules ▶ Structure propagation*: the propagation section is shown
     /// in the modules panel.
@@ -265,6 +314,9 @@ pub struct Settings {
     /// Folders of fine-tuned TotalSynth checkpoints added in the model
     /// manager, run like the published apps ([`crate::synth::custom`]).
     pub synth_folders: Vec<PathBuf>,
+
+    /// The 2D/3D registration's measure, search, tolerances and room.
+    pub reg2d3d: Reg2d3dPrefs,
 }
 
 impl Default for Settings {
@@ -282,7 +334,7 @@ impl Default for Settings {
             // there is, and what is switched on is remembered.
             module_registration: false,
             module_simulation: false,
-            module_synthesis: false,
+            module_generation: false,
             module_propagation: false,
             module_structures: false,
             module_auto: false,
@@ -297,6 +349,7 @@ impl Default for Settings {
             ts_licence: None,
             nnunet_folders: Vec::new(),
             synth_folders: Vec::new(),
+            reg2d3d: Reg2d3dPrefs::default(),
             // Let wgpu choose. The installer writes an explicit value when
             // the person installing picks one.
             graphics_backend: Backend::Auto,
@@ -1017,9 +1070,11 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
             if let Some(b) = bool_from_str(value) {
                 s.module_simulation = b;
             }
-        } else if key.eq_ignore_ascii_case(MODULE_SYNTH_KEY) {
+        } else if key.eq_ignore_ascii_case(MODULE_GEN_KEY)
+            || key.eq_ignore_ascii_case(MODULE_SYNTH_KEY)
+        {
             if let Some(b) = bool_from_str(value) {
-                s.module_synthesis = b;
+                s.module_generation = b;
             }
         } else if key.eq_ignore_ascii_case(MODULE_PROP_KEY) {
             if let Some(b) = bool_from_str(value) {
@@ -1057,6 +1112,28 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
                 .map(|v| v.trim().to_lowercase())
                 .filter(|v| !v.is_empty())
                 .collect();
+        } else if key.eq_ignore_ascii_case(REG2D3D_METRIC_KEY) {
+            let v = value.trim();
+            if !v.is_empty() {
+                s.reg2d3d.metric = v.to_ascii_lowercase();
+            }
+        } else if key.eq_ignore_ascii_case(REG2D3D_OPTIMIZER_KEY) {
+            let v = value.trim();
+            if !v.is_empty() {
+                s.reg2d3d.optimizer = v.to_ascii_lowercase();
+            }
+        } else if key.eq_ignore_ascii_case(REG2D3D_TOLERANCE_KEY) {
+            // "mm, degrees"; tenths are what is kept.
+            let t: Vec<f64> = value
+                .split(',')
+                .filter_map(|v| v.trim().parse().ok())
+                .collect();
+            if let [mm, deg] = t[..] {
+                let tenths = |v: f64| (v * 10.0).round().clamp(1.0, 1000.0) as u16;
+                s.reg2d3d.tolerance_tenths = [tenths(mm), tenths(deg)];
+            }
+        } else if key.eq_ignore_ascii_case(REG2D3D_ROOM_KEY) {
+            s.reg2d3d.room = value.trim().to_string();
         } else if key.eq_ignore_ascii_case(GRAPHICS_BACKEND_KEY) {
             // An unreadable value leaves the default rather than failing to
             // start: this file is edited by hand and by an installer, and a
@@ -1089,7 +1166,7 @@ fn render(s: &Settings) -> String {
         "# optional modules-panel sections (Modules menu) = on | off\n\
          {MODULE_REG_KEY} = {}\n\
          {MODULE_SIM_KEY} = {}\n\
-         {MODULE_SYNTH_KEY} = {}\n\
+         {MODULE_GEN_KEY} = {}\n\
          {MODULE_PROP_KEY} = {}\n\
          {MODULE_TOOLS_KEY} = {}\n\
          {MODULE_AUTO_KEY} = {}\n\
@@ -1105,7 +1182,7 @@ fn render(s: &Settings) -> String {
          {GRAPHICS_BACKEND_KEY} = {}\n",
         bool_to_str(s.module_registration),
         bool_to_str(s.module_simulation),
-        bool_to_str(s.module_synthesis),
+        bool_to_str(s.module_generation),
         bool_to_str(s.module_propagation),
         bool_to_str(s.module_structures),
         bool_to_str(s.module_auto),
@@ -1117,9 +1194,26 @@ fn render(s: &Settings) -> String {
         s.graphics_backend.key()
     ));
     out.push_str("# what each row of the central area shows, left to right:\n");
-    out.push_str("# up to three of axial, sagittal, coronal, 3d\n");
+    out.push_str("# any of axial, sagittal, coronal, 3d, planar1, planar2\n");
     for (key, row) in VIEW_ROW_KEYS.iter().zip(&s.view_rows) {
         out.push_str(&format!("{key} = {}\n", render_view_row(row)));
+    }
+    let r = &s.reg2d3d;
+    out.push_str(&format!(
+        "# 2D/3D registration: measure, search, tolerance (mm, degrees)\n\
+         {REG2D3D_METRIC_KEY} = {}\n\
+         {REG2D3D_OPTIMIZER_KEY} = {}\n\
+         {REG2D3D_TOLERANCE_KEY} = {:.1}, {:.1}\n",
+        r.metric,
+        r.optimizer,
+        r.tolerance_tenths[0] as f64 / 10.0,
+        r.tolerance_tenths[1] as f64 / 10.0
+    ));
+    if !r.room.is_empty() {
+        out.push_str(&format!(
+            "# the imaging room last chosen for a radiograph\n{REG2D3D_ROOM_KEY} = {}\n",
+            r.room
+        ));
     }
     if !s.nnunet_folders.is_empty() {
         out.push_str("# nnU-Net model folders added in the model manager, one per line\n");
@@ -1394,6 +1488,30 @@ mod tests {
     }
 
     #[test]
+    fn round_trips_the_2d3d_choices() {
+        let s = Settings {
+            reg2d3d: Reg2d3dPrefs {
+                metric: "lncc".into(),
+                optimizer: "nelder-mead".into(),
+                tolerance_tenths: [15, 5],
+                room: "Upright room".into(),
+            },
+            ..Settings::default()
+        };
+        assert_eq!(parse(&render(&s)), s);
+        assert_eq!(
+            parse(&format!("{REG2D3D_TOLERANCE_KEY} = 3, 0.5"))
+                .reg2d3d
+                .tolerance_tenths,
+            [30, 5]
+        );
+        assert_eq!(
+            parse(&format!("{REG2D3D_TOLERANCE_KEY} = three")).reg2d3d,
+            Reg2d3dPrefs::default()
+        );
+    }
+
+    #[test]
     fn round_trips_the_graphics_backend() {
         for b in Backend::ALL {
             let s = Settings {
@@ -1466,9 +1584,28 @@ mod tests {
             ]
         );
         assert_eq!(
-            parse_view_row("axial,sagittal,coronal,3d").len(),
+            parse_view_row("axial,sagittal,coronal,3d,planar1,planar2").len(),
             MAX_PANES,
             "a row that names every kind keeps every kind"
+        );
+        // The two planar panes are kinds of their own, and neither is in
+        // the row a fresh installation gets.
+        assert_eq!(
+            parse_view_row("planar2, axial, Planar1"),
+            vec![PaneKind::Planar(1), axial, PaneKind::Planar(0)]
+        );
+        assert!(
+            !default_view_row()
+                .iter()
+                .any(|k| matches!(k, PaneKind::Planar(_))),
+            "the planar panes are off until something asks for them"
+        );
+        assert_eq!(
+            PaneKind::ALL
+                .iter()
+                .filter(|k| matches!(k, PaneKind::Planar(_)))
+                .count(),
+            PLANAR_PANES
         );
         // The order is the user's: this is left to right on screen.
         assert_eq!(parse_view_row("3d,axial"), vec![PaneKind::Scene3d, axial]);
@@ -1519,7 +1656,7 @@ mod tests {
             view_rows: [
                 vec![PaneKind::Plane(ViewPlane::Axial), PaneKind::Scene3d],
                 vec![PaneKind::Plane(ViewPlane::Coronal)],
-                vec![PaneKind::Plane(ViewPlane::Sagittal)],
+                vec![PaneKind::Plane(ViewPlane::Sagittal), PaneKind::Planar(1)],
                 default_view_row(),
             ],
             ..Settings::default()
@@ -1584,7 +1721,7 @@ mod tests {
                 module_structures: bits & 8 != 0,
                 module_auto: bits & 16 != 0,
                 module_dose: bits & 32 != 0,
-                module_synthesis: bits & 64 != 0,
+                module_generation: bits & 64 != 0,
                 modules_open: if bits & 1 != 0 {
                     vec!["editor".into(), "dose".into()]
                 } else {
@@ -1602,6 +1739,17 @@ mod tests {
             parse(&format!("{MODULE_PROP_KEY} = on")).module_propagation,
             "the propagation module is remembered too"
         );
+        // Image synthesis became a section of Image generation: a file that
+        // had the old module on opens with the new one on, and is written
+        // back under the new name only.
+        let old = parse(&format!("{MODULE_SYNTH_KEY} = on"));
+        assert!(old.module_generation, "the old key still switches it on");
+        let written = render(&old);
+        assert!(written.contains(&format!("{MODULE_GEN_KEY} = on")));
+        assert!(
+            !written.contains(MODULE_SYNTH_KEY),
+            "and is not written again"
+        );
         // A settings file that says nothing is a fresh installation, and a
         // fresh installation opens on the images with no modules panel at
         // all. Every one of them is switched on from the Modules menu, and
@@ -1615,7 +1763,7 @@ mod tests {
                 && !fresh.module_dose
                 && !fresh.module_registration
                 && !fresh.module_simulation
-                && !fresh.module_synthesis
+                && !fresh.module_generation
                 && !fresh.module_propagation,
             "a fresh installation starts with every module switched off"
         );

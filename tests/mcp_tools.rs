@@ -790,3 +790,65 @@ fn a_synthetic_ct_is_made_and_evaluated() {
     rust_dicom_station::synth::custom::register(&[]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn radiographs_register_to_the_ct_and_export() {
+    let dir = common::target_dir("mcp_2d3d");
+    let folder = common::fourd_folder(&dir, [0.0, 6.0, 3.0]);
+    common::radiographs_into(&folder, [3.0, 0.0, -4.0], "kV");
+    let mut core = core_for(&dir);
+    let c = &mut core;
+    let d = call(c, "open_dataset", json!({"path": folder}));
+    let planar = d["planar_images"].as_array().unwrap();
+    assert_eq!(planar.len(), 2, "{d}");
+    assert_eq!(planar[0]["geometry"], "rt_image");
+    let _ = fail(c, "register_2d3d", json!({"dataset": "ds1", "images": []}));
+    let _ = fail(
+        c,
+        "register_2d3d",
+        json!({"dataset": "ds1", "images": [{"image": "9"}]}),
+    );
+    let r = call(
+        c,
+        "register_2d3d",
+        json!({"dataset": "ds1", "series": 1, "images": [{"image": "1"}, {"image": "kV LAT"}],
+               "metric": "ncc", "pixels": 96, "dof": "translations", "file_drrs": true}),
+    );
+    assert_eq!(r["setup"], "setup1");
+    let t = &r["result"]["correction_lps"]["translation_mm"];
+    let got = [
+        t[0].as_f64().unwrap(),
+        t[1].as_f64().unwrap(),
+        t[2].as_f64().unwrap(),
+    ];
+    for (g, want) in got.iter().zip([-3.0, 0.0, 4.0]) {
+        assert!((g - want).abs() < 1.0, "{r}");
+    }
+    assert_eq!(
+        r["drrs_filed_as_planar_images"].as_array().unwrap().len(),
+        2
+    );
+    let again = call(c, "describe_setup", json!({"setup": "setup1"}));
+    assert_eq!(
+        again["result"]["correction_lps"],
+        r["result"]["correction_lps"]
+    );
+    let ex = call(c, "export_setup", json!({"setup": "setup1"}));
+    let files: Vec<&str> = ex["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f.as_str().unwrap())
+        .collect();
+    assert!(
+        files.contains(&"setup_reg.dcm") && files.contains(&"setup_report.json"),
+        "{ex}"
+    );
+    assert_eq!(
+        files.iter().filter(|f| f.starts_with("setup_drr_")).count(),
+        2
+    );
+    let s = call(c, "describe_session", json!({}));
+    assert_eq!(s["setups"][0]["setup"], "setup1");
+    let _ = std::fs::remove_dir_all(&dir);
+}

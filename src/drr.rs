@@ -101,25 +101,67 @@ pub enum HuMode {
     /// Integrate the raw values (plastimatch `-h none`). No physics, but it
     /// is what one wants when comparing against another tool's raw output.
     Raw,
+    /// A megavoltage beam: Compton scattering dominates, so attenuation is
+    /// proportional to electron density, `μ = μ_water,MV · ρe(HU)`
+    /// ([`mu_megavoltage`]). Bone contrast is low, as on an EPID image.
+    MegaVoltage,
 }
 
 impl HuMode {
-    pub const ALL: [HuMode; 2] = [HuMode::Water, HuMode::Raw];
+    pub const ALL: [HuMode; 3] = [HuMode::Water, HuMode::MegaVoltage, HuMode::Raw];
 
     pub fn label(self) -> &'static str {
         match self {
             HuMode::Water => "Attenuation (μ from HU)",
             HuMode::Raw => "Raw line integral",
+            HuMode::MegaVoltage => "Attenuation at MV (electron density)",
         }
     }
+
+    /// The name on a command line, in a workflow file and in an MCP call.
+    pub fn key(self) -> &'static str {
+        match self {
+            HuMode::Water => "water",
+            HuMode::Raw => "raw",
+            HuMode::MegaVoltage => "mv",
+        }
+    }
+
+    pub fn from_key(s: &str) -> Option<HuMode> {
+        let s = s.trim().to_ascii_lowercase();
+        HuMode::ALL.into_iter().find(|m| m.key() == s)
+    }
+}
+
+/// Linear attenuation coefficient of water for a megavoltage beam, mm⁻¹:
+/// about 2 MeV effective, the energy a 6 MV spectrum's attenuation in water
+/// averages to.
+pub const MU_WATER_MV: f64 = 0.0049;
+
+/// Relative electron density from HU: the bilinear calibration of Schneider,
+/// Pedroni and Lomax (Phys Med Biol 1996) in its usual simplified form -
+/// `1 + HU/1000` up to 100 HU (air to soft tissue), then a shallower line
+/// through bone, `1.1 + (HU − 100)/1950`.
+pub fn electron_density(hu: f32) -> f32 {
+    if hu <= 100.0 {
+        (1.0 + hu / 1000.0).max(0.0)
+    } else {
+        1.1 + (hu - 100.0) / 1950.0
+    }
+}
+
+/// Attenuation per millimetre of a megavoltage beam.
+#[inline]
+pub fn mu_megavoltage(hu: f32) -> f32 {
+    MU_WATER_MV as f32 * electron_density(hu)
 }
 
 /// Linear attenuation coefficient of water at ~60 keV, mm⁻¹ - the effective
 /// energy plastimatch's DRR preprocessing assumes.
 pub const MU_WATER: f64 = 0.0206;
 
-/// Cone-beam geometry, IEC 61217.
-#[derive(Clone, Copy, Debug)]
+/// Cone-beam geometry, IEC 61217 (see [`crate::iec`] for the chain).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Geometry {
     /// Source-to-axis distance, mm.
     pub sad: f64,
@@ -127,10 +169,28 @@ pub struct Geometry {
     pub sid: f64,
     /// Gantry angle, degrees (0 = source above the patient).
     pub gantry_deg: f64,
-    /// Patient-support (couch) angle, degrees.
+    /// Patient-support (couch, or chair) angle, degrees.
     pub couch_deg: f64,
+    /// Table-top pitch and roll, degrees (6-DOF couches).
+    pub pitch_deg: f64,
+    pub roll_deg: f64,
+    /// Beam limiting device (collimator) angle, degrees: turns the aperture,
+    /// not the detector.
+    pub collimator_deg: f64,
     /// Isocentre in patient coordinates.
     pub isocenter: Vec3,
+    /// How the patient lies or sits.
+    pub patient: crate::iec::PatientFrame,
+    /// Origin of the X-ray image receptor in gantry coordinates (X-Ray Image
+    /// Receptor Translation, an absolute position); `None` is the default,
+    /// on the beam axis at `(0, 0, SAD − SID)`.
+    pub receptor: Option<Vec3>,
+    /// Rotation of the receptor about the beam axis, degrees, positive
+    /// counter-clockwise seen from the source.
+    pub receptor_angle_deg: f64,
+    /// Centre of the image in the receptor plane `(Xr, Yr)`, mm: where an RT
+    /// image's pixels sit when they are not centred on the beam axis.
+    pub image_center: [f64; 2],
     /// Detector size at the imager, mm (width × height).
     pub panel_mm: [f64; 2],
     /// Output image size, pixels.
@@ -144,7 +204,14 @@ impl Default for Geometry {
             sid: 1500.0,
             gantry_deg: 0.0,
             couch_deg: 0.0,
+            pitch_deg: 0.0,
+            roll_deg: 0.0,
+            collimator_deg: 0.0,
             isocenter: Vec3::ZERO,
+            patient: crate::iec::PatientFrame::default(),
+            receptor: None,
+            receptor_angle_deg: 0.0,
+            image_center: [0.0, 0.0],
             panel_mm: [400.0, 400.0],
             dims: [512, 512],
         }
@@ -188,44 +255,112 @@ impl Geometry {
         }
     }
 
+    /// A direction of the gantry frame in patient coordinates: through the
+    /// gantry rotation into the fixed frame, then back through the table top
+    /// and the patient's mounting on it (`fixed = Q · M · lps`).
+    fn gantry_to_patient(&self) -> crate::iec::M3 {
+        use crate::iec;
+        let m = self.patient.patient_to_fixed();
+        let q = iec::table_top(self.couch_deg, self.pitch_deg, self.roll_deg);
+        let to_patient = iec::mul(&iec::transpose(&m), &iec::transpose(&q));
+        iec::mul(&to_patient, &iec::rot_y(self.gantry_deg))
+    }
+
+    /// The beam limiting device's axes in patient coordinates: `Xb` and
+    /// `Yb` (the gantry's turned by the collimator angle about the beam
+    /// axis, counter-clockwise seen from the source), and `Zg`, towards the
+    /// source. Jaw and leaf positions are along `Xb` and `Yb` at the
+    /// isocentre plane.
+    pub fn bld_axes(&self) -> [Vec3; 3] {
+        use crate::iec;
+        let g2p = self.gantry_to_patient();
+        let r = iec::rot_z(self.collimator_deg);
+        let dir = |v: Vec3| iec::mul_vec(&g2p, iec::mul_vec(&r, v));
+        [
+            dir(Vec3::new(1.0, 0.0, 0.0)),
+            dir(Vec3::new(0.0, 1.0, 0.0)),
+            iec::mul_vec(&g2p, Vec3::new(0.0, 0.0, 1.0)),
+        ]
+    }
+
+    /// The receptor's origin and in-plane axes in gantry coordinates.
+    fn receptor_frame(&self) -> (Vec3, Vec3, Vec3) {
+        use crate::iec;
+        let origin = self
+            .receptor
+            .unwrap_or(Vec3::new(0.0, 0.0, self.sad - self.sid));
+        let r = iec::rot_z(self.receptor_angle_deg);
+        (
+            origin,
+            iec::mul_vec(&r, Vec3::new(1.0, 0.0, 0.0)),
+            iec::mul_vec(&r, Vec3::new(0.0, 1.0, 0.0)),
+        )
+    }
+
     /// Where everything is, in patient coordinates.
+    ///
+    /// Gantry 0° puts the source above the patient, 90° at the patient's
+    /// left for a head-first supine patient; turning the couch by `C` is, from
+    /// the beam's point of view, turning the patient by `−C` about the
+    /// vertical. The whole chain is [`crate::iec`]'s.
     pub fn frame(&self) -> BeamFrame {
-        // IEC fixed frame for a head-first supine patient, in DICOM LPS.
-        let xf = Vec3::new(1.0, 0.0, 0.0); // patient left
-        let yf = Vec3::new(0.0, 0.0, 1.0); // towards the head, the gantry axis
-        let zf = Vec3::new(0.0, -1.0, 0.0); // vertical, up (anterior)
-
-        let g = self.gantry_deg.to_radians();
-        // Source direction from the isocentre: up at 0°, patient-left at 90°.
-        let mut to_source = xf * g.sin() + zf * g.cos();
-        // The detector's +x runs with the gantry; +y stays along the axis.
-        let mut panel_x = xf * g.cos() - zf * g.sin();
-        let mut panel_y = yf;
-
-        // Rotating the couch by C is, from the beam's point of view, rotating
-        // the patient by −C about the vertical axis.
-        let c = -self.couch_deg.to_radians();
-        if c != 0.0 {
-            let rot = |v: Vec3| {
-                // Rotation about zf (= −y in LPS) by `c`.
-                let (s, co) = c.sin_cos();
-                // Components in the (xf, yf) plane rotate; zf is fixed.
-                let a = v.dot(xf);
-                let b = v.dot(yf);
-                let h = v.dot(zf);
-                xf * (a * co - b * s) + yf * (a * s + b * co) + zf * h
-            };
-            to_source = rot(to_source);
-            panel_x = rot(panel_x);
-            panel_y = rot(panel_y);
-        }
-
+        use crate::iec;
+        let g2p = self.gantry_to_patient();
+        let dir = |v: Vec3| iec::mul_vec(&g2p, v);
+        let to_source = dir(Vec3::new(0.0, 0.0, 1.0));
+        let (rec, rx, ry) = self.receptor_frame();
+        let center_g = rec + rx * self.image_center[0] + ry * self.image_center[1];
         BeamFrame {
             source: self.isocenter + to_source * self.sad,
             axis: to_source * -1.0,
-            panel_center: self.isocenter + to_source * -(self.sid - self.sad),
-            panel_x,
-            panel_y,
+            panel_center: self.isocenter + dir(center_g),
+            panel_x: dir(rx),
+            panel_y: dir(ry),
+        }
+    }
+
+    /// The camera of this geometry: the panel's pixels, rows along `+Xr`
+    /// and columns down `−Yr` as an RT Image's are, in patient coordinates.
+    pub fn camera(&self) -> crate::projection::ProjectionGeometry {
+        let f = self.frame();
+        let px = self.pixel_mm();
+        let [w, h] = self.dims;
+        crate::projection::ProjectionGeometry {
+            source: f.source,
+            origin: f.panel_center + f.panel_x * ((0.5 - w as f64 * 0.5) * px[0])
+                - f.panel_y * ((0.5 - h as f64 * 0.5) * px[1]),
+            row_step: f.panel_x * px[0],
+            col_step: f.panel_y * -px[1],
+            dims: self.dims,
+        }
+    }
+
+    /// The camera of an image whose first pixel's centre sits at `first`
+    /// in the receptor plane `(Xr, Yr)` and whose rows and columns run along
+    /// `row` and `col` there (unit vectors in receptor coordinates), `spacing`
+    /// apart - an RT Image's position, orientation and pixel spacing.
+    pub fn camera_of_pixels(
+        &self,
+        first: [f64; 2],
+        row: Vec3,
+        col: Vec3,
+        spacing: [f64; 2],
+        dims: [usize; 2],
+    ) -> crate::projection::ProjectionGeometry {
+        use crate::iec;
+        let g2p = self.gantry_to_patient();
+        let (rec, rx, ry) = self.receptor_frame();
+        let rz = rx.cross(ry);
+        // Receptor coordinates to gantry coordinates.
+        let in_gantry = |v: Vec3| rx * v.x + ry * v.y + rz * v.z;
+        let dir = |v: Vec3| iec::mul_vec(&g2p, v);
+        let origin_g = rec + in_gantry(Vec3::new(first[0], first[1], 0.0));
+        crate::projection::ProjectionGeometry {
+            source: self.isocenter + dir(Vec3::new(0.0, 0.0, self.sad)),
+            origin: self.isocenter + dir(origin_g),
+            row_step: dir(in_gantry(row)) * spacing[0],
+            col_step: dir(in_gantry(col)) * spacing[1],
+            dims,
         }
     }
 
@@ -250,6 +385,10 @@ impl Geometry {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DrrParams {
     pub geometry: Geometry,
+    /// An exact camera that stands in for `geometry`'s: an RT image's own,
+    /// whose pixels need not be centred or oriented as the IEC parameters
+    /// alone would put them.
+    pub camera: Option<crate::projection::ProjectionGeometry>,
     pub engine: Engine,
     pub hu: HuMode,
     /// Ray-cast step, mm (ignored by the exact tracer).
@@ -263,11 +402,17 @@ impl DrrParams {
     pub fn for_volume(vol: &Volume) -> DrrParams {
         DrrParams {
             geometry: Geometry::centered_on(vol),
+            camera: None,
             engine: Engine::Siddon,
             hu: HuMode::Water,
             step_mm: 1.0,
             threshold_hu: -800.0,
         }
+    }
+
+    /// The camera a run renders through: the given one, or the geometry's.
+    pub fn camera(&self) -> crate::projection::ProjectionGeometry {
+        self.camera.unwrap_or_else(|| self.geometry.camera())
     }
 }
 
@@ -307,11 +452,11 @@ impl DrrImage {
     /// does: its own viewer window, renaming, and travelling with the study
     /// when it is copied or moved.
     ///
-    /// `invert` stores the greyscale the way the DRR window is showing it.
-    /// A line integral is large where attenuation is large, which on a
-    /// radiograph reads as *dark*; inverting keeps what lands in the tree
-    /// looking like what was on screen. The geometry that produced the image
-    /// is carried along as the info rows the planar viewer lists.
+    /// `invert` is the DRR section's *Invert* switch. A line integral is
+    /// large where attenuation is large, which on a radiograph reads as
+    /// *dark*; inverting stores the image the way a radiograph is read. The
+    /// geometry that produced the image is carried along as info rows,
+    /// which the planar pane's image menu lists.
     pub fn to_planar(&self, params: &DrrParams, invert: bool) -> PlanarImage {
         let g = &params.geometry;
         // The inversion maps [min, max] onto itself, so the range and the
@@ -373,9 +518,72 @@ impl DrrImage {
             data,
             min_value: self.min,
             max_value: self.max,
-            window: ((self.min + self.max) * 0.5, (self.max - self.min).max(1.0)),
+            // The whole range: line integrals span a few units, so no floor
+            // of one here - the planar pane bounds its window by the range.
+            window: ((self.min + self.max) * 0.5, (self.max - self.min).max(1e-6)),
             info,
+            iec: Some(params.geometry),
+            camera: Some(params.camera()),
+            ..Default::default()
         }
+    }
+
+    /// The signed difference `self - other` of two renderings of the same
+    /// geometry, as a planar image of its own: what the two projectors
+    /// disagree about, pixel by pixel, filed beside them.
+    ///
+    /// The window is centred on zero and spans the largest disagreement both
+    /// ways, so mid-grey is agreement and bright is where `self` integrates
+    /// more. `None` when the two are not the same raster.
+    pub fn difference_to_planar(
+        &self,
+        other: &DrrImage,
+        params: &DrrParams,
+    ) -> Option<PlanarImage> {
+        if self.dims != other.dims || self.pixels.is_empty() {
+            return None;
+        }
+        let data: Vec<f32> = self
+            .pixels
+            .iter()
+            .zip(&other.pixels)
+            .map(|(a, b)| a - b)
+            .collect();
+        let min = data.iter().cloned().fold(f32::MAX, f32::min);
+        let max = data.iter().cloned().fold(f32::MIN, f32::max);
+        let reach = min.abs().max(max.abs()).max(1e-6);
+        let mut out = self.to_planar(params, false);
+        let g = &params.geometry;
+        out.label = format!(
+            "DRR difference · G {:.0}° C {:.0}°",
+            g.gantry_deg, g.couch_deg
+        );
+        out.data = data;
+        out.min_value = min;
+        out.max_value = max;
+        out.window = (0.0, 2.0 * reach);
+        // What it is a difference of, in place of one engine's own rows.
+        out.info
+            .retain(|(k, _)| k != "Source" && k != "Render time" && k != "Greyscale");
+        out.info.insert(
+            0,
+            (
+                "Source".into(),
+                format!(
+                    "difference {} minus {}",
+                    self.engine.label(),
+                    other.engine.label()
+                ),
+            ),
+        );
+        out.info.push((
+            "Greyscale".into(),
+            format!(
+                "signed - mid-grey is agreement, bright where {} integrates more",
+                self.engine.short()
+            ),
+        ));
+        Some(out)
     }
 }
 
@@ -460,6 +668,7 @@ fn attenuation(v: f32, mode: HuMode, threshold: f32) -> f32 {
             }
         }
         HuMode::Raw => v,
+        HuMode::MegaVoltage => mu_megavoltage(v),
     }
 }
 
@@ -603,15 +812,14 @@ fn raycast(vol: &Volume, src: Vec3, dst: Vec3, mode: HuMode, threshold: f32, ste
 pub fn render(vol: &Volume, params: &DrrParams, sink: &dyn ProgressSink) -> Result<DrrImage> {
     let t_start = std::time::Instant::now();
     let g = &params.geometry;
-    let [w, h] = g.dims;
+    if params.camera.is_none() && (g.sid <= 0.0 || g.sad <= 0.0) {
+        bail!("source-to-axis and source-to-imager distances must be positive");
+    }
+    let cam = params.camera();
+    let [w, h] = cam.dims;
     if w == 0 || h == 0 {
         bail!("the detector has no pixels");
     }
-    if g.sid <= 0.0 || g.sad <= 0.0 {
-        bail!("source-to-axis and source-to-imager distances must be positive");
-    }
-    let frame = g.frame();
-    let px = g.pixel_mm();
     let engine = params.engine;
     let mode = params.hu;
     let threshold = params.threshold_hu;
@@ -624,14 +832,11 @@ pub fn render(vol: &Volume, params: &DrrParams, sink: &dyn ProgressSink) -> Resu
             if sink.cancelled() {
                 return (j, row);
             }
-            // Pixel centres, +y running down the image as a detector row does.
-            let dy = (j as f64 + 0.5 - h as f64 * 0.5) * px[1];
             for (i, out) in row.iter_mut().enumerate() {
-                let dx = (i as f64 + 0.5 - w as f64 * 0.5) * px[0];
-                let target = frame.panel_center + frame.panel_x * dx - frame.panel_y * dy;
+                let target = cam.pixel(i as f64, j as f64);
                 *out = match engine {
-                    Engine::Siddon => siddon(vol, frame.source, target, mode, threshold),
-                    Engine::RayCast => raycast(vol, frame.source, target, mode, threshold, step),
+                    Engine::Siddon => siddon(vol, cam.source, target, mode, threshold),
+                    Engine::RayCast => raycast(vol, cam.source, target, mode, threshold, step),
                 };
             }
             (j, row)
@@ -651,7 +856,7 @@ pub fn render(vol: &Volume, params: &DrrParams, sink: &dyn ProgressSink) -> Resu
     Ok(DrrImage {
         pixels,
         dims: [w, h],
-        spacing: px,
+        spacing: cam.spacing(),
         min,
         max,
         engine,
@@ -755,6 +960,33 @@ mod tests {
         assert!(cast.info.iter().any(|(k, _)| k == "Step"));
     }
 
+    /// The difference of two renderings is filed like one: same raster,
+    /// signed values, a window centred on agreement.
+    #[test]
+    fn the_difference_of_two_renderings_is_a_planar_image() {
+        let params = DrrParams::for_volume(&slab(8, 1.0, 3..5, 0));
+        let a = fake_image(Engine::Siddon);
+        let mut b = fake_image(Engine::RayCast);
+        b.pixels = vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
+        let d = a.difference_to_planar(&b, &params).expect("same raster");
+        assert_eq!((d.cols, d.rows), (3, 2));
+        assert_eq!(d.data, vec![-1.0, 0.0, 2.0, 3.0, 1.0, -1.0]);
+        assert_eq!((d.min_value, d.max_value), (-1.0, 3.0));
+        assert_eq!(
+            d.window,
+            (0.0, 6.0),
+            "zero in the middle, the largest reach both ways"
+        );
+        assert!(d.label.starts_with("DRR difference"));
+        let source = &d.info.iter().find(|(k, _)| k == "Source").unwrap().1;
+        assert!(source.contains("Siddon") && source.contains("Ray-cast"));
+        assert!(d.info.iter().all(|(k, _)| k != "Render time"));
+        // Two rasters that do not match have no difference to file.
+        let mut c = fake_image(Engine::RayCast);
+        c.dims = [2, 3];
+        assert!(a.difference_to_planar(&c, &params).is_none());
+    }
+
     #[test]
     fn the_beam_frame_follows_the_iec_convention() {
         let g = Geometry {
@@ -805,6 +1037,7 @@ mod tests {
         };
         let params = DrrParams {
             geometry: g,
+            camera: None,
             hu: HuMode::Water,
             threshold_hu: -500.0,
             step_mm: 0.25,
@@ -838,6 +1071,7 @@ mod tests {
     fn the_two_engines_agree_on_the_same_geometry() {
         let vol = slab(48, 3.0, 12..36, 300);
         let params = DrrParams {
+            camera: None,
             geometry: Geometry {
                 dims: [48, 48],
                 panel_mm: [300.0, 300.0],

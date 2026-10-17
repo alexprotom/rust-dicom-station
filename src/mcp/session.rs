@@ -74,6 +74,15 @@ pub struct GroupRegistration {
     pub phases: Vec<PhaseReg>,
 }
 
+/// A patient setup found from radiographs (`register_2d3d`).
+pub struct Setup {
+    pub id: String,
+    pub dataset: String,
+    /// The CT series it registered.
+    pub series: usize,
+    pub result: crate::setup::SetupResult,
+}
+
 /// A finished motion analysis.
 pub struct Run {
     pub id: String,
@@ -88,6 +97,7 @@ pub struct Session {
     pub datasets: Vec<Dataset>,
     pub registrations: Vec<Registration>,
     pub group_registrations: Vec<GroupRegistration>,
+    pub setups: Vec<Setup>,
     pub runs: Vec<Run>,
     /// Volumes read so far - of every dataset, the 4D pipelines' phases
     /// included - under the configured budget (`volume_cache_mb`). The
@@ -115,6 +125,7 @@ impl Session {
             datasets: Vec::new(),
             registrations: Vec::new(),
             group_registrations: Vec::new(),
+            setups: Vec::new(),
             runs: Vec::new(),
             counters: HashMap::new(),
             out_dir: None,
@@ -178,6 +189,7 @@ impl Session {
             .retain(|r| r.fixed.0 != id && r.moving.0 != id);
         self.group_registrations
             .retain(|g| g.dataset != id && g.moving.0 != id);
+        self.setups.retain(|s| s.dataset != id);
         Ok(())
     }
 
@@ -325,6 +337,13 @@ impl Session {
             .iter()
             .find(|r| r.id == id)
             .ok_or_else(|| anyhow!("no group registration '{id}'"))
+    }
+
+    pub fn setup(&self, id: &str) -> Result<&Setup> {
+        self.setups
+            .iter()
+            .find(|s| s.id == id)
+            .ok_or_else(|| anyhow!("no setup '{id}'"))
     }
 
     pub fn run(&self, id: &str) -> Result<&Run> {

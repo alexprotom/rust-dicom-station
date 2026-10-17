@@ -13,7 +13,6 @@ impl ViewerApp {
         let mut open_save_img = false;
         let mut open_models = false;
         let mut open_pacs = false;
-        let mut open_drr = false;
         let mut open_export = false;
         let mut wf_menu: Option<workflow_edit::WfPending> = None;
         let mut wf_show_editor = false;
@@ -257,9 +256,14 @@ impl ViewerApp {
                             )
                             .changed();
                         modules_changed |= ui
-                            .checkbox(&mut self.module_synthesis, "Image synthesis")
+                            .checkbox(&mut self.module_generation, "Image generation")
                             .on_hover_text(
-                                "A synthetic CT from an MR or a CBCT (TotalSynth), added to                                  the study as a CT series, and its evaluation against a CT of                                  the same patient: HU errors, SSIM, water-equivalent                                  thickness.",
+                                "Images made from images. Image synthesis: a synthetic CT \
+                                 from an MR or a CBCT (TotalSynth), added to the study as a \
+                                 CT series, and its evaluation against a CT of the same \
+                                 patient. DRR: digitally reconstructed radiographs of a CT, \
+                                 with an exact and an interpolating projector, filed under \
+                                 Planar images and shown in the row's planar panes.",
                             )
                             .changed();
                         modules_changed |= ui
@@ -387,21 +391,6 @@ impl ViewerApp {
                         .clicked()
                     {
                         self.motion_results_open = true;
-                        ui.close();
-                    }
-                    if ui
-                        .add_enabled(
-                            self.any_volume(),
-                            egui::Button::new("☢ Digitally reconstructed radiograph"),
-                        )
-                        .on_hover_text(
-                            "Forward-project the CT onto a flat detector - two \
-                             independent projectors, an exact ray tracer and an \
-                             interpolating one, with the difference between them",
-                        )
-                        .clicked()
-                    {
-                        open_drr = true;
                         ui.close();
                     }
                     if tip_button(
@@ -684,10 +673,6 @@ impl ViewerApp {
         }
         if open_models {
             self.open_models_window();
-        }
-        if open_drr {
-            let slot = self.first_volume_slot();
-            self.open_drr_window(slot);
         }
         if open_export {
             self.open_export_dialog();

@@ -509,7 +509,6 @@ impl ViewerApp {
     /// names it, the cached overlays.
     fn wf_detach(&mut self, slot: usize) {
         self.drop_phase_cache(slot);
-        self.planar_windows.retain(|w| w.slot != slot);
         self.d3_windows.retain(|w| w.slot != slot);
         self.tree_picks.retain(|(s, _)| *s != slot);
         if self.tree_focus.as_ref().is_some_and(|t| t.slot() == slot) {

@@ -40,6 +40,7 @@ use super::exec::{Ctx, Done, RegEntry, Report, RunOptions, Scope, Table, Value};
 use super::{safe_name, Node};
 
 mod more;
+mod setup;
 mod synth;
 
 /// Run one node on its inputs (one list of values per input port).
@@ -90,6 +91,8 @@ pub(super) fn run_node(
         Op::DoseMetrics(p_) => more::dose_metrics(ctx, node, &inputs[0], p_, p),
         Op::ArchiveImport(p_) => more::archive_import(&mut *ctx, &inputs[0], p_, p),
         Op::Drr(p_) => more::drr(ctx, node, need(0)?, p_, p),
+        Op::Register2d3d(p_) => setup::register_2d3d(ctx, node, need(0)?, p_, p),
+        Op::PositionedCopy(p_) => setup::positioned_copy(ctx, node, need(0)?, one(1), p_, p),
         Op::SynthesizeCt(p_) => synth::synthesize_ct(ctx, node, need(0)?, p_, p),
         Op::EvaluateSct(p_) => {
             synth::evaluate_sct(ctx, node, need(0)?, need(1)?, one(2), one(3), p_, p)

@@ -13,7 +13,6 @@ impl ViewerApp {
         self.slots[slot] = StudySlot::empty();
         self.drop_phase_cache(slot);
         self.forget_sources(slot);
-        self.planar_windows.retain(|w| w.slot != slot);
         self.d3_windows.retain(|w| w.slot != slot);
         self.tree_picks.retain(|(s, _)| *s != slot);
         if self.tree_focus.as_ref().is_some_and(|t| t.slot() == slot) {
@@ -35,12 +34,6 @@ impl ViewerApp {
     /// than in the panel that drew the button.
     pub(super) fn remove_object(&mut self, r: ObjRef) {
         let slot = r.slot.min(MAX_WORKSPACES - 1);
-        let planar_gone = |windows: &mut Vec<PlanarWindow>, idx: usize| {
-            windows.retain(|w| !(w.slot == slot && w.idx == idx));
-            for w in windows.iter_mut().filter(|w| w.slot == slot && w.idx > idx) {
-                w.idx -= 1;
-            }
-        };
         let Some(study) = self.slots[slot].study.as_mut() else {
             return;
         };
@@ -83,7 +76,7 @@ impl ViewerApp {
                     return;
                 }
                 study.planar_images.remove(r.idx);
-                planar_gone(&mut self.planar_windows, r.idx);
+                self.planar_removed(slot, r.idx);
             }
             ObjKind::Registration => {
                 if r.idx >= study.registrations.len() {
@@ -96,6 +89,13 @@ impl ViewerApp {
                     return;
                 }
                 study.treat_records.remove(r.idx);
+            }
+            ObjKind::Setup => {
+                if r.idx >= study.setups.len() {
+                    return;
+                }
+                study.setups.remove(r.idx);
+                self.setup_removed(slot, r.idx);
             }
         }
         self.settings_gen += 1;
@@ -166,6 +166,9 @@ impl ViewerApp {
             }
             RenameTarget::Record { slot, idx } => {
                 self.obj_remove = Some(obj(slot, ObjKind::Record, idx));
+            }
+            RenameTarget::Setup { slot, idx } => {
+                self.obj_remove = Some(obj(slot, ObjKind::Setup, idx));
             }
             RenameTarget::FourD { slot, idx } => {
                 self.fourd_action = Some(FourDAction::Dissolve { slot, group: idx });
@@ -413,6 +416,11 @@ impl ViewerApp {
             },
             treat_records: if masks.take_extras {
                 study.treat_records.clone()
+            } else {
+                Vec::new()
+            },
+            setups: if masks.take_extras {
+                study.setups.clone()
             } else {
                 Vec::new()
             },
@@ -780,6 +788,7 @@ mod tree_tests {
             planar_images: Vec::new(),
             registrations: Vec::new(),
             treat_records: Vec::new(),
+            setups: Vec::new(),
             fourd_groups: Vec::new(),
             warnings: Vec::new(),
             default_window: (40.0, 400.0),

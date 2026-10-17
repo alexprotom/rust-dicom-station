@@ -926,15 +926,25 @@ impl ViewerApp {
             && self.group_registration.is_none()
         {
             // The module is switched on, so the section says what it is
-            // waiting for rather than leaving an empty panel.
+            // waiting for rather than leaving an empty panel - or holds the
+            // one registration that needs a single workspace: a CT against
+            // its radiographs.
+            let two_d = self.reg2d3d_relevant();
             egui::CollapsingHeader::new(egui::RichText::new("Image registration").strong())
                 .default_open(false)
                 .show(ui, |ui| {
-                    ui.weak(
-                        "Load a second workspace (File > Add DICOM folder), or a workspace \
-                         with more than one image series - registration aligns one image \
-                         onto another",
-                    );
+                    if two_d {
+                        egui::CollapsingHeader::new(reg2d3d::REG2D3D_TOOL.menu_entry())
+                            .id_salt("reg2d3d")
+                            .default_open(true)
+                            .show(ui, |ui| self.reg2d3d_section(ui));
+                    } else {
+                        ui.weak(
+                            "Load a second workspace (File > Add DICOM folder), or a workspace \
+                             with more than one image series - registration aligns one image \
+                             onto another",
+                        );
+                    }
                 });
             ui.separator();
             return;
@@ -1315,6 +1325,14 @@ impl ViewerApp {
                         .show(ui, |ui| {
                             shape_act = self.shape_section(ui, both);
                         });
+                    // A CT against its own radiographs: one workspace is
+                    // enough.
+                    if self.reg2d3d_relevant() {
+                        egui::CollapsingHeader::new(reg2d3d::REG2D3D_TOOL.menu_entry())
+                            .id_salt("reg2d3d")
+                            .default_open(false)
+                            .show(ui, |ui| self.reg2d3d_section(ui));
+                    }
                     // A transform that is already known does not have to be
                     // recovered: type it in and apply it, and everything
                     // downstream - fusion, the crosshair link, propagation,
@@ -1850,8 +1868,9 @@ impl ViewerApp {
                 );
             }
             match method {
-                // Nothing to tune: a given matrix is not optimized.
-                RegMethod::Given => {}
+                // Nothing to tune: a given matrix is not optimized, and a
+                // 2D/3D pose is tuned where it is run.
+                RegMethod::Given | RegMethod::Projective => {}
                 RegMethod::ElastixRigid | RegMethod::ElastixBSpline => {
                     f.row_tip(
                         "Samples/iter",

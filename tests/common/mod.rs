@@ -128,3 +128,47 @@ pub fn name_the_patient(folder: &Path, name: &str, id: &str, birth: &str) {
         std::fs::rename(&tmp, &p).unwrap();
     }
 }
+
+/// Write two RT Images of the folder's CT into the folder - a kV AP and a
+/// kV lateral, 128 pixels, about the CT's centre - of the patient found
+/// displaced by `shift` (mm, patient LPS), each with the RT Image geometry
+/// that places it as planned and the label `{prefix} AP` / `{prefix} LAT`.
+/// A 2D/3D registration of the two should answer a correction of
+/// `-shift`.
+pub fn radiographs_into(folder: &Path, shift: [f64; 3], prefix: &str) {
+    use rust_dicom_station::dicom_export::{write_rt_image, ObjectMeta};
+    use rust_dicom_station::drr::{self, DrrParams, Engine, Geometry};
+    use rust_dicom_station::geometry::Vec3;
+    let study = loader::load_directory(folder, &Progress::default()).expect("the CT loads");
+    let vol = &study.volume;
+    let iso = Geometry::centered_on(vol).isocenter;
+    let d = Vec3::new(shift[0], shift[1], shift[2]);
+    for (name, gantry) in [("AP", 0.0), ("LAT", 90.0)] {
+        let geometry = Geometry {
+            gantry_deg: gantry,
+            isocenter: iso,
+            dims: [128, 128],
+            panel_mm: [300.0, 300.0],
+            ..Geometry::default()
+        };
+        let mut params = DrrParams::for_volume(vol);
+        params.geometry = geometry;
+        params.engine = Engine::RayCast;
+        params.step_mm = 1.0;
+        // The anatomy at room point x is the CT's at x - shift.
+        params.camera = Some(geometry.camera().mapped(|p| p - d));
+        let img = drr::render(vol, &params, &Progress::default()).expect("rendered");
+        let mut planar = img.to_planar(
+            &DrrParams {
+                camera: None,
+                ..params
+            },
+            false,
+        );
+        planar.label = format!("{prefix} {name}");
+        planar.frame_of_reference_uid = vol.frame_of_reference_uid.clone();
+        let meta = ObjectMeta::of_study(&study, "KV", "kV image");
+        write_rt_image(&folder.join(format!("rtimage_{name}.dcm")), &planar, &meta)
+            .expect("RT image written");
+    }
+}

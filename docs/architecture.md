@@ -43,24 +43,27 @@ rust-dicom-station
 ├── Application (GUI, egui over wgpu)
 │   ├── Window chrome: menu bar, toolbar (W/L, presets, 3D, crosshair, reset, the draw row), status bar
 │   ├── Modules panel: the Image information, Playback, registration, simulation,
-│   │   image synthesis (synthetic CT and its evaluation), Structure editor
+│   │   Image generation (image synthesis: synthetic CT and its evaluation;
+│   │   DRR, filed under the planar images), Structure editor
 │   │   (insert, edit, combine), Structure auto tools (body contour and the
 │   │   three engines), propagation and Dose estimation sections
 │   ├── Side panel: per workspace a DICOM tree - patient ▶ study ▶ modality ▶ series, with RT
 │   │   structures, segmentations, 4D groups, dose and plans inside their study -
 │   │   plus dose display, planar images, spatial registrations, records,
 │   │   warnings with an Acknowledge button
-│   ├── Views: one row per open workspace (up to four), each of up to four
-│   │   panes chosen under Settings ▸ View layout - the MPR planes and the 3D
-│   │   surface scene; linked viewports, crosshair,
+│   ├── Views: one row per open workspace (up to four), each of up to six
+│   │   panes chosen under Settings ▸ View layout - the MPR planes, the 3D
+│   │   surface scene and two planar panes (radiographs, RT images, DRRs;
+│   │   off in the standard row, not drawn without a planar image); linked
+│   │   viewports, crosshair,
 │   │   a workspace with no volume says so in place of the panes and holds back
 │   │   the voxel tools;
 │   │   zoom / pan / W-L interaction, maximize, per-view caches
 │   ├── Tool windows (one shared skeleton; each can be docked over the views or
 │   │   detached into its own window of the operating system):
-│   │   3D structures, planar viewers, structure motion and its results,
+│   │   3D structures, structure motion and its results,
 │   │   structure comparison, structure details, transfer by relationship,
-│   │   DVH, DRR, PACS, model manager, export, anonymizer, generator,
+│   │   DVH, PACS, model manager, export, anonymizer, generator,
 │   │   the auto-segmentation results
 │   ├── Data tree operations: rename every level; Shift-click ranges; copy / move /
 │   │   remove / export the ticked items; create / connect / copy / move / remove
@@ -309,6 +312,12 @@ src/
     reg_shape.rs      its Align by structures sub-section: the structures
                       both images carry, paired and weighted, the run, the
                       per-structure report
+    reg2d3d.rs        its 2D/3D registration sub-section: the radiographs and
+                      their geometry, the isocentre, the region, the method,
+                      the run, the result rows, the nudge, the positioned
+                      copy and the files; the setups in the data tree; the
+                      isocentre, markers and outlines drawn over the
+                      radiographs in the planar panes
     matrix_edit.rs    the hand-typed 4 x 4 transform, as a planning system
                       shows one: the sixteen numbers, use
                       / identity / invert / from the result, clipboard in
@@ -316,7 +325,12 @@ src/
                       transfer by relationship
     views.rs          central MPR viewports, interaction, texture caches
     d3.rs             live 3D structure window
-    planar.rs         floating DX / CR / RTIMAGE viewers
+    planar.rs         the planar panes: a workspace's DX / CR / RTIMAGE images
+                      and DRRs in its row (Planar 1 and 2); each holds a stack
+                      compared by fade, checkerboard, difference, edges or
+                      flicker,
+                      with a window per image, zoom and pan; showing an image
+                      from the tree puts its pane into the row
     tree.rs           workspace-tree copy / move / remove with reference chains
     rename.rs         renaming every level of the data tree
     sets.rs           structure sets and segmentation series as tree nodes:
@@ -409,7 +423,11 @@ src/
     dose_est.rs       the Dose estimation module: the dose metrics table of
                       the ticked structures against one dose (physical /
                       effective), recomputed whenever they change
-    drr_win.rs        the DRR window: geometry, projectors, comparison
+    image_gen.rs      the Image generation module: one workspace row over the
+                      Image synthesis and DRR sections
+    drr_win.rs        its DRR section: geometry, projectors, comparison; every
+                      rendering filed under the planar images and shown in the
+                      row's planar panes
     pacs_win.rs       the PACS window: menu bar (Settings: storage folders,
                       PACS server page), the row of sources, the local tree
                       and its context menu (rename, cohorts, move files,
@@ -462,10 +480,12 @@ src/
                     reading, resampling between lattices, the SEG writer         DICOM
   rtdose.rs         RT Dose parsing + trilinear patient-space sampling           DICOM
   rtplan.rs         RT Plan / RT Ion Plan parsing                                DICOM
-  extras.rs         DX / CR / RTIMAGE planar images, REG, RTRECORD               DICOM
+  extras.rs         DX / CR / RTIMAGE planar images (an RT Image's geometry
+                    read into a camera), REG, RTRECORD                           DICOM
   dicom_export.rs   DICOM writer: the object builders (CT slice, RTSTRUCT with
                     its image reference chain, SEG, RTDOSE, RTPLAN, Deformable
-                    Spatial Registration) and the patching file copier         DICOM
+                    and rigid Spatial Registration, RT Image with its
+                    geometry) and the patching file copier                     DICOM
   export.rs         what one export run is: the workspace / patient / study /
                     series selection tree, every editable name and UID, the
                     RTSTRUCT / SEG choice, and the runner that keeps the
@@ -476,7 +496,22 @@ src/
                     git trees listing, raw downloads, resumable                  Sim
   simulate.rs       known-transform study generator (registration QA)           Sim
   drr.rs            DRR: IEC cone-beam geometry, Siddon exact tracing and
-                    ITK-style interpolating ray-casting                          Sim
+                    ITK-style interpolating ray-casting, the kV and MV
+                    attenuation models                                           Sim
+  iec.rs            the IEC 61217 chain (fixed, gantry, receptor, support,
+                    table top), the eight patient positions and upright, the
+                    couch readout of a pose                                      Sim
+  projection.rs     the pinhole camera every geometry ends in (and a 3 x 4
+                    projection matrix), the CT as attenuation with coarser
+                    copies, the posed index-space ray-cast                      Sim
+    gpu.rs          the same ray-cast as a WGSL compute shader on the
+                    inference device (feature gpu)                              Sim
+  rooms.rs          imaging-rooms.json: calibrated views of room-mounted kV
+                    pairs                                                       Sim
+  setup.rs          patient setup from radiographs: the request made from a
+                    study (images, geometry sources, isocentre, markers), the
+                    result as the study keeps it, the DRRs at a pose, the
+                    outlines, the positioned copy, the files                   Reg
   registration.rs   parameters, transforms (rigid, B-spline, RBF, field,
                     composite), region masks, pyramid, samplers, the
                     initialisation (identity, centres of gravity, two points),
@@ -490,6 +525,19 @@ src/
     shape.rs          registration by structures: signed distance maps,
                       surface points, the symmetric Gauss-Newton rigid fit,
                       the per-structure B-spline refinement on the maps
+    optim.rs          Powell with Brent line searches, Nelder-Mead, L-BFGS:
+                      bounded, deterministic
+    parzen.rs         the cubic B-spline Parzen window (shared by the 3D and
+                      the 2D mutual information)
+    metric2d.rs       2D images, pyramids and masks; NCC, gradient
+                      correlation, gradient difference, pattern intensity,
+                      local NCC, Mattes MI
+    projective.rs     2D/3D registration by intensity: polarity, the in-plane
+                      search and the grid, coarse to fine over posed
+                      renderings, the curvature check, the readouts
+    markers.rs        2D/3D registration by markers: detection in the CT and
+                      on the images, pairing by layout, the LM pose,
+                      triangulation and the moved-marker check, the hybrid
   propagate.rs      structures across a registration: pull-back with a cached
                     mapping lattice                                              Reg
   fourd.rs          4D sub-studies: phase recognition, ordered groups
@@ -563,6 +611,7 @@ src/
       nodes/more.rs     the archive, anonymize, prompt, combine, rename,
                         transfer, copy-to-phases, DVH, dose, archive-import
                         and DRR steps
+      nodes/setup.rs    the 2D/3D registration and positioned copy steps
       store.rs          the user's workflow folder, load / save, the recent
                         list, the examples compiled in
 
@@ -572,8 +621,8 @@ src/
                       the redactor every outgoing string passes
     session.rs        open workspaces, transforms, reports, and their handles
     tools/            the tools as plain functions with schema-deriving
-                      argument structs: session, segment, register, fourd,
-                      analysis, output
+                      argument structs: session, segment, register, setup
+                      (2D/3D), fourd, analysis, output
     prompts.rs        the heart_target_propagation prompt, the doc resources
     audit             the call log (the shared crate::audit)
     server.rs         the rmcp glue: transport, progress, cancellation, _async jobs
@@ -597,8 +646,9 @@ crates/            the workspace's two library crates; lib.rs re-exports their
                         conversion (ConvertSpec), the converted-weight cache
       pickle.rs         native PyTorch checkpoint (.pth / .pt / .bin) reader
       device.rs         DevicePref (Auto / GPU / CPU), the inference device
-                        opened adapter by adapter and self-tested, the
-                        backend-panic guard
+                        opened adapter by adapter and self-tested (its wgpu
+                        device and queue kept for the viewer's own shaders),
+                        the backend-panic guard
       params.rs         shape-checked view of a loaded state dict
       half.rs           binary16 ↔ binary32 conversion
       tensor.rs         Mat [rows, cols] and Act [c, d, h, w]; transposed conv

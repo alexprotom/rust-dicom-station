@@ -93,6 +93,31 @@ pub(crate) fn fmt_ds(v: f64) -> String {
     }
 }
 
+/// DICOM DS with as many significant digits as its 16 bytes hold: what a
+/// rescale slope, a matrix entry or a geometry attribute needs to read back
+/// as written.
+pub(crate) fn fmt_ds_exact(v: f64) -> String {
+    if !v.is_finite() {
+        return "0".into();
+    }
+    let plain = format!("{v}");
+    if plain.len() <= 16 {
+        return plain;
+    }
+    for prec in (1..=15).rev() {
+        let s = format!("{v:.prec$e}");
+        if s.len() <= 16 {
+            return s;
+        }
+    }
+    fmt_ds(v)
+}
+
+pub(crate) fn put_ds_exact(o: &mut InMemDicomObject, tag: Tag, vals: &[f64]) {
+    let s: Vec<String> = vals.iter().map(|v| fmt_ds_exact(*v)).collect();
+    put_strs(o, tag, VR::DS, &s);
+}
+
 pub(crate) fn today() -> (String, String) {
     // Days since epoch → Y/M/D (proleptic Gregorian, civil algorithm).
     let secs = SystemTime::now()
@@ -954,6 +979,62 @@ pub(crate) fn build_plan(
         if let Some(iso) = b.isocenter {
             put_ds(&mut cp, tags::ISOCENTER_POSITION, &[iso.x, iso.y, iso.z]);
         }
+        if !ion {
+            if let Some(c) = b.collimator_angle {
+                put_ds(&mut cp, tags::BEAM_LIMITING_DEVICE_ANGLE, &[c]);
+                put_str(
+                    &mut cp,
+                    tags::BEAM_LIMITING_DEVICE_ROTATION_DIRECTION,
+                    VR::CS,
+                    "NONE",
+                );
+            }
+            if let Some(ap) = &b.aperture {
+                // The device (and its leaf boundaries) on the beam, its
+                // positions on the control point.
+                let device = |ty: &str, pairs: usize, bounds: Option<&[f64]>| {
+                    let mut d = InMemDicomObject::new_empty();
+                    put_str(&mut d, tags::RT_BEAM_LIMITING_DEVICE_TYPE, VR::CS, ty);
+                    put_is(&mut d, tags::NUMBER_OF_LEAF_JAW_PAIRS, pairs as i64);
+                    if let Some(b) = bounds {
+                        put_ds(&mut d, tags::LEAF_POSITION_BOUNDARIES, b);
+                    }
+                    d
+                };
+                let position = |ty: &str, v: &[f64]| {
+                    let mut d = InMemDicomObject::new_empty();
+                    put_str(&mut d, tags::RT_BEAM_LIMITING_DEVICE_TYPE, VR::CS, ty);
+                    put_ds(&mut d, tags::LEAF_JAW_POSITIONS, v);
+                    d
+                };
+                let (mut devices, mut positions) = (Vec::new(), Vec::new());
+                if let Some(j) = ap.jaw_x {
+                    devices.push(device("ASYMX", 1, None));
+                    positions.push(position("ASYMX", &j));
+                }
+                if let Some(j) = ap.jaw_y {
+                    devices.push(device("ASYMY", 1, None));
+                    positions.push(position("ASYMY", &j));
+                }
+                if let Some(m) = &ap.mlc {
+                    let ty = if m.along_x { "MLCX" } else { "MLCY" };
+                    devices.push(device(ty, m.pairs.len(), Some(&m.boundaries)));
+                    let v: Vec<f64> = m
+                        .pairs
+                        .iter()
+                        .map(|p| p[0])
+                        .chain(m.pairs.iter().map(|p| p[1]))
+                        .collect();
+                    positions.push(position(ty, &v));
+                }
+                put_seq(&mut bo, tags::BEAM_LIMITING_DEVICE_SEQUENCE, devices);
+                put_seq(
+                    &mut cp,
+                    tags::BEAM_LIMITING_DEVICE_POSITION_SEQUENCE,
+                    positions,
+                );
+            }
+        }
         let cp_tag = if ion {
             tags::ION_CONTROL_POINT_SEQUENCE
         } else {
@@ -1664,4 +1745,259 @@ pub fn write_derived_image_series(
         Ok(())
     })?;
     Ok(DerivedSeries { series_uid, files })
+}
+
+// ---------------------------------------------------------------------------
+// Rigid Spatial Registration and RT Image
+// ---------------------------------------------------------------------------
+
+/// Spatial Registration Storage.
+pub const SOP_SPATIAL_REG: &str = "1.2.840.10008.5.1.4.1.1.66.1";
+/// RT Image Storage.
+pub const SOP_RTIMAGE: &str = "1.2.840.10008.5.1.4.1.1.481.1";
+
+/// The identity of the patient and study an object is written into.
+#[derive(Clone, Debug, Default)]
+pub struct ObjectMeta {
+    pub patient_name: String,
+    pub patient_id: String,
+    pub study_uid: String,
+    /// Content Label (CS, sanitised on the way out).
+    pub label: String,
+    pub description: String,
+}
+
+impl ObjectMeta {
+    /// The patient and study of `study`.
+    pub fn of_study(study: &LoadedStudy, label: &str, description: &str) -> Self {
+        ObjectMeta {
+            patient_name: study.meta.patient_name.clone(),
+            patient_id: study.meta.patient_id.clone(),
+            study_uid: study
+                .series
+                .get(study.active_series)
+                .or(study.series.first())
+                .map(|s| s.study_uid.clone())
+                .unwrap_or_default(),
+            label: label.into(),
+            description: description.into(),
+        }
+    }
+
+    fn write(&self, o: &mut InMemDicomObject, sop_class: &str, modality: &str) {
+        put_str(o, tags::SPECIFIC_CHARACTER_SET, VR::CS, "ISO_IR 100");
+        put_str(o, tags::SOP_CLASS_UID, VR::UI, sop_class);
+        put_str(o, tags::SOP_INSTANCE_UID, VR::UI, new_uid());
+        put_str(o, tags::MODALITY, VR::CS, modality);
+        put_str(o, tags::PATIENT_NAME, VR::PN, self.patient_name.as_str());
+        put_str(o, tags::PATIENT_ID, VR::LO, self.patient_id.as_str());
+        let study = if self.study_uid.is_empty() {
+            new_uid()
+        } else {
+            self.study_uid.clone()
+        };
+        put_str(o, tags::STUDY_INSTANCE_UID, VR::UI, study);
+        put_str(o, tags::SERIES_INSTANCE_UID, VR::UI, new_uid());
+        put_is(o, tags::SERIES_NUMBER, 1);
+        put_is(o, tags::INSTANCE_NUMBER, 1);
+        put_str(o, tags::CONTENT_LABEL, VR::CS, sanitize_cs(&self.label));
+        put_str(
+            o,
+            tags::CONTENT_DESCRIPTION,
+            VR::LO,
+            self.description.as_str(),
+        );
+        put_str(
+            o,
+            tags::SERIES_DESCRIPTION,
+            VR::LO,
+            self.description.as_str(),
+        );
+        let (date, time) = today();
+        put_str(o, tags::CONTENT_DATE, VR::DA, date.clone());
+        put_str(o, tags::CONTENT_TIME, VR::TM, time.clone());
+        put_str(o, tags::SERIES_DATE, VR::DA, date);
+        put_str(o, tags::SERIES_TIME, VR::TM, time);
+    }
+}
+
+fn matrix_item(for_uid: &str, m: &[f64; 16]) -> InMemDicomObject {
+    let mut mat = InMemDicomObject::new_empty();
+    put_str(
+        &mut mat,
+        tags::FRAME_OF_REFERENCE_TRANSFORMATION_MATRIX_TYPE,
+        VR::CS,
+        "RIGID",
+    );
+    put_ds_exact(&mut mat, tags::FRAME_OF_REFERENCE_TRANSFORMATION_MATRIX, m);
+    let mut mreg = InMemDicomObject::new_empty();
+    put_seq(&mut mreg, tags::MATRIX_SEQUENCE, vec![mat]);
+    let mut item = InMemDicomObject::new_empty();
+    put_str(&mut item, tags::FRAME_OF_REFERENCE_UID, VR::UI, for_uid);
+    put_seq(&mut item, tags::MATRIX_REGISTRATION_SEQUENCE, vec![mreg]);
+    item
+}
+
+/// Write a rigid transform as a Spatial Registration.
+///
+/// The object is in `target_for_uid` (the frame the transform maps into: a
+/// registration's moving image, the planning CT of a 2D/3D registration)
+/// and carries two items: the identity for that frame, and `matrix`
+/// (row-major, `p' = M p`) for `source_for_uid`.
+pub fn write_rigid_registration(
+    path: &Path,
+    matrix: &[f64; 16],
+    source_for_uid: &str,
+    target_for_uid: &str,
+    meta: &ObjectMeta,
+) -> Result<()> {
+    let identity = [
+        1.0, 0.0, 0.0, 0.0, //
+        0.0, 1.0, 0.0, 0.0, //
+        0.0, 0.0, 1.0, 0.0, //
+        0.0, 0.0, 0.0, 1.0,
+    ];
+    let mut o = InMemDicomObject::new_empty();
+    meta.write(&mut o, SOP_SPATIAL_REG, "REG");
+    put_str(&mut o, tags::FRAME_OF_REFERENCE_UID, VR::UI, target_for_uid);
+    put_seq(
+        &mut o,
+        tags::REGISTRATION_SEQUENCE,
+        vec![
+            matrix_item(target_for_uid, &identity),
+            matrix_item(source_for_uid, matrix),
+        ],
+    );
+    write_object(o, SOP_SPATIAL_REG, path)
+}
+
+/// Write a planar image as an RT Image: the pixels as 16-bit values with
+/// the rescale that gives them back, and, when the image has its IEC
+/// geometry, every attribute [`crate::extras::rt_image_geometry`] reads
+/// it from.
+pub fn write_rt_image(
+    path: &Path,
+    img: &crate::extras::PlanarImage,
+    meta: &ObjectMeta,
+) -> Result<()> {
+    if img.data.len() != img.rows * img.cols || img.data.is_empty() {
+        anyhow::bail!("the image has no pixels");
+    }
+    let mut o = InMemDicomObject::new_empty();
+    meta.write(&mut o, SOP_RTIMAGE, "RTIMAGE");
+    if !img.frame_of_reference_uid.is_empty() {
+        put_str(
+            &mut o,
+            tags::FRAME_OF_REFERENCE_UID,
+            VR::UI,
+            img.frame_of_reference_uid.as_str(),
+        );
+    }
+    put_str(
+        &mut o,
+        tags::RT_IMAGE_LABEL,
+        VR::SH,
+        truncate(&img.label, 16),
+    );
+    put_str(
+        &mut o,
+        tags::RT_IMAGE_DESCRIPTION,
+        VR::ST,
+        img.label.as_str(),
+    );
+    put_strs(
+        &mut o,
+        tags::IMAGE_TYPE,
+        VR::CS,
+        &["DERIVED".into(), "SECONDARY".into(), "DRR".into()],
+    );
+    put_str(&mut o, tags::CONVERSION_TYPE, VR::CS, "WSD");
+    put_str(&mut o, tags::RT_IMAGE_PLANE, VR::CS, "NORMAL");
+    // Image Plane Pixel Spacing is [between rows, between columns].
+    put_ds_exact(
+        &mut o,
+        tags::IMAGE_PLANE_PIXEL_SPACING,
+        &[img.spacing[1], img.spacing[0]],
+    );
+    if let Some(g) = &img.iec {
+        put_ds_exact(&mut o, tags::RADIATION_MACHINE_SAD, &[g.sad]);
+        put_ds_exact(&mut o, tags::RT_IMAGE_SID, &[g.sid]);
+        put_ds_exact(&mut o, tags::GANTRY_ANGLE, &[g.gantry_deg]);
+        put_ds_exact(&mut o, tags::PATIENT_SUPPORT_ANGLE, &[g.couch_deg]);
+        put_ds_exact(&mut o, tags::TABLE_TOP_PITCH_ANGLE, &[g.pitch_deg]);
+        put_ds_exact(&mut o, tags::TABLE_TOP_ROLL_ANGLE, &[g.roll_deg]);
+        put_ds_exact(
+            &mut o,
+            tags::BEAM_LIMITING_DEVICE_ANGLE,
+            &[g.collimator_deg],
+        );
+        put_ds_exact(
+            &mut o,
+            tags::X_RAY_IMAGE_RECEPTOR_ANGLE,
+            &[g.receptor_angle_deg],
+        );
+        if let Some(r) = g.receptor {
+            put_ds_exact(
+                &mut o,
+                tags::X_RAY_IMAGE_RECEPTOR_TRANSLATION,
+                &[r.x, r.y, r.z],
+            );
+        }
+        put_ds_exact(
+            &mut o,
+            tags::ISOCENTER_POSITION,
+            &[g.isocenter.x, g.isocenter.y, g.isocenter.z],
+        );
+        if let crate::iec::PatientFrame::Position(p) = g.patient {
+            put_str(&mut o, tags::PATIENT_POSITION, VR::CS, p.code());
+        }
+        // The first pixel's centre in the receptor plane, rows along +Xr
+        // and columns along -Yr about the image centre.
+        let (sx, sy) = (img.spacing[0], img.spacing[1]);
+        put_ds_exact(
+            &mut o,
+            tags::RT_IMAGE_POSITION,
+            &[
+                g.image_center[0] - (img.cols as f64 - 1.0) * 0.5 * sx,
+                g.image_center[1] + (img.rows as f64 - 1.0) * 0.5 * sy,
+            ],
+        );
+    }
+    if img.megavoltage {
+        put_str(&mut o, tags::PRIMARY_DOSIMETER_UNIT, VR::CS, "MU");
+    }
+    let (lo, hi) = img
+        .data
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(a, b), &v| (a.min(v), b.max(v)));
+    let span = (hi - lo) as f64;
+    let slope = if span > 0.0 { span / 65535.0 } else { 1.0 };
+    put_us(&mut o, tags::ROWS, img.rows as u16);
+    put_us(&mut o, tags::COLUMNS, img.cols as u16);
+    put_us(&mut o, tags::BITS_ALLOCATED, 16);
+    put_us(&mut o, tags::BITS_STORED, 16);
+    put_us(&mut o, tags::HIGH_BIT, 15);
+    put_us(&mut o, tags::PIXEL_REPRESENTATION, 0);
+    put_us(&mut o, tags::SAMPLES_PER_PIXEL, 1);
+    put_str(
+        &mut o,
+        tags::PHOTOMETRIC_INTERPRETATION,
+        VR::CS,
+        "MONOCHROME2",
+    );
+    put_ds_exact(&mut o, tags::RESCALE_INTERCEPT, &[lo as f64]);
+    put_ds_exact(&mut o, tags::RESCALE_SLOPE, &[slope]);
+    put_ds_exact(&mut o, tags::WINDOW_CENTER, &[img.window.0 as f64]);
+    put_ds_exact(&mut o, tags::WINDOW_WIDTH, &[img.window.1 as f64]);
+    let words: Vec<u16> = img
+        .data
+        .iter()
+        .map(|&v| (((v - lo) as f64) / slope).round().clamp(0.0, 65535.0) as u16)
+        .collect();
+    o.put(DataElement::new(
+        tags::PIXEL_DATA,
+        VR::OW,
+        PrimitiveValue::U16(C::from_vec(words)),
+    ));
+    write_object(o, SOP_RTIMAGE, path)
 }

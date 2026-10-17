@@ -9,11 +9,12 @@ Each page here covers one area.
 | [viewer.md](viewer.md) | Loading - folders or individual files, with or without a reconstructable volume - volume reconstruction, the MPR layout, window/level, the patient ▶ study ▶ series tree, the four workspaces and comparing them, planar images, interaction bindings, appearance, the graphics backend |
 | [rt-objects.md](rt-objects.md) | RTSTRUCT, RTDOSE, RTPLAN, REG, RT treatment records, and how their reference chains are resolved |
 | [registration.md](registration.md) | The four registration engines, local registration, analytics, vector fields, fusion, the transform simulator, verification |
+| [registration-2d3d.md](registration-2d3d.md) | 2D/3D registration: the CT's pose from kV radiographs, a room-mounted pair or portal images, by intensity, by markers or both; the conventions, the couch readout, the setups, the positioned copy, the files, validation |
 | [propagation.md](propagation.md) | Carrying contours and segmentations across a registration |
 | [volumes.md](volumes.md) | How every volume is calculated: voxels-based, surface-based (a closed triangle surface reconstructed from the contours), planimetry, the propagation volumes - the exact rules and formulas |
 | [star-target-propagation.md](star-target-propagation.md) | Step by step: a cardiac target from the CCT onto every 4DCT phase, anchored on the heart, in the viewer and from the MCP server |
 | [motion-4d.md](motion-4d.md) | 4D groups, the per-phase register ▸ propagate ▸ measure pipeline, motion metrics, ITV generation, the results window, structure comparison (Dice, HD95, the rigid offset), the details table and transfer |
-| [drr.md](drr.md) | Digitally reconstructed radiographs: the two projectors, the geometry, the comparison |
+| [drr.md](drr.md) | Digitally reconstructed radiographs (*Image generation ▶ DRR*): the two projectors, the geometry (patient positions, RT images, calibrated rooms), kV and MV attenuation, the comparison, filing into the planar images |
 | [dvh.md](dvh.md) | Dose-volume histograms: sampling, axes, metrics, protocol constraints, CSV export, the analytic phantom |
 | [contours.md](contours.md) | Drawing and editing RT structures as contours: the polygon, spline, freehand, brush, nudge and live-wire tools, the drawing modes, interpolation, tidying, points of interest, templates and the set lock |
 | [segmentation.md](segmentation.md) | Interactive segmentation: brush, eraser, geodesic region growing, the 3D view, mask → RTSTRUCT |

@@ -2049,6 +2049,125 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             });
             effort_ui(f, id, &mut p.effort);
         }
+        Op::Register2d3d(p) => {
+            f.row_tip(
+                "Images",
+                "Planar images by number or label, separated by commas; empty: every one \
+                 that states its geometry",
+                |ui| text(ui, &mut p.images, "every placed image", 150.0),
+            );
+            f.row("Method", |ui| {
+                let mut m = crate::setup::SetupMethod::from_key(&p.method).unwrap_or_default();
+                choice(
+                    ui,
+                    ("method2d", id),
+                    &mut m,
+                    &crate::setup::SetupMethod::ALL,
+                    |v| v.label(),
+                );
+                p.method = m.key().into();
+            });
+            f.row("Measure", |ui| {
+                let mut m = crate::registration::metric2d::Metric2d::from_key(&p.metric)
+                    .unwrap_or_default();
+                choice(
+                    ui,
+                    ("metric2d", id),
+                    &mut m,
+                    &crate::registration::metric2d::Metric2d::ALL,
+                    |v| v.label(),
+                );
+                p.metric = m.key().into();
+            });
+            f.row("", |ui| {
+                ui.checkbox(&mut p.translations_only, "Translations only");
+            });
+            f.row("", |ui| {
+                ui.checkbox(&mut p.detect_markers, "Markers found in the CT");
+            });
+            f.row_tip(
+                "Clip box",
+                "Half its size about the isocentre; 0 for none",
+                |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut p.clip_mm)
+                            .range(0.0..=400.0)
+                            .suffix(" mm"),
+                    );
+                },
+            );
+            f.row_tip(
+                "Clip about",
+                "A structure the box is put around instead, with a margin",
+                |ui| {
+                    text(ui, &mut p.clip_structure, "no structure", 110.0);
+                    ui.add_enabled(
+                        !p.clip_structure.trim().is_empty(),
+                        egui::DragValue::new(&mut p.clip_margin_mm)
+                            .range(0.0..=100.0)
+                            .prefix("+")
+                            .suffix(" mm"),
+                    );
+                },
+            );
+            f.row("", |ui| {
+                ui.checkbox(&mut p.clip_rays, "Rays inside the box only")
+                    .on_hover_text("Otherwise the box chooses the pixels compared");
+            });
+            f.row("Threshold", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut p.threshold_hu)
+                        .range(-1000.0..=2000.0)
+                        .suffix(" HU"),
+                );
+            });
+            f.row("Levels", |ui| {
+                ui.add(egui::DragValue::new(&mut p.levels).range(1..=5));
+            });
+            f.row("Pixels", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut p.pixels)
+                        .range(32..=1024)
+                        .suffix(" px"),
+                );
+            });
+            f.row("", |ui| {
+                ui.checkbox(&mut p.file_drrs, "DRRs at the answer as planar images");
+            });
+            if p.method != "markers" {
+                f.row("Compute", |ui| {
+                    choice(ui, ("dev", id), &mut p.device, &cat::Device::ALL, |v| {
+                        v.label()
+                    });
+                });
+            }
+            f.row_tip(
+                "Folder",
+                "Inside the run folder, or an absolute path; {input} is the study's title; \
+                 empty writes nothing",
+                |ui| text(ui, &mut p.folder, "setup/{input}", 150.0),
+            );
+        }
+        Op::PositionedCopy(p) => {
+            f.row_tip(
+                "Shift",
+                "Without a pose: where the anatomy is found, mm (patient x, y, z)",
+                |ui| {
+                    for v in &mut p.translation_mm {
+                        ui.add(egui::DragValue::new(v).speed(0.5).max_decimals(1));
+                    }
+                },
+            );
+            f.row_tip(
+                "Turn",
+                "Without a pose: rotations about x, y, z through the series' centre, degrees",
+                |ui| {
+                    for v in &mut p.rotation_deg {
+                        ui.add(egui::DragValue::new(v).speed(0.1).max_decimals(2));
+                    }
+                },
+            );
+        }
         Op::RegisterByStructures(p) => {
             f.row_tip(
                 "Pairs",

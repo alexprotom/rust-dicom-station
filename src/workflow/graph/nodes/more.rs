@@ -1372,6 +1372,7 @@ pub(super) fn drr(
         if prm.file_into_study {
             let mut pl = img.to_planar(&params, prm.invert);
             pl.label = format!("DRR {name}");
+            pl.frame_of_reference_uid = vol.frame_of_reference_uid.clone();
             planar.push(pl);
         }
     }

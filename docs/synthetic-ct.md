@@ -38,8 +38,9 @@ A folder of your own checkpoints carries whatever licence its data allows.
 
 ## Using it
 
-*Modules ▶ Image synthesis* (right panel, F10). The section works on one
-workspace (the **Workspace** row) and its displayed series.
+*Modules ▶ Image generation ▶ Image synthesis* (right panel, F10). The
+section works on the module's workspace (the **Workspace** row above it,
+shared with the DRR section) and its displayed series.
 
 * **Model** - the app; the default follows the series' modality. A model
   offered for another modality than the series' says so in the warning

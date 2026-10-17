@@ -40,10 +40,11 @@ burn = { version = "0.21", default-features = false, features = ["std", "ndarray
 # them the CPU path of MedSAM2 ran on one core. The crate is never named in
 # the code; listing it here only turns the features on, Cargo unifies them.
 burn-ndarray = { version = "0.21", default-features = false, features = ["std", "multi-threads", "simd"] }
-# The graphics library under burn's wgpu backend, named only to open the
-# inference device ourselves (nn/device.rs): the version is the one cubecl
-# uses, and its features are the ones cubecl turns on.
-wgpu = { version = "29", default-features = false, optional = true }
+# The graphics library under burn's wgpu backend, named to open the
+# inference device ourselves (nn/device.rs) and re-exported for the viewer's
+# WGSL projector: the version is the one cubecl uses, and `wgsl` is among
+# the features cubecl turns on.
+wgpu = { version = "29", default-features = false, features = ["wgsl"], optional = true }
 
 # The weight download: rustls with the OS trust store on the desktop, so
 # corporate/clinical TLS-inspection proxies with custom CAs work; the

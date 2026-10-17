@@ -193,6 +193,15 @@ impl LoadedStudy {
     }
 }
 
+/// How the patient lay for a series: the *Patient Position* of its first
+/// file, read when asked (the DRR and the 2D/3D registration need it once,
+/// not every series of every folder).
+pub fn series_patient_position(series: &SeriesInfo) -> Option<crate::iec::PatientPosition> {
+    let first = series.files.first()?;
+    let obj = crate::dicomfile::open_scan(first).ok()?;
+    str_of(&obj, tags::PATIENT_POSITION).and_then(|s| crate::iec::PatientPosition::from_code(&s))
+}
+
 impl SeriesInfo {
     /// Grouping key for the patient level of the data tree.
     pub fn patient_key(&self) -> &str {
@@ -241,6 +250,9 @@ pub struct LoadedStudy {
     pub registrations: Vec<SpatialReg>,
     /// RT (Ion) Beams Treatment Records.
     pub treat_records: Vec<TreatRecord>,
+    /// Patient setups found from radiographs: the 2D/3D registrations made
+    /// here (not read from files).
+    pub setups: Vec<crate::setup::SetupResult>,
     /// 4D sub-studies recognised among (or built by hand from) `series`.
     pub fourd_groups: Vec<crate::fourd::FourDGroup>,
     pub warnings: Vec<String>,
@@ -262,6 +274,7 @@ impl Default for LoadedStudy {
             planar_images: Vec::new(),
             registrations: Vec::new(),
             treat_records: Vec::new(),
+            setups: Vec::new(),
             fourd_groups: Vec::new(),
             warnings: Vec::new(),
             default_window: (40.0, 400.0),
@@ -682,6 +695,7 @@ fn load_files_with(
         planar_images,
         registrations,
         treat_records,
+        setups: Vec::new(),
         fourd_groups,
         warnings,
         default_window,

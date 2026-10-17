@@ -224,6 +224,35 @@ pub fn describe(ds: &Dataset) -> Value {
             })
         })
         .collect();
+    let planar: Vec<Value> = st
+        .planar_images
+        .iter()
+        .enumerate()
+        .map(|(i, im)| {
+            let mut v = json!({
+                "number": i + 1,
+                "label": clean_text(&im.label),
+                "modality": im.modality,
+                "pixels": [im.cols, im.rows],
+                "spacing_mm": im.spacing,
+                "geometry": if im.camera.is_some() {
+                    "rt_image".to_string()
+                } else {
+                    match &im.geometry_missing {
+                        Some(m) => format!("missing: {m}"),
+                        None => "none".to_string(),
+                    }
+                },
+            });
+            if let Some(b) = im.referenced_beam {
+                v["beam"] = json!(b);
+            }
+            if im.megavoltage {
+                v["megavoltage"] = json!(true);
+            }
+            v
+        })
+        .collect();
     json!({
         "dataset": ds.id,
         "origin": ds.origin.to_string_lossy(),
@@ -238,6 +267,7 @@ pub fn describe(ds: &Dataset) -> Value {
         "segmentation_series": seg_series,
         "doses": doses,
         "plans": plans,
+        "planar_images": planar,
         "warnings": st.warnings.len(),
     })
 }
@@ -301,6 +331,7 @@ pub fn describe_session(core: &mut Core, _a: NoArgs, _p: &Progress) -> Result<Va
         "registrations": s.registrations.iter().map(|r| json!({"reg": r.id, "fixed": r.fixed.0, "moving": r.moving.0, "method": r.result.method.label()})).collect::<Vec<_>>(),
         "group_registrations": s.group_registrations.iter().map(|g| json!({"greg": g.id, "dataset": g.dataset, "group": clean_text(&g.group_name), "phases": g.phases.len()})).collect::<Vec<_>>(),
         "runs": s.runs.iter().map(|r| json!({"run": r.id, "dataset": r.dataset})).collect::<Vec<_>>(),
+        "setups": s.setups.iter().map(|x| json!({"setup": x.id, "dataset": x.dataset, "method": x.result.method.key()})).collect::<Vec<_>>(),
         "phi_policy": s.config.phi_policy.label(),
         "roots": s.config.roots.len(),
         "output_configured": s.config.output_dir.is_some(),

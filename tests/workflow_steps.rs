@@ -684,3 +684,74 @@ fn a_synthetic_ct_step_makes_an_image_the_next_steps_take() {
     rust_dicom_station::synth::custom::register(&[]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_setup_from_radiographs_moves_a_copy_of_the_study_where_the_patient_was() {
+    let dir = common::target_dir("test_workflow_steps_2d3d");
+    let plan = phantom(&dir, "plan", 0.0);
+    common::radiographs_into(&plan, [4.0, 0.0, -3.0], "kV");
+    let mut wf = Workflow::new("setup");
+    let l = wf.add(load(&plan), "Plan", [0.0, 0.0]);
+    let img = wf.add(Op::SelectImage(SelectImage::default()), "", [250.0, 0.0]);
+    let reg = wf.add(
+        Op::Register2d3d(Register2d3d {
+            metric: "ncc".into(),
+            translations_only: true,
+            pixels: 96,
+            device: Device::Cpu,
+            ..Register2d3d::default()
+        }),
+        "",
+        [500.0, 0.0],
+    );
+    let copy = wf.add(
+        Op::PositionedCopy(PositionedCopy::default()),
+        "",
+        [750.0, 0.0],
+    );
+    let target = wf.add(select("TARGET"), "", [500.0, 200.0]);
+    let prop = wf.add(Op::Propagate(Propagate::default()), "", [1000.0, 100.0]);
+    wf.link(l, 0, img, 0);
+    wf.link(img, 0, reg, 0);
+    wf.link(img, 0, copy, 0);
+    wf.link(reg, 0, copy, 1);
+    wf.link(img, 0, target, 0);
+    wf.link(copy, 1, prop, 0);
+    wf.link(target, 0, prop, 1);
+    assert!(wf.check().ok(), "{:?}", wf.check().errors);
+    let wf = Workflow::from_json(&wf.to_json()).expect("reads back");
+    let out = run(&wf, &options(&dir, &wf));
+    assert!(out.ok(), "{:?}", out.error);
+
+    let rep = out
+        .reports
+        .iter()
+        .find(|r| r.title.starts_with("2D/3D registration"))
+        .expect("a report");
+    let row = rep.tables[0]
+        .rows
+        .iter()
+        .find(|r| r[0].starts_with("Correction, translation"))
+        .expect("the correction");
+    let t: Vec<f64> = row[1]
+        .split_whitespace()
+        .map(|v| v.parse().unwrap())
+        .collect();
+    for (g, want) in t.iter().zip([-4.0, 0.0, 3.0]) {
+        assert!((g - want).abs() < 1.0, "{t:?}");
+    }
+    // Filed with the study, the DRRs beside the radiographs, the files
+    // written, and the copy a study of its own with the target on it.
+    let plan_study = &out.studies[0].study;
+    assert_eq!(plan_study.setups.len(), 1);
+    assert_eq!(plan_study.planar_images.len(), 4);
+    let files = walk(&out.run_dir);
+    assert!(
+        files.iter().any(|f| f.ends_with("setup_reg.dcm")),
+        "{files:?}"
+    );
+    assert_eq!(out.studies.len(), 2);
+    let landed = names_of(&out, 1);
+    assert!(landed.iter().any(|n| n.starts_with("TARGET")), "{landed:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

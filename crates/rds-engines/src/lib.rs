@@ -29,6 +29,12 @@ pub mod unet2d;
 pub mod vista3d;
 pub mod zoo;
 
+/// The graphics library under burn's wgpu backend, for the viewer's own
+/// compute shaders on the device [`nn::device::GpuContext`] opened (the
+/// projector of the 2D/3D registration): one version, one device.
+#[cfg(feature = "gpu")]
+pub use wgpu;
+
 // The core types, under the crate-relative paths the engine code has always
 // used (`crate::volume::Volume`, `crate::progress::ProgressSink`, ...).
 pub(crate) use rds_core::{progress, volume};

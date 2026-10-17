@@ -46,7 +46,12 @@ pub mod analysis;
 pub mod dvf;
 pub mod elastix;
 pub mod landmark;
+pub mod markers;
+pub mod metric2d;
+pub mod optim;
+pub(crate) mod parzen;
 pub mod plastimatch;
+pub mod projective;
 pub mod shape;
 
 use std::sync::Arc;
@@ -91,6 +96,10 @@ pub enum RegMethod {
     /// The same, then a local B-spline refinement per structure on the
     /// distance maps.
     ShapeDeformable,
+    /// The rigid pose of a CT whose projections match radiographs
+    /// ([`projective`]). Not in [`RegMethod::ALL`]: it has radiographs, not
+    /// a second volume.
+    Projective,
 }
 
 impl RegMethod {
@@ -114,6 +123,7 @@ impl RegMethod {
             RegMethod::Given => "Given - a transform matrix, not a recovered one",
             RegMethod::ShapeRigid => "Rigid - by structures (surface distance)",
             RegMethod::ShapeDeformable => "Deformable - by structures + local B-spline",
+            RegMethod::Projective => "Rigid - 2D/3D to radiographs",
         }
     }
 
@@ -127,6 +137,7 @@ impl RegMethod {
             RegMethod::Given => "Given",
             RegMethod::ShapeRigid => "Rigid (structures)",
             RegMethod::ShapeDeformable => "B-spline (structures)",
+            RegMethod::Projective => "2D/3D",
         }
     }
 
@@ -172,6 +183,10 @@ impl RegMethod {
                  refinement on each structure's distance maps: every structure laid \
                  onto its partner, the rest of the patient left on the rigid result."
             }
+            RegMethod::Projective => {
+                "The pose of the CT whose DRRs match radiographs of the patient at \
+                 treatment."
+            }
         }
     }
 
@@ -182,6 +197,7 @@ impl RegMethod {
             RegMethod::PlastimatchBSpline | RegMethod::PlastimatchLandmark => "plastimatch",
             RegMethod::Given => "given",
             RegMethod::ShapeRigid | RegMethod::ShapeDeformable => "structures",
+            RegMethod::Projective => "2D/3D",
         }
     }
 
@@ -189,7 +205,10 @@ impl RegMethod {
     pub fn is_deformable(self) -> bool {
         !matches!(
             self,
-            RegMethod::ElastixRigid | RegMethod::Given | RegMethod::ShapeRigid
+            RegMethod::ElastixRigid
+                | RegMethod::Given
+                | RegMethod::ShapeRigid
+                | RegMethod::Projective
         )
     }
 
@@ -216,6 +235,9 @@ pub enum Metric {
     /// what a registration by structures ([`shape`]) minimizes. Not in
     /// [`Metric::ALL`]: no image engine can be asked for it.
     SurfaceDistance,
+    /// A similarity of radiographs and DRRs ([`projective`]); larger is
+    /// better, unlike the others.
+    Projective(metric2d::Metric2d),
 }
 
 impl Metric {
@@ -226,6 +248,7 @@ impl Metric {
             Metric::MeanSquares => "Mean squares",
             Metric::MutualInformation => "Mutual information",
             Metric::SurfaceDistance => "Surface distance",
+            Metric::Projective(m) => m.label(),
         }
     }
 
@@ -235,6 +258,7 @@ impl Metric {
             Metric::MeanSquares => "MSD",
             Metric::MutualInformation => "−MI",
             Metric::SurfaceDistance => "RMS mm",
+            Metric::Projective(m) => m.tag(),
         }
     }
 
@@ -254,6 +278,7 @@ impl Metric {
                  the other image, both ways. Says how well the contours agree; the \
                  images are not looked at."
             }
+            Metric::Projective(_) => "Similarity of the radiographs and the DRRs.",
         }
     }
 }
@@ -601,6 +626,15 @@ pub struct RigidTransform {
     t: Vec3,
 }
 
+impl std::fmt::Debug for RigidTransform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RigidTransform")
+            .field("params", &self.params)
+            .field("center", &self.center)
+            .finish()
+    }
+}
+
 impl RigidTransform {
     pub fn new(params: [f64; 6], center: Vec3) -> Self {
         let (rx, ry, rz) = (params[0], params[1], params[2]);
@@ -663,6 +697,34 @@ impl RigidTransform {
             ],
             center,
         )
+    }
+
+    /// The inverse mapping as a transform of its own, about the same
+    /// centre: `T⁻¹(q) = Rᵀ(q − c) + c − Rᵀ t`.
+    pub fn inverse(&self) -> RigidTransform {
+        let m = self.rot_t.0;
+        // Rᵀ = Rz(c) Ry(b) Rx(a), read back.
+        let b = -m[6].clamp(-1.0, 1.0).asin();
+        let a = m[7].atan2(m[8]);
+        let c = m[3].atan2(m[0]);
+        let t = self.rot_t.mul_vec(self.t) * -1.0;
+        RigidTransform::new([a, b, c, t.x, t.y, t.z], self.center)
+    }
+
+    /// `∂T⁻¹(q)/∂param_i` at a moving point `q`: how the point a moving
+    /// point comes from moves with each parameter.
+    pub fn unmap_jacobian(&self, q: Vec3) -> [Vec3; 6] {
+        let v = q - self.center - self.t;
+        let back = |m: &Mat3| m.transpose().mul_vec(v);
+        let neg = |e: Vec3| self.rot_t.mul_vec(e) * -1.0;
+        [
+            back(&self.drot[0]),
+            back(&self.drot[1]),
+            back(&self.drot[2]),
+            neg(Vec3::new(1.0, 0.0, 0.0)),
+            neg(Vec3::new(0.0, 1.0, 0.0)),
+            neg(Vec3::new(0.0, 0.0, 1.0)),
+        ]
     }
 
     /// ∂T/∂param_i evaluated at fixed point `p` (3-vectors per parameter).
@@ -1959,6 +2021,9 @@ fn register_with(
         RegMethod::ShapeRigid | RegMethod::ShapeDeformable => {
             bail!("a registration by structures runs through registration::shape::register")
         }
+        RegMethod::Projective => {
+            bail!("a 2D/3D registration runs through registration::projective::register_2d3d")
+        }
     };
 
     // Whatever the engine minimized, the reported before/after pair is in
@@ -1981,6 +2046,9 @@ fn register_with(
             bail!(
                 "the surface distance is the metric of registration::shape, not of an image engine"
             )
+        }
+        Metric::Projective(_) => {
+            bail!("a 2D/3D measure is the metric of registration::projective, not of a 3D engine")
         }
     };
 

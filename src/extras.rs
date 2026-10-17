@@ -1,7 +1,11 @@
 //! Additional DICOM object types beyond volumes and the core RT set:
 //!
 //! * planar projection images - DX / CR digital radiographs and RTIMAGE
-//!   (DRRs, portal / setup images), shown in floating viewer windows;
+//!   (DRRs, portal / setup images), shown in the rows' planar panes; an RT
+//!   Image's geometry (gantry, couch, SAD, SID, receptor, isocentre, patient
+//!   position) is read into the IEC parameters and the exact camera of its
+//!   pixels ([`rt_image_geometry`]), which is what the 2D/3D registration
+//!   projects the planning CT through;
 //! * REG - Spatial Registration objects (rigid 4×4 frame-of-reference
 //!   transformation matrices, and Deformable Spatial Registration objects
 //!   with their displacement grids, both of which can be applied as the
@@ -23,7 +27,7 @@ use crate::registration::{RigidTransform, VectorField};
 // Planar images (DX / CR / RTIMAGE)
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct PlanarImage {
     pub label: String,
     pub modality: String,
@@ -39,6 +43,153 @@ pub struct PlanarImage {
     pub window: (f32, f32),
     /// Free-form metadata (name, value) for display.
     pub info: Vec<(String, String)>,
+    /// SOP Instance UID (empty for an image made here and not yet written).
+    pub sop_instance_uid: String,
+    /// Frame of Reference the image's geometry is in.
+    pub frame_of_reference_uid: String,
+    /// Referenced Beam Number of an RT Image.
+    pub referenced_beam: Option<i32>,
+    /// The IEC parameters the image states - an RT Image's gantry, couch,
+    /// SAD, SID, receptor, patient position and isocentre, or the geometry a
+    /// DRR was rendered with. `None` when it states too few to place it.
+    pub iec: Option<crate::drr::Geometry>,
+    /// The exact camera of the image's pixels in patient coordinates. `None`
+    /// without `iec`, or without an isocentre to close the chain.
+    pub camera: Option<crate::projection::ProjectionGeometry>,
+    /// What a usable geometry still lacks, for the UI (`"isocentre"`, `"SID"`).
+    pub geometry_missing: Option<String>,
+    /// A megavoltage image: exposed by the treatment beam (Primary Dosimeter
+    /// Unit MU), so low bone contrast and an aperture in the field.
+    pub megavoltage: bool,
+    /// Frames in the file: more than one for a cine, of which `data` is the
+    /// first ([`load_frame`] reads the others).
+    pub frame_count: usize,
+    /// The file the image was read from.
+    pub source_path: Option<std::path::PathBuf>,
+}
+
+/// Frame `frame` of a multi-frame planar image, with the same Modality LUT
+/// and MONOCHROME1 handling as [`load_planar`].
+pub fn load_frame(path: &Path, frame: usize) -> Result<Vec<f32>> {
+    let obj = crate::dicomfile::open_full(path)
+        .with_context(|| format!("open planar image {}", path.display()))?;
+    let decoded = obj
+        .decode_pixel_data()
+        .with_context(|| format!("decode pixel data of {}", path.display()))?;
+    let n = (decoded.rows() as usize) * (decoded.columns() as usize);
+    if frame >= decoded.number_of_frames().max(1) as usize {
+        bail!("{} has no frame {}", path.display(), frame + 1);
+    }
+    let opts = ConvertOptions::new().with_modality_lut(ModalityLutOption::Default);
+    let mut data: Vec<f32> = decoded
+        .to_vec_frame_with_options(frame as u32, &opts)
+        .with_context(|| format!("convert frame {} of {}", frame + 1, path.display()))?;
+    data.truncate(n);
+    let mono1 = str_of(&obj, tags::PHOTOMETRIC_INTERPRETATION).is_some_and(|p| p == "MONOCHROME1");
+    if mono1 {
+        let (lo, hi) = data
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+        for v in &mut data {
+            *v = lo + hi - *v;
+        }
+    }
+    Ok(data)
+}
+
+/// The geometry an RT Image states, or what it is missing.
+///
+/// The chain is PS3.3 C.8.8.2: *Radiation Machine SAD* and *RT Image SID*
+/// place source and image plane; *Gantry Angle*, *Patient Support Angle*,
+/// *Table Top Pitch / Roll* and *Beam Limiting Device Angle* (inside the
+/// first Exposure Sequence item when present there, which supersedes the
+/// top level, C.8.8.2.4) turn it; *X-Ray Image Receptor Translation* (the
+/// receptor origin's absolute position in gantry coordinates) and *Angle*
+/// place the receptor; *RT Image Position* is the centre of the first pixel
+/// in `(Xr, Yr)`, and *RT Image Orientation* the row and column directions
+/// (default rows along `+Xr`, columns along `−Yr`, C.8.8.2.7); *Isocenter
+/// Position* and *Patient Position* bring it into patient coordinates.
+pub fn rt_image_geometry(
+    obj: &dicom_object::InMemDicomObject,
+    cols: usize,
+    rows: usize,
+    spacing: [f64; 2],
+) -> (
+    Option<crate::drr::Geometry>,
+    Option<crate::projection::ProjectionGeometry>,
+    Option<String>,
+) {
+    // An attribute from the first exposure when it is there, else the top.
+    let exposure = items_of(obj, tags::EXPOSURE_SEQUENCE).and_then(|s| s.first());
+    let angle = |tag| {
+        exposure
+            .and_then(|e| f64_of(e, tag))
+            .or_else(|| f64_of(obj, tag))
+    };
+    let sad = f64_of(obj, tags::RADIATION_MACHINE_SAD).filter(|v| *v > 0.0);
+    let sid = f64_of(obj, tags::RT_IMAGE_SID).filter(|v| *v > 0.0);
+    let Some(sad) = sad else {
+        return (None, None, Some("SAD".into()));
+    };
+    let Some(sid) = sid else {
+        return (None, None, Some("SID".into()));
+    };
+    let vec3 = |tag| {
+        f64s_of(obj, tag)
+            .filter(|v| v.len() >= 3)
+            .map(|v| Vec3::new(v[0], v[1], v[2]))
+    };
+    let isocenter = vec3(tags::ISOCENTER_POSITION);
+    let patient = str_of(obj, tags::PATIENT_POSITION)
+        .and_then(|s| crate::iec::PatientPosition::from_code(&s))
+        .map(crate::iec::PatientFrame::Position)
+        .unwrap_or_default();
+    let first = f64s_of(obj, tags::RT_IMAGE_POSITION)
+        .filter(|v| v.len() >= 2)
+        .map(|v| [v[0], v[1]])
+        .unwrap_or([
+            -(cols as f64 - 1.0) * 0.5 * spacing[0],
+            (rows as f64 - 1.0) * 0.5 * spacing[1],
+        ]);
+    let (row, col) = f64s_of(obj, tags::RT_IMAGE_ORIENTATION)
+        .filter(|v| v.len() >= 6)
+        .map(|v| {
+            (
+                Vec3::new(v[0], v[1], v[2]).normalized(),
+                Vec3::new(v[3], v[4], v[5]).normalized(),
+            )
+        })
+        .unwrap_or((Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, -1.0, 0.0)));
+    let center = |half: [f64; 2]| {
+        let c = Vec3::new(first[0], first[1], 0.0) + row * half[0] + col * half[1];
+        [c.x, c.y]
+    };
+    let geometry = crate::drr::Geometry {
+        sad,
+        sid,
+        gantry_deg: angle(tags::GANTRY_ANGLE).unwrap_or(0.0),
+        couch_deg: angle(tags::PATIENT_SUPPORT_ANGLE).unwrap_or(0.0),
+        pitch_deg: angle(tags::TABLE_TOP_PITCH_ANGLE).unwrap_or(0.0),
+        roll_deg: angle(tags::TABLE_TOP_ROLL_ANGLE).unwrap_or(0.0),
+        collimator_deg: angle(tags::BEAM_LIMITING_DEVICE_ANGLE).unwrap_or(0.0),
+        isocenter: isocenter.unwrap_or(Vec3::ZERO),
+        patient,
+        receptor: vec3(tags::X_RAY_IMAGE_RECEPTOR_TRANSLATION),
+        receptor_angle_deg: f64_of(obj, tags::X_RAY_IMAGE_RECEPTOR_ANGLE).unwrap_or(0.0),
+        image_center: center([
+            (cols as f64 - 1.0) * 0.5 * spacing[0],
+            (rows as f64 - 1.0) * 0.5 * spacing[1],
+        ]),
+        panel_mm: [cols as f64 * spacing[0], rows as f64 * spacing[1]],
+        dims: [cols, rows],
+    };
+    match isocenter {
+        Some(_) => {
+            let cam = geometry.camera_of_pixels(first, row, col, spacing, [cols, rows]);
+            (Some(geometry), Some(cam), None)
+        }
+        None => (Some(geometry), None, Some("isocentre".into())),
+    }
 }
 
 pub fn load_planar(path: &Path) -> Result<PlanarImage> {
@@ -51,12 +202,12 @@ pub fn load_planar(path: &Path) -> Result<PlanarImage> {
         .with_context(|| format!("decode pixel data of {}", path.display()))?;
     let rows = decoded.rows() as usize;
     let cols = decoded.columns() as usize;
-    if decoded.number_of_frames() > 1 {
-        bail!("multi-frame planar image not supported: {}", path.display());
-    }
+    // A cine (XA / RF) is one view over time: its first frame is the image,
+    // and the rest are read when something asks for them (`load_frame`).
+    let frame_count = decoded.number_of_frames().max(1) as usize;
     let opts = ConvertOptions::new().with_modality_lut(ModalityLutOption::Default);
     let mut data: Vec<f32> = decoded
-        .to_vec_with_options(&opts)
+        .to_vec_frame_with_options(0, &opts)
         .with_context(|| format!("convert pixels of {}", path.display()))?;
     if data.len() < rows * cols {
         bail!(
@@ -138,7 +289,16 @@ pub fn load_planar(path: &Path) -> Result<PlanarImage> {
         "Size".into(),
         format!("{cols}×{rows} px · {:.2}/{:.2} mm", spacing[0], spacing[1]),
     ));
+    if frame_count > 1 {
+        info.push(("Frames".into(), format!("{frame_count} (the first shown)")));
+    }
 
+    let (iec, camera, geometry_missing) = if modality == "RTIMAGE" {
+        rt_image_geometry(&obj, cols, rows, spacing)
+    } else {
+        (None, None, None)
+    };
+    let megavoltage = str_of(&obj, tags::PRIMARY_DOSIMETER_UNIT).is_some_and(|u| u == "MU");
     Ok(PlanarImage {
         label,
         modality,
@@ -150,6 +310,15 @@ pub fn load_planar(path: &Path) -> Result<PlanarImage> {
         max_value: max_v,
         window,
         info,
+        sop_instance_uid: str_of(&obj, tags::SOP_INSTANCE_UID).unwrap_or_default(),
+        frame_of_reference_uid: str_of(&obj, tags::FRAME_OF_REFERENCE_UID).unwrap_or_default(),
+        referenced_beam: i32_of(&obj, tags::REFERENCED_BEAM_NUMBER),
+        iec,
+        camera,
+        geometry_missing,
+        megavoltage,
+        frame_count,
+        source_path: Some(path.to_path_buf()),
     })
 }
 
@@ -484,4 +653,95 @@ pub fn load_record(path: &Path) -> Result<TreatRecord> {
         ion,
         beams,
     })
+}
+
+#[cfg(test)]
+mod rt_image_tests {
+    use super::*;
+    use dicom_core::{DataElement, PrimitiveValue, VR};
+    use dicom_object::InMemDicomObject;
+
+    fn ds(obj: &mut InMemDicomObject, tag: dicom_core::Tag, vals: &[f64]) {
+        crate::dicom_export::put_ds(obj, tag, vals);
+    }
+
+    fn rt_image(extra: impl FnOnce(&mut InMemDicomObject)) -> InMemDicomObject {
+        let mut o = InMemDicomObject::new_empty();
+        ds(&mut o, tags::RADIATION_MACHINE_SAD, &[1000.0]);
+        ds(&mut o, tags::RT_IMAGE_SID, &[1500.0]);
+        ds(&mut o, tags::GANTRY_ANGLE, &[90.0]);
+        ds(&mut o, tags::PATIENT_SUPPORT_ANGLE, &[0.0]);
+        ds(&mut o, tags::ISOCENTER_POSITION, &[1.0, 2.0, 3.0]);
+        o.put(DataElement::new(
+            tags::PATIENT_POSITION,
+            VR::CS,
+            PrimitiveValue::from("HFS"),
+        ));
+        extra(&mut o);
+        o
+    }
+
+    /// A centred RT image with nothing but the IEC parameters is the camera
+    /// the DRR geometry of those parameters makes.
+    #[test]
+    fn a_centred_rt_image_is_the_drr_camera() {
+        let (g, cam, missing) = rt_image_geometry(&rt_image(|_| {}), 8, 6, [0.5, 0.5]);
+        assert!(missing.is_none(), "{missing:?}");
+        let g = g.unwrap();
+        let cam = cam.unwrap();
+        let want = crate::drr::Geometry {
+            gantry_deg: 90.0,
+            isocenter: Vec3::new(1.0, 2.0, 3.0),
+            panel_mm: [4.0, 3.0],
+            dims: [8, 6],
+            ..Default::default()
+        };
+        assert_eq!(g.panel_mm, want.panel_mm);
+        assert!(g.image_center[0].abs() < 1e-12 && g.image_center[1].abs() < 1e-12);
+        let w = want.camera();
+        assert!((cam.source - w.source).length() < 1e-9);
+        assert!((cam.origin - w.origin).length() < 1e-9);
+        assert!((cam.row_step - w.row_step).length() < 1e-9);
+        assert!((cam.col_step - w.col_step).length() < 1e-9);
+        assert!((g.camera().origin - w.origin).length() < 1e-9);
+    }
+
+    /// RT Image Position moves the pixels in the receptor plane, and the
+    /// receptor translation is an absolute position of the receptor origin.
+    #[test]
+    fn the_position_and_the_receptor_translation_move_the_pixels() {
+        let o = rt_image(|o| {
+            ds(o, tags::RT_IMAGE_POSITION, &[-10.0, 20.0]);
+            ds(
+                o,
+                tags::X_RAY_IMAGE_RECEPTOR_TRANSLATION,
+                &[5.0, 0.0, -500.0],
+            );
+        });
+        let (g, cam, _) = rt_image_geometry(&o, 8, 6, [0.5, 0.5]);
+        let (g, cam) = (g.unwrap(), cam.unwrap());
+        // Gantry 90 for HFS: the gantry's Zg is the patient's +x (left), its
+        // Xg the patient's anterior... the receptor origin sits 500 mm past
+        // the isocentre on the far side (towards -x), shifted 5 mm along Xg.
+        let f = g.frame();
+        let first = cam.pixel(0.0, 0.0);
+        let rec = Vec3::new(1.0, 2.0, 3.0) + f.axis * 500.0 + f.panel_x * 5.0;
+        let want = rec + f.panel_x * -10.0 + f.panel_y * 20.0;
+        assert!((first - want).length() < 1e-9, "{first:?} vs {want:?}");
+        // The IEC parameters carry the same picture for the default
+        // orientation: the image centre in the receptor plane.
+        assert!((g.camera().origin - cam.origin).length() < 1e-9);
+        // An RT image with no isocentre has parameters, but no camera.
+        let mut o = rt_image(|_| {});
+        o.remove_element(tags::ISOCENTER_POSITION);
+        let (g, cam, missing) = rt_image_geometry(&o, 8, 6, [0.5, 0.5]);
+        assert!(g.is_some() && cam.is_none());
+        assert_eq!(missing.as_deref(), Some("isocentre"));
+        let mut o = rt_image(|_| {});
+        o.remove_element(tags::RT_IMAGE_SID);
+        assert_eq!(
+            rt_image_geometry(&o, 8, 6, [0.5, 0.5]).2.as_deref(),
+            Some("SID")
+        );
+    }
 }

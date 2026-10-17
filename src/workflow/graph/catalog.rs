@@ -222,6 +222,8 @@ pub enum Kind {
     Rename,
     Register,
     RegisterByStructures,
+    Register2d3d,
+    PositionedCopy,
     Propagate,
     Transfer,
     PropagateToGroup,
@@ -238,7 +240,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 27] = [
+    pub const ALL: [Kind; 29] = [
         Kind::LoadFolder,
         Kind::LoadFolders,
         Kind::LoadFromArchive,
@@ -253,6 +255,8 @@ impl Kind {
         Kind::Rename,
         Kind::Register,
         Kind::RegisterByStructures,
+        Kind::Register2d3d,
+        Kind::PositionedCopy,
         Kind::Propagate,
         Kind::Transfer,
         Kind::PropagateToGroup,
@@ -410,6 +414,28 @@ impl Kind {
                         map (rigid or translation only), then optionally a local B-spline \
                         per structure. For images whose contours agree but whose \
                         intensities never will.",
+                ends_a_branch: false,
+                writes: false,
+            },
+            Kind::Register2d3d => &KindInfo {
+                name: "2D/3D registration",
+                glyph: "⌖",
+                category: Category::Register,
+                blurb: "The pose of an image series whose DRRs match the study's planar \
+                        images (kV radiographs, MV portal images), by their intensities, by \
+                        implanted markers, or both. The correction and the couch moves in \
+                        the report, the setup filed with the study, and the registration \
+                        objects in the folder.",
+                ends_a_branch: false,
+                writes: true,
+            },
+            Kind::PositionedCopy => &KindInfo {
+                name: "Positioned copy",
+                glyph: "⇥",
+                category: Category::Register,
+                blurb: "The study as the patient was found: the image series moved by the \
+                        pose of a 2D/3D registration (or by a displacement typed here), with \
+                        its structures and doses, as a new study registered to the first.",
                 ends_a_branch: false,
                 writes: false,
             },
@@ -731,6 +757,26 @@ impl Kind {
                 ];
                 P
             }
+            Kind::Register2d3d => {
+                const P: &[PortSpec] = &[PortSpec::one(
+                    "Image",
+                    &[T::Image],
+                    "the CT the radiographs are registered to; its study holds them",
+                )];
+                P
+            }
+            Kind::PositionedCopy => {
+                const P: &[PortSpec] = &[
+                    PortSpec::one("Image", &[T::Image], "the image series to move"),
+                    PortSpec::one(
+                        "Pose",
+                        &[T::Registration],
+                        "a 2D/3D registration of that series; the displacement typed here when left free",
+                    )
+                    .optional(),
+                ];
+                P
+            }
             Kind::Propagate => {
                 const P: &[PortSpec] = &[
                     PortSpec::one(
@@ -942,6 +988,28 @@ impl Kind {
                 ];
                 P
             }
+            Kind::Register2d3d => {
+                const P: &[OutSpec] = &[
+                    out("Pose", T::Registration, "the room onto the CT"),
+                    out(
+                        "Report",
+                        T::Report,
+                        "the correction, couch moves and similarity",
+                    ),
+                ];
+                P
+            }
+            Kind::PositionedCopy => {
+                const P: &[OutSpec] = &[
+                    out("Image", T::Image, "the moved series, in a study of its own"),
+                    out(
+                        "Registration",
+                        T::Registration,
+                        "the copy onto the original",
+                    ),
+                ];
+                P
+            }
             Kind::Propagate => {
                 const P: &[OutSpec] = &[
                     out("Structures", T::Structures, "the structures as they landed"),
@@ -997,6 +1065,8 @@ impl Kind {
             Kind::BodyContour => Op::BodyContour(Default::default()),
             Kind::Register => Op::Register(Default::default()),
             Kind::RegisterByStructures => Op::RegisterByStructures(Default::default()),
+            Kind::Register2d3d => Op::Register2d3d(Default::default()),
+            Kind::PositionedCopy => Op::PositionedCopy(Default::default()),
             Kind::Propagate => Op::Propagate(Default::default()),
             Kind::PropagateToGroup => Op::PropagateToGroup(Default::default()),
             Kind::Motion => Op::Motion(Default::default()),
@@ -1043,6 +1113,8 @@ pub enum Op {
     BodyContour(BodyContour),
     Register(Register),
     RegisterByStructures(RegisterByStructures),
+    Register2d3d(Register2d3d),
+    PositionedCopy(PositionedCopy),
     Propagate(Propagate),
     PropagateToGroup(PropagateToGroup),
     Motion(Motion),
@@ -1075,6 +1147,8 @@ impl Op {
             Op::BodyContour(_) => Kind::BodyContour,
             Op::Register(_) => Kind::Register,
             Op::RegisterByStructures(_) => Kind::RegisterByStructures,
+            Op::Register2d3d(_) => Kind::Register2d3d,
+            Op::PositionedCopy(_) => Kind::PositionedCopy,
             Op::Propagate(_) => Kind::Propagate,
             Op::PropagateToGroup(_) => Kind::PropagateToGroup,
             Op::Motion(_) => Kind::Motion,
@@ -1402,6 +1476,30 @@ impl Op {
                 }
                 v
             }
+            Op::Register2d3d(p) => {
+                let mut v = vec![format!(
+                    "{} · {}",
+                    crate::setup::SetupMethod::from_key(&p.method)
+                        .unwrap_or_default()
+                        .label(),
+                    crate::registration::metric2d::Metric2d::from_key(&p.metric)
+                        .unwrap_or_default()
+                        .tag()
+                )];
+                v.push(if p.images.trim().is_empty() {
+                    "every placed planar image".to_string()
+                } else {
+                    format!("images {}", p.images.trim())
+                });
+                if !p.folder.trim().is_empty() {
+                    v.push(format!("to {}", quoted(&p.folder)));
+                }
+                v
+            }
+            Op::PositionedCopy(p) => vec![format!(
+                "or by {:.1}, {:.1}, {:.1} mm",
+                p.translation_mm[0], p.translation_mm[1], p.translation_mm[2]
+            )],
             Op::Drr(p) => vec![
                 if p.plan_beams {
                     "at the plan's beams".to_string()
@@ -1523,6 +1621,14 @@ impl Op {
                 }
                 if p.difference && p.folder.trim().is_empty() {
                     v.push("no folder is given".into());
+                }
+            }
+            Op::Register2d3d(p) => {
+                if crate::setup::SetupMethod::from_key(&p.method).is_none() {
+                    v.push("the method is intensity, markers or hybrid".into());
+                }
+                if crate::registration::metric2d::Metric2d::from_key(&p.metric).is_none() {
+                    v.push("the measure is ncc, gc, gd, pi, lncc or mi".into());
                 }
             }
             Op::Drr(p) => {
@@ -2561,6 +2667,75 @@ impl Default for Drr {
             file_into_study: true,
         }
     }
+}
+
+/// A 2D/3D registration of an image series to its study's planar images.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Register2d3d {
+    /// The planar images, by number or label, separated by commas; empty is
+    /// every planar image that states its own geometry.
+    pub images: String,
+    /// `intensity`, `markers` or `hybrid`.
+    pub method: String,
+    /// `ncc`, `gc`, `gd`, `pi`, `lncc` or `mi`.
+    pub metric: String,
+    pub translations_only: bool,
+    /// Half the size of the clip box about the isocentre, mm; 0 for none.
+    pub clip_mm: f64,
+    /// The clip box about this structure instead, `clip_margin_mm` larger
+    /// on every side; empty for none.
+    pub clip_structure: String,
+    pub clip_margin_mm: f64,
+    /// Rays integrate inside the box only, rather than the box choosing the
+    /// pixels compared.
+    pub clip_rays: bool,
+    pub threshold_hu: f32,
+    pub levels: usize,
+    /// The finest level's longest side, pixels.
+    pub pixels: usize,
+    /// Find the markers in the CT rather than among its points of interest.
+    pub detect_markers: bool,
+    /// Also file the DRRs at the answer as planar images of the study.
+    pub file_drrs: bool,
+    /// Where the registration object, the DRRs and the report go: inside
+    /// the run folder, or absolute; `{input}` is the study's title. Empty
+    /// writes nothing.
+    pub folder: String,
+    /// Where the DRRs of the intensity search are rendered.
+    pub device: Device,
+}
+
+impl Default for Register2d3d {
+    fn default() -> Self {
+        Register2d3d {
+            images: String::new(),
+            method: "intensity".into(),
+            metric: "gc".into(),
+            translations_only: false,
+            clip_mm: 0.0,
+            clip_structure: String::new(),
+            clip_margin_mm: 10.0,
+            clip_rays: false,
+            threshold_hu: -800.0,
+            levels: 3,
+            pixels: 256,
+            detect_markers: false,
+            file_drrs: true,
+            folder: "setup/{input}".into(),
+            device: Device::Auto,
+        }
+    }
+}
+
+/// The study moved by a pose: a 2D/3D registration's, or the displacement
+/// given here (planned point to where it is found, about the series'
+/// centre).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PositionedCopy {
+    pub translation_mm: [f64; 3],
+    pub rotation_deg: [f64; 3],
 }
 
 /// A synthetic CT from an MR or CBCT series.

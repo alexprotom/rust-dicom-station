@@ -25,6 +25,122 @@ pub struct BeamInfo {
     pub n_control_points: usize,
     pub meterset: Option<f64>,
     pub beam_dose: Option<f64>,
+    /// Beam Limiting Device Angle at the first control point, degrees.
+    pub collimator_angle: Option<f64>,
+    /// The jaws and the MLC at the first control point (photon beams).
+    pub aperture: Option<Aperture>,
+}
+
+/// A photon beam's aperture at its first control point: jaws and MLC, in
+/// the beam limiting device's own axes, millimetres at the isocentre plane
+/// (Leaf/Jaw Positions, PS3.3 C.8.8.14).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Aperture {
+    /// `[x1, x2]` and `[y1, y2]`; `None` for a beam without that pair.
+    pub jaw_x: Option<[f64; 2]>,
+    pub jaw_y: Option<[f64; 2]>,
+    pub mlc: Option<Mlc>,
+}
+
+/// A multileaf collimator's leaves at one control point.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Mlc {
+    /// The leaves travel along `Xb` (MLCX) or `Yb` (MLCY).
+    pub along_x: bool,
+    /// `n + 1` leaf boundaries across the travel, mm.
+    pub boundaries: Vec<f64>,
+    /// Per pair, the A bank's (negative side) and the B bank's positions.
+    pub pairs: Vec<[f64; 2]>,
+}
+
+impl Aperture {
+    /// The open field as rectangles `[x0, x1, y0, y1]`: each leaf pair's
+    /// opening within the jaws, or the jaws alone.
+    pub fn rectangles(&self) -> Vec<[f64; 4]> {
+        const OPEN: [f64; 2] = [-1e4, 1e4];
+        let jx = self.jaw_x.unwrap_or(OPEN);
+        let jy = self.jaw_y.unwrap_or(OPEN);
+        let clip = |r: [f64; 4]| {
+            let c = [
+                r[0].max(jx[0]),
+                r[1].min(jx[1]),
+                r[2].max(jy[0]),
+                r[3].min(jy[1]),
+            ];
+            (c[1] > c[0] && c[3] > c[2]).then_some(c)
+        };
+        match &self.mlc {
+            None if self.jaw_x.is_some() || self.jaw_y.is_some() => {
+                clip([jx[0], jx[1], jy[0], jy[1]]).into_iter().collect()
+            }
+            None => Vec::new(),
+            Some(m) => m
+                .pairs
+                .iter()
+                .enumerate()
+                .filter_map(|(i, p)| {
+                    let (lo, hi) = (*m.boundaries.get(i)?, *m.boundaries.get(i + 1)?);
+                    clip(if m.along_x {
+                        [p[0], p[1], lo, hi]
+                    } else {
+                        [lo, hi, p[0], p[1]]
+                    })
+                })
+                .collect(),
+        }
+    }
+
+    /// Whether the point `(x, y)` of the isocentre plane is in the field.
+    pub fn contains(&self, x: f64, y: f64) -> bool {
+        self.rectangles()
+            .iter()
+            .any(|r| x >= r[0] && x <= r[1] && y >= r[2] && y <= r[3])
+    }
+}
+
+/// The aperture of a beam from its Beam Limiting Device Sequence (the leaf
+/// boundaries) and its first control point's positions.
+fn parse_aperture(
+    beam: &dicom_object::InMemDicomObject,
+    cp0: &dicom_object::InMemDicomObject,
+) -> Option<Aperture> {
+    let mut boundaries: Vec<(String, Vec<f64>)> = Vec::new();
+    if let Some(devs) = items_of(beam, tags::BEAM_LIMITING_DEVICE_SEQUENCE) {
+        for d in devs {
+            let ty = str_of(d, tags::RT_BEAM_LIMITING_DEVICE_TYPE).unwrap_or_default();
+            if let Some(b) = f64s_of(d, tags::LEAF_POSITION_BOUNDARIES) {
+                boundaries.push((ty, b));
+            }
+        }
+    }
+    let positions = items_of(cp0, tags::BEAM_LIMITING_DEVICE_POSITION_SEQUENCE)?;
+    let mut ap = Aperture::default();
+    for p in positions {
+        let ty = str_of(p, tags::RT_BEAM_LIMITING_DEVICE_TYPE).unwrap_or_default();
+        let Some(v) = f64s_of(p, tags::LEAF_JAW_POSITIONS) else {
+            continue;
+        };
+        match ty.as_str() {
+            "X" | "ASYMX" if v.len() >= 2 => ap.jaw_x = Some([v[0], v[1]]),
+            "Y" | "ASYMY" if v.len() >= 2 => ap.jaw_y = Some([v[0], v[1]]),
+            "MLCX" | "MLCY" => {
+                let n = v.len() / 2;
+                let Some((_, b)) = boundaries.iter().find(|(t, _)| *t == ty) else {
+                    continue;
+                };
+                if n == 0 || b.len() != n + 1 {
+                    continue;
+                }
+                ap.mlc = Some(Mlc {
+                    along_x: ty == "MLCX",
+                    boundaries: b.clone(),
+                    pairs: (0..n).map(|i| [v[i], v[n + i]]).collect(),
+                });
+            }
+            _ => {}
+        }
+    }
+    (ap.jaw_x.is_some() || ap.jaw_y.is_some() || ap.mlc.is_some()).then_some(ap)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -130,12 +246,18 @@ pub fn load(path: &Path) -> Result<PlanInfo> {
                 n_control_points: 0,
                 meterset: None,
                 beam_dose: None,
+                collimator_angle: None,
+                aperture: None,
             };
 
             if let Some(cps) = items_of(b, cp_tag) {
                 info.n_control_points = cps.len();
                 for (ci, cp) in cps.iter().enumerate() {
                     if ci == 0 {
+                        info.collimator_angle = f64_of(cp, tags::BEAM_LIMITING_DEVICE_ANGLE);
+                        if kind != "Ion" {
+                            info.aperture = parse_aperture(b, cp);
+                        }
                         info.gantry_angle = f64_of(cp, tags::GANTRY_ANGLE);
                         info.couch_angle = f64_of(cp, tags::PATIENT_SUPPORT_ANGLE);
                         info.isocenter = f64s_of(cp, tags::ISOCENTER_POSITION)

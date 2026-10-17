@@ -43,6 +43,7 @@
 use anyhow::{bail, Result};
 use rayon::prelude::*;
 
+use super::parzen::{beta3, dbeta3};
 use super::*;
 
 /// How many samples one level may use before the eligible list is thinned.
@@ -54,33 +55,6 @@ const MAX_DENSE_SAMPLES: usize = 400_000;
 
 /// Joint-histogram bins per axis for Mattes mutual information.
 const MI_BINS: usize = 32;
-
-/// Cubic B-spline Parzen window and its derivative.
-#[inline]
-fn beta3(t: f64) -> f64 {
-    let a = t.abs();
-    if a < 1.0 {
-        2.0 / 3.0 - a * a + a * a * a * 0.5
-    } else if a < 2.0 {
-        let d = 2.0 - a;
-        d * d * d / 6.0
-    } else {
-        0.0
-    }
-}
-
-#[inline]
-fn dbeta3(t: f64) -> f64 {
-    let a = t.abs();
-    if a < 1.0 {
-        -2.0 * t + 1.5 * t * a
-    } else if a < 2.0 {
-        let d = 2.0 - a;
-        -t.signum() * d * d * 0.5
-    } else {
-        0.0
-    }
-}
 
 /// The bins and scales one level's mutual information is computed over.
 #[derive(Clone, Copy)]
@@ -213,8 +187,9 @@ impl Level<'_> {
         // loop serve the mean-squared and the mutual-information cost alike.
         let (cost, scalars) = match self.metric {
             // The surface distance never reaches an image engine
-            // (`register_with` refuses it); mean squares is the harmless arm.
-            Metric::MeanSquares | Metric::SurfaceDistance => {
+            // (`register_with` refuses it), nor does a 2D/3D measure; mean
+            // squares is the harmless arm.
+            Metric::MeanSquares | Metric::SurfaceDistance | Metric::Projective(_) => {
                 let samples = &self.samples;
                 let (sum, cnt) = crate::par::ordered_fold(
                     &mapped,

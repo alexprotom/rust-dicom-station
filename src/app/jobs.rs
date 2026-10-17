@@ -319,7 +319,9 @@ impl ViewerApp {
         self.show_workspace(slot);
         // Any previous registration no longer matches the loaded volumes,
         // and open viewers for this slot reference stale data.
-        self.planar_windows.retain(|w| w.slot != slot);
+        // The planar panes name images by index, and those were another
+        // study's.
+        self.slots[slot].planar = Default::default();
         self.d3_windows.retain(|w| w.slot != slot);
         if self.maximized.map(|(s, _)| s == slot).unwrap_or(false) {
             self.maximized = None;

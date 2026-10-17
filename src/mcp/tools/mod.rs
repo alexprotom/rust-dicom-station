@@ -14,6 +14,7 @@ pub mod output;
 pub mod register;
 pub mod segment;
 pub mod session;
+pub mod setup;
 pub mod synthesis;
 pub mod workflows;
 
@@ -146,6 +147,25 @@ registry! {
         "Carry structures across a registration. to: fixed or moving, the side they land on \
          (the side they come from is the other). Each arrives as a new segment with its volume \
          before and after."),
+
+    // ---- patient setup from radiographs --------------------------------
+    "register_2d3d" => (setup::Register2d3dArgs, setup::register_2d3d, true,
+        "2D/3D registration: the rigid pose of a CT series whose DRRs match planar images of the \
+         dataset (kV radiographs, MV portal images; see planar_images in describe_dataset). Each \
+         image's geometry is its own RT Image attributes, a plan beam, a calibrated room view or \
+         IEC numbers typed in. method: intensity (the images against DRRs; metric gc, ncc, gd, \
+         pi, lncc, mi), markers (points of interest of type MARKER, named ones, or markers \
+         detected in the CT, paired with spots on the images) or hybrid (markers, then \
+         intensity). Returns a setup handle, the correction in patient coordinates and as couch \
+         moves, the displacement, per-view similarity before and after, marker residuals and \
+         any warning (a weakly constrained direction, a marker that moved). The correction maps \
+         the room onto the CT."),
+    "describe_setup" => (setup::SetupArgs, setup::describe_setup, false,
+        "The numbers of an earlier register_2d3d again."),
+    "export_setup" => (setup::ExportSetupArgs, setup::export_setup, false,
+        "Write a setup into the output folder: the correction as a rigid DICOM Spatial \
+         Registration (room to planning CT), the DRRs at the answer as RT Images, and the \
+         report as JSON."),
 
     // ---- 4D -----------------------------------------------------------
     "list_4d_groups" => (session::DatasetArgs, fourd::list_4d_groups, false,

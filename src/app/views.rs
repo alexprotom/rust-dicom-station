@@ -57,7 +57,10 @@ impl ViewerApp {
                 }
                 // Maximized single-pane layout: one pane fills the window.
                 if let Some((mslot, kind)) = self.maximized {
-                    if self.is_open(mslot) && self.slots[mslot].study.is_some() {
+                    if self.is_open(mslot)
+                        && self.slots[mslot].study.is_some()
+                        && self.pane_available(mslot, kind)
+                    {
                         let full = ui.available_rect_before_wrap();
                         self.note_row_rect(mslot, full);
                         self.pane(ui, mslot, kind, full, true);
@@ -90,18 +93,38 @@ impl ViewerApp {
             });
     }
 
-    /// What a row shows, left to right.
-    ///
-    /// The setting is the user's; this is what the row can actually be given
-    /// today, so a row left empty falls back to the three planes rather than
-    /// to a blank strip of window.
-    pub(super) fn row_panes(&self, slot: usize) -> Vec<PaneKind> {
+    /// What the row is set to show, left to right: the user's layout, which
+    /// *Settings ▸ View layout* edits. A row left empty is the three planes
+    /// rather than a blank strip of window.
+    pub(super) fn row_layout(&self, slot: usize) -> Vec<PaneKind> {
         let mut panes = self.view_rows[slot.min(MAX_WORKSPACES - 1)].clone();
         panes.truncate(crate::settings::MAX_PANES);
         if panes.is_empty() {
             panes = crate::settings::default_view_row();
         }
         panes
+    }
+
+    /// What a row shows, left to right: its layout, less the panes there is
+    /// nothing to put in today. A planar pane needs a planar image, and a
+    /// workspace with none - every plain CT - shows its planes as if the
+    /// pane were not in the layout at all.
+    pub(super) fn row_panes(&self, slot: usize) -> Vec<PaneKind> {
+        let mut panes = self.row_layout(slot);
+        panes.retain(|k| self.pane_available(slot, *k));
+        if panes.is_empty() {
+            panes = crate::settings::default_view_row();
+        }
+        panes
+    }
+
+    /// Can `kind` be drawn for `slot` now? A planar pane needs an image of
+    /// its own to show ([`Self::planar_drawn`]).
+    pub(super) fn pane_available(&self, slot: usize, kind: PaneKind) -> bool {
+        match kind {
+            PaneKind::Planar(k) => self.planar_drawn(slot, k as usize),
+            _ => true,
+        }
     }
 
     /// Does this row show the surface scene? The toolbar's *3D* button for
@@ -131,6 +154,7 @@ impl ViewerApp {
         match kind {
             PaneKind::Plane(p) => self.view_cell(ui, slot, super::plane_index(p), rect, first),
             PaneKind::Scene3d => self.scene_pane(ui, slot, rect),
+            PaneKind::Planar(k) => self.planar_pane(ui, slot, k as usize, rect),
         }
     }
 
@@ -245,7 +269,7 @@ impl ViewerApp {
         // screen is remembered, not configured here.
         for slot in self.open_slots() {
             let name = SLOT_NAMES[slot];
-            let row = self.row_panes(slot);
+            let row = self.row_layout(slot);
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(format!("Row {name}")).strong());
                 // Back to the three planes in the usual order, in one click:
@@ -301,6 +325,15 @@ impl ViewerApp {
                              window; the 3D button in the toolbar steps aside while it \
                              is here",
                         );
+                    } else if matches!(kind, PaneKind::Planar(_)) {
+                        resp.on_hover_text(
+                            "One of this workspace's planar images - a radiograph, an RT \
+                             image, a DRR - in the row, with its own window, zoom and \
+                             pan; the menu in its corner or the wheel picks the image. \
+                             Not drawn while the workspace has no planar image. Ticking \
+                             an image under Planar images in the data tree puts it here \
+                             too.",
+                        );
                     }
                     // Where in the row it sits. A pane that is not in the row
                     // has nowhere to go, and the ends have nowhere further.
@@ -328,7 +361,7 @@ impl ViewerApp {
             }
         }
         if let Some((slot, kind, on)) = toggle {
-            let row = self.row_panes(slot);
+            let row = self.row_layout(slot);
             let panes = &mut self.view_rows[slot];
             // A row that was still the default has to become a real list
             // before anything can be added to or taken out of it.
@@ -343,6 +376,23 @@ impl ViewerApp {
             } else {
                 panes.retain(|k| *k != kind);
             }
+            // A planar pane ticked on by hand is one asked for: it comes up
+            // with an image of its own (its number, or the last there is)
+            // rather than waiting for the tree to give it one; ticked off,
+            // it forgets its stack.
+            if let PaneKind::Planar(k) = kind {
+                let n = self.slots[slot]
+                    .study
+                    .as_ref()
+                    .map(|s| s.planar_images.len())
+                    .unwrap_or(0);
+                let v = &mut self.slots[slot].planar[k as usize];
+                v.layers.clear();
+                v.blend = 0.0;
+                if on && n > 0 {
+                    v.layers.push(PlanarLayer::new((k as usize).min(n - 1)));
+                }
+            }
             changed = true;
         }
         if let Some(slot) = reset {
@@ -350,7 +400,7 @@ impl ViewerApp {
             changed = true;
         }
         if let Some((slot, i, right)) = shift {
-            let row = self.row_panes(slot);
+            let row = self.row_layout(slot);
             let panes = &mut self.view_rows[slot];
             if panes.is_empty() {
                 *panes = row;
@@ -554,7 +604,7 @@ impl ViewerApp {
             if counts.is_empty() {
                 "Nothing in it can be reconstructed into slices.".to_string()
             } else {
-                format!("{counts} - open them from the panel on the left.")
+                format!("{counts} - tick a planar image on the left to show it in this row.")
             },
             FontId::proportional(13.0),
             hint,
@@ -949,6 +999,39 @@ impl ViewerApp {
                         painter.circle_stroke(p, 6.0, Stroke::new(1.0, Color32::WHITE));
                     }
                 }
+            }
+        }
+
+        // The 2D/3D registration's clip box, on the slices that cut it.
+        if let Some(b) = self.reg2d3d_clip_shown(slot) {
+            let (lo, hi) = b.corners();
+            let corners: Vec<[f64; 3]> = (0..8)
+                .map(|c| {
+                    let p = crate::geometry::Vec3::new(
+                        if c & 1 == 0 { lo.x } else { hi.x },
+                        if c & 2 == 0 { lo.y } else { hi.y },
+                        if c & 4 == 0 { lo.z } else { hi.z },
+                    );
+                    vol.voxel_to_plane_pixel(plane, vol.patient_to_voxel(p))
+                })
+                .collect();
+            let depth = corners
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), c| {
+                    (a.min(c[2]), b.max(c[2]))
+                });
+            let here = view.slice as f64;
+            if here >= depth.0 - 0.5 && here <= depth.1 + 0.5 {
+                let pts: Vec<Pos2> = corners
+                    .iter()
+                    .map(|c| px_to_screen([c[0] as f32, c[1] as f32]))
+                    .collect();
+                painter.rect_stroke(
+                    Rect::from_points(&pts),
+                    0.0,
+                    Stroke::new(1.2, Color32::from_rgb(255, 210, 0)),
+                    egui::StrokeKind::Middle,
+                );
             }
         }
 

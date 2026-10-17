@@ -143,7 +143,7 @@ impl ViewerApp {
             ("Playback", "playback"),
             ("Image registration", "registration"),
             ("Image simulation", "simulation"),
-            ("Image synthesis", "synthesis"),
+            ("Image generation", "generation"),
             ("Structure editor", "editor"),
             ("Structure auto tools", "auto"),
             ("module_propagate", "propagation"),
@@ -205,8 +205,8 @@ impl ViewerApp {
                 if self.module_simulation {
                     self.simulation_section(ui);
                 }
-                if self.module_synthesis {
-                    self.synthesis_section(ui);
+                if self.module_generation {
+                    self.image_generation_section(ui);
                 }
                 if self.module_structures {
                     self.structures_editor_section(ui);
@@ -383,7 +383,7 @@ impl ViewerApp {
     /// the frame started with comes in as `current` and a new one goes out
     /// through `out`, to be written back once the borrow ends - the same
     /// two-step every other edit the tree makes goes through.
-    fn focus_row(
+    pub(super) fn focus_row(
         ui: &egui::Ui,
         resp: &egui::Response,
         me: RenameTarget,
@@ -512,6 +512,7 @@ impl ViewerApp {
         self.data_tree(ui, slot);
         self.dose_display_section(ui, slot);
         self.planar_section(ui, slot);
+        self.setups_section(ui, slot);
         self.reg_objects_section(ui, slot);
         self.records_section(ui, slot);
         self.warnings_section(ui, slot);
@@ -3131,7 +3132,9 @@ impl ViewerApp {
             .unwrap_or_else(|| " ▶ (structure set not loaded)".to_string())
     }
 
-    /// DX / CR / RTIMAGE planar images: list with per-image viewer windows.
+    /// DX / CR / RTIMAGE planar images, DRRs among them, drawn like image
+    /// series: a click shows the image in a planar pane of the row, and a
+    /// `P1` / `P2` badge says which pane holds it.
     pub(super) fn planar_section(&mut self, ui: &mut egui::Ui, slot: usize) {
         let n = self.slots[slot]
             .study
@@ -3141,18 +3144,19 @@ impl ViewerApp {
         if n == 0 {
             return;
         }
-        let mut open_idx = None;
-        let mut close_idx = None;
+        #[derive(Clone, Copy)]
+        enum Act {
+            Show(usize, Option<usize>),
+            Stack(usize, Option<usize>),
+            Take(usize, usize),
+        }
+        let mut act: Option<Act> = None;
         let mut rename: Option<RenameTarget> = None;
         let mut remove: Option<ObjRef> = None;
         let mut focus: Option<RenameTarget> = None;
         let current = self.tree_focus.clone();
-        let open_windows: Vec<usize> = self
-            .planar_windows
-            .iter()
-            .filter(|w| w.slot == slot && w.open)
-            .map(|w| w.idx)
-            .collect();
+        let panes: Vec<Vec<usize>> = (0..n).map(|i| self.planar_panes_showing(slot, i)).collect();
+        let ctrl = ui.input(|i| i.modifiers.command);
         // Normally a side note beneath the tree; for a workspace with no image
         // volume these *are* the images, so the section opens itself.
         let sole_content = !self.slots[slot].has_volume();
@@ -3163,45 +3167,94 @@ impl ViewerApp {
                 .default_open(sole_content)
                 .show(ui, |ui| {
                     for (i, img) in study.planar_images.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(format!("[{}]", img.modality)).weak());
-                            // A planar image is shown in a window of its own,
-                            // so the tick box is that window.
-                            let mut shown = open_windows.contains(&i);
-                            let resp = ui.checkbox(&mut shown, &img.label);
-                            Self::focus_row(
-                                ui,
-                                &resp,
-                                RenameTarget::Planar { slot, idx: i },
-                                &current,
-                                &mut focus,
-                            );
-                            if resp.changed() {
-                                if shown {
-                                    open_idx = Some(i);
-                                } else {
-                                    close_idx = Some(i);
+                        let me = RenameTarget::Planar { slot, idx: i };
+                        let in_panes = &panes[i];
+                        let resp = ui
+                            .scope(|ui| {
+                                ui.spacing_mut().item_spacing.x = 3.0;
+                                ui.horizontal(|ui| {
+                                    let resp = ui.add(
+                                        egui::Button::selectable(
+                                            !in_panes.is_empty(),
+                                            img.label.as_str(),
+                                        )
+                                        .wrap(),
+                                    );
+                                    for k in in_panes {
+                                        ui.add(
+                                            egui::Button::new(
+                                                egui::RichText::new(format!("P{}", k + 1))
+                                                    .small()
+                                                    .strong(),
+                                            )
+                                            .small()
+                                            .corner_radius(2.0)
+                                            .sense(egui::Sense::hover()),
+                                        )
+                                        .on_hover_text(
+                                            format!(
+                                                "Shown in {}",
+                                                PaneKind::Planar(*k as u8).label()
+                                            ),
+                                        );
+                                    }
+                                    Self::keyboard_badge(ui, current.as_ref() == Some(&me));
+                                    resp
+                                })
+                                .inner
+                            })
+                            .inner;
+                        Self::focus_row(ui, &resp, me.clone(), &current, &mut focus);
+                        if resp.clicked() {
+                            act = Some(if ctrl {
+                                Act::Stack(i, None)
+                            } else {
+                                Act::Show(i, None)
+                            });
+                        }
+                        let mut tip = format!("{} · {} × {} px", img.modality, img.cols, img.rows);
+                        for (k, v) in &img.info {
+                            tip.push_str(&format!("\n{k}: {v}"));
+                        }
+                        resp.on_hover_text(tip).context_menu(|ui| {
+                            for k in 0..settings::PLANAR_PANES {
+                                let label = PaneKind::Planar(k as u8).label();
+                                if ui.button(format!("👁 Show in {label}")).clicked() {
+                                    act = Some(Act::Show(i, Some(k)));
+                                    ui.close();
                                 }
                             }
-                            resp.on_hover_text(
-                                "Show this image in its own window\nright-click: rename or \
-                                 remove\nF2: rename, Delete: remove",
-                            )
-                            .context_menu(|ui| {
-                                if ui.button("✏ Rename").clicked() {
-                                    rename = Some(RenameTarget::Planar { slot, idx: i });
+                            ui.separator();
+                            for k in 0..settings::PLANAR_PANES {
+                                let label = PaneKind::Planar(k as u8).label();
+                                if in_panes.contains(&k) {
+                                    if ui.button(format!("➖ Take out of {label}")).clicked() {
+                                        act = Some(Act::Take(i, k));
+                                        ui.close();
+                                    }
+                                } else if ui
+                                    .button(format!("➕ Compare in {label}"))
+                                    .on_hover_text("Put it on top of what the pane shows")
+                                    .clicked()
+                                {
+                                    act = Some(Act::Stack(i, Some(k)));
                                     ui.close();
                                 }
-                                ui.separator();
-                                if ui.button("🗑 Remove").clicked() {
-                                    remove = Some(ObjRef {
-                                        slot,
-                                        kind: ObjKind::Planar,
-                                        idx: i,
-                                    });
-                                    ui.close();
-                                }
-                            });
+                            }
+                            ui.separator();
+                            if ui.button("✏ Rename").clicked() {
+                                rename = Some(RenameTarget::Planar { slot, idx: i });
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("🗑 Remove").clicked() {
+                                remove = Some(ObjRef {
+                                    slot,
+                                    kind: ObjKind::Planar,
+                                    idx: i,
+                                });
+                                ui.close();
+                            }
                         });
                     }
                 });
@@ -3215,32 +3268,21 @@ impl ViewerApp {
         if focus.is_some() {
             self.tree_focus = focus;
         }
-        if let Some(i) = close_idx {
-            for w in self
-                .planar_windows
-                .iter_mut()
-                .filter(|w| w.slot == slot && w.idx == i)
-            {
-                w.open = false;
-            }
+        let Some(a) = act else { return };
+        match a {
+            Act::Show(i, pane) => self.show_planar(slot, i, pane),
+            Act::Stack(i, pane) => self.stack_planar(slot, i, pane),
+            Act::Take(i, k) => self.take_planar_image(slot, k, i),
         }
-        if let Some(i) = open_idx {
-            if let Some(w) = self
-                .planar_windows
-                .iter_mut()
-                .find(|w| w.slot == slot && w.idx == i)
+        if !matches!(a, Act::Take(..)) {
+            // Shown means on screen: a workspace put aside comes back, and a
+            // maximized pane of another kind gives way to the row.
+            self.shown[slot] = true;
+            if self
+                .maximized
+                .is_some_and(|(s, k)| s != slot || !matches!(k, PaneKind::Planar(_)))
             {
-                w.open = true;
-            } else {
-                let wl = self.slots[slot].study.as_ref().unwrap().planar_images[i].window;
-                self.planar_windows.push(PlanarWindow {
-                    slot,
-                    idx: i,
-                    open: true,
-                    wl,
-                    tex: None,
-                    tex_wl: (f32::NAN, f32::NAN),
-                });
+                self.maximized = None;
             }
         }
     }
@@ -3782,6 +3824,10 @@ fn tree_level_of(study: &LoadedStudy, slot: usize, t: &RenameTarget) -> Vec<Rena
         RenameTarget::Record { .. } => n_of(study.treat_records.len())
             .into_iter()
             .map(|idx| RenameTarget::Record { slot, idx })
+            .collect(),
+        RenameTarget::Setup { .. } => n_of(study.setups.len())
+            .into_iter()
+            .map(|idx| RenameTarget::Setup { slot, idx })
             .collect(),
     }
 }
@@ -4371,6 +4417,7 @@ mod layout_tests {
             planar_images: Vec::new(),
             registrations: Vec::new(),
             treat_records: Vec::new(),
+            setups: Vec::new(),
             fourd_groups: Vec::new(),
             warnings: Vec::new(),
             default_window: (40.0, 400.0),
