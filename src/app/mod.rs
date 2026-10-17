@@ -50,6 +50,7 @@ mod combine;
 mod compare_win;
 mod contour_edit;
 mod d3;
+mod data_tree;
 mod derived_app;
 mod detach;
 mod dialogs;
@@ -58,8 +59,10 @@ mod drr_win;
 mod dvh_win;
 mod export_win;
 mod form;
+mod fourd_tree;
 mod glyphs;
 mod home;
+mod image_gen;
 mod img_info;
 mod interactive_seg;
 mod jobs;
@@ -80,6 +83,7 @@ mod poi;
 mod prompt_seg;
 mod propagate_win;
 mod record;
+mod reg2d3d;
 mod reg_panel;
 mod reg_shape;
 mod rename;
@@ -88,6 +92,7 @@ mod seg;
 mod seg_edit;
 mod seg_engines;
 mod sets;
+mod slot;
 mod snapshot;
 mod stats_win;
 mod struct_tools;
@@ -96,19 +101,34 @@ mod testdata_win;
 mod theme;
 mod transfer_win;
 mod tree;
+mod tree_dose;
+mod tree_menus;
+mod tree_model;
+mod tree_planar;
+mod tree_plans;
+mod tree_records;
+mod tree_registrations;
+mod tree_segmentations;
+mod tree_structures;
 mod views;
 mod widgets;
 mod workflow_edit;
 mod workflow_run;
 mod workspace_pick;
 
-use drr_win::DrrDialog;
+use d3::D3Window;
+use drr_win::{DrrRun, DrrState};
+use jobs::{cancel_if, poll_job, poll_tool_job, Job, LoadResult};
 use pacs_win::{PacsOutcome, PacsWindow};
 use propagate_win::{GroupRegistration, PropOutcome, PropagateDialog};
+use reg_panel::{ActiveRegistration, FusionSide};
 use reg_panel::{RegImage, RegInit, RegOutcome, RegRoi};
 use rename::{RenameDialog, RenameTarget};
 use seg_engines::*;
+use sets::{Destination, ItemAction, PhasesCopy, PoiAct, SetAction, SetKind, SetRef};
+use slot::{plane_index, StudySlot};
 use theme::*;
+use tree::{ObjKind, ObjRef, TreeAction, TreeOp, TreeSel};
 use widgets::*;
 
 /// How many workspaces the program will hold at once, from
@@ -429,896 +449,95 @@ struct GrowDrag {
     capped: bool,
 }
 
-// Per-viewport state and caches
+// Planar panes
 
-struct ViewState {
-    plane: ViewPlane,
-    slice: usize,
+/// One planar pane of a row ([`PaneKind::Planar`]): which of the
+/// workspace's planar images it shows and how.
+///
+/// A pane shows one image or several, stacked: the scrubber along its
+/// bottom edge moves through the stack, and the two images either side of
+/// it are compared the way [`Compare`] says - faded into each other, in a
+/// checkerboard, as a difference or one's edges over the other. Images are
+/// named by their index in `study.planar_images`; removing one renumbers the
+/// panes ([`ViewerApp::planar_removed`]). Zoom and pan are in the units of an
+/// MPR view (screen pixels per millimetre, millimetres off the centre) and
+/// every image of the stack is drawn at that scale about the same centre, so
+/// two renderings of one geometry lie exactly on each other.
+#[derive(Default)]
+struct PlanarView {
+    /// The stack, bottom first. Empty: nothing given to the pane yet.
+    layers: Vec<PlanarLayer>,
+    /// Where the scrubber stands in the stack: 0 is the first image, 1 the
+    /// second, and a fraction is between the two.
+    blend: f32,
+    compare: Compare,
     /// Screen pixels per mm; 0 means auto-fit.
     zoom: f32,
-    /// Pan offset of the image center relative to the viewport center, mm.
     pan: Vec2,
-    /// Fractional mouse-wheel line accumulator for slice stepping.
+    /// Fractional mouse-wheel line accumulator for stepping through the
+    /// stack.
     scroll_accum: f32,
-    tex: Option<TextureHandle>,
-    dose_tex: Option<TextureHandle>,
-    img_key: Option<(usize, u32, u32)>,
-    dose_key: Option<u64>,
-    contour_key: Option<u64>,
-    slice_buf: Vec<i16>,
-    /// What `slice_buf` holds: (volume, plane, slice). A window/level drag
-    /// changes only the mapping to grey, so the slice itself is kept.
-    slice_key: Option<(usize, ViewPlane, usize)>,
-    dose_plane: Vec<f32>,
-    iso_segs: Vec<(usize, render::Segment)>,
-    contours: Vec<(usize, render::RoiPlaneGraphics)>,
-    fusion_tex: Option<TextureHandle>,
-    fusion_key: Option<u64>,
-    /// The other image sampled at every pixel of the fused slice (`None`
-    /// outside it), and what it was sampled for: everything but the window
-    /// and the blend weight, which only recolour these values.
-    fusion_samples: Vec<Option<f32>>,
-    fusion_geom: Option<u64>,
-    seg_tex: Option<TextureHandle>,
-    seg_key: Option<u64>,
-    /// Identity of the vector-field geometry cached below.
-    field_key: Option<u64>,
-    /// Arrows of the deformation field on this slice, display-pixel space.
-    field_arrows: Vec<registration::dvf::Glyph>,
-    /// The deformed lattice of this slice, display-pixel space.
-    field_lines: Vec<Vec<[f32; 2]>>,
+    /// The difference or edge image of the pair being compared, and what it
+    /// was made from.
+    cmp_tex: Option<TextureHandle>,
+    cmp_key: Option<u64>,
 }
 
-impl ViewState {
-    fn new(plane: ViewPlane) -> Self {
-        ViewState {
-            plane,
-            slice: 0,
-            zoom: 0.0,
-            pan: Vec2::ZERO,
-            scroll_accum: 0.0,
-            tex: None,
-            dose_tex: None,
-            img_key: None,
-            dose_key: None,
-            contour_key: None,
-            slice_buf: Vec::new(),
-            slice_key: None,
-            dose_plane: Vec::new(),
-            iso_segs: Vec::new(),
-            contours: Vec::new(),
-            fusion_tex: None,
-            fusion_key: None,
-            fusion_samples: Vec::new(),
-            fusion_geom: None,
-            seg_tex: None,
-            seg_key: None,
-            field_key: None,
-            field_arrows: Vec::new(),
-            field_lines: Vec::new(),
-        }
-    }
-
-    fn invalidate(&mut self) {
-        self.img_key = None;
-        self.slice_key = None;
-        self.dose_key = None;
-        self.contour_key = None;
-        self.fusion_key = None;
-        self.fusion_geom = None;
-        self.seg_key = None;
-        self.field_key = None;
-    }
-}
-
-/// Which of the three view slots shows a plane - the order `fresh_views`
-/// builds them in.
-fn plane_index(plane: ViewPlane) -> usize {
-    match plane {
-        ViewPlane::Axial => 0,
-        ViewPlane::Sagittal => 1,
-        ViewPlane::Coronal => 2,
-    }
-}
-
-fn fresh_views() -> [ViewState; 3] {
-    [
-        ViewState::new(ViewPlane::Axial),
-        ViewState::new(ViewPlane::Sagittal),
-        ViewState::new(ViewPlane::Coronal),
-    ]
-}
-
-// A loaded study with its own display state ("A" = primary, "B" = comparison)
-
-struct StudySlot {
-    study: Option<LoadedStudy>,
-    views: [ViewState; 3],
-    /// Fractional voxel coords of the linked crosshair (in this slot's volume).
-    cursor: [f64; 3],
-    roi_visible: Vec<bool>,
-    /// Index of the active plan within `study.plans`: the one whose details
-    /// are listed and whose isocenters the views draw. One at a time, like
-    /// the structure sets and the segmentation series.
-    active_plan: usize,
-    /// The row's own switch: whether the active plan's isocenters are drawn
-    /// at all. Clicking the active row again turns them off without losing
-    /// which plan is selected.
-    plans_shown: bool,
-    /// Index of the active structure set within `study.structure_sets`.
-    active_structs: usize,
-    /// The tick box on the RT structures series row: whether the active set
-    /// is drawn at all. Unticking it clears the contours from the image views
-    /// while the set stays selected, so the ROI list, the drawing tools and a
-    /// 3D scene opened on it all keep working.
-    structs_shown: bool,
-    /// The same tick box on the segmentation series row.
-    segs_shown: bool,
-    active_dose: usize,
-    dose_reference: f32,
-    /// Index of the active segmentation series within `study.seg_series`.
-    active_seg_series: usize,
-    /// Index of the segment the tools edit, within that series.
-    active_seg: usize,
-    /// Index of the ROI the contour tools edit, within the active structure
-    /// set. Out of range simply means "none yet".
-    active_roi: usize,
-    /// The active structure set's ROIs mapped into the displayed volume's
-    /// voxel space, for the image views' contours.
-    roi_prep: RoiPrep,
-}
-
-/// The ROIs of one structure set prepared for drawing on one volume
-/// ([`render::PreparedRoi`]): scrolling through a view, dragging the
-/// crosshair or playing a 4D cine then costs the contours that cross each
-/// slice, instead of mapping every point of every visible structure per view
-/// per step. Filled per ROI the first time it is drawn.
-#[derive(Default)]
-struct RoiPrep {
-    /// (structure set index, `ViewerApp::structures_gen`) the ROIs are for.
-    key: Option<(usize, u64)>,
-    /// The volume they were mapped into. Weak: a cache must not keep a
-    /// replaced volume's voxels alive, and unlike its address a `Weak` cannot
-    /// be taken over by the next volume allocated in the same place.
-    volume: std::sync::Weak<Volume>,
-    rois: Vec<Option<render::PreparedRoi>>,
-}
-
-impl RoiPrep {
-    /// The cache for `(set, gen)` on `vol`, emptied when it was for anything
-    /// else.
-    fn for_set(&mut self, set: usize, gen: u64, vol: &Arc<Volume>, n_rois: usize) {
-        let same_volume = std::ptr::eq(self.volume.as_ptr(), Arc::as_ptr(vol));
-        if self.key != Some((set, gen)) || !same_volume || self.rois.len() != n_rois {
-            self.key = Some((set, gen));
-            self.volume = Arc::downgrade(vol);
-            self.rois.clear();
-            self.rois.resize_with(n_rois, || None);
-        }
-    }
-}
-
-impl StudySlot {
-    /// The currently selected structure set of this slot, if any.
-    fn active_structures(&self) -> Option<&crate::rtstruct::StructureSet> {
-        self.study
-            .as_ref()
-            .and_then(|s| s.structure_sets.get(self.active_structs))
-    }
-
-    /// Whether this slot shows an image volume.
-    ///
-    /// A slot can hold a perfectly good workspace with none - RT images, a
-    /// structure set, a plan. Every feature that needs voxels (the MPR views,
-    /// the brush, registration, the segmentation engines, the DRR) asks this
-    /// rather than `study.is_some()`.
-    fn has_volume(&self) -> bool {
-        self.study.as_ref().is_some_and(|st| st.has_volume())
-    }
-
-    /// Voxel spacing of the displayed volume, or unit spacing without one -
-    /// what every conversion from voxels to millimetres falls back on.
-    fn spacing_or_unit(&self) -> [f64; 3] {
-        self.study
-            .as_ref()
-            .map(|st| st.volume.spacing)
-            .unwrap_or([1.0; 3])
-    }
-
-    /// `voxels` of the displayed volume, in cm³.
-    fn voxels_cm3(&self, voxels: u64) -> f64 {
-        let sp = self.spacing_or_unit();
-        voxels as f64 * crate::volume::voxel_cm3(sp)
-    }
-
-    /// One ROI of one structure set, by index.
-    fn roi(&self, set: usize, roi: usize) -> Option<&crate::rtstruct::Roi> {
-        self.study
-            .as_ref()
-            .and_then(|st| st.structure_sets.get(set))
-            .and_then(|ss| ss.rois.get(roi))
-    }
-
-    /// [`Self::roi`] for editing.
-    fn roi_mut(&mut self, set: usize, roi: usize) -> Option<&mut crate::rtstruct::Roi> {
-        self.study
-            .as_mut()
-            .and_then(|st| st.structure_sets.get_mut(set))
-            .and_then(|ss| ss.rois.get_mut(roi))
-    }
-
-    /// Series UID of the displayed volume, when there is one.
-    fn displayed_uid(&self) -> Option<&str> {
-        let st = self.study.as_ref()?;
-        if !st.has_volume() {
-            return None;
-        }
-        st.series.get(st.active_series).map(|se| se.uid.as_str())
-    }
-
-    /// Index of the segmentation series the tools edit, clamped to what the
-    /// study actually holds.
-    fn seg_series_idx(&self) -> Option<usize> {
-        let st = self.study.as_ref()?;
-        (!st.seg_series.is_empty()).then(|| self.active_seg_series.min(st.seg_series.len() - 1))
-    }
-
-    /// Segments of the active segmentation series - empty unless they live
-    /// on the displayed volume's lattice, because every overlay, brush
-    /// stroke and mesh indexes them with that volume's dimensions. A series
-    /// drawn on another image series simply has nothing to show here.
-    fn segs(&self) -> &[Segmentation] {
-        match (self.study.as_ref(), self.seg_series_idx()) {
-            (Some(st), Some(i))
-                if st.has_volume() && st.seg_series[i].grid.dims == st.volume.dims =>
-            {
-                &st.seg_series[i].segs
-            }
-            _ => &[],
-        }
-    }
-
-    /// [`Self::segs`] for editing; `None` when there is nothing editable.
-    fn segs_mut(&mut self) -> Option<&mut Vec<Segmentation>> {
-        let i = self.seg_series_idx()?;
-        let st = self.study.as_mut()?;
-        if !st.has_volume() {
-            return None;
-        }
-        let dims = st.volume.dims;
-        let ser = &mut st.seg_series[i];
-        (ser.grid.dims == dims).then_some(&mut ser.segs)
-    }
-}
-
-impl StudySlot {
-    fn empty() -> Self {
-        StudySlot {
-            study: None,
-            views: fresh_views(),
-            cursor: [0.0; 3],
-            roi_visible: Vec::new(),
-            active_plan: 0,
-            plans_shown: true,
-            active_structs: 0,
-            structs_shown: true,
-            segs_shown: true,
-            active_dose: 0,
-            dose_reference: 1.0,
-            active_seg_series: 0,
-            active_seg: 0,
-            active_roi: usize::MAX,
-            roi_prep: RoiPrep::default(),
-        }
-    }
-}
-
-// Background loading
-
-/// A freshly reconstructed volume: pixels, its default window/level and any
-/// non-fatal notes raised while reading the series.
-type LoadedVolume = (Arc<Volume>, (f32, f32), Vec<String>);
-
-enum LoadResult {
-    /// A whole folder, for the given slot.
-    Study(Box<anyhow::Result<LoadedStudy>>, usize),
-    /// A single series switched into (slot, series index).
-    Volume(Box<anyhow::Result<LoadedVolume>>, usize, usize),
-    /// One phase of a 4D group stepped into (slot, series index). Lands
-    /// through [`ViewerApp::install_phase_volume`] instead, so that the
-    /// crosshair, the zoom and the registration stay where they are.
-    Phase(Box<anyhow::Result<LoadedVolume>>, usize, usize),
-}
-
-/// A unit of work running on a background thread: a shared progress handle
-/// plus the channel its result arrives on. Every background feature in the
-/// app has this shape, and [`poll_job`] drives them all identically.
-struct Job<T> {
-    progress: Arc<Progress>,
-    rx: mpsc::Receiver<T>,
-}
-
-impl<T> Job<T> {
-    /// Run `work` on a new thread and return the handle to poll for its
-    /// result. The worker gets the progress handle; the caller keeps a clone.
-    fn spawn(progress: Arc<Progress>, work: impl FnOnce(&Progress) -> T + Send + 'static) -> Job<T>
-    where
-        T: Send + 'static,
-    {
-        let (tx, rx) = mpsc::channel();
-        let p = progress.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(work(&p));
-        });
-        Job { progress, rx }
-    }
-}
-
-/// Ask a running job to stop when its window's Cancel button was pressed;
-/// nothing happens without a job.
-fn cancel_if<T>(cancel: bool, job: &Option<Job<T>>) {
-    if cancel {
-        if let Some(job) = job {
-            job.progress.cancel();
-        }
-    }
-}
-
-/// Poll a background job. Returns its result once, clearing the slot; reports
-/// a worker that died without answering into `error`; otherwise schedules the
-/// next poll and returns `None`.
-fn poll_job<T>(
-    slot: &mut Option<Job<T>>,
-    ctx: &egui::Context,
-    what: &str,
-    error: &mut Option<String>,
-) -> Option<T> {
-    let job = slot.as_ref()?;
-    match job.rx.try_recv() {
-        Ok(v) => {
-            *slot = None;
-            Some(v)
-        }
-        Err(mpsc::TryRecvError::Empty) => {
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
-            None
-        }
-        Err(mpsc::TryRecvError::Disconnected) => {
-            *slot = None;
-            *error = Some(format!("{what} thread terminated unexpectedly"));
-            None
-        }
-    }
-}
-
-/// [`poll_job`] for the jobs that answer with `(slot, Result)`: a failure is
-/// reported as `"{what} failed: "`, except a cancellation, which is what
-/// the user asked for and needs no dialog.
-fn poll_tool_job<T>(
-    slot: &mut Option<Job<(usize, anyhow::Result<T>)>>,
-    ctx: &egui::Context,
-    what: &str,
-    error: &mut Option<String>,
-) -> Option<(usize, T)> {
-    match poll_job(slot, ctx, what, error)? {
-        (s, Ok(v)) => Some((s, v)),
-        (_, Err(e)) => {
-            if !progress::is_cancellation(&e) {
-                *error = Some(format!("{what} failed: {e:#}"));
-            }
-            None
-        }
-    }
-}
-
-/// What *Prepare phases* answers with: the structure meshes of each phase,
-/// each under the [`ViewerApp::d3_key_of`] the window will look it up by.
-type PhaseMeshes = Vec<(u64, Vec<RoiMesh>)>;
-
-/// A floating 3D structure-rendering window (one per study slot).
-/// A segmentation meshing result: the meshes, the generation each was built
-/// from, and the geometry they were built on (see `D3Window::seg_mesh_gens`).
-type SegMeshes = (Vec<RoiMesh>, Vec<u64>, u64);
-
-struct D3Window {
-    slot: usize,
-    open: bool,
-    yaw: f32,
-    pitch: f32,
-    /// Zoom multiplier on the auto-fit scale.
-    zoom: f32,
-    pan: Vec2,
-    /// The hand: while it is on, dragging with the left button moves the
-    /// scene instead of turning it. Middle-drag pans either way, but a
-    /// wheel mouse is not something every desk has.
-    pan_mode: bool,
-    opacity: f32,
-    meshes: Option<Arc<Vec<RoiMesh>>>,
-    /// Scene bounding-sphere (patient mm) for auto-fit.
-    center: [f32; 3],
-    radius: f32,
-    /// Identity of the structure set the meshes were built from.
-    key: u64,
-    /// Identity of the image the scene stands on ([`ViewerApp::d3_scene_id`]).
-    /// When it changes the camera starts over - turned, zoomed and centred
-    /// for the new anatomy - since a view kept from another image orbits a
-    /// point that is not in this one.
-    scene: u64,
-    /// Fit the camera to the meshes when they land: the first time, and
-    /// after the image changed; a rebuild after an edit keeps the view where
-    /// it was.
-    refit: bool,
-    /// Counts every set of meshes that landed; the frame cache is keyed on
-    /// it. Only [`super::d3::set_meshes`] may change `meshes`, because a
-    /// set that arrives without bumping this is drawn through the previous
-    /// set's triangle order.
-    mesh_gen: u64,
-    /// Geometry hash per ROI the meshes were built from, and the ROIs a
-    /// running partial rebuild replaces (`None`: a full build).
-    roi_hashes: Vec<u64>,
-    rebuilding: Option<Vec<usize>>,
-    /// Isodose surfaces of the workspace's active dose at the isodose lines'
-    /// levels: the meshes (`roi_index` = level index), the build in flight,
-    /// what they were built from, and their opacity.
-    show_iso: bool,
-    iso_meshes: Option<Arc<Vec<RoiMesh>>>,
-    iso_job: Option<Job<Vec<RoiMesh>>>,
-    iso_built: u64,
-    iso_opacity: f32,
-    /// The *Structures* panel: opacity per structure, times the window's
-    /// own, keyed by ROI index; absent means 1.
-    show_list: bool,
-    roi_alpha: std::collections::HashMap<usize, f32>,
-    job: Option<Job<Vec<RoiMesh>>>,
-    /// Live meshes of the painted segmentations (`roi_index` = seg index).
-    seg_meshes: Option<Arc<Vec<RoiMesh>>>,
-    /// The [`Segmentation::gen`] each of `seg_meshes` was built from, in the
-    /// same order, and the volume geometry they were built on: a rebuild
-    /// re-meshes only the segments whose generation it has no mesh for.
-    seg_mesh_gens: Vec<u64>,
-    seg_geom: u64,
-    seg_job: Option<Job<SegMeshes>>,
-    /// Hash of the segmentation state `seg_meshes` was built from.
-    seg_built: u64,
-    /// Also draw the *other* workspace's structures, mapped through the active
-    /// registration - the two anatomies in one scene is what makes a
-    /// deformable result readable at all.
-    show_other: bool,
-    /// Opacity of that second workspace, independent of this one's.
-    other_opacity: f32,
-    other_meshes: Option<Arc<Vec<RoiMesh>>>,
-    other_job: Option<Job<Vec<RoiMesh>>>,
-    /// Identity of the (structure set, registration) `other_meshes` were
-    /// built from.
-    other_key: u64,
-    /// Draw the deformation field as arrows in the scene.
-    show_field: bool,
-    /// Paint the surfaces with the dose that falls on them instead of the
-    /// structure's own colour: what a hot spot does to an organ, on the
-    /// organ, rather than on a slice through it.
-    show_dose: bool,
-    /// Structure meshes already built, by the key they were built for.
-    /// Each phase of a 4D group has its own structure set, so stepping
-    /// through them would otherwise re-mesh the same anatomy on every
-    /// pass; *Prepare phases* fills this up front so the cine runs.
-    mesh_cache: std::collections::HashMap<u64, Arc<Vec<RoiMesh>>>,
-    /// The `settings_gen` the caches were filled at. An edit changes every
-    /// key at once, so they are dropped rather than kept as meshes of
-    /// something that no longer exists.
-    mesh_cache_gen: u64,
-    /// The same for the isodose shells, filled as the phases are seen.
-    iso_cache: std::collections::HashMap<u64, Arc<Vec<RoiMesh>>>,
-    /// Meshing every phase of the group up front.
-    prep_job: Option<Job<PhaseMeshes>>,
-    /// Cached projected geometry for the current camera.
-    frame: D3Frame,
-}
-
-/// Cached triangle soup of a 3D window.
+/// One image of a planar pane's stack, with the window it is shown with.
 ///
-/// egui repaints on every pointer move, and projecting + depth-sorting a few
-/// hundred thousand triangles takes several milliseconds, so the soup is
-/// rebuilt only when something it actually depends on changes. The draw
-/// order depends on orientation and visibility alone, so panning and zooming
-/// reuse the existing sort.
-#[derive(Default)]
-struct D3Frame {
-    /// Identity of the current depth sort (orientation + visibility + meshes).
-    order_key: Option<u64>,
-    /// Identity of the current projected vertices (also zoom / pan / size).
-    vertex_key: Option<u64>,
-    mesh: Arc<egui::epaint::Mesh>,
-    /// Triangles in scene order, indexed by the sort below.
-    tris: Vec<[u32; 3]>,
-    /// View-space depth per vertex.
-    depth: Vec<f32>,
-    /// `(monotone depth key) << 32 | triangle slot`, sorted far-to-near.
-    order: Vec<u64>,
+/// The window is the image's own in this pane: two planar images of one
+/// workspace - a kV image and its DRR - have nothing like a shared modality
+/// window.
+struct PlanarLayer {
+    /// Index into `study.planar_images`.
+    image: usize,
+    /// (centre, width), and the identity of the image it was set for: an
+    /// image replaced under the same index starts from its own window.
+    wl: (f32, f32),
+    wl_for: Option<PlanarKey>,
+    tex: Option<TextureHandle>,
+    /// What `tex` was made from: the image and the window.
+    tex_key: Option<(PlanarKey, u32, u32)>,
 }
 
-/// Map an `f32` to a `u32` that sorts in the same order, so the painter's
-/// algorithm can use a primitive sort instead of a float comparator.
-#[inline]
-fn depth_key(d: f32) -> u32 {
-    let b = d.to_bits();
-    if b & 0x8000_0000 != 0 {
-        !b
-    } else {
-        b ^ 0x8000_0000
+impl PlanarLayer {
+    fn new(image: usize) -> Self {
+        PlanarLayer {
+            image,
+            wl: (0.0, 1.0),
+            wl_for: None,
+            tex: None,
+            tex_key: None,
+        }
     }
 }
+
+/// How a planar pane compares the two images either side of its scrubber.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum Compare {
+    /// The upper one over the lower, as opaque as the scrubber is far
+    /// towards it.
+    #[default]
+    Fade,
+    /// Alternate squares of the two.
+    Checker,
+    /// The signed difference of what the two show, mid-grey where they
+    /// agree (same raster only).
+    Difference,
+    /// The lower one, with the edges of the upper drawn over it.
+    Edges,
+    /// The two in turn, twice a second.
+    Flicker,
+}
+
+/// Identity of one planar image's pixels: the buffer and its shape. The
+/// label can be renamed and the index shifts when an earlier image is
+/// removed; neither changes what the texture has to show.
+type PlanarKey = (usize, usize, usize);
 
 #[inline]
 fn mix(h: u64, v: u64) -> u64 {
     (h ^ v).wrapping_mul(0x100000001b3)
-}
-
-/// What a right-click action on the data tree selects.
-#[derive(Clone)]
-enum TreeSel {
-    /// All series of one patient (grouped by `SeriesInfo::patient_key`).
-    Patient(String),
-    /// All series of one study (StudyInstanceUID).
-    Study(String),
-    /// A single series (index into `LoadedStudy::series`).
-    Series(usize),
-    /// Several series at once (indices into `LoadedStudy::series`): the
-    /// ones ticked in the tree, every series of a modality node, or the
-    /// members of a 4D group. Each takes its own reference chain along,
-    /// like a single series does.
-    Many(Vec<usize>),
-}
-
-/// What to do with the selection.
-#[derive(Clone, Copy, PartialEq)]
-enum TreeOp {
-    Copy,
-    Move,
-    Remove,
-}
-
-/// Right-click action on the data tree.
-#[derive(Clone)]
-struct TreeAction {
-    from: usize,
-    /// Where it goes. For a removal it is the workspace it came from, since
-    /// nothing goes anywhere.
-    to: usize,
-    sel: TreeSel,
-    op: TreeOp,
-}
-
-/// Which of a workspace's two kinds of segmented series an action addresses.
-///
-/// The data tree treats them alike - both are series drawn on an image
-/// series, both hold named, coloured items - even though one stores contours
-/// and the other voxel masks. Conversions between the two happen on
-/// transfer (`ViewerApp::apply_item_action`).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum SetKind {
-    /// RT Structure Set: contours.
-    Structures,
-    /// DICOM Segmentation series: binary voxel masks.
-    Segmentations,
-}
-
-impl SetKind {
-    /// "structure" / "segment", pluralized for `n`.
-    fn item_name(self, n: usize) -> &'static str {
-        match (self, n) {
-            (SetKind::Structures, 1) => "structure",
-            (SetKind::Structures, _) => "structures",
-            (SetKind::Segmentations, 1) => "segment",
-            (SetKind::Segmentations, _) => "segments",
-        }
-    }
-    fn series_name(self) -> &'static str {
-        match self {
-            SetKind::Structures => "RT structure set",
-            SetKind::Segmentations => "segmentation series",
-        }
-    }
-}
-
-/// One structure set / segmentation series of one workspace.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-struct SetRef {
-    slot: usize,
-    kind: SetKind,
-    /// Index into that workspace's list, or [`SetRef::NEW`] for a series that
-    /// does not exist yet - what the *New …* transfer destinations mean.
-    idx: usize,
-}
-
-impl SetRef {
-    const NEW: usize = usize::MAX;
-}
-
-/// One of the study-level objects that are neither image, structure nor
-/// segmentation series: they hang off the study, are drawn in the views (or
-/// not), and can be taken out of the workspace.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum ObjKind {
-    Dose,
-    Plan,
-    Planar,
-    Registration,
-    Record,
-}
-
-/// Which object, in which workspace.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-struct ObjRef {
-    slot: usize,
-    kind: ObjKind,
-    idx: usize,
-}
-
-/// Deferred right-click action on a whole series node of the data tree.
-enum SetAction {
-    New(SetRef),
-    Remove(SetRef),
-    /// Open the rename dialog on the series.
-    Rename(SetRef),
-    /// Re-point the series at the image series with this Series Instance UID.
-    Connect(SetRef, String),
-    /// Copy (`copy`) or move the whole series to another workspace.
-    Transfer {
-        from: SetRef,
-        to: usize,
-        copy: bool,
-    },
-    /// Write a segmentation series as a standalone DICOM SEG file. An empty
-    /// `items` means the whole series; otherwise only those segments.
-    ExportSeg {
-        set: SetRef,
-        items: Vec<usize>,
-    },
-}
-
-/// Deferred right-click action on individual structures / segments.
-/// What the structure list's point-of-interest entries do.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PoiAct {
-    /// Centre the views on the item.
-    Localize,
-    /// Move the point to where the views cross.
-    MoveHere,
-    /// Make this the structure set's localization point.
-    Localization,
-    /// A new point at the centre of gravity of this structure.
-    AtCentre,
-}
-
-enum ItemAction {
-    /// Copy (`copy`) or move `items` of `from` into the series `to`.
-    Transfer {
-        from: SetRef,
-        items: Vec<usize>,
-        to: SetRef,
-        copy: bool,
-    },
-    Remove {
-        from: SetRef,
-        items: Vec<usize>,
-    },
-    /// Open the rename dialog on the clicked item alone.
-    Rename {
-        from: SetRef,
-        idx: usize,
-    },
-    /// Open the structure-algebra window with these items as its operands.
-    Combine {
-        from: SetRef,
-        items: Vec<usize>,
-    },
-    /// Plot these items' dose-volume histograms.
-    Dvh {
-        from: SetRef,
-        items: Vec<usize>,
-    },
-    /// Carry these items into the other workspace through the active
-    /// registration: open the propagation module aimed at them.
-    Map {
-        from: SetRef,
-        items: Vec<usize>,
-    },
-    /// Write these segments as a DICOM SEG file of their own.
-    ExportSeg {
-        from: SetRef,
-        items: Vec<usize>,
-    },
-    /// Copy (`copy`) or move `items` of `from` onto every phase of a 4D
-    /// group, as they are, filed per phase the way `landing` says.
-    ToPhases {
-        from: SetRef,
-        items: Vec<usize>,
-        slot: usize,
-        group: usize,
-        landing: workflow::group::Landing,
-        copy: bool,
-    },
-}
-
-/// A destination of *Copy to* / *Move to*: one series, or every phase of a
-/// 4D group at once.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Destination {
-    Set(SetRef),
-    Phases {
-        slot: usize,
-        group: usize,
-        landing: workflow::group::Landing,
-    },
-}
-
-impl Destination {
-    /// The transfer of `items` of `from` here.
-    fn transfer(self, from: SetRef, items: Vec<usize>, copy: bool) -> ItemAction {
-        match self {
-            Destination::Set(to) => ItemAction::Transfer {
-                from,
-                items,
-                to,
-                copy,
-            },
-            Destination::Phases {
-                slot,
-                group,
-                landing,
-            } => ItemAction::ToPhases {
-                from,
-                items,
-                slot,
-                group,
-                landing,
-                copy,
-            },
-        }
-    }
-}
-
-/// A *Copy to each phase* in flight: what was copied, where it goes and how
-/// it is filed, kept until the phases are loaded and the copies made.
-struct PhasesCopy {
-    from: SetRef,
-    items: Vec<usize>,
-    slot: usize,
-    group_name: String,
-    landing: workflow::group::Landing,
-    copy: bool,
-}
-
-/// Which parts of a `LoadedStudy` a tree selection covers: the selected
-/// series plus the RT objects linked to them via the DICOM reference chain
-/// (RTSTRUCT ▶ series, RTPLAN ▶ RTSTRUCT, RTDOSE ▶ RTPLAN).
-struct SubsetMasks {
-    series: Vec<bool>,
-    structs: Vec<bool>,
-    /// Segmentation series drawn on the selected image series.
-    seg_series: Vec<bool>,
-    doses: Vec<bool>,
-    plans: Vec<bool>,
-    /// Planar images / REG objects / treatment records are only carried when
-    /// the selection covers the whole slot content.
-    take_extras: bool,
-}
-
-/// A floating viewer window for a planar image (DX / CR / RTIMAGE).
-struct PlanarWindow {
-    slot: usize,
-    idx: usize,
-    open: bool,
-    wl: (f32, f32),
-    tex: Option<TextureHandle>,
-    tex_wl: (f32, f32),
-}
-
-/// A completed registration plus the two images it was run on.
-///
-/// The images are named by workspace slot and series UID, and their volumes
-/// are kept: a registration may pair any two series - the displayed one of
-/// A with a phase of B, or a cardiac CT with a 4DCT phase of the *same*
-/// workspace - so nothing here assumes the two slots display them. The views
-/// check, per slot, whether what is on show is the fixed or the moving
-/// image and draw the fusion, the field and the crosshair link accordingly.
-struct ActiveRegistration {
-    result: RegistrationResult,
-    /// The fixed image: the transform maps its patient coordinates into the
-    /// moving image's. The field is sampled on it and drawn where it shows.
-    fixed_slot: usize,
-    fixed_uid: String,
-    fixed_vol: Arc<Volume>,
-    /// The moving image.
-    moving_slot: usize,
-    moving_uid: String,
-    moving_vol: Arc<Volume>,
-    /// The displacement field sampled from the transform, so the views draw
-    /// a lattice lookup instead of evaluating the transform per pixel.
-    field: Arc<VectorField>,
-    /// The region the run was restricted to, kept so the field can be
-    /// re-sampled at a different lattice without rebuilding the mask.
-    region: Option<Arc<RegionMask>>,
-    /// The phase of the group registration this is, when it was installed
-    /// from there to be looked at: clearing it leaves the group alone.
-    group_phase: Option<String>,
-    /// Per-structure Dice, filled the first time it is asked for.
-    ///
-    /// Not computed with the rest of the analysis: it needs a mask
-    /// rasterized and propagated per structure, which is a second of work on
-    /// a real study - fine on a button, wrong every frame. It lives on the
-    /// registration, so installing another one throws the scores away with
-    /// the transform they belong to.
-    struct_dice: Option<Vec<StructDice>>,
-    /// Per structure, when the registration was made by structures.
-    shape_report: Option<registration::ShapeReport>,
-}
-
-/// One structure scored against its namesake in the other workspace.
-#[derive(Clone, Debug)]
-struct StructDice {
-    name: String,
-    color: [u8; 3],
-    /// Dice of the fixed workspace's structure against the moving workspace's,
-    /// carried through the transform.
-    after: f64,
-    /// The same two structures with no transform at all - what they already
-    /// had in common. A registration that does not raise this did not help
-    /// this structure.
-    before: f64,
-    fixed_cm3: f64,
-    moving_cm3: f64,
-}
-
-impl ActiveRegistration {
-    /// Whether `slot` currently displays the fixed image.
-    fn shows_fixed(&self, slot: usize, slots: &[StudySlot; MAX_WORKSPACES]) -> bool {
-        slot == self.fixed_slot && slots[slot].displayed_uid() == Some(self.fixed_uid.as_str())
-    }
-
-    /// Whether `slot` currently displays the moving image.
-    fn shows_moving(&self, slot: usize, slots: &[StudySlot; MAX_WORKSPACES]) -> bool {
-        slot == self.moving_slot && slots[slot].displayed_uid() == Some(self.moving_uid.as_str())
-    }
-
-    /// Whether the fusion overlay belongs on `slot` for the chosen side:
-    /// on the fixed image, the moving one is warped onto it; on the moving
-    /// image, the fixed one comes the other way.
-    fn fusion_on_slot(
-        &self,
-        slot: usize,
-        side: FusionSide,
-        slots: &[StudySlot; MAX_WORKSPACES],
-    ) -> bool {
-        match side {
-            FusionSide::Fixed => self.shows_fixed(slot, slots),
-            FusionSide::Moving => self.shows_moving(slot, slots),
-        }
-    }
-
-    /// `A · 3 CCT ...` for the two images.
-    fn describe(&self, slots: &[StudySlot; MAX_WORKSPACES]) -> (String, String) {
-        let name = |slot: usize, uid: &str| {
-            let series = slots[slot]
-                .study
-                .as_ref()
-                .and_then(|st| st.series.iter().position(|se| se.uid == uid))
-                .map(|i| format!("{}", i + 1))
-                .unwrap_or_else(|| "?".into());
-            format!("{} · {series}", SLOT_NAMES[slot])
-        };
-        (
-            name(self.fixed_slot, &self.fixed_uid),
-            name(self.moving_slot, &self.moving_uid),
-        )
-    }
-}
-
-/// Which of the two registered images the fusion overlay is drawn on.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum FusionSide {
-    Fixed,
-    Moving,
 }
 
 /// One image series of one workspace, as the registration module names it.
@@ -1482,9 +701,16 @@ pub struct ViewerApp {
     /// A re-sampling of the field after the lattice step changed.
     field_job: Option<Job<VectorField>>,
 
-    // Tools ▶ DRR.
-    drr_dialog: Option<DrrDialog>,
-    drr_job: Option<Job<anyhow::Result<Vec<crate::drr::DrrImage>>>>,
+    // Modules ▶ Image generation: the module's workspace, and the DRR
+    // section's state (made the first time the section is drawn) and run.
+    gen: image_gen::ImageGen,
+    drr: Option<DrrState>,
+    drr_job: Option<Job<anyhow::Result<DrrRun>>>,
+    /// *Image registration ▶ 2D/3D registration*: its state, and its run.
+    r2d: Option<reg2d3d::Reg2d3dState>,
+    r2d_job: Option<Job<reg2d3d::Reg2d3dJobOut>>,
+    /// The 2D/3D section's remembered choices (persisted).
+    r2d_prefs: settings::Reg2d3dPrefs,
 
     // Tools ▶ Propagate structures.
     /// The window, when open.
@@ -1557,8 +783,6 @@ pub struct ViewerApp {
     anon_apply_job: Option<Job<anyhow::Result<usize>>>,
     anon_result: Option<String>,
 
-    /// Open floating viewers for planar images.
-    planar_windows: Vec<PlanarWindow>,
     /// Open 3D structure-rendering windows.
     d3_windows: Vec<D3Window>,
     /// Deferred right-click action from the study tree.
@@ -1655,6 +879,9 @@ pub struct ViewerApp {
     poi_counter: usize,
     /// The working geometry of the ROI under the contour tools.
     edit: Option<contour_edit::EditStack>,
+    /// When the working stack was last written into its structure (see
+    /// `contour_edit::OFF_AXIS_FLUSH`).
+    edit_flushed: Option<std::time::Instant>,
     /// The interpolated slices shown as a preview, until accepted.
     interp: Option<contour_edit::InterpPreview>,
     /// Contours copied from one slice, and the axis they were cut on.
@@ -1806,6 +1033,9 @@ pub struct ViewerApp {
 
     /// Bumped whenever ROI visibility / dose settings change → cache rebuild.
     settings_gen: u64,
+    /// Each workspace's data tree as last laid out, and what for
+    /// (see `tree_model::tree_layout_cached`).
+    tree_cache: [Option<(u64, Arc<Vec<tree_model::PatientNode>>)>; MAX_WORKSPACES],
     /// Per workspace: bumped by every sample of a contour edit (brush,
     /// nudge, hand drag, drawing), which used to bump `settings_gen` and so
     /// rebuilt every cache of every workspace - dose washes, fusion, the
@@ -1830,8 +1060,9 @@ pub struct ViewerApp {
     /// *Modules ▶ Image simulation*: the simulation section is part of the
     /// modules panel. Persisted between runs.
     module_simulation: bool,
-    /// *Modules ▶ Image synthesis*: the synthetic CT section. Persisted.
-    module_synthesis: bool,
+    /// *Modules ▶ Image generation*: the synthetic CT and the DRR, two
+    /// sections of one module. Persisted.
+    module_generation: bool,
     /// *Modules ▶ Structure propagation*: the propagation section is part
     /// of the modules panel. Persisted between runs.
     module_propagation: bool,
@@ -1939,7 +1170,7 @@ impl ViewerApp {
     pub(super) fn any_module(&self) -> bool {
         self.module_registration
             || self.module_simulation
-            || self.module_synthesis
+            || self.module_generation
             || self.module_propagation
             || self.module_structures
             || self.module_auto
@@ -2067,8 +1298,12 @@ impl ViewerApp {
             field_scale: 3.0,
             field_color: true,
             field_job: None,
-            drr_dialog: None,
+            gen: Default::default(),
+            drr: None,
             drr_job: None,
+            r2d: None,
+            r2d_job: None,
+            r2d_prefs: prefs.reg2d3d.clone(),
             propagate_dialog: None,
             propagate_job: None,
             phases_job: None,
@@ -2107,7 +1342,6 @@ impl ViewerApp {
             anon_scan_job: None,
             anon_apply_job: None,
             anon_result: None,
-            planar_windows: Vec::new(),
             d3_windows: Vec::new(),
             tree_action: None,
             set_action: None,
@@ -2211,6 +1445,7 @@ impl ViewerApp {
             roi_counter: 0,
             poi_counter: 0,
             edit: None,
+            edit_flushed: None,
             interp: None,
             contour_clip: None,
             tools: struct_tools::StructTools::default(),
@@ -2222,12 +1457,13 @@ impl ViewerApp {
             dose_threshold_pct: 15.0,
             iso_levels: default_iso_levels(),
             settings_gen: 0,
+            tree_cache: Default::default(),
             struct_gen: [0; MAX_WORKSPACES],
             edit_summary_cache: None,
             wl_preset: None,
             module_registration: prefs.module_registration,
             module_simulation: prefs.module_simulation,
-            module_synthesis: prefs.module_synthesis,
+            module_generation: prefs.module_generation,
             module_propagation: prefs.module_propagation,
             module_structures: prefs.module_structures,
             module_auto: prefs.module_auto,
@@ -2256,7 +1492,7 @@ impl ViewerApp {
             active_backend: cc
                 .wgpu_render_state
                 .as_ref()
-                .map(|r| crate::gfx::Backend::from_wgpu(r.adapter.get_info().backend)),
+                .map(|r| crate::gfx_wgpu::from_wgpu(r.adapter.get_info().backend)),
             settings_error: None,
             picker: pick::Picker::default(),
             wf_editor: None,
@@ -2303,7 +1539,7 @@ impl ViewerApp {
             archive_more: self.archive_more.clone(),
             module_registration: self.module_registration,
             module_simulation: self.module_simulation,
-            module_synthesis: self.module_synthesis,
+            module_generation: self.module_generation,
             module_propagation: self.module_propagation,
             module_structures: self.module_structures,
             module_auto: self.module_auto,
@@ -2322,6 +1558,7 @@ impl ViewerApp {
             },
             nnunet_folders: self.nnunet_folders.clone(),
             synth_folders: self.synth_folders.clone(),
+            reg2d3d: self.r2d_prefs.clone(),
         }) {
             Ok(()) => self.settings_error = None,
             Err(e) => {
@@ -2527,7 +1764,6 @@ impl ViewerApp {
         if self.hovered_slot == slot {
             self.hovered_slot = 0;
         }
-        self.planar_windows.retain(|w| w.slot != slot);
         self.d3_windows.retain(|w| w.slot != slot);
         if self.maximized.map(|(s, _)| s == slot).unwrap_or(false) {
             self.maximized = None;
@@ -2608,286 +1844,14 @@ impl ViewerApp {
 impl eframe::App for ViewerApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        // Poll background loading.
-        match poll_job(&mut self.loading, &ctx, "Loading", &mut self.error) {
-            Some(LoadResult::Study(res, slot)) => match *res {
-                Ok(study) => self.absorb_loaded_study(slot, study),
-                Err(e) => self.error = Some(format!("{e:#}")),
-            },
-            Some(LoadResult::Volume(res, slot, idx)) => match *res {
-                Ok((vol, window, warnings)) => {
-                    self.apply_new_volume(slot, vol, window, idx);
-                    if let Some(study) = &mut self.slots[slot].study {
-                        study.warnings.extend(warnings);
-                    }
-                }
-                Err(e) => self.error = Some(format!("{e:#}")),
-            },
-            Some(LoadResult::Phase(res, slot, idx)) => match *res {
-                Ok((vol, window, _)) => {
-                    let label = self.phase_label_of(slot, idx);
-                    self.install_phase_volume(slot, vol, window, idx, &label);
-                }
-                Err(e) => self.error = Some(format!("{e:#}")),
-            },
-            None => {}
-        }
-        // Kick a queued load once the current one finished.
-        if self.loading.is_none() {
-            if let Some((slot, uid)) = self.pending_switch.take() {
-                let idx = self.slots[slot]
-                    .study
-                    .as_ref()
-                    .and_then(|st| st.series.iter().position(|se| se.uid == uid));
-                if let Some(idx) = idx {
-                    self.start_series_switch(slot, idx);
-                }
-            } else if let Some((slot, path)) = self.pending_load.take() {
-                self.start_load(slot, path);
-            } else if let Some((slot, paths, sources)) = self.pending_load_files.take() {
-                self.start_load_files_noting(slot, paths, sources);
-            } else if !self.restore_queue.is_empty() {
-                // One source of the session being restored at a time.
-                let (slot, path) = self.restore_queue.remove(0);
-                if path.is_dir() {
-                    self.start_load(slot, path);
-                } else {
-                    self.start_load_files(slot, vec![path]);
-                }
-            }
-        }
-
-        self.poll_pending_phase_field();
-
-        // Poll background simulation.
-        if let Some((target, study)) =
-            poll_job(&mut self.sim_job, &ctx, "Simulation", &mut self.error)
+        // A sagittal or coronal stroke let go where the view did not see the
+        // release (over a corner button, outside the view) still writes what
+        // it left waiting, before anything landing below can move `gen`.
+        if self.edit.as_ref().is_some_and(|e| e.pending) && !ctx.input(|i| i.pointer.primary_down())
         {
-            self.on_study_loaded(target, study);
-            self.show_workspace(target);
+            self.end_contour_stroke();
         }
-
-        // Poll background export.
-        match poll_job(&mut self.export_job, &ctx, "Export", &mut self.error) {
-            Some(Ok(sum)) => {
-                self.export_result = Some(sum.message());
-                self.export_warnings = sum.warnings;
-            }
-            Some(Err(e)) => self.error = Some(format!("Export failed: {e:#}")),
-            None => {}
-        }
-
-        // Poll background test-data generation.
-        match poll_job(
-            &mut self.gen_job,
-            &ctx,
-            "Test data generation",
-            &mut self.error,
-        ) {
-            Some(Ok((n, dir))) => {
-                self.gen_result = Some(format!("✔ {n} DICOM file(s) written to {}", dir.display()));
-                if self.gen_load_after {
-                    self.gen_open = false;
-                    self.start_load(0, dir);
-                }
-            }
-            Some(Err(e)) => self.error = Some(format!("Test data generation failed: {e:#}")),
-            None => {}
-        }
-
-        // Poll the test-data download.
-        self.poll_testdata_job(&ctx);
-
-        // Poll a model download / update batch.
-        self.poll_models_job(&ctx);
-
-        // Poll the tool windows' workers.
-        if let Some((slot, result)) =
-            poll_tool_job(&mut self.autoseg_job, &ctx, AUTOSEG.name, &mut self.error)
-        {
-            self.on_autoseg_done(slot, result);
-        }
-        if let Some((slot, result)) = poll_tool_job(
-            &mut self.medsam2_job,
-            &ctx,
-            SLICE_PROP.name,
-            &mut self.error,
-        ) {
-            self.on_medsam2_done(slot, result);
-        }
-        if let Some((slot, result)) =
-            poll_tool_job(&mut self.segvol_job, &ctx, PROMPT_SEG.name, &mut self.error)
-        {
-            self.on_segvol_done(slot, result);
-        }
-        let nni_busy = self.nni_job.is_some();
-        if let Some((slot, result)) = poll_tool_job(
-            &mut self.nni_job,
-            &ctx,
-            INTERACTIVE_SEG.name,
-            &mut self.error,
-        ) {
-            self.on_nni_done(slot, result);
-        } else if nni_busy && self.nni_job.is_none() {
-            // Failed or cancelled: the prompt's mark goes, the rest wait on.
-            if self.nni.inflight_mark {
-                self.nni.marks.pop();
-            }
-            self.nni_next();
-        }
-        if let Some((slot, result)) =
-            poll_tool_job(&mut self.body_job, &ctx, BODY_CONTOUR.name, &mut self.error)
-        {
-            self.on_body_done(slot, result);
-        }
-        if let Some((slot, done)) = poll_tool_job(
-            &mut self.synth_job,
-            &ctx,
-            synth_win::SYNTHESIS.name,
-            &mut self.error,
-        ) {
-            self.on_synthesis_done(slot, done);
-        }
-        if let Some((slot, done)) = poll_tool_job(
-            &mut self.synth_eval_job,
-            &ctx,
-            "Synthetic CT evaluation",
-            &mut self.error,
-        ) {
-            self.on_sct_eval_done(slot, done);
-        }
-        if let Some((slot, result)) =
-            poll_tool_job(&mut self.combine_job, &ctx, COMBINE.name, &mut self.error)
-        {
-            self.on_combine_done(slot, result);
-        }
-        if let Some((slot, result)) = poll_tool_job(
-            &mut self.derived_job,
-            &ctx,
-            "Derived structure",
-            &mut self.error,
-        ) {
-            self.on_derived_done(slot, result);
-        }
-        // One at a time: the queue is what "update all" leaves behind.
-        if self.derived_job.is_none() && !self.derived_queue.is_empty() {
-            let slot = self.derived_slot;
-            self.next_derived_in_queue(slot);
-        }
-        if let Some(rows) = poll_job(
-            &mut self.dose_est_job,
-            &ctx,
-            "Dose estimation",
-            &mut self.error,
-        ) {
-            self.on_dose_est_done(rows);
-        }
-        match poll_job(&mut self.dvh_job, &ctx, "DVH", &mut self.error) {
-            Some(Ok(done)) => self.on_dvh_done(done),
-            Some(Err(e)) if !progress::is_cancellation(&e) => {
-                self.error = Some(format!("DVH failed: {e:#}"));
-            }
-            _ => {}
-        }
-        if let Some((slot, outcome)) =
-            poll_tool_job(&mut self.motion_job, &ctx, MOTION.name, &mut self.error)
-        {
-            self.on_motion_done(slot, outcome);
-        }
-
-        // Poll background registration.
-        if let Some((fixed_slot, out)) =
-            poll_tool_job(&mut self.reg_job, &ctx, "Registration", &mut self.error)
-        {
-            self.install_registration(out);
-            self.fusion_on = true;
-            // Re-propagate the crosshair through the new transform.
-            let cursor = self.slots[fixed_slot].cursor;
-            self.set_cursor(fixed_slot, cursor, usize::MAX);
-        }
-
-        // Poll an archive job - a scan, an import, an upload or a removal.
-        match poll_job(&mut self.pacs_job, &ctx, "Archive", &mut self.error) {
-            Some(Ok(outcome)) => self.on_pacs_done(outcome),
-            Some(Err(e)) => self.error = Some(format!("Archive: {e:#}")),
-            None => {}
-        }
-        // A call to a paired PACS server, and the queue it keeps current.
-        if let Some(r) = poll_job(&mut self.pacs_remote_job, &ctx, "PACS", &mut self.error) {
-            self.on_remote_done(r);
-        }
-        self.poll_remote_tasks(ctx.input(|i| i.time));
-        // The PACS server on this machine.
-        if let Some(r) = poll_job(
-            &mut self.pacs_server_job,
-            &ctx,
-            "PACS server",
-            &mut self.error,
-        ) {
-            self.on_server_done(r);
-        }
-        self.poll_server_status(ctx.input(|i| i.time));
-
-        // Poll a DRR rendering.
-        match poll_job(&mut self.drr_job, &ctx, "DRR", &mut self.error) {
-            Some(Ok(images)) => self.on_drr_done(images),
-            // A cancelled render is what the user asked for, not a failure.
-            Some(Err(e)) if !progress::is_cancellation(&e) => {
-                self.error = Some(format!("DRR failed: {e:#}"));
-            }
-            _ => {}
-        }
-
-        // Poll a structure propagation.
-        if let Some((dst_slot, out)) = poll_tool_job(
-            &mut self.propagate_job,
-            &ctx,
-            "Propagation",
-            &mut self.error,
-        ) {
-            self.on_propagation_done(dst_slot, out);
-        }
-
-        // Poll a copy onto every phase of a 4D group.
-        if let Some((what, job)) = self.phases_job.take() {
-            let mut slot = Some(job);
-            match poll_job(&mut slot, &ctx, "Copy to phases", &mut self.error) {
-                Some(Ok(phases)) => self.on_phases_copied(what, phases),
-                Some(Err(e)) if !progress::is_cancellation(&e) => {
-                    self.error = Some(format!("Copy to phases failed: {e:#}"));
-                }
-                Some(Err(_)) => {}
-                None => {
-                    if let Some(job) = slot {
-                        self.phases_job = Some((what, job));
-                    }
-                }
-            }
-        }
-
-        // Poll the 4D phase reader, run the cine clock, and hand the frame
-        // egui has just delivered to whoever asked for it - a recording of a
-        // run, or a still of the views.
-        self.poll_phase_cache(&ctx);
-        self.play_tick(&ctx);
-        let shot = ctx.input(|i| {
-            i.events.iter().rev().find_map(|e| match e {
-                egui::Event::Screenshot { image, .. } => Some(image.clone()),
-                _ => None,
-            })
-        });
-        self.record_tick(&ctx, shot.as_ref());
-        self.snapshot_tick(&ctx, shot.as_ref());
-
-        // Poll a workflow run: its steps, what it shows, its end.
-        self.poll_workflow_run(&ctx);
-
-        // Poll a vector-field re-sampling.
-        if let Some(field) = poll_job(&mut self.field_job, &ctx, "Vector field", &mut self.error) {
-            if let Some(reg) = &mut self.registration {
-                reg.field = Arc::new(field);
-            }
-        }
+        self.poll_all_jobs(&ctx);
 
         // Global segmentation shortcuts (skipped while a text field is
         // focused): Ctrl+Z undo, Esc cancels a region-grow drag, [ ] resize
@@ -2971,7 +1935,6 @@ impl eframe::App for ViewerApp {
         self.modules_panel(ui);
         self.status_bar(ui);
         self.central_views(ui);
-        self.planar_windows_ui(&ctx);
         self.d3_windows_ui(&ctx);
         if let Some(action) = self.tree_action.take() {
             self.apply_tree_action(action);

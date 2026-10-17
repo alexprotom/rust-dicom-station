@@ -119,6 +119,7 @@ segmentation series added when a name repeats. Series are numbered as
 | `combine_structures` | Union / intersect / subtract with margins in mm (uniform or per patient direction) and cleanup |
 | `register`, `describe_registration` | Rigid, elastix B-spline or plastimatch B-spline; `region` makes a run local to a structure of the fixed workspace; `start` refines an earlier registration; `init` says where the search starts (automatic, the identity, the centres of gravity, or the centroids of a structure contoured on both) |
 | `register_structures` | Registration by structures: the moving series aligned onto the fixed one by structures contoured on both, the intensities left out (each surface laid onto its partner's signed distance map, both ways). `structures` pairs them by name (`moving` when it is named differently there, `weight` for how much one counts); `dof` is `rigid` or `translation`; `refine` adds a local B-spline per structure on the distance maps (`elastix_bspline`, `plastimatch_bspline`), with `start` refining an earlier registration of the same pair; `robust_mm` makes the fit Huber-robust; `init` is `auto` (the structures' centroids), `identity`, or a structure whose centroids are matched. Returns a `reg` handle like `register`, plus the mean surface distance and Dice of every structure before and after |
+| `register_2d3d`, `describe_setup`, `export_setup` | 2D/3D registration ([registration-2d3d.md](registration-2d3d.md)): the pose of a CT series whose DRRs match planar images of its dataset (`describe_dataset` lists them, with whether each states its geometry), by `method` `intensity` (`metric` `gc`, `ncc`, `gd`, `pi`, `lncc`, `mi`), `markers` (the MARKER points of interest, named ones, or `detect_markers`) or `hybrid`; each image's `geometry` its own (`image`), a plan `beam`, a calibrated `room` view or `typed`, its `region` (polygons of pixel positions: the part compared) and `picks` (markers placed by hand: `marker` and `at`); `clip_mm` (a cube about the isocentre) or `clip_structure` with `clip_margin_mm` (the box whose shadow is compared; `clip_rays` makes the rays integrate inside it only), `threshold_hu`, `dof`, `isocenter`, `patient`; the renderings run where the server's `device` says; `file_drrs` adds the DRRs at the answer to the dataset. Returns a `setup` handle, the correction in patient coordinates and as couch moves, the displacement, the similarity per view, marker residuals and any warning. `export_setup` writes the rigid Spatial Registration, the DRRs as RT Images and the report into the output folder |
 | `propagate` | Carry structures across a registration, to the fixed or the moving side |
 | `propagate_to_group` | One series onto every phase of a 4D group, one deformable registration per phase, transforms kept and reused. With `anchor` (a structure contoured on the source and on every phase, the heart say) the run is anchored on it: centroids matched, a rigid fit on the structure plus a margin, a local deformable refinement, and the anchor's Dice against each phase's own contour as the check. This is how a cardiac CT meets a 4DCT. `land` files the results as a segmentation series per phase or as contours in each phase's own structure set; `anchor_landed_as` names the anchor's own copy (`<anchor>_prop` by default); `keep_shape` carries each structure as the rigid fit of the transform over it (shape and volume kept, `rigid_residual_mm` reported) |
 | `analyse_motion` | The 4D pipeline: tracks, amplitudes, correlation with a reference structure, per-phase QA, one ITV per target and model. The rigid model is a local fit around each structure (`local_rigid_margin_mm`, 15 by default; 0 for one global fit); a target contoured on every phase is also tracked *as contoured*, straight from the phases' own contours (`contoured`); `phases` restricts the run to some of them |
@@ -218,7 +219,7 @@ the rest of the station, it is for research and QA use.
 
 ## For developers
 
-`src/mcp/` is compiled only with the `mcp` feature. `config.rs` is the
+`crates/rds-domain/src/mcp/` is compiled only with the `mcp` feature. `config.rs` is the
 operator's file; `phi.rs` the gate and the redactor; `session.rs` the open
 workspaces and handles; `tools/` the tools as plain functions
 `fn(&mut Core, Args, &Progress) -> Result<Value>` whose argument structs
@@ -227,7 +228,7 @@ derive the JSON schema the client sees; `server.rs` the `rmcp` glue
 prompt and the resources. `Core::call_public` is the one entry point the
 server and the tests use, and the only place redaction happens.
 
-The pipelines themselves live in `src/workflow/` (the 4D motion pipeline,
+The pipelines themselves live in `crates/rds-domain/src/workflow/` (the 4D motion pipeline,
 one volume onto every phase of a group, structures by name), shared with the
 viewer's tool windows, so the server and the viewer run the same code. So
 does the headless core under the session: `workflow::session` holds the

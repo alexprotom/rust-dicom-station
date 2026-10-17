@@ -74,7 +74,7 @@ apps:
   # caches after every refresh), so the server gets only the GPU wrapper,
   # which the extension has already put into the snap. The display plugs are
   # for open_in_viewer: the viewer it starts runs under this app's
-  # confinement, through the desktop launcher (src/mcp/tools/output.rs).
+  # confinement, through the desktop launcher (crates/rds-domain/src/mcp/tools/output.rs).
   rds-mcp:
     command: bin/rds-mcp
     command-chain:

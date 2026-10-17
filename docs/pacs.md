@@ -130,7 +130,11 @@ the person decided: the cohorts, who is in which, the names given.
 
 * A scan walks the folders (quick) and reads only the files it has not seen
   or that changed (size or time); the rest comes from the catalog. The first
-  scan of a large PACS reads every header once, in parallel.
+  scan of a large PACS reads every header once, in parallel. A scan that
+  finds nothing new and nothing gone writes nothing.
+* An import reads the headers of what it files in parallel and writes the
+  catalog once at the end; a pull from a server, bundle after bundle, writes
+  it once per study.
 * **JSON**, one line per patient, study and series, so that any tool reads it
   and a person can open it.
 * The DICOM files are the truth: delete the catalog and the next scan builds
@@ -245,7 +249,7 @@ moving a study's files into a new folder with its series folders kept, the
 catalog staying in the main folder, and removal taking the emptied folders
 with it.
 
-Unit tests in `src/archive.rs` and `src/archive/catalog.rs` cover the parts
+Unit tests in `crates/rds-domain/src/archive.rs` and `crates/rds-domain/src/archive/catalog.rs` cover the parts
 with no round trip: the folder-name sanitizer, a missing folder reading as an
 empty PACS, the cohort rule on a set of folders, the catalog reading back what
 was written (and its lock going with the write), only this program's old

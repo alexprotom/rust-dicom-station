@@ -1,10 +1,10 @@
-//! *Modules ▶ Image synthesis*: a synthetic CT from the displayed MR or
-//! CBCT ([`crate::synth`], TotalSynth), landed as a new CT series of the
-//! study ([`crate::sct`]), and its evaluation against a CT of the same
-//! patient ([`crate::sct::eval`]).
+//! *Modules ▶ Image generation ▶ Image synthesis*: a synthetic CT from the
+//! displayed MR or CBCT ([`crate::synth`], TotalSynth), landed as a new CT
+//! series of the study ([`crate::sct`]), and its evaluation against a CT of
+//! the same patient ([`crate::sct::eval`]).
 //!
-//! The section has the bones of the auto tools: the workspace row, a
-//! description, the inputs, an `Options` fold with the compute device and
+//! The section has the bones of the auto tools: the module's workspace row
+//! above it ([`super::image_gen`]), a description, the inputs, an `Options` fold with the compute device and
 //! the model folder, the licence line in the warning colour (the published
 //! weights are CC BY-NC), and a button row that becomes the progress row.
 //! The result is a series of files that joins the study, so it can be
@@ -610,39 +610,15 @@ impl ViewerApp {
         self.synth.eval_result = Some(view);
     }
 
-    /// The *Image synthesis* module.
-    pub(super) fn synthesis_section(&mut self, ui: &mut egui::Ui) {
-        let title = egui::RichText::new(SYNTHESIS.name).strong();
-        if !self.any_volume() {
-            egui::CollapsingHeader::new(title)
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.weak("Load a workspace with an MR or CBCT series to synthesize a CT from");
-                });
-            ui.separator();
-            return;
-        }
-        if !self.slots[self.synth.slot].has_volume() {
-            self.synth.slot = self.first_volume_slot();
-        }
-        let busy = self.synth_job.is_some() || self.synth_eval_job.is_some();
-        let mut new_slot = None;
+    /// The *Image synthesis* section of the Image generation module, on the
+    /// module's workspace.
+    pub(super) fn synthesis_tool(&mut self, ui: &mut egui::Ui) {
         let mut actions = SectionActions::default();
-        egui::CollapsingHeader::new(title)
-            .default_open(false)
-            .show(ui, |ui| {
-                new_slot = workspace_row(ui, self.synth.slot, self.volume_slots(), !busy);
-                self.synthesis_body(ui, &mut actions);
-                ui.separator();
-                egui::CollapsingHeader::new("Evaluate against a CT")
-                    .default_open(false)
-                    .show(ui, |ui| self.sct_eval_body(ui, &mut actions));
-            });
+        self.synthesis_body(ui, &mut actions);
         ui.separator();
-        if let Some(s) = new_slot {
-            self.synth.slot = s;
-            self.synth.eval_ref = None;
-        }
+        egui::CollapsingHeader::new("Evaluate against a CT")
+            .default_open(false)
+            .show(ui, |ui| self.sct_eval_body(ui, &mut actions));
         if actions.browse {
             self.ask_folder("Model folder", |app, dir| {
                 app.models_dir = dir.display().to_string();
@@ -689,12 +665,6 @@ impl ViewerApp {
             .unwrap_or(0);
         let running = self.synth_job.as_ref().filter(|_| self.synth_slot == slot);
         let s = &mut self.synth;
-        ui.label(
-            "Synthesizes a CT from the displayed MR or CBCT with TotalSynth (a 2.5-D UNet++ \
-             trained on SynthRAD 2023 and 2025, brain to pelvis) and adds it to the study as \
-             a new CT series, on the same frame of reference.",
-        );
-        ui.separator();
         // ---- the app ---------------------------------------------------
         // A model that no longer exists, or one for the other modality when
         // the displayed series changed, gives way to the one for this series.

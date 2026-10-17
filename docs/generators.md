@@ -5,7 +5,7 @@ Structure editor*, right panel) - after *+ Empty structure* and *✱ Point of
 interest*, the generators: a grey-level window, a shape, a dose level or
 the field of view.
 These are the cheap generators every planning system has, and the arithmetic
-behind them is a few lines each ([`src/generate.rs`](architecture.md#module-map)).
+behind them is a few lines each ([`crates/rds-domain/src/generate.rs`](architecture.md#module-map)).
 What matters is where the result lands: an ordinary RT structure, editable
 with the contour tools from the moment it appears ([contours.md](contours.md)),
 not a read-only overlay.
@@ -95,7 +95,7 @@ The obvious use is an isodose structure to intersect with an organ, which is
 
 ## Verification
 
-`src/generate.rs`'s own tests: a threshold takes exactly the voxels in its
+`crates/rds-domain/src/generate.rs`'s own tests: a threshold takes exactly the voxels in its
 window and no others, a limiting mask really limits it, and an upper bound
 excludes what it should; the field of view of a padded reconstruction comes
 out as the circle it is, to within five per cent of its analytic area, and

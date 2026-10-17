@@ -10,6 +10,13 @@
 //! depthwise conv3d with a constant kernel, which is what an average pool
 //! is) followed, when the width changes, by a 1×1×1 conv and a norm.
 //!
+//! The segmentation head runs [`HEAD_CLASSES`] classes at a time, each
+//! piece read back before the next is computed ([`GpuNet::forward_classes`]):
+//! the logits of a 118-class model at a 128-cubed patch are 990 MB, of the
+//! residual-encoder `small` models at 192 cubed 3.3 GB, which as one buffer
+//! is more than many graphics cards will allocate, and as one readback more
+//! than a tablet wants to hold beside its accumulator.
+//!
 //! Only compiled with the `gpu` cargo feature (on by default).
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -72,6 +79,9 @@ struct GTransp {
     stride: [usize; 3],
 }
 
+/// Classes of the segmentation head computed and read back at once.
+pub const HEAD_CLASSES: usize = 16;
+
 /// The network with weights resident on the GPU.
 pub struct GpuNet {
     device: WgpuDevice,
@@ -79,8 +89,9 @@ pub struct GpuNet {
     enc: Vec<GStage>,
     transp: Vec<GTransp>,
     dec: Vec<Vec<GBlock>>,
-    head_w: Tensor<B, 5>,
-    head_b: Tensor<B, 1>,
+    /// The head's weights in pieces of [`HEAD_CLASSES`] classes: the first
+    /// class of the piece, its weights and biases.
+    heads: Vec<(usize, Tensor<B, 5>, Tensor<B, 1>)>,
     classes: usize,
 }
 
@@ -179,26 +190,58 @@ impl GpuNet {
                 stride: t.stride,
             })
             .collect();
-        let head_w = upload5(d, &unet.head.w, [unet.head.classes, unet.head.cin, 1, 1, 1]);
-        let head_b = upload1(d, &unet.head.b);
+        let (classes, cin) = (unet.head.classes, unet.head.cin);
+        let heads = (0..classes)
+            .step_by(HEAD_CLASSES)
+            .map(|c0| {
+                let n = HEAD_CLASSES.min(classes - c0);
+                (
+                    c0,
+                    upload5(d, &unet.head.w[c0 * cin..(c0 + n) * cin], [n, cin, 1, 1, 1]),
+                    upload1(d, &unet.head.b[c0..c0 + n]),
+                )
+            })
+            .collect();
         Ok(GpuNet {
             device: d.clone(),
             stem,
             enc,
             transp,
             dec,
-            head_w,
-            head_b,
-            classes: unet.head.classes,
+            heads,
+            classes,
         })
+    }
+
+    pub fn num_classes(&self) -> usize {
+        self.classes
     }
 
     /// Forward one normalized patch `[channels * p0*p1*p2]` → logits
     /// `[classes * p0*p1*p2]`, both flattened C-order. `channels` is 1 for
     /// a segmentation model and follows from the length.
     pub fn forward(&self, patch: &[f32], p: [usize; 3]) -> Result<Vec<f32>> {
+        let mut out = vec![0f32; self.classes * p[0] * p[1] * p[2]];
+        let n = p[0] * p[1] * p[2];
+        self.forward_classes(patch, p, &mut |c0, piece| {
+            out[c0 * n..c0 * n + piece.len()].copy_from_slice(&piece);
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    /// [`forward`](Self::forward), the logits handed to `sink` a piece of
+    /// [`HEAD_CLASSES`] classes at a time, in class order: the first class
+    /// of the piece and its logits `[n, p0, p1, p2]`. Only one piece exists
+    /// at a time, on the device and here.
+    pub fn forward_classes(
+        &self,
+        patch: &[f32],
+        p: [usize; 3],
+        sink: &mut dyn FnMut(usize, Vec<f32>) -> Result<()>,
+    ) -> Result<()> {
         let channels = patch.len() / (p[0] * p[1] * p[2]).max(1);
-        let run = || -> Result<Vec<f32>> {
+        let features = guarded(|| -> Result<Tensor<B, 5>> {
             let x = Tensor::<B, 5>::from_data(
                 TensorData::new(patch.to_vec(), [1, channels, p[0], p[1], p[2]]),
                 &self.device,
@@ -237,22 +280,30 @@ impl GpuNet {
                     cur = run_block(blk, cur);
                 }
             }
-            let logits = conv3d(
-                cur,
-                self.head_w.clone(),
-                Some(self.head_b.clone()),
-                ConvOptions::new([1, 1, 1], [0, 0, 0], [1, 1, 1], 1),
-            );
-            let data = logits
-                .into_data()
-                .to_vec::<f32>()
-                .map_err(|e| anyhow!("GPU readback failed: {e:?}"))?;
-            if data.len() != self.classes * p[0] * p[1] * p[2] {
-                bail!("GPU returned unexpected logits size {}", data.len());
+            Ok(cur)
+        })
+        .context("GPU forward")?;
+        for (c0, w, b) in &self.heads {
+            let piece = guarded(|| -> Result<Vec<f32>> {
+                let logits = conv3d(
+                    features.clone(),
+                    w.clone(),
+                    Some(b.clone()),
+                    ConvOptions::new([1, 1, 1], [0, 0, 0], [1, 1, 1], 1),
+                );
+                logits
+                    .into_data()
+                    .to_vec::<f32>()
+                    .map_err(|e| anyhow!("GPU readback failed: {e:?}"))
+            })
+            .context("GPU forward")?;
+            let n = HEAD_CLASSES.min(self.classes - c0);
+            if piece.len() != n * p[0] * p[1] * p[2] {
+                bail!("GPU returned unexpected logits size {}", piece.len());
             }
-            Ok(data)
-        };
-        guarded(run).context("GPU forward")
+            sink(*c0, piece)?;
+        }
+        Ok(())
     }
 }
 
@@ -329,4 +380,47 @@ fn run_res_block(blk: &GResBlock, x: Tensor<B, 5>) -> Tensor<B, 5> {
     let h = run_block(&blk.conv1, x);
     let y = conv_norm(&blk.conv2, h);
     leaky_relu(y + residual, 0.01)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::autoseg::net::tests::{patch, tiny_with};
+
+    /// The GPU network against the CPU one, its head in pieces (20 classes:
+    /// a piece of 16 and one of 4). Needs a GPU (a software one will do):
+    /// `RDS_GPU_TESTS=1 cargo test -p rds-engines -- --ignored gpu_head`.
+    #[test]
+    #[ignore]
+    fn gpu_head_in_pieces_matches_the_cpu() {
+        if std::env::var_os("RDS_GPU_TESTS").is_none() {
+            eprintln!("RDS_GPU_TESTS is not set");
+            return;
+        }
+        let ctx = GpuContext::try_new().expect("a GPU");
+        for residual in [false, true] {
+            let (cfg, t) = tiny_with(residual, 20);
+            let p = cfg.patch_size;
+            let unet = UNet::build(cfg, &t).unwrap();
+            let g = GpuNet::new(&ctx, &unet).unwrap();
+            let x = patch(5, p);
+            let want = unet.forward_cpu(&x).data;
+            let mut pieces = Vec::new();
+            g.forward_classes(&x.data, p, &mut |c0, piece| {
+                pieces.push((c0, piece.len()));
+                Ok(())
+            })
+            .unwrap();
+            let n = p[0] * p[1] * p[2];
+            assert_eq!(pieces, vec![(0, 16 * n), (16, 4 * n)]);
+            let got = g.forward(&x.data, p).unwrap();
+            let range = want.iter().fold(0f32, |m, v| m.max(v.abs()));
+            let worst = got
+                .iter()
+                .zip(&want)
+                .fold(0f32, |m, (a, b)| m.max((a - b).abs()));
+            eprintln!("residual {residual}: worst {worst:e} of {range}");
+            assert!(worst <= 1e-3 * range.max(1.0), "{worst} vs range {range}");
+        }
+    }
 }

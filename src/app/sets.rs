@@ -17,6 +17,187 @@ use crate::dicomseg::{self, SegSeries};
 use crate::rtstruct::{Roi, StructureSet};
 use crate::workflow::{self, group::Landing, select};
 
+/// Which of a workspace's two kinds of segmented series an action addresses.
+///
+/// The data tree treats them alike - both are series drawn on an image
+/// series, both hold named, coloured items - even though one stores contours
+/// and the other voxel masks. Conversions between the two happen on
+/// transfer (`ViewerApp::apply_item_action`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum SetKind {
+    /// RT Structure Set: contours.
+    Structures,
+    /// DICOM Segmentation series: binary voxel masks.
+    Segmentations,
+}
+
+impl SetKind {
+    /// "structure" / "segment", pluralized for `n`.
+    pub(super) fn item_name(self, n: usize) -> &'static str {
+        match (self, n) {
+            (SetKind::Structures, 1) => "structure",
+            (SetKind::Structures, _) => "structures",
+            (SetKind::Segmentations, 1) => "segment",
+            (SetKind::Segmentations, _) => "segments",
+        }
+    }
+    pub(super) fn series_name(self) -> &'static str {
+        match self {
+            SetKind::Structures => "RT structure set",
+            SetKind::Segmentations => "segmentation series",
+        }
+    }
+}
+
+/// One structure set / segmentation series of one workspace.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) struct SetRef {
+    pub(super) slot: usize,
+    pub(super) kind: SetKind,
+    /// Index into that workspace's list, or [`SetRef::NEW`] for a series that
+    /// does not exist yet - what the *New …* transfer destinations mean.
+    pub(super) idx: usize,
+}
+
+impl SetRef {
+    pub(super) const NEW: usize = usize::MAX;
+}
+
+/// Deferred right-click action on a whole series node of the data tree.
+pub(super) enum SetAction {
+    New(SetRef),
+    Remove(SetRef),
+    /// Open the rename dialog on the series.
+    Rename(SetRef),
+    /// Re-point the series at the image series with this Series Instance UID.
+    Connect(SetRef, String),
+    /// Copy (`copy`) or move the whole series to another workspace.
+    Transfer {
+        from: SetRef,
+        to: usize,
+        copy: bool,
+    },
+    /// Write a segmentation series as a standalone DICOM SEG file. An empty
+    /// `items` means the whole series; otherwise only those segments.
+    ExportSeg {
+        set: SetRef,
+        items: Vec<usize>,
+    },
+}
+
+/// Deferred right-click action on individual structures / segments.
+/// What the structure list's point-of-interest entries do.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum PoiAct {
+    /// Centre the views on the item.
+    Localize,
+    /// Move the point to where the views cross.
+    MoveHere,
+    /// Make this the structure set's localization point.
+    Localization,
+    /// A new point at the centre of gravity of this structure.
+    AtCentre,
+}
+
+pub(super) enum ItemAction {
+    /// Copy (`copy`) or move `items` of `from` into the series `to`.
+    Transfer {
+        from: SetRef,
+        items: Vec<usize>,
+        to: SetRef,
+        copy: bool,
+    },
+    Remove {
+        from: SetRef,
+        items: Vec<usize>,
+    },
+    /// Open the rename dialog on the clicked item alone.
+    Rename {
+        from: SetRef,
+        idx: usize,
+    },
+    /// Open the structure-algebra window with these items as its operands.
+    Combine {
+        from: SetRef,
+        items: Vec<usize>,
+    },
+    /// Plot these items' dose-volume histograms.
+    Dvh {
+        from: SetRef,
+        items: Vec<usize>,
+    },
+    /// Carry these items into the other workspace through the active
+    /// registration: open the propagation module aimed at them.
+    Map {
+        from: SetRef,
+        items: Vec<usize>,
+    },
+    /// Write these segments as a DICOM SEG file of their own.
+    ExportSeg {
+        from: SetRef,
+        items: Vec<usize>,
+    },
+    /// Copy (`copy`) or move `items` of `from` onto every phase of a 4D
+    /// group, as they are, filed per phase the way `landing` says.
+    ToPhases {
+        from: SetRef,
+        items: Vec<usize>,
+        slot: usize,
+        group: usize,
+        landing: workflow::group::Landing,
+        copy: bool,
+    },
+}
+
+/// A destination of *Copy to* / *Move to*: one series, or every phase of a
+/// 4D group at once.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Destination {
+    Set(SetRef),
+    Phases {
+        slot: usize,
+        group: usize,
+        landing: workflow::group::Landing,
+    },
+}
+
+impl Destination {
+    /// The transfer of `items` of `from` here.
+    pub(super) fn transfer(self, from: SetRef, items: Vec<usize>, copy: bool) -> ItemAction {
+        match self {
+            Destination::Set(to) => ItemAction::Transfer {
+                from,
+                items,
+                to,
+                copy,
+            },
+            Destination::Phases {
+                slot,
+                group,
+                landing,
+            } => ItemAction::ToPhases {
+                from,
+                items,
+                slot,
+                group,
+                landing,
+                copy,
+            },
+        }
+    }
+}
+
+/// A *Copy to each phase* in flight: what was copied, where it goes and how
+/// it is filed, kept until the phases are loaded and the copies made.
+pub(super) struct PhasesCopy {
+    pub(super) from: SetRef,
+    pub(super) items: Vec<usize>,
+    pub(super) slot: usize,
+    pub(super) group_name: String,
+    pub(super) landing: workflow::group::Landing,
+    pub(super) copy: bool,
+}
+
 impl ViewerApp {
     // -- Series nodes ------------------------------------------------------
 

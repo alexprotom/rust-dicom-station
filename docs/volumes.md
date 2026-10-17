@@ -8,9 +8,9 @@ Every volume the station reports comes from one of three calculations:
 | **Surface-based** | the volume enclosed by a closed triangle surface reconstructed from the planar contours | *Structure details*, the propagation report |
 | **Planimetry** | contour area on each slice times the slice spacing | the drawing panel, while a structure is edited; the confirmations of tools that create a structure |
 
-This page gives the exact rules and formulas. Code: `src/segmentation.rs` (`rasterize_roi`,
-`mask_to_roi`), `src/contours.rs` (`Stack`, `Region::area`), `src/rt_surface.rs`,
-`src/propagate.rs`, `src/app/stats_win.rs`, `src/app/run_report.rs`.
+This page gives the exact rules and formulas. Code: `crates/rds-domain/src/segmentation.rs` (`rasterize_roi`,
+`mask_to_roi`), `crates/rds-domain/src/contours.rs` (`Stack`, `Region::area`), `crates/rds-domain/src/rt_surface.rs`,
+`crates/rds-domain/src/propagate.rs`, `src/app/stats_win.rs`, `src/app/run_report.rs`.
 
 ---
 
@@ -347,7 +347,7 @@ wherever it lies.
 
 ## 4. Propagation
 
-`src/propagate.rs`. A structure on the source (moving) image is carried onto the destination
+`crates/rds-domain/src/propagate.rs`. A structure on the source (moving) image is carried onto the destination
 (fixed) image through a transform `T` that maps destination points to source points.
 
 **Source volume.** The source structure as a mask on the source lattice. Contours are
@@ -432,10 +432,10 @@ surface-based `Δ%` also contains that difference.
 
 ## 5. Other volumes
 
-- **DVH** (`src/dvh.rs`): `V = (N_in + N_out) · v` over the structure's mask on the image
+- **DVH** (`crates/rds-domain/src/dvh.rs`): `V = (N_in + N_out) · v` over the structure's mask on the image
   lattice. `N_out` counts voxels outside the dose grid. They go into the lowest dose bin and are
   reported as *outside*.
-- **Structure comparison, motion and ITV** (`src/motion.rs`): voxels-based, on the lattice the
+- **Structure comparison, motion and ITV** (`crates/rds-domain/src/motion.rs`): voxels-based, on the lattice the
   comparison is made on.
 - **Segments listed in a workspace**: `N · v` of the segment's own series.
 - **MCP tools** (`volume_cm3`, `source_cm3`, `mapped_cm3`, `result_cm3`): voxels-based, as above.
@@ -481,7 +481,7 @@ the heart, onto another patient's 4DCT (0.764 × 0.764 × 0.5 mm).
   target is a compact outline on 0.5 mm slices, and its surface holds 93 %. With no deformation
   at all, the surface-based figure still moves by +39 %.
 
-`src/rt_surface.rs`'s unit tests check the reconstruction on shapes of known volume:
+`crates/rds-domain/src/rt_surface.rs`'s unit tests check the reconstruction on shapes of known volume:
 
 - a stack of squares, which gives a closed surface with no seams;
 - a block that splits into four posts, which leaves a 1600 mm² seam that is closed, after which

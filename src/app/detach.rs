@@ -131,9 +131,33 @@ pub(super) fn tool_window<R>(
     if !*open {
         return None;
     }
-    let title = window_title(&title.into());
+    // `FnOnce` contents, called from egui's `FnMut` callbacks: the option
+    // hands them over exactly once, on the pass that actually draws. The
+    // window itself is [`tool_window_body`], compiled once for every tool
+    // rather than once per caller's closure type.
+    let mut contents = Some(contents);
+    let mut ret = None;
+    tool_window_body(ctx, id, title.into(), open, opts, &mut |ui| {
+        if let Some(c) = contents.take() {
+            ret = Some(c(ui));
+        }
+    });
+    ret
+}
+
+/// [`tool_window`] with its contents as a plain `dyn` call.
+fn tool_window_body(
+    ctx: &egui::Context,
+    id: &str,
+    title: String,
+    open: &mut bool,
+    opts: WinOpts,
+    contents: &mut dyn FnMut(&mut egui::Ui),
+) {
+    let title = window_title(&title);
     if ctx.embed_viewports() {
-        return embedded_window(ctx, id, &title, open, opts, contents);
+        embedded_window(ctx, id, &title, open, opts, contents);
+        return;
     }
     // Is this the pass that opens the window, or one of the passes that keep
     // it open? Every open window is drawn once per pass of the main window
@@ -174,10 +198,6 @@ pub(super) fn tool_window<R>(
         }
     }
 
-    // `FnOnce` contents, called from egui's `FnMut` callback: the option
-    // hands it over exactly once, on the pass that actually draws.
-    let mut contents = Some(contents);
-    let mut ret = None;
     let mut close = false;
     let mut seen = None;
     ctx.show_viewport_immediate(
@@ -217,13 +237,9 @@ pub(super) fn tool_window<R>(
             if opts.scroll {
                 egui::ScrollArea::both()
                     .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        if let Some(c) = contents.take() {
-                            ret = Some(c(ui));
-                        }
-                    });
-            } else if let Some(c) = contents.take() {
-                ret = Some(c(ui));
+                    .show(ui, |ui| contents(ui));
+            } else {
+                contents(ui);
             }
             ui.ctx().input(|i| {
                 let info = i.viewport();
@@ -252,7 +268,6 @@ pub(super) fn tool_window<R>(
     if close {
         *open = false;
     }
-    ret
 }
 
 /// The tool window where the backend has no native windows: an
@@ -260,14 +275,14 @@ pub(super) fn tool_window<R>(
 /// resizable, closed by its own title-bar button. egui remembers where the
 /// user leaves it, so nothing about geometry has to be kept here; *Keep on
 /// top* does not exist, there being nothing to be on top of.
-fn embedded_window<R>(
+fn embedded_window(
     ctx: &egui::Context,
     id: &str,
     title: &str,
     open: &mut bool,
     opts: WinOpts,
-    contents: impl FnOnce(&mut egui::Ui) -> R,
-) -> Option<R> {
+    contents: &mut dyn FnMut(&mut egui::Ui),
+) {
     let size = [
         opts.size[0].max(MIN_SIZE[0]),
         if opts.size[1] > 0.0 {
@@ -276,7 +291,6 @@ fn embedded_window<R>(
             DEFAULT_TALL
         },
     ];
-    let mut ret = None;
     egui::Window::new(title)
         .id(egui::Id::new(("tool_window", id)))
         .open(open)
@@ -288,12 +302,11 @@ fn embedded_window<R>(
             if opts.scroll {
                 egui::ScrollArea::both()
                     .auto_shrink([false, false])
-                    .show(ui, |ui| ret = Some(contents(ui)));
+                    .show(ui, |ui| contents(ui));
             } else {
-                ret = Some(contents(ui));
+                contents(ui);
             }
         });
-    ret
 }
 
 #[cfg(test)]

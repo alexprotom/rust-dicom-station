@@ -28,7 +28,8 @@
 //!
 //! **Again, faster.** The window keeps what every step of the last run
 //! left ([`StepCache`]); the next run takes over every step whose settings,
-//! inputs and files are unchanged, and the canvas marks them ♻. *Forget*
+//! files and the steps it reads from are unchanged, and the canvas marks
+//! them ♻. *Forget*
 //! empties it. Independent rows at the start can run side by side, and the
 //! memory kept for image volumes between steps is set here.
 //!
@@ -509,7 +510,6 @@ impl ViewerApp {
     /// names it, the cached overlays.
     fn wf_detach(&mut self, slot: usize) {
         self.drop_phase_cache(slot);
-        self.planar_windows.retain(|w| w.slot != slot);
         self.d3_windows.retain(|w| w.slot != slot);
         self.tree_picks.retain(|(s, _)| *s != slot);
         if self.tree_focus.as_ref().is_some_and(|t| t.slot() == slot) {

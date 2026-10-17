@@ -158,6 +158,61 @@ impl SendPtr {
     }
 }
 
+/// Spare activation buffers, handed from one layer, and one patch, to the
+/// next instead of being freed and allocated again.
+///
+/// At full resolution a layer's output is hundreds of megabytes. Buffers
+/// that large come straight from the operating system and go back to it
+/// when freed, so every layer of every patch would fault its output in page
+/// by page again; through an arena the pages stay mapped for the whole run.
+/// A buffer taken from here keeps what its last user left in it: it is only
+/// ever handed to an operation that writes every element of its output.
+#[derive(Default)]
+pub struct Arena {
+    spare: Vec<Vec<f32>>,
+}
+
+impl Arena {
+    /// A buffer of `len` floats with stale contents: the smallest spare that
+    /// already holds that many, else the largest one grown, else a new one.
+    pub fn take(&mut self, len: usize) -> Vec<f32> {
+        let fits = (0..self.spare.len())
+            .filter(|&i| self.spare[i].len() >= len)
+            .min_by_key(|&i| self.spare[i].len());
+        let pick = fits.or_else(|| (0..self.spare.len()).max_by_key(|&i| self.spare[i].capacity()));
+        match pick {
+            Some(i) => {
+                let mut v = self.spare.swap_remove(i);
+                if v.len() >= len {
+                    v.truncate(len);
+                } else {
+                    v.resize(len, 0.0);
+                }
+                v
+            }
+            None => vec![0.0; len],
+        }
+    }
+
+    /// [`take`](Self::take) shaped as an activation volume.
+    pub fn act(&mut self, c: usize, d: usize, h: usize, w: usize) -> Act {
+        Act {
+            c,
+            d,
+            h,
+            w,
+            data: self.take(c * d * h * w),
+        }
+    }
+
+    /// Hand a buffer back for the next [`take`](Self::take).
+    pub fn give(&mut self, v: Vec<f32>) {
+        if v.capacity() > 0 {
+            self.spare.push(v);
+        }
+    }
+}
+
 /// Transposed 3-D convolution with `kernel = stride`, for any stride.
 ///
 /// The 2× case has its own hand-tuned routine below; this is the general
@@ -173,14 +228,30 @@ pub fn conv_transpose3d_stride(
     cout: usize,
     stride: [usize; 3],
 ) -> Act {
+    let out = Act::zeros(cout, x.d * stride[0], x.h * stride[1], x.w * stride[2]);
+    conv_transpose3d_stride_into(x, weight, bias, stride, out)
+}
+
+/// [`conv_transpose3d_stride`] into `out`, already shaped
+/// `[cout, d*s0, h*s1, w*s2]`; every element is written, so its contents
+/// may be stale (an [`Arena`] buffer).
+pub fn conv_transpose3d_stride_into(
+    x: &Act,
+    weight: &[f32],
+    bias: &[f32],
+    stride: [usize; 3],
+    mut out: Act,
+) -> Act {
     let [s0, s1, s2] = stride;
+    let cout = out.c;
     if stride == [2, 2, 2] {
-        return conv_transpose3d_2x(x, weight, bias, cout);
+        return conv_transpose3d_2x_into(x, weight, bias, out);
     }
     let (cin, d, h, w) = (x.c, x.d, x.h, x.w);
     let ks = s0 * s1 * s2;
     debug_assert_eq!(weight.len(), cin * cout * ks);
     let (od, oh, ow) = (d * s0, h * s1, w * s2);
+    debug_assert_eq!((out.d, out.h, out.w), (od, oh, ow));
     // Repack the weight as [cout*ks, cin] for a row-major GEMM.
     let mut wt = vec![0f32; cout * ks * cin];
     for ci in 0..cin {
@@ -192,7 +263,6 @@ pub fn conv_transpose3d_stride(
     }
     let hw = h * w;
     let ohw = oh * ow;
-    let mut out = Act::zeros(cout, od, oh, ow);
     let out_ptr = SendPtr(out.data.as_mut_ptr());
     let od_stride = od * ohw;
     // Input slice z writes output slices z*s0 .. z*s0+s0, disjoint across z.
@@ -259,9 +329,18 @@ pub fn conv_transpose3d_stride(
 /// projects to a disjoint 2x2x2 output block. `weight`: `[cin, cout, 2, 2, 2]` -
 /// PyTorch's `ConvTranspose3d` layout.
 pub fn conv_transpose3d_2x(x: &Act, weight: &[f32], bias: &[f32], cout: usize) -> Act {
+    let out = Act::zeros(cout, x.d * 2, x.h * 2, x.w * 2);
+    conv_transpose3d_2x_into(x, weight, bias, out)
+}
+
+/// [`conv_transpose3d_2x`] into `out`, already shaped `[cout, 2d, 2h, 2w]`;
+/// every element is written.
+fn conv_transpose3d_2x_into(x: &Act, weight: &[f32], bias: &[f32], mut out: Act) -> Act {
+    let cout = out.c;
     let (cin, d, h, w) = (x.c, x.d, x.h, x.w);
     debug_assert_eq!(weight.len(), cin * cout * 8);
     let (od, oh, ow) = (d * 2, h * 2, w * 2);
+    debug_assert_eq!((out.d, out.h, out.w), (od, oh, ow));
     // Repack weight as [cout*8, cin] for a row-major GEMM.
     let mut wt = vec![0f32; cout * 8 * cin];
     for ci in 0..cin {
@@ -272,7 +351,6 @@ pub fn conv_transpose3d_2x(x: &Act, weight: &[f32], bias: &[f32], cout: usize) -
         }
     }
     let hw = h * w;
-    let mut out = Act::zeros(cout, od, oh, ow);
     let ohw = oh * ow;
     let out_ptr = SendPtr(out.data.as_mut_ptr());
     let od_stride = od * ohw; // per-channel stride in the output

@@ -261,7 +261,7 @@ It asserts:
 Dataset300 weights end to end through the hybrid; `#[ignore]`d because it
 downloads 124 MB.
 
-`src/morphology.rs`'s own tests check the pieces underneath: the distance
+`crates/rds-domain/src/morphology.rs`'s own tests check the pieces underneath: the distance
 transform against brute force on an anisotropic grid, the opening against a
 sheet and a block, 6-connectivity against a shared corner, slice-wise versus
 3-D filling, the persistence test against an extruded rail and a bump, and the

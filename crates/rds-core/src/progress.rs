@@ -12,7 +12,21 @@
 //! through [`ProgressSink::report`] never has to know where it sits.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
+
+/// Where every progress message also goes, when a platform asks for it.
+type Trail = Box<dyn Fn(&str) + Send + Sync>;
+static TRAIL: OnceLock<Trail> = OnceLock::new();
+
+/// Hand every message any [`Progress`] is set to, from any job, to `f` as
+/// well. For a platform whose own log is the only evidence a run leaves
+/// when the system ends the program without a word - Android, when memory
+/// runs out - so that log can say which step it was on. `f` runs on the
+/// worker's thread and should be quick; it decides itself what to keep.
+/// The first call wins.
+pub fn set_trail(f: Trail) {
+    let _ = TRAIL.set(f);
+}
 
 /// What a long operation reports to whoever started it. Implemented by
 /// [`Progress`] for the application, and by [`Quiet`] / [`Stderr`] for tests
@@ -78,7 +92,11 @@ impl Default for Progress {
 
 impl Progress {
     pub fn set(&self, m: impl Into<String>) {
-        *self.msg.lock().unwrap_or_else(|e| e.into_inner()) = m.into();
+        let m = m.into();
+        if let Some(trail) = TRAIL.get() {
+            trail(&m);
+        }
+        *self.msg.lock().unwrap_or_else(|e| e.into_inner()) = m;
     }
     /// The message, behind the prefix when one is set.
     pub fn get(&self) -> String {

@@ -106,7 +106,9 @@ pub(super) struct WorkflowEditor {
     /// The file it was read from or last saved to.
     pub path: Option<PathBuf>,
     /// The workflow as last saved or opened, to tell whether it changed.
-    saved: String,
+    /// Kept as the value, not as its JSON: the title asks every frame, and
+    /// comparing two workflows costs nothing next to writing one out.
+    saved: Workflow,
     /// The node whose parameters the right-hand panel shows.
     pub inspect: Option<u32>,
     pub findings: Findings,
@@ -126,8 +128,9 @@ pub(super) struct WorkflowEditor {
     /// last), as workflow JSON.
     undo: Vec<String>,
     redo: Vec<String>,
-    /// The state the history last kept.
-    committed: String,
+    /// The state the history last kept, as the value it is compared with
+    /// every frame; it is written out only when it becomes a step.
+    committed: Workflow,
     /// Canvas to window as last drawn, and a view to set on the next frame
     /// (the minimap's, or the one kept across a rebuilt canvas).
     view: TSTransform,
@@ -227,7 +230,7 @@ impl WorkflowEditor {
             description: wf.description.clone(),
             output: wf.output.clone(),
             path,
-            saved: String::new(),
+            saved: Workflow::new(""),
             inspect: None,
             findings,
             status: None,
@@ -246,7 +249,7 @@ impl WorkflowEditor {
             frames: wf.frames.clone(),
             undo: Vec::new(),
             redo: Vec::new(),
-            committed: String::new(),
+            committed: Workflow::new(""),
             view: TSTransform::IDENTITY,
             set_view: None,
             rects: Vec::new(),
@@ -254,16 +257,16 @@ impl WorkflowEditor {
             clip: None,
             frame_drag: None,
         };
-        ed.saved = ed.to_workflow().to_json();
+        ed.saved = ed.to_workflow();
         ed.committed = ed.snapshot();
         ed
     }
 
     /// The whole state the history keeps: the workflow, its name as typed.
-    fn snapshot(&self) -> String {
+    fn snapshot(&self) -> Workflow {
         let mut wf = self.to_workflow();
         wf.name = self.name.clone();
-        wf.to_json()
+        wf
     }
 
     /// Put `wf` on the canvas in place of what is there, keeping the file,
@@ -294,7 +297,8 @@ impl WorkflowEditor {
         }
         let now = self.snapshot();
         if now != self.committed {
-            self.undo.push(std::mem::replace(&mut self.committed, now));
+            self.undo
+                .push(std::mem::replace(&mut self.committed, now).to_json());
             if self.undo.len() > HISTORY {
                 self.undo.remove(0);
             }
@@ -307,7 +311,8 @@ impl WorkflowEditor {
     fn commit_pending(&mut self) {
         let now = self.snapshot();
         if now != self.committed {
-            self.undo.push(std::mem::replace(&mut self.committed, now));
+            self.undo
+                .push(std::mem::replace(&mut self.committed, now).to_json());
             self.redo.clear();
         }
     }
@@ -317,11 +322,12 @@ impl WorkflowEditor {
         let Some(prev) = self.undo.pop() else {
             return;
         };
+        let Ok(wf) = Workflow::from_json(&prev) else {
+            return;
+        };
         self.redo
-            .push(std::mem::replace(&mut self.committed, prev.clone()));
-        if let Ok(wf) = Workflow::from_json(&prev) {
-            self.load(wf);
-        }
+            .push(std::mem::replace(&mut self.committed, wf.clone()).to_json());
+        self.load(wf);
         self.status = Some("Undone".into());
     }
 
@@ -336,11 +342,12 @@ impl WorkflowEditor {
         let Some(next) = self.redo.pop() else {
             return;
         };
+        let Ok(wf) = Workflow::from_json(&next) else {
+            return;
+        };
         self.undo
-            .push(std::mem::replace(&mut self.committed, next.clone()));
-        if let Ok(wf) = Workflow::from_json(&next) {
-            self.load(wf);
-        }
+            .push(std::mem::replace(&mut self.committed, wf.clone()).to_json());
+        self.load(wf);
         self.status = Some("Redone".into());
     }
 
@@ -459,13 +466,13 @@ impl WorkflowEditor {
 
     /// Changed since it was last saved or opened?
     pub(super) fn dirty(&self) -> bool {
-        self.to_workflow().to_json() != self.saved
+        self.to_workflow() != self.saved
     }
 
     /// It was just saved as `path`.
     pub(super) fn mark_saved(&mut self, path: PathBuf) {
         self.path = Some(path);
-        self.saved = self.to_workflow().to_json();
+        self.saved = self.to_workflow();
     }
 
     fn next_id(&self) -> u32 {
@@ -2049,6 +2056,125 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             });
             effort_ui(f, id, &mut p.effort);
         }
+        Op::Register2d3d(p) => {
+            f.row_tip(
+                "Images",
+                "Planar images by number or label, separated by commas; empty: every one \
+                 that states its geometry",
+                |ui| text(ui, &mut p.images, "every placed image", 150.0),
+            );
+            f.row("Method", |ui| {
+                let mut m = crate::setup::SetupMethod::from_key(&p.method).unwrap_or_default();
+                choice(
+                    ui,
+                    ("method2d", id),
+                    &mut m,
+                    &crate::setup::SetupMethod::ALL,
+                    |v| v.label(),
+                );
+                p.method = m.key().into();
+            });
+            f.row("Measure", |ui| {
+                let mut m = crate::registration::metric2d::Metric2d::from_key(&p.metric)
+                    .unwrap_or_default();
+                choice(
+                    ui,
+                    ("metric2d", id),
+                    &mut m,
+                    &crate::registration::metric2d::Metric2d::ALL,
+                    |v| v.label(),
+                );
+                p.metric = m.key().into();
+            });
+            f.row("", |ui| {
+                ui.checkbox(&mut p.translations_only, "Translations only");
+            });
+            f.row("", |ui| {
+                ui.checkbox(&mut p.detect_markers, "Markers found in the CT");
+            });
+            f.row_tip(
+                "Clip box",
+                "Half its size about the isocentre; 0 for none",
+                |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut p.clip_mm)
+                            .range(0.0..=400.0)
+                            .suffix(" mm"),
+                    );
+                },
+            );
+            f.row_tip(
+                "Clip about",
+                "A structure the box is put around instead, with a margin",
+                |ui| {
+                    text(ui, &mut p.clip_structure, "no structure", 110.0);
+                    ui.add_enabled(
+                        !p.clip_structure.trim().is_empty(),
+                        egui::DragValue::new(&mut p.clip_margin_mm)
+                            .range(0.0..=100.0)
+                            .prefix("+")
+                            .suffix(" mm"),
+                    );
+                },
+            );
+            f.row("", |ui| {
+                ui.checkbox(&mut p.clip_rays, "Rays inside the box only")
+                    .on_hover_text("Otherwise the box chooses the pixels compared");
+            });
+            f.row("Threshold", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut p.threshold_hu)
+                        .range(-1000.0..=2000.0)
+                        .suffix(" HU"),
+                );
+            });
+            f.row("Levels", |ui| {
+                ui.add(egui::DragValue::new(&mut p.levels).range(1..=5));
+            });
+            f.row("Pixels", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut p.pixels)
+                        .range(32..=1024)
+                        .suffix(" px"),
+                );
+            });
+            f.row("", |ui| {
+                ui.checkbox(&mut p.file_drrs, "DRRs at the answer as planar images");
+            });
+            if p.method != "markers" {
+                f.row("Compute", |ui| {
+                    choice(ui, ("dev", id), &mut p.device, &cat::Device::ALL, |v| {
+                        v.label()
+                    });
+                });
+            }
+            f.row_tip(
+                "Folder",
+                "Inside the run folder, or an absolute path; {input} is the study's title; \
+                 empty writes nothing",
+                |ui| text(ui, &mut p.folder, "setup/{input}", 150.0),
+            );
+        }
+        Op::PositionedCopy(p) => {
+            f.row_tip(
+                "Shift",
+                "Without a pose: where the anatomy is found, mm (patient x, y, z)",
+                |ui| {
+                    for v in &mut p.translation_mm {
+                        ui.add(egui::DragValue::new(v).speed(0.5).max_decimals(1));
+                    }
+                },
+            );
+            f.row_tip(
+                "Turn",
+                "Without a pose: rotations about x, y, z through the series' centre, degrees",
+                |ui| {
+                    for v in &mut p.rotation_deg {
+                        ui.add(egui::DragValue::new(v).speed(0.1).max_decimals(2));
+                    }
+                },
+            );
+        }
         Op::RegisterByStructures(p) => {
             f.row_tip(
                 "Pairs",
@@ -2793,8 +2919,9 @@ impl ViewerApp {
                 if let Some(e) = store::EXAMPLES.get(i) {
                     let mut ed = WorkflowEditor::from_workflow(e.workflow(), None);
                     // An example is a start, not a file of the user's: the
-                    // first save asks where.
-                    ed.saved = String::new();
+                    // first save asks where. (No canvas is ever unnamed:
+                    // an empty name reads as "Untitled workflow".)
+                    ed.saved = Workflow::new("");
                     ed.status = Some(format!("Example: {}", e.blurb));
                     self.wf_editor = Some(ed);
                 }
@@ -2879,11 +3006,10 @@ impl ViewerApp {
         let Some(mut ed) = self.wf_editor.take() else {
             return;
         };
-        let marks = self
-            .wf_run
-            .as_ref()
-            .map(|r| r.marks.clone())
-            .unwrap_or_default();
+        // Read where they are: the run's marks are a map of strings, and
+        // cloning it for every frame of the editor bought nothing.
+        let no_marks = BTreeMap::new();
+        let marks = self.wf_run.as_ref().map(|r| &r.marks).unwrap_or(&no_marks);
         let running = self.wf_run.as_ref().is_some_and(|r| r.is_running());
         let mut actions = Vec::new();
         let title = ed.title();
@@ -2895,7 +3021,7 @@ impl ViewerApp {
             &mut open,
             detach::WinOpts::size(1600.0, 920.0).no_scroll(),
             |ui| {
-                ed.ui(ui, &marks, running, &mut actions);
+                ed.ui(ui, marks, running, &mut actions);
                 if let Some(q) = &question {
                     answer = confirm_window(ui.ctx(), q);
                 }

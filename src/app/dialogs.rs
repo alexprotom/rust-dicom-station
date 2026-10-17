@@ -39,7 +39,6 @@ impl ViewerApp {
         self.anonymize_window(ctx);
         self.models_window(ctx);
         self.pacs_window(ctx);
-        self.drr_window(ctx);
         self.export_window(ctx);
         self.rename_window(ctx);
         self.stats_window(ctx);

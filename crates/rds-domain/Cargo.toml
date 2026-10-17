@@ -1,0 +1,104 @@
+[package]
+name = "rds-domain"
+version.workspace = true
+edition = "2021"
+description = "Everything of rust-dicom-station below the window: DICOM / RT DICOM I/O, geometry, registration (3D and 2D/3D), structures, dose, 4D motion, workflows, the archive and its PACS server, the MCP server, the settings"
+license = "MIT"
+repository = "https://github.com/alexprotom/rust-dicom-station"
+publish = false
+
+# Why this is a crate of its own: the root crate is the viewer (`src/app/`)
+# and this is everything it stands on. As a dependency it is compiled once
+# and left alone while the viewer is edited, which is most edits; an edit
+# here recompiles this crate and the viewer, as before. The root crate
+# re-exports every module under the path it had (`rust_dicom_station::loader`).
+# The version is the workspace's, the one the release reads: the MCP and PACS
+# servers, the derived series and the run files report it.
+
+[dependencies]
+anyhow = "1.0"
+dicom-core = "0.10"
+dicom-dictionary-std = "0.10"
+dicom-object = "0.10"
+dicom-pixeldata = { version = "0.10", features = ["native", "rayon"] }
+dicom-transfer-syntax-registry = "0.10"  # read data sets that carry no file meta group (see dicomfile.rs)
+# The DRR workflow step writes its renderings as PNG.
+image = { version = "0.25", default-features = false, features = ["png"] }
+# Only for two plain types: `Color32` (render, segmentation colours) and the
+# theme preference the settings keep. Not the window library.
+egui = "0.36"
+rayon = "1.12"
+walkdir = "2.5"
+
+# ---- the workspace's crates below this one ----
+rds-core = { path = "../rds-core" }
+rds-engines = { path = "../rds-engines", default-features = false }
+serde_json = "1"                    # settings, templates, workflow files, MCP
+# The workflow files (`workflow::graph`) are JSON read and written through
+# serde's derive; serde_json above already pulls serde itself in.
+serde = { version = "1", features = ["derive"] }
+
+# ---- the MCP server (`rds-mcp`, feature `mcp`) ----
+# Optional: the viewer's default build compiles none of this. The server is a
+# second executable that links the same library and speaks the Model Context
+# Protocol over standard input and output; see docs/mcp.md.
+rmcp = { version = "3.2", optional = true, default-features = false, features = ["server", "macros", "transport-io", "schemars"] }
+# Shared with the PACS server below; `fs`, `io-util`, `net` and `signal` are
+# what that one needs (bodies streamed to disk, its listener, Ctrl+C).
+tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net", "signal"] }
+schemars = { version = "1", optional = true }
+
+# ---- the remote archive, client side (every build, the mobile ones too) ----
+# `src/pacs/` talks to a PACS server (`rds-pacs`, below) over HTTPS through
+# the same `ureq` as the downloads, so every build is a client. `rustls` is
+# named directly only for the certificate pin - a verifier that accepts
+# exactly the one certificate a server was paired with - and with the
+# version and features `ureq` already compiles. `sha2` makes fingerprints
+# and token hashes, `getrandom` the tokens' bytes, `zip` the bundles studies
+# travel in, `toml` reads and writes `pacs.toml` (and the MCP server's
+# `mcp.toml`), `gethostname` names this device when it pairs, `if-addrs`
+# lists this machine's network interfaces (the addresses the operator's
+# window shows other stations; `getifaddrs` on Unix, the IP helper API on
+# Windows, bindings only).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+toml = { version = "1", default-features = false, features = ["parse", "display", "serde", "std"] }
+gethostname = "1"
+if-addrs = "0.15"
+
+# ---- the PACS server (`rds-pacs`, feature `pacs-server`) ----
+# Optional, like the MCP server: a third executable that serves the archive
+# folder to other stations over HTTPS (docs/pacs-server.md). The viewer's
+# default build compiles none of this, and the Android and iOS front ends
+# never enable it, so those are always clients. TLS is rustls with the
+# `ring` provider set explicitly (`tls-rustls-no-provider`), the same one
+# the client side uses; `rcgen` makes the self-signed certificate.
+axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "json", "query", "tokio"] }
+axum-server = { version = "0.8", optional = true, features = ["tls-rustls-no-provider"] }
+rcgen = { version = "0.14", optional = true }
+subtle = { version = "2", optional = true }
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["std"] }
+
+# The test-data download and the PACS client: rustls (pure Rust TLS) with the
+# OS trust store on the desktop, so corporate/clinical TLS-inspection proxies
+# with custom CAs work; the bundled Mozilla roots on Android and iOS, whose
+# stores `rustls-native-certs` cannot read (the model weights come through
+# crates/rds-engines, keyed the same way).
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+ureq = { version = "2", features = ["native-certs"] }
+
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+ureq = { version = "2" }
+
+[features]
+default = ["gpu"]
+# The wgpu inference backend of the engines (see crates/rds-engines), and the
+# 2D/3D projector's compute shader on the same device.
+gpu = ["rds-engines/gpu"]
+# The `mcp` module behind the MCP server executable.
+mcp = ["dep:rmcp", "dep:tokio", "dep:schemars"]
+# The server half of the `pacs` module behind the PACS server executable.
+pacs-server = ["dep:axum", "dep:axum-server", "dep:tokio", "dep:rcgen", "dep:subtle", "dep:futures-util"]

@@ -291,6 +291,9 @@ pub(super) fn run_on_phases<R>(
     run: impl Fn(&Volume, &Progress) -> anyhow::Result<R>,
 ) -> anyhow::Result<Vec<(PhaseInfo, R)>> {
     use anyhow::Context;
+    // Every phase runs the same networks: an automatic model keeps the
+    // ones it built for the next phase instead of loading them again.
+    let _keep = crate::autoseg::KeepNetworks::new();
     let n = phases.len().max(1);
     let mut out = Vec::with_capacity(phases.len());
     for (i, ph) in phases.iter().enumerate() {
@@ -444,6 +447,38 @@ pub(super) fn workspace_row(
 /// One line every tool window ends its options with.
 pub(super) const RESEARCH_NOTE: &str = "Research / QA use - not a medical device.";
 
+/// One mask a single-mask engine made, for [`ViewerApp::land_one_mask`].
+pub(super) struct OneMask<'a> {
+    pub name: &'a str,
+    pub dims: [usize; 3],
+    pub mask: &'a [u8],
+    pub voxels: u64,
+    pub frame_of_reference_uid: &'a str,
+}
+
+/// What differs between the engines that land through
+/// [`ViewerApp::land_one_mask`].
+pub(super) struct OneMaskLanding<'a> {
+    pub tool: &'a ToolInfo,
+    /// RT ROI Interpreted Type of the contours, and the label of a new set.
+    pub roi_type: &'a str,
+    pub default_label: &'a str,
+    /// The note on a phase whose mask came out empty, after "phase N: ".
+    pub empty_phase: &'a str,
+    /// The error when the mask on the displayed volume came out empty.
+    pub empty_error: &'a str,
+}
+
+/// How [`ViewerApp::land_one_mask`] went.
+pub(super) enum OneMaskLanded {
+    /// Filed on the phases of a group; the line the section shows.
+    Phases(String),
+    /// Filed on the displayed volume; the engine words its own summary.
+    Displayed,
+    /// Nothing landed (and an error says why where there is one).
+    Nothing,
+}
+
 /// The message shown when a run finishes on a workspace that was replaced
 /// meanwhile.
 pub(super) fn stale_result(tool: &ToolInfo) -> String {
@@ -582,6 +617,87 @@ impl ViewerApp {
     pub(super) fn default_set_target(&self, slot: usize) -> Option<usize> {
         let n = self.structure_set_labels(slot).len();
         (n > 0).then(|| self.slots[slot].active_structs.min(n - 1))
+    }
+
+    /// The landing the two single-mask engines (the body contour, SegVol)
+    /// share: one mask per phase of a group, or one on the displayed volume
+    /// checked against the workspace it was made for.
+    ///
+    /// `color` is the segment colour, or `None` for the next of the palette
+    /// (on the displayed volume drawn only once the result is known to land;
+    /// for a group before the phases are filed, as it always was). Errors (a stale or an
+    /// empty result on the displayed volume) go to `self.error`.
+    pub(super) fn land_one_mask(
+        &mut self,
+        slot: usize,
+        output: &ToolOutput,
+        how: &OneMaskLanding,
+        color: Option<[u8; 3]>,
+        results: &[(&PhaseInfo, OneMask)],
+    ) -> OneMaskLanded {
+        let Some((first, result)) = results.first() else {
+            return OneMaskLanded::Nothing;
+        };
+        let pick = |app: &mut Self| color.unwrap_or_else(|| app.next_seg_color());
+        if let Some(group) = first.group.clone() {
+            let n = results.len();
+            let empty = results.iter().filter(|(_, r)| r.voxels == 0).count();
+            let color = pick(self);
+            let copies: Vec<_> = results
+                .iter()
+                .map(|(info, r)| {
+                    let segs = if r.voxels == 0 {
+                        Vec::new()
+                    } else {
+                        vec![Segmentation::from_label_map(
+                            r.name.to_string(),
+                            color,
+                            r.dims,
+                            r.mask,
+                            1,
+                        )]
+                    };
+                    let notes = (r.voxels == 0)
+                        .then(|| format!("phase {}: {}", info.label, how.empty_phase))
+                        .into_iter()
+                        .collect();
+                    info.copy(segs, notes)
+                })
+                .collect();
+            let landed = self.land_phases(slot, &group, output.kind, how.roi_type, copies);
+            if landed == 0 {
+                return OneMaskLanded::Nothing;
+            }
+            return OneMaskLanded::Phases(format!(
+                "✔ {} on {landed} of {n} phases of {group}{}",
+                result.name,
+                if empty > 0 {
+                    format!(" - {empty} came out empty")
+                } else {
+                    String::new()
+                }
+            ));
+        }
+        if !self.slot_still_shows(slot, result.dims, result.frame_of_reference_uid) {
+            self.error = Some(stale_result(how.tool));
+            return OneMaskLanded::Nothing;
+        }
+        if result.voxels == 0 {
+            self.error = Some(how.empty_error.into());
+            return OneMaskLanded::Nothing;
+        }
+        let color = pick(self);
+        let seg = Segmentation::from_label_map(
+            result.name.to_string(),
+            color,
+            result.dims,
+            result.mask,
+            1,
+        );
+        if self.land_masks(slot, output, how.roi_type, how.default_label, vec![seg]) == 0 {
+            return OneMaskLanded::Nothing;
+        }
+        OneMaskLanded::Displayed
     }
 
     /// File masks made on the displayed volume of `slot` the way `out` says:

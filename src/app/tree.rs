@@ -7,13 +7,83 @@
 
 use super::*;
 
+/// What a right-click action on the data tree selects.
+#[derive(Clone)]
+pub(super) enum TreeSel {
+    /// All series of one patient (grouped by `SeriesInfo::patient_key`).
+    Patient(String),
+    /// All series of one study (StudyInstanceUID).
+    Study(String),
+    /// A single series (index into `LoadedStudy::series`).
+    Series(usize),
+    /// Several series at once (indices into `LoadedStudy::series`): the
+    /// ones ticked in the tree, every series of a modality node, or the
+    /// members of a 4D group. Each takes its own reference chain along,
+    /// like a single series does.
+    Many(Vec<usize>),
+}
+
+/// What to do with the selection.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum TreeOp {
+    Copy,
+    Move,
+    Remove,
+}
+
+/// Right-click action on the data tree.
+#[derive(Clone)]
+pub(super) struct TreeAction {
+    pub(super) from: usize,
+    /// Where it goes. For a removal it is the workspace it came from, since
+    /// nothing goes anywhere.
+    pub(super) to: usize,
+    pub(super) sel: TreeSel,
+    pub(super) op: TreeOp,
+}
+
+/// One of the study-level objects that are neither image, structure nor
+/// segmentation series: they hang off the study, are drawn in the views (or
+/// not), and can be taken out of the workspace.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum ObjKind {
+    Dose,
+    Plan,
+    Planar,
+    Registration,
+    Record,
+    Setup,
+}
+
+/// Which object, in which workspace.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) struct ObjRef {
+    pub(super) slot: usize,
+    pub(super) kind: ObjKind,
+    pub(super) idx: usize,
+}
+
+/// Which parts of a `LoadedStudy` a tree selection covers: the selected
+/// series plus the RT objects linked to them via the DICOM reference chain
+/// (RTSTRUCT ▶ series, RTPLAN ▶ RTSTRUCT, RTDOSE ▶ RTPLAN).
+pub(super) struct SubsetMasks {
+    pub(super) series: Vec<bool>,
+    pub(super) structs: Vec<bool>,
+    /// Segmentation series drawn on the selected image series.
+    pub(super) seg_series: Vec<bool>,
+    pub(super) doses: Vec<bool>,
+    pub(super) plans: Vec<bool>,
+    /// Planar images / REG objects / treatment records are only carried when
+    /// the selection covers the whole slot content.
+    pub(super) take_extras: bool,
+}
+
 impl ViewerApp {
     /// Empty a study slot completely (used by tree "move" actions).
     pub(super) fn tree_clear_slot(&mut self, slot: usize) {
         self.slots[slot] = StudySlot::empty();
         self.drop_phase_cache(slot);
         self.forget_sources(slot);
-        self.planar_windows.retain(|w| w.slot != slot);
         self.d3_windows.retain(|w| w.slot != slot);
         self.tree_picks.retain(|(s, _)| *s != slot);
         if self.tree_focus.as_ref().is_some_and(|t| t.slot() == slot) {
@@ -35,12 +105,6 @@ impl ViewerApp {
     /// than in the panel that drew the button.
     pub(super) fn remove_object(&mut self, r: ObjRef) {
         let slot = r.slot.min(MAX_WORKSPACES - 1);
-        let planar_gone = |windows: &mut Vec<PlanarWindow>, idx: usize| {
-            windows.retain(|w| !(w.slot == slot && w.idx == idx));
-            for w in windows.iter_mut().filter(|w| w.slot == slot && w.idx > idx) {
-                w.idx -= 1;
-            }
-        };
         let Some(study) = self.slots[slot].study.as_mut() else {
             return;
         };
@@ -83,7 +147,7 @@ impl ViewerApp {
                     return;
                 }
                 study.planar_images.remove(r.idx);
-                planar_gone(&mut self.planar_windows, r.idx);
+                self.planar_removed(slot, r.idx);
             }
             ObjKind::Registration => {
                 if r.idx >= study.registrations.len() {
@@ -96,6 +160,13 @@ impl ViewerApp {
                     return;
                 }
                 study.treat_records.remove(r.idx);
+            }
+            ObjKind::Setup => {
+                if r.idx >= study.setups.len() {
+                    return;
+                }
+                study.setups.remove(r.idx);
+                self.setup_removed(slot, r.idx);
             }
         }
         self.settings_gen += 1;
@@ -166,6 +237,9 @@ impl ViewerApp {
             }
             RenameTarget::Record { slot, idx } => {
                 self.obj_remove = Some(obj(slot, ObjKind::Record, idx));
+            }
+            RenameTarget::Setup { slot, idx } => {
+                self.obj_remove = Some(obj(slot, ObjKind::Setup, idx));
             }
             RenameTarget::FourD { slot, idx } => {
                 self.fourd_action = Some(FourDAction::Dissolve { slot, group: idx });
@@ -413,6 +487,11 @@ impl ViewerApp {
             },
             treat_records: if masks.take_extras {
                 study.treat_records.clone()
+            } else {
+                Vec::new()
+            },
+            setups: if masks.take_extras {
+                study.setups.clone()
             } else {
                 Vec::new()
             },
@@ -780,6 +859,7 @@ mod tree_tests {
             planar_images: Vec::new(),
             registrations: Vec::new(),
             treat_records: Vec::new(),
+            setups: Vec::new(),
             fourd_groups: Vec::new(),
             warnings: Vec::new(),
             default_window: (40.0, 400.0),

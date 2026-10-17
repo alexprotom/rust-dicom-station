@@ -107,6 +107,32 @@ pub fn propagate_from<B: Backend>(
     config: &Config,
     hooks: &dyn ProgressSink,
 ) -> Result<Segmentation> {
+    let encode = |index: usize| model.encode_slice(slices.slice(index));
+    propagate_with(
+        model,
+        slices,
+        prompt_slice,
+        anchor,
+        prompt,
+        config,
+        hooks,
+        &encode,
+    )
+}
+
+/// [`propagate_from`], each tracked slice's features obtained from
+/// `features` (which may have kept them from an earlier propagation).
+#[allow(clippy::too_many_arguments)]
+pub fn propagate_with<B: Backend>(
+    model: &Medsam2<B>,
+    slices: &dyn Slices<B>,
+    prompt_slice: usize,
+    anchor: &SliceFeatures<B>,
+    prompt: &Prompt<B>,
+    config: &Config,
+    hooks: &dyn ProgressSink,
+    features: &dyn Fn(usize) -> SliceFeatures<B>,
+) -> Result<Segmentation> {
     let n = slices.len();
     if n == 0 {
         bail!("the stack is empty");
@@ -161,7 +187,7 @@ pub fn propagate_from<B: Backend>(
             visited as f32 / total as f32,
             &format!("Slice {index} of {n}"),
         );
-        let feats = model.encode_slice(slices.slice(index));
+        let feats = features(index);
         let out = forward.track(index, &feats, false);
         store(index, &out, &mut masks);
         visited += 1;
@@ -182,7 +208,7 @@ pub fn propagate_from<B: Backend>(
                 visited as f32 / total as f32,
                 &format!("Slice {index} of {n}"),
             );
-            let feats = model.encode_slice(slices.slice(index));
+            let feats = features(index);
             let out = reverse.track(index, &feats, true);
             store(index, &out, &mut masks);
             visited += 1;

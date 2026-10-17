@@ -613,8 +613,8 @@ impl ViewerApp {
             .striped(true)
             .show(ui, |ui| {
                 ui.strong("ITV");
-                ui.strong(a.slot_label());
-                ui.strong(b.slot_label());
+                ui.strong(slot_label(a));
+                ui.strong(slot_label(b));
                 ui.strong("change");
                 ui.end_row();
                 for ia in &a.itvs {
@@ -665,8 +665,8 @@ impl ViewerApp {
                 .striped(true)
                 .show(ui, |ui| {
                     ui.strong("Track");
-                    ui.strong(a.slot_label());
-                    ui.strong(b.slot_label());
+                    ui.strong(slot_label(a));
+                    ui.strong(slot_label(b));
                     ui.end_row();
                     for (label, pa, pb) in matched {
                         ui.label(label);
@@ -712,11 +712,10 @@ impl ViewerApp {
     }
 }
 
-impl MotionReport {
-    /// `workspace A` - the comparison table's column header.
-    fn slot_label(&self) -> String {
-        format!("workspace {}", self.slot_name)
-    }
+/// `workspace A` - the comparison table's column header. (A function, not a
+/// method: `MotionReport` lives in another crate.)
+fn slot_label(r: &MotionReport) -> String {
+    format!("workspace {}", r.slot_name)
 }
 
 /// The reference structure's track worth drawing beside the targets: as

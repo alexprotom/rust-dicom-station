@@ -133,6 +133,8 @@ bar carries a `*` while there are unsaved changes.
 | 🔁 Copy to each phase | structures, group | structures | Copies structures onto every phase as they are, in patient coordinates, no registration: a fixed margin, a couch, an ITV. |
 | ⇄ Register | image, image | registration, report | Rigid or rigid + B-spline (elastix) or B-spline (plastimatch) of the moving image onto the fixed one, with the start (automatic, identity, centres of gravity) and the effort. |
 | ◎ Register by structures | structures, structures | registration, report | The image the *Fixed* structures were found on and the one the *Moving* structures were found on, aligned on those structures alone (paired by name; *Pairs* adds the ones named differently, `Heart = heart_total`): rigid or translation only, then optionally a local B-spline per structure, the start as for *Register*. The report has the registration's numbers and, per structure, the mean surface distance and Dice before and after. See [registration.md](registration.md#registration-by-structures). |
+| ⌖ 2D/3D registration | image | registration (the pose), report | The image's pose from the planar images of its study ([registration-2d3d.md](registration-2d3d.md)): the ones named (by number or label) or every one that states its geometry; by intensity (the measure), markers (the MARKER points, or found in the CT) or markers then intensity; six moves or the translations, a box whose shadow is compared (a cube about the isocentre, or about a structure with a margin; optionally the rays inside it only), the threshold, where the DRRs are rendered (*Compute*). Files the setup with the study (and the DRRs at the answer as planar images), writes the rigid Spatial Registration, the DRRs as RT Images and the report into a folder of the run; the report has the correction, the couch moves and the similarity per view. |
+| ⇥ Positioned copy | image, pose (optional) | image, registration | The study as the patient was found: the image moved by the pose of a 2D/3D registration of it - or by a displacement typed into the step, the transform simulator as a step - with its structures and doses, as a study of its own; the registration maps the copy onto the image, for *Propagate* and the rest. |
 | ➕ Propagate | registration, structures | structures, report | Carries the structures across the registration onto the other image, into its structure set or a segmentation series, with an optional name suffix, closing, filling and *keep the shape*. |
 | ⏩ Propagate to 4D group | structures, anchor (optional), group | structures, registrations, report | One image onto every phase, one registration per phase. With an anchor - a structure on the source image that every phase also has, the heart - the run is anchored: centroids matched, a rigid fit on the anchor plus a margin (by contours or by intensity), then a local deformable refinement, and the anchor's own landed copy (`<anchor>_prop`) is compared with each phase's contour (Dice, HD95, centroid distance, a verdict). Without one, a plain deformable run. Filed in each phase's own structure set (or a segmentation series). See [star-target-propagation.md](star-target-propagation.md). |
 | 📈 Motion and ITV | targets, reference (optional), group (optional) | structures (the ITVs), report | The 4D motion pipeline of [motion-4d.md](motion-4d.md): each target (and the reference structure) as contoured on every phase when every phase has it, rigidly (around each structure, or one global body) and deformably; centroid tracks, peak-to-peak, correlation with the reference, registration QA; the ITV per target and model with an optional margin, filed on the reference phase. |
@@ -204,13 +206,18 @@ the rows do not run at all; a run whose rows ran side by side keeps nothing
 to take over, so the next run starts from what the last plain run left.
 
 *Take over unchanged steps from the last run* (on by default): the window
-keeps what every step of its last run left, filed under a fingerprint of
-the step, its settings, its wires, the folders' contents, and every step
-before it in the run order. The next run takes over each step whose
-fingerprint it finds (marked ♻ on the canvas and in the list) and runs the
-rest; change the ITV margin and only the motion step and what follows run
-again. Steps that write files always run, into the new run's folder.
-*Forget* lets go of what is kept (and its memory).
+keeps what every step of its last run left, filed under a key made of the
+step's settings, its wires, the folders' contents, and the keys of the
+steps it reads from. The next run takes over each step whose key it finds
+(marked ♻ on the canvas and in the list) and runs the rest; change the ITV
+margin and only the motion step and what reads from it run again, while a
+second row of the workflow that does not read from it is taken over even
+where it comes later in the run order. A step is run again, key or not,
+when a study it reads or changes was changed this time by a step it does
+not read from. Renaming a step reruns it only when what it makes carries
+its title (a report, a study's label). Steps that write files always run,
+into the new run's folder. *Forget* lets go of what is kept (and its
+memory).
 
 *Keep up to N MB of image volumes between steps*: the phases a step read
 stay in memory for the next step that reads them, the least used let go
@@ -366,13 +373,13 @@ names are those of the serial run.
 ## For developers
 
 ```
-src/workflow/
+crates/rds-domain/src/workflow/
   params.rs    choices shared by the module dialogs, the MCP tools and the steps
                (variant, device, method, landing, name clash) with their file names
   session.rs   the headless core under both the runner and the MCP session:
                the budgeted volume cache (Volumes), UIDs, filing structures
                into a study under the name-clash rule (file_items)
-src/workflow/graph/
+crates/rds-domain/src/workflow/graph/
   mod.rs       the document model: Workflow, Node, Link, Frame; check(), order(),
                fragment() / paste() for the editor's clipboard, templates
   catalog.rs   every kind of step: ports, typed pins, parameter structs (serde), summaries
@@ -381,6 +388,7 @@ src/workflow/graph/
   nodes.rs     what each step does, and how results are filed in their study
   nodes/more.rs  the archive, anonymize, prompt, combine, rename, transfer,
                copy-to-phases, DVH, dose, archive-import and DRR steps
+  nodes/setup.rs the 2D/3D registration and positioned copy steps
   store.rs     the user folder, load / save, the recent list, the shipped examples
   examples/    the example workflows, compiled in
 src/app/
@@ -388,7 +396,7 @@ src/app/
                      actions, history, clipboard, frames, the map
   workflow_run.rs    the run window, the job, showing steps in the workspaces (and
                      parking the user's studies), reruns, results
-src/mcp/tools/workflows.rs   list_workflows, run_workflow
+crates/rds-domain/src/mcp/tools/workflows.rs   list_workflows, run_workflow
 examples/workflow_cli.rs     the headless runner
 tests/workflow_graph.rs      the example rebuilt on the 4D phantom, run end to end
 tests/workflow_steps.rs      the other steps, reruns, parallel rows, batches

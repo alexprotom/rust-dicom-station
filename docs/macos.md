@@ -4,8 +4,8 @@ Rust DICOM Station on macOS is the same program it is on Windows and Linux:
 the same viewer, the same modules, the same detachable tool windows, drawing
 through Metal instead of Vulkan or Direct3D. Nothing was taken out and
 nothing was rewritten for the platform - `eframe` opens an AppKit window,
-`src/settings.rs` already knew where *Application Support* is, and
-`src/gfx.rs` already knew Metal is the only graphics backend Apple has.
+`crates/rds-domain/src/settings.rs` already knew where *Application Support* is, and
+`crates/rds-domain/src/gfx.rs` already knew Metal is the only graphics backend Apple has.
 
 Every release attaches two disk images, one per architecture:
 

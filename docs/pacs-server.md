@@ -459,20 +459,20 @@ every station's pairing.
 
 ## For developers: the protocol
 
-The code is in `src/pacs/` (the client side, always compiled) with the
+The code is in `crates/rds-domain/src/pacs/` (the client side, always compiled) with the
 server half behind the cargo feature `pacs-server`:
 
 ```text
-src/pacs/protocol.rs   the JSON both sides share (serde, #[serde(default)])
-src/pacs/client.rs     Remote: ureq + the pinning verifier; bundles, uploads
-src/pacs/servers.rs    pacs-servers.json
-src/pacs/mirror.rs     the mirror, the outbox, pull / send / sync
-src/pacs/config.rs     pacs.toml
-src/pacs/local.rs      the server on this machine: folders, running.json, start
-src/pacs/tls.rs        the certificate (rcgen), the rustls server configuration
-src/pacs/auth.rs       pairing codes, tokens, roles
-src/pacs/server.rs     the routes (axum over tokio)
-src/pacs/tasks.rs      the queue and the runner over workflow::graph::exec
+crates/rds-domain/src/pacs/protocol.rs   the JSON both sides share (serde, #[serde(default)])
+crates/rds-domain/src/pacs/client.rs     Remote: ureq + the pinning verifier; bundles, uploads
+crates/rds-domain/src/pacs/servers.rs    pacs-servers.json
+crates/rds-domain/src/pacs/mirror.rs     the mirror, the outbox, pull / send / sync
+crates/rds-domain/src/pacs/config.rs     pacs.toml
+crates/rds-domain/src/pacs/local.rs      the server on this machine: folders, running.json, start
+crates/rds-domain/src/pacs/tls.rs        the certificate (rcgen), the rustls server configuration
+crates/rds-domain/src/pacs/auth.rs       pairing codes, tokens, roles
+crates/rds-domain/src/pacs/server.rs     the routes (axum over tokio)
+crates/rds-domain/src/pacs/tasks.rs      the queue and the runner over workflow::graph::exec
 src/bin/rds-pacs.rs    the executable
 src/app/pacs_remote.rs, pacs_server_win.rs   the windows
 ```
@@ -485,9 +485,9 @@ Every route is under `/rds/v1/` and, except the first two, needs
 | `GET /server` | none | name, version, protocol version, server id, fingerprint, whether it runs tasks |
 | `POST /pair` | a code | `{code, client_name}` → `{token, role, server_id, client_name}` |
 | `GET /whoami` | view | the caller's name and role |
-| `GET /patients` | view | the listing |
+| `GET /patients` | view | the listing: from the catalog, the storage folders walked again when the last walk is a minute old (what the server and the station's viewer file is in it at once; the walk is for files put into the folders by hand) |
 | `GET /studies/{uid}` | view | the manifest: every instance with its SOP Instance UID and size |
-| `GET /studies/{uid}/instances/{sop}` | view | one file |
+| `GET /studies/{uid}/instances/{sop}` | view | one file, streamed from disk |
 | `POST /studies/{uid}/bundle` | view | `{sops}` → a zip of as many as fit 64 MB |
 | `POST /studies` | edit | a DICOM file or a zip of them → what the archive did |
 | `DELETE /studies/{uid}`, `/patients/{key}` | admin | remove |

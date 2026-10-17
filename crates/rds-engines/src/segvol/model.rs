@@ -8,8 +8,9 @@
 //! `Arc`) and every run after the first starts at the image.
 //!
 //! The text tower is only needed for text prompts, so it is built the first
-//! time one arrives, from a second read of the checkpoint, and kept from then
-//! on; box and point prompts never pay for it.
+//! time one arrives, from a second read of the cache that takes its own
+//! tensors only, and kept from then on; box and point prompts never pay for
+//! it.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -93,7 +94,11 @@ impl Model {
                     f.ensure(&self.models_dir, progress)?;
                 }
                 let bpe = Bpe::from_dir(&self.models_dir)?;
-                let params = weights::load(&self.models_dir, progress)?;
+                let params = weights::load_where(
+                    &self.models_dir,
+                    &|k| k.starts_with("text_encoder."),
+                    progress,
+                )?;
                 let enc = TextEncoder::build(&params)?;
                 let _ = self.text.set((bpe, enc));
             }

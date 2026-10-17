@@ -530,7 +530,7 @@ impl ViewerApp {
     /// Open the editor on the structure `roi` of `slot`'s active set.
     pub(super) fn edit_roi_in_editor(&mut self, slot: usize, roi: usize) {
         self.slots[slot].active_roi = roi;
-        self.edit = None;
+        self.drop_edit();
         self.reveal_editor(slot, Section::Edit);
     }
 
@@ -1440,7 +1440,7 @@ impl ViewerApp {
             .moves
             .retain(|e| !(e.slot == slot && e.set == o.set && e.roi == o.roi));
         self.tools.move_seq += 1;
-        self.edit = None;
+        self.drop_edit();
         self.interp = None;
         self.settings_gen += 1;
         self.mark_overridden(slot, o.set, o.roi);
@@ -2191,7 +2191,7 @@ impl ViewerApp {
             "structure"
         };
         self.settings_gen += 1;
-        self.edit = None;
+        self.drop_edit();
         self.tools.new.status = Some(format!(
             "✔ {name} created: {cm3:.2} cm³ on {occupied} slice(s). It is now the \
              {kind} the editor works on."

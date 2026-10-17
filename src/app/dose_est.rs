@@ -613,7 +613,7 @@ impl ViewerApp {
         self.dose_est.cursor = Some(step);
         if moved {
             self.settings_gen += 1;
-            self.edit = None;
+            self.drop_edit();
         }
         // The table this step showed, and the key that geometry hashes to,
         // so the panel does not start a run to compute it again.
@@ -1069,9 +1069,6 @@ impl ViewerApp {
                     Err(e) => app.error = Some(format!("Could not write the file: {e}")),
                 },
             );
-        }
-        if self.dose_est_job.is_some() {
-            ui.ctx().request_repaint();
         }
     }
 }

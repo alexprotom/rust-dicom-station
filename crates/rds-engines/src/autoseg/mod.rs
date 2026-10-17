@@ -30,6 +30,7 @@ pub mod custom;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod infer;
+pub mod kept;
 pub mod net;
 pub mod post;
 pub mod preprocess;
@@ -44,6 +45,7 @@ use std::path::Path;
 
 use crate::progress::{Progress, ProgressSink};
 use crate::volume::Volume;
+pub use kept::{release_networks, KeepNetworks};
 pub use task::{
     all_tasks, download_needed, run_task_labels, task_by_key, NnOptions, NnTask, TaskLabels,
 };

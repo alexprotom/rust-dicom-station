@@ -43,24 +43,27 @@ rust-dicom-station
 ├── Application (GUI, egui over wgpu)
 │   ├── Window chrome: menu bar, toolbar (W/L, presets, 3D, crosshair, reset, the draw row), status bar
 │   ├── Modules panel: the Image information, Playback, registration, simulation,
-│   │   image synthesis (synthetic CT and its evaluation), Structure editor
+│   │   Image generation (image synthesis: synthetic CT and its evaluation;
+│   │   DRR, filed under the planar images), Structure editor
 │   │   (insert, edit, combine), Structure auto tools (body contour and the
 │   │   three engines), propagation and Dose estimation sections
 │   ├── Side panel: per workspace a DICOM tree - patient ▶ study ▶ modality ▶ series, with RT
 │   │   structures, segmentations, 4D groups, dose and plans inside their study -
 │   │   plus dose display, planar images, spatial registrations, records,
 │   │   warnings with an Acknowledge button
-│   ├── Views: one row per open workspace (up to four), each of up to four
-│   │   panes chosen under Settings ▸ View layout - the MPR planes and the 3D
-│   │   surface scene; linked viewports, crosshair,
+│   ├── Views: one row per open workspace (up to four), each of up to six
+│   │   panes chosen under Settings ▸ View layout - the MPR planes, the 3D
+│   │   surface scene and two planar panes (radiographs, RT images, DRRs;
+│   │   off in the standard row, not drawn without a planar image); linked
+│   │   viewports, crosshair,
 │   │   a workspace with no volume says so in place of the panes and holds back
 │   │   the voxel tools;
 │   │   zoom / pan / W-L interaction, maximize, per-view caches
 │   ├── Tool windows (one shared skeleton; each can be docked over the views or
 │   │   detached into its own window of the operating system):
-│   │   3D structures, planar viewers, structure motion and its results,
+│   │   3D structures, structure motion and its results,
 │   │   structure comparison, structure details, transfer by relationship,
-│   │   DVH, DRR, PACS, model manager, export, anonymizer, generator,
+│   │   DVH, PACS, model manager, export, anonymizer, generator,
 │   │   the auto-segmentation results
 │   ├── Data tree operations: rename every level; Shift-click ranges; copy / move /
 │   │   remove / export the ticked items; create / connect / copy / move / remove
@@ -221,14 +224,26 @@ Where each function lives. The right-hand tag is the functional category
 (**App**, **DICOM**, **Sim**, **Reg**, **4D**, **Dose**, **Seg**, **NN**,
 **Core**, **MCP**).
 
+The tree below is the one API the code sees, `crate::<module>` in the
+viewer and `rust_dicom_station::<module>` outside it. On disk it is four
+crates: the viewer itself (`src/`: `main.rs`, `bin/`, `lib.rs`, `app/`,
+`icon.rs`, `gfx_wgpu.rs`), `crates/rds-domain/src/` with every other module
+listed under `src/` here (so that an edit in `app/` recompiles the viewer
+alone), and the two crates listed under `crates/` at the end. `lib.rs`
+re-exports the three below it module by module, under these paths.
+
 ```
 src/
   main.rs           entry point: opens the eframe/wgpu window, retrying the
                     other graphics backends when one will not start              App
   bin/rds-mcp.rs    the MCP server executable (cargo feature `mcp`): reads
                     mcp.toml, serves the tools over standard input and output    MCP
-  lib.rs            library root - every module is public, so the integration
-                    tests and the examples drive the same code as the GUI
+  lib.rs            library root - every module is public (the domain, core
+                    and engines crates' re-exported by name), so the
+                    integration tests and the examples drive the same code as
+                    the GUI
+  gfx_wgpu.rs       the backend choice of gfx.rs in the window library's
+                    wgpu types (the domain crate does not link eframe)           App
   par.rs            parallel sums in a fixed order (ordered_fold): the same
                     result on every run and every thread count                   Core
   models.rs         the model folder: root, per-engine sub-folders, migration,
@@ -251,7 +266,9 @@ src/
     catalog.rs      rds-pacs-catalog.json: one file per PACS, every file read
                     once (header -> patient / study / series), the cohort
                     rule for folders, the person's names and memberships;
-                    lock file + rename for two writers; old sidecars removed DICOM
+                    lock file + rename for two writers; old sidecars removed;
+                    a rescan that finds nothing new writes nothing; an
+                    Importer files several folders under one update          DICOM
   audit.rs          the call log both servers write (data/<server>/audit-*.log)
                                                                                  App
   pacs/             the PACS server and its client: the archive served to
@@ -278,8 +295,10 @@ src/
   app/              egui application, split by concern; every submodule is a
                     further `impl ViewerApp` block, so the struct and its state
                     stay in one place while the behaviour is grouped:            App
-    mod.rs            ViewerApp and every type it holds, construction, the job
-                      plumbing (Job::spawn, poll_job, poll_tool_job), per-frame driver
+    mod.rs            ViewerApp's struct, construction, the per-frame driver;
+                      the types it holds live with the files that use them
+    slot.rs           StudySlot (a workspace) and ViewState (a view), with the
+                      prepared-structure caches (RoiPrep, RoiPreps)
     theme.rs          theme-dependent colors
     glyphs.rs         the font stack (Hack as the last proportional fallback)
                       and the test that fails on a glyph egui cannot draw
@@ -301,28 +320,52 @@ src/
                       window is built from, so labels and controls line up
                       within a section and between them
     panels.rs         both edge panels: the shared show / hide machinery, the
-                      left panel's per-workspace Data tree sections, and the
-                      right panel's list of switched-on modules
+                      shared row widgets, and the right panel's list of
+                      switched-on modules
+    data_tree.rs      the left panel's Data tree per workspace: patients,
+                      studies, modality nodes, series rows, transfer menu
+    tree_model.rs     the tree as data (PatientNode / StudyNode, the layout,
+                      cached per study), the arrow-key walk
+    fourd_tree.rs     the 4D groups in the tree and what their menus do
+    tree_menus.rs     the set, destination and item context menus
+    tree_*.rs         one file per tree section: structures, segmentations,
+                      dose, plans, planar images, registrations, records and
+                      warnings
     reg_panel.rs      the Image registration module: method, region, parameters,
                       landmarks, the run (against another workspace or every
                       phase of a 4D group), the analytics, the vector field
     reg_shape.rs      its Align by structures sub-section: the structures
                       both images carry, paired and weighted, the run, the
                       per-structure report
+    reg2d3d.rs        its 2D/3D registration sub-section: the radiographs and
+                      their geometry, the isocentre, the region, the method,
+                      the run, the result rows, the nudge, the positioned
+                      copy and the files; the setups in the data tree; the
+                      isocentre, markers and outlines drawn over the
+                      radiographs in the planar panes
     matrix_edit.rs    the hand-typed 4 x 4 transform, as a planning system
                       shows one: the sixteen numbers, use
                       / identity / invert / from the result, clipboard in
                       and out. Shared by registration, propagation and
                       transfer by relationship
-    views.rs          central MPR viewports, interaction, texture caches
-    d3.rs             live 3D structure window
-    planar.rs         floating DX / CR / RTIMAGE viewers
+    views.rs          central MPR viewports: cache refresh (one_view), the
+                      frame, the overlays and the pointer, each its own method
+    d3.rs             live 3D structure window (and its types)
+    planar.rs         the planar panes: a workspace's DX / CR / RTIMAGE images
+                      and DRRs in its row (Planar 1 and 2); each holds a stack
+                      compared by fade, checkerboard, difference, edges or
+                      flicker,
+                      with a window per image, zoom and pan; showing an image
+                      from the tree puts its pane into the row
     tree.rs           workspace-tree copy / move / remove with reference chains
+                      (TreeSel, TreeAction and the object references)
     rename.rs         renaming every level of the data tree
     sets.rs           structure sets and segmentation series as tree nodes:
                       create, connect, copy / move / remove, move single
                       structures / segments (contour ⇄ mask conversion)
-    jobs.rs           loading, simulation, export, generator, anonymizer and
+    jobs.rs           the job plumbing (Job::spawn, poll_job, poll_tool_job,
+                      poll_all_jobs, called once a frame) and the loading,
+                      simulation, export, generator, anonymizer and
                       auto-segmentation job starts
     dialogs.rs        auto-segmentation window + results, generator, anonymizer,
                       error dialog
@@ -409,7 +452,11 @@ src/
     dose_est.rs       the Dose estimation module: the dose metrics table of
                       the ticked structures against one dose (physical /
                       effective), recomputed whenever they change
-    drr_win.rs        the DRR window: geometry, projectors, comparison
+    image_gen.rs      the Image generation module: one workspace row over the
+                      Image synthesis and DRR sections
+    drr_win.rs        its DRR section: geometry, projectors, comparison; every
+                      rendering filed under the planar images and shown in the
+                      row's planar panes
     pacs_win.rs       the PACS window: menu bar (Settings: storage folders,
                       PACS server page), the row of sources, the local tree
                       and its context menu (rename, cohorts, move files,
@@ -462,10 +509,12 @@ src/
                     reading, resampling between lattices, the SEG writer         DICOM
   rtdose.rs         RT Dose parsing + trilinear patient-space sampling           DICOM
   rtplan.rs         RT Plan / RT Ion Plan parsing                                DICOM
-  extras.rs         DX / CR / RTIMAGE planar images, REG, RTRECORD               DICOM
+  extras.rs         DX / CR / RTIMAGE planar images (an RT Image's geometry
+                    read into a camera), REG, RTRECORD                           DICOM
   dicom_export.rs   DICOM writer: the object builders (CT slice, RTSTRUCT with
                     its image reference chain, SEG, RTDOSE, RTPLAN, Deformable
-                    Spatial Registration) and the patching file copier         DICOM
+                    and rigid Spatial Registration, RT Image with its
+                    geometry) and the patching file copier                     DICOM
   export.rs         what one export run is: the workspace / patient / study /
                     series selection tree, every editable name and UID, the
                     RTSTRUCT / SEG choice, and the runner that keeps the
@@ -476,7 +525,22 @@ src/
                     git trees listing, raw downloads, resumable                  Sim
   simulate.rs       known-transform study generator (registration QA)           Sim
   drr.rs            DRR: IEC cone-beam geometry, Siddon exact tracing and
-                    ITK-style interpolating ray-casting                          Sim
+                    ITK-style interpolating ray-casting, the kV and MV
+                    attenuation models                                           Sim
+  iec.rs            the IEC 61217 chain (fixed, gantry, receptor, support,
+                    table top), the eight patient positions and upright, the
+                    couch readout of a pose                                      Sim
+  projection.rs     the pinhole camera every geometry ends in (and a 3 x 4
+                    projection matrix), the CT as attenuation with coarser
+                    copies, the posed index-space ray-cast                      Sim
+    gpu.rs          the same ray-cast as a WGSL compute shader on the
+                    inference device (feature gpu)                              Sim
+  rooms.rs          imaging-rooms.json: calibrated views of room-mounted kV
+                    pairs                                                       Sim
+  setup.rs          patient setup from radiographs: the request made from a
+                    study (images, geometry sources, isocentre, markers), the
+                    result as the study keeps it, the DRRs at a pose, the
+                    outlines, the positioned copy, the files                   Reg
   registration.rs   parameters, transforms (rigid, B-spline, RBF, field,
                     composite), region masks, pyramid, samplers, the
                     initialisation (identity, centres of gravity, two points),
@@ -490,8 +554,22 @@ src/
     shape.rs          registration by structures: signed distance maps,
                       surface points, the symmetric Gauss-Newton rigid fit,
                       the per-structure B-spline refinement on the maps
+    optim.rs          Powell with Brent line searches, Nelder-Mead, L-BFGS:
+                      bounded, deterministic
+    parzen.rs         the cubic B-spline Parzen window (shared by the 3D and
+                      the 2D mutual information)
+    metric2d.rs       2D images, pyramids and masks; NCC, gradient
+                      correlation, gradient difference, pattern intensity,
+                      local NCC, Mattes MI
+    projective.rs     2D/3D registration by intensity: polarity, the in-plane
+                      search and the grid, coarse to fine over posed
+                      renderings, the curvature check, the readouts
+    markers.rs        2D/3D registration by markers: detection in the CT and
+                      on the images, pairing by layout, the LM pose,
+                      triangulation and the moved-marker check, the hybrid
   propagate.rs      structures across a registration: pull-back with a cached
-                    mapping lattice                                              Reg
+                    mapping lattice; each result kept as a BoxedMask (its
+                    bounding box only), unpacked to a full mask on demand       Reg
   fourd.rs          4D sub-studies: phase recognition, ordered groups
                     (phases + AVG / MIP), custom-group rules                     4D
   motion.rs         motion arithmetic over phases: centroids, peak-to-peak,
@@ -563,6 +641,7 @@ src/
       nodes/more.rs     the archive, anonymize, prompt, combine, rename,
                         transfer, copy-to-phases, DVH, dose, archive-import
                         and DRR steps
+      nodes/setup.rs    the 2D/3D registration and positioned copy steps
       store.rs          the user's workflow folder, load / save, the recent
                         list, the examples compiled in
 
@@ -572,17 +651,21 @@ src/
                       the redactor every outgoing string passes
     session.rs        open workspaces, transforms, reports, and their handles
     tools/            the tools as plain functions with schema-deriving
-                      argument structs: session, segment, register, fourd,
-                      analysis, output
+                      argument structs: session, segment, register, setup
+                      (2D/3D), fourd, analysis, output
     prompts.rs        the heart_target_propagation prompt, the doc resources
     audit             the call log (the shared crate::audit)
     server.rs         the rmcp glue: transport, progress, cancellation, _async jobs
   mesh3d.rs         contour / mask ▶ surface meshes (scanline fill, surface
                     nets, Laplacian smoothing)                                   Seg
 
-crates/            the workspace's two library crates; lib.rs re-exports their
+crates/            the workspace's library crates; lib.rs re-exports their
                    modules under the paths they had in src/ (crate::volume,
                    rust_dicom_station::medsam2, ...)
+  rds-domain/src/   every module listed under src/ above but the viewer's own
+                    (app/, main.rs, bin/, icon.rs, gfx_wgpu.rs); the cargo
+                    features gpu, mcp and pacs-server, which the root's
+                    forward to
   rds-core/src/
     progress.rs     the one progress handle + ProgressSink, Quiet, Stderr         Core
     volume.rs       3D volume, patient-space geometry, slice extraction,
@@ -593,11 +676,15 @@ crates/            the workspace's two library crates; lib.rs re-exports their
                     compiled once rather than with every change to the viewer
     nn/               shared neural-network infrastructure - nothing in here
                       knows about a particular architecture                        NN
-      cache.rs          RemoteFile download, torch checkpoint ▶ safetensors
-                        conversion (ConvertSpec), the converted-weight cache
+      cache.rs          RemoteFile download (length-checked, resumed from the
+                        .part with Range + If-Range), torch checkpoint ▶
+                        safetensors conversion (ConvertSpec), the
+                        converted-weight cache read tensor by tensor
       pickle.rs         native PyTorch checkpoint (.pth / .pt / .bin) reader
-      device.rs         DevicePref (Auto / GPU / CPU), the validated wgpu
-                        context, the backend-panic guard
+      device.rs         DevicePref (Auto / GPU / CPU), the inference device
+                        opened adapter by adapter and self-tested (its wgpu
+                        device and queue kept for the viewer's own shaders),
+                        the backend-panic guard
       params.rs         shape-checked view of a loaded state dict
       half.rs           binary16 ↔ binary32 conversion
       tensor.rs         Mat [rows, cols] and Act [c, d, h, w]; transposed conv
@@ -623,6 +710,8 @@ crates/            the workspace's two library crates; lib.rs re-exports their
       config.rs         nnU-Net plans.json parsing, both formats, inherits_from
       weights.rs        which models exist, where they are published, the
                         release-zip unpacking (folds, two trainings per zip)
+      kept.rs           KeepNetworks: built networks kept across the phases
+                        of one run while the guard lives, released after
       cpu.rs            CPU conv engine (im2col + SIMD GEMM conv3d with any
                         padding, transposed convs, norms)
       net.rs            PlainConvUNet / ResidualEncoderUNet assembly (any input
@@ -741,9 +830,12 @@ packaging/         everything that turns the viewer into an installable package,
 
 ## UI architecture
 
-`ViewerApp` is defined in `app/mod.rs` together with every type it holds; the
-sibling modules only add `impl ViewerApp` blocks, so each child reaches the
-struct's private fields without widening any visibility beyond `pub(super)`.
+`ViewerApp` is defined in `app/mod.rs`; the types it holds sit with the files
+that use them (`slot.rs`, `d3.rs`, `tree.rs`, `sets.rs`, `reg_panel.rs`,
+`jobs.rs`) and are imported back into `mod.rs`, so `use super::*` reaches them
+from every sibling. The sibling modules only add `impl ViewerApp` blocks, so
+each child reaches the struct's private fields without widening any
+visibility beyond `pub(super)`.
 
 `ViewerApp` owns [`settings::MAX_WORKSPACES`] `StudySlot`s - four, workspaces
 A to D - and a flag per slot saying which of them are on screen (A always is;
@@ -918,7 +1010,16 @@ on Linux):
 `nn/cache.rs` owns the path from a URL to a loaded tensor map
 (`RemoteFile::ensure` ▶ `convert_checkpoint` ▶ `load_safetensors`, wrapped as
 `ensure_converted`); each engine's `weights.rs` only says which files, which
-tensors and under what names. Installations that predate the single root are
+tensors and under what names. A download is checked against its
+Content-Length and, when it breaks off, resumed from its `.part` file (with
+the server's validator beside it) on the next try; the converted cache is
+read tensor by tensor into the networks' own buffers, never through a copy
+of the whole file. What a run builds from the weights lives as long as the
+run: an nnU-Net network is kept across the phases of one run by a
+`KeepNetworks` guard (up to 1 GB of weights, the most recently used first)
+and dropped with it, SegVol keeps its last window
+encodings and MedSAM2 its slice features while the model is resident, so a
+second prompt pays the decoder only. Installations that predate the single root are
 migrated at startup: the old `autoseg_models/`, `segvol_model/` and
 `medsam2_model/` folders beside the executable are renamed into place. The
 Windows installer uses the same default, records `models_dir` only when a
@@ -975,7 +1076,9 @@ tests).
 
 ## Dependencies
 
-All pure Rust: `dicom-rs` (DICOM, with `dicom-pixeldata` for decoding),
+All pure Rust, and the viewer crate names only what the window needs
+(`eframe`, `rfd`, `egui-snarl`, the image encoders); the rest belongs to
+`rds-domain` and the engines: `dicom-rs` (DICOM, with `dicom-pixeldata` for decoding),
 `egui` / `eframe` (UI over wgpu), `egui-snarl` (the workflow editor's node
 canvas), `serde` (the workflow files), `rayon`, `rfd` (file dialogs; desktop
 only), `walkdir`, `anyhow`; for the engines `gemm` (SIMD matrix kernels),

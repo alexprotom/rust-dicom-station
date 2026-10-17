@@ -634,3 +634,106 @@ fn cohorts_names_and_moves_live_in_the_one_catalog() {
         "a person's file stays, and its folder"
     );
 }
+
+/// A scan that finds nothing new and nothing gone leaves the catalog file
+/// alone: a PACS server listing the archive every few seconds walks the
+/// folders and writes nothing. A file that does change is caught.
+#[test]
+fn a_rescan_that_finds_nothing_new_leaves_the_catalog_alone() {
+    let src = scratch("test_archive_quiet_src");
+    gen_test_data::generate(&src, &GenParams::default(), &Progress::default()).unwrap();
+    let root = scratch("test_archive_quiet_root");
+    let archive = Archive::new(&root);
+    archive.import(&src, &Progress::default()).unwrap();
+    archive.refresh(&Progress::default()).unwrap();
+    let cat = archive.catalog_path();
+    let stamp = |p: &std::path::Path| {
+        let m = std::fs::metadata(p).unwrap();
+        (m.modified().unwrap(), std::fs::read(p).unwrap())
+    };
+    let before = stamp(&cat);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let listed = archive.scan_tree(&Progress::default()).unwrap();
+    assert_eq!(listed.patients().len(), 1);
+    assert_eq!(stamp(&cat), before, "nothing changed, nothing written");
+
+    // A file that is not DICOM is remembered as such: the catalog changes
+    // once, and the next scan is quiet again.
+    std::fs::write(root.join("notes.txt"), "a person's notes").unwrap();
+    archive.refresh(&Progress::default()).unwrap();
+    let after_note = stamp(&cat);
+    assert_ne!(after_note, before, "a new file is caught");
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    archive.refresh(&Progress::default()).unwrap();
+    assert_eq!(stamp(&cat), after_note);
+}
+
+/// An import of several folders writes the catalog once, at the end; a
+/// folder the caller made for the purpose has its files moved, not copied;
+/// a filed file the catalog never heard of is put back into it.
+#[test]
+fn several_folders_are_filed_under_one_catalog_update() {
+    let src = scratch("test_archive_importer_src");
+    let n = gen_test_data::generate(&src, &GenParams::default(), &Progress::default()).unwrap();
+    // Two scratch folders, the generated files split between them.
+    let a = scratch("test_archive_importer_a");
+    let b = scratch("test_archive_importer_b");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&src)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .collect();
+    files.sort();
+    for (i, f) in files.iter().enumerate() {
+        let into = if i % 2 == 0 { &a } else { &b };
+        std::fs::copy(f, into.join(f.file_name().unwrap())).unwrap();
+    }
+
+    let root = scratch("test_archive_importer_root");
+    let archive = Archive::new(&root);
+    let mut im = archive.importer().taking_files();
+    let (sa, ha) = im.file_folder(&a, &Progress::default()).unwrap();
+    let (sb, hb) = im.file_folder(&b, &Progress::default()).unwrap();
+    assert_eq!(sa.stored + sb.stored, n);
+    assert_eq!(ha.len() + hb.len(), n, "every header that arrived");
+    assert!(
+        archive.tree().patients().is_empty(),
+        "the catalog learns of them at the end"
+    );
+    assert_eq!(
+        std::fs::read_dir(&a).unwrap().count() + std::fs::read_dir(&b).unwrap().count(),
+        0,
+        "the scratch folders' files were moved"
+    );
+    im.finish().unwrap();
+    let pts = archive.tree().patients();
+    assert_eq!(pts.len(), 1);
+    assert_eq!(pts[0].studies[0].files, n);
+
+    // A file filed by an import that broke off before the catalog was
+    // written: the next import of it puts it into the catalog.
+    let uid = pts[0].studies[0].study_uid.clone();
+    let one = archive.study_instances(&uid).unwrap()[0].clone();
+    rust_dicom_station::archive::catalog::update(&root, |c| {
+        for s in c.series.values_mut() {
+            s.files.retain(|f| f.4 != one.sop_uid);
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(archive.study_instances(&uid).unwrap().len(), n - 1);
+    let again = archive.import(&src, &Progress::default()).unwrap();
+    assert_eq!((again.stored, again.duplicates), (0, n));
+    assert_eq!(
+        archive.study_instances(&uid).unwrap().len(),
+        n,
+        "the stray file is listed again"
+    );
+    assert!(
+        src.join(files[0].file_name().unwrap()).exists(),
+        "a plain import copies"
+    );
+}

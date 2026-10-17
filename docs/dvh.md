@@ -179,7 +179,7 @@ share one.
 
 ## Verification
 
-`src/dvh.rs`'s own tests check the arithmetic on grids built in the test: a
+`crates/rds-domain/src/dvh.rs`'s own tests check the arithmetic on grids built in the test: a
 uniform dose gives a step and exact statistics; a linear ramp gives a DVH
 linear to within 2 %, read in both directions; voxels outside the dose grid
 are counted, reported, and drag D60 % to zero without disturbing the

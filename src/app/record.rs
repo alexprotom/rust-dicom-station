@@ -206,7 +206,12 @@ impl ViewerApp {
                 .views
                 .get(view)
                 .map(|v| (slot, PaneKind::Plane(v.plane))),
-            _ => self.row_panes(slot).first().map(|k| (slot, *k)),
+            // A planar pane has no phases to play: the first pane that does.
+            _ => self
+                .row_panes(slot)
+                .into_iter()
+                .find(|k| !matches!(k, PaneKind::Planar(_)))
+                .map(|k| (slot, k)),
         }
     }
 

@@ -8,8 +8,15 @@
 //! networks stay generic over the backend; only these calls look at which
 //! one they were given, and on the CPU backend move the tensors' data
 //! through the GEMM kernels and back. On the GPU they are burn's own.
+//!
+//! The weights are a [`Kernel`]: on the CPU backend the plain values the
+//! kernels read, so that no call copies them out of a burn tensor (on
+//! CT-FM that was 350 MB per window), on another backend the device
+//! tensor. A batch of one, the case of every 3-D network here, goes into
+//! and out of the kernels without a copy of its activations either.
 
 use std::any::TypeId;
+use std::borrow::Cow;
 
 use burn::tensor::backend::Backend;
 use burn::tensor::module::{conv2d as burn_conv2d, conv3d as burn_conv3d, conv_transpose3d};
@@ -19,8 +26,53 @@ use burn::tensor::{Tensor, TensorData};
 use crate::autoseg::cpu::{self, conv3d_padded, Act};
 
 /// Is `B` the CPU backend the engines use?
-fn is_cpu<B: Backend>() -> bool {
+pub(crate) fn is_cpu<B: Backend>() -> bool {
     TypeId::of::<B>() == TypeId::of::<crate::medsam2::engine::Cpu>()
+}
+
+/// A convolution's weights (or biases): the values themselves on the CPU
+/// backend, a tensor on any other.
+pub enum Kernel<B: Backend, const D: usize> {
+    Host { data: Vec<f32>, shape: [usize; D] },
+    Device(Tensor<B, D>),
+}
+
+impl<B: Backend, const D: usize> Kernel<B, D> {
+    /// `data` shaped `shape`, held as the backend `dev` belongs to wants it.
+    pub fn new(data: &[f32], shape: [usize; D], dev: &B::Device) -> Self {
+        debug_assert_eq!(data.len(), shape.iter().product::<usize>());
+        if is_cpu::<B>() {
+            Kernel::Host {
+                data: data.to_vec(),
+                shape,
+            }
+        } else {
+            Kernel::Device(tensor(data.to_vec(), shape, dev))
+        }
+    }
+
+    pub fn dims(&self) -> [usize; D] {
+        match self {
+            Kernel::Host { shape, .. } => *shape,
+            Kernel::Device(t) => t.dims(),
+        }
+    }
+
+    /// The values, borrowed when they are held here.
+    pub fn host(&self) -> Cow<'_, [f32]> {
+        match self {
+            Kernel::Host { data, .. } => Cow::Borrowed(data),
+            Kernel::Device(t) => Cow::Owned(data(t.clone())),
+        }
+    }
+
+    /// The tensor on `dev`, uploaded when the values are held here.
+    pub fn tensor(&self, dev: &B::Device) -> Tensor<B, D> {
+        match self {
+            Kernel::Host { data, shape } => tensor(data.clone(), *shape, dev),
+            Kernel::Device(t) => t.clone(),
+        }
+    }
 }
 
 pub(crate) fn data<B: Backend, const D: usize>(t: Tensor<B, D>) -> Vec<f32> {
@@ -41,39 +93,49 @@ pub(crate) fn tensor<B: Backend, const D: usize>(
 /// `Conv2d(kernel k, stride, padding)` on `[n, c, h, w]`.
 pub fn conv2d<B: Backend>(
     x: Tensor<B, 4>,
-    w: &Tensor<B, 4>,
-    b: Option<&Tensor<B, 1>>,
+    w: &Kernel<B, 4>,
+    b: Option<&Kernel<B, 1>>,
     stride: usize,
     padding: usize,
 ) -> Tensor<B, 4> {
+    let dev = x.device();
     if !is_cpu::<B>() {
         return burn_conv2d(
             x,
-            w.clone(),
-            b.cloned(),
+            w.tensor(&dev),
+            b.map(|b| b.tensor(&dev)),
             ConvOptions::new([stride, stride], [padding, padding], [1, 1], 1),
         );
     }
-    let dev = x.device();
     let [n, c, h, wd] = x.dims();
     let [cout, _, kh, kw] = w.dims();
     let oh = (h + 2 * padding - kh) / stride + 1;
     let ow = (wd + 2 * padding - kw) / stride + 1;
     let xs = data(x);
-    let ws = data(w.clone());
-    let bs = b
-        .map(|b| data(b.clone()))
-        .unwrap_or_else(|| vec![0.0; cout]);
+    let ws = w.host();
+    let bs = b.map_or_else(|| Cow::Owned(vec![0.0; cout]), |b| b.host());
     // The batch becomes the depth axis of a 3-D convolution with a kernel
-    // one deep, so every slice is convolved on its own in one call.
+    // one deep, so every slice is convolved on its own in one call. A batch
+    // of one is that layout already.
     let plane = h * wd;
-    let mut act = Act::zeros(c, n, h, wd);
-    for s in 0..n {
-        for ch in 0..c {
-            act.data[(ch * n + s) * plane..(ch * n + s + 1) * plane]
-                .copy_from_slice(&xs[(s * c + ch) * plane..(s * c + ch + 1) * plane]);
+    let act = if n == 1 {
+        Act {
+            c,
+            d: 1,
+            h,
+            w: wd,
+            data: xs,
         }
-    }
+    } else {
+        let mut act = Act::zeros(c, n, h, wd);
+        for s in 0..n {
+            for ch in 0..c {
+                act.data[(ch * n + s) * plane..(ch * n + s + 1) * plane]
+                    .copy_from_slice(&xs[(s * c + ch) * plane..(s * c + ch + 1) * plane]);
+            }
+        }
+        act
+    };
     let y = conv3d_padded(
         &act,
         &ws,
@@ -84,6 +146,9 @@ pub fn conv2d<B: Backend>(
         [0, padding, padding],
         [n, oh, ow],
     );
+    if n == 1 {
+        return tensor(y.data, [n, cout, oh, ow], &dev);
+    }
     let oplane = oh * ow;
     let mut out = vec![0f32; n * cout * oplane];
     for s in 0..n {
@@ -98,41 +163,30 @@ pub fn conv2d<B: Backend>(
 /// `Conv3d(kernel k, stride, padding)` on `[n, c, d, h, w]`.
 pub fn conv3d<B: Backend>(
     x: Tensor<B, 5>,
-    w: &Tensor<B, 5>,
-    b: Option<&Tensor<B, 1>>,
+    w: &Kernel<B, 5>,
+    b: Option<&Kernel<B, 1>>,
     stride: usize,
     padding: usize,
 ) -> Tensor<B, 5> {
+    let dev = x.device();
     if !is_cpu::<B>() {
         return burn_conv3d(
             x,
-            w.clone(),
-            b.cloned(),
+            w.tensor(&dev),
+            b.map(|b| b.tensor(&dev)),
             ConvOptions::new([stride; 3], [padding; 3], [1, 1, 1], 1),
         );
     }
-    let dev = x.device();
     let [n, c, d, h, wd] = x.dims();
     let [cout, _, kd, kh, kw] = w.dims();
     let o = |len: usize, k: usize| (len + 2 * padding - k) / stride + 1;
     let od = [o(d, kd), o(h, kh), o(wd, kw)];
     let xs = data(x);
-    let ws = data(w.clone());
-    let bs = b
-        .map(|b| data(b.clone()))
-        .unwrap_or_else(|| vec![0.0; cout]);
-    let vol = c * d * h * wd;
-    let mut out = Vec::with_capacity(n * cout * od[0] * od[1] * od[2]);
-    for s in 0..n {
-        let act = Act {
-            c,
-            d,
-            h,
-            w: wd,
-            data: xs[s * vol..(s + 1) * vol].to_vec(),
-        };
-        let y = conv3d_padded(
-            &act,
+    let ws = w.host();
+    let bs = b.map_or_else(|| Cow::Owned(vec![0.0; cout]), |b| b.host());
+    let run = |act: &Act| {
+        conv3d_padded(
+            act,
             &ws,
             &bs,
             cout,
@@ -140,35 +194,67 @@ pub fn conv3d<B: Backend>(
             [stride; 3],
             [padding; 3],
             od,
-        );
+        )
+    };
+    let shape = [n, cout, od[0], od[1], od[2]];
+    if n == 1 {
+        let y = run(&Act {
+            c,
+            d,
+            h,
+            w: wd,
+            data: xs,
+        });
+        return tensor(y.data, shape, &dev);
+    }
+    let vol = c * d * h * wd;
+    let mut out = Vec::with_capacity(n * cout * od[0] * od[1] * od[2]);
+    for s in 0..n {
+        let y = run(&Act {
+            c,
+            d,
+            h,
+            w: wd,
+            data: xs[s * vol..(s + 1) * vol].to_vec(),
+        });
         out.extend_from_slice(&y.data);
     }
-    tensor(out, [n, cout, od[0], od[1], od[2]], &dev)
+    tensor(out, shape, &dev)
 }
 
 /// `ConvTranspose3d(kernel 3, stride 2, padding 1, output_padding 1)` on
 /// `[n, c, d, h, w]`; `w` is `[cin, cout, 3, 3, 3]`.
 pub fn conv_transpose3d_k3s2<B: Backend>(
     x: Tensor<B, 5>,
-    w: &Tensor<B, 5>,
-    b: Option<&Tensor<B, 1>>,
+    w: &Kernel<B, 5>,
+    b: Option<&Kernel<B, 1>>,
 ) -> Tensor<B, 5> {
+    let dev = x.device();
     if !is_cpu::<B>() {
         return conv_transpose3d(
             x,
-            w.clone(),
-            b.cloned(),
+            w.tensor(&dev),
+            b.map(|b| b.tensor(&dev)),
             ConvTransposeOptions::new([2; 3], [1; 3], [1; 3], [1; 3], 1),
         );
     }
-    let dev = x.device();
     let [n, c, d, h, wd] = x.dims();
     let [_, cout, _, _, _] = w.dims();
     let xs = data(x);
-    let ws = data(w.clone());
-    let bs = b
-        .map(|b| data(b.clone()))
-        .unwrap_or_else(|| vec![0.0; cout]);
+    let ws = w.host();
+    let bs = b.map_or_else(|| Cow::Owned(vec![0.0; cout]), |b| b.host());
+    let shape = [n, cout, 2 * d, 2 * h, 2 * wd];
+    if n == 1 {
+        let act = Act {
+            c,
+            d,
+            h,
+            w: wd,
+            data: xs,
+        };
+        let y = cpu::conv_transpose3d_k3s2(&act, &ws, &bs, cout);
+        return tensor(y.data, shape, &dev);
+    }
     let vol = c * d * h * wd;
     let mut out = Vec::with_capacity(n * cout * 8 * d * h * wd);
     for s in 0..n {
@@ -181,7 +267,7 @@ pub fn conv_transpose3d_k3s2<B: Backend>(
         };
         out.extend_from_slice(&cpu::conv_transpose3d_k3s2(&act, &ws, &bs, cout).data);
     }
-    tensor(out, [n, cout, 2 * d, 2 * h, 2 * wd], &dev)
+    tensor(out, shape, &dev)
 }
 
 /// What follows a normalization.
@@ -511,14 +597,29 @@ mod tests {
             let x = values(dims.iter().product(), 1);
             let w = values(4 * 3 * k * k * k, 7);
             let (want, od) = naive_conv3d(&x, dims, &w, 4, k, stride, pad);
-            let xt = tensor::<Cpu, 5>(x, [1, 3, 5, 6, 7], &dev);
-            let wt = tensor::<Cpu, 5>(w, [4, 3, k, k, k], &dev);
-            let got = conv3d(xt, &wt, None, stride, pad);
+            let xt = tensor::<Cpu, 5>(x.clone(), [1, 3, 5, 6, 7], &dev);
+            let wk = Kernel::<Cpu, 5>::new(&w, [4, 3, k, k, k], &dev);
+            assert!(matches!(wk, Kernel::Host { .. }));
+            let got = conv3d(xt, &wk, None, stride, pad);
             assert_eq!(got.dims(), [1, 4, od[0], od[1], od[2]]);
             let got = data(got);
             for (a, b) in got.iter().zip(&want) {
                 assert!((a - b).abs() < 1e-4, "{a} vs {b}");
             }
+            // A batch of two goes the other way through the kernels; each
+            // item comes out as it did alone, to the bit, whichever way the
+            // weights are held.
+            let mut two = x.clone();
+            two.extend(x.iter().map(|v| -v));
+            let wd = Kernel::<Cpu, 5>::Device(tensor(w.clone(), [4, 3, k, k, k], &dev));
+            let both = data(conv3d(
+                tensor::<Cpu, 5>(two, [2, 3, 5, 6, 7], &dev),
+                &wd,
+                None,
+                stride,
+                pad,
+            ));
+            assert_eq!(&both[..got.len()], &got[..]);
         }
     }
 
@@ -531,7 +632,20 @@ mod tests {
         let xt = tensor::<Cpu, 4>(x.clone(), [2, 3, 6, 5], &dev);
         let wt = tensor::<Cpu, 4>(w.clone(), [4, 3, 3, 3], &dev);
         let bt = tensor::<Cpu, 1>(b.clone(), [4], &dev);
-        let fast = data(conv2d(xt.clone(), &wt, Some(&bt), 1, 1));
+        let (wk, bk) = (
+            Kernel::<Cpu, 4>::new(&w, [4, 3, 3, 3], &dev),
+            Kernel::<Cpu, 1>::new(&b, [4], &dev),
+        );
+        let fast = data(conv2d(xt.clone(), &wk, Some(&bk), 1, 1));
+        // One slice alone takes the batch-of-one way.
+        let one = data(conv2d(
+            tensor::<Cpu, 4>(x[..3 * 6 * 5].to_vec(), [1, 3, 6, 5], &dev),
+            &wk,
+            Some(&bk),
+            1,
+            1,
+        ));
+        assert_eq!(&fast[..one.len()], &one[..]);
         let slow = data(burn_conv2d(
             xt,
             wt,
@@ -552,7 +666,11 @@ mod tests {
         let xt = tensor::<Cpu, 5>(x, [1, 3, 3, 4, 5], &dev);
         let wt = tensor::<Cpu, 5>(w, [3, 2, 3, 3, 3], &dev);
         let bt = tensor::<Cpu, 1>(b, [2], &dev);
-        let fast = conv_transpose3d_k3s2(xt.clone(), &wt, Some(&bt));
+        let fast = conv_transpose3d_k3s2(
+            xt.clone(),
+            &Kernel::new(&data(wt.clone()), [3, 2, 3, 3, 3], &dev),
+            Some(&Kernel::Device(bt.clone())),
+        );
         assert_eq!(fast.dims(), [1, 2, 6, 8, 10]);
         let slow = conv_transpose3d(
             xt,
@@ -572,13 +690,42 @@ mod bench {
     use crate::medsam2::engine::Cpu;
     use burn::tensor::activation::relu;
 
+    /// The convolutions of a SegResNet window (96 cubed) at the widths of
+    /// its first three levels, with the GFLOP/s each reaches:
+    /// `cargo test -p rds-engines --release -- --ignored bench_segresnet`.
+    #[test]
+    #[ignore]
+    fn bench_segresnet_shapes() {
+        let dev = Default::default();
+        for (c, n) in [(32usize, 96usize), (64, 48), (128, 24)] {
+            let x = tensor::<Cpu, 5>(
+                (0..c * n * n * n).map(|i| (i % 7) as f32 * 0.1).collect(),
+                [1, c, n, n, n],
+                &dev,
+            );
+            let w = Kernel::<Cpu, 5>::new(&vec![0.01; c * c * 27], [c, c, 3, 3, 3], &dev);
+            let _ = conv3d(x.clone(), &w, None, 1, 1);
+            let t0 = std::time::Instant::now();
+            let reps = 3;
+            for _ in 0..reps {
+                let _ = conv3d(x.clone(), &w, None, 1, 1);
+            }
+            let t = t0.elapsed().as_secs_f64() / reps as f64;
+            let flop = 2.0 * (c * c * 27) as f64 * (n * n * n) as f64;
+            eprintln!(
+                "{c} channels at {n}^3: {t:.3} s, {:.1} GFLOP/s",
+                flop / t / 1e9
+            );
+        }
+    }
+
     #[test]
     #[ignore]
     fn bench_lungmask_shapes() {
         let dev = Default::default();
         let x = tensor::<Cpu, 4>(vec![0.5; 2 * 64 * 256 * 256], [2, 64, 256, 256], &dev);
-        let w = tensor::<Cpu, 4>(vec![0.01; 64 * 64 * 9], [64, 64, 3, 3], &dev);
-        let b = tensor::<Cpu, 1>(vec![0.0; 64], [64], &dev);
+        let w = Kernel::<Cpu, 4>::new(&[0.01; 64 * 64 * 9], [64, 64, 3, 3], &dev);
+        let b = Kernel::<Cpu, 1>::new(&[0.0; 64], [64], &dev);
         let s = tensor::<Cpu, 4>(vec![1.0; 64], [1, 64, 1, 1], &dev);
         let t0 = std::time::Instant::now();
         let y = conv2d(x.clone(), &w, Some(&b), 1, 1);

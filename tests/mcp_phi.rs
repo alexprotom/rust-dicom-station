@@ -49,6 +49,9 @@ fn fixture(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
     let root = dir.join(format!("studies_{}_{}", "Doe", ID));
     std::fs::create_dir_all(&root).unwrap();
     let folder = common::fourd_folder(&root, [0.0, 6.0, 3.0]);
+    // Radiographs whose RT Image Label carries the patient's name, as a
+    // console that labels images by patient does.
+    common::radiographs_into(&folder, [2.0, 0.0, 0.0], "JANE");
     common::name_the_patient(&folder, NAME, ID, BIRTH);
     let out = dir.join("out");
     std::fs::create_dir_all(&out).unwrap();
@@ -246,6 +249,26 @@ fn exercise(policy: PhiPolicy, tag: &str) {
     )
     .unwrap();
     assert_eq!(sr["structures"].as_array().unwrap().len(), 2, "{sr}");
+
+    // A setup from the two radiographs, named by the patient's name.
+    let _ = call(
+        c,
+        l,
+        "register_2d3d",
+        json!({"dataset": "ds1", "images": [{"image": "JANE OBLIQUE"}]}),
+    );
+    let su = call(
+        c,
+        l,
+        "register_2d3d",
+        json!({"dataset": "ds1", "series": 1, "images": [{"image": "1"}, {"image": "2"}],
+               "metric": "ncc", "pixels": 64, "levels": 2, "dof": "translations", "file_drrs": true}),
+    )
+    .unwrap();
+    assert_eq!(su["setup"], "setup1");
+    call(c, l, "describe_setup", json!({"setup": "setup1"})).unwrap();
+    call(c, l, "export_setup", json!({"setup": "setup1"})).unwrap();
+    call(c, l, "describe_dataset", json!({"dataset": "ds1"})).unwrap();
 
     // A synthetic CT of phase 0 (the miniature network as a checkpoint
     // folder of the user's), and its evaluation against the 50% phase.

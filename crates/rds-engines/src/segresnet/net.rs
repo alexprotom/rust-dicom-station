@@ -17,8 +17,7 @@ use anyhow::{bail, Result};
 use burn::tensor::backend::Backend;
 use burn::tensor::Tensor;
 
-use crate::medsam2::ops;
-use crate::nn::fastconv::{self, Activation};
+use crate::nn::fastconv::{self, Activation, Kernel};
 use crate::nn::params::Params;
 
 /// A normalization layer of the family, for a backend: its parameters per
@@ -129,8 +128,8 @@ impl<B: Backend> Norm<B> {
 
 /// A 3-D convolution, padded `kernel / 2`.
 pub struct Conv<B: Backend> {
-    pub w: Tensor<B, 5>,
-    pub b: Option<Tensor<B, 1>>,
+    pub w: Kernel<B, 5>,
+    pub b: Option<Kernel<B, 1>>,
     pub stride: usize,
     pub k: usize,
 }
@@ -151,7 +150,7 @@ impl<B: Backend> Conv<B> {
     ) -> Result<Self> {
         let w = p.get(&format!("{prefix}.weight"), &[cout, cin, k, k, k])?;
         let b = if bias {
-            Some(ops::from_slice(
+            Some(Kernel::new(
                 p.vec(&format!("{prefix}.bias"), cout)?,
                 [cout],
                 dev,
@@ -160,7 +159,7 @@ impl<B: Backend> Conv<B> {
             None
         };
         Ok(Conv {
-            w: ops::from_slice(w, [cout, cin, k, k, k], dev),
+            w: Kernel::new(w, [cout, cin, k, k, k], dev),
             b,
             stride,
             k,
@@ -396,7 +395,7 @@ impl<B: Backend> SegResNet<B> {
 struct DsUp<B: Backend> {
     /// `ConvTranspose3d(2c, c, 3, stride 2, padding 1, output_padding 1)`,
     /// no bias.
-    w: Tensor<B, 5>,
+    w: Kernel<B, 5>,
     blocks: Vec<ResBlock<B>>,
     head: Option<Conv<B>>,
 }
@@ -508,7 +507,7 @@ impl<B: Backend> SegResNetDs<B> {
                     None
                 };
                 out.push(DsUp {
-                    w: ops::from_slice(w, [2 * c, c, 3, 3, 3], dev),
+                    w: Kernel::new(w, [2 * c, c, 3, 3, 3], dev),
                     blocks,
                     head,
                 });
@@ -607,6 +606,7 @@ impl<B: Backend> SegResNetDs<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::medsam2::ops;
     use crate::unet2d::net::tests::{fixture, worst};
 
     type B = burn::backend::NdArray;

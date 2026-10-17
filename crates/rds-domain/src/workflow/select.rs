@@ -1,0 +1,260 @@
+//! Structures by name: the one way both the viewer's recipes and the MCP
+//! server refer to a contour or a segment, and how one becomes a mask on
+//! whatever lattice a run needs.
+
+use crate::dicomseg::{resample_mask, SegSeries};
+use crate::loader::LoadedStudy;
+use crate::propagate::{BoxedMask, Subject};
+use crate::rtstruct::Roi;
+use crate::segmentation;
+use crate::volume::Grid;
+
+use anyhow::{bail, Context, Result};
+
+/// Where a structure's geometry comes from.
+pub enum Source {
+    /// RTSTRUCT contours; rasterized onto the lattice a run asks for.
+    Contours(Roi),
+    /// A voxel mask on the lattice it was made on, kept as its box;
+    /// resampled when needed.
+    Mask { mask: BoxedMask, grid: Grid },
+}
+
+/// One structure frozen for a worker thread: its identity and geometry,
+/// with no reference back into the study it came from.
+pub struct Structure {
+    pub name: String,
+    pub color: [u8; 3],
+    pub source: Source,
+}
+
+impl Structure {
+    /// From an RTSTRUCT ROI.
+    pub fn from_roi(roi: &Roi) -> Structure {
+        Structure {
+            name: roi.name.clone(),
+            color: roi.color,
+            source: Source::Contours(roi.clone()),
+        }
+    }
+
+    /// From one segment of a segmentation series: its box, not a copy of
+    /// the whole mask (a run over a 4D group holds one per structure per
+    /// phase).
+    pub fn from_segment(series: &SegSeries, idx: usize) -> Option<Structure> {
+        let seg = series.segs.get(idx)?;
+        // The recorded box is trusted only while it accounts for every set
+        // voxel; otherwise the whole lattice is read.
+        let mask = match seg.bbox {
+            Some((lo, hi)) => {
+                let boxed = BoxedMask::pack_within(&seg.mask, seg.dims, lo, hi);
+                if boxed.count() == seg.count {
+                    boxed
+                } else {
+                    BoxedMask::pack(&seg.mask, seg.dims)
+                }
+            }
+            None => BoxedMask::pack(&seg.mask, seg.dims),
+        };
+        Some(Structure {
+            name: seg.name.clone(),
+            color: seg.color,
+            source: Source::Mask {
+                mask,
+                grid: series.grid.clone(),
+            },
+        })
+    }
+
+    /// The structure as a mask on `grid` (one byte per voxel, 1 inside).
+    ///
+    /// Contours are rasterized, masks resampled unless the lattice already
+    /// matches. An empty result is an error: a run that continued with it
+    /// would report a centroid of nothing.
+    pub fn mask_on(&self, grid: &Grid) -> Result<Vec<u8>> {
+        let mask = match &self.source {
+            Source::Contours(roi) => segmentation::rasterize_roi(grid, roi).with_context(|| {
+                format!("'{}' has no contour inside the reference phase", self.name)
+            })?,
+            Source::Mask { mask, grid: from } => {
+                if from.matches(grid) {
+                    mask.mask()
+                } else {
+                    resample_mask(&mask.mask(), from, grid)
+                }
+            }
+        };
+        if mask.iter().all(|&v| v == 0) {
+            bail!("'{}' is empty on the reference phase", self.name);
+        }
+        Ok(mask)
+    }
+
+    /// The structure's surface-based volume, cm³: the volume enclosed by the
+    /// closed surface reconstructed from the contours (see
+    /// [`crate::rt_surface`]), with `grid`'s slice spacing standing in where
+    /// the contours give none - what Structure details shows in its
+    /// Surface-based column. `None` for a segment, which has no contours to
+    /// build a surface from.
+    pub fn surface_on(&self, grid: &Grid) -> Option<f64> {
+        match &self.source {
+            Source::Contours(roi) => crate::rt_surface::surface_volume_cm3(roi, grid.spacing[2]),
+            Source::Mask { .. } => None,
+        }
+    }
+
+    /// The structure as something `propagate` carries, on `grid`.
+    pub fn subject_on(&self, grid: &Grid) -> Result<Subject> {
+        Ok(Subject {
+            name: self.name.clone(),
+            color: self.color,
+            mask: self.mask_on(grid)?,
+            surface_cm3: self.surface_on(grid),
+            keep_shape: false,
+        })
+    }
+}
+
+/// Every structure as something `propagate` carries, on `grid`, measured in
+/// parallel - building the surface of a large contoured organ is a fair
+/// fraction of a second - and kept in their order. A structure that fails
+/// fails the lot.
+pub fn subjects_on(structures: &[Structure], grid: &Grid) -> Result<Vec<Subject>> {
+    use rayon::prelude::*;
+    structures.par_iter().map(|s| s.subject_on(grid)).collect()
+}
+
+/// What kind of object a named structure is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kind {
+    /// An ROI of an RT structure set.
+    Roi,
+    /// A segment of a segmentation series.
+    Segment,
+}
+
+/// One entry of [`list`]: enough to show a structure and to find it again.
+pub struct Entry {
+    pub name: String,
+    pub kind: Kind,
+    /// Which structure set / segmentation series, and the position in it.
+    pub set: usize,
+    pub idx: usize,
+    /// Label of the set the structure is in.
+    pub set_label: String,
+    pub color: [u8; 3],
+}
+
+/// Every structure of a study, structure sets first, then segmentation
+/// series, each in file order.
+pub fn list(study: &LoadedStudy) -> Vec<Entry> {
+    let mut out = Vec::new();
+    for (set, ss) in study.structure_sets.iter().enumerate() {
+        for (idx, roi) in ss.rois.iter().enumerate() {
+            out.push(Entry {
+                name: roi.name.clone(),
+                kind: Kind::Roi,
+                set,
+                idx,
+                set_label: ss.label.clone(),
+                color: roi.color,
+            });
+        }
+    }
+    for (set, ser) in study.seg_series.iter().enumerate() {
+        for (idx, seg) in ser.segs.iter().enumerate() {
+            out.push(Entry {
+                name: seg.name.clone(),
+                kind: Kind::Segment,
+                set,
+                idx,
+                set_label: ser.label.clone(),
+                color: seg.color,
+            });
+        }
+    }
+    out
+}
+
+/// Freeze the structure an [`Entry`] points at.
+pub fn structure(study: &LoadedStudy, e: &Entry) -> Option<Structure> {
+    match e.kind {
+        Kind::Roi => Some(Structure::from_roi(
+            study.structure_sets.get(e.set)?.rois.get(e.idx)?,
+        )),
+        Kind::Segment => Structure::from_segment(study.seg_series.get(e.set)?, e.idx),
+    }
+}
+
+/// Find a structure by name.
+///
+/// An exact match wins; failing that, a case-insensitive one. Names repeat
+/// across structure sets (every 4D phase may carry its own "Heart"), so
+/// `set_label`, when given, narrows the search to one set. With several
+/// matches left the *last* one wins: the most recently added set is the one
+/// a run just produced.
+pub fn find(study: &LoadedStudy, name: &str, set_label: Option<&str>) -> Option<Structure> {
+    let all = list(study);
+    let in_set = |e: &&Entry| set_label.is_none_or(|l| e.set_label == l);
+    let exact = all.iter().filter(in_set).rfind(|e| e.name == name);
+    let lax = || {
+        let lower = name.to_lowercase();
+        all.iter()
+            .filter(in_set)
+            .rfind(|e| e.name.to_lowercase() == lower)
+    };
+    exact.or_else(lax).and_then(|e| structure(study, e))
+}
+
+/// Find a structure by name *on one image series*: the contour of it drawn
+/// on that series, not a namesake from another phase.
+///
+/// A 4D study carries one structure set per phase, each with its own
+/// "heart"; [`find`] would hand back the last of them whichever phase is
+/// asked about. Here a set that references the series (or, failing that,
+/// its frame of reference) wins; only when none does is the search widened
+/// to the whole study, so a structure set that names no series still works.
+pub fn find_on_series(
+    study: &LoadedStudy,
+    name: &str,
+    series_uid: &str,
+    frame_of_reference_uid: &str,
+) -> Option<Structure> {
+    let all = list(study);
+    let lower = name.to_lowercase();
+    let named = |e: &&Entry| e.name == name || e.name.to_lowercase() == lower;
+    let bound_to = |e: &Entry, by_series: bool| -> bool {
+        let (series, frame) = match e.kind {
+            Kind::Roi => {
+                let ss = &study.structure_sets[e.set];
+                (
+                    ss.referenced_series_uid.as_str(),
+                    ss.frame_of_reference_uid.as_str(),
+                )
+            }
+            Kind::Segment => {
+                let sr = &study.seg_series[e.set];
+                (
+                    sr.referenced_series_uid.as_str(),
+                    sr.grid.frame_of_reference_uid.as_str(),
+                )
+            }
+        };
+        if by_series {
+            !series.is_empty() && series == series_uid
+        } else {
+            !frame.is_empty() && frame == frame_of_reference_uid
+        }
+    };
+    let pick = |by_series: bool| {
+        all.iter()
+            .filter(named)
+            .filter(|e| bound_to(e, by_series))
+            .rfind(|e| e.name == name)
+            .or_else(|| all.iter().filter(named).rfind(|e| bound_to(e, by_series)))
+    };
+    pick(true)
+        .or_else(|| pick(false))
+        .and_then(|e| structure(study, e))
+        .or_else(|| find(study, name, None))
+}

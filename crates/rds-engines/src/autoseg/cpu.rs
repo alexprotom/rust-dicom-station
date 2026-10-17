@@ -15,7 +15,9 @@ use rayon::prelude::*;
 // SegVol mask decoder, so they live in `nn`; re-exported here because this
 // is where the nnU-Net code has always reached for them.
 use crate::nn::tensor::SendPtr;
-pub use crate::nn::tensor::{conv_transpose3d_2x, conv_transpose3d_stride, Act};
+pub use crate::nn::tensor::{
+    conv_transpose3d_2x, conv_transpose3d_stride, conv_transpose3d_stride_into, Act, Arena,
+};
 
 #[inline]
 fn conv_out(len: usize, k: usize, s: usize) -> usize {
@@ -76,6 +78,27 @@ pub fn conv3d(
     conv3d_padded(x, weight, bias, cout, kernel, stride, pad, out)
 }
 
+/// [`conv3d`] with the output taken from `arena` (see [`Arena`]): the same
+/// arithmetic, without a fresh allocation per layer.
+pub fn conv3d_in(
+    x: &Act,
+    weight: &[f32],
+    bias: &[f32],
+    cout: usize,
+    kernel: [usize; 3],
+    stride: [usize; 3],
+    arena: &mut Arena,
+) -> Act {
+    let out = arena.act(
+        cout,
+        conv_out(x.d, kernel[0], stride[0]),
+        conv_out(x.h, kernel[1], stride[1]),
+        conv_out(x.w, kernel[2], stride[2]),
+    );
+    let pad = [kernel[0] / 2, kernel[1] / 2, kernel[2] / 2];
+    conv3d_padded_into(x, weight, bias, kernel, stride, pad, out)
+}
+
 /// [`conv3d`] with the padding before each axis and the output size given:
 /// output voxel `o` reads input `o * stride - pad + k` for each tap `k`,
 /// zero outside the input. Any kernel size, odd or even.
@@ -90,16 +113,44 @@ pub fn conv3d_padded(
     pad: [usize; 3],
     out_dims: [usize; 3],
 ) -> Act {
+    let [od, oh, ow] = out_dims;
+    conv3d_padded_into(
+        x,
+        weight,
+        bias,
+        kernel,
+        stride,
+        pad,
+        Act::zeros(cout, od, oh, ow),
+    )
+}
+
+/// [`conv3d_padded`] into `out`, already shaped `[cout, od, oh, ow]`. Every
+/// element is written (the GEMM does not read its destination), so `out`
+/// may hold stale values.
+fn conv3d_padded_into(
+    x: &Act,
+    weight: &[f32],
+    bias: &[f32],
+    kernel: [usize; 3],
+    stride: [usize; 3],
+    pad: [usize; 3],
+    mut out: Act,
+) -> Act {
     let (cin, d, h, w) = (x.c, x.d, x.h, x.w);
+    let cout = out.c;
     let [kd, kh, kw] = kernel;
     let [sd, sh, sw] = stride;
     debug_assert_eq!(weight.len(), cout * cin * kd * kh * kw);
-    let [od, oh, ow] = out_dims;
+    let [od, oh, ow] = [out.d, out.h, out.w];
     let ohw = oh * ow;
     let k = cin * kd * kh * kw;
     let (pd, ph, pw) = (pad[0] as isize, pad[1] as isize, pad[2] as isize);
-    let mut out = Act::zeros(cout, od, oh, ow);
-    if out.data.is_empty() || k == 0 {
+    if out.data.is_empty() {
+        return out;
+    }
+    if k == 0 {
+        out.data.fill(0.0);
         return out;
     }
     let out_ptr = SendPtr(out.data.as_mut_ptr());
@@ -336,10 +387,16 @@ pub fn add_lrelu(x: &mut Act, r: &Act) {
 /// padded): the skip path of a strided residual block. Trailing voxels that
 /// do not fill a window are dropped, as PyTorch drops them.
 pub fn avg_pool3d(x: &Act, k: [usize; 3]) -> Act {
+    avg_pool3d_in(x, k, &mut Arena::default())
+}
+
+/// [`avg_pool3d`] with the output taken from `arena`; every element is
+/// written.
+pub fn avg_pool3d_in(x: &Act, k: [usize; 3], arena: &mut Arena) -> Act {
     let [kd, kh, kw] = k;
     debug_assert!(kd >= 1 && kh >= 1 && kw >= 1);
     let (od, oh, ow) = (x.d / kd, x.h / kh, x.w / kw);
-    let mut out = Act::zeros(x.c, od, oh, ow);
+    let mut out = arena.act(x.c, od, oh, ow);
     let inv = 1.0 / (kd * kh * kw) as f32;
     let (d, h, w) = (x.d, x.h, x.w);
     let in_plane = h * w;
@@ -372,8 +429,13 @@ pub fn avg_pool3d(x: &Act, k: [usize; 3]) -> Act {
 
 /// Channel-wise concatenation `[a; b]`.
 pub fn concat(a: &Act, b: &Act) -> Act {
+    concat_in(a, b, &mut Arena::default())
+}
+
+/// [`concat`] with the output taken from `arena`; every element is written.
+pub fn concat_in(a: &Act, b: &Act, arena: &mut Arena) -> Act {
     debug_assert!(a.d == b.d && a.h == b.h && a.w == b.w);
-    let mut out = Act::zeros(a.c + b.c, a.d, a.h, a.w);
+    let mut out = arena.act(a.c + b.c, a.d, a.h, a.w);
     let (sa, sb) = (a.c * a.spatial(), b.c * b.spatial());
     out.data[..sa].copy_from_slice(&a.data);
     out.data[sa..sa + sb].copy_from_slice(&b.data);

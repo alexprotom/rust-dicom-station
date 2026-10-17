@@ -1,0 +1,1235 @@
+//! Directory scanning, DICOM classification and volume reconstruction.
+//!
+//! The loader makes two passes: a fast header-only scan (stops before Pixel
+//! Data) to classify every file, then a parallel full read of the selected
+//! image series. RT objects (RTSTRUCT / RTDOSE / RTPLAN) are parsed by their
+//! dedicated modules.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use anyhow::{bail, Context, Result};
+use dicom_dictionary_std::tags;
+use dicom_object::InMemDicomObject;
+use dicom_pixeldata::{ConvertOptions, ModalityLutOption, PixelDecoder};
+use rayon::prelude::*;
+
+use crate::dicomseg::{self, SegSeries};
+use crate::extras::{self, PlanarImage, SpatialReg, TreatRecord};
+use crate::geometry::Vec3;
+use crate::progress::Progress;
+use crate::rtdose::{self, DoseGrid};
+use crate::rtplan::{self, PlanInfo};
+use crate::rtstruct::{self, StructureSet};
+use crate::volume::Volume;
+
+// ---------------------------------------------------------------------------
+// Safe element extraction helpers (missing/malformed tags never panic).
+// ---------------------------------------------------------------------------
+
+pub fn str_of(obj: &InMemDicomObject, tag: dicom_core::Tag) -> Option<String> {
+    obj.element(tag)
+        .ok()
+        .and_then(|e| e.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+pub fn f64_of(obj: &InMemDicomObject, tag: dicom_core::Tag) -> Option<f64> {
+    obj.element(tag).ok().and_then(|e| e.to_float64().ok())
+}
+
+pub fn f64s_of(obj: &InMemDicomObject, tag: dicom_core::Tag) -> Option<Vec<f64>> {
+    obj.element(tag)
+        .ok()
+        .and_then(|e| e.to_multi_float64().ok())
+}
+
+pub fn i32_of(obj: &InMemDicomObject, tag: dicom_core::Tag) -> Option<i32> {
+    obj.element(tag).ok().and_then(|e| e.to_int::<i32>().ok())
+}
+
+/// Short file name for warning messages.
+fn fname(p: &Path) -> std::borrow::Cow<'_, str> {
+    p.file_name().unwrap_or_default().to_string_lossy()
+}
+
+/// Parse a group of same-kind files in parallel, keeping the successes in
+/// order and turning each failure into a warning.
+fn parse_group<T: Send>(
+    files: &[PathBuf],
+    kind: &str,
+    busy: &str,
+    progress: &Progress,
+    warnings: &mut Vec<String>,
+    load: impl Fn(&Path) -> Result<T> + Sync,
+) -> Vec<T> {
+    if files.is_empty() {
+        return Vec::new();
+    }
+    progress.set(busy);
+    let results: Vec<Result<T>> = files.par_iter().map(|f| load(f)).collect();
+    let mut out = Vec::with_capacity(files.len());
+    for (f, r) in files.iter().zip(results) {
+        match r {
+            Ok(v) => out.push(v),
+            Err(e) => warnings.push(format!("{kind} {} load failed: {e:#}", fname(f))),
+        }
+    }
+    out
+}
+
+pub fn items_of(obj: &InMemDicomObject, tag: dicom_core::Tag) -> Option<&[InMemDicomObject]> {
+    obj.element(tag).ok().and_then(|e| e.items())
+}
+
+// ---------------------------------------------------------------------------
+// PET: standardized uptake value
+// ---------------------------------------------------------------------------
+
+/// Seconds since midnight of a DICOM `TM` value (`HHMMSS.FFFFFF`).
+fn tm_seconds(tm: &str) -> Option<f64> {
+    let t: String = tm
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    if t.len() < 6 {
+        return None;
+    }
+    let h: f64 = t.get(0..2)?.parse().ok()?;
+    let m: f64 = t.get(2..4)?.parse().ok()?;
+    let s: f64 = t.get(4..)?.parse().ok()?;
+    Some(h * 3600.0 + m * 60.0 + s)
+}
+
+/// The factor that turns a PET voxel in Bq/mL into a body-weight SUV.
+///
+/// `SUV = C · weight / A(t)` with `A(t) = A₀ · 2^(−Δt / T½)`: the injected
+/// activity decayed to the moment the images were acquired, and the weight
+/// in grams because an SUV is g/mL. A delay that comes out negative means
+/// the acquisition is filed after midnight, so a day is added rather than
+/// the number being thrown away.
+///
+/// `None` when any of it is missing or nonsensical - an SUV computed from
+/// a guessed weight is worse than no SUV at all.
+pub fn suv_bw_factor(weight_kg: f64, dose_bq: f64, half_life_s: f64, delay_s: f64) -> Option<f64> {
+    if weight_kg <= 0.0 || dose_bq <= 0.0 || half_life_s <= 0.0 {
+        return None;
+    }
+    let delay = if delay_s < 0.0 {
+        delay_s + 24.0 * 3600.0
+    } else {
+        delay_s
+    };
+    // A day of decay of an 18F tracer is 2^-13: nothing measurable is left,
+    // and the number is far more likely to be a broken header.
+    if !(0.0..=6.0 * 3600.0).contains(&delay) {
+        return None;
+    }
+    let decayed = dose_bq * 2f64.powf(-delay / half_life_s);
+    (decayed > 0.0).then_some(weight_kg * 1000.0 / decayed)
+}
+
+/// Read that factor out of one PET image's header, or `None` when the
+/// series does not carry what it takes: the pixels must be in Bq/mL
+/// (Units, 0054,1001), and the patient weight, the injected activity, the
+/// half-life and both times must all be there.
+fn suv_factor_of(obj: &InMemDicomObject) -> Option<f64> {
+    if str_of(obj, tags::UNITS).unwrap_or_default() != "BQML" {
+        return None;
+    }
+    let weight = f64_of(obj, tags::PATIENT_WEIGHT)?;
+    let item = items_of(obj, tags::RADIOPHARMACEUTICAL_INFORMATION_SEQUENCE)?.first()?;
+    let dose = f64_of(item, tags::RADIONUCLIDE_TOTAL_DOSE)?;
+    let half_life = f64_of(item, tags::RADIONUCLIDE_HALF_LIFE)?;
+    let injected = str_of(item, tags::RADIOPHARMACEUTICAL_START_TIME)
+        .as_deref()
+        .and_then(tm_seconds)?;
+    // The series time is what the decay correction is referred to on the
+    // scanners that write `DECY START`, which is nearly all of them.
+    let scanned = str_of(obj, tags::SERIES_TIME)
+        .or_else(|| str_of(obj, tags::ACQUISITION_TIME))
+        .as_deref()
+        .and_then(tm_seconds)?;
+    suv_bw_factor(weight, dose, half_life, scanned - injected)
+}
+
+// ---------------------------------------------------------------------------
+// Scan results
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Default)]
+pub struct SeriesInfo {
+    pub uid: String,
+    pub modality: String,
+    pub description: String,
+    /// Patient this series belongs to (for the patient ▶ study ▶ series tree).
+    pub patient_id: String,
+    pub patient_name: String,
+    /// Study this series belongs to (for the study/series tree).
+    pub study_uid: String,
+    pub study_date: String,
+    pub study_description: String,
+    /// StudyID (0020,0010): the department's own number for the study, short
+    /// and human-written, unlike the Study Instance UID. Often empty.
+    pub study_id: String,
+    /// SeriesNumber (0020,0011), when present.
+    pub series_number: Option<i64>,
+    /// TemporalPositionIdentifier (0020,0100) of the first slice - enhanced
+    /// 4D exports carry the phase here rather than in the description.
+    pub temporal_id: Option<i64>,
+    /// PET only: what a stored value has to be multiplied by to become a
+    /// body-weight SUV. `None` unless the header carries everything it
+    /// takes ([`suv_bw_factor`]).
+    pub suv_bw: Option<f64>,
+    pub files: Vec<PathBuf>,
+}
+
+impl LoadedStudy {
+    /// Re-detect the 4D groups after the series list changed, keeping
+    /// custom groups (see [`crate::fourd::refresh`]).
+    pub fn refresh_fourd(&mut self) {
+        self.fourd_groups = crate::fourd::refresh(&self.fourd_groups, &self.series);
+    }
+}
+
+/// How the patient lay for a series: the *Patient Position* of its first
+/// file, read when asked (the DRR and the 2D/3D registration need it once,
+/// not every series of every folder).
+pub fn series_patient_position(series: &SeriesInfo) -> Option<crate::iec::PatientPosition> {
+    let first = series.files.first()?;
+    let obj = crate::dicomfile::open_scan(first).ok()?;
+    str_of(&obj, tags::PATIENT_POSITION).and_then(|s| crate::iec::PatientPosition::from_code(&s))
+}
+
+impl SeriesInfo {
+    /// Grouping key for the patient level of the data tree.
+    pub fn patient_key(&self) -> &str {
+        if !self.patient_id.is_empty() {
+            &self.patient_id
+        } else if !self.patient_name.is_empty() {
+            &self.patient_name
+        } else {
+            "?"
+        }
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct PatientMeta {
+    pub patient_name: String,
+    pub patient_id: String,
+    pub study_date: String,
+    pub study_description: String,
+    /// StudyID (0020,0010), see [`SeriesInfo::study_id`].
+    pub study_id: String,
+}
+
+/// Everything found in a directory, with the primary series volume loaded.
+#[derive(Clone)]
+pub struct LoadedStudy {
+    pub meta: PatientMeta,
+    pub series: Vec<SeriesInfo>,
+    pub active_series: usize,
+    /// The displayed volume. Shared, not copied: every background job (a
+    /// registration, a segmentation engine, an export) works on the same
+    /// allocation the views draw from, and a series switch replaces it.
+    pub volume: Arc<Volume>,
+    /// All RT Structure Sets found in the folder (e.g. one per 4DCT phase).
+    /// The application selects the active one per study slot.
+    pub structure_sets: Vec<StructureSet>,
+    /// DICOM Segmentation series - imported SEG objects and everything the
+    /// interactive tools paint. Each keeps the voxel lattice it was made on
+    /// and names the image series it belongs to.
+    pub seg_series: Vec<SegSeries>,
+    pub doses: Vec<DoseGrid>,
+    pub plans: Vec<PlanInfo>,
+    /// DX / CR radiographs and RTIMAGE (DRR / portal) planar images.
+    pub planar_images: Vec<PlanarImage>,
+    /// REG spatial registration objects found in the folder.
+    pub registrations: Vec<SpatialReg>,
+    /// RT (Ion) Beams Treatment Records.
+    pub treat_records: Vec<TreatRecord>,
+    /// Patient setups found from radiographs: the 2D/3D registrations made
+    /// here (not read from files).
+    pub setups: Vec<crate::setup::SetupResult>,
+    /// 4D sub-studies recognised among (or built by hand from) `series`.
+    pub fourd_groups: Vec<crate::fourd::FourDGroup>,
+    pub warnings: Vec<String>,
+    pub default_window: (f32, f32),
+}
+
+impl Default for LoadedStudy {
+    /// Nothing loaded: no series, no volume, nothing else.
+    fn default() -> Self {
+        LoadedStudy {
+            meta: PatientMeta::default(),
+            series: Vec::new(),
+            active_series: 0,
+            volume: Arc::new(Volume::empty()),
+            structure_sets: Vec::new(),
+            seg_series: Vec::new(),
+            doses: Vec::new(),
+            plans: Vec::new(),
+            planar_images: Vec::new(),
+            registrations: Vec::new(),
+            treat_records: Vec::new(),
+            setups: Vec::new(),
+            fourd_groups: Vec::new(),
+            warnings: Vec::new(),
+            default_window: (40.0, 400.0),
+        }
+    }
+}
+
+impl LoadedStudy {
+    /// Whether this workspace holds a reconstructed image volume.
+    ///
+    /// A study with none is not an error: a folder or a handful of files can
+    /// hold nothing but RT images, a structure set or a plan. Everything that
+    /// needs voxels asks this first; see [`Volume::empty`].
+    pub fn has_volume(&self) -> bool {
+        !self.volume.is_empty()
+    }
+}
+
+pub const IMAGE_MODALITIES: &[&str] = &["CT", "MR", "PT", "NM", "US", "OT"];
+/// Modalities treated as 2D projection images (no volume reconstruction).
+const PLANAR_MODALITIES: &[&str] = &["DX", "CR", "RTIMAGE", "MG", "XA", "RF", "PX"];
+const SOP_RTIMAGE: &str = "1.2.840.10008.5.1.4.1.1.481.1";
+const SOP_DX_PRESENTATION: &str = "1.2.840.10008.5.1.4.1.1.1.1";
+const SOP_DX_PROCESSING: &str = "1.2.840.10008.5.1.4.1.1.1.1.1";
+
+/// SOP Class UID fallbacks for RT objects (when Modality is absent).
+const SOP_RTSTRUCT: &str = "1.2.840.10008.5.1.4.1.1.481.3";
+const SOP_RTDOSE: &str = "1.2.840.10008.5.1.4.1.1.481.2";
+const SOP_RTPLAN: &str = "1.2.840.10008.5.1.4.1.1.481.5";
+const SOP_RTIONPLAN: &str = "1.2.840.10008.5.1.4.1.1.481.8";
+
+pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
+    load_directory_with(dir, progress, true)
+}
+
+/// [`load_directory`] without reconstructing a volume - see
+/// [`load_files_to_merge`].
+pub fn load_directory_to_merge(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
+    load_directory_with(dir, progress, false)
+}
+
+fn load_directory_with(dir: &Path, progress: &Progress, with_volume: bool) -> Result<LoadedStudy> {
+    progress.set("Scanning directory");
+
+    let files: Vec<PathBuf> = walkdir::WalkDir::new(dir)
+        .follow_links(true)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.into_path())
+        .collect();
+
+    if files.is_empty() {
+        bail!("No files found in {}", dir.display());
+    }
+    load_files_with(&files, &dir.display().to_string(), progress, with_volume)
+}
+
+/// Load an explicit list of DICOM files (*File ▶ Add DICOM file(s)*).
+///
+/// The same code path as [`load_directory`] - the only difference is where
+/// the list of files came from. Opening three RT images, one structure set or
+/// a single slice is therefore not a special mode with its own rules; it is
+/// an ordinary study that happens to be small, and it merges into a workspace
+/// exactly like a folder does.
+///
+/// `origin` names what is being opened, for error messages only.
+pub fn load_files(files: &[PathBuf], origin: &str, progress: &Progress) -> Result<LoadedStudy> {
+    load_files_with(files, origin, progress, true)
+}
+
+/// [`load_files`] for merging into a workspace (*File ▶ Add DICOM folder*
+/// on one that is open): everything but the volume.
+///
+/// A merge keeps the workspace's own volume and only adds series and RT
+/// objects to its tree, so the primary series the load would reconstruct -
+/// every slice decoded, the most expensive part of a load by far - was
+/// thrown away. The study comes back with an empty volume and its series
+/// listed, `active_series` pointing at the one that would have been shown.
+pub fn load_files_to_merge(
+    files: &[PathBuf],
+    origin: &str,
+    progress: &Progress,
+) -> Result<LoadedStudy> {
+    load_files_with(files, origin, progress, false)
+}
+
+fn load_files_with(
+    files: &[PathBuf],
+    origin: &str,
+    progress: &Progress,
+    with_volume: bool,
+) -> Result<LoadedStudy> {
+    if files.is_empty() {
+        bail!("No files to open");
+    }
+    progress.set(format!("Reading headers of {} files", files.len()));
+
+    // Everything below keeps the order files arrive in - which series is
+    // met first, which structure set, which dose. A folder's listing comes
+    // in whatever order the file system keeps (on ext4 that is a hash of
+    // the name, seeded per disk), so the same folder could load its series
+    // in a different order on another machine. Sorted, it cannot.
+    let mut files = files.to_vec();
+    files.sort();
+    let files = &files[..];
+
+    // Parallel header-only scan.
+    struct Scanned {
+        path: PathBuf,
+        modality: String,
+        sop_class: String,
+        series_uid: String,
+        series_desc: String,
+        study_uid: String,
+        series_number: Option<i64>,
+        temporal_id: Option<i64>,
+        suv_bw: Option<f64>,
+        has_geometry: bool,
+        meta: PatientMeta,
+    }
+
+    let scanned: Vec<Scanned> = files
+        .par_iter()
+        .filter_map(|path| {
+            let obj = crate::dicomfile::open_scan(path).ok()?;
+            let modality = str_of(&obj, tags::MODALITY).unwrap_or_default();
+            let sop_class = str_of(&obj, tags::SOP_CLASS_UID).unwrap_or_default();
+            let series_uid = str_of(&obj, tags::SERIES_INSTANCE_UID).unwrap_or_default();
+            let series_desc = str_of(&obj, tags::SERIES_DESCRIPTION).unwrap_or_default();
+            let study_uid = str_of(&obj, tags::STUDY_INSTANCE_UID).unwrap_or_default();
+            let series_number = i32_of(&obj, tags::SERIES_NUMBER).map(i64::from);
+            let temporal_id = i32_of(&obj, tags::TEMPORAL_POSITION_IDENTIFIER).map(i64::from);
+            let suv_bw = (modality == "PT").then(|| suv_factor_of(&obj)).flatten();
+            let has_geometry = obj.element(tags::IMAGE_POSITION_PATIENT).is_ok()
+                && obj.element(tags::ROWS).is_ok();
+            let meta = PatientMeta {
+                patient_name: str_of(&obj, tags::PATIENT_NAME).unwrap_or_default(),
+                patient_id: str_of(&obj, tags::PATIENT_ID).unwrap_or_default(),
+                study_date: str_of(&obj, tags::STUDY_DATE).unwrap_or_default(),
+                study_description: str_of(&obj, tags::STUDY_DESCRIPTION).unwrap_or_default(),
+                study_id: str_of(&obj, tags::STUDY_ID).unwrap_or_default(),
+            };
+            Some(Scanned {
+                path: path.clone(),
+                modality,
+                sop_class,
+                series_uid,
+                series_desc,
+                study_uid,
+                series_number,
+                temporal_id,
+                suv_bw,
+                has_geometry,
+                meta,
+            })
+        })
+        .collect();
+
+    let mut warnings = Vec::new();
+    let unreadable = files.len() - scanned.len();
+    if unreadable > 0 {
+        warnings.push(format!(
+            "{unreadable} file(s) were not readable as DICOM and were skipped"
+        ));
+    }
+    if scanned.is_empty() {
+        bail!("No DICOM files found in {origin}");
+    }
+
+    // Classify.
+    let mut image_series: Vec<SeriesInfo> = Vec::new();
+    let mut rtstruct_files = Vec::new();
+    let mut seg_files = Vec::new();
+    let mut rtdose_files = Vec::new();
+    let mut rtplan_files = Vec::new();
+    let mut planar_files = Vec::new();
+    let mut reg_files = Vec::new();
+    let mut record_files = Vec::new();
+    let mut meta = PatientMeta::default();
+
+    // Series are looked up by UID rather than scanned linearly: with many
+    // series in one folder the linear form is quadratic in the file count.
+    let mut series_index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+
+    // An image file without Image Position Patient cannot be placed in a
+    // volume. Judged file by file that would break a series in which one
+    // slice happens to lack the tag, so the question is asked of the series:
+    // if *nothing* in it is positioned, none of it can be reconstructed and
+    // its files are opened as single images instead of being dropped. This
+    // is what makes "open this one file" work for an RT image, a scanned
+    // document, a secondary capture or a stray unpositioned slice.
+    let positioned: std::collections::HashSet<&str> = scanned
+        .iter()
+        .filter(|s| s.has_geometry)
+        .map(|s| s.series_uid.as_str())
+        .collect();
+
+    for s in &scanned {
+        if meta.patient_id.is_empty() && !s.meta.patient_id.is_empty() {
+            meta = s.meta.clone();
+        }
+        let is_rt_struct = s.modality == "RTSTRUCT" || s.sop_class == SOP_RTSTRUCT;
+        let is_rt_dose = s.modality == "RTDOSE" || s.sop_class == SOP_RTDOSE;
+        let is_rt_plan = s.modality == "RTPLAN"
+            || s.modality == "RTIONPLAN"
+            || s.sop_class == SOP_RTPLAN
+            || s.sop_class == SOP_RTIONPLAN;
+        let is_seg = s.modality == "SEG" || s.sop_class == dicomseg::SOP_SEG;
+        let is_reg = s.modality == "REG" || extras::is_reg_sop(&s.sop_class);
+        let is_record = s.modality == "RTRECORD" || extras::is_record_sop(&s.sop_class);
+        let is_planar = PLANAR_MODALITIES.contains(&s.modality.as_str())
+            || s.sop_class == SOP_RTIMAGE
+            || s.sop_class == SOP_DX_PRESENTATION
+            || s.sop_class == SOP_DX_PROCESSING;
+
+        if is_rt_struct {
+            rtstruct_files.push(s.path.clone());
+        } else if is_seg {
+            seg_files.push(s.path.clone());
+        } else if is_rt_dose {
+            rtdose_files.push(s.path.clone());
+        } else if is_rt_plan {
+            rtplan_files.push(s.path.clone());
+        } else if is_reg {
+            reg_files.push(s.path.clone());
+        } else if is_record {
+            record_files.push(s.path.clone());
+        } else if is_planar && !s.has_geometry {
+            planar_files.push(s.path.clone());
+        } else if !positioned.contains(s.series_uid.as_str()) {
+            // An image whose series carries no position anywhere: readable
+            // on its own, but not part of any volume.
+            planar_files.push(s.path.clone());
+        } else if s.has_geometry
+            && (IMAGE_MODALITIES.contains(&s.modality.as_str())
+                || PLANAR_MODALITIES.contains(&s.modality.as_str())
+                || s.modality.is_empty())
+        {
+            match series_index.get(s.series_uid.as_str()) {
+                Some(&i) => image_series[i].files.push(s.path.clone()),
+                None => {
+                    series_index.insert(s.series_uid.as_str(), image_series.len());
+                    image_series.push(SeriesInfo {
+                        uid: s.series_uid.clone(),
+                        modality: s.modality.clone(),
+                        description: s.series_desc.clone(),
+                        patient_id: s.meta.patient_id.clone(),
+                        patient_name: s.meta.patient_name.clone(),
+                        study_uid: s.study_uid.clone(),
+                        study_date: s.meta.study_date.clone(),
+                        study_description: s.meta.study_description.clone(),
+                        study_id: s.meta.study_id.clone(),
+                        series_number: s.series_number,
+                        temporal_id: s.temporal_id,
+                        suv_bw: s.suv_bw,
+                        files: vec![s.path.clone()],
+                    });
+                }
+            }
+        }
+    }
+
+    // Default to the series with the most slices (typically the planning CT).
+    // Series of equal length - the phases of a 4DCT, say - go by series
+    // number, as the scanner numbered them, then by UID, so the order never
+    // depends on which file happened to be read first.
+    image_series.sort_by(|a, b| {
+        b.files
+            .len()
+            .cmp(&a.files.len())
+            .then_with(|| {
+                a.series_number
+                    .unwrap_or(i64::MAX)
+                    .cmp(&b.series_number.unwrap_or(i64::MAX))
+            })
+            .then_with(|| a.uid.cmp(&b.uid))
+    });
+    let active_series = 0;
+
+    // No image series is not an error. RT images, a structure set, a plan or
+    // a dose grid are perfectly ordinary things to open on their own, and a
+    // workspace holding only those is loaded with an empty volume rather than
+    // refused; see [`Volume::empty`].
+    let (volume, default_window) = match image_series.first() {
+        Some(_) if !with_volume => (Volume::empty(), (40.0, 400.0)),
+        Some(series) => {
+            let (v, w, mut vol_warnings) = load_series_volume(series, progress)?;
+            warnings.append(&mut vol_warnings);
+            (v, w)
+        }
+        None => {
+            warnings.push(
+                "No image series with slice positions - nothing to reconstruct a volume from. \
+                 Everything else in the selection was loaded; single images are under \
+                 Planar images."
+                    .into(),
+            );
+            // Keep a usable window rather than the (0, 1) an empty volume
+            // would suggest, so the other workspace's display is untouched.
+            (Volume::empty(), (40.0, 400.0))
+        }
+    };
+
+    // RT objects - every structure set is loaded (e.g. one per 4DCT phase);
+    // the application chooses which one is active. Each group is parsed in
+    // parallel; the files are independent.
+    let structure_sets = parse_group(
+        &rtstruct_files,
+        "RTSTRUCT",
+        "Parsing RT Structure Sets",
+        progress,
+        &mut warnings,
+        rtstruct::load,
+    );
+    let seg_series = parse_group(
+        &seg_files,
+        "SEG",
+        "Parsing segmentations (SEG)",
+        progress,
+        &mut warnings,
+        dicomseg::load,
+    );
+    let doses = parse_group(
+        &rtdose_files,
+        "RTDOSE",
+        "Parsing RT Dose",
+        progress,
+        &mut warnings,
+        rtdose::load,
+    );
+    let plans = parse_group(
+        &rtplan_files,
+        "RTPLAN",
+        "Parsing RT Plan",
+        progress,
+        &mut warnings,
+        rtplan::load,
+    );
+    let planar_images = parse_group(
+        &planar_files,
+        "planar image",
+        "Loading planar images (DX/RTIMAGE)",
+        progress,
+        &mut warnings,
+        extras::load_planar,
+    );
+    let registrations = parse_group(
+        &reg_files,
+        "REG",
+        "Parsing spatial registrations (REG)",
+        progress,
+        &mut warnings,
+        extras::load_reg,
+    );
+    for r in registrations.iter().filter(|r| r.deformable) {
+        warnings.push(format!(
+            "REG {} is a deformable registration - only its rigid matrices are read",
+            r.label
+        ));
+    }
+    let treat_records = parse_group(
+        &record_files,
+        "RTRECORD",
+        "Parsing treatment records",
+        progress,
+        &mut warnings,
+        extras::load_record,
+    );
+
+    // Frame-of-reference sanity checks.
+    for ss in &structure_sets {
+        if !ss.frame_of_reference_uid.is_empty()
+            && !volume.frame_of_reference_uid.is_empty()
+            && ss.frame_of_reference_uid != volume.frame_of_reference_uid
+        {
+            warnings.push(format!(
+                "RTSTRUCT {} frame of reference differs from the image volume - contours may be misaligned",
+                ss.file_name
+            ));
+        }
+    }
+    for sr in &seg_series {
+        if !sr.grid.frame_of_reference_uid.is_empty()
+            && !volume.frame_of_reference_uid.is_empty()
+            && sr.grid.frame_of_reference_uid != volume.frame_of_reference_uid
+        {
+            warnings.push(format!(
+                "SEG {} frame of reference differs from the image volume - \
+                 the segments may be misaligned",
+                sr.file_name
+            ));
+        }
+    }
+    for d in &doses {
+        if !d.frame_of_reference_uid.is_empty()
+            && !volume.frame_of_reference_uid.is_empty()
+            && d.frame_of_reference_uid != volume.frame_of_reference_uid
+        {
+            warnings.push(
+                "RTDOSE frame of reference differs from the image volume - overlay may be misaligned"
+                    .into(),
+            );
+        }
+    }
+
+    let fourd_groups = crate::fourd::detect(&image_series);
+
+    Ok(LoadedStudy {
+        meta,
+        series: image_series,
+        active_series,
+        volume: Arc::new(volume),
+        structure_sets,
+        seg_series,
+        doses,
+        plans,
+        planar_images,
+        registrations,
+        treat_records,
+        setups: Vec::new(),
+        fourd_groups,
+        warnings,
+        default_window,
+    })
+}
+
+/// Fully load one image series into a `Volume` (parallel decode).
+/// Does the modality LUT of this image map every stored value onto an
+/// integer that fits an `i16`? Then the pixels can be converted straight
+/// into the volume's type; otherwise they go through `f32` and a rounding.
+fn integral_rescale(decoded: &dicom_pixeldata::DecodedPixelData<'_>) -> bool {
+    let Ok(rescales) = decoded.rescale() else {
+        return false;
+    };
+    let bits = u32::from(decoded.bits_stored().clamp(1, 16));
+    let signed = decoded.pixel_representation() == dicom_pixeldata::PixelRepresentation::Signed;
+    let (lo, hi) = if signed {
+        (-(1i64 << (bits - 1)), (1i64 << (bits - 1)) - 1)
+    } else {
+        (0i64, (1i64 << bits) - 1)
+    };
+    rescales.iter().all(|r| {
+        r.slope == 1.0
+            && r.intercept.fract() == 0.0
+            && (lo as f64 + r.intercept) >= f64::from(i16::MIN)
+            && (hi as f64 + r.intercept) <= f64::from(i16::MAX)
+    })
+}
+
+/// Where one slice of a series sits, from its header alone.
+struct SliceGeom {
+    pos: Vec3,
+    proj: f64,
+    rows: usize,
+    cols: usize,
+    row_dir: Vec3,
+    col_dir: Vec3,
+    /// [along i (columns), along j (rows)].
+    spacing: [f64; 2],
+    for_uid: String,
+    window: Option<(f32, f32)>,
+    thickness: Option<f64>,
+}
+
+impl SliceGeom {
+    /// Read from a slice's header. What makes a slice unusable as part of a
+    /// volume - no position, several frames - is an error here, so the full
+    /// load and [`series_grid`] drop the same files.
+    fn of(obj: &InMemDicomObject, path: &Path) -> Result<SliceGeom> {
+        let ipp = f64s_of(obj, tags::IMAGE_POSITION_PATIENT)
+            .filter(|v| v.len() >= 3)
+            .with_context(|| format!("missing ImagePositionPatient in {}", path.display()))?;
+        let iop = f64s_of(obj, tags::IMAGE_ORIENTATION_PATIENT)
+            .filter(|v| v.len() >= 6)
+            .unwrap_or_else(|| vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+        let ps = f64s_of(obj, tags::PIXEL_SPACING)
+            .filter(|v| v.len() >= 2)
+            .unwrap_or_else(|| vec![1.0, 1.0]);
+
+        let row_dir = Vec3::from_slice(&iop[0..3]).normalized();
+        let col_dir = Vec3::from_slice(&iop[3..6]).normalized();
+        let normal = row_dir.cross(col_dir).normalized();
+        let pos = Vec3::from_slice(&ipp);
+
+        let window = match (
+            f64s_of(obj, tags::WINDOW_CENTER).and_then(|v| v.first().copied()),
+            f64s_of(obj, tags::WINDOW_WIDTH).and_then(|v| v.first().copied()),
+        ) {
+            (Some(c), Some(w)) if w > 1.0 => Some((c as f32, w as f32)),
+            _ => None,
+        };
+        // What the pixel decoder reads its geometry from, read the same way.
+        let rows = i32_of(obj, tags::ROWS).unwrap_or(0).max(0) as usize;
+        let cols = i32_of(obj, tags::COLUMNS).unwrap_or(0).max(0) as usize;
+        if i32_of(obj, tags::NUMBER_OF_FRAMES).unwrap_or(1) > 1 {
+            bail!(
+                "multi-frame image {} not supported as part of a series",
+                path.display()
+            );
+        }
+        Ok(SliceGeom {
+            pos,
+            proj: pos.dot(normal),
+            rows,
+            cols,
+            row_dir,
+            col_dir,
+            spacing: [ps[1], ps[0]],
+            for_uid: str_of(obj, tags::FRAME_OF_REFERENCE_UID).unwrap_or_default(),
+            window,
+            thickness: f64_of(obj, tags::SLICE_THICKNESS),
+        })
+    }
+}
+
+/// Put a series' slices in stack order - one in-plane size, sorted along the
+/// slice normal, duplicates dropped - and return the spacing between them.
+/// `geom` reads each slice's [`SliceGeom`].
+fn stack_slices<T>(
+    slices: &mut Vec<T>,
+    geom: impl Fn(&T) -> &SliceGeom,
+    warnings: &mut Vec<String>,
+) -> f64 {
+    // Consistent in-plane dimensions.
+    let (rows, cols) = (geom(&slices[0]).rows, geom(&slices[0]).cols);
+    let before = slices.len();
+    slices.retain(|s| geom(s).rows == rows && geom(s).cols == cols);
+    if slices.len() != before {
+        warnings.push(format!(
+            "{} slice(s) with mismatched dimensions were dropped",
+            before - slices.len()
+        ));
+    }
+
+    // Sort along the slice normal and drop duplicates.
+    slices.sort_by(|a, b| {
+        geom(a)
+            .proj
+            .partial_cmp(&geom(b).proj)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    slices.dedup_by(|a, b| (geom(a).proj - geom(b).proj).abs() < 0.01);
+
+    let nz = slices.len();
+    if nz > 1 {
+        let mut diffs: Vec<f64> = slices
+            .windows(2)
+            .map(|w| geom(&w[1]).proj - geom(&w[0]).proj)
+            .collect();
+        diffs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median = diffs[diffs.len() / 2];
+        let max_dev = diffs
+            .iter()
+            .map(|d| (d - median).abs())
+            .fold(0.0_f64, f64::max);
+        if median > 1e-6 && max_dev / median > 0.01 {
+            warnings.push(format!(
+                "Non-uniform slice spacing (median {:.3} mm, max deviation {:.3} mm) - using median",
+                median, max_dev
+            ));
+        }
+        median.max(1e-6)
+    } else {
+        geom(&slices[0]).thickness.unwrap_or(1.0).max(1e-6)
+    }
+}
+
+/// The lattice [`load_series_volume`] would build for `series`, from the
+/// slice headers alone.
+///
+/// Rasterizing structures onto a series - for an export, for a copy onto
+/// every phase of a 4D group - needs the series' geometry and nothing of its
+/// pixels, and decoding them is nearly all of what a load costs. A slice
+/// whose header is fine but whose pixels would not decode is part of this
+/// lattice and would be left out of the loaded volume; that is the one way
+/// the two can differ.
+pub fn series_grid(series: &SeriesInfo) -> Result<crate::volume::Grid> {
+    let results: Vec<Result<SliceGeom>> = series
+        .files
+        .par_iter()
+        .map(|path| {
+            let obj = crate::dicomfile::open_scan(path)?;
+            SliceGeom::of(&obj, path)
+        })
+        .collect();
+    let mut slices: Vec<SliceGeom> = results.into_iter().filter_map(Result::ok).collect();
+    if slices.is_empty() {
+        bail!("No slices of the series could be read");
+    }
+    let mut warnings = Vec::new();
+    let slice_spacing = stack_slices(&mut slices, |g| g, &mut warnings);
+    let first = &slices[0];
+    Ok(crate::volume::Grid {
+        dims: [first.cols, first.rows, slices.len()],
+        spacing: [first.spacing[0], first.spacing[1], slice_spacing],
+        origin: first.pos,
+        row_dir: first.row_dir,
+        col_dir: first.col_dir,
+        normal: first.row_dir.cross(first.col_dir).normalized(),
+        frame_of_reference_uid: first.for_uid.clone(),
+    })
+}
+
+pub fn load_series_volume(
+    series: &SeriesInfo,
+    progress: &Progress,
+) -> Result<(Volume, (f32, f32), Vec<String>)> {
+    progress.set(format!(
+        "Loading {} slice(s) of series {}",
+        series.files.len(),
+        if series.description.is_empty() {
+            &series.modality
+        } else {
+            &series.description
+        }
+    ));
+
+    struct SliceRec {
+        geom: SliceGeom,
+        data: Vec<i16>,
+        /// Value range of this slice, accumulated while the pixels are still
+        /// hot in cache instead of by a second serial pass over the volume.
+        min: i16,
+        max: i16,
+    }
+
+    let opts = ConvertOptions::new().with_modality_lut(ModalityLutOption::Default);
+
+    let results: Vec<Result<SliceRec>> = series
+        .files
+        .par_iter()
+        .map(|path| -> Result<SliceRec> {
+            let obj = crate::dicomfile::open_full(path)?;
+            let mut geom = SliceGeom::of(&obj, path)?;
+
+            let decoded = obj
+                .decode_pixel_data()
+                .with_context(|| format!("decode pixel data of {}", path.display()))?;
+            let rows = decoded.rows() as usize;
+            let cols = decoded.columns() as usize;
+            (geom.rows, geom.cols) = (rows, cols);
+            if decoded.number_of_frames() > 1 {
+                bail!(
+                    "multi-frame image {} not supported as part of a series",
+                    path.display()
+                );
+            }
+            let mut data: Vec<i16> = if integral_rescale(&decoded) {
+                // The common case - a CT with slope 1 and an integer
+                // intercept, or no rescale at all: the modality LUT lands
+                // exactly on integers, so the pixels go straight into the
+                // volume's own type instead of through a slice-sized f32
+                // buffer and a rounding pass.
+                decoded
+                    .to_vec_with_options(&opts)
+                    .with_context(|| format!("convert pixels of {}", path.display()))?
+            } else {
+                let f: Vec<f32> = decoded
+                    .to_vec_with_options(&opts)
+                    .with_context(|| format!("convert pixels of {}", path.display()))?;
+                f.iter()
+                    .map(|&v| v.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16)
+                    .collect()
+            };
+            if data.len() < rows * cols {
+                bail!(
+                    "pixel buffer smaller than Rows×Columns in {}",
+                    path.display()
+                );
+            }
+            data.truncate(rows * cols);
+
+            let (mut min, mut max) = (i16::MAX, i16::MIN);
+            for &v in &data {
+                min = min.min(v);
+                max = max.max(v);
+            }
+            Ok(SliceRec {
+                geom,
+                data,
+                min,
+                max,
+            })
+        })
+        .collect();
+
+    let mut warnings = Vec::new();
+    let mut slices: Vec<SliceRec> = Vec::with_capacity(results.len());
+    for r in results {
+        match r {
+            Ok(s) => slices.push(s),
+            Err(e) => warnings.push(format!("slice skipped: {e:#}")),
+        }
+    }
+    if slices.is_empty() {
+        bail!("No slices of the series could be decoded");
+    }
+
+    let slice_spacing = stack_slices(&mut slices, |s| &s.geom, &mut warnings);
+    let nz = slices.len();
+    let (nx, ny) = (slices[0].geom.cols, slices[0].geom.rows);
+    let mut data = Vec::with_capacity(nx * ny * nz);
+    let mut min_v = i16::MAX;
+    let mut max_v = i16::MIN;
+    for s in &slices {
+        min_v = min_v.min(s.min);
+        max_v = max_v.max(s.max);
+        data.extend_from_slice(&s.data);
+    }
+
+    let first = &slices[0].geom;
+    let volume = Volume {
+        data,
+        dims: [nx, ny, nz],
+        spacing: [first.spacing[0], first.spacing[1], slice_spacing],
+        origin: first.pos,
+        row_dir: first.row_dir,
+        col_dir: first.col_dir,
+        normal: first.row_dir.cross(first.col_dir).normalized(),
+        frame_of_reference_uid: first.for_uid.clone(),
+        min_value: min_v,
+        max_value: max_v,
+    };
+
+    let default_window = first
+        .window
+        .unwrap_or_else(|| default_window_for(&series.modality, &volume.data));
+
+    Ok((volume, default_window, warnings))
+}
+
+/// Merge `src` into `dest` (used by *File ▶ Add folder* and the tree
+/// copy/move actions). Series and RT objects already present in `dest`
+/// (same UID) are skipped; the displayed volume and all active selections
+/// of `dest` are left untouched. Returns human-readable notes about
+/// anything that was skipped.
+pub fn merge_study(dest: &mut LoadedStudy, src: LoadedStudy) -> Vec<String> {
+    let mut notes = Vec::new();
+
+    // Series are the one collection that grows into the hundreds (every
+    // phase of a 4DCT is one), so their UIDs are looked up in a set.
+    let mut known: std::collections::HashSet<String> =
+        dest.series.iter().map(|d| d.uid.clone()).collect();
+    let mut skipped = 0usize;
+    for s in src.series {
+        if !known.insert(s.uid.clone()) {
+            skipped += 1;
+        } else {
+            dest.series.push(s);
+        }
+    }
+    if skipped > 0 {
+        notes.push(format!(
+            "{skipped} series were already present and were not added again"
+        ));
+    }
+
+    for ss in src.structure_sets {
+        let dup = dest.structure_sets.iter().any(|d| {
+            (!ss.sop_instance_uid.is_empty() && d.sop_instance_uid == ss.sop_instance_uid)
+                || (ss.sop_instance_uid.is_empty()
+                    && !ss.file_name.is_empty()
+                    && d.file_name == ss.file_name)
+        });
+        if !dup {
+            dest.structure_sets.push(ss);
+        }
+    }
+    for sr in src.seg_series {
+        let dup = dest.seg_series.iter().any(|d| {
+            (!sr.sop_instance_uid.is_empty() && d.sop_instance_uid == sr.sop_instance_uid)
+                || (sr.sop_instance_uid.is_empty()
+                    && !sr.file_name.is_empty()
+                    && d.file_name == sr.file_name)
+        });
+        if !dup {
+            dest.seg_series.push(sr);
+        }
+    }
+    for p in src.plans {
+        let dup = !p.sop_instance_uid.is_empty()
+            && dest
+                .plans
+                .iter()
+                .any(|d| d.sop_instance_uid == p.sop_instance_uid);
+        if !dup {
+            dest.plans.push(p);
+        }
+    }
+    for d in src.doses {
+        let dup = dest.doses.iter().any(|e| {
+            e.dims == d.dims
+                && e.referenced_plan_uid == d.referenced_plan_uid
+                && e.study_uid == d.study_uid
+                && e.label == d.label
+                && e.max_dose == d.max_dose
+        });
+        if !dup {
+            dest.doses.push(d);
+        }
+    }
+    for img in src.planar_images {
+        let dup = dest
+            .planar_images
+            .iter()
+            .any(|e| e.label == img.label && e.rows == img.rows && e.cols == img.cols);
+        if !dup {
+            dest.planar_images.push(img);
+        }
+    }
+    for r in src.registrations {
+        if !dest.registrations.iter().any(|e| e.label == r.label) {
+            dest.registrations.push(r);
+        }
+    }
+    for r in src.treat_records {
+        if !dest
+            .treat_records
+            .iter()
+            .any(|e| e.label == r.label && e.date == r.date)
+        {
+            dest.treat_records.push(r);
+        }
+    }
+    // 4D groups: carry over custom groups that don't collide with an
+    // existing one, then re-detect around them for the merged series list.
+    for g in src.fourd_groups {
+        let dup = dest.fourd_groups.iter().any(|d| {
+            d.members
+                .iter()
+                .any(|m| g.members.iter().any(|n| n.series_uid == m.series_uid))
+        });
+        if g.custom && !dup {
+            dest.fourd_groups.push(g);
+        }
+    }
+    dest.refresh_fourd();
+
+    dest.warnings.extend(src.warnings);
+    notes
+}
+
+/// The window a series comes up with when its files name none: the soft
+/// tissue window for a CT (Hounsfield units are a fixed scale), and for a
+/// modality without one (MR, PET) the 1st to the 99th percentile of its
+/// values, which leaves out the odd bright voxel that would otherwise
+/// darken the whole image.
+fn default_window_for(modality: &str, data: &[i16]) -> (f32, f32) {
+    match modality {
+        "CT" => (40.0, 400.0),
+        _ => percentile_windows(data, &[(1.0, 99.0)])[0],
+    }
+}
+
+/// Windows (centre, width) spanning the `lo`-th to the `hi`-th percentile
+/// of a volume's values, one per pair. The volume's minimum is left out
+/// when anything else is there: it is the padding outside the field of
+/// view (or the empty air of an MR), and counting it would make every low
+/// percentile that value.
+pub fn percentile_windows(data: &[i16], pairs: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    if data.is_empty() {
+        return vec![(0.0, 1.0); pairs.len()];
+    }
+    let mut hist = vec![0u64; 1 << 16];
+    let mut min = i16::MAX;
+    for &v in data {
+        hist[(v as i32 + 32768) as usize] += 1;
+        min = min.min(v);
+    }
+    let pad = (min as i32 + 32768) as usize;
+    let mut total = data.len() as u64;
+    if total > hist[pad] {
+        total -= hist[pad];
+        hist[pad] = 0;
+    }
+    // The value at percentile p: the first whose running count reaches it.
+    let value_at = |p: f32| -> f32 {
+        let target = ((p.clamp(0.0, 100.0) as f64 / 100.0) * total as f64)
+            .ceil()
+            .max(1.0) as u64;
+        let mut acc = 0u64;
+        for (i, &c) in hist.iter().enumerate() {
+            acc += c;
+            if acc >= target {
+                return i as f32 - 32768.0;
+            }
+        }
+        32767.0
+    };
+    pairs
+        .iter()
+        .map(|&(lo, hi)| {
+            let a = value_at(lo);
+            let b = value_at(hi).max(a + 1.0);
+            ((a + b) * 0.5, b - a)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn percentile_windows_leave_the_padding_and_the_outliers_out() {
+        // 1000 voxels of padding at the minimum, 1000 of tissue from 100 to
+        // 1099, one outlier.
+        let mut data: Vec<i16> = vec![-2000; 1000];
+        data.extend((0..1000).map(|i| 100 + i as i16));
+        data.push(30000);
+        let w = percentile_windows(&data, &[(1.0, 99.0), (0.0, 100.0)]);
+        let (c, width) = w[0];
+        assert!((c - 600.0).abs() < 15.0, "centred on the tissue: {c}");
+        assert!((width - 980.0).abs() < 15.0, "1 to 99 %: {width}");
+        assert_eq!(w[1].0 + w[1].1 / 2.0, 30000.0, "100 % is the outlier");
+        assert_eq!(default_window_for("CT", &data), (40.0, 400.0));
+        assert_eq!(percentile_windows(&[], &[(1.0, 99.0)]), vec![(0.0, 1.0)]);
+    }
+
+    #[test]
+    fn a_dicom_time_is_seconds_since_midnight() {
+        assert_eq!(tm_seconds("000000"), Some(0.0));
+        assert_eq!(tm_seconds("120000.000000"), Some(12.0 * 3600.0));
+        assert_eq!(
+            tm_seconds("13:45:30"),
+            Some(13.0 * 3600.0 + 45.0 * 60.0 + 30.0)
+        );
+        assert_eq!(tm_seconds("1345"), None);
+    }
+
+    #[test]
+    fn the_suv_factor_is_weight_over_the_decayed_activity() {
+        // 70 kg, 370 MBq of an 18F tracer (half-life 6586 s), imaged one
+        // half-life later: half the activity is left, so the factor is
+        // twice what it would be at the moment of injection.
+        let hl = 6586.0;
+        let at_once = suv_bw_factor(70.0, 370e6, hl, 0.0).expect("all present");
+        let later = suv_bw_factor(70.0, 370e6, hl, hl).expect("all present");
+        assert!((at_once - 70_000.0 / 370e6).abs() < 1e-12);
+        assert!((later / at_once - 2.0).abs() < 1e-9);
+        // A voxel of 5000 Bq/mL an hour after 370 MBq into 70 kg is an SUV
+        // of about 1.4: the arithmetic every PET reader knows.
+        let f = suv_bw_factor(70.0, 370e6, hl, 3600.0).expect("all present");
+        let suv = 5000.0 * f;
+        assert!((1.3..1.5).contains(&suv), "SUV {suv}");
+
+        // Nonsense in, nothing out - never a guessed number.
+        assert!(suv_bw_factor(0.0, 370e6, hl, 0.0).is_none());
+        assert!(suv_bw_factor(70.0, 0.0, hl, 0.0).is_none());
+        assert!(suv_bw_factor(70.0, 370e6, 0.0, 0.0).is_none());
+        // A scan filed after midnight: the delay wraps instead of going
+        // negative.
+        assert!(suv_bw_factor(70.0, 370e6, hl, -3600.0).is_none());
+        // ... but only within the day: 23 h of delay is a broken header.
+        assert!(suv_bw_factor(70.0, 370e6, hl, 23.0 * 3600.0).is_none());
+    }
+}

@@ -58,6 +58,7 @@ mod tests {
         let mut offenders: Vec<String> = Vec::new();
         let mut stack = vec![
             manifest.join("src"),
+            manifest.join("crates/rds-domain/src"),
             manifest.join("crates/rds-core/src"),
             manifest.join("crates/rds-engines/src"),
         ];

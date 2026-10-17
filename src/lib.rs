@@ -1,59 +1,32 @@
-//! rust-dicom-station library: DICOM / RT DICOM loading, geometry and
-//! rendering primitives, plus the egui application.
+//! rust-dicom-station library: the egui application, over the DICOM /
+//! RT DICOM loading, geometry, registration and analysis of `rds-domain`
+//! (re-exported here module by module).
 
-pub mod anonymize;
 pub mod app;
-pub mod archive;
-pub mod audit;
-pub mod bodymask;
-pub mod contours;
-pub mod derived;
-pub mod dicom_export;
-pub mod dicomfile;
-pub mod dicomseg;
-pub mod drr;
-pub mod dvh;
-pub mod export;
-pub mod extras;
-pub mod fourd;
-pub mod gen_test_data;
-pub mod generate;
-pub mod gfx;
+pub mod gfx_wgpu;
 pub mod icon;
-pub mod imginfo;
-pub mod livewire;
-pub mod loader;
-pub mod mesh3d;
-pub mod models;
-pub mod morphology;
-pub mod motion;
-pub mod pacs;
-pub mod par;
-pub mod propagate;
-pub mod registration;
-pub mod render;
-pub mod rt_surface;
-pub mod rtdose;
-pub mod rtplan;
-pub mod rtstruct;
-pub mod sct;
-pub mod segmentation;
-pub mod settings;
-pub mod simulate;
-pub mod structops;
-pub mod templates;
-pub mod testdata;
-pub mod workflow;
 
-#[cfg(feature = "mcp")]
-pub mod mcp;
-
-// The core types and the inference engines are crates of their own
-// (crates/rds-core, crates/rds-engines), so the engines are compiled once
-// rather than with every change to the viewer. Their modules keep the paths
-// they had here, `crate::volume::Volume` and `rust_dicom_station::medsam2`
-// alike.
-pub use rds_core::{geometry, progress, volume};
-pub use rds_engines::{
+// Everything below the window is a crate of its own (crates/rds-domain), as
+// the core types (crates/rds-core) and the inference engines
+// (crates/rds-engines) are, so an edit in the viewer recompiles the viewer
+// alone. Every module keeps the path it had here, `crate::loader` in the
+// viewer and `rust_dicom_station::medsam2` outside alike.
+pub use rds_domain::{
+    anonymize, archive, audit, bodymask, contours, derived, dicom_export, dicomfile, dicomseg, drr,
+    dvh, export, extras, fourd, gen_test_data, generate, gfx, iec, imginfo, livewire, loader,
+    mesh3d, models, morphology, motion, pacs, par, portal, projection, propagate, registration,
+    render, rooms, rt_surface, rtdose, rtplan, rtstruct, sct, segmentation, settings, setup,
+    simulate, structops, templates, testdata, workflow,
+};
+pub use rds_domain::{
     autoseg, medsam2, nn, nninteractive, segresnet, segvol, synth, unet2d, vista3d, zoo,
 };
+pub use rds_domain::{geometry, progress, volume};
+
+#[cfg(feature = "mcp")]
+pub use rds_domain::mcp;
+
+/// The viewer's version, for the front ends whose own crate has another
+/// (the Android and iOS packages): their log lines and panic files carry
+/// this one.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");

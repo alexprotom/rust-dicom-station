@@ -114,6 +114,32 @@ pub fn load(models_dir: &Path, sink: &dyn ProgressSink) -> Result<Params> {
     Ok(Params::new(tensors))
 }
 
+/// [`load`] for the tensors whose (normalized) name `keep` accepts. With the
+/// cache in place only those are read from it; on first use the whole
+/// checkpoint is converted as [`load`] does, and the rest dropped.
+pub fn load_where(
+    models_dir: &Path,
+    keep: &(dyn Fn(&str) -> bool + Sync),
+    sink: &dyn ProgressSink,
+) -> Result<Params> {
+    let cache_path = models_dir.join(CACHE_NAME);
+    if cache_path.is_file() {
+        sink.report(0.0, "Loading weights (SegVol)");
+        return Ok(Params::new(cache::load_safetensors_where(
+            &cache_path,
+            keep,
+        )?));
+    }
+    let mut tensors = cache::ensure_converted(
+        &cache_path,
+        &convert_spec(),
+        || CHECKPOINT.ensure(models_dir, sink),
+        sink,
+    )?;
+    tensors.retain(|k, _| keep(k));
+    Ok(Params::new(tensors))
+}
+
 /// Open the checkpoint's state dict. The archive root *is* the state dict,
 /// so the top-level key is empty.
 ///

@@ -6207,6 +6207,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "rds-domain"
+version = "0.11.7"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "dicom-core",
+ "dicom-dictionary-std",
+ "dicom-object",
+ "dicom-pixeldata",
+ "dicom-transfer-syntax-registry",
+ "egui",
+ "gethostname",
+ "getrandom 0.3.4",
+ "if-addrs",
+ "image",
+ "rayon",
+ "rds-core",
+ "rds-engines",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "toml",
+ "ureq",
+ "walkdir",
+ "zip 2.4.2",
+]
+
+[[package]]
 name = "rds-engines"
 version = "0.10.1"
 dependencies = [
@@ -6441,36 +6470,19 @@ dependencies = [
 
 [[package]]
 name = "rust-dicom-station"
-version = "0.11.3"
+version = "0.11.7"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
- "dicom-core",
- "dicom-dictionary-std",
- "dicom-object",
- "dicom-pixeldata",
- "dicom-transfer-syntax-registry",
  "eframe",
  "egui",
  "egui-snarl",
- "gethostname",
- "getrandom 0.3.4",
- "if-addrs",
  "image",
  "png",
  "rayon",
- "rds-core",
- "rds-engines",
+ "rds-domain",
  "rfd",
- "rustls",
- "serde",
  "serde_json",
- "sha2",
- "toml",
- "ureq",
- "walkdir",
  "winresource",
- "zip 2.4.2",
 ]
 
 [[package]]

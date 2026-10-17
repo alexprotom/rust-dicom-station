@@ -140,6 +140,12 @@ fn labels_touch(data: &[u8], dims: [usize; 3]) -> bool {
 /// background, through an ellipsoid of that radius in millimetres. Labels
 /// already placed are never overwritten, and each label grows from where it
 /// stood before any growing (`dilate_vertebrae_labels`).
+///
+/// Upstream grows one label after the other, so a background voxel two
+/// labels reach takes the one earlier in `labels`. That is computed here in
+/// one walk over the grid rather than one per label: every labelled voxel
+/// marks the voxels its ellipsoid covers with its label's rank, keeping the
+/// smallest, and the background then takes the label of the rank it got.
 fn dilate_labels(
     data: &[u8],
     dims: [usize; 3],
@@ -177,34 +183,40 @@ fn dilate_labels(
     }
     let [d0, d1, d2] = dims;
     let idx = |a: usize, b: usize, c: usize| (a * d1 + b) * d2 + c;
-    for &label in labels {
-        let mut grow: Vec<usize> = Vec::new();
-        for a in 0..d0 {
-            for b in 0..d1 {
-                for c in 0..d2 {
-                    if data[idx(a, b, c)] != label {
+    // A label's rank: its first place in `labels`; NONE for the rest.
+    const NONE: u8 = u8::MAX;
+    let mut rank = [NONE; 256];
+    for (r, &l) in labels.iter().enumerate().rev() {
+        rank[l as usize] = r.min(NONE as usize - 1) as u8;
+    }
+    let mut reach = vec![NONE; data.len()];
+    for a in 0..d0 {
+        for b in 0..d1 {
+            for c in 0..d2 {
+                let r = rank[data[idx(a, b, c)] as usize];
+                if r == NONE {
+                    continue;
+                }
+                for o in &offsets {
+                    let (x, y, z) = (a as isize + o[0], b as isize + o[1], c as isize + o[2]);
+                    if x < 0
+                        || y < 0
+                        || z < 0
+                        || x >= d0 as isize
+                        || y >= d1 as isize
+                        || z >= d2 as isize
+                    {
                         continue;
                     }
-                    for o in &offsets {
-                        let (x, y, z) = (a as isize + o[0], b as isize + o[1], c as isize + o[2]);
-                        if x < 0
-                            || y < 0
-                            || z < 0
-                            || x >= d0 as isize
-                            || y >= d1 as isize
-                            || z >= d2 as isize
-                        {
-                            continue;
-                        }
-                        grow.push(idx(x as usize, y as usize, z as usize));
-                    }
+                    let v = &mut reach[idx(x as usize, y as usize, z as usize)];
+                    *v = (*v).min(r);
                 }
             }
         }
-        for v in grow {
-            if out[v] == 0 {
-                out[v] = label;
-            }
+    }
+    for (o, &r) in out.iter_mut().zip(&reach) {
+        if *o == 0 && r != NONE {
+            *o = labels[r as usize];
         }
     }
     out
@@ -363,6 +375,97 @@ mod tests {
         // than a voxel, so nothing grows.
         vertebrae_pp(&mut d, dims, [10.0, 10.0, 10.0], 0, &classes);
         assert_eq!(d, vec![24, 24, 0, 0, 23, 23, 0, 0, 22, 22, 0, 0]);
+    }
+
+    /// The label-by-label growth `dilate_labels` used to run, over the
+    /// same structuring element.
+    fn dilate_label_by_label(
+        data: &[u8],
+        dims: [usize; 3],
+        offsets: &[[isize; 3]],
+        labels: &[u8],
+    ) -> Vec<u8> {
+        let [d0, d1, d2] = dims;
+        let idx = |a: usize, b: usize, c: usize| (a * d1 + b) * d2 + c;
+        let mut out = data.to_vec();
+        for &label in labels {
+            let mut grow = Vec::new();
+            for a in 0..d0 {
+                for b in 0..d1 {
+                    for c in 0..d2 {
+                        if data[idx(a, b, c)] != label {
+                            continue;
+                        }
+                        for o in offsets {
+                            let (x, y, z) =
+                                (a as isize + o[0], b as isize + o[1], c as isize + o[2]);
+                            if (0..d0 as isize).contains(&x)
+                                && (0..d1 as isize).contains(&y)
+                                && (0..d2 as isize).contains(&z)
+                            {
+                                grow.push(idx(x as usize, y as usize, z as usize));
+                            }
+                        }
+                    }
+                }
+            }
+            for v in grow {
+                if out[v] == 0 {
+                    out[v] = label;
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn one_walk_grows_what_one_walk_per_label_grew() {
+        let dims = [9, 11, 10];
+        let n = dims[0] * dims[1] * dims[2];
+        let mut seed = 0x51ED_2701u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        // The element the function builds for 3 mm at 1.5 x 1.5 x 2 mm.
+        let (spacing, radius) = ([1.5, 1.5, 2.0], 3.0);
+        let mut offsets = Vec::new();
+        let radii: [f64; 3] = std::array::from_fn(|a| radius / spacing[a]);
+        let vals: [Vec<f64>; 3] = std::array::from_fn(|a| {
+            let r = radii[a];
+            (0..(2.0 * r + 1.0).ceil() as usize)
+                .map(|e| -r + e as f64)
+                .collect()
+        });
+        for (e0, v0) in vals[0].iter().enumerate() {
+            for (e1, v1) in vals[1].iter().enumerate() {
+                for (e2, v2) in vals[2].iter().enumerate() {
+                    if (v0 / radii[0]).powi(2) + (v1 / radii[1]).powi(2) + (v2 / radii[2]).powi(2)
+                        <= 1.0
+                    {
+                        offsets.push([
+                            e0 as isize - (vals[0].len() / 2) as isize,
+                            e1 as isize - (vals[1].len() / 2) as isize,
+                            e2 as isize - (vals[2].len() / 2) as isize,
+                        ]);
+                    }
+                }
+            }
+        }
+        for _ in 0..5 {
+            let data: Vec<u8> = (0..n)
+                .map(|_| match next() % 60 {
+                    k @ 0..=5 => k as u8 + 1,
+                    _ => 0,
+                })
+                .collect();
+            // Out of order, a repeat, and labels 6 left out (never grown).
+            let labels = [4u8, 1, 5, 2, 4, 3];
+            let want = dilate_label_by_label(&data, dims, &offsets, &labels);
+            assert_eq!(dilate_labels(&data, dims, spacing, radius, &labels), want);
+        }
     }
 
     #[test]

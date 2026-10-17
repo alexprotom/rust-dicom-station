@@ -110,9 +110,14 @@ its CT second, and have the contours land on the right images.
 ## The rows and their panes
 
 The main area is **one row per open workspace** - up to four, **A** to
-**D** - and each row shows up to **four panes**, chosen under *Settings ▸
-View layout*: the **axial**, **sagittal** and **coronal** planes, and the
-**3D** surface scene. The rows share the height equally and are chosen
+**D** - and each row shows up to **six panes**, chosen under *Settings ▸
+View layout*: the **axial**, **sagittal** and **coronal** planes, the
+**3D** surface scene, and the two **planar panes**, *Planar 1* and *Planar
+2*, which show the workspace's planar images (radiographs, RT images, DRRs;
+see [Planar images](#planar-images-dx--cr--rtimage) below). The planar
+panes are not in the standard row, and a planar pane in a row whose
+workspace holds no planar image is not drawn at all, so a plain CT keeps its
+three planes whatever the layout says. The rows share the height equally and are chosen
 separately, so the planning CT can sit above one plane of the repeat scan,
 or a single large axial above the same plane of another workspace. A
 workspace appears as soon as something is loaded into it and goes when it is
@@ -122,8 +127,8 @@ The panes of a row split its width evenly, so a row of two is two large
 images rather than two and a gap, and a row of one is one image across the
 window. A row always shows something: the last tick of a row cannot be
 taken off, and a tick greys out once the row holds as many panes as it
-carries - every kind there is, so a row can hold the three planes and the
-surface scene at once. The **◀ ▶** buttons beside each tick move that pane
+carries - every kind there is, so a row can hold the three planes, the
+surface scene and both planar panes at once. The **◀ ▶** buttons beside each tick move that pane
 one place left or right in the row, and the list is drawn in the row's own
 order, so it reads left to right the way the row does; a newly ticked pane
 joins at the right. **⟲ Reset** beside a row's heading puts that row back to
@@ -228,8 +233,8 @@ read with one window and a change to it moves both, while a CT beside an MR
 keeps a window of its own for each. A series that comes up in a workspace
 takes the window of another workspace showing its modality, if one does.
 
-**Every tool has its own window.** The PACS, the model manager, the DRR,
-the 3D scenes, the segmentation, motion and DVH tools, the export and
+**Every tool has its own window.** The PACS, the model manager, the 3D
+scenes, the segmentation, motion and DVH tools, the export and
 anonymizer dialogs - none of them float inside the main window. Each opens as
 a window of the operating system in its own right, with its own title bar and
 task-bar entry, to be dragged onto a second or third monitor, resized or
@@ -271,22 +276,26 @@ brings it back.
 The *Modules* menu chooses the right panel's sections, in the order they
 appear: **Image information** (what the displayed series is - see below),
 **Playback** (the ▶ buttons on the viewports - see below), **Image
-registration**, **Image simulation**, the **Structure editor** (insert, edit
-and combine structures - [contours.md](contours.md)), the **Structure auto
-tools** (the body contour and the three segmentation engines -
-[segmentation.md](segmentation.md)), **Structure propagation** and **Dose
+registration**, **Image simulation**, **Image generation** (two sections
+under one workspace row: *Image synthesis*, a synthetic CT from an MR or a
+CBCT - [synthetic-ct.md](synthetic-ct.md) - and *Digitally reconstructed
+radiograph*, radiographs of a CT filed under the planar images -
+[drr.md](drr.md)), the **Structure editor**
+(insert, edit and combine structures - [contours.md](contours.md)), the
+**Structure auto tools** (the body contour and the three segmentation
+engines - [segmentation.md](segmentation.md)), **Structure propagation** and **Dose
 estimation** (the dose metrics table - [dvh.md](dvh.md)). A fresh
-installation starts with all eight off - the program opens on the images
+installation starts with all nine off - the program opens on the images
 with nothing over them, and the panel is built up from the menu as the work
-needs it. Every choice is remembered between runs, and with all eight off
+needs it. Every choice is remembered between runs, and with all nine off
 there is no right panel at all. Every section starts folded; which ones were
 unfolded is remembered too, and *Restore the last session* unfolds them
 again. The drawing tools are not in the panel: the toolbar's **✏
 Draw structure** button unfolds them on the toolbar. The *Tools* menu keeps
 the windows: **◑ Structure comparison**, **📋 Structure details** (one row
 per structure, with a Dice column against a reference of your choice) and
-**📈 Structure motion**, then transfer, DVH, DRR, the archive, the models
-and the anonymizer.
+**📈 Structure motion**, then transfer, DVH, the archive, the models and
+the anonymizer.
 
 ## Image information
 
@@ -730,13 +739,54 @@ show the respiratory differences.
 
 ## Planar images (DX / CR / RTIMAGE)
 
-Digital radiographs and RT images (portal/setup images) in the study folder -
-plus any DRR added from the DRR window with *➕ Add to workspace A/B* (see
-[drr.md](drr.md)) - are listed in the sidebar and open in floating viewer
-windows with their own window/level (DICOM default at open; auto, manual, or
-right-drag like the CT views), correct physical aspect ratio (imager /
-image-plane pixel spacing), MONOCHROME1 inversion, and metadata - body part,
-view and kVp for DX; machine, gantry angle, SAD and SID for RTIMAGE.
+Digital radiographs and RT images (portal / setup images) in the study
+folder - plus every DRR rendered by *Modules ▶ Image generation ▶
+Digitally reconstructed radiograph* (see [drr.md](drr.md)) - are listed
+under **Planar images** in the sidebar and shown in the row's two **planar
+panes**, *Planar 1* and *Planar 2*, rather than in windows of their own.
+
+The rows read like image series: the image's name, highlighted while it is
+on screen, and a **P1** / **P2** badge for the pane that holds it, as **RTS**
+marks the series a structure set was drawn on; hovering a row lists the
+image's details - body part, view and kVp for DX; machine, gantry angle, SAD
+and SID for RTIMAGE; the producing geometry for a DRR. A **click** shows the
+image alone in a planar pane - one that already shows it, else a planar pane
+not on screen (so two images clicked one after the other sit side by side),
+else the one given an image longest ago - and puts that pane into the row
+when it is not there. **Ctrl + click** puts it on top of a pane's stack to
+compare it with what the pane shows (the pane given an image last that does
+not hold it already), or takes it out of a stack again. The right-click
+menu names the pane: **👁 Show in Planar 1 / 2**, **➕ Compare in Planar
+1 / 2**, **➖ Take out of Planar 1 / 2**, beside rename and remove. A
+rendered DRR comes up the same way. The panes are ordinary panes otherwise:
+placed and ordered under *Settings ▸ View layout*, maximized with **⛶**,
+taken off the row with **✖**, and remembered with the rest of the layout; a
+pane whose last image is taken out leaves the row.
+
+**Several images in one pane.** A pane holding a stack draws a scrubber
+along its bottom edge, as a plane's slice scrubber, and the **wheel** steps
+through the stack the same way. The two images either side of the scrubber
+are compared as the bar's mode button says, one click moving to the next:
+**◐ fade** (the upper one over the lower, as opaque as the scrubber is
+near it), **▣ checkerboard**, **⊖ difference** (the signed difference of
+what the two show through their windows, mid-grey where they agree; images
+of the same raster only), **⬚ edges** (the lower image with the upper
+one's edges in orange) and **⇄ flicker** (the two in turn, twice a
+second). Every image of a stack is drawn at the pane's
+scale about the same centre, so two renderings of one geometry lie
+exactly on each other.
+
+The pane's title is the image it shows, as a plane's is its name, with the
+image compared to it and the mode under it. **Ctrl + wheel** (or a pinch)
+zooms about the pointer, a **middle drag** or the **✋** hand pans, **➕ /
+➖** zoom about the middle and **⟲** puts back the fitted view and the
+images' own windows. **Right-drag** is window / level as on the CT views,
+for the image the scrubber is nearer, but every image keeps a window of its
+own, starting from the one it carries: a kV image and a line integral have
+no modality window to share. The image keeps its correct physical aspect
+ratio (imager / image-plane pixel spacing), MONOCHROME1 images are inverted
+on reading, the bottom edge reads the size, the pixel spacing and the
+window, and the value under the pointer is shown above it.
 
 Any image that carries no slice position lands here, whatever its modality -
 that is what makes *File > Add DICOM file(s)* on a single RT image, an
@@ -831,9 +881,24 @@ program.
 
 The program creates two independent `wgpu` instances: `eframe` draws the
 interface with one, and `burn` runs the networks on another. The first takes
-its backends as a typed argument; the second is several layers down inside
-`cubecl` and takes them only from the environment. So the chosen backend is
-also exported as `WGPU_BACKEND` for this process - once, at the very top of
-`main` before any thread exists, which is both the documented contract for
-writing the environment and exactly the workaround that was already known to
-work. A value the user set themselves is never overwritten.
+its backends as a typed argument; the second is opened by the engines
+themselves (`crates/rds-engines/src/nn/device.rs`), which read the choice
+from the environment. So the chosen backend is also exported as
+`WGPU_BACKEND` for this process - once, at the very top of `main` before any
+thread exists, which is both the documented contract for writing the
+environment and exactly the workaround that was already known to work. A
+value the user set themselves is never overwritten.
+
+The inference device falls back too, and further than the window: left to
+itself, `burn`'s `cubecl` would ask one graphics API per platform (Metal on
+macOS, Vulkan everywhere else, iOS included) for one adapter, and report any
+failure as a panic whose text never reached the user. The engines instead
+try the exported backend first, then the platform's own (Vulkan and Direct3D
+12 on Windows, Vulkan on Linux and Android, Metal on Apple), every adapter of
+each, discrete before integrated before software; the device is requested
+exactly as `cubecl` requests it and proved with a small convolution and
+matrix product. OpenGL draws but does not compute: burn's reductions need
+float atomics it lacks, and the test says so.
+The first that passes runs the networks, and the job's device line names it
+(`GPU (Adreno (TM) 650, Vulkan)`); when none passes, forcing *GPU* reports
+each adapter and what stopped it.

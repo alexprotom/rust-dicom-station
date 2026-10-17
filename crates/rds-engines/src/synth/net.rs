@@ -19,8 +19,8 @@ use crate::nn::fastconv;
 
 /// A convolution on a device.
 struct Conv<B: Backend> {
-    w: Tensor<B, 4>,
-    b: Tensor<B, 1>,
+    w: fastconv::Kernel<B, 4>,
+    b: fastconv::Kernel<B, 1>,
     stride: usize,
     pad: usize,
 }
@@ -28,8 +28,8 @@ struct Conv<B: Backend> {
 impl<B: Backend> Conv<B> {
     fn upload(c: &ConvW, dev: &B::Device) -> Self {
         Conv {
-            w: ops::from_slice(&c.w, [c.cout, c.cin, c.k, c.k], dev),
-            b: ops::from_slice(&c.b, [c.cout], dev),
+            w: fastconv::Kernel::new(&c.w, [c.cout, c.cin, c.k, c.k], dev),
+            b: fastconv::Kernel::new(&c.b, [c.cout], dev),
             stride: c.stride,
             pad: c.pad,
         }

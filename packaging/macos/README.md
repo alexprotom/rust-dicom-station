@@ -2,8 +2,8 @@
 
 The viewer's macOS front end is the viewer: nothing here is a second
 program. `eframe` opens a Metal window on macOS exactly as it opens a Vulkan
-one on Linux, `src/settings.rs` already puts configuration and model weights
-under `~/Library/Application Support/RustDICOMStation`, and `src/gfx.rs`
+one on Linux, `crates/rds-domain/src/settings.rs` already puts configuration and model weights
+under `~/Library/Application Support/RustDICOMStation`, and `crates/rds-domain/src/gfx.rs`
 already knows Metal is the only backend Apple has. What was missing was a
 *package*: a `.app` bundle a user can drag into Applications, and a `.dmg`
 to put it in.
