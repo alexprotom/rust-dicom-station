@@ -7,6 +7,77 @@
 
 use super::*;
 
+/// What a right-click action on the data tree selects.
+#[derive(Clone)]
+pub(super) enum TreeSel {
+    /// All series of one patient (grouped by `SeriesInfo::patient_key`).
+    Patient(String),
+    /// All series of one study (StudyInstanceUID).
+    Study(String),
+    /// A single series (index into `LoadedStudy::series`).
+    Series(usize),
+    /// Several series at once (indices into `LoadedStudy::series`): the
+    /// ones ticked in the tree, every series of a modality node, or the
+    /// members of a 4D group. Each takes its own reference chain along,
+    /// like a single series does.
+    Many(Vec<usize>),
+}
+
+/// What to do with the selection.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum TreeOp {
+    Copy,
+    Move,
+    Remove,
+}
+
+/// Right-click action on the data tree.
+#[derive(Clone)]
+pub(super) struct TreeAction {
+    pub(super) from: usize,
+    /// Where it goes. For a removal it is the workspace it came from, since
+    /// nothing goes anywhere.
+    pub(super) to: usize,
+    pub(super) sel: TreeSel,
+    pub(super) op: TreeOp,
+}
+
+/// One of the study-level objects that are neither image, structure nor
+/// segmentation series: they hang off the study, are drawn in the views (or
+/// not), and can be taken out of the workspace.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum ObjKind {
+    Dose,
+    Plan,
+    Planar,
+    Registration,
+    Record,
+    Setup,
+}
+
+/// Which object, in which workspace.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) struct ObjRef {
+    pub(super) slot: usize,
+    pub(super) kind: ObjKind,
+    pub(super) idx: usize,
+}
+
+/// Which parts of a `LoadedStudy` a tree selection covers: the selected
+/// series plus the RT objects linked to them via the DICOM reference chain
+/// (RTSTRUCT ▶ series, RTPLAN ▶ RTSTRUCT, RTDOSE ▶ RTPLAN).
+pub(super) struct SubsetMasks {
+    pub(super) series: Vec<bool>,
+    pub(super) structs: Vec<bool>,
+    /// Segmentation series drawn on the selected image series.
+    pub(super) seg_series: Vec<bool>,
+    pub(super) doses: Vec<bool>,
+    pub(super) plans: Vec<bool>,
+    /// Planar images / REG objects / treatment records are only carried when
+    /// the selection covers the whole slot content.
+    pub(super) take_extras: bool,
+}
+
 impl ViewerApp {
     /// Empty a study slot completely (used by tree "move" actions).
     pub(super) fn tree_clear_slot(&mut self, slot: usize) {

@@ -157,7 +157,7 @@ evaluated.
 
 ## Verification
 
-`src/structops.rs`'s own tests cover the algebra: the four operations on known
+`crates/rds-domain/src/structops.rs`'s own tests cover the algebra: the four operations on known
 bitmaps, left-to-right folding over three operands, a label-map operand read
 as a mask rather than as numbers, margins in patient directions on two
 lattices stored opposite ways up, mixed grow-and-shrink margins, the cleanup
@@ -171,7 +171,7 @@ union), a superior margin on a feet-first lattice, a wrong-way subtraction
 coming out empty rather than wrong, and `keep largest` rescuing a cut that
 left a sliver.
 
-The margin machinery is checked in `src/morphology.rs` against a brute-force
+The margin machinery is checked in `crates/rds-domain/src/morphology.rs` against a brute-force
 dilation written from the definition, over isotropic, symmetric-anisotropic,
 one-sided and axis-disabled margins, plus the identity that a symmetric margin
 agrees with the plain ball.

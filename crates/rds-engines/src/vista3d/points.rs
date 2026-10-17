@@ -191,8 +191,8 @@ pub struct PointHead<B: Backend> {
     special: Vec<f32>,
     mask_token: Vec<f32>,
     supported: Vec<f32>,
-    up_w: Tensor<B, 5>,
-    up_b: Tensor<B, 1>,
+    up_w: fastconv::Kernel<B, 5>,
+    up_b: fastconv::Kernel<B, 1>,
     up_conv: Conv<B>,
     hyper: [Linear<B>; 3],
     width: usize,
@@ -289,8 +289,8 @@ impl<B: Backend> PointHead<B> {
             special: emb("point_head.special_class_embed.weight")?,
             mask_token: emb("point_head.mask_tokens.weight")?,
             supported: emb("point_head.supported_embed.weight")?,
-            up_w: ops::from_slice(up_w, [f, f, 3, 3, 3], dev),
-            up_b: ops::from_slice(p.vec("point_head.output_upscaling.0.bias", f)?, [f], dev),
+            up_w: fastconv::Kernel::new(up_w, [f, f, 3, 3, 3], dev),
+            up_b: fastconv::Kernel::new(p.vec("point_head.output_upscaling.0.bias", f)?, [f], dev),
             up_conv: Conv::load(p, "point_head.output_upscaling.3", f, f, 3, 1, true, dev)?,
             hyper: [
                 Linear::load(

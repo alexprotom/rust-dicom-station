@@ -23,6 +23,10 @@ come out hard, because in the voxel model they are.
 registration metrics: the ray is marched at a fixed step, trilinearly
 interpolated values accumulated with a midpoint rule - the volume as a
 smooth field, so edges are softer and step size a real accuracy/speed knob.
+The march runs in voxel indices (the patient-to-voxel mapping done once per
+ray, not per sample), and it steps over blocks of 8 x 8 x 8 voxels whose
+highest value is below the threshold: those samples add exactly nothing,
+so skipping them changes no value.
 
 *Run both and compare* renders the same geometry with each of them; the
 difference of the two and its statistics (max and mean absolute
@@ -50,7 +54,7 @@ states it and an RTPLAN beam or an RT Image stores it:
   off the beam axis (*X-Ray Image Receptor Translation*) and turned about
   it (*Angle*); its pixels need not be centred.
 
-The chain from the room to the patient is `src/iec.rs`: the fixed frame
+The chain from the room to the patient is `crates/rds-domain/src/iec.rs`: the fixed frame
 (`Zf` up, `Yf` along the gantry axis towards the gantry), the gantry, the
 receptor, the patient support, the table top, and the patient's position
 on it. For a head-first supine patient `Xf` (patient left) = `+x`, `Yf`

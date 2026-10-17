@@ -28,7 +28,8 @@
 //!
 //! **Again, faster.** The window keeps what every step of the last run
 //! left ([`StepCache`]); the next run takes over every step whose settings,
-//! inputs and files are unchanged, and the canvas marks them ♻. *Forget*
+//! files and the steps it reads from are unchanged, and the canvas marks
+//! them ♻. *Forget*
 //! empties it. Independent rows at the start can run side by side, and the
 //! memory kept for image volumes between steps is set here.
 //!

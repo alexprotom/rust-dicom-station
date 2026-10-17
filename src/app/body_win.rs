@@ -142,73 +142,44 @@ impl ViewerApp {
         let Some(output) = self.body_dialog.as_ref().map(|d| d.output.clone()) else {
             return;
         };
-        let Some((first, result)) = results.first() else {
-            return;
+        let masks: Vec<(&PhaseInfo, OneMask)> = results
+            .iter()
+            .map(|(info, r)| {
+                (
+                    info,
+                    OneMask {
+                        name: &r.name,
+                        dims: r.volume_dims,
+                        mask: &r.mask,
+                        voxels: r.voxels,
+                        frame_of_reference_uid: &r.frame_of_reference_uid,
+                    },
+                )
+            })
+            .collect();
+        let how = OneMaskLanding {
+            tool: &BODY_CONTOUR,
+            roi_type: "EXTERNAL",
+            default_label: "Body",
+            empty_phase: "the body contour came out empty",
+            empty_error: "The body contour came out empty - lower the threshold, or reduce the \
+                          opening radius.",
         };
-        if let Some(group) = first.group.clone() {
-            // One outline per phase, filed on that phase.
-            let n = results.len();
-            let empty = results.iter().filter(|(_, r)| r.voxels == 0).count();
-            let copies: Vec<_> = results
-                .iter()
-                .map(|(info, r)| {
-                    let segs = if r.voxels == 0 {
-                        Vec::new()
-                    } else {
-                        vec![Segmentation::from_label_map(
-                            r.name.clone(),
-                            BONE,
-                            r.volume_dims,
-                            &r.mask,
-                            1,
-                        )]
-                    };
-                    let notes = (r.voxels == 0)
-                        .then(|| format!("phase {}: the body contour came out empty", info.label))
-                        .into_iter()
-                        .collect();
-                    info.copy(segs, notes)
-                })
-                .collect();
-            let landed = self.land_phases(slot, &group, output.kind, "EXTERNAL", copies);
-            if landed == 0 {
+        // One outline per phase, filed on that phase, or one on the
+        // displayed volume.
+        match self.land_one_mask(slot, &output, &how, Some(BONE), &masks) {
+            OneMaskLanded::Nothing => return,
+            OneMaskLanded::Phases(status) => {
+                if let Some(d) = &mut self.body_dialog {
+                    d.status = Some(status);
+                }
                 return;
             }
-            let name = result.name.clone();
-            if let Some(d) = &mut self.body_dialog {
-                d.status = Some(format!(
-                    "✔ {name} on {landed} of {n} phases of {group}{}",
-                    if empty > 0 {
-                        format!(" - {empty} came out empty")
-                    } else {
-                        String::new()
-                    }
-                ));
-            }
-            return;
+            OneMaskLanded::Displayed => {}
         }
-        if !self.slot_still_shows(slot, result.volume_dims, &result.frame_of_reference_uid) {
-            self.error = Some(stale_result(&BODY_CONTOUR));
+        let Some((_, result)) = results.first() else {
             return;
-        }
-        if result.voxels == 0 {
-            self.error = Some(
-                "The body contour came out empty - lower the threshold, or reduce the \
-                 opening radius."
-                    .into(),
-            );
-            return;
-        }
-        let seg = Segmentation::from_label_map(
-            result.name.clone(),
-            BONE,
-            result.volume_dims,
-            &result.mask,
-            1,
-        );
-        if self.land_masks(slot, &output, "EXTERNAL", "Body", vec![seg]) == 0 {
-            return;
-        }
+        };
         // The cm³ conversions read `self`, so they happen before the
         // dialog is borrowed mutably.
         let removed_cm3 = self.slots[slot].voxels_cm3(result.removed_voxels);

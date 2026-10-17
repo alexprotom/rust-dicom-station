@@ -362,7 +362,7 @@ registration ▸ Vector field* as after any registration
 
 ## Verification
 
-`src/propagate.rs`'s unit tests assert that a translation carries a ball
+`crates/rds-domain/src/propagate.rs`'s unit tests assert that a translation carries a ball
 by exactly that much (centroid within 0.5 mm, volume preserved to 6 %),
 that a ball carried with its shape kept through a transform that halves its
 volume keeps its volume to 3 % and lands within a voxel of where the

@@ -728,6 +728,8 @@ pub fn ready_files(spec: &ModelSpec) -> Vec<String> {
 pub fn spare_files(spec: &ModelSpec) -> Vec<String> {
     let mut v: Vec<String> = (0..spec.folds.max(1)).map(fold_checkpoint_tmp).collect();
     v.push(DOWNLOAD_TMP.to_string());
+    // What an interrupted download keeps to be continued (nn::cache).
+    v.push(format!("{DOWNLOAD_TMP}.validator"));
     v
 }
 
@@ -752,6 +754,82 @@ pub fn ensure_model_folds(
     sink: &dyn ProgressSink,
 ) -> Result<LoadedModel> {
     let dir = models_dir.join(spec.key);
+    let load = spec.folds.max(1).min(max_folds.max(1));
+    let mut fresh = convert_missing(spec, &dir, load, sink)?;
+    let mut folds = Vec::with_capacity(load as usize);
+    for f in 0..load {
+        match fresh.remove(&f) {
+            Some(t) => folds.push(t),
+            None => folds.push(load_fold(spec, &dir, f, sink)?),
+        }
+    }
+    Ok(LoadedModel {
+        spec: *spec,
+        config: read_config(spec, &dir)?,
+        folds,
+    })
+}
+
+/// Make the model runnable offline (download and convert whatever is
+/// missing, every fold) and return its configuration, without keeping any
+/// weights in memory: [`load_folds`] reads them when the network is about
+/// to run, so a model in parts holds one part's weights at a time.
+pub fn prepare_model(
+    spec: &ModelSpec,
+    models_dir: &Path,
+    sink: &dyn ProgressSink,
+) -> Result<ModelConfig> {
+    let dir = models_dir.join(spec.key);
+    convert_missing(spec, &dir, 0, sink)?;
+    read_config(spec, &dir)
+}
+
+/// The converted weights of the first `max_folds` folds (at least one, at
+/// most the model's), `fold_0` first, from the cache [`prepare_model`]
+/// made.
+pub fn load_folds(
+    spec: &ModelSpec,
+    models_dir: &Path,
+    max_folds: u8,
+    sink: &dyn ProgressSink,
+) -> Result<Vec<HashMap<String, WTensor>>> {
+    let dir = models_dir.join(spec.key);
+    let load = spec.folds.max(1).min(max_folds.max(1));
+    (0..load).map(|f| load_fold(spec, &dir, f, sink)).collect()
+}
+
+/// How many folds a run that allows `max_folds` loads.
+pub fn folds_loaded(spec: &ModelSpec, max_folds: u8) -> u8 {
+    spec.folds.max(1).min(max_folds.max(1))
+}
+
+fn load_fold(
+    spec: &ModelSpec,
+    dir: &Path,
+    f: u8,
+    sink: &dyn ProgressSink,
+) -> Result<HashMap<String, WTensor>> {
+    sink.report(0.0, &format!("Loading weights ({})", spec.label));
+    cache::load_safetensors(&dir.join(fold_cache_name(f)))
+}
+
+fn read_config(spec: &ModelSpec, dir: &Path) -> Result<ModelConfig> {
+    let plans_path = dir.join(PLANS_NAME);
+    let plans_text = std::fs::read_to_string(&plans_path)
+        .with_context(|| format!("read {}", plans_path.display()))?;
+    ModelConfig::from_plans_json_cfg(&plans_text, spec.configuration)
+}
+
+/// Download, unpack and convert the folds whose cache is missing (and the
+/// plans), into `dir`. The tensors of the folds below `keep` that were
+/// converted now are handed back, so a caller about to use them does not
+/// read the cache it just wrote.
+fn convert_missing(
+    spec: &ModelSpec,
+    dir: &Path,
+    keep: u8,
+    sink: &dyn ProgressSink,
+) -> Result<HashMap<u8, HashMap<String, WTensor>>> {
     let plans_path = dir.join(PLANS_NAME);
     let n = spec.folds.max(1);
     // `decoder.encoder.*` and `*.all_modules.*` are duplicate registrations
@@ -765,13 +843,12 @@ pub fn ensure_model_folds(
     let missing: Vec<u8> = (0..n)
         .filter(|f| !dir.join(fold_cache_name(*f)).is_file())
         .collect();
-    let load = n.min(max_folds.max(1));
     let mut fresh: HashMap<u8, HashMap<String, WTensor>> = HashMap::new();
     if !missing.is_empty() || !plans_path.is_file() {
         let ckpts = match spec.source {
-            Source::NnUnetV1 { .. } => super::v1::fetch(spec, &dir, &missing, sink),
-            Source::Local => local_entries(spec, &dir, &missing),
-            _ => download_and_unpack(spec, &dir, &missing, sink),
+            Source::NnUnetV1 { .. } => super::v1::fetch(spec, dir, &missing, sink),
+            Source::Local => local_entries(spec, dir, &missing),
+            _ => download_and_unpack(spec, dir, &missing, sink),
         }
         .with_context(|| format!("prepare model '{}'", spec.label))?;
         for (f, ckpt) in ckpts {
@@ -786,29 +863,12 @@ pub fn ensure_model_folds(
             if spec.source != Source::Local {
                 let _ = std::fs::remove_file(&ckpt);
             }
-            if f < load {
+            if f < keep {
                 fresh.insert(f, t);
             }
         }
     }
-    let mut folds = Vec::with_capacity(load as usize);
-    for f in 0..load {
-        match fresh.remove(&f) {
-            Some(t) => folds.push(t),
-            None => {
-                sink.report(0.0, &format!("Loading weights ({})", spec.label));
-                folds.push(cache::load_safetensors(&dir.join(fold_cache_name(f)))?);
-            }
-        }
-    }
-    let plans_text = std::fs::read_to_string(&plans_path)
-        .with_context(|| format!("read {}", plans_path.display()))?;
-    let config = ModelConfig::from_plans_json_cfg(&plans_text, spec.configuration)?;
-    Ok(LoadedModel {
-        spec: *spec,
-        config,
-        folds,
-    })
+    Ok(fresh)
 }
 
 /// True when the model's converted cache is already present.

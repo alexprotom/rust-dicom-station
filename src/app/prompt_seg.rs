@@ -231,72 +231,42 @@ impl ViewerApp {
         let Some(output) = self.segvol_dialog.as_ref().map(|d| d.output.clone()) else {
             return;
         };
-        let Some((first, result)) = results.first() else {
-            return;
+        let masks: Vec<(&PhaseInfo, OneMask)> = results
+            .iter()
+            .map(|(info, r)| {
+                (
+                    info,
+                    OneMask {
+                        name: &r.name,
+                        dims: r.volume_dims,
+                        mask: &r.mask,
+                        voxels: r.voxels,
+                        frame_of_reference_uid: &r.frame_of_reference_uid,
+                    },
+                )
+            })
+            .collect();
+        let how = OneMaskLanding {
+            tool: &PROMPT_SEG,
+            roi_type: "ORGAN",
+            default_label: "Prompt segmentation",
+            empty_phase: "the prompt produced an empty mask",
+            empty_error:
+                "The prompt produced an empty mask. Try a larger box or a different prompt.",
         };
-        if let Some(group) = first.group.clone() {
-            let n = results.len();
-            let empty = results.iter().filter(|(_, r)| r.voxels == 0).count();
-            let color = self.next_seg_color();
-            let copies: Vec<_> = results
-                .iter()
-                .map(|(info, r)| {
-                    let segs = if r.voxels == 0 {
-                        Vec::new()
-                    } else {
-                        vec![Segmentation::from_label_map(
-                            r.name.clone(),
-                            color,
-                            r.volume_dims,
-                            &r.mask,
-                            1,
-                        )]
-                    };
-                    let notes = (r.voxels == 0)
-                        .then(|| format!("phase {}: the prompt produced an empty mask", info.label))
-                        .into_iter()
-                        .collect();
-                    info.copy(segs, notes)
-                })
-                .collect();
-            let landed = self.land_phases(slot, &group, output.kind, "ORGAN", copies);
-            if landed == 0 {
+        match self.land_one_mask(slot, &output, &how, None, &masks) {
+            OneMaskLanded::Nothing => return,
+            OneMaskLanded::Phases(status) => {
+                if let Some(d) = &mut self.segvol_dialog {
+                    d.status = Some(status);
+                }
                 return;
             }
-            let name = result.name.clone();
-            if let Some(d) = &mut self.segvol_dialog {
-                d.status = Some(format!(
-                    "✔ {name} on {landed} of {n} phases of {group}{}",
-                    if empty > 0 {
-                        format!(" - {empty} came out empty")
-                    } else {
-                        String::new()
-                    }
-                ));
-            }
-            return;
+            OneMaskLanded::Displayed => {}
         }
-        if !self.slot_still_shows(slot, result.volume_dims, &result.frame_of_reference_uid) {
-            self.error = Some(stale_result(&PROMPT_SEG));
+        let Some((_, result)) = results.first() else {
             return;
-        }
-        if result.voxels == 0 {
-            self.error = Some(
-                "The prompt produced an empty mask. Try a larger box or a different prompt.".into(),
-            );
-            return;
-        }
-        let color = self.next_seg_color();
-        let seg = Segmentation::from_label_map(
-            result.name.clone(),
-            color,
-            result.volume_dims,
-            &result.mask,
-            1,
-        );
-        if self.land_masks(slot, &output, "ORGAN", "Prompt segmentation", vec![seg]) == 0 {
-            return;
-        }
+        };
         let cm3 = self.slots[slot].voxels_cm3(result.voxels);
         if let Some(d) = &mut self.segvol_dialog {
             d.status = Some(format!(

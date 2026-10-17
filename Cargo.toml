@@ -1,18 +1,21 @@
 [package]
 name = "rust-dicom-station"
-version = "0.11.7"
+version.workspace = true
 edition = "2021"
 description = "Fast, robust DICOM / RT DICOM viewer in pure Rust (CT/MR volumes, RTSTRUCT, RTDOSE, RTPLAN) with a three-view MPR layout"
 license = "MIT"
 repository = "https://github.com/alexprotom/rust-dicom-station"
 
+# The one version of the viewer and of everything below it (crates/rds-domain),
+# bumped here per release. It stays the first `version = "..."` line of this
+# file and comes before the dependencies: the release workflows read and
+# write it with `sed` (first match) and the installer's packer (`rds-pack`)
+# reads the first `version` key above the dependency table.
+[workspace.package]
+version = "0.11.7"
+
 [dependencies]
 anyhow = "1.0"
-dicom-core = "0.10"
-dicom-dictionary-std = "0.10"
-dicom-object = "0.10"
-dicom-pixeldata = { version = "0.10", features = ["native", "rayon"] }
-dicom-transfer-syntax-registry = "0.10"  # read data sets that carry no file meta group (see dicomfile.rs)
 # `gif` and `jpeg` alongside `png`: the playback recorder writes an animated
 # GIF and *File ▸ Save image* writes a JPEG. Both encoders are pure Rust like
 # everything else here (see app/record.rs and app/snapshot.rs).
@@ -22,100 +25,49 @@ image = { version = "0.25", default-features = false, features = ["png", "gif", 
 png = "0.18"
 egui = "0.36"
 rayon = "1.12"
-walkdir = "2.5"
-
-# ---- the workspace's own crates ----
-# Core types (geometry, volume, progress) and the inference engines (nn,
-# autoseg, segvol, medsam2) are crates of their own, so the engines - burn's
-# wgpu backend above all - are compiled once rather than with every change
-# to the viewer. `lib.rs` re-exports their modules under the paths they had.
-rds-core = { path = "crates/rds-core" }
-rds-engines = { path = "crates/rds-engines", default-features = false }
-serde_json = "1"                    # settings, templates, workflow files, MCP
-# The workflow files (`workflow::graph`) are JSON read and written through
-# serde's derive; serde_json above already pulls serde itself in.
-serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 # The node canvas of the workflow editor (`app/workflow_edit.rs`): pure Rust
 # over egui, the wires, pins, pan and zoom of a node graph.
 egui-snarl = "0.12"
 
-# ---- the MCP server (`rds-mcp`, feature `mcp`) ----
-# Optional: the viewer's default build compiles none of this. The server is a
-# second executable that links the same library and speaks the Model Context
-# Protocol over standard input and output; see docs/mcp.md.
-rmcp = { version = "3.2", optional = true, default-features = false, features = ["server", "macros", "transport-io", "schemars"] }
-# Shared with the PACS server below; `fs`, `io-util`, `net` and `signal` are
-# what that one needs (bodies streamed to disk, its listener, Ctrl+C).
+# ---- the workspace's own crates ----
+# Everything below the window (crates/rds-domain), and under it the core types
+# (crates/rds-core) and the inference engines (crates/rds-engines), are
+# crates of their own, so an edit in the viewer compiles the viewer alone and
+# the engines - burn's wgpu backend above all - are compiled once. `lib.rs`
+# re-exports their modules under the paths they had.
+rds-domain = { path = "crates/rds-domain", default-features = false }
+
+# The MCP server executable (`src/bin/rds-mcp.rs`, feature `mcp`) starts its
+# own runtime; the server itself is `rds_domain::mcp`.
 tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net", "signal"] }
-schemars = { version = "1", optional = true }
-
-# ---- the remote archive, client side (every build, the mobile ones too) ----
-# `src/pacs/` talks to a PACS server (`rds-pacs`, below) over HTTPS through
-# the same `ureq` as the downloads, so every build is a client. `rustls` is
-# named directly only for the certificate pin - a verifier that accepts
-# exactly the one certificate a server was paired with - and with the
-# version and features `ureq` already compiles. `sha2` makes fingerprints
-# and token hashes, `getrandom` the tokens' bytes, `zip` the bundles studies
-# travel in, `toml` reads and writes `pacs.toml` (and the MCP server's
-# `mcp.toml`), `gethostname` names this device when it pairs, `if-addrs`
-# lists this machine's network interfaces (the addresses the operator's
-# window shows other stations; `getifaddrs` on Unix, the IP helper API on
-# Windows, bindings only).
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-sha2 = "0.10"
-base64 = "0.22"
-getrandom = "0.3"
-zip = { version = "2", default-features = false, features = ["deflate"] }
-toml = { version = "1", default-features = false, features = ["parse", "display", "serde", "std"] }
-gethostname = "1"
-if-addrs = "0.15"
-
-# ---- the PACS server (`rds-pacs`, feature `pacs-server`) ----
-# Optional, like the MCP server: a third executable that serves the archive
-# folder to other stations over HTTPS (docs/pacs-server.md). The viewer's
-# default build compiles none of this, and the Android and iOS front ends
-# never enable it, so those are always clients. TLS is rustls with the
-# `ring` provider set explicitly (`tls-rustls-no-provider`), the same one
-# the client side uses; `rcgen` makes the self-signed certificate.
-axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "json", "query", "tokio"] }
-axum-server = { version = "0.8", optional = true, features = ["tls-rustls-no-provider"] }
-rcgen = { version = "0.14", optional = true }
-subtle = { version = "2", optional = true }
-futures-util = { version = "0.3", optional = true, default-features = false, features = ["std"] }
 
 # ---- the desktop window stack (Windows, Linux, macOS) ----
 # The Android build (see `packaging/android/`) is the same library behind a different
 # entry point, so the three things that differ are keyed by target here and
 # the code stays one: the window library's activity glue, the file dialog
-# (`rfd` has no Android backend; `app/pick.rs` draws one in egui there), and
-# the TLS trust store for the weight download (Android has no store that
-# `rustls-native-certs` can read, so the bundled Mozilla roots are used).
+# (`rfd` has no Android backend; `app/pick.rs` draws one in egui there) and,
+# in crates/rds-domain, the TLS trust store for the downloads.
 # The iOS / iPadOS build (see `packaging/ios/`) differs in the same three
 # places and gets a table of its own below; the desktop table leaves it out.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "links", "wgpu", "wayland", "x11"] }
 rfd = "0.17"
-# the test-data download - rustls (pure Rust TLS) with the OS trust store, so
-# corporate/clinical TLS-inspection proxies with custom CAs work (the model
-# weights come through crates/rds-engines, keyed the same way)
-ureq = { version = "2", features = ["native-certs"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 # `android-native-activity`: the activity is Android's own `NativeActivity`,
 # so the package needs no Java or Kotlin. `accesskit` is only offered with
 # the GameActivity glue and is left out here.
 eframe = { version = "0.36", default-features = false, features = ["default_fonts", "links", "wgpu", "android-native-activity"] }
-ureq = { version = "2" }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 # UIKit needs no activity glue: `winit` starts the application itself. No
 # `x11` / `wayland` (nothing to build them for) and no `accesskit` (it has
 # no iOS adapter; `accesskit_winit` would compile to a stub). No `rfd`
 # either - it has no iOS backend, so `app/pick.rs` draws the same egui
-# browser as on Android. And the bundled Mozilla roots for TLS: iOS keeps
-# its trust store where `rustls-native-certs` cannot read it.
+# browser as on Android. (The bundled Mozilla roots for TLS, iOS keeping its
+# trust store where `rustls-native-certs` cannot read it: crates/rds-domain.)
 eframe = { version = "0.36", default-features = false, features = ["default_fonts", "links", "wgpu"] }
-ureq = { version = "2" }
 
 # The Windows executable's icon resource (see `build.rs`). Host-gated: on a
 # Linux or macOS build the crate is never fetched and the script is a no-op.
@@ -125,15 +77,20 @@ winresource = "0.1"
 [features]
 default = ["gpu"]
 # The wgpu inference backend of the engines (see crates/rds-engines).
-gpu = ["rds-engines/gpu"]
+gpu = ["rds-domain/gpu"]
 # The MCP server executable and the `mcp` library module behind it.
-mcp = ["dep:rmcp", "dep:tokio", "dep:schemars"]
+mcp = ["rds-domain/mcp", "dep:tokio"]
 # The PACS server executable and the server half of the `pacs` module.
-pacs-server = ["dep:axum", "dep:axum-server", "dep:tokio", "dep:rcgen", "dep:subtle", "dep:futures-util"]
+pacs-server = ["rds-domain/pacs-server"]
 
-# The MedSAM2 suite drives the engine's modules through burn tensors itself.
 [dev-dependencies]
+# The MedSAM2 suite drives the engine's modules through burn tensors itself.
 burn = { version = "0.21", default-features = false, features = ["std", "ndarray"] }
+# The suites that build or check DICOM files by hand.
+dicom-core = "0.10"
+dicom-dictionary-std = "0.10"
+dicom-object = "0.10"
+dicom-transfer-syntax-registry = "0.10"
 
 [[bin]]
 name = "rds-mcp"
@@ -162,10 +119,10 @@ name = "pacs_mirror"
 required-features = ["pacs-server"]
 
 [workspace]
-members = ["crates/rds-core", "crates/rds-engines"]
+members = ["crates/rds-core", "crates/rds-engines", "crates/rds-domain"]
 # A bare `cargo build` / `test` / `clippy` in the repository root covers all
-# three crates, as it did when they were one.
-default-members = [".", "crates/rds-core", "crates/rds-engines"]
+# four crates, as it did when they were one.
+default-members = [".", "crates/rds-core", "crates/rds-engines", "crates/rds-domain"]
 
 [profile.release]
 opt-level = 3

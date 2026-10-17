@@ -3,6 +3,157 @@
 
 use super::*;
 
+/// What *Prepare phases* answers with: the structure meshes of each phase,
+/// each under the [`ViewerApp::d3_key_of`] the window will look it up by.
+pub(super) type PhaseMeshes = Vec<(u64, Vec<RoiMesh>)>;
+
+/// A floating 3D structure-rendering window (one per study slot).
+/// A segmentation meshing result: the meshes, the generation each was built
+/// from, and the geometry they were built on (see `D3Window::seg_mesh_gens`).
+pub(super) type SegMeshes = (Vec<RoiMesh>, Vec<u64>, u64);
+
+pub(super) struct D3Window {
+    pub(super) slot: usize,
+    pub(super) open: bool,
+    pub(super) yaw: f32,
+    pub(super) pitch: f32,
+    /// Zoom multiplier on the auto-fit scale.
+    pub(super) zoom: f32,
+    pub(super) pan: Vec2,
+    /// The hand: while it is on, dragging with the left button moves the
+    /// scene instead of turning it. Middle-drag pans either way, but a
+    /// wheel mouse is not something every desk has.
+    pub(super) pan_mode: bool,
+    pub(super) opacity: f32,
+    pub(super) meshes: Option<Arc<Vec<RoiMesh>>>,
+    /// Scene bounding-sphere (patient mm) for auto-fit.
+    pub(super) center: [f32; 3],
+    pub(super) radius: f32,
+    /// Identity of the structure set the meshes were built from.
+    pub(super) key: u64,
+    /// Identity of the image the scene stands on ([`ViewerApp::d3_scene_id`]).
+    /// When it changes the camera starts over - turned, zoomed and centred
+    /// for the new anatomy - since a view kept from another image orbits a
+    /// point that is not in this one.
+    pub(super) scene: u64,
+    /// Fit the camera to the meshes when they land: the first time, and
+    /// after the image changed; a rebuild after an edit keeps the view where
+    /// it was.
+    pub(super) refit: bool,
+    /// Counts every set of meshes that landed; the frame cache is keyed on
+    /// it. Only [`super::d3::set_meshes`] may change `meshes`, because a
+    /// set that arrives without bumping this is drawn through the previous
+    /// set's triangle order.
+    pub(super) mesh_gen: u64,
+    /// Geometry hash per ROI the meshes were built from, and the ROIs a
+    /// running partial rebuild replaces (`None`: a full build).
+    pub(super) roi_hashes: Vec<u64>,
+    /// The edit stamp per ROI ([`StudySlot::roi_stamp`]) at the same time,
+    /// and the (set, `settings_gen`) they belong to: while that pair holds,
+    /// the stamps alone say which structures an edit changed.
+    pub(super) roi_stamps: Vec<u64>,
+    pub(super) roi_base: Option<(usize, u64)>,
+    pub(super) rebuilding: Option<Vec<usize>>,
+    /// Isodose surfaces of the workspace's active dose at the isodose lines'
+    /// levels: the meshes (`roi_index` = level index), the build in flight,
+    /// what they were built from, and their opacity.
+    pub(super) show_iso: bool,
+    pub(super) iso_meshes: Option<Arc<Vec<RoiMesh>>>,
+    pub(super) iso_job: Option<Job<Vec<RoiMesh>>>,
+    pub(super) iso_built: u64,
+    pub(super) iso_opacity: f32,
+    /// The *Structures* panel: opacity per structure, times the window's
+    /// own, keyed by ROI index; absent means 1.
+    pub(super) show_list: bool,
+    pub(super) roi_alpha: std::collections::HashMap<usize, f32>,
+    pub(super) job: Option<Job<Vec<RoiMesh>>>,
+    /// Live meshes of the painted segmentations (`roi_index` = seg index).
+    pub(super) seg_meshes: Option<Arc<Vec<RoiMesh>>>,
+    /// The [`Segmentation::gen`] each of `seg_meshes` was built from, in the
+    /// same order, and the volume geometry they were built on: a rebuild
+    /// re-meshes only the segments whose generation it has no mesh for.
+    pub(super) seg_mesh_gens: Vec<u64>,
+    pub(super) seg_geom: u64,
+    pub(super) seg_job: Option<Job<SegMeshes>>,
+    /// Hash of the segmentation state `seg_meshes` was built from.
+    pub(super) seg_built: u64,
+    /// Also draw the *other* workspace's structures, mapped through the active
+    /// registration - the two anatomies in one scene is what makes a
+    /// deformable result readable at all.
+    pub(super) show_other: bool,
+    /// Opacity of that second workspace, independent of this one's.
+    pub(super) other_opacity: f32,
+    pub(super) other_meshes: Option<Arc<Vec<RoiMesh>>>,
+    pub(super) other_job: Option<Job<Vec<RoiMesh>>>,
+    /// Identity of the (structure set, registration) `other_meshes` were
+    /// built from.
+    pub(super) other_key: u64,
+    /// Draw the deformation field as arrows in the scene.
+    pub(super) show_field: bool,
+    /// Paint the surfaces with the dose that falls on them instead of the
+    /// structure's own colour: what a hot spot does to an organ, on the
+    /// organ, rather than on a slice through it.
+    pub(super) show_dose: bool,
+    /// Structure meshes already built, by the key they were built for.
+    /// Each phase of a 4D group has its own structure set, so stepping
+    /// through them would otherwise re-mesh the same anatomy on every
+    /// pass; *Prepare phases* fills this up front so the cine runs.
+    pub(super) mesh_cache: std::collections::HashMap<u64, Arc<Vec<RoiMesh>>>,
+    /// The `structures_gen` the cache was filled at. An edit changes every
+    /// key at once, so the meshes are dropped rather than kept as meshes of
+    /// something that no longer exists.
+    pub(super) mesh_cache_gen: u64,
+    /// The isodose shells, filled as the phases are seen, by the dose and
+    /// lines they were built for: no structure edit touches them.
+    pub(super) iso_cache: std::collections::HashMap<u64, Arc<Vec<RoiMesh>>>,
+    /// Meshing every phase of the group up front.
+    pub(super) prep_job: Option<Job<PhaseMeshes>>,
+    /// Cached projected geometry for the current camera.
+    pub(super) frame: D3Frame,
+}
+
+/// Cached triangle soup of a 3D window.
+///
+/// egui repaints on every pointer move, and projecting + depth-sorting a few
+/// hundred thousand triangles takes several milliseconds, so the soup is
+/// rebuilt only when something it actually depends on changes. The draw
+/// order depends on orientation and visibility alone, so panning and zooming
+/// reuse the existing sort; the turned and shaded vertices (the lighting, the
+/// dose painted on the surface) do not depend on pan or zoom either, so those
+/// only place the kept vertices again.
+#[derive(Default)]
+pub(super) struct D3Frame {
+    /// Identity of the current depth sort (orientation + visibility + meshes).
+    pub(super) order_key: Option<u64>,
+    /// Identity of the turned, shaded vertices: the sort's, plus colours,
+    /// opacities, the dose painted on them and the centre turned about.
+    pub(super) shade_key: Option<u64>,
+    /// Identity of the current projected vertices (also zoom / pan / size).
+    pub(super) vertex_key: Option<u64>,
+    pub(super) mesh: Arc<egui::epaint::Mesh>,
+    /// Per vertex, the turned position across and up the screen before
+    /// scaling and centring: what a pan or a zoom places again.
+    pub(super) base: Vec<[f32; 2]>,
+    /// Triangles in scene order, indexed by the sort below.
+    pub(super) tris: Vec<[u32; 3]>,
+    /// View-space depth per vertex.
+    pub(super) depth: Vec<f32>,
+    /// `(monotone depth key) << 32 | triangle slot`, sorted far-to-near.
+    pub(super) order: Vec<u64>,
+}
+
+/// Map an `f32` to a `u32` that sorts in the same order, so the painter's
+/// algorithm can use a primitive sort instead of a float comparator.
+#[inline]
+fn depth_key(d: f32) -> u32 {
+    let b = d.to_bits();
+    if b & 0x8000_0000 != 0 {
+        !b
+    } else {
+        b ^ 0x8000_0000
+    }
+}
+
 /// The identity of one structure's geometry, for the 3D window's partial
 /// rebuilds.
 ///
@@ -12,7 +163,7 @@ use super::*;
 /// recolour never has to re-mesh anything - and never fails to show, in a
 /// window or in a row, whether or not anything else made the meshes
 /// rebuild.
-fn roi_hash(roi: &crate::rtstruct::Roi) -> u64 {
+pub(super) fn roi_hash(roi: &crate::rtstruct::Roi) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     roi.contours.len().hash(&mut h);
@@ -159,8 +310,66 @@ fn fit_to_meshes(w: &mut D3Window, meshes: &[RoiMesh]) -> bool {
     true
 }
 
+/// The most sets of meshes a window keeps by key, and the most bytes they
+/// may hold together. The count alone let 64 phases of a TotalSegmentator
+/// set, or 64 sets of isodose shells, take hundreds of megabytes.
+const MESH_CACHE_SETS: usize = 64;
+const MESH_CACHE_BYTES: usize = 384 << 20;
+
+/// What a set of meshes holds in memory: vertices, normals and triangles.
+fn meshes_bytes(meshes: &[RoiMesh]) -> usize {
+    meshes
+        .iter()
+        .map(|m| {
+            m.verts.len() * std::mem::size_of::<[f32; 3]>()
+                + m.normals.len() * std::mem::size_of::<[f32; 3]>()
+                + m.tris.len() * std::mem::size_of::<[u32; 3]>()
+        })
+        .sum()
+}
+
+/// File `meshes` under `key` in a window's cache while the cache is under
+/// both of its caps; a full cache simply stops growing, as it always has.
+/// A key already there is replaced whatever the size.
+fn cache_meshes(
+    cache: &mut std::collections::HashMap<u64, Arc<Vec<RoiMesh>>>,
+    key: u64,
+    meshes: Arc<Vec<RoiMesh>>,
+) {
+    if let Some(slot) = cache.get_mut(&key) {
+        *slot = meshes;
+        return;
+    }
+    let used: usize = cache.values().map(|m| meshes_bytes(m)).sum();
+    if cache.len() < MESH_CACHE_SETS && used + meshes_bytes(&meshes) <= MESH_CACHE_BYTES {
+        cache.insert(key, meshes);
+    }
+}
+
 const RESET_TIP: &str =
     "Reset the camera: default angle, centred on the structures, fit zoom and no offset";
+
+/// What a scene reads from the workspaces besides its own window state,
+/// gathered once per frame by [`ViewerApp::d3_inputs`] - the same way for
+/// a window and for a pane of a row, so the two cannot drift apart.
+struct D3Inputs<'a> {
+    /// The ROI ticks of the scene's own workspace.
+    visible: Vec<bool>,
+    /// Name and colour of every ROI of the active set, by index.
+    names: Vec<(String, [u8; 3])>,
+    /// Visibility and live colour of every segment.
+    seg_disp: Vec<(bool, [u8; 3])>,
+    /// The workspace whose structures can be shown through the
+    /// registration ([`ViewerApp::d3_partner`]).
+    other: Option<usize>,
+    /// Its ROI ticks, and whether it has structures at all.
+    other_visible: Vec<bool>,
+    has_other: bool,
+    /// The registration's field when the scene shows its fixed image.
+    reg_here: Option<(Arc<crate::registration::dvf::VectorField>, &'static str)>,
+    /// The dose the surfaces can be painted with, and its reference.
+    dose_here: Option<(&'a crate::rtdose::DoseGrid, f32)>,
+}
 
 /// The camera a scene starts with: the default turn, no zoom, no pan,
 /// looking at `sphere` (centre and radius, patient mm) until meshes land to
@@ -241,6 +450,54 @@ fn structure_list(
 
 impl ViewerApp {
     // -- 3D structure windows ----------------------------------------------
+    /// The workspace a scene of `slot` shows beside its own: the other image
+    /// of the active registration when `slot` holds one of its two, since
+    /// that is the transform the other structures are mapped through, and
+    /// otherwise the next open workspace. Any of the four workspaces may
+    /// be either.
+    fn d3_partner(&self, slot: usize) -> Option<usize> {
+        if let Some(r) = &self.registration {
+            if r.fixed_slot == slot && r.moving_slot != slot {
+                return Some(r.moving_slot);
+            }
+            if r.moving_slot == slot && r.fixed_slot != slot {
+                return Some(r.fixed_slot);
+            }
+        }
+        self.other_open(slot)
+    }
+
+    /// Everything a scene of `slot` reads from the workspaces this frame.
+    fn d3_inputs(&self, slot: usize) -> D3Inputs<'_> {
+        let s = &self.slots[slot];
+        let other = self.d3_partner(slot);
+        D3Inputs {
+            visible: s.roi_visible.clone(),
+            names: s
+                .active_structures()
+                .map(|ss| ss.rois.iter().map(|r| (r.name.clone(), r.color)).collect())
+                .unwrap_or_default(),
+            seg_disp: s.segs().iter().map(|g| (g.visible, g.color)).collect(),
+            other,
+            other_visible: other
+                .map(|o| self.slots[o].roi_visible.clone())
+                .unwrap_or_default(),
+            has_other: other
+                .and_then(|o| self.slots[o].study.as_ref())
+                .is_some_and(|st| !st.structure_sets.is_empty()),
+            reg_here: self
+                .registration
+                .as_ref()
+                .filter(|r| r.shows_fixed(slot, &self.slots))
+                .map(|r| (r.field.clone(), r.result.method.short())),
+            dose_here: s
+                .study
+                .as_ref()
+                .and_then(|st| st.doses.get(s.active_dose))
+                .map(|d| (d, s.dose_reference.max(1e-6))),
+        }
+    }
+
     /// Identity of the structure set a 3D window would be built from.
     pub(super) fn d3_key(&self, slot: usize) -> u64 {
         self.d3_key_of(slot, self.slots[slot].active_structs)
@@ -426,41 +683,66 @@ impl ViewerApp {
             return;
         }
         // An edit invalidates every key at once, so the phase meshes built
-        // before it are not meshes of anything any more.
+        // before it are not meshes of anything any more. The isodose shells
+        // are keyed by the dose and its lines alone, which no structure edit
+        // touches, so they stay.
         if w.mesh_cache_gen != self.structures_gen(w.slot) {
             w.mesh_cache.clear();
-            w.iso_cache.clear();
             w.mesh_cache_gen = self.structures_gen(w.slot);
         }
         w.key = key;
         // Already meshed, most likely by *Prepare phases* or by an earlier
         // pass through the cycle: a phase step is then a pointer swap.
+        let slot_state = &self.slots[w.slot];
+        let set = slot_state.active_structs;
+        let base = Some((set, self.settings_gen));
+        let stamps =
+            |n: usize| -> Vec<u64> { (0..n).map(|i| slot_state.roi_stamp(set, i)).collect() };
         if let Some(cached) = w.mesh_cache.get(&key).cloned() {
             set_meshes(w, cached);
-            w.roi_hashes = self.slots[w.slot]
+            w.roi_hashes = slot_state
                 .active_structures()
                 .map(|ss| ss.rois.iter().map(roi_hash).collect())
                 .unwrap_or_default();
+            w.roi_stamps = stamps(w.roi_hashes.len());
+            w.roi_base = base;
             w.rebuilding = None;
             return;
         }
-        let Some(ss) = self.slots[w.slot].active_structures() else {
+        let Some(ss) = slot_state.active_structures() else {
             set_meshes(w, Arc::new(Vec::new()));
             w.roi_hashes.clear();
+            w.roi_stamps.clear();
+            w.roi_base = None;
             return;
         };
         // Only the structures whose contours changed are meshed again: a
         // drag of a chamber volume must not re-mesh the heart every sample.
-        let hashes: Vec<u64> = ss.rois.iter().map(roi_hash).collect();
-        let partial = w.meshes.is_some() && w.roi_hashes.len() == hashes.len();
-        let changed: Vec<usize> = if partial {
-            (0..hashes.len())
-                .filter(|&i| hashes[i] != w.roi_hashes[i])
-                .collect()
+        let n = ss.rois.len();
+        let now = stamps(n);
+        let partial = w.meshes.is_some() && w.roi_hashes.len() == n;
+        let changed: Vec<usize> = if partial && w.roi_base == base && w.roi_stamps.len() == n {
+            // Nothing but contour edits since the last look, and an edit
+            // stamps the one structure it wrote: walking the points of
+            // every structure to find it cost a hash of the whole set per
+            // brush sample. Only the stamped ones are hashed again.
+            let changed: Vec<usize> = (0..n).filter(|&i| now[i] != w.roi_stamps[i]).collect();
+            for &i in &changed {
+                w.roi_hashes[i] = roi_hash(&ss.rois[i]);
+            }
+            changed
         } else {
-            (0..hashes.len()).collect()
+            let hashes: Vec<u64> = ss.rois.iter().map(roi_hash).collect();
+            let changed = if partial {
+                (0..n).filter(|&i| hashes[i] != w.roi_hashes[i]).collect()
+            } else {
+                (0..n).collect()
+            };
+            w.roi_hashes = hashes;
+            changed
         };
-        w.roi_hashes = hashes;
+        w.roi_stamps = now;
+        w.roi_base = base;
         if changed.is_empty() {
             return;
         }
@@ -551,6 +833,8 @@ impl ViewerApp {
             refit: true,
             mesh_gen: 0,
             roi_hashes: Vec::new(),
+            roi_stamps: Vec::new(),
+            roi_base: None,
             rebuilding: None,
             show_iso: false,
             iso_meshes: None,
@@ -579,7 +863,7 @@ impl ViewerApp {
                 let mut err = None;
                 if let Some(built) = poll_job(&mut w.prep_job, ctx, "Phase meshing", &mut err) {
                     for (key, meshes) in built {
-                        w.mesh_cache.insert(key, Arc::new(meshes));
+                        cache_meshes(&mut w.mesh_cache, key, Arc::new(meshes));
                     }
                     // The phase on display may be one of the ones just
                     // built: take it from the cache now.
@@ -621,9 +905,7 @@ impl ViewerApp {
                     let meshes = Arc::new(meshes);
                     // File it under the key it was built for, so stepping
                     // back onto this phase later costs nothing.
-                    if w.mesh_cache.len() < 64 {
-                        w.mesh_cache.insert(w.key, meshes.clone());
-                    }
+                    cache_meshes(&mut w.mesh_cache, w.key, meshes.clone());
                     set_meshes(w, meshes);
                 }
                 self.error = self.error.take().or(err);
@@ -723,21 +1005,21 @@ impl ViewerApp {
                     w.other_meshes = Some(Arc::new(m));
                 }
                 self.error = self.error.take().or(err);
-                let other = 1 - w.slot;
-                let key = self
-                    .registration
-                    .as_ref()
-                    .map(|_| {
+                let other = self.d3_partner(w.slot);
+                let key = match (&self.registration, other) {
+                    (Some(_), Some(other)) => {
                         let mut h = self.d3_key(other);
                         h = mix(h, self.reg_gen);
+                        h = mix(h, other as u64);
                         mix(h, w.show_other as u64)
-                    })
-                    .unwrap_or(0);
+                    }
+                    _ => 0,
+                };
                 if w.show_other && w.other_job.is_none() && w.other_key != key {
                     w.other_key = key;
                     w.other_meshes = None;
                     let reg = self.registration.as_ref();
-                    let ss = self.slots[other].active_structures().cloned();
+                    let ss = other.and_then(|o| self.slots[o].active_structures().cloned());
                     if let (Some(reg), Some(ss)) = (reg, ss) {
                         // The transform maps fixed → moving. Whichever of the
                         // two this window shows, the *other* workspace has to
@@ -798,9 +1080,7 @@ impl ViewerApp {
                 let mut err = None;
                 if let Some(m) = poll_job(&mut w.iso_job, ctx, "Isodose meshing", &mut err) {
                     let m = Arc::new(m);
-                    if w.iso_cache.len() < 64 {
-                        w.iso_cache.insert(w.iso_built, m.clone());
-                    }
+                    cache_meshes(&mut w.iso_cache, w.iso_built, m.clone());
                     w.iso_meshes = Some(m);
                 }
                 self.error = self.error.take().or(err);
@@ -814,6 +1094,11 @@ impl ViewerApp {
                         for b in d.sop_instance_uid.bytes() {
                             h = mix(h, b as u64);
                         }
+                        // The UID can be empty and the index can shift when a
+                        // dose is removed: the grid itself says which it is.
+                        h = mix(h, d.data.as_ptr() as u64);
+                        h = mix(h, d.data.len() as u64);
+                        h = mix(h, d.max_dose.to_bits() as u64);
                         h = mix(h, self.slots[w.slot].dose_reference.to_bits() as u64);
                         for l in self.iso_levels.iter().filter(|l| l.on) {
                             h = mix(h, l.pct.to_bits() as u64);
@@ -880,36 +1165,21 @@ impl ViewerApp {
             if !w.open {
                 continue;
             }
-            let visible: &[bool] = &self.slots[w.slot].roi_visible;
-            let names: Vec<(String, [u8; 3])> = self.slots[w.slot]
-                .active_structures()
-                .map(|ss| ss.rois.iter().map(|r| (r.name.clone(), r.color)).collect())
-                .unwrap_or_default();
-            // Snapshot of segmentation display state (visibility + live color).
-            let seg_disp: Vec<(bool, [u8; 3])> = self.slots[w.slot]
-                .segs()
-                .iter()
-                .map(|s| (s.visible, s.color))
-                .collect();
-            let other_visible: Vec<bool> = self.slots[1 - w.slot].roi_visible.clone();
-            let has_other = self.slots[1 - w.slot]
-                .study
-                .as_ref()
-                .map(|s| !s.structure_sets.is_empty())
-                .unwrap_or(false);
-            let reg_here = self
-                .registration
-                .as_ref()
-                .filter(|r| r.shows_fixed(w.slot, &self.slots))
-                .map(|r| (r.field.clone(), r.result.method.short()));
+            // What the scene reads from the workspaces, gathered as a pane
+            // gathers it.
+            let D3Inputs {
+                visible,
+                names,
+                seg_disp,
+                other,
+                other_visible,
+                has_other,
+                reg_here,
+                dose_here,
+            } = self.d3_inputs(w.slot);
+            let visible = visible.as_slice();
             let registered = self.registration.is_some();
-            // The dose the surfaces can be painted with: the one selected in
-            // this workspace, with its own reference for the colour scale.
-            let dose_here: Option<(&crate::rtdose::DoseGrid, f32)> = self.slots[w.slot]
-                .study
-                .as_ref()
-                .and_then(|st| st.doses.get(self.slots[w.slot].active_dose))
-                .map(|d| (d, self.slots[w.slot].dose_reference.max(1e-6)));
+            let other_name = other.map(|o| SLOT_NAMES[o]).unwrap_or("-");
             // The 4D transport of this window. It starts the same run the
             // viewports' ▶4D does - there is one phase per workspace, and this
             // window follows it - so the two buttons are the same button in
@@ -1050,10 +1320,7 @@ impl ViewerApp {
                                 has_other,
                                 egui::Checkbox::new(
                                     &mut w.show_other,
-                                    format!(
-                                        "Workspace {} through the registration",
-                                        SLOT_NAMES[1 - w.slot]
-                                    ),
+                                    format!("Workspace {other_name} through the registration"),
                                 ),
                             )
                             .on_hover_text(
@@ -1065,7 +1332,7 @@ impl ViewerApp {
                             if w.show_other {
                                 ui.add(
                                     egui::Slider::new(&mut w.other_opacity, 0.1..=1.0)
-                                        .text(SLOT_NAMES[1 - w.slot]),
+                                        .text(other_name),
                                 );
                             }
                         });
@@ -1148,36 +1415,21 @@ impl ViewerApp {
             self.d3_windows = windows;
             return;
         };
-        let visible: Vec<bool> = self.slots[slot].roi_visible.clone();
-        let seg_disp: Vec<(bool, [u8; 3])> = self.slots[slot]
-            .segs()
-            .iter()
-            .map(|s| (s.visible, s.color))
-            .collect();
-        // The structures of the workspace this one is paired with, drawn
-        // faintly beside its own.
-        let other_visible: Vec<bool> = self
-            .other_open(slot)
-            .map(|o| self.slots[o].roi_visible.clone())
-            .unwrap_or_default();
-        let reg_here = self
-            .registration
-            .as_ref()
-            .filter(|r| r.shows_fixed(slot, &self.slots))
-            .map(|r| (r.field.clone(), r.result.method.short()));
-        let dose_here: Option<(&crate::rtdose::DoseGrid, f32)> = self.slots[slot]
-            .study
-            .as_ref()
-            .and_then(|st| st.doses.get(self.slots[slot].active_dose))
-            .map(|d| (d, self.slots[slot].dose_reference.max(1e-6)));
+        // Gathered as the window gathers them; the pane has no use for the
+        // pairing itself, only for the other workspace's ticks.
+        let D3Inputs {
+            visible,
+            names,
+            seg_disp,
+            other_visible,
+            reg_here,
+            dose_here,
+            ..
+        } = self.d3_inputs(slot);
         // Worked out first, drawn last: the scene fills the whole pane, so
         // it has to know which parts of it the buttons own before it reads
         // a drag, and the buttons have to be registered after it so they
         // sit on top and get the hover.
-        let names: Vec<(String, [u8; 3])> = self.slots[slot]
-            .active_structures()
-            .map(|ss| ss.rois.iter().map(|r| (r.name.clone(), r.color)).collect())
-            .unwrap_or_default();
         let bar = Self::d3_pane_bar(
             ui,
             rect,
@@ -1685,42 +1937,59 @@ impl ViewerApp {
             }
         }
         let paint_dose = w.show_dose && dose_here.is_some();
-        let mut vertex_key = mix(order_key, scale.to_bits() as u64);
-        vertex_key = mix(vertex_key, paint_dose as u64);
+        // What the shaded, turned vertices depend on: everything but where
+        // the scene sits on screen and how large. A pan or a zoom keeps
+        // them and only places them again (below).
+        let mut shade_key = mix(order_key, paint_dose as u64);
         if paint_dose {
             let (_, reference) = dose_here.as_ref().expect("checked");
-            vertex_key = mix(vertex_key, reference.to_bits() as u64);
+            shade_key = mix(shade_key, reference.to_bits() as u64);
         }
-        vertex_key = mix(vertex_key, cx.to_bits() as u64);
-        vertex_key = mix(vertex_key, cyc.to_bits() as u64);
         // The point the scene turns about: a camera started over for a new
         // image can land on the same scale with a different centre.
         for c in w.center {
-            vertex_key = mix(vertex_key, c.to_bits() as u64);
+            shade_key = mix(shade_key, c.to_bits() as u64);
         }
-        vertex_key = mix(vertex_key, alpha as u64);
-        vertex_key = mix(vertex_key, other_alpha as u64);
+        shade_key = mix(shade_key, alpha as u64);
+        shade_key = mix(shade_key, other_alpha as u64);
         if let Some(im) = &iso_meshes {
             order_key = mix(order_key, Arc::as_ptr(im) as u64);
             order_key = mix(order_key, w.iso_built);
-            vertex_key = mix(vertex_key, iso_alpha as u64);
+            shade_key = mix(shade_key, iso_alpha as u64);
         }
+        // The shells are part of the soup too: the full order key, so new
+        // shells are shaded even when nothing else moved.
+        shade_key = mix(shade_key, order_key);
         for (i, a) in &w.roi_alpha {
-            vertex_key = mix(vertex_key, (*i as u64) << 32 | a.to_bits() as u64);
+            shade_key = mix(shade_key, (*i as u64) << 32 | a.to_bits() as u64);
         }
         // Structure and segmentation colours are applied live at draw
-        // time, so they are part of what the projected vertices depend on.
+        // time, so they are part of what the shaded vertices depend on.
         for c in names
             .iter()
             .map(|(_, c)| c)
             .chain(seg_disp.iter().map(|(_, c)| c))
         {
-            vertex_key = mix(
-                vertex_key,
+            shade_key = mix(
+                shade_key,
                 (c[0] as u64) | ((c[1] as u64) << 8) | ((c[2] as u64) << 16),
             );
         }
+        let mut vertex_key = mix(shade_key, scale.to_bits() as u64);
+        vertex_key = mix(vertex_key, cx.to_bits() as u64);
+        vertex_key = mix(vertex_key, cyc.to_bits() as u64);
 
+        if w.frame.shade_key == Some(shade_key) && w.frame.vertex_key != Some(vertex_key) {
+            // Only moved or zoomed: the same turned and shaded vertices,
+            // placed again by the same expression as when they were made,
+            // so the picture is exactly what a full rebuild would draw.
+            let f = &mut w.frame;
+            let mesh = Arc::make_mut(&mut f.mesh);
+            for (v, b) in mesh.vertices.iter_mut().zip(&f.base) {
+                v.pos = Pos2::new(cx + b[0] * scale, cyc - b[1] * scale);
+            }
+            f.vertex_key = Some(vertex_key);
+        }
         if w.frame.vertex_key != Some(vertex_key) {
             let (sy, cy) = w.yaw.sin_cos();
             let (sp, cp) = w.pitch.sin_cos();
@@ -1746,6 +2015,7 @@ impl ViewerApp {
             let mesh = Arc::make_mut(&mut f.mesh);
             mesh.vertices.clear();
             f.depth.clear();
+            f.base.clear();
             if reorder {
                 f.tris.clear();
             }
@@ -1831,6 +2101,7 @@ impl ViewerApp {
                         color: col,
                     });
                     f.depth.push(t[1]);
+                    f.base.push([t[0], t[2]]);
                 }
                 if reorder {
                     f.tris.extend(
@@ -1863,6 +2134,7 @@ impl ViewerApp {
                 f.order_key = Some(order_key);
             }
             f.vertex_key = Some(vertex_key);
+            f.shade_key = Some(shade_key);
         }
 
         painter.add(egui::Shape::Mesh(w.frame.mesh.clone()));

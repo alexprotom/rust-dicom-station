@@ -38,7 +38,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use android_activity::AndroidApp;
-use rust_dicom_station::{app, gfx, settings};
+use rust_dicom_station::{app, gfx, gfx_wgpu, settings};
 
 mod clipboard;
 mod insets;
@@ -106,7 +106,7 @@ fn android_main(app: AndroidApp) {
 
     let mut wgpu_options = eframe::WgpuConfiguration::default();
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
-        setup.instance_descriptor.backends = backend.bits();
+        setup.instance_descriptor.backends = gfx_wgpu::bits(backend);
     }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_title("Rust DICOM Station: Viewer"),

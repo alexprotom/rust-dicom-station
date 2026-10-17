@@ -13,6 +13,113 @@ use super::*;
 use crate::app::combine::ItemRef;
 use crate::registration::{analysis, LandmarkKernel, RegParams, Warp};
 
+/// A completed registration plus the two images it was run on.
+///
+/// The images are named by workspace slot and series UID, and their volumes
+/// are kept: a registration may pair any two series - the displayed one of
+/// A with a phase of B, or a cardiac CT with a 4DCT phase of the *same*
+/// workspace - so nothing here assumes the two slots display them. The views
+/// check, per slot, whether what is on show is the fixed or the moving
+/// image and draw the fusion, the field and the crosshair link accordingly.
+pub(super) struct ActiveRegistration {
+    pub(super) result: RegistrationResult,
+    /// The fixed image: the transform maps its patient coordinates into the
+    /// moving image's. The field is sampled on it and drawn where it shows.
+    pub(super) fixed_slot: usize,
+    pub(super) fixed_uid: String,
+    pub(super) fixed_vol: Arc<Volume>,
+    /// The moving image.
+    pub(super) moving_slot: usize,
+    pub(super) moving_uid: String,
+    pub(super) moving_vol: Arc<Volume>,
+    /// The displacement field sampled from the transform, so the views draw
+    /// a lattice lookup instead of evaluating the transform per pixel.
+    pub(super) field: Arc<VectorField>,
+    /// The region the run was restricted to, kept so the field can be
+    /// re-sampled at a different lattice without rebuilding the mask.
+    pub(super) region: Option<Arc<RegionMask>>,
+    /// The phase of the group registration this is, when it was installed
+    /// from there to be looked at: clearing it leaves the group alone.
+    pub(super) group_phase: Option<String>,
+    /// Per-structure Dice, filled the first time it is asked for.
+    ///
+    /// Not computed with the rest of the analysis: it needs a mask
+    /// rasterized and propagated per structure, which is a second of work on
+    /// a real study - fine on a button, wrong every frame. It lives on the
+    /// registration, so installing another one throws the scores away with
+    /// the transform they belong to.
+    pub(super) struct_dice: Option<Vec<StructDice>>,
+    /// Per structure, when the registration was made by structures.
+    pub(super) shape_report: Option<registration::ShapeReport>,
+}
+
+/// One structure scored against its namesake in the other workspace.
+#[derive(Clone, Debug)]
+pub(super) struct StructDice {
+    pub(super) name: String,
+    pub(super) color: [u8; 3],
+    /// Dice of the fixed workspace's structure against the moving workspace's,
+    /// carried through the transform.
+    pub(super) after: f64,
+    /// The same two structures with no transform at all - what they already
+    /// had in common. A registration that does not raise this did not help
+    /// this structure.
+    pub(super) before: f64,
+    pub(super) fixed_cm3: f64,
+    pub(super) moving_cm3: f64,
+}
+
+impl ActiveRegistration {
+    /// Whether `slot` currently displays the fixed image.
+    pub(super) fn shows_fixed(&self, slot: usize, slots: &[StudySlot; MAX_WORKSPACES]) -> bool {
+        slot == self.fixed_slot && slots[slot].displayed_uid() == Some(self.fixed_uid.as_str())
+    }
+
+    /// Whether `slot` currently displays the moving image.
+    pub(super) fn shows_moving(&self, slot: usize, slots: &[StudySlot; MAX_WORKSPACES]) -> bool {
+        slot == self.moving_slot && slots[slot].displayed_uid() == Some(self.moving_uid.as_str())
+    }
+
+    /// Whether the fusion overlay belongs on `slot` for the chosen side:
+    /// on the fixed image, the moving one is warped onto it; on the moving
+    /// image, the fixed one comes the other way.
+    pub(super) fn fusion_on_slot(
+        &self,
+        slot: usize,
+        side: FusionSide,
+        slots: &[StudySlot; MAX_WORKSPACES],
+    ) -> bool {
+        match side {
+            FusionSide::Fixed => self.shows_fixed(slot, slots),
+            FusionSide::Moving => self.shows_moving(slot, slots),
+        }
+    }
+
+    /// `A · 3 CCT ...` for the two images.
+    pub(super) fn describe(&self, slots: &[StudySlot; MAX_WORKSPACES]) -> (String, String) {
+        let name = |slot: usize, uid: &str| {
+            let series = slots[slot]
+                .study
+                .as_ref()
+                .and_then(|st| st.series.iter().position(|se| se.uid == uid))
+                .map(|i| format!("{}", i + 1))
+                .unwrap_or_else(|| "?".into());
+            format!("{} · {series}", SLOT_NAMES[slot])
+        };
+        (
+            name(self.fixed_slot, &self.fixed_uid),
+            name(self.moving_slot, &self.moving_uid),
+        )
+    }
+}
+
+/// Which of the two registered images the fusion overlay is drawn on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum FusionSide {
+    Fixed,
+    Moving,
+}
+
 /// What restricts the next registration: everything, or one structure.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum RegRoi {
@@ -949,22 +1056,22 @@ impl ViewerApp {
             ui.separator();
             return;
         }
-        let mut run: Option<bool> = None;
+        let run: Option<bool> = None;
         let mut cancel = false;
-        let mut clear = false;
-        let mut propagate_from: Option<usize> = None;
-        let mut resample = false;
-        let mut add_landmark = false;
-        let mut drop_landmark: Option<usize> = None;
-        let mut clear_landmarks = false;
-        let mut save_field = false;
-        let mut run_group: Option<(RegPick, usize, usize)> = None;
-        let mut clear_group = false;
-        let mut show_phase: Option<usize> = None;
-        let mut hide_field = false;
-        let mut score_structs = false;
-        let mut apply_matrix = false;
-        let mut shape_act: Option<reg_shape::ShapeAction> = None;
+        let clear = false;
+        let propagate_from: Option<usize> = None;
+        let resample = false;
+        let add_landmark = false;
+        let drop_landmark: Option<usize> = None;
+        let clear_landmarks = false;
+        let save_field = false;
+        let run_group: Option<(RegPick, usize, usize)> = None;
+        let clear_group = false;
+        let show_phase: Option<usize> = None;
+        let hide_field = false;
+        let score_structs = false;
+        let apply_matrix = false;
+        let shape_act: Option<reg_shape::ShapeAction> = None;
         // 4D groups either workspace offers, keyed the way `reg_group` is.
         let group_choices: Vec<((usize, usize), String)> = self
             .propagate_group_choices()
@@ -984,6 +1091,26 @@ impl ViewerApp {
             self.reg_group = None;
         }
 
+        let mut rf = RegForm {
+            run,
+            clear,
+            propagate_from,
+            resample,
+            add_landmark,
+            drop_landmark,
+            clear_landmarks,
+            save_field,
+            run_group,
+            clear_group,
+            show_phase,
+            hide_field,
+            score_structs,
+            apply_matrix,
+            shape_act,
+            group_choices,
+            both,
+            fixed_slot: 0,
+        };
         egui::CollapsingHeader::new(egui::RichText::new("Image registration").strong())
             .default_open(false)
             .show(ui, |ui| {
@@ -999,702 +1126,30 @@ impl ViewerApp {
                     return;
                 }
 
-                // ---- the two images ----
-                // Any series of either workspace can be the fixed or the moving
-                // image - the displayed ones, a phase of a 4DCT, a cardiac CT
-                // against a phase of the same workspace. The fixed image may
-                // also be every phase of a 4D group: one registration per
-                // phase, since the phases differ by breathing, which is the
-                // whole reason the acquisition exists.
-                self.settle_reg_picks();
-                let choices = self.reg_choices();
-                let fixed_slot = self.reg_fixed.slot;
-                let label_of = |p: RegPick| {
-                    choices
-                        .iter()
-                        .find(|c| c.pick == p)
-                        .map(|c| c.label.clone())
-                        .unwrap_or_else(|| "(none)".into())
-                };
-                // Everything the run is made of, one form: the two
-                // images, the method, the region and where the search
-                // starts.
-                form::form(ui, "reg_setup", |f| {
-                    f.row_tip(
-                        "Fixed image",
-                        "The image the other is aligned onto; the transform maps its \
-                         coordinates into the moving image's. A series that is not on \
-                         display is loaded for the run.",
-                        |ui| {
-                            let current = match self.reg_group {
-                                None => label_of(self.reg_fixed),
-                                Some(k) => group_choices
-                                    .iter()
-                                    .find(|(g, _)| *g == k)
-                                    .map(|(_, l)| l.clone())
-                                    .unwrap_or_default(),
-                            };
-                            egui::ComboBox::from_id_salt("reg_fixed_image")
-                                .selected_text(current)
-                                .width(230.0)
-                                .show_ui(ui, |ui| {
-                                    for c in &choices {
-                                        let mark = if c.displayed { " (displayed)" } else { "" };
-                                        if ui
-                                            .selectable_label(
-                                                self.reg_group.is_none()
-                                                    && self.reg_fixed == c.pick,
-                                                format!("{}{mark}", c.label),
-                                            )
-                                            .clicked()
-                                        {
-                                            self.reg_fixed = c.pick;
-                                            self.reg_group = None;
-                                        }
-                                    }
-                                    if !group_choices.is_empty() {
-                                        ui.separator();
-                                        for (key, label) in &group_choices {
-                                            ui.selectable_value(
-                                                &mut self.reg_group,
-                                                Some(*key),
-                                                format!("every phase of {label}"),
-                                            );
-                                        }
-                                    }
-                                });
-                        },
-                    );
-                    f.row_tip(
-                        "Moving image",
-                        "The image that is moved and deformed onto the fixed one",
-                        |ui| {
-                            egui::ComboBox::from_id_salt("reg_moving_image")
-                                .selected_text(label_of(self.reg_moving))
-                                .width(230.0)
-                                .show_ui(ui, |ui| {
-                                    for c in &choices {
-                                        let mark = if c.displayed { " (displayed)" } else { "" };
-                                        ui.selectable_value(
-                                            &mut self.reg_moving,
-                                            c.pick,
-                                            format!("{}{mark}", c.label),
-                                        );
-                                    }
-                                });
-                        },
-                    );
-                    if self.reg_group.is_some() {
-                        f.wide(|ui| {
-                            ui.weak(
-                                "Every phase is registered on its own against the moving \
-                                 image. The transforms are kept, so sending structures to \
-                                 the same group afterwards costs no registration at all.",
-                            );
-                        });
-                    } else if self.reg_fixed.slot == self.reg_moving.slot {
-                        f.wide(|ui| {
-                            ui.weak(
-                                "Two series of one workspace. The fusion overlay needs each \
-                                 on display in its own workspace: load the same folder as \
-                                 the other workspace to see it; propagation works either \
-                                 way.",
-                            );
-                        });
-                    }
-
-                    // ---- method ----
-                    f.row("Method", |ui| {
-                        egui::ComboBox::from_id_salt("reg_method")
-                            .selected_text(self.reg_method.short())
-                            .width(190.0)
-                            .show_ui(ui, |ui| {
-                                for m in RegMethod::ALL {
-                                    ui.selectable_value(&mut self.reg_method, m, m.short())
-                                        .on_hover_text(m.hint());
-                                }
-                            });
-                    });
-                    f.wide(|ui| {
-                        ui.weak(self.reg_method.hint());
-                    });
-
-                    // ---- region ----
-                    let region_choices = self.region_choices_for(fixed_slot);
-                    if self.region_label(fixed_slot).is_none() {
-                        self.reg_roi = RegRoi::Whole;
-                    }
-                    f.row_tip(
-                        "Region",
-                        "Restrict the registration to one structure of the fixed \
-                         workspace. Samples come from inside it only and the B-spline \
-                         lattice covers it alone, so a small structure can be aligned at a \
-                         fine grid - and, when it refines an existing result, the rest of \
-                         the patient keeps that result untouched.",
-                        |ui| {
-                            let current = self
-                                .region_label(fixed_slot)
-                                .unwrap_or_else(|| "Whole image".into());
-                            egui::ComboBox::from_id_salt("reg_roi")
-                                .selected_text(current)
-                                .width(190.0)
-                                .show_ui(ui, |ui| {
-                                    for (choice, label) in &region_choices {
-                                        ui.selectable_value(&mut self.reg_roi, *choice, label);
-                                    }
-                                });
-                        },
-                    );
-                    if self.reg_roi != RegRoi::Whole {
-                        f.row_tip(
-                            "Margin",
-                            "The structure is grown by this much before sampling. Without a \
-                             margin nothing outside the structure constrains its boundary, \
-                             and the boundary is what you are aligning.",
-                            |ui| {
-                                ui.add(
-                                    egui::DragValue::new(&mut self.reg_margin_mm)
-                                        .speed(1.0)
-                                        .range(0.0..=60.0)
-                                        .suffix(" mm"),
-                                );
-                            },
-                        );
-                    }
-
-                    // ---- initialisation ----
-                    let init_choices = self.init_choices_for(fixed_slot);
-                    if !init_choices.iter().any(|(c, _)| *c == self.reg_init) {
-                        self.reg_init = RegInit::Auto;
-                    }
-                    f.row_tip(
-                        "Start from",
-                        "Where the search begins. The engines take steps of a few \
-                         millimetres, so two images that do not overlap at the identity \
-                         (different frames of reference: a cardiac CT and a 4DCT) never \
-                         find each other. Automatic keeps the identity when they overlap \
-                         and matches the centres of gravity when they do not; a structure \
-                         contoured on both workspaces matches its centroids, which is the \
-                         surest start for an organ.",
-                        |ui| {
-                            let current = init_choices
-                                .iter()
-                                .find(|(c, _)| *c == self.reg_init)
-                                .map(|(_, l)| l.clone())
-                                .unwrap_or_default();
-                            egui::ComboBox::from_id_salt("reg_init")
-                                .selected_text(current)
-                                .width(190.0)
-                                .show_ui(ui, |ui| {
-                                    for (choice, label) in &init_choices {
-                                        ui.selectable_value(&mut self.reg_init, *choice, label);
-                                    }
-                                });
-                        },
-                    );
-                });
-
-                // ---- parameters ----
-                egui::CollapsingHeader::new("Parameters")
-                    .id_salt("reg_params")
-                    .default_open(false)
-                    .show(ui, |ui| self.parameter_rows(ui));
-
-                // ---- landmarks ----
-                if self.reg_method == RegMethod::PlastimatchLandmark {
-                    let residuals =
-                        match self.registration.as_ref().map(|r| &r.result.transform.warp) {
-                            Some(Warp::Rbf(w)) if w.centers.len() == self.reg_landmarks.len() => {
-                                Some(w.residuals())
-                            }
-                            _ => None,
-                        };
-                    egui::CollapsingHeader::new(format!(
-                        "Landmarks ({})",
-                        self.reg_landmarks.len()
-                    ))
-                    .id_salt("reg_landmarks")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            if tip_button(
-                                ui,
-                                "➕ Add pair",
-                                "Take the crosshair of each workspace as one pair. Put \
-                                 both crosshairs on the same anatomy first - and turn \
-                                 off View ▶ Sync crosshairs, or they move together.",
-                            ) {
-                                add_landmark = true;
-                            }
-                            if ui
-                                .add_enabled(
-                                    !self.reg_landmarks.is_empty(),
-                                    egui::Button::new("Clear all"),
-                                )
-                                .clicked()
-                            {
-                                clear_landmarks = true;
-                            }
-                        });
-                        if self.reg_landmarks.is_empty() {
-                            ui.weak("No pairs yet.");
-                        }
-                        egui::ScrollArea::vertical()
-                            .max_height(160.0)
-                            .show(ui, |ui| {
-                                for (i, l) in self.reg_landmarks.iter().enumerate() {
-                                    ui.horizontal(|ui| {
-                                        if ui.small_button("🗑").clicked() {
-                                            drop_landmark = Some(i);
-                                        }
-                                        let d = l.displacement();
-                                        ui.monospace(format!("{}: {:.1} mm", l.name, d.length()))
-                                            .on_hover_text(format!(
-                                        "fixed ({:.1}, {:.1}, {:.1})\nmoving ({:.1}, {:.1}, {:.1})",
-                                        l.fixed.x,
-                                        l.fixed.y,
-                                        l.fixed.z,
-                                        l.moving.x,
-                                        l.moving.y,
-                                        l.moving.z
-                                    ));
-                                        if let Some(r) = residuals.as_ref().and_then(|r| r.get(i)) {
-                                            ui.weak(format!("residual {r:.2} mm"));
-                                        }
-                                    });
-                                }
-                            });
-                    });
-                }
-
-                // ---- run ----
-                if let Some((gslot, group)) = self.reg_group {
-                    let n = self.group_phase_count(gslot, group);
-                    let moving_ok = self.pick_series(self.reg_moving).is_some();
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(
-                                n >= 2 && moving_ok && self.propagate_job.is_none(),
-                                egui::Button::new(format!("▶ Register {n} phases")),
-                            )
-                            .on_hover_text("One registration per phase, against the moving image")
-                            .clicked()
-                        {
-                            run_group = Some((self.reg_moving, gslot, group));
-                        }
-                    });
-                    if self.propagate_job.is_some() {
-                        ui.weak("A run against a group is already going.");
-                    } else if !moving_ok {
-                        ui.weak("Pick a moving image.");
-                    }
-                } else {
-                    let can_refine = self
-                        .registration
-                        .as_ref()
-                        .is_some_and(|r| r.fixed_slot == fixed_slot)
-                        && self.reg_method.is_deformable();
-                    ui.horizontal(|ui| {
-                        if enabled_tip_button(
-                            ui,
-                            both,
-                            "▶ Register",
-                            "Recover the transform from scratch",
-                        ) {
-                            run = Some(false);
-                        }
-                        if enabled_tip_button(
-                            ui,
-                            both && can_refine,
-                            "▶ Refine",
-                            "Recover a correction on top of the active registration and \
-                             add the two together - how a local registration is meant to \
-                             be used after a global one",
-                        ) {
-                            run = Some(true);
-                        }
-                    });
-                    if !both {
-                        ui.weak("Load two workspaces (comparison mode) first");
-                    }
-                    // The same two images, aligned on structures contoured
-                    // on both instead of on their voxel values.
-                    egui::CollapsingHeader::new("Align by structures")
-                        .id_salt("reg_shape")
-                        .default_open(false)
-                        .show(ui, |ui| {
-                            shape_act = self.shape_section(ui, both);
-                        });
-                    // A CT against its own radiographs: one workspace is
-                    // enough.
-                    if self.reg2d3d_relevant() {
-                        egui::CollapsingHeader::new(reg2d3d::REG2D3D_TOOL.menu_entry())
-                            .id_salt("reg2d3d")
-                            .default_open(false)
-                            .show(ui, |ui| self.reg2d3d_section(ui));
-                    }
-                    // A transform that is already known does not have to be
-                    // recovered: type it in and apply it, and everything
-                    // downstream - fusion, the crosshair link, propagation,
-                    // the vector field - reads it as it reads any other.
-                    egui::CollapsingHeader::new("Transform matrix")
-                        .default_open(false)
-                        .show(ui, |ui| {
-                            // Every transform this module has produced: the
-                            // active registration, and - after a group run -
-                            // each phase's own. One grid, a picker above it.
-                            let (choices, deformable) = self.reg_matrix_choices();
-                            if choices.is_empty() {
-                                ui.weak(
-                                    "Nothing has been registered yet, so there is no \
-                                     transform to show. Type one in and tick *Use this \
-                                     matrix* to hand it over.",
-                                );
-                            }
-                            matrix_edit::matrix_editor_multi(
-                                ui,
-                                &mut self.reg_matrix,
-                                &mut self.reg_matrix_pick,
-                                &choices,
-                            );
-                            // A B-spline or a landmark warp is not a matrix;
-                            // what the grid can show of it is the rigid part
-                            // it starts from, and taking that over drops the
-                            // deformation. Better said than discovered.
-                            if deformable {
-                                ui.weak(
-                                    "the transform is deformable: this is its rigid part, \
-                                     and using it drops the deformation",
-                                );
-                            }
-                            if tip_widget(
-                                ui,
-                                both && self.reg_matrix.use_it,
-                                egui::Button::new("▶ Apply as the registration"),
-                                "Install these numbers as the active registration of the \
-                                 two workspaces, without running anything. It replaces \
-                                 whatever registration is active.",
-                            ) {
-                                apply_matrix = true;
-                            }
-                        });
-                }
-
-                // ---- what a group run left behind ----
-                let shown_phase = self
-                    .registration
-                    .as_ref()
-                    .and_then(|r| r.group_phase.clone());
-                if let Some(gr) = &self.group_registration {
-                    ui.separator();
-                    ui.label(
-                        egui::RichText::new(format!("✔ {} phase by phase", gr.group_name)).strong(),
-                    );
-                    run_report::facts(
-                        ui,
-                        "reg_group_facts",
-                        &[
-                            ("Group", gr.group_name.clone()),
-                            (
-                                "Moving image",
-                                format!("workspace {}", SLOT_NAMES[gr.moving_slot]),
-                            ),
-                            ("Phases", gr.phases.len().to_string()),
-                        ],
-                    );
-                    ui.add_space(4.0);
-                    // One row per phase, the numbers in columns: the phase
-                    // whose metric barely moved is found by scanning down a
-                    // column, not by reading ten sentences.
-                    egui::ScrollArea::horizontal()
-                        .id_salt("reg_group_rows")
-                        .show(ui, |ui| {
-                            egui::Grid::new("reg_group_grid")
-                                .striped(true)
-                                .spacing([10.0, 2.0])
-                                .show(ui, |ui| {
-                                    run_report::head(ui, "Phase");
-                                    run_report::head(ui, "Metric ▶");
-                                    run_report::head(ui, "Iters");
-                                    run_report::head(ui, "t, s");
-                                    run_report::head(ui, "Vector field");
-                                    ui.end_row();
-                                    for (pi, ph) in gr.phases.iter().enumerate() {
-                                        ui.label(&ph.label);
-                                        match &ph.metrics {
-                                            Some(m) => {
-                                                ui.monospace(format!(
-                                                    "{} {:.0} ▶ {:.0}",
-                                                    m.tag, m.initial, m.final_value
-                                                ))
-                                                .on_hover_text(&ph.metric_line);
-                                                ui.monospace(format!("{}", m.iterations));
-                                                ui.monospace(format!("{:.1}", m.secs));
-                                            }
-                                            None => {
-                                                // A reused transform has no
-                                                // measurement of its own.
-                                                ui.weak(&ph.metric_line);
-                                                ui.weak("-");
-                                                ui.weak("-");
-                                            }
-                                        }
-                                        // The phase's transform as the active
-                                        // registration: its fusion and its
-                                        // deformation field, drawn as after
-                                        // any other registration.
-                                        let on_show = shown_phase.as_deref()
-                                            == Some(
-                                                format!("{} · {}", gr.group_name, ph.label)
-                                                    .as_str(),
-                                            );
-                                        let field_shown = on_show && self.field_on;
-                                        if ui
-                                            .selectable_label(
-                                                field_shown,
-                                                if field_shown {
-                                                    "👁 on the views"
-                                                } else {
-                                                    "👁 show"
-                                                },
-                                            )
-                                            .on_hover_text(
-                                                "Draw this phase's deformation field on the views \
-                                                 (and in 3D): its transform becomes the active \
-                                                 registration, with the fusion overlay and the \
-                                                 Vector field settings below, and the phase is put \
-                                                 on display if it is not. Click again to hide the \
-                                                 field. The group registration stays as it is.",
-                                            )
-                                            .clicked()
-                                        {
-                                            if field_shown {
-                                                hide_field = true;
-                                            } else {
-                                                show_phase = Some(pi);
-                                            }
-                                        }
-                                        ui.end_row();
-                                    }
-                                });
-                        });
-                    ui.add_space(4.0);
-                    if tip_button(
-                        ui,
-                        "Clear group registration",
-                        "The next run against this group registers again",
-                    ) {
-                        clear_group = true;
-                    }
-                }
-
-                // ---- result ----
-                if let Some(reg) = &self.registration {
-                    ui.separator();
-                    let res = &reg.result;
-                    let (fixed, moving) = reg.describe(&self.slots);
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "✔ {}  ({moving} ▶ {fixed})",
-                            res.method.label()
-                        ))
-                        .strong(),
-                    );
-                    if let Some(g) = &reg.group_phase {
-                        ui.weak(format!(
-                            "Phase {g} of the group registration above, on display. \
-                             Clearing it here leaves the group as it is."
-                        ));
-                    }
-                    // A matrix that was handed over was not optimized, so
-                    // "MSD 0.0 ▶ 0.0 (0 iters)" would be a row of zeros
-                    // pretending to be a measurement; those rows are left
-                    // empty and `facts` drops them. The analysis below is
-                    // computed from the transform itself and does mean
-                    // something, so that stays.
-                    let m = (res.method != RegMethod::Given).then(|| res.metrics());
-                    run_report::facts(
-                        ui,
-                        "reg_result_facts",
-                        &[
-                            ("Method", res.method.label().to_string()),
-                            ("Fixed", fixed.clone()),
-                            ("Moving", moving.clone()),
-                            ("Region", res.region.clone().unwrap_or_default()),
-                            (
-                                "Metric ▶",
-                                m.map(|m| {
-                                    // Millimetres of surface distance want
-                                    // their decimals; HU² and MI do not.
-                                    let d = if m.tag == Metric::SurfaceDistance.tag() {
-                                        2
-                                    } else {
-                                        0
-                                    };
-                                    format!("{} {:.d$} ▶ {:.d$}", m.tag, m.initial, m.final_value)
-                                })
-                                .unwrap_or_default(),
-                            ),
-                            (
-                                "Iters",
-                                m.map(|m| m.iterations.to_string()).unwrap_or_default(),
-                            ),
-                            (
-                                "t, s",
-                                m.map(|m| format!("{:.1}", m.secs)).unwrap_or_default(),
-                            ),
-                            ("Transform", res.transform.warp.describe()),
-                        ],
-                    );
-
-                    if let Some(rep) = &reg.shape_report {
-                        reg_shape::shape_report_rows(ui, rep);
-                    }
-
-                    egui::CollapsingHeader::new("Analysis")
-                        .id_salt("reg_analysis")
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            score_structs |= analysis_rows(
-                                ui,
-                                res,
-                                self.slots[reg.fixed_slot].active_structures(),
-                                &res.transform,
-                                reg.struct_dice.as_deref(),
-                            );
-                        });
-
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.fusion_on, "Fusion overlay on");
-                        ui.selectable_value(
-                            &mut self.fusion_side,
-                            FusionSide::Fixed,
-                            format!("fixed ({fixed})"),
-                        )
-                        .on_hover_text("The moving image warped onto the fixed one");
-                        ui.selectable_value(
-                            &mut self.fusion_side,
-                            FusionSide::Moving,
-                            format!("moving ({moving})"),
-                        )
-                        .on_hover_text("The fixed image carried back onto the moving one");
-                    });
-                    let shown = match self.fusion_side {
-                        FusionSide::Fixed => reg.shows_fixed(reg.fixed_slot, &self.slots),
-                        FusionSide::Moving => reg.shows_moving(reg.moving_slot, &self.slots),
-                    };
-                    if self.fusion_on && !shown {
-                        ui.weak(
-                            "That image is not on display: click its series in the data \
-                             tree to see the overlay.",
-                        );
-                    }
-                    ui.add(
-                        egui::Slider::new(&mut self.fusion_weight, 0.0..=1.0).text("Fusion blend"),
-                    );
-
-                    egui::CollapsingHeader::new("Vector field")
-                        .id_salt("reg_field")
-                        .default_open(false)
-                        .show(ui, |ui| {
-                            ui.checkbox(&mut self.field_on, "Show the deformation field")
-                                .on_hover_text(
-                                    "Draw the recovered displacement in every view - and \
-                                     in the 3D window - instead of leaving it implicit in \
-                                     the fusion colours",
-                                );
-                            if ui
-                                .add_enabled(
-                                    !res.transform.warp.is_none(),
-                                    egui::Checkbox::new(
-                                        &mut self.field_warp_only,
-                                        "Deformation only (leave the rigid part out)",
-                                    ),
-                                )
-                                .on_hover_text(
-                                    "Draw what the B-spline adds on top of the rigid \
-                                     alignment rather than the whole displacement. A \
-                                     registration between two frames of reference - a \
-                                     cardiac CT onto a 4DCT phase - moves every point by the \
-                                     same hundreds of millimetres, and drawn whole the field \
-                                     shows that jump and hides the deformation.",
-                                )
-                                .changed()
-                            {
-                                resample = true;
-                            }
-                            ui.horizontal(|ui| {
-                                ui.label("Style");
-                                for s in FieldStyle::ALL {
-                                    ui.selectable_value(&mut self.field_style, s, s.label());
-                                }
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Spacing");
-                                if ui
-                                    .add(
-                                        egui::DragValue::new(&mut self.field_step_mm)
-                                            .speed(1.0)
-                                            .range(2.0..=60.0)
-                                            .suffix(" mm"),
-                                    )
-                                    .on_hover_text("Lattice the field is sampled on")
-                                    .changed()
-                                {
-                                    resample = true;
-                                }
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Arrow scale");
-                                ui.add(
-                                    egui::Slider::new(&mut self.field_scale, 0.5..=20.0)
-                                        .logarithmic(true),
-                                )
-                                .on_hover_text(
-                                    "Arrows are drawn this many times their true length; \
-                                     millimetre motion is invisible at 1×",
-                                );
-                            });
-                            ui.checkbox(&mut self.field_color, "Colour by magnitude")
-                                .on_hover_text(
-                                    "Blue → red over the field's own range, so where the \
-                                     deformation is largest reads at a glance",
-                                );
-                            if let Some(job) = &self.field_job {
-                                ui.horizontal(|ui| {
-                                    ui.spinner();
-                                    ui.weak(job.progress.get());
-                                });
-                            } else {
-                                ui.weak(reg.field.describe());
-                            }
-                            if tip_button(
-                                ui,
-                                "💾 Save as DICOM",
-                                "Write the field as a Deformable Spatial Registration \
-                                 object: the whole mapping in one grid, with identity \
-                                 pre- and post-matrices, so another system has no \
-                                 composition rule to get wrong",
-                            ) {
-                                save_field = true;
-                            }
-                        });
-
-                    ui.horizontal(|ui| {
-                        if tip_button(
-                            ui,
-                            "⇄ Propagate structures",
-                            "Open the structures propagation module, aimed at this \
-                             registration",
-                        ) {
-                            propagate_from = Some(reg.moving_slot);
-                        }
-                        if ui.button("Clear registration").clicked() {
-                            clear = true;
-                        }
-                    });
-                }
+                self.reg_setup_rows(ui, &mut rf);
+                self.reg_parameter_rows(ui, &mut rf);
+                self.reg_run_rows(ui, &mut rf);
+                self.reg_group_results(ui, &mut rf);
+                self.reg_result_rows(ui, &mut rf);
             });
+        let RegForm {
+            run,
+            clear,
+            propagate_from,
+            resample,
+            add_landmark,
+            drop_landmark,
+            clear_landmarks,
+            save_field,
+            run_group,
+            clear_group,
+            show_phase,
+            hide_field,
+            score_structs,
+            apply_matrix,
+            shape_act,
+            ..
+        } = rf;
         ui.separator();
 
         if clear_group {
@@ -2158,4 +1613,760 @@ fn analysis_rows(
             }
         });
     score
+}
+
+// -- The parts of the registration section, top to bottom -------------------
+
+impl ViewerApp {
+    /// The two images and everything the run is made of: the method, the
+    /// region, where the search starts.
+    fn reg_setup_rows(&mut self, ui: &mut egui::Ui, rf: &mut RegForm) {
+        let group_choices = &rf.group_choices;
+        // ---- the two images ----
+        // Any series of either workspace can be the fixed or the moving
+        // image - the displayed ones, a phase of a 4DCT, a cardiac CT
+        // against a phase of the same workspace. The fixed image may
+        // also be every phase of a 4D group: one registration per
+        // phase, since the phases differ by breathing, which is the
+        // whole reason the acquisition exists.
+        self.settle_reg_picks();
+        let choices = self.reg_choices();
+        let fixed_slot = self.reg_fixed.slot;
+        let label_of = |p: RegPick| {
+            choices
+                .iter()
+                .find(|c| c.pick == p)
+                .map(|c| c.label.clone())
+                .unwrap_or_else(|| "(none)".into())
+        };
+        // Everything the run is made of, one form: the two
+        // images, the method, the region and where the search
+        // starts.
+        form::form(ui, "reg_setup", |f| {
+            f.row_tip(
+                "Fixed image",
+                "The image the other is aligned onto; the transform maps its \
+                 coordinates into the moving image's. A series that is not on \
+                 display is loaded for the run.",
+                |ui| {
+                    let current = match self.reg_group {
+                        None => label_of(self.reg_fixed),
+                        Some(k) => group_choices
+                            .iter()
+                            .find(|(g, _)| *g == k)
+                            .map(|(_, l)| l.clone())
+                            .unwrap_or_default(),
+                    };
+                    egui::ComboBox::from_id_salt("reg_fixed_image")
+                        .selected_text(current)
+                        .width(230.0)
+                        .show_ui(ui, |ui| {
+                            for c in &choices {
+                                let mark = if c.displayed { " (displayed)" } else { "" };
+                                if ui
+                                    .selectable_label(
+                                        self.reg_group.is_none() && self.reg_fixed == c.pick,
+                                        format!("{}{mark}", c.label),
+                                    )
+                                    .clicked()
+                                {
+                                    self.reg_fixed = c.pick;
+                                    self.reg_group = None;
+                                }
+                            }
+                            if !group_choices.is_empty() {
+                                ui.separator();
+                                for (key, label) in group_choices {
+                                    ui.selectable_value(
+                                        &mut self.reg_group,
+                                        Some(*key),
+                                        format!("every phase of {label}"),
+                                    );
+                                }
+                            }
+                        });
+                },
+            );
+            f.row_tip(
+                "Moving image",
+                "The image that is moved and deformed onto the fixed one",
+                |ui| {
+                    egui::ComboBox::from_id_salt("reg_moving_image")
+                        .selected_text(label_of(self.reg_moving))
+                        .width(230.0)
+                        .show_ui(ui, |ui| {
+                            for c in &choices {
+                                let mark = if c.displayed { " (displayed)" } else { "" };
+                                ui.selectable_value(
+                                    &mut self.reg_moving,
+                                    c.pick,
+                                    format!("{}{mark}", c.label),
+                                );
+                            }
+                        });
+                },
+            );
+            if self.reg_group.is_some() {
+                f.wide(|ui| {
+                    ui.weak(
+                        "Every phase is registered on its own against the moving \
+                         image. The transforms are kept, so sending structures to \
+                         the same group afterwards costs no registration at all.",
+                    );
+                });
+            } else if self.reg_fixed.slot == self.reg_moving.slot {
+                f.wide(|ui| {
+                    ui.weak(
+                        "Two series of one workspace. The fusion overlay needs each \
+                         on display in its own workspace: load the same folder as \
+                         the other workspace to see it; propagation works either \
+                         way.",
+                    );
+                });
+            }
+
+            // ---- method ----
+            f.row("Method", |ui| {
+                egui::ComboBox::from_id_salt("reg_method")
+                    .selected_text(self.reg_method.short())
+                    .width(190.0)
+                    .show_ui(ui, |ui| {
+                        for m in RegMethod::ALL {
+                            ui.selectable_value(&mut self.reg_method, m, m.short())
+                                .on_hover_text(m.hint());
+                        }
+                    });
+            });
+            f.wide(|ui| {
+                ui.weak(self.reg_method.hint());
+            });
+
+            // ---- region ----
+            let region_choices = self.region_choices_for(fixed_slot);
+            if self.region_label(fixed_slot).is_none() {
+                self.reg_roi = RegRoi::Whole;
+            }
+            f.row_tip(
+                "Region",
+                "Restrict the registration to one structure of the fixed \
+                 workspace. Samples come from inside it only and the B-spline \
+                 lattice covers it alone, so a small structure can be aligned at a \
+                 fine grid - and, when it refines an existing result, the rest of \
+                 the patient keeps that result untouched.",
+                |ui| {
+                    let current = self
+                        .region_label(fixed_slot)
+                        .unwrap_or_else(|| "Whole image".into());
+                    egui::ComboBox::from_id_salt("reg_roi")
+                        .selected_text(current)
+                        .width(190.0)
+                        .show_ui(ui, |ui| {
+                            for (choice, label) in &region_choices {
+                                ui.selectable_value(&mut self.reg_roi, *choice, label);
+                            }
+                        });
+                },
+            );
+            if self.reg_roi != RegRoi::Whole {
+                f.row_tip(
+                    "Margin",
+                    "The structure is grown by this much before sampling. Without a \
+                     margin nothing outside the structure constrains its boundary, \
+                     and the boundary is what you are aligning.",
+                    |ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut self.reg_margin_mm)
+                                .speed(1.0)
+                                .range(0.0..=60.0)
+                                .suffix(" mm"),
+                        );
+                    },
+                );
+            }
+
+            // ---- initialisation ----
+            let init_choices = self.init_choices_for(fixed_slot);
+            if !init_choices.iter().any(|(c, _)| *c == self.reg_init) {
+                self.reg_init = RegInit::Auto;
+            }
+            f.row_tip(
+                "Start from",
+                "Where the search begins. The engines take steps of a few \
+                 millimetres, so two images that do not overlap at the identity \
+                 (different frames of reference: a cardiac CT and a 4DCT) never \
+                 find each other. Automatic keeps the identity when they overlap \
+                 and matches the centres of gravity when they do not; a structure \
+                 contoured on both workspaces matches its centroids, which is the \
+                 surest start for an organ.",
+                |ui| {
+                    let current = init_choices
+                        .iter()
+                        .find(|(c, _)| *c == self.reg_init)
+                        .map(|(_, l)| l.clone())
+                        .unwrap_or_default();
+                    egui::ComboBox::from_id_salt("reg_init")
+                        .selected_text(current)
+                        .width(190.0)
+                        .show_ui(ui, |ui| {
+                            for (choice, label) in &init_choices {
+                                ui.selectable_value(&mut self.reg_init, *choice, label);
+                            }
+                        });
+                },
+            );
+        });
+        rf.fixed_slot = fixed_slot;
+    }
+
+    /// The method's parameters, and the landmarks of a landmark run.
+    fn reg_parameter_rows(&mut self, ui: &mut egui::Ui, rf: &mut RegForm) {
+        let mut add_landmark = rf.add_landmark;
+        let mut drop_landmark = rf.drop_landmark;
+        let mut clear_landmarks = rf.clear_landmarks;
+        // ---- parameters ----
+        egui::CollapsingHeader::new("Parameters")
+            .id_salt("reg_params")
+            .default_open(false)
+            .show(ui, |ui| self.parameter_rows(ui));
+
+        // ---- landmarks ----
+        if self.reg_method == RegMethod::PlastimatchLandmark {
+            let residuals = match self.registration.as_ref().map(|r| &r.result.transform.warp) {
+                Some(Warp::Rbf(w)) if w.centers.len() == self.reg_landmarks.len() => {
+                    Some(w.residuals())
+                }
+                _ => None,
+            };
+            egui::CollapsingHeader::new(format!("Landmarks ({})", self.reg_landmarks.len()))
+                .id_salt("reg_landmarks")
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if tip_button(
+                            ui,
+                            "➕ Add pair",
+                            "Take the crosshair of each workspace as one pair. Put \
+                         both crosshairs on the same anatomy first - and turn \
+                         off View ▶ Sync crosshairs, or they move together.",
+                        ) {
+                            add_landmark = true;
+                        }
+                        if ui
+                            .add_enabled(
+                                !self.reg_landmarks.is_empty(),
+                                egui::Button::new("Clear all"),
+                            )
+                            .clicked()
+                        {
+                            clear_landmarks = true;
+                        }
+                    });
+                    if self.reg_landmarks.is_empty() {
+                        ui.weak("No pairs yet.");
+                    }
+                    egui::ScrollArea::vertical()
+                        .max_height(160.0)
+                        .show(ui, |ui| {
+                            for (i, l) in self.reg_landmarks.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    if ui.small_button("🗑").clicked() {
+                                        drop_landmark = Some(i);
+                                    }
+                                    let d = l.displacement();
+                                    ui.monospace(format!("{}: {:.1} mm", l.name, d.length()))
+                                        .on_hover_text(format!(
+                                "fixed ({:.1}, {:.1}, {:.1})\nmoving ({:.1}, {:.1}, {:.1})",
+                                l.fixed.x,
+                                l.fixed.y,
+                                l.fixed.z,
+                                l.moving.x,
+                                l.moving.y,
+                                l.moving.z
+                            ));
+                                    if let Some(r) = residuals.as_ref().and_then(|r| r.get(i)) {
+                                        ui.weak(format!("residual {r:.2} mm"));
+                                    }
+                                });
+                            }
+                        });
+                });
+        }
+        rf.add_landmark = add_landmark;
+        rf.drop_landmark = drop_landmark;
+        rf.clear_landmarks = clear_landmarks;
+    }
+
+    /// The run: a group or a pair, the transform typed in, the registration by
+    /// structures.
+    fn reg_run_rows(&mut self, ui: &mut egui::Ui, rf: &mut RegForm) {
+        let mut run = rf.run;
+        let mut run_group = rf.run_group;
+        let mut apply_matrix = rf.apply_matrix;
+        let mut shape_act = std::mem::take(&mut rf.shape_act);
+        let both = rf.both;
+        let fixed_slot = rf.fixed_slot;
+        // ---- run ----
+        if let Some((gslot, group)) = self.reg_group {
+            let n = self.group_phase_count(gslot, group);
+            let moving_ok = self.pick_series(self.reg_moving).is_some();
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        n >= 2 && moving_ok && self.propagate_job.is_none(),
+                        egui::Button::new(format!("▶ Register {n} phases")),
+                    )
+                    .on_hover_text("One registration per phase, against the moving image")
+                    .clicked()
+                {
+                    run_group = Some((self.reg_moving, gslot, group));
+                }
+            });
+            if self.propagate_job.is_some() {
+                ui.weak("A run against a group is already going.");
+            } else if !moving_ok {
+                ui.weak("Pick a moving image.");
+            }
+        } else {
+            let can_refine = self
+                .registration
+                .as_ref()
+                .is_some_and(|r| r.fixed_slot == fixed_slot)
+                && self.reg_method.is_deformable();
+            ui.horizontal(|ui| {
+                if enabled_tip_button(ui, both, "▶ Register", "Recover the transform from scratch")
+                {
+                    run = Some(false);
+                }
+                if enabled_tip_button(
+                    ui,
+                    both && can_refine,
+                    "▶ Refine",
+                    "Recover a correction on top of the active registration and \
+                     add the two together - how a local registration is meant to \
+                     be used after a global one",
+                ) {
+                    run = Some(true);
+                }
+            });
+            if !both {
+                ui.weak("Load two workspaces (comparison mode) first");
+            }
+            // The same two images, aligned on structures contoured
+            // on both instead of on their voxel values.
+            egui::CollapsingHeader::new("Align by structures")
+                .id_salt("reg_shape")
+                .default_open(false)
+                .show(ui, |ui| {
+                    shape_act = self.shape_section(ui, both);
+                });
+            // A CT against its own radiographs: one workspace is
+            // enough.
+            if self.reg2d3d_relevant() {
+                egui::CollapsingHeader::new(reg2d3d::REG2D3D_TOOL.menu_entry())
+                    .id_salt("reg2d3d")
+                    .default_open(false)
+                    .show(ui, |ui| self.reg2d3d_section(ui));
+            }
+            // A transform that is already known does not have to be
+            // recovered: type it in and apply it, and everything
+            // downstream - fusion, the crosshair link, propagation,
+            // the vector field - reads it as it reads any other.
+            egui::CollapsingHeader::new("Transform matrix")
+                .default_open(false)
+                .show(ui, |ui| {
+                    // Every transform this module has produced: the
+                    // active registration, and - after a group run -
+                    // each phase's own. One grid, a picker above it.
+                    let (choices, deformable) = self.reg_matrix_choices();
+                    if choices.is_empty() {
+                        ui.weak(
+                            "Nothing has been registered yet, so there is no \
+                             transform to show. Type one in and tick *Use this \
+                             matrix* to hand it over.",
+                        );
+                    }
+                    matrix_edit::matrix_editor_multi(
+                        ui,
+                        &mut self.reg_matrix,
+                        &mut self.reg_matrix_pick,
+                        &choices,
+                    );
+                    // A B-spline or a landmark warp is not a matrix;
+                    // what the grid can show of it is the rigid part
+                    // it starts from, and taking that over drops the
+                    // deformation. Better said than discovered.
+                    if deformable {
+                        ui.weak(
+                            "the transform is deformable: this is its rigid part, \
+                             and using it drops the deformation",
+                        );
+                    }
+                    if tip_widget(
+                        ui,
+                        both && self.reg_matrix.use_it,
+                        egui::Button::new("▶ Apply as the registration"),
+                        "Install these numbers as the active registration of the \
+                         two workspaces, without running anything. It replaces \
+                         whatever registration is active.",
+                    ) {
+                        apply_matrix = true;
+                    }
+                });
+        }
+        rf.run = run;
+        rf.run_group = run_group;
+        rf.apply_matrix = apply_matrix;
+        rf.shape_act = shape_act;
+    }
+
+    /// What a group run left behind: one registration per phase, and which
+    /// one is on the views.
+    fn reg_group_results(&mut self, ui: &mut egui::Ui, rf: &mut RegForm) {
+        let mut clear_group = rf.clear_group;
+        let mut show_phase = rf.show_phase;
+        let mut hide_field = rf.hide_field;
+        // ---- what a group run left behind ----
+        let shown_phase = self
+            .registration
+            .as_ref()
+            .and_then(|r| r.group_phase.clone());
+        if let Some(gr) = &self.group_registration {
+            ui.separator();
+            ui.label(egui::RichText::new(format!("✔ {} phase by phase", gr.group_name)).strong());
+            run_report::facts(
+                ui,
+                "reg_group_facts",
+                &[
+                    ("Group", gr.group_name.clone()),
+                    (
+                        "Moving image",
+                        format!("workspace {}", SLOT_NAMES[gr.moving_slot]),
+                    ),
+                    ("Phases", gr.phases.len().to_string()),
+                ],
+            );
+            ui.add_space(4.0);
+            // One row per phase, the numbers in columns: the phase
+            // whose metric barely moved is found by scanning down a
+            // column, not by reading ten sentences.
+            egui::ScrollArea::horizontal()
+                .id_salt("reg_group_rows")
+                .show(ui, |ui| {
+                    egui::Grid::new("reg_group_grid")
+                        .striped(true)
+                        .spacing([10.0, 2.0])
+                        .show(ui, |ui| {
+                            run_report::head(ui, "Phase");
+                            run_report::head(ui, "Metric ▶");
+                            run_report::head(ui, "Iters");
+                            run_report::head(ui, "t, s");
+                            run_report::head(ui, "Vector field");
+                            ui.end_row();
+                            for (pi, ph) in gr.phases.iter().enumerate() {
+                                ui.label(&ph.label);
+                                match &ph.metrics {
+                                    Some(m) => {
+                                        ui.monospace(format!(
+                                            "{} {:.0} ▶ {:.0}",
+                                            m.tag, m.initial, m.final_value
+                                        ))
+                                        .on_hover_text(&ph.metric_line);
+                                        ui.monospace(format!("{}", m.iterations));
+                                        ui.monospace(format!("{:.1}", m.secs));
+                                    }
+                                    None => {
+                                        // A reused transform has no
+                                        // measurement of its own.
+                                        ui.weak(&ph.metric_line);
+                                        ui.weak("-");
+                                        ui.weak("-");
+                                    }
+                                }
+                                // The phase's transform as the active
+                                // registration: its fusion and its
+                                // deformation field, drawn as after
+                                // any other registration.
+                                let on_show = shown_phase.as_deref()
+                                    == Some(format!("{} · {}", gr.group_name, ph.label).as_str());
+                                let field_shown = on_show && self.field_on;
+                                if ui
+                                    .selectable_label(
+                                        field_shown,
+                                        if field_shown {
+                                            "👁 on the views"
+                                        } else {
+                                            "👁 show"
+                                        },
+                                    )
+                                    .on_hover_text(
+                                        "Draw this phase's deformation field on the views \
+                                         (and in 3D): its transform becomes the active \
+                                         registration, with the fusion overlay and the \
+                                         Vector field settings below, and the phase is put \
+                                         on display if it is not. Click again to hide the \
+                                         field. The group registration stays as it is.",
+                                    )
+                                    .clicked()
+                                {
+                                    if field_shown {
+                                        hide_field = true;
+                                    } else {
+                                        show_phase = Some(pi);
+                                    }
+                                }
+                                ui.end_row();
+                            }
+                        });
+                });
+            ui.add_space(4.0);
+            if tip_button(
+                ui,
+                "Clear group registration",
+                "The next run against this group registers again",
+            ) {
+                clear_group = true;
+            }
+        }
+        rf.clear_group = clear_group;
+        rf.show_phase = show_phase;
+        rf.hide_field = hide_field;
+    }
+
+    /// The result on display: its numbers, its checks, and what can be done
+    /// with it.
+    fn reg_result_rows(&mut self, ui: &mut egui::Ui, rf: &mut RegForm) {
+        let mut clear = rf.clear;
+        let mut propagate_from = rf.propagate_from;
+        let mut resample = rf.resample;
+        let mut save_field = rf.save_field;
+        let mut score_structs = rf.score_structs;
+        // ---- result ----
+        if let Some(reg) = &self.registration {
+            ui.separator();
+            let res = &reg.result;
+            let (fixed, moving) = reg.describe(&self.slots);
+            ui.label(
+                egui::RichText::new(format!("✔ {}  ({moving} ▶ {fixed})", res.method.label()))
+                    .strong(),
+            );
+            if let Some(g) = &reg.group_phase {
+                ui.weak(format!(
+                    "Phase {g} of the group registration above, on display. \
+                     Clearing it here leaves the group as it is."
+                ));
+            }
+            // A matrix that was handed over was not optimized, so
+            // "MSD 0.0 ▶ 0.0 (0 iters)" would be a row of zeros
+            // pretending to be a measurement; those rows are left
+            // empty and `facts` drops them. The analysis below is
+            // computed from the transform itself and does mean
+            // something, so that stays.
+            let m = (res.method != RegMethod::Given).then(|| res.metrics());
+            run_report::facts(
+                ui,
+                "reg_result_facts",
+                &[
+                    ("Method", res.method.label().to_string()),
+                    ("Fixed", fixed.clone()),
+                    ("Moving", moving.clone()),
+                    ("Region", res.region.clone().unwrap_or_default()),
+                    (
+                        "Metric ▶",
+                        m.map(|m| {
+                            // Millimetres of surface distance want
+                            // their decimals; HU² and MI do not.
+                            let d = if m.tag == Metric::SurfaceDistance.tag() {
+                                2
+                            } else {
+                                0
+                            };
+                            format!("{} {:.d$} ▶ {:.d$}", m.tag, m.initial, m.final_value)
+                        })
+                        .unwrap_or_default(),
+                    ),
+                    (
+                        "Iters",
+                        m.map(|m| m.iterations.to_string()).unwrap_or_default(),
+                    ),
+                    (
+                        "t, s",
+                        m.map(|m| format!("{:.1}", m.secs)).unwrap_or_default(),
+                    ),
+                    ("Transform", res.transform.warp.describe()),
+                ],
+            );
+
+            if let Some(rep) = &reg.shape_report {
+                reg_shape::shape_report_rows(ui, rep);
+            }
+
+            egui::CollapsingHeader::new("Analysis")
+                .id_salt("reg_analysis")
+                .default_open(true)
+                .show(ui, |ui| {
+                    score_structs |= analysis_rows(
+                        ui,
+                        res,
+                        self.slots[reg.fixed_slot].active_structures(),
+                        &res.transform,
+                        reg.struct_dice.as_deref(),
+                    );
+                });
+
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.fusion_on, "Fusion overlay on");
+                ui.selectable_value(
+                    &mut self.fusion_side,
+                    FusionSide::Fixed,
+                    format!("fixed ({fixed})"),
+                )
+                .on_hover_text("The moving image warped onto the fixed one");
+                ui.selectable_value(
+                    &mut self.fusion_side,
+                    FusionSide::Moving,
+                    format!("moving ({moving})"),
+                )
+                .on_hover_text("The fixed image carried back onto the moving one");
+            });
+            let shown = match self.fusion_side {
+                FusionSide::Fixed => reg.shows_fixed(reg.fixed_slot, &self.slots),
+                FusionSide::Moving => reg.shows_moving(reg.moving_slot, &self.slots),
+            };
+            if self.fusion_on && !shown {
+                ui.weak(
+                    "That image is not on display: click its series in the data \
+                     tree to see the overlay.",
+                );
+            }
+            ui.add(egui::Slider::new(&mut self.fusion_weight, 0.0..=1.0).text("Fusion blend"));
+
+            egui::CollapsingHeader::new("Vector field")
+                .id_salt("reg_field")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.checkbox(&mut self.field_on, "Show the deformation field")
+                        .on_hover_text(
+                            "Draw the recovered displacement in every view - and \
+                             in the 3D window - instead of leaving it implicit in \
+                             the fusion colours",
+                        );
+                    if ui
+                        .add_enabled(
+                            !res.transform.warp.is_none(),
+                            egui::Checkbox::new(
+                                &mut self.field_warp_only,
+                                "Deformation only (leave the rigid part out)",
+                            ),
+                        )
+                        .on_hover_text(
+                            "Draw what the B-spline adds on top of the rigid \
+                             alignment rather than the whole displacement. A \
+                             registration between two frames of reference - a \
+                             cardiac CT onto a 4DCT phase - moves every point by the \
+                             same hundreds of millimetres, and drawn whole the field \
+                             shows that jump and hides the deformation.",
+                        )
+                        .changed()
+                    {
+                        resample = true;
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("Style");
+                        for s in FieldStyle::ALL {
+                            ui.selectable_value(&mut self.field_style, s, s.label());
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Spacing");
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut self.field_step_mm)
+                                    .speed(1.0)
+                                    .range(2.0..=60.0)
+                                    .suffix(" mm"),
+                            )
+                            .on_hover_text("Lattice the field is sampled on")
+                            .changed()
+                        {
+                            resample = true;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Arrow scale");
+                        ui.add(
+                            egui::Slider::new(&mut self.field_scale, 0.5..=20.0).logarithmic(true),
+                        )
+                        .on_hover_text(
+                            "Arrows are drawn this many times their true length; \
+                             millimetre motion is invisible at 1×",
+                        );
+                    });
+                    ui.checkbox(&mut self.field_color, "Colour by magnitude")
+                        .on_hover_text(
+                            "Blue → red over the field's own range, so where the \
+                             deformation is largest reads at a glance",
+                        );
+                    if let Some(job) = &self.field_job {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.weak(job.progress.get());
+                        });
+                    } else {
+                        ui.weak(reg.field.describe());
+                    }
+                    if tip_button(
+                        ui,
+                        "💾 Save as DICOM",
+                        "Write the field as a Deformable Spatial Registration \
+                         object: the whole mapping in one grid, with identity \
+                         pre- and post-matrices, so another system has no \
+                         composition rule to get wrong",
+                    ) {
+                        save_field = true;
+                    }
+                });
+
+            ui.horizontal(|ui| {
+                if tip_button(
+                    ui,
+                    "⇄ Propagate structures",
+                    "Open the structures propagation module, aimed at this \
+                     registration",
+                ) {
+                    propagate_from = Some(reg.moving_slot);
+                }
+                if ui.button("Clear registration").clicked() {
+                    clear = true;
+                }
+            });
+        }
+        rf.clear = clear;
+        rf.propagate_from = propagate_from;
+        rf.resample = resample;
+        rf.save_field = save_field;
+        rf.score_structs = score_structs;
+    }
+}
+
+/// What one frame of the registration section works with: what its
+/// buttons ask for, done once it has been drawn and its borrows end.
+struct RegForm {
+    run: Option<bool>,
+    clear: bool,
+    propagate_from: Option<usize>,
+    resample: bool,
+    add_landmark: bool,
+    drop_landmark: Option<usize>,
+    clear_landmarks: bool,
+    save_field: bool,
+    run_group: Option<(RegPick, usize, usize)>,
+    clear_group: bool,
+    show_phase: Option<usize>,
+    hide_field: bool,
+    score_structs: bool,
+    apply_matrix: bool,
+    shape_act: Option<reg_shape::ShapeAction>,
+    group_choices: Vec<((usize, usize), String)>,
+    both: bool,
+    fixed_slot: usize,
 }

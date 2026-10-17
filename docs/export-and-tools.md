@@ -296,7 +296,7 @@ The listing comes from GitHub's git API (one call, no token; when that
 call is refused for the API's rate limit of 60 an hour per address, the
 built-in list of the folder's 1840 files is used instead) and the files
 from `raw.githubusercontent.com`, through the same downloader the model
-weights use (`src/testdata.rs`). A file already in the folder with the
+weights use (`crates/rds-domain/src/testdata.rs`). A file already in the folder with the
 listed size is not fetched again, so *Cancel* or a dropped connection costs
 nothing but the file in flight, which is removed; running the tool again
 continues where it stopped, and a run that finds everything present says so

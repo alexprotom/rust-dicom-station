@@ -37,7 +37,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use rust_dicom_station::{app, gfx, icon, settings};
+use rust_dicom_station::{app, gfx, gfx_wgpu, icon, settings};
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -229,7 +229,7 @@ fn run(
 ) -> Attempt {
     let mut wgpu_options = eframe::WgpuConfiguration::default();
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
-        setup.instance_descriptor.backends = backend.bits();
+        setup.instance_descriptor.backends = gfx_wgpu::bits(backend);
     }
 
     WINDOWING_UP.store(false, Ordering::SeqCst);

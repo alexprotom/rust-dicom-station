@@ -206,13 +206,18 @@ the rows do not run at all; a run whose rows ran side by side keeps nothing
 to take over, so the next run starts from what the last plain run left.
 
 *Take over unchanged steps from the last run* (on by default): the window
-keeps what every step of its last run left, filed under a fingerprint of
-the step, its settings, its wires, the folders' contents, and every step
-before it in the run order. The next run takes over each step whose
-fingerprint it finds (marked ♻ on the canvas and in the list) and runs the
-rest; change the ITV margin and only the motion step and what follows run
-again. Steps that write files always run, into the new run's folder.
-*Forget* lets go of what is kept (and its memory).
+keeps what every step of its last run left, filed under a key made of the
+step's settings, its wires, the folders' contents, and the keys of the
+steps it reads from. The next run takes over each step whose key it finds
+(marked ♻ on the canvas and in the list) and runs the rest; change the ITV
+margin and only the motion step and what reads from it run again, while a
+second row of the workflow that does not read from it is taken over even
+where it comes later in the run order. A step is run again, key or not,
+when a study it reads or changes was changed this time by a step it does
+not read from. Renaming a step reruns it only when what it makes carries
+its title (a report, a study's label). Steps that write files always run,
+into the new run's folder. *Forget* lets go of what is kept (and its
+memory).
 
 *Keep up to N MB of image volumes between steps*: the phases a step read
 stay in memory for the next step that reads them, the least used let go
@@ -368,13 +373,13 @@ names are those of the serial run.
 ## For developers
 
 ```
-src/workflow/
+crates/rds-domain/src/workflow/
   params.rs    choices shared by the module dialogs, the MCP tools and the steps
                (variant, device, method, landing, name clash) with their file names
   session.rs   the headless core under both the runner and the MCP session:
                the budgeted volume cache (Volumes), UIDs, filing structures
                into a study under the name-clash rule (file_items)
-src/workflow/graph/
+crates/rds-domain/src/workflow/graph/
   mod.rs       the document model: Workflow, Node, Link, Frame; check(), order(),
                fragment() / paste() for the editor's clipboard, templates
   catalog.rs   every kind of step: ports, typed pins, parameter structs (serde), summaries
@@ -391,7 +396,7 @@ src/app/
                      actions, history, clipboard, frames, the map
   workflow_run.rs    the run window, the job, showing steps in the workspaces (and
                      parking the user's studies), reruns, results
-src/mcp/tools/workflows.rs   list_workflows, run_workflow
+crates/rds-domain/src/mcp/tools/workflows.rs   list_workflows, run_workflow
 examples/workflow_cli.rs     the headless runner
 tests/workflow_graph.rs      the example rebuilt on the 4D phantom, run end to end
 tests/workflow_steps.rs      the other steps, reruns, parallel rows, batches

@@ -41,7 +41,8 @@
 //! `--clip-rays` the rays also integrate inside it only.
 //!
 //! `--bench` times the projector on the CT at the three sizes of the plan
-//! (512² at 1 mm, 256² at 2 mm, 128² at 4 mm) and exits. `--device` puts
+//! (512² at 1 mm, 256² at 2 mm, 128² at 4 mm), on the CPU also sampling
+//! every step (what skipping empty space saves), and exits. `--device` puts
 //! the renderings of the registration (and of the bench) on the GPU; the
 //! default is the CPU.
 //!
@@ -139,8 +140,26 @@ fn bench(vol: &Volume, iso: Vec3, device: DevicePref) -> Result<()> {
             None => render_posed(&mu, cam, step, &Quiet),
         }
     };
-    println!("| detector | step | rays | samples | time | per sample |");
-    println!("|---|---|---|---|---|---|");
+    // On the CPU, the same renderings sampling every step as well: what
+    // skipping the empty blocks saves.
+    let plain = gpu.is_none().then(|| mu.every_step());
+    let best_of_three = |f: &dyn Fn() -> Result<Vec<f32>>| -> Result<f64> {
+        // One untimed run, then the best of three.
+        let _ = f()?;
+        let mut best = f64::INFINITY;
+        for _ in 0..3 {
+            let t = Instant::now();
+            let _ = f()?;
+            best = best.min(t.elapsed().as_secs_f64());
+        }
+        Ok(best)
+    };
+    println!(
+        "occupied blocks: {:.0} % of the lattice",
+        100.0 * mu.occupied_fraction()
+    );
+    println!("| detector | step | rays | samples | time | per sample | every step |");
+    println!("|---|---|---|---|---|---|---|");
     for (px, step) in [(512usize, 1.0f64), (256, 2.0), (128, 4.0)] {
         let cam = Geometry {
             isocenter: iso,
@@ -149,19 +168,19 @@ fn bench(vol: &Volume, iso: Vec3, device: DevicePref) -> Result<()> {
             ..Geometry::default()
         }
         .camera();
-        // One untimed run, then the best of three.
-        let _ = render(&cam, step)?;
-        let mut best = f64::INFINITY;
-        for _ in 0..3 {
-            let t = Instant::now();
-            let _ = render(&cam, step)?;
-            best = best.min(t.elapsed().as_secs_f64());
-        }
+        let best = best_of_three(&|| render(&cam, step))?;
+        let every = match &plain {
+            Some(m) => {
+                let ms = best_of_three(&|| render_posed(m, &cam, step, &Quiet))? * 1e3;
+                format!("{ms:.1} ms")
+            }
+            None => "-".into(),
+        };
         let (lo, hi) = mu.bounds();
         let depth = (hi - lo).length();
         let samples = (px * px) as f64 * depth / step;
         println!(
-            "| {px} × {px} | {step:.0} mm | {} | {:.1} M | {:.1} ms | {:.2} ns |",
+            "| {px} × {px} | {step:.0} mm | {} | {:.1} M | {:.1} ms | {:.2} ns | {every} |",
             px * px,
             samples / 1e6,
             best * 1e3,

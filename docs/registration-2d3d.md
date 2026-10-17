@@ -106,13 +106,16 @@ The radiographs against DRRs of the CT, coarse to fine:
   CT converted to attenuation once per run (`projection::MuVolume`), with
   coarser copies for the coarse levels: a CT of thin pixels and thick
   slices loses its pixels first. Each level reads the coarsest copy that
-  still resolves its pixels at the isocentre.
+  still resolves its pixels at the isocentre. Each copy keeps a map of
+  which blocks of 8 x 8 x 8 voxels hold anything above zero, and a ray
+  steps over the empty ones without sampling them: they would add exactly
+  zero, so the rendering is the same to the bit.
 * **On the GPU** (*Compute*: GPU, or Auto when there is one that is not a
   renderer in software, which is slower at this than the CPU) the same
   ray-cast runs as a WGSL compute shader (`projection::gpu`) on the device
   the networks use: each copy a level reads is uploaded once as a 3-D
-  texture, each rendering is read back and the measure computed on the CPU
-  as before. The images agree with the CPU's to a millionth of their range
+  texture, the views of one evaluation are rendered in one submission and
+  read back together, and the measure is computed on the CPU as before. The images agree with the CPU's to a millionth of their range
   on average; a ray the GPU's `f32` set-up cuts into one piece more or
   fewer (about one in ten thousand) differs by the midpoint rule's own
   error, at most two thousandths. A GPU that was only preferred and fails
@@ -254,7 +257,7 @@ the same way.
   CT itself with the patient displaced, registers them and prints the
   error - the one-command self-test on any CT; with `--out` it also writes
   them as RT Images to load with the CT. `--bench` times the projector,
-  `--device gpu` puts it (and the registration's renderings) on the GPU.
+  with and without the empty-block skipping, `--device gpu` puts it (and the registration's renderings) on the GPU.
 
 ## Validation
 
@@ -292,7 +295,10 @@ box. The projector on the same CT, two threads of the build machine:
 | 256 × 256 | 2 mm | 0.44 s |
 | 128 × 128 | 4 mm | 0.06 s |
 
-A registration of two views at 96 pixels takes 5 to 20 seconds there
+Skipping the empty blocks makes the 1 mm rendering about 1.5 times faster
+on this CT, where 31 % of the blocks hold anything; at 2 mm the gain is
+under 10 % and at 4 mm there is none, because a step is then longer than a
+block is wide. A registration of two views at 96 pixels takes 5 to 20 seconds there
 (the DRRs are rendered only where the measure reads them); a desktop with
 eight cores is several times faster, and the levels read coarser copies
 of the CT than these timings do.

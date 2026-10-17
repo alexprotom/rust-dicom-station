@@ -32,6 +32,38 @@ pub(super) struct DerivedCache {
     /// One entry per ROI of that set: `None` for a structure that is not
     /// derived.
     pub items: Vec<Option<Status>>,
+    /// The operands' own fingerprints, kept between refreshes.
+    pub operands: OperandHashes,
+}
+
+/// The fingerprint of each operand as last computed, and what it stood for:
+/// a structure's edit stamp ([`StudySlot::roi_stamp`]) or a segment's
+/// `Segmentation::gen`. A brush sample moves `structures_gen` and with it
+/// every status, but it changes one operand at most, so the others are not
+/// walked again: hashing every point of every operand, and counting every
+/// voxel of every mask operand, per sample was the cost of a derived set.
+/// Everything else that touches a structure moves `settings_gen`, which
+/// empties the table.
+#[derive(Default)]
+pub(super) struct OperandHashes {
+    gen: u64,
+    /// (segment rather than structure, set, index) -> (version, hash).
+    map: std::collections::HashMap<(bool, usize, usize), (u64, u64)>,
+}
+
+impl OperandHashes {
+    /// The hash of one operand at `version`, computed only when the table
+    /// has no entry for that version.
+    fn get(&mut self, key: (bool, usize, usize), version: u64, hash: impl FnOnce() -> u64) -> u64 {
+        match self.map.get(&key) {
+            Some(&(v, h)) if v == version => h,
+            _ => {
+                let h = hash();
+                self.map.insert(key, (version, h));
+                h
+            }
+        }
+    }
 }
 
 /// What one finished re-evaluation hands back.
@@ -95,6 +127,18 @@ impl ViewerApp {
     /// Fingerprint of everything a recipe depends on, or the name of the
     /// first operand that no longer resolves.
     pub(super) fn dep_fingerprint(&self, slot: usize, expr: &Expr) -> Result<u64, String> {
+        self.dep_fingerprint_in(slot, expr, None)
+    }
+
+    /// [`Self::dep_fingerprint`], reading the operands' hashes from
+    /// `operands` where it holds them for the current state. The same
+    /// numbers either way: the table only spares recomputing them.
+    fn dep_fingerprint_in(
+        &self,
+        slot: usize,
+        expr: &Expr,
+        mut operands: Option<&mut OperandHashes>,
+    ) -> Result<u64, String> {
         let study = self.slots[slot]
             .study
             .as_ref()
@@ -109,12 +153,25 @@ impl ViewerApp {
                     .structure_sets
                     .get(item.set)
                     .and_then(|s| s.rois.get(item.idx))
-                    .map(derived::hash_roi),
+                    .map(|r| match operands.as_deref_mut() {
+                        Some(t) => {
+                            let version = self.slots[slot].roi_stamp(item.set, item.idx);
+                            t.get((false, item.set, item.idx), version, || {
+                                derived::hash_roi(r)
+                            })
+                        }
+                        None => derived::hash_roi(r),
+                    }),
                 SetKind::Segmentations => study
                     .seg_series
                     .get(item.set)
                     .and_then(|s| s.segs.get(item.idx))
-                    .map(|s| derived::hash_mask(&s.mask)),
+                    .map(|s| match operands.as_deref_mut() {
+                        Some(t) => t.get((true, item.set, item.idx), s.gen, || {
+                            derived::hash_mask(&s.mask)
+                        }),
+                        None => derived::hash_mask(&s.mask),
+                    }),
             }
             .ok_or_else(|| format!("'{}' is not in this workspace any more", d.name))?;
             // The margin is part of what the result depends on.
@@ -142,14 +199,28 @@ impl ViewerApp {
             .map(|ss| ss.rois.len())
             .unwrap_or(0);
         let mut items = vec![None; n];
+        let mut operands = std::mem::take(&mut self.derived[slot].operands);
+        if operands.gen != self.settings_gen {
+            operands = OperandHashes {
+                gen: self.settings_gen,
+                ..Default::default()
+            };
+        }
         for (i, item) in items.iter_mut().enumerate() {
             let Some(d) = self.derived_of(slot, set, i) else {
                 continue;
             };
-            let current = self.dep_fingerprint(slot, &d.expr).unwrap_or(0);
+            let current = self
+                .dep_fingerprint_in(slot, &d.expr, Some(&mut operands))
+                .unwrap_or(0);
             *item = Some(d.status(current));
         }
-        self.derived[slot] = DerivedCache { gen, set, items };
+        self.derived[slot] = DerivedCache {
+            gen,
+            set,
+            items,
+            operands,
+        };
     }
 
     /// The status marker the structure list draws, if the ROI is derived.
@@ -314,7 +385,7 @@ impl ViewerApp {
         }
         self.write_derived(slot, result.set, result.roi, Some(&d));
         // The working stack of the contour tools may be this very structure.
-        self.edit = None;
+        self.drop_edit();
         self.interp = None;
         self.notice = Some(format!("{} updated: {:.2} cm³", result.name, result.cm3));
     }

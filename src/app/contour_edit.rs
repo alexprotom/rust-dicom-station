@@ -153,7 +153,25 @@ pub(super) struct EditStack {
     /// `settings_gen` when the cache was filled: anything else that touches
     /// structures bumps it, which is exactly when this must be re-read.
     pub gen: u64,
+    /// Changed since it was last written into the ROI: a stroke on a
+    /// sagittal or coronal stack writes back at most every
+    /// [`OFF_AXIS_FLUSH`], and on release ([`ViewerApp::end_contour_stroke`]).
+    pub pending: bool,
+    /// The ROI's name and a fingerprint of its contours as this stack last
+    /// read or wrote them (sagittal and coronal stacks only, the only ones
+    /// that leave samples pending): a write still waiting may go in after
+    /// `gen` moved, as long as nothing else has changed this structure.
+    pub name: String,
+    pub synced: u64,
 }
+
+/// How often a stroke on a sagittal or coronal working stack writes back
+/// into the structure while it goes on. Writing back means re-slicing the
+/// stack onto axial contours through the lattice; on every mouse sample
+/// that was a full-volume rasterisation and trace each time for a body
+/// outline. Axial strokes write back on every sample, which costs nothing
+/// of the kind.
+const OFF_AXIS_FLUSH: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// The in-plane coordinates of a voxel point, for a stack sliced on `axis`.
 fn uv(axis: usize, v: [f64; 3]) -> [f64; 2] {
@@ -325,7 +343,7 @@ impl ViewerApp {
         *active_roi = idx;
         self.slots[slot].structs_shown = true;
         self.settings_gen += 1;
-        self.edit = None;
+        self.drop_edit();
         Some(idx)
     }
 
@@ -371,7 +389,7 @@ impl ViewerApp {
             .map(|(i, _)| i);
         if let Some(i) = hit {
             self.slots[slot].active_roi = i;
-            self.edit = None;
+            self.drop_edit();
             return true;
         }
         false
@@ -403,7 +421,7 @@ impl ViewerApp {
         if let Some(roi) = self.slots[snap.slot].roi_mut(snap.set, snap.roi) {
             roi.contours = snap.contours;
         }
-        self.edit = None;
+        self.drop_edit();
         self.settings_gen += 1;
     }
 
@@ -425,6 +443,11 @@ impl ViewerApp {
         if !fresh {
             return Some(());
         }
+        // A stroke still waiting to be written goes into its own structure
+        // before another stack takes its place.
+        if self.pending_edit_applies() {
+            self.flush_edit();
+        }
         let study = self.slots[slot].study.as_ref()?;
         let grid = study.volume.grid();
         let r = study.structure_sets.get(set)?.rois.get(roi)?;
@@ -437,6 +460,7 @@ impl ViewerApp {
         } else {
             st.to_axis(grid.dims, axis)
         };
+        let synced = if axis == 2 { 0 } else { super::d3::roi_hash(r) };
         if converted {
             self.notice = Some(format!(
                 "'{name}' was drawn on {} slices. Editing it here re-cuts the geometry \
@@ -453,6 +477,9 @@ impl ViewerApp {
             roi,
             stack,
             gen: self.structures_gen(slot),
+            pending: false,
+            name,
+            synced,
         });
         Some(())
     }
@@ -484,17 +511,84 @@ impl ViewerApp {
         let Some(grid) = self.slots[e.slot].study.as_ref().map(|st| st.volume.grid()) else {
             return;
         };
+        let mut synced = e.synced;
         if let Some(roi) = self.slots[e.slot].roi_mut(e.set, e.roi) {
             e.stack.apply_to_roi(roi, &grid);
+            if e.stack.axis != 2 {
+                synced = super::d3::roi_hash(roi);
+            }
         }
         self.struct_gen[e.slot] += 1;
+        // Which structure this sample wrote, for the caches kept per ROI.
+        let stamp = self.struct_gen[e.slot];
+        self.slots[e.slot].roi_edits.insert((e.set, e.roi), stamp);
         // A derived structure edited by hand is no longer what its recipe
         // produced, and has to say so.
         self.mark_overridden(e.slot, e.set, e.roi);
         self.edit = Some(EditStack {
             gen: self.structures_gen(e.slot),
+            pending: false,
+            synced,
             ..e
         });
+        self.edit_flushed = Some(std::time::Instant::now());
+    }
+
+    /// Write a sample of a stroke back into the structure: at once on an
+    /// axial stack or on the stroke's last sample, otherwise when the last
+    /// write is [`OFF_AXIS_FLUSH`] old, so a sagittal or coronal stroke
+    /// still shows as it goes without re-slicing the structure per sample.
+    /// What is written in the end is the same either way: every write
+    /// converts the whole working stack, which the writes leave alone.
+    fn flush_edit_sample(&mut self, last: bool) {
+        let axial = self.edit.as_ref().is_some_and(|e| e.stack.axis == 2);
+        let due = self
+            .edit_flushed
+            .is_none_or(|t| t.elapsed() >= OFF_AXIS_FLUSH);
+        if axial || last || due {
+            self.flush_edit();
+        } else if let Some(e) = self.edit.as_mut() {
+            e.pending = true;
+        }
+    }
+
+    /// The pointer let go of a contour stroke (brush, nudge or hand drag):
+    /// write back what the last samples left waiting.
+    pub(super) fn end_contour_stroke(&mut self) {
+        if self.pending_edit_applies() {
+            self.flush_edit();
+        }
+    }
+
+    /// Is there a stroke waiting to be written, and may it still go into its
+    /// structure? Yes while nothing touched the structures since (`gen`), and
+    /// also when something else moved `gen` (a job landing, a lock toggled)
+    /// but the structure is still there, under its name, exactly as this
+    /// stack last left it. An undo or a tool that changed it in between wins
+    /// over the samples still waiting.
+    fn pending_edit_applies(&self) -> bool {
+        let Some(e) = self.edit.as_ref().filter(|e| e.pending) else {
+            return false;
+        };
+        if e.gen == self.structures_gen(e.slot) {
+            return true;
+        }
+        self.slots[e.slot]
+            .study
+            .as_ref()
+            .and_then(|st| st.structure_sets.get(e.set))
+            .and_then(|ss| ss.rois.get(e.roi))
+            .is_some_and(|r| r.name == e.name && super::d3::roi_hash(r) == e.synced)
+    }
+
+    /// Let go of the working stack (the structures changed, or another one
+    /// is being edited), writing first what a stroke left waiting if it
+    /// still applies.
+    pub(super) fn drop_edit(&mut self) {
+        if self.pending_edit_applies() {
+            self.flush_edit();
+        }
+        self.edit = None;
     }
 
     // -- drawing ----------------------------------------------------------
@@ -757,9 +851,7 @@ impl ViewerApp {
             }
         }
         e.stack.prune();
-        if axis == 2 || last {
-            self.flush_edit();
-        }
+        self.flush_edit_sample(last);
     }
 
     /// Delete the one contour the crosshair sits inside, on the current
@@ -843,7 +935,7 @@ impl ViewerApp {
         if !region.nudge(a, b, radius_mm, mm) {
             return;
         }
-        self.flush_edit();
+        self.flush_edit_sample(false);
     }
 
     // -- what the views draw ----------------------------------------------
@@ -993,7 +1085,7 @@ impl ViewerApp {
             f(&mut e.stack, dims);
             e.stack.prune();
         }
-        self.flush_edit();
+        self.flush_edit_sample(false);
         self.interp = None;
         true
     }
@@ -1020,6 +1112,26 @@ impl ViewerApp {
             r.contours.len(),
             points,
         );
+        // The working stack of this very structure, on the axial stack the
+        // structure is written as, is what it is right now (more so while a
+        // stroke waits to be written): no need to read the contours back
+        // into a stack, which on every brush sample cost the structure's
+        // whole conversion again.
+        let working = self
+            .edit
+            .as_ref()
+            .filter(|e| {
+                e.slot == slot
+                    && e.set == set
+                    && e.roi == roi
+                    && e.stack.axis == 2
+                    && e.gen == self.structures_gen(slot)
+            })
+            .map(|e| (e.stack.volume_cm3(study.volume.spacing), e.stack.occupied()));
+        if let Some((cm3, occupied)) = working {
+            let (name, roi_type) = (r.name.clone(), r.roi_type.clone());
+            return Some((name, roi_type, cm3, occupied, points));
+        }
         let (cm3, occupied) = match self.edit_summary_cache {
             Some((k, v)) if k == key => v,
             _ => {

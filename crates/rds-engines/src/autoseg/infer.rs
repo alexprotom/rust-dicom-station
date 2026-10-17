@@ -20,7 +20,9 @@
 //! the windows that cross it. Peak memory stays near
 //! `classes x patch0 x strip x D2` floats whatever the scan's size.
 
-use anyhow::{bail, Result};
+use std::borrow::Cow;
+
+use anyhow::{anyhow, bail, Result};
 use rayon::prelude::*;
 
 use super::config::ModelConfig;
@@ -148,11 +150,32 @@ pub fn monai_plan(dims: [usize; 3], patch: [usize; 3], overlap: f64, fill: Fill)
     }
 }
 
+/// Where [`InferHooks::forward_classes`] delivers a patch's logits: the
+/// first class of a piece and the logits of its classes
+/// `[n, p0, p1, p2]` (flattened, C-order), borrowed or handed over.
+pub type ClassSink<'s> = dyn FnMut(usize, Cow<'_, [f32]>) -> Result<()> + 's;
+
 /// Callbacks the sliding window needs from the caller.
 pub trait InferHooks: Sync {
     /// Forward one patch `[1, p0, p1, p2]` (flattened, C-order) → logits
     /// `[classes, p0, p1, p2]` (flattened, C-order).
     fn forward(&self, patch: &[f32]) -> Result<Vec<f32>>;
+
+    /// [`forward`](Self::forward), the logits handed to `sink` in pieces of
+    /// consecutive classes, in class order, together every class once. A
+    /// network whose classes are many can then compute and hand over a few
+    /// at a time and never hold them all; the default hands over the whole.
+    fn forward_classes(&self, patch: &[f32], sink: &mut ClassSink<'_>) -> Result<()> {
+        sink(0, Cow::Owned(self.forward(patch)?))
+    }
+
+    /// True when the network runs on another device, so that computing the
+    /// next patch while this thread adds up the last one is worth a thread
+    /// (and a piece of logits in flight); see [`predict_plan`].
+    fn overlaps(&self) -> bool {
+        false
+    }
+
     /// Called after each tile: `done` of `total`. Return false to cancel.
     fn tile_done(&self, done: usize, total: usize) -> bool;
 }
@@ -268,10 +291,119 @@ pub fn predict_plan(
         })
         .sum();
 
+    // Every tile, in the order the windows run: by strip, then along the
+    // three axes. The accumulation below follows this order, so every
+    // voxel adds its windows in the same order however they are computed.
+    let order: Vec<(usize, [usize; 3])> = strips
+        .iter()
+        .enumerate()
+        .flat_map(|(si, &st)| {
+            let s1s: Vec<usize> = plan.starts[1]
+                .iter()
+                .copied()
+                .filter(|&s1| crosses(s1, st))
+                .collect();
+            plan.starts[0].iter().flat_map(move |&s0| {
+                let s1s = s1s.clone();
+                s1s.into_iter()
+                    .flat_map(move |s1| plan.starts[2].iter().map(move |&s2| (si, [s0, s1, s2])))
+            })
+        })
+        .collect();
+    debug_assert_eq!(order.len(), total_tiles);
+
     let mut labels = vec![0u8; d0 * d1 * d2];
-    let mut patch = vec![0f32; p0 * p1 * p2];
+    if hooks.overlaps() && order.len() > 1 {
+        // The network runs elsewhere: a second thread extracts and forwards
+        // the windows in order and sends their logits over, at most two
+        // pieces ahead, while this one adds up the last.
+        std::thread::scope(|scope| -> Result<()> {
+            let (tx, rx) = std::sync::mpsc::sync_channel::<Result<(usize, Vec<f32>)>>(2);
+            let order_ref = &order;
+            scope.spawn(move || {
+                let mut patch = vec![0f32; p0 * p1 * p2];
+                for &(_, origin) in order_ref {
+                    extract_patch(vol, dims, plan, origin, &mut patch);
+                    let sent = hooks.forward_classes(&patch, &mut |c0, piece| {
+                        tx.send(Ok((c0, piece.into_owned())))
+                            .map_err(|_| anyhow!("the run stopped"))
+                    });
+                    if let Err(e) = sent {
+                        // The receiver gone means the run was stopped there;
+                        // anything else is the network's error to report.
+                        let _ = tx.send(Err(e));
+                        return;
+                    }
+                }
+            });
+            let next = || -> Result<(usize, Vec<f32>)> {
+                rx.recv()
+                    .map_err(|_| anyhow!("the inference thread stopped"))?
+            };
+            run_tiles(
+                &order,
+                &strips,
+                dims,
+                classes,
+                plan,
+                hooks,
+                &mut labels,
+                &mut |_, _, take| {
+                    let mut seen = 0;
+                    while seen < classes {
+                        let (c0, piece) = next()?;
+                        let n = piece.len() / (p0 * p1 * p2).max(1);
+                        take(c0, Cow::Owned(piece))?;
+                        seen += n.max(1);
+                    }
+                    Ok(())
+                },
+            )
+        })?;
+    } else {
+        let mut patch = vec![0f32; p0 * p1 * p2];
+        run_tiles(
+            &order,
+            &strips,
+            dims,
+            classes,
+            plan,
+            hooks,
+            &mut labels,
+            &mut |origin, _, take| {
+                extract_patch(vol, dims, plan, origin, &mut patch);
+                hooks.forward_classes(&patch, take)
+            },
+        )?;
+    }
+    Ok(labels)
+}
+
+/// Where the logits of tile `origin` (of strip index `strip`) come from:
+/// handed, piece by piece, to `take`.
+type TileSource<'a> = dyn FnMut([usize; 3], usize, &mut dyn FnMut(usize, Cow<'_, [f32]>) -> Result<()>) -> Result<()>
+    + 'a;
+
+/// The accumulation over the tiles of `order`: a ring per strip, rows
+/// finalized to labels as soon as no later window reaches them.
+#[allow(clippy::too_many_arguments)]
+fn run_tiles(
+    order: &[(usize, [usize; 3])],
+    strips: &[(usize, usize)],
+    dims: [usize; 3],
+    classes: usize,
+    plan: &WindowPlan,
+    hooks: &dyn InferHooks,
+    labels: &mut [u8],
+    source: &mut TileSource<'_>,
+) -> Result<()> {
+    let [d0, d1, d2] = dims;
+    let [p0, p1, p2] = plan.patch;
+    let ppp = p0 * p1 * p2;
+    let total_tiles = order.len();
     let mut done_tiles = 0usize;
-    for &(y_lo, y_hi) in &strips {
+    let mut tiles = order.iter().peekable();
+    for (si, &(y_lo, y_hi)) in strips.iter().enumerate() {
         let h = y_hi - y_lo;
         let plane = h * d2;
         let win = p0;
@@ -283,20 +415,10 @@ pub fn predict_plan(
                 .into_par_iter()
                 .map(|r| {
                     let base = (r % win) * classes * plane;
-                    let mut out = vec![0u8; plane];
-                    for (v, lab) in out.iter_mut().enumerate() {
-                        let mut best = 0usize;
-                        let mut best_v = f32::NEG_INFINITY;
-                        for c in 0..classes {
-                            let a = acc[base + c * plane + v];
-                            if a > best_v {
-                                best_v = a;
-                                best = c;
-                            }
-                        }
-                        *lab = best as u8;
-                    }
-                    (r, out)
+                    (
+                        r,
+                        argmax_row(&acc[base..base + classes * plane], classes, plane),
+                    )
                 })
                 .collect();
             for (r, out) in rows {
@@ -308,72 +430,101 @@ pub fn predict_plan(
                 acc[slot * classes * plane..(slot + 1) * classes * plane].fill(0.0);
             }
         };
-        for &s0 in &plan.starts[0] {
+        while let Some(&&(tsi, origin)) = tiles.peek() {
+            if tsi != si {
+                break;
+            }
+            tiles.next();
+            let [s0, s1, s2] = origin;
             // Rows strictly below this tile row's start receive no more writes.
             let tile_lo = s0.saturating_sub(plan.off[0]);
             if tile_lo > finalized {
                 let to = tile_lo.min(d0);
-                finalize_rows(&mut acc, &mut labels, finalized, to);
+                finalize_rows(&mut acc, labels, finalized, to);
                 finalized = to;
             }
-            for &s1 in plan.starts[1]
-                .iter()
-                .filter(|&&s1| crosses(s1, (y_lo, y_hi)))
-            {
-                for &s2 in &plan.starts[2] {
-                    extract_patch(vol, dims, plan, [s0, s1, s2], &mut patch);
-                    let logits = hooks.forward(&patch)?;
-                    if logits.len() != classes * p0 * p1 * p2 {
-                        bail!(
-                            "model returned {} logits, expected {}",
-                            logits.len(),
-                            classes * p0 * p1 * p2
-                        );
-                    }
-                    let tile = Tile {
-                        origin: [s0, s1, s2],
-                        off: plan.off,
-                        dims,
-                        patch: plan.patch,
-                        classes,
-                        rows: (y_lo, y_hi),
-                    };
-                    let acc_ptr = SendPtr(acc.as_mut_ptr());
-                    (0..p0).into_par_iter().for_each(|pz| {
-                        let z = s0 + pz;
-                        if z < plan.off[0] || z >= plan.off[0] + d0 {
-                            return;
-                        }
-                        let slot = (z - plan.off[0]) % win;
-                        // SAFETY: each pz maps to its own ring slot (the
-                        // patch is at most `win` rows tall), so the slices
-                        // written in parallel are disjoint.
-                        let acc = unsafe {
-                            std::slice::from_raw_parts_mut(
-                                acc_ptr.get().add(slot * classes * plane),
-                                classes * plane,
-                            )
-                        };
-                        tile.accumulate_row(
-                            acc,
-                            &logits,
-                            pz,
-                            plan.profiles[0][pz],
-                            &plan.profiles[1],
-                            &plan.profiles[2],
-                            plan.floor,
-                        );
-                    });
-                    done_tiles += 1;
-                    if !hooks.tile_done(done_tiles, total_tiles) {
-                        bail!("cancelled");
-                    }
+            let tile = Tile {
+                origin: [s0, s1, s2],
+                off: plan.off,
+                dims,
+                patch: plan.patch,
+                classes,
+                rows: (y_lo, y_hi),
+            };
+            let mut seen = 0usize;
+            let acc_ptr = SendPtr(acc.as_mut_ptr());
+            source(origin, si, &mut |c0, piece| {
+                if piece.len() % ppp.max(1) != 0 || c0 != seen {
+                    bail!(
+                        "model returned logits for classes from {c0} ({} values), expected from {seen}",
+                        piece.len()
+                    );
                 }
+                let n = piece.len() / ppp.max(1);
+                if c0 + n > classes {
+                    bail!("model returned {} classes, expected {classes}", c0 + n);
+                }
+                (0..p0).into_par_iter().for_each(|pz| {
+                    let z = s0 + pz;
+                    if z < plan.off[0] || z >= plan.off[0] + d0 {
+                        return;
+                    }
+                    let slot = (z - plan.off[0]) % win;
+                    // SAFETY: each pz maps to its own ring slot (the
+                    // patch is at most `win` rows tall), so the slices
+                    // written in parallel are disjoint.
+                    let acc = unsafe {
+                        std::slice::from_raw_parts_mut(
+                            acc_ptr.get().add(slot * classes * plane),
+                            classes * plane,
+                        )
+                    };
+                    tile.accumulate_row(
+                        acc,
+                        &piece,
+                        c0..c0 + n,
+                        pz,
+                        plan.profiles[0][pz],
+                        &plan.profiles[1],
+                        &plan.profiles[2],
+                        plan.floor,
+                    );
+                });
+                seen += n;
+                Ok(())
+            })?;
+            if seen != classes {
+                bail!("model returned {seen} classes, expected {classes}");
+            }
+            done_tiles += 1;
+            if !hooks.tile_done(done_tiles, total_tiles) {
+                bail!("cancelled");
             }
         }
-        finalize_rows(&mut acc, &mut labels, finalized, d0);
+        finalize_rows(&mut acc, labels, finalized, d0);
     }
-    Ok(labels)
+    Ok(())
+}
+
+/// The class with the largest sum at each voxel of one accumulator row
+/// (`[classes][plane]`); the first such class on a tie, as a scan in class
+/// order that replaces only on `>` gives. The running best is kept per
+/// voxel and the classes are read one after another, each a contiguous
+/// stretch, rather than all the classes of one voxel at a stride of a
+/// plane.
+fn argmax_row(acc: &[f32], classes: usize, plane: usize) -> Vec<u8> {
+    let mut best = vec![0u8; plane];
+    let mut best_v = vec![f32::NEG_INFINITY; plane];
+    for c in 0..classes {
+        let row = &acc[c * plane..(c + 1) * plane];
+        for ((b, bv), &a) in best.iter_mut().zip(best_v.iter_mut()).zip(row) {
+            if a > *bv {
+                *bv = a;
+                *b = c as u8;
+            }
+        }
+    }
+    best
 }
 
 /// Copy the patch at padded-grid `origin` out of the volume, filling
@@ -461,11 +612,15 @@ impl Tile {
     /// floor every voxel gets exactly `acc += logit * (w0 * g1) * g2`, in
     /// that order, so the sums are the ones the per-voxel loop made to the
     /// bit; with one, the weight `max(w0 * g1 * g2, floor)` is formed first.
+    ///
+    /// `logits` holds the classes `classes` only (`[n][p0][p1][p2]`); `acc`
+    /// holds every class.
     #[allow(clippy::too_many_arguments)]
     fn accumulate_row(
         &self,
         acc: &mut [f32],
         logits: &[f32],
+        classes: std::ops::Range<usize>,
         pz: usize,
         w0: f32,
         g1: &[f32],
@@ -474,6 +629,7 @@ impl Tile {
     ) {
         let [p0, p1, p2] = self.patch;
         let [_, _, d2] = self.dims;
+        debug_assert!(classes.end <= self.classes);
         let strip_lo = self.rows.0;
         let plane = (self.rows.1 - self.rows.0) * d2;
         let (ys, xs) = (self.inside(1), self.inside(2));
@@ -484,8 +640,8 @@ impl Tile {
         // The first volume column the patch row covers.
         let x0 = self.origin[2] + xs.start - self.off[2];
         let mut w = vec![0f32; xs.len()];
-        for c in 0..self.classes {
-            let lbase = ((c * p0) + pz) * p1 * p2;
+        for c in classes.clone() {
+            let lbase = (((c - classes.start) * p0) + pz) * p1 * p2;
             let abase = c * plane;
             for py in ys.clone() {
                 let wy = w0 * g1[py];
@@ -626,7 +782,7 @@ mod tests {
             for (pz, &w0) in g0.iter().enumerate() {
                 let mut a = start.clone();
                 let mut b = start.clone();
-                t.accumulate_row(&mut a, &logits, pz, w0, &g1, &g2, 0.0);
+                t.accumulate_row(&mut a, &logits, 0..classes, pz, w0, &g1, &g2, 0.0);
                 accumulate_row_per_voxel(&mut b, &logits, &t, pz, w0, &g1, &g2);
                 let (a, b): (Vec<u32>, Vec<u32>) = (
                     a.iter().map(|v| v.to_bits()).collect(),
@@ -704,6 +860,118 @@ mod tests {
                        MemAvailable:    3145728 kB\nBuffers:            1024 kB\n";
         assert_eq!(mem_available(meminfo), Some(3 << 30));
         assert_eq!(mem_available("MemTotal: 1 kB\n"), None);
+    }
+
+    /// A fake model with four classes whose logits depend on position and
+    /// value, handed over in pieces of `piece` classes, on this thread or
+    /// (`overlap`) from the look-ahead one.
+    struct Pieces {
+        piece: usize,
+        overlap: bool,
+    }
+    impl InferHooks for Pieces {
+        fn forward(&self, patch: &[f32]) -> Result<Vec<f32>> {
+            let n = patch.len();
+            let mut out = vec![0f32; 4 * n];
+            for (i, v) in patch.iter().enumerate() {
+                for c in 0..4 {
+                    out[c * n + i] =
+                        (v * (c as f32 + 0.5) + (i % 7) as f32 * 0.01 * c as f32).sin();
+                }
+            }
+            Ok(out)
+        }
+        fn forward_classes(&self, patch: &[f32], sink: &mut ClassSink<'_>) -> Result<()> {
+            let all = self.forward(patch)?;
+            let n = patch.len();
+            let mut c0 = 0;
+            while c0 < 4 {
+                let k = self.piece.min(4 - c0);
+                sink(c0, Cow::Borrowed(&all[c0 * n..(c0 + k) * n]))?;
+                c0 += k;
+            }
+            Ok(())
+        }
+        fn overlaps(&self) -> bool {
+            self.overlap
+        }
+        fn tile_done(&self, _d: usize, _t: usize) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn pieces_of_classes_and_the_look_ahead_thread_change_nothing() {
+        let dims = [11, 9, 13];
+        let vol: Vec<f32> = (0..dims[0] * dims[1] * dims[2])
+            .map(|i| ((i * 37) % 101) as f32 / 50.0 - 1.0)
+            .collect();
+        let plan = nnunet_plan(dims, [6, 6, 6], 0.5);
+        let whole = predict_plan(&vol, dims, 4, &plan, ACC_BUDGET, &Threshold4).unwrap();
+        for (piece, overlap) in [(4, false), (1, false), (3, false), (2, true), (4, true)] {
+            for budget in [ACC_BUDGET, 4 * 6 * dims[2] * 4 * 2] {
+                let got =
+                    predict_plan(&vol, dims, 4, &plan, budget, &Pieces { piece, overlap }).unwrap();
+                assert_eq!(
+                    got, whole,
+                    "pieces of {piece}, overlap {overlap}, budget {budget}"
+                );
+            }
+        }
+        // A model that hands over the wrong number of classes is an error,
+        // on either thread.
+        for overlap in [false, true] {
+            assert!(predict_plan(
+                &vol,
+                dims,
+                5,
+                &plan,
+                ACC_BUDGET,
+                &Pieces { piece: 2, overlap }
+            )
+            .is_err());
+        }
+    }
+
+    /// [`Pieces`] as one whole forward pass.
+    struct Threshold4;
+    impl InferHooks for Threshold4 {
+        fn forward(&self, patch: &[f32]) -> Result<Vec<f32>> {
+            Pieces {
+                piece: 4,
+                overlap: false,
+            }
+            .forward(patch)
+        }
+        fn tile_done(&self, _d: usize, _t: usize) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn the_streamed_argmax_is_the_per_voxel_one() {
+        let (classes, plane) = (5usize, 37usize);
+        let mut acc: Vec<f32> = (0..classes * plane)
+            .map(|i| ((i * 13) % 7) as f32 - 3.0)
+            .collect();
+        // Ties, a NaN and infinities.
+        acc[2] = f32::NAN;
+        acc[plane + 3] = f32::INFINITY;
+        acc[4 * plane + 3] = f32::INFINITY;
+        acc[2 * plane + 5] = f32::NEG_INFINITY;
+        let got = argmax_row(&acc, classes, plane);
+        for (v, &g) in got.iter().enumerate() {
+            let mut best = 0usize;
+            let mut best_v = f32::NEG_INFINITY;
+            for c in 0..classes {
+                let a = acc[c * plane + v];
+                if a > best_v {
+                    best_v = a;
+                    best = c;
+                }
+            }
+            assert_eq!(g as usize, best, "voxel {v}");
+        }
     }
 
     #[test]

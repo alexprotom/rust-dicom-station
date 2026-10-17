@@ -68,6 +68,6 @@ argument, because a binary inside an AppImage has no path of its own:
 ```
 
 *Settings > MCP server > Copy client configuration* writes exactly that
-when the viewer runs from an AppImage (`src/settings.rs`, `McpLaunch`). A
+when the viewer runs from an AppImage (`crates/rds-domain/src/settings.rs`, `McpLaunch`). A
 copy or symlink of the image named `rds-mcp` works as well, for clients
 that will not pass an argument.

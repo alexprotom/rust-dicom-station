@@ -89,17 +89,72 @@ impl PixelPrompt {
     }
 }
 
-/// The last encoded slice, kept so that adjusting a prompt on it - the whole
-/// point of an interactive box - costs no encoder pass at all.
+/// Encoded slices kept for the next prompt on the same stack, at most
+/// [`KEEP_SLICES`] of them.
+///
+/// The prompted slice is always kept, so adjusting a prompt on it - the
+/// whole point of an interactive box - costs no encoder pass at all. So are
+/// the slices a propagation went through, those nearest the prompted slice
+/// first: propagating a corrected prompt from the same slice then re-encodes
+/// only the slices beyond them. (A plain least-recently-used rule would keep
+/// the far end of the last pass, exactly the slices the next pass reaches
+/// last.)
 struct Cache<B: Backend> {
-    slice: usize,
-    features: SliceFeatures<B>,
+    /// The slice of the last prompt, what "nearest" is measured from.
+    centre: usize,
+    kept: Vec<(usize, SliceFeatures<B>)>,
+}
+
+/// Slices kept with their features: about 4 MB each at MedSAM2's 512-pixel
+/// input.
+pub const KEEP_SLICES: usize = 32;
+
+impl<B: Backend> Default for Cache<B> {
+    fn default() -> Self {
+        Cache {
+            centre: 0,
+            kept: Vec::new(),
+        }
+    }
+}
+
+impl<B: Backend> Cache<B> {
+    fn get(&self, slice: usize) -> Option<SliceFeatures<B>> {
+        self.kept
+            .iter()
+            .find(|(s, _)| *s == slice)
+            .map(|(_, f)| f.clone())
+    }
+
+    /// Keep `features` of `slice` unless every kept slice is nearer the
+    /// centre; then the farthest one makes room. The centre's own slice is
+    /// always kept.
+    fn put(&mut self, slice: usize, features: SliceFeatures<B>) {
+        if let Some(e) = self.kept.iter_mut().find(|(s, _)| *s == slice) {
+            e.1 = features;
+            return;
+        }
+        let dist = |s: usize| s.abs_diff(self.centre);
+        if self.kept.len() >= KEEP_SLICES {
+            let (far, _) = self
+                .kept
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, (s, _))| (dist(*s), *s))
+                .expect("full");
+            if dist(self.kept[far].0) <= dist(slice) && slice != self.centre {
+                return;
+            }
+            self.kept.swap_remove(far);
+        }
+        self.kept.push((slice, features));
+    }
 }
 
 enum Inner {
-    Cpu(Box<Medsam2<Cpu>>, Mutex<Option<Cache<Cpu>>>),
+    Cpu(Box<Medsam2<Cpu>>, Mutex<Cache<Cpu>>),
     #[cfg(feature = "gpu")]
-    Gpu(Box<Medsam2<Gpu>>, Mutex<Option<Cache<Gpu>>>),
+    Gpu(Box<Medsam2<Gpu>>, Mutex<Cache<Gpu>>),
 }
 
 /// The loaded network, on whichever backend was chosen.
@@ -118,7 +173,7 @@ impl Engine {
             Some(ctx) => Ok(Engine {
                 inner: Inner::Gpu(
                     Box::new(Medsam2::<Gpu>::load(params, ctx.device())?),
-                    Mutex::new(None),
+                    Mutex::new(Cache::default()),
                 ),
                 device: ctx.describe(),
             }),
@@ -129,7 +184,7 @@ impl Engine {
                 Ok(Engine {
                     inner: Inner::Cpu(
                         Box::new(Medsam2::<Cpu>::load(params, &device)?),
-                        Mutex::new(None),
+                        Mutex::new(Cache::default()),
                     ),
                     device: crate::nn::device::describe_cpu(),
                 })
@@ -190,13 +245,13 @@ impl Engine {
         }
     }
 
-    /// Forget the cached slice - call this whenever the prepared stack itself
-    /// changes (a different study, or a different intensity window).
+    /// Forget the cached slices - call this whenever the prepared stack
+    /// itself changes (a different study, or a different intensity window).
     pub fn clear_cache(&self) {
         match &self.inner {
-            Inner::Cpu(_, cache) => *cache.lock().unwrap() = None,
+            Inner::Cpu(_, cache) => *lock(cache) = Cache::default(),
             #[cfg(feature = "gpu")]
-            Inner::Gpu(_, cache) => *cache.lock().unwrap() = None,
+            Inner::Gpu(_, cache) => *lock(cache) = Cache::default(),
         }
     }
 
@@ -255,29 +310,39 @@ fn to_prompt<B: Backend>(
     }
 }
 
-/// The encoded prompted slice, from the cache when it is the same one.
-fn anchor<B: Backend>(
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// A slice's features, from the cache when it holds them.
+fn features<B: Backend>(
     model: &Medsam2<B>,
-    cache: &Mutex<Option<Cache<B>>>,
+    cache: &Mutex<Cache<B>>,
     stack: &dyn Slices<B>,
     slice: usize,
 ) -> SliceFeatures<B> {
-    if let Some(hit) = cache.lock().unwrap().as_ref() {
-        if hit.slice == slice {
-            return hit.features.clone();
-        }
+    if let Some(hit) = lock(cache).get(slice) {
+        return hit;
     }
     let features = model.encode_slice(stack.slice(slice));
-    *cache.lock().unwrap() = Some(Cache {
-        slice,
-        features: features.clone(),
-    });
+    lock(cache).put(slice, features.clone());
     features
+}
+
+/// The encoded prompted slice, which becomes the cache's centre.
+fn anchor<B: Backend>(
+    model: &Medsam2<B>,
+    cache: &Mutex<Cache<B>>,
+    stack: &dyn Slices<B>,
+    slice: usize,
+) -> SliceFeatures<B> {
+    lock(cache).centre = slice;
+    features(model, cache, stack, slice)
 }
 
 fn run<B: Backend>(
     model: &Medsam2<B>,
-    cache: &Mutex<Option<Cache<B>>>,
+    cache: &Mutex<Cache<B>>,
     prepared: &Prepared,
     slice: usize,
     prompt: &EnginePrompt,
@@ -292,12 +357,15 @@ fn run<B: Backend>(
     }
     hooks.report(0.0, "Encoding the prompted slice");
     let anchor = anchor(model, cache, &stack, slice);
-    infer::propagate_from(model, &stack, slice, &anchor, &prompt, config, hooks)
+    let tracked = |index: usize| features(model, cache, &stack, index);
+    infer::propagate_with(
+        model, &stack, slice, &anchor, &prompt, config, hooks, &tracked,
+    )
 }
 
 fn run_preview<B: Backend>(
     model: &Medsam2<B>,
-    cache: &Mutex<Option<Cache<B>>>,
+    cache: &Mutex<Cache<B>>,
     prepared: &Prepared,
     slice: usize,
     prompt: &EnginePrompt,
@@ -322,6 +390,45 @@ fn run_preview<B: Backend>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn feats(v: f32) -> SliceFeatures<Cpu> {
+        let dev = burn::tensor::Device::<Cpu>::default();
+        SliceFeatures {
+            pix_feat: ops::from_slice(&[v], [1, 1, 1, 1], &dev),
+            high_res: None,
+        }
+    }
+
+    fn value(f: &SliceFeatures<Cpu>) -> f32 {
+        ops::to_vec(f.pix_feat.clone())[0]
+    }
+
+    #[test]
+    fn the_slices_nearest_the_prompt_are_kept() {
+        let mut c: Cache<Cpu> = Cache {
+            centre: 50,
+            kept: Vec::new(),
+        };
+        // A propagation from slice 50 up to 99, then back down to 0.
+        for s in (50..100).chain((0..50).rev()) {
+            c.put(s, feats(s as f32));
+        }
+        assert_eq!(c.kept.len(), KEEP_SLICES);
+        let mut kept: Vec<usize> = c.kept.iter().map(|(s, _)| *s).collect();
+        kept.sort();
+        // The 32 nearest: 35..=65, and of 34 and 66 (both 16 away) the one
+        // already kept when the other came.
+        assert_eq!(kept, (35..67).collect::<Vec<_>>());
+        assert_eq!(value(&c.get(40).unwrap()), 40.0);
+        assert!(c.get(70).is_none());
+        // A prompt elsewhere moves the centre; what is near it now wins.
+        c.centre = 90;
+        c.put(90, feats(90.0));
+        c.put(91, feats(91.0));
+        assert!(c.get(90).is_some() && c.get(91).is_some());
+        assert!(c.get(35).is_none() && c.get(36).is_none() && c.get(37).is_some());
+        assert_eq!(c.kept.len(), KEEP_SLICES);
+    }
 
     #[test]
     fn a_box_prompt_is_ordered_and_labelled() {

@@ -18,8 +18,11 @@
 //! those classes the task's answer is empty, as upstream's is.
 
 use anyhow::{bail, Context, Result};
+use std::borrow::Cow;
 use std::path::Path;
+use std::sync::Mutex;
 
+use super::kept::{self, NetKey, Nets, PartNets};
 use super::weights::{self, ModelSpec};
 use super::{cpu, infer, net, post, preprocess};
 use crate::nn::device::DevicePref;
@@ -397,6 +400,11 @@ pub fn run_task_labels(
 /// Clear `labels` outside the voxels of `mask` carrying one of `ids`,
 /// dilated `iterations` times with the 6-neighbourhood (scipy's
 /// `binary_dilation` with its default structure).
+///
+/// `k` dilations with the 6-neighbourhood reach exactly the voxels within
+/// `k` steps of a seed along the grid's axes (city-block distance), so the
+/// region is found by one breadth-first walk out from every seed at once,
+/// stopped at `k` steps, rather than by `k` passes over the whole grid.
 pub fn remove_outside(
     labels: &mut [u8],
     mask: &[u8],
@@ -409,50 +417,170 @@ pub fn remove_outside(
     for &i in ids {
         want[i as usize] = true;
     }
-    let mut inside: Vec<bool> = mask.iter().map(|&l| want[l as usize]).collect();
-    let mut next = inside.clone();
-    for _ in 0..iterations {
-        for z in 0..nz {
-            for y in 0..ny {
-                for x in 0..nx {
-                    let v = x + nx * (y + ny * z);
-                    if inside[v] {
-                        continue;
-                    }
-                    next[v] = (x > 0 && inside[v - 1])
-                        || (x + 1 < nx && inside[v + 1])
-                        || (y > 0 && inside[v - nx])
-                        || (y + 1 < ny && inside[v + nx])
-                        || (z > 0 && inside[v - nx * ny])
-                        || (z + 1 < nz && inside[v + nx * ny]);
+    // Steps from the nearest seed, `u16::MAX` for unreached.
+    let far = u16::MAX;
+    let limit = iterations.min(far as usize - 1) as u16;
+    let mut dist: Vec<u16> = mask
+        .iter()
+        .map(|&l| if want[l as usize] { 0 } else { far })
+        .collect();
+    // The walk starts from the seeds' edge only: a seed whose six
+    // neighbours are seeds too reaches nothing the others do not. Indices
+    // as u32, the frontier being the one list as long as a surface.
+    assert!(
+        dist.len() <= u32::MAX as usize,
+        "a grid of more than 2^32 voxels"
+    );
+    let plane = nx * ny;
+    let is_seed = |u: usize| dist[u] == 0;
+    let edge = |v: usize| {
+        let (x, y, z) = (v % nx, (v / nx) % ny, v / plane);
+        (x > 0 && !is_seed(v - 1))
+            || (x + 1 < nx && !is_seed(v + 1))
+            || (y > 0 && !is_seed(v - nx))
+            || (y + 1 < ny && !is_seed(v + nx))
+            || (z > 0 && !is_seed(v - plane))
+            || (z + 1 < nz && !is_seed(v + plane))
+    };
+    let mut front: Vec<u32> = (0..dist.len())
+        .filter(|&v| dist[v] == 0 && edge(v))
+        .map(|v| v as u32)
+        .collect();
+    let mut next: Vec<u32> = Vec::new();
+    for step in 1..=limit {
+        if front.is_empty() {
+            break;
+        }
+        for &v in &front {
+            let v = v as usize;
+            let (x, y, z) = (v % nx, (v / nx) % ny, v / plane);
+            let mut visit = |u: usize| {
+                if dist[u] == far {
+                    dist[u] = step;
+                    next.push(u as u32);
                 }
+            };
+            if x > 0 {
+                visit(v - 1);
+            }
+            if x + 1 < nx {
+                visit(v + 1);
+            }
+            if y > 0 {
+                visit(v - nx);
+            }
+            if y + 1 < ny {
+                visit(v + nx);
+            }
+            if z > 0 {
+                visit(v - nx * ny);
+            }
+            if z + 1 < nz {
+                visit(v + nx * ny);
             }
         }
-        std::mem::swap(&mut inside, &mut next);
-        next.copy_from_slice(&inside);
+        std::mem::swap(&mut front, &mut next);
+        next.clear();
     }
-    for (l, &keep) in labels.iter_mut().zip(&inside) {
-        if !keep {
+    for (l, &d) in labels.iter_mut().zip(&dist) {
+        if d == far {
             *l = 0;
         }
     }
 }
 
-/// Boxed patch-forward closure: normalized patch → logits.
-type ForwardFn<'a> = Box<dyn Fn(&[f32]) -> Result<Vec<f32>> + Sync + 'a>;
-
+/// The sliding window's view of one part: its networks (the folds, summed)
+/// and the progress row.
 struct Hooks<'a> {
-    forward: ForwardFn<'a>,
+    nets: &'a PartNets,
+    patch: [usize; 3],
+    /// Activation buffers reused from patch to patch (CPU); the forward
+    /// pass runs on one thread at a time, so the lock is never contended.
+    arena: Mutex<cpu::Arena>,
     progress: &'a Progress,
     /// (model index, model count) for progress text.
     model: (usize, usize),
     label: &'a str,
 }
 
+impl Hooks<'_> {
+    /// The folds' logits summed into `sum` (`[classes, p0, p1, p2]`), fold 0
+    /// first and each later fold added in turn, as an ensemble of the CPU
+    /// networks always summed them.
+    fn cpu_sum(&self, nets: &[net::UNet], patch: &[f32], arena: &mut cpu::Arena) -> Vec<f32> {
+        let [p0, p1, p2] = self.patch;
+        let mut x = arena.act(1, p0, p1, p2);
+        x.data.copy_from_slice(patch);
+        let mut sum = nets[0].forward_cpu_in(&x, arena).data;
+        for n in &nets[1..] {
+            let more = n.forward_cpu_in(&x, arena);
+            sum.iter_mut().zip(&more.data).for_each(|(a, b)| *a += b);
+            arena.give(more.data);
+        }
+        arena.give(x.data);
+        sum
+    }
+}
+
 impl infer::InferHooks for Hooks<'_> {
     fn forward(&self, patch: &[f32]) -> Result<Vec<f32>> {
-        (self.forward)(patch)
+        let mut out = None;
+        self.forward_classes(patch, &mut |_, piece| {
+            out = Some(piece.into_owned());
+            Ok(())
+        })?;
+        out.context("the network returned nothing")
     }
+
+    fn forward_classes(&self, patch: &[f32], sink: &mut infer::ClassSink<'_>) -> Result<()> {
+        match &self.nets.nets {
+            Nets::Cpu(nets) => {
+                let mut arena = self.arena.lock().unwrap_or_else(|p| p.into_inner());
+                let sum = self.cpu_sum(nets, patch, &mut arena);
+                let res = sink(0, Cow::Borrowed(&sum));
+                // The logits go back to the arena for the next patch.
+                arena.give(sum);
+                res
+            }
+            #[cfg(feature = "gpu")]
+            Nets::Gpu(gnets) => {
+                let p = self.patch;
+                if let [g] = gnets.as_slice() {
+                    // One network: each piece of classes goes straight on.
+                    return g
+                        .forward_classes(patch, p, &mut |c0, piece| sink(c0, Cow::Owned(piece)));
+                }
+                // Folds: summed here, piece by piece, fold 0 first, as the
+                // whole logits were.
+                let n = p[0] * p[1] * p[2];
+                let mut sum = vec![0f32; self.nets.classes * n];
+                for (fi, g) in gnets.iter().enumerate() {
+                    g.forward_classes(patch, p, &mut |c0, piece| {
+                        let dst = &mut sum[c0 * n..c0 * n + piece.len()];
+                        if fi == 0 {
+                            dst.copy_from_slice(&piece);
+                        } else {
+                            dst.iter_mut().zip(&piece).for_each(|(a, b)| *a += b);
+                        }
+                        Ok(())
+                    })?;
+                }
+                sink(0, Cow::Owned(sum))
+            }
+        }
+    }
+
+    /// One network on the GPU only: its logits go on in class pieces, so a
+    /// tile computed ahead costs a piece of memory. Folds are summed into
+    /// whole logits first, and a tile ahead would hold several of those.
+    fn overlaps(&self) -> bool {
+        #[cfg(feature = "gpu")]
+        if matches!(&self.nets.nets, Nets::Gpu(g) if g.len() == 1) {
+            return true;
+        }
+        false
+    }
+
     fn tile_done(&self, done: usize, total: usize) -> bool {
         let (mi, mn) = self.model;
         let text = if mn > 1 {
@@ -470,7 +598,70 @@ impl infer::InferHooks for Hooks<'_> {
     }
 }
 
+/// The networks of one part on the chosen device, built from the folds in
+/// the cache (or the ones kept from an earlier run, see [`kept`]).
+fn part_nets(
+    part: &Part,
+    dir: &Path,
+    max_folds: u8,
+    config: &super::config::ModelConfig,
+    gpu: Option<&crate::nn::device::GpuContext>,
+    device_desc: &str,
+    progress: &Progress,
+) -> Result<std::sync::Arc<PartNets>> {
+    let key = NetKey {
+        spec: part.spec.key,
+        dir: dir.to_path_buf(),
+        folds: weights::folds_loaded(&part.spec, max_folds),
+        device: device_desc.to_string(),
+    };
+    kept::get_or_build(&key, || {
+        let folds = weights::load_folds(&part.spec, dir, max_folds, progress)?;
+        if progress.cancelled() {
+            bail!(CANCELLED);
+        }
+        let bytes = folds
+            .iter()
+            .flat_map(|f| f.values())
+            .map(|t| t.data.len() * std::mem::size_of::<f32>())
+            .sum();
+        // Each fold's tensors move into its network: nothing is copied, and
+        // the map is gone once the network stands.
+        let nets: Vec<net::UNet> = folds
+            .into_iter()
+            .map(|t| net::UNet::build_owned(config.clone(), t))
+            .collect::<Result<_>>()
+            .with_context(|| format!("assemble network ({})", part.spec.label))?;
+        let classes = nets[0].num_classes();
+        let nets = match gpu {
+            None => Nets::Cpu(nets),
+            #[cfg(feature = "gpu")]
+            Some(ctx) => {
+                // Uploaded one at a time, each host copy dropped as soon as
+                // its network is on the device.
+                let mut g = Vec::with_capacity(nets.len());
+                for n in nets {
+                    g.push(super::gpu::GpuNet::new(ctx, &n)?);
+                }
+                Nets::Gpu(g)
+            }
+            #[cfg(not(feature = "gpu"))]
+            Some(ctx) => ctx.unreachable(),
+        };
+        Ok(PartNets {
+            classes,
+            nets,
+            bytes,
+        })
+    })
+}
+
 /// The networks of a task, merged, on the volume's own grid.
+///
+/// Every part is downloaded and converted first, so a missing file stops
+/// the run before any window has run; then each part's weights are loaded
+/// just before its windows and dropped after them (unless they are being
+/// kept, see [`kept`]), so a model in parts holds one part at a time.
 fn run_parts(
     volume: &Volume,
     task: &NnTask,
@@ -484,27 +675,27 @@ fn run_parts(
     let (base, span) = window;
     let phase = |p: &Progress, at: f32, len: f32| p.set_phase(base + span * at, span * len);
 
-    // Progress budget: 15% download/convert/load, 5% preprocess,
-    // 75% inference, 5% postprocess.
+    // Progress budget: 15% download/convert, 5% preprocess, 75% loading
+    // and inference, 5% postprocess.
     let dl_span = 0.15 / n_models as f32;
     let max_folds = match task.folds {
         FoldUse::All => u8::MAX,
         FoldUse::First => 1,
     };
-    let mut models = Vec::with_capacity(n_models);
+    let mut configs = Vec::with_capacity(n_models);
     for (i, part) in parts.iter().enumerate() {
         phase(progress, i as f32 * dl_span, dl_span);
         let dir = root.join(part.spec.home.subdir());
-        let m = weights::ensure_model_folds(&part.spec, &dir, max_folds, progress)?;
+        let config = weights::prepare_model(&part.spec, &dir, progress)?;
         if progress.cancelled() {
             bail!(CANCELLED);
         }
-        models.push(m);
+        configs.push(config);
     }
-    let spacing = models[0].config.spacing;
-    let axes = models[0].spec.axes;
-    for m in &models {
-        if m.config.spacing != spacing || m.spec.axes != axes {
+    let spacing = configs[0].spacing;
+    let axes = parts[0].spec.axes;
+    for (c, part) in configs.iter().zip(parts) {
+        if c.spacing != spacing || part.spec.axes != axes {
             bail!("the sub-models of '{}' disagree on their grid", task.label);
         }
     }
@@ -537,65 +728,42 @@ fn run_parts(
 
     let mut global = vec![0u8; vol_model.len()];
     let infer_span = 0.75 / n_models as f32;
-    for (mi, (model, part)) in models.iter().zip(parts).enumerate() {
+    for (mi, (config, part)) in configs.iter().zip(parts).enumerate() {
         phase(progress, 0.2 + mi as f32 * infer_span, infer_span);
+        let dir = root.join(part.spec.home.subdir());
+        let nets = part_nets(
+            part,
+            &dir,
+            max_folds,
+            config,
+            gpu.as_ref(),
+            &device_desc,
+            progress,
+        )?;
         // A z-score model normalizes against this image, so its constants
-        // are only knowable now, with the resampled volume in hand.
-        let mut cfg = model.config.clone();
+        // are only knowable now, with the resampled volume in hand; the
+        // networks themselves do not depend on them.
+        let mut cfg = config.clone();
         cfg.apply_image_norm(&vol_model);
-        let nets: Vec<net::UNet> = model
-            .folds
-            .iter()
-            .map(|t| net::UNet::build(cfg.clone(), t))
-            .collect::<Result<_>>()
-            .with_context(|| format!("assemble network ({})", model.spec.label))?;
-        let classes = nets[0].num_classes();
-        let p = cfg.patch_size;
-        let forward: ForwardFn = match &gpu {
-            None => {
-                let nets = &nets;
-                Box::new(move |patch: &[f32]| {
-                    let x = cpu::Act {
-                        c: 1,
-                        d: p[0],
-                        h: p[1],
-                        w: p[2],
-                        data: patch.to_vec(),
-                    };
-                    let mut sum = nets[0].forward_cpu(&x).data;
-                    for n in &nets[1..] {
-                        let more = n.forward_cpu(&x).data;
-                        sum.iter_mut().zip(&more).for_each(|(a, b)| *a += b);
-                    }
-                    Ok(sum)
-                })
-            }
-            #[cfg(feature = "gpu")]
-            Some(ctx) => {
-                let gnets = nets
-                    .iter()
-                    .map(|n| super::gpu::GpuNet::new(ctx, n))
-                    .collect::<Result<Vec<_>>>()?;
-                Box::new(move |patch: &[f32]| {
-                    let mut sum = gnets[0].forward(patch, p)?;
-                    for g in &gnets[1..] {
-                        let more = g.forward(patch, p)?;
-                        sum.iter_mut().zip(&more).for_each(|(a, b)| *a += b);
-                    }
-                    Ok(sum)
-                })
-            }
-            #[cfg(not(feature = "gpu"))]
-            Some(ctx) => ctx.unreachable(),
-        };
         let hooks = Hooks {
-            forward,
+            nets: &nets,
+            patch: cfg.patch_size,
+            arena: Mutex::new(cpu::Arena::default()),
             progress,
             model: (mi, n_models),
             label: task.label,
         };
-        let local = infer::predict(&vol_model, map.model_dims, classes, &cfg, task.step, &hooks)
-            .with_context(|| format!("inference ({})", model.spec.label))?;
+        let local = infer::predict(
+            &vol_model,
+            map.model_dims,
+            nets.classes,
+            &cfg,
+            task.step,
+            &hooks,
+        )
+        .with_context(|| format!("inference ({})", part.spec.label))?;
+        drop(hooks);
+        drop(nets);
         // Merge: the network's labels through its table; later parts win.
         for (g, l) in global.iter_mut().zip(local.iter()) {
             if *l != 0 {
@@ -718,6 +886,76 @@ mod tests {
         m[4] = 1;
         remove_outside(&mut l, &m, [3, 3, 1], &[1], 1);
         assert_eq!(l, [0, 1, 0, 1, 1, 1, 0, 1, 0]);
+    }
+
+    /// The pass-by-pass dilation `remove_outside` used to run.
+    fn remove_outside_by_passes(
+        labels: &mut [u8],
+        mask: &[u8],
+        dims: [usize; 3],
+        ids: &[u8],
+        iterations: usize,
+    ) {
+        let [nx, ny, nz] = dims;
+        let mut inside: Vec<bool> = mask.iter().map(|l| ids.contains(l)).collect();
+        let mut next = inside.clone();
+        for _ in 0..iterations {
+            for z in 0..nz {
+                for y in 0..ny {
+                    for x in 0..nx {
+                        let v = x + nx * (y + ny * z);
+                        if inside[v] {
+                            continue;
+                        }
+                        next[v] = (x > 0 && inside[v - 1])
+                            || (x + 1 < nx && inside[v + 1])
+                            || (y > 0 && inside[v - nx])
+                            || (y + 1 < ny && inside[v + nx])
+                            || (z > 0 && inside[v - nx * ny])
+                            || (z + 1 < nz && inside[v + nx * ny]);
+                    }
+                }
+            }
+            std::mem::swap(&mut inside, &mut next);
+            next.copy_from_slice(&inside);
+        }
+        for (l, &keep) in labels.iter_mut().zip(&inside) {
+            if !keep {
+                *l = 0;
+            }
+        }
+    }
+
+    #[test]
+    fn the_breadth_first_walk_keeps_what_the_passes_kept() {
+        let dims = [13, 9, 7];
+        let n = dims[0] * dims[1] * dims[2];
+        let mut seed = 0x9E37_79B9u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for trial in 0..6 {
+            // Sparse seeds of two kinds and other labels around them.
+            let mask: Vec<u8> = (0..n)
+                .map(|_| match next() % 97 {
+                    0 => 3,
+                    1 => 5,
+                    2..=5 => 7,
+                    _ => 0,
+                })
+                .collect();
+            let labels: Vec<u8> = (0..n).map(|_| (next() % 4) as u8 + 1).collect();
+            for iterations in [0, 1, 2, 5, 40] {
+                let mut a = labels.clone();
+                let mut b = labels.clone();
+                remove_outside(&mut a, &mask, dims, &[3, 5], iterations);
+                remove_outside_by_passes(&mut b, &mask, dims, &[3, 5], iterations);
+                assert_eq!(a, b, "trial {trial}, {iterations} iterations");
+            }
+        }
     }
 
     #[test]

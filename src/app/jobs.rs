@@ -3,12 +3,114 @@
 //! Every long operation follows the same shape: snapshot the inputs, spawn a
 //! thread, poll the channel each frame (`poll_job`), and land the result --
 //! validating it first where the underlying data could have changed
-//! meanwhile. The `Job` type and `poll_job` itself live in the parent
-//! module; see `docs/architecture.md` for the pattern.
+//! meanwhile. The `Job` type, `poll_job` and the per-frame poll of every
+//! job (`poll_all_jobs`) are here too; see `docs/architecture.md` for the
+//! pattern.
 
 use super::*;
 
 use std::path::Path;
+
+// Background loading
+
+/// A freshly reconstructed volume: pixels, its default window/level and any
+/// non-fatal notes raised while reading the series.
+pub(super) type LoadedVolume = (Arc<Volume>, (f32, f32), Vec<String>);
+
+pub(super) enum LoadResult {
+    /// A whole folder, for the given slot.
+    Study(Box<anyhow::Result<LoadedStudy>>, usize),
+    /// A single series switched into (slot, series index).
+    Volume(Box<anyhow::Result<LoadedVolume>>, usize, usize),
+    /// One phase of a 4D group stepped into (slot, series index). Lands
+    /// through [`ViewerApp::install_phase_volume`] instead, so that the
+    /// crosshair, the zoom and the registration stay where they are.
+    Phase(Box<anyhow::Result<LoadedVolume>>, usize, usize),
+}
+
+/// A unit of work running on a background thread: a shared progress handle
+/// plus the channel its result arrives on. Every background feature in the
+/// app has this shape, and [`poll_job`] drives them all identically.
+pub(super) struct Job<T> {
+    pub(super) progress: Arc<Progress>,
+    pub(super) rx: mpsc::Receiver<T>,
+}
+
+impl<T> Job<T> {
+    /// Run `work` on a new thread and return the handle to poll for its
+    /// result. The worker gets the progress handle; the caller keeps a clone.
+    pub(super) fn spawn(
+        progress: Arc<Progress>,
+        work: impl FnOnce(&Progress) -> T + Send + 'static,
+    ) -> Job<T>
+    where
+        T: Send + 'static,
+    {
+        let (tx, rx) = mpsc::channel();
+        let p = progress.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(work(&p));
+        });
+        Job { progress, rx }
+    }
+}
+
+/// Ask a running job to stop when its window's Cancel button was pressed;
+/// nothing happens without a job.
+pub(super) fn cancel_if<T>(cancel: bool, job: &Option<Job<T>>) {
+    if cancel {
+        if let Some(job) = job {
+            job.progress.cancel();
+        }
+    }
+}
+
+/// Poll a background job. Returns its result once, clearing the slot; reports
+/// a worker that died without answering into `error`; otherwise schedules the
+/// next poll and returns `None`.
+pub(super) fn poll_job<T>(
+    slot: &mut Option<Job<T>>,
+    ctx: &egui::Context,
+    what: &str,
+    error: &mut Option<String>,
+) -> Option<T> {
+    let job = slot.as_ref()?;
+    match job.rx.try_recv() {
+        Ok(v) => {
+            *slot = None;
+            Some(v)
+        }
+        Err(mpsc::TryRecvError::Empty) => {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            None
+        }
+        Err(mpsc::TryRecvError::Disconnected) => {
+            *slot = None;
+            *error = Some(format!("{what} thread terminated unexpectedly"));
+            None
+        }
+    }
+}
+
+/// [`poll_job`] for the jobs that answer with `(slot, Result)`: a failure is
+/// reported as `"{what} failed: "`, except a cancellation, which is what
+/// the user asked for and needs no dialog.
+pub(super) fn poll_tool_job<T>(
+    slot: &mut Option<Job<(usize, anyhow::Result<T>)>>,
+    ctx: &egui::Context,
+    what: &str,
+    error: &mut Option<String>,
+) -> Option<(usize, T)> {
+    match poll_job(slot, ctx, what, error)? {
+        (s, Ok(v)) => Some((s, v)),
+        (_, Err(e)) => {
+            if !progress::is_cancellation(&e) {
+                *error = Some(format!("{what} failed: {e:#}"));
+            }
+            None
+        }
+    }
+}
 
 impl ViewerApp {
     /// Note that a workspace was loaded from here, so *Restore the last
@@ -678,5 +780,297 @@ impl ViewerApp {
         });
         self.anon_result = None;
         self.anon_apply_job = Some(Job { progress, rx });
+    }
+}
+
+impl ViewerApp {
+    /// Once a frame, before anything is drawn: every background job is
+    /// polled and what finished lands, in this order; then the 4D cine
+    /// clock, the recorder and the snapshot take the frame egui delivered.
+    pub(super) fn poll_all_jobs(&mut self, ctx: &egui::Context) {
+        // Poll background loading.
+        match poll_job(&mut self.loading, ctx, "Loading", &mut self.error) {
+            Some(LoadResult::Study(res, slot)) => match *res {
+                Ok(study) => self.absorb_loaded_study(slot, study),
+                Err(e) => self.error = Some(format!("{e:#}")),
+            },
+            Some(LoadResult::Volume(res, slot, idx)) => match *res {
+                Ok((vol, window, warnings)) => {
+                    self.apply_new_volume(slot, vol, window, idx);
+                    if let Some(study) = &mut self.slots[slot].study {
+                        study.warnings.extend(warnings);
+                    }
+                }
+                Err(e) => self.error = Some(format!("{e:#}")),
+            },
+            Some(LoadResult::Phase(res, slot, idx)) => match *res {
+                Ok((vol, window, _)) => {
+                    let label = self.phase_label_of(slot, idx);
+                    self.install_phase_volume(slot, vol, window, idx, &label);
+                }
+                Err(e) => self.error = Some(format!("{e:#}")),
+            },
+            None => {}
+        }
+        // Kick a queued load once the current one finished.
+        if self.loading.is_none() {
+            if let Some((slot, uid)) = self.pending_switch.take() {
+                let idx = self.slots[slot]
+                    .study
+                    .as_ref()
+                    .and_then(|st| st.series.iter().position(|se| se.uid == uid));
+                if let Some(idx) = idx {
+                    self.start_series_switch(slot, idx);
+                }
+            } else if let Some((slot, path)) = self.pending_load.take() {
+                self.start_load(slot, path);
+            } else if let Some((slot, paths, sources)) = self.pending_load_files.take() {
+                self.start_load_files_noting(slot, paths, sources);
+            } else if !self.restore_queue.is_empty() {
+                // One source of the session being restored at a time.
+                let (slot, path) = self.restore_queue.remove(0);
+                if path.is_dir() {
+                    self.start_load(slot, path);
+                } else {
+                    self.start_load_files(slot, vec![path]);
+                }
+            }
+        }
+
+        self.poll_pending_phase_field();
+
+        // Poll background simulation.
+        if let Some((target, study)) =
+            poll_job(&mut self.sim_job, ctx, "Simulation", &mut self.error)
+        {
+            self.on_study_loaded(target, study);
+            self.show_workspace(target);
+        }
+
+        // Poll background export.
+        match poll_job(&mut self.export_job, ctx, "Export", &mut self.error) {
+            Some(Ok(sum)) => {
+                self.export_result = Some(sum.message());
+                self.export_warnings = sum.warnings;
+            }
+            Some(Err(e)) => self.error = Some(format!("Export failed: {e:#}")),
+            None => {}
+        }
+
+        // Poll background test-data generation.
+        match poll_job(
+            &mut self.gen_job,
+            ctx,
+            "Test data generation",
+            &mut self.error,
+        ) {
+            Some(Ok((n, dir))) => {
+                self.gen_result = Some(format!("✔ {n} DICOM file(s) written to {}", dir.display()));
+                if self.gen_load_after {
+                    self.gen_open = false;
+                    self.start_load(0, dir);
+                }
+            }
+            Some(Err(e)) => self.error = Some(format!("Test data generation failed: {e:#}")),
+            None => {}
+        }
+
+        // Poll the test-data download.
+        self.poll_testdata_job(ctx);
+
+        // Poll a model download / update batch.
+        self.poll_models_job(ctx);
+
+        // Poll the tool windows' workers.
+        if let Some((slot, result)) =
+            poll_tool_job(&mut self.autoseg_job, ctx, AUTOSEG.name, &mut self.error)
+        {
+            self.on_autoseg_done(slot, result);
+        }
+        if let Some((slot, result)) =
+            poll_tool_job(&mut self.medsam2_job, ctx, SLICE_PROP.name, &mut self.error)
+        {
+            self.on_medsam2_done(slot, result);
+        }
+        if let Some((slot, result)) =
+            poll_tool_job(&mut self.segvol_job, ctx, PROMPT_SEG.name, &mut self.error)
+        {
+            self.on_segvol_done(slot, result);
+        }
+        let nni_busy = self.nni_job.is_some();
+        if let Some((slot, result)) = poll_tool_job(
+            &mut self.nni_job,
+            ctx,
+            INTERACTIVE_SEG.name,
+            &mut self.error,
+        ) {
+            self.on_nni_done(slot, result);
+        } else if nni_busy && self.nni_job.is_none() {
+            // Failed or cancelled: the prompt's mark goes, the rest wait on.
+            if self.nni.inflight_mark {
+                self.nni.marks.pop();
+            }
+            self.nni_next();
+        }
+        if let Some((slot, result)) =
+            poll_tool_job(&mut self.body_job, ctx, BODY_CONTOUR.name, &mut self.error)
+        {
+            self.on_body_done(slot, result);
+        }
+        if let Some((slot, done)) = poll_tool_job(
+            &mut self.synth_job,
+            ctx,
+            synth_win::SYNTHESIS.name,
+            &mut self.error,
+        ) {
+            self.on_synthesis_done(slot, done);
+        }
+        if let Some((slot, done)) = poll_tool_job(
+            &mut self.synth_eval_job,
+            ctx,
+            "Synthetic CT evaluation",
+            &mut self.error,
+        ) {
+            self.on_sct_eval_done(slot, done);
+        }
+        if let Some((slot, result)) =
+            poll_tool_job(&mut self.combine_job, ctx, COMBINE.name, &mut self.error)
+        {
+            self.on_combine_done(slot, result);
+        }
+        if let Some((slot, result)) = poll_tool_job(
+            &mut self.derived_job,
+            ctx,
+            "Derived structure",
+            &mut self.error,
+        ) {
+            self.on_derived_done(slot, result);
+        }
+        // One at a time: the queue is what "update all" leaves behind.
+        if self.derived_job.is_none() && !self.derived_queue.is_empty() {
+            let slot = self.derived_slot;
+            self.next_derived_in_queue(slot);
+        }
+        if let Some(rows) = poll_job(
+            &mut self.dose_est_job,
+            ctx,
+            "Dose estimation",
+            &mut self.error,
+        ) {
+            self.on_dose_est_done(rows);
+        }
+        match poll_job(&mut self.dvh_job, ctx, "DVH", &mut self.error) {
+            Some(Ok(done)) => self.on_dvh_done(done),
+            Some(Err(e)) if !progress::is_cancellation(&e) => {
+                self.error = Some(format!("DVH failed: {e:#}"));
+            }
+            _ => {}
+        }
+        if let Some((slot, outcome)) =
+            poll_tool_job(&mut self.motion_job, ctx, MOTION.name, &mut self.error)
+        {
+            self.on_motion_done(slot, outcome);
+        }
+
+        // Poll background registration.
+        if let Some((fixed_slot, out)) =
+            poll_tool_job(&mut self.reg_job, ctx, "Registration", &mut self.error)
+        {
+            self.install_registration(out);
+            self.fusion_on = true;
+            // Re-propagate the crosshair through the new transform.
+            let cursor = self.slots[fixed_slot].cursor;
+            self.set_cursor(fixed_slot, cursor, usize::MAX);
+        }
+
+        // Poll an archive job - a scan, an import, an upload or a removal.
+        match poll_job(&mut self.pacs_job, ctx, "Archive", &mut self.error) {
+            Some(Ok(outcome)) => self.on_pacs_done(outcome),
+            Some(Err(e)) => self.error = Some(format!("Archive: {e:#}")),
+            None => {}
+        }
+        // A call to a paired PACS server, and the queue it keeps current.
+        if let Some(r) = poll_job(&mut self.pacs_remote_job, ctx, "PACS", &mut self.error) {
+            self.on_remote_done(r);
+        }
+        self.poll_remote_tasks(ctx.input(|i| i.time));
+        // The PACS server on this machine.
+        if let Some(r) = poll_job(
+            &mut self.pacs_server_job,
+            ctx,
+            "PACS server",
+            &mut self.error,
+        ) {
+            self.on_server_done(r);
+        }
+        self.poll_server_status(ctx.input(|i| i.time));
+
+        // Poll a 2D/3D registration (or its DRRs, its nudge, its copy).
+        if let Some(out) = poll_job(
+            &mut self.r2d_job,
+            ctx,
+            "2D/3D registration",
+            &mut self.error,
+        ) {
+            self.on_reg2d3d_done(out);
+        }
+
+        // Poll a DRR rendering.
+        match poll_job(&mut self.drr_job, ctx, "DRR", &mut self.error) {
+            Some(Ok(run)) => self.on_drr_done(run),
+            // A cancelled render is what the user asked for, not a failure.
+            Some(Err(e)) if !progress::is_cancellation(&e) => {
+                self.error = Some(format!("DRR failed: {e:#}"));
+            }
+            _ => {}
+        }
+
+        // Poll a structure propagation.
+        if let Some((dst_slot, out)) =
+            poll_tool_job(&mut self.propagate_job, ctx, "Propagation", &mut self.error)
+        {
+            self.on_propagation_done(dst_slot, out);
+        }
+
+        // Poll a copy onto every phase of a 4D group.
+        if let Some((what, job)) = self.phases_job.take() {
+            let mut slot = Some(job);
+            match poll_job(&mut slot, ctx, "Copy to phases", &mut self.error) {
+                Some(Ok(phases)) => self.on_phases_copied(what, phases),
+                Some(Err(e)) if !progress::is_cancellation(&e) => {
+                    self.error = Some(format!("Copy to phases failed: {e:#}"));
+                }
+                Some(Err(_)) => {}
+                None => {
+                    if let Some(job) = slot {
+                        self.phases_job = Some((what, job));
+                    }
+                }
+            }
+        }
+
+        // Poll the 4D phase reader, run the cine clock, and hand the frame
+        // egui has just delivered to whoever asked for it - a recording of a
+        // run, or a still of the views.
+        self.poll_phase_cache(ctx);
+        self.play_tick(ctx);
+        let shot = ctx.input(|i| {
+            i.events.iter().rev().find_map(|e| match e {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+        });
+        self.record_tick(ctx, shot.as_ref());
+        self.snapshot_tick(ctx, shot.as_ref());
+
+        // Poll a workflow run: its steps, what it shows, its end.
+        self.poll_workflow_run(ctx);
+
+        // Poll a vector-field re-sampling.
+        if let Some(field) = poll_job(&mut self.field_job, ctx, "Vector field", &mut self.error) {
+            if let Some(reg) = &mut self.registration {
+                reg.field = Arc::new(field);
+            }
+        }
     }
 }

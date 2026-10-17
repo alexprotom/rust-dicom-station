@@ -1203,18 +1203,236 @@ impl ViewerApp {
             .map(|j| (j.progress.get(), j.progress.frac()));
 
         let mut new_slot = None;
-        let mut act_run = false;
-        let mut act_preview = false;
-        let mut act_cancel = false;
-        let mut nudge: Option<[f64; 6]> = None;
-        let mut act_copy = false;
-        let mut act_report = false;
-        let mut act_dicom = false;
-        let mut act_clip = false;
-        let mut chosen_room: Option<String> = None;
+        let act_run = false;
+        let act_preview = false;
+        let act_cancel = false;
+        let nudge: Option<[f64; 6]> = None;
+        let act_copy = false;
+        let act_report = false;
+        let act_dicom = false;
+        let act_clip = false;
+        let chosen_room: Option<String> = None;
         let id = ui.make_persistent_id("reg2d3d");
 
         new_slot = workspace_row(ui, st.slot, slots, !busy).or(new_slot);
+        let mut sf = R2dForm {
+            st,
+            planar,
+            beams,
+            room_views,
+            structures,
+            default_iso,
+            crosshair,
+            marker_names,
+            n_markers,
+            current,
+            job_line,
+            busy,
+            id,
+            chosen_room,
+            act_clip,
+            act_run,
+            act_preview,
+            act_cancel,
+            act_copy,
+            act_report,
+            act_dicom,
+            nudge,
+        };
+        self.r2d_images_rows(ui, &mut sf);
+        self.r2d_setup_rows(ui, &mut sf);
+        self.r2d_run_rows(ui, &mut sf);
+        self.r2d_result_rows(ui, &mut sf);
+        let R2dForm {
+            mut st,
+            chosen_room,
+            act_clip,
+            act_run,
+            act_preview,
+            act_cancel,
+            act_copy,
+            act_report,
+            act_dicom,
+            nudge,
+            ..
+        } = sf;
+
+        let target_slot = st.slot;
+        let clip_centre = st
+            .clip_shown
+            .as_ref()
+            .and_then(|(_, b)| *b)
+            .map(|b| b.center);
+        if let Some(r) = chosen_room {
+            st.room = r;
+        }
+        let prefs = st.prefs();
+        self.r2d = Some(st);
+        if prefs != self.r2d_prefs {
+            self.r2d_prefs = prefs;
+            self.persist_settings();
+        }
+        if let Some(s) = new_slot {
+            if let Some(st) = &mut self.r2d {
+                *st = Reg2d3dState::new(s, &self.r2d_prefs);
+            }
+            self.reg2d3d_follow(s);
+        }
+        if act_cancel {
+            cancel_if(true, &self.r2d_job);
+        }
+        if act_run {
+            self.start_reg2d3d("run");
+        }
+        if act_preview {
+            self.start_reg2d3d("preview");
+        }
+        if let Some(d) = nudge {
+            self.nudge_reg2d3d(d);
+        }
+        if act_copy {
+            self.reg2d3d_copy();
+        }
+        if act_report {
+            self.reg2d3d_save_report();
+        }
+        if act_dicom {
+            self.reg2d3d_save_dicom();
+        }
+        if act_clip {
+            // The box's centre under the crosshair, so its slices show it.
+            if let (Some(c), Some(study)) = (clip_centre, &self.slots[target_slot].study) {
+                let v = study.volume.patient_to_voxel(c);
+                self.slots[target_slot].cursor = v;
+                self.sync_views_to_cursor(target_slot, None);
+            }
+        }
+    }
+}
+
+impl ViewerApp {
+    /// Setup `idx` of `slot` was taken out of the study.
+    pub(super) fn setup_removed(&mut self, slot: usize, idx: usize) {
+        if let Some(st) = self.r2d.as_mut().filter(|st| st.slot == slot) {
+            st.current = match st.current {
+                Some(c) if c == idx => None,
+                Some(c) if c > idx => Some(c - 1),
+                c => c,
+            };
+            if st.current.is_none() {
+                st.drrs.clear();
+                st.outlines.clear();
+                st.outlines_for = None;
+            }
+        }
+    }
+
+    /// *Setups* in the data tree: the 2D/3D registrations made for this
+    /// workspace's CT.
+    pub(super) fn setups_section(&mut self, ui: &mut egui::Ui, slot: usize) {
+        let Some(study) = self.slots[slot].study.as_ref() else {
+            return;
+        };
+        let n = study.setups.len();
+        if n == 0 {
+            return;
+        }
+        let rows: Vec<(String, String)> = study
+            .setups
+            .iter()
+            .map(|s| {
+                let c = s.result.correction();
+                (
+                    s.label.clone(),
+                    format!(
+                        "{} · {:+.1}, {:+.1}, {:+.1} mm{}",
+                        s.when,
+                        c[3],
+                        c[4],
+                        c[5],
+                        if s.adjusted { " · moved by hand" } else { "" }
+                    ),
+                )
+            })
+            .collect();
+        let current = self
+            .r2d
+            .as_ref()
+            .filter(|st| st.slot == slot)
+            .and_then(|st| st.current);
+        let focused = self.tree_focus.clone();
+        let mut show = None;
+        let mut rename = None;
+        let mut remove = None;
+        let mut focus = None;
+        egui::CollapsingHeader::new(format!("Setups ({n})"))
+            .id_salt(("setups", slot))
+            .default_open(true)
+            .show(ui, |ui| {
+                for (i, (label, line)) in rows.iter().enumerate() {
+                    let text = egui::RichText::new(format!("{} {label}", REG2D3D_TOOL.glyph));
+                    let resp = ui.selectable_label(current == Some(i), text);
+                    ui.weak(line.as_str());
+                    if resp.clicked() {
+                        show = Some(i);
+                    }
+                    Self::focus_row(
+                        ui,
+                        &resp,
+                        RenameTarget::Setup { slot, idx: i },
+                        &focused,
+                        &mut focus,
+                    );
+                    resp.context_menu(|ui| {
+                        if ui.button("👁 Show").clicked() {
+                            show = Some(i);
+                            ui.close();
+                        }
+                        if ui.button("✏ Rename").clicked() {
+                            rename = Some(RenameTarget::Setup { slot, idx: i });
+                            ui.close();
+                        }
+                        ui.separator();
+                        if ui.button("🗑 Remove").clicked() {
+                            remove = Some(ObjRef {
+                                slot,
+                                kind: ObjKind::Setup,
+                                idx: i,
+                            });
+                            ui.close();
+                        }
+                    });
+                }
+            });
+        if focus.is_some() {
+            self.tree_focus = focus;
+        }
+        if rename.is_some() {
+            self.rename_request = rename;
+        }
+        if remove.is_some() {
+            self.obj_remove = remove;
+        }
+        if let Some(i) = show {
+            // Where its controls are: the registration module, unfolded.
+            self.module_registration = true;
+            self.show_setup(slot, i);
+        }
+    }
+}
+
+// -- The parts of the 2D/3D section, top to bottom --------------------------
+
+impl ViewerApp {
+    /// *Images*: the radiographs of the study, each with its view and its
+    /// geometry, and the room they were taken in.
+    fn r2d_images_rows(&self, ui: &mut egui::Ui, sf: &mut R2dForm) {
+        let st = &mut sf.st;
+        let planar = &sf.planar;
+        let beams = &sf.beams;
+        let room_views = &sf.room_views;
+        let id = sf.id;
+        let mut chosen_room = std::mem::take(&mut sf.chosen_room);
         egui::CollapsingHeader::new("Images")
             .id_salt((id, "images"))
             .default_open(true)
@@ -1252,7 +1470,7 @@ impl ViewerApp {
                                 {
                                     v.source = GeometrySource::Image;
                                 }
-                                for (p, b, l) in &beams {
+                                for (p, b, l) in beams {
                                     if ui.selectable_label(false, l.as_str()).clicked() {
                                         v.source = GeometrySource::Beam {
                                             plan: *p,
@@ -1261,7 +1479,7 @@ impl ViewerApp {
                                         };
                                     }
                                 }
-                                for (r, w) in &room_views {
+                                for (r, w) in room_views {
                                     if ui.selectable_label(false, format!("room: {w}")).clicked() {
                                         v.source = GeometrySource::Room {
                                             room: r.clone(),
@@ -1328,7 +1546,20 @@ impl ViewerApp {
                         .on_hover_text(e.as_str());
                 }
             });
+        sf.chosen_room = chosen_room;
+    }
 
+    /// *Setup*: the isocentre, the region, the markers, the measure and the
+    /// search, the tolerances.
+    fn r2d_setup_rows(&self, ui: &mut egui::Ui, sf: &mut R2dForm) {
+        let st = &mut sf.st;
+        let structures = &sf.structures;
+        let default_iso = sf.default_iso;
+        let crosshair = sf.crosshair;
+        let marker_names = &sf.marker_names;
+        let n_markers = sf.n_markers;
+        let id = sf.id;
+        let mut act_clip = sf.act_clip;
         egui::CollapsingHeader::new("Setup")
             .id_salt((id, "setup"))
             .default_open(true)
@@ -1404,7 +1635,7 @@ impl ViewerApp {
                                     {
                                         st.clip_structure = None;
                                     }
-                                    for n in &structures {
+                                    for n in structures {
                                         if ui
                                             .selectable_label(
                                                 st.clip_structure.as_ref() == Some(n),
@@ -1589,7 +1820,7 @@ impl ViewerApp {
                                                 st.tool = PaneTool::None;
                                             }
                                         }
-                                        for n in &marker_names {
+                                        for n in marker_names {
                                             if ui
                                                 .selectable_label(
                                                     st.pick_marker.as_ref() == Some(n),
@@ -1660,7 +1891,17 @@ impl ViewerApp {
                     });
                 });
             });
+        sf.act_clip = act_clip;
+    }
 
+    /// The run row and its progress.
+    fn r2d_run_rows(&self, ui: &mut egui::Ui, sf: &mut R2dForm) {
+        let st = &mut sf.st;
+        let job_line = std::mem::take(&mut sf.job_line);
+        let busy = sf.busy;
+        let mut act_run = sf.act_run;
+        let mut act_preview = sf.act_preview;
+        let mut act_cancel = sf.act_cancel;
         ui.horizontal(|ui| {
             if busy {
                 ui.spinner();
@@ -1691,8 +1932,24 @@ impl ViewerApp {
         if let Some(s) = &st.status {
             ui.label(s.as_str());
         }
+        sf.act_run = act_run;
+        sf.act_preview = act_preview;
+        sf.act_cancel = act_cancel;
+    }
 
-        if let Some(s) = &current {
+    /// The registration on display: its correction against the tolerances,
+    /// its numbers, the overlays, and what can be done with it.
+    fn r2d_result_rows(&self, ui: &mut egui::Ui, sf: &mut R2dForm) {
+        let st = &mut sf.st;
+        let structures = &sf.structures;
+        let current = &sf.current;
+        let busy = sf.busy;
+        let id = sf.id;
+        let mut act_copy = sf.act_copy;
+        let mut act_report = sf.act_report;
+        let mut act_dicom = sf.act_dicom;
+        let mut nudge = sf.nudge;
+        if let Some(s) = current {
             ui.separator();
             let r = &s.result;
             ui.label(egui::RichText::new(&s.label).strong());
@@ -1849,7 +2106,7 @@ impl ViewerApp {
                         egui::ScrollArea::vertical()
                             .max_height(140.0)
                             .show(ui, |ui| {
-                                for name in &structures {
+                                for name in structures {
                                     let mut on = st.outlined.contains(name);
                                     if ui.checkbox(&mut on, name.as_str()).changed() {
                                         if on {
@@ -1892,167 +2149,37 @@ impl ViewerApp {
                 }
             });
         }
-
-        let target_slot = st.slot;
-        let clip_centre = st
-            .clip_shown
-            .as_ref()
-            .and_then(|(_, b)| *b)
-            .map(|b| b.center);
-        if let Some(r) = chosen_room {
-            st.room = r;
-        }
-        let prefs = st.prefs();
-        self.r2d = Some(st);
-        if prefs != self.r2d_prefs {
-            self.r2d_prefs = prefs;
-            self.persist_settings();
-        }
-        if let Some(s) = new_slot {
-            if let Some(st) = &mut self.r2d {
-                *st = Reg2d3dState::new(s, &self.r2d_prefs);
-            }
-            self.reg2d3d_follow(s);
-        }
-        if act_cancel {
-            cancel_if(true, &self.r2d_job);
-        }
-        if act_run {
-            self.start_reg2d3d("run");
-        }
-        if act_preview {
-            self.start_reg2d3d("preview");
-        }
-        if let Some(d) = nudge {
-            self.nudge_reg2d3d(d);
-        }
-        if act_copy {
-            self.reg2d3d_copy();
-        }
-        if act_report {
-            self.reg2d3d_save_report();
-        }
-        if act_dicom {
-            self.reg2d3d_save_dicom();
-        }
-        if act_clip {
-            // The box's centre under the crosshair, so its slices show it.
-            if let (Some(c), Some(study)) = (clip_centre, &self.slots[target_slot].study) {
-                let v = study.volume.patient_to_voxel(c);
-                self.slots[target_slot].cursor = v;
-                self.sync_views_to_cursor(target_slot, None);
-            }
-        }
+        sf.act_copy = act_copy;
+        sf.act_report = act_report;
+        sf.act_dicom = act_dicom;
+        sf.nudge = nudge;
     }
 }
 
-impl ViewerApp {
-    /// Setup `idx` of `slot` was taken out of the study.
-    pub(super) fn setup_removed(&mut self, slot: usize, idx: usize) {
-        if let Some(st) = self.r2d.as_mut().filter(|st| st.slot == slot) {
-            st.current = match st.current {
-                Some(c) if c == idx => None,
-                Some(c) if c > idx => Some(c - 1),
-                c => c,
-            };
-            if st.current.is_none() {
-                st.drrs.clear();
-                st.outlines.clear();
-                st.outlines_for = None;
-            }
-        }
-    }
-
-    /// *Setups* in the data tree: the 2D/3D registrations made for this
-    /// workspace's CT.
-    pub(super) fn setups_section(&mut self, ui: &mut egui::Ui, slot: usize) {
-        let Some(study) = self.slots[slot].study.as_ref() else {
-            return;
-        };
-        let n = study.setups.len();
-        if n == 0 {
-            return;
-        }
-        let rows: Vec<(String, String)> = study
-            .setups
-            .iter()
-            .map(|s| {
-                let c = s.result.correction();
-                (
-                    s.label.clone(),
-                    format!(
-                        "{} · {:+.1}, {:+.1}, {:+.1} mm{}",
-                        s.when,
-                        c[3],
-                        c[4],
-                        c[5],
-                        if s.adjusted { " · moved by hand" } else { "" }
-                    ),
-                )
-            })
-            .collect();
-        let current = self
-            .r2d
-            .as_ref()
-            .filter(|st| st.slot == slot)
-            .and_then(|st| st.current);
-        let focused = self.tree_focus.clone();
-        let mut show = None;
-        let mut rename = None;
-        let mut remove = None;
-        let mut focus = None;
-        egui::CollapsingHeader::new(format!("Setups ({n})"))
-            .id_salt(("setups", slot))
-            .default_open(true)
-            .show(ui, |ui| {
-                for (i, (label, line)) in rows.iter().enumerate() {
-                    let text = egui::RichText::new(format!("{} {label}", REG2D3D_TOOL.glyph));
-                    let resp = ui.selectable_label(current == Some(i), text);
-                    ui.weak(line.as_str());
-                    if resp.clicked() {
-                        show = Some(i);
-                    }
-                    Self::focus_row(
-                        ui,
-                        &resp,
-                        RenameTarget::Setup { slot, idx: i },
-                        &focused,
-                        &mut focus,
-                    );
-                    resp.context_menu(|ui| {
-                        if ui.button("👁 Show").clicked() {
-                            show = Some(i);
-                            ui.close();
-                        }
-                        if ui.button("✏ Rename").clicked() {
-                            rename = Some(RenameTarget::Setup { slot, idx: i });
-                            ui.close();
-                        }
-                        ui.separator();
-                        if ui.button("🗑 Remove").clicked() {
-                            remove = Some(ObjRef {
-                                slot,
-                                kind: ObjKind::Setup,
-                                idx: i,
-                            });
-                            ui.close();
-                        }
-                    });
-                }
-            });
-        if focus.is_some() {
-            self.tree_focus = focus;
-        }
-        if rename.is_some() {
-            self.rename_request = rename;
-        }
-        if remove.is_some() {
-            self.obj_remove = remove;
-        }
-        if let Some(i) = show {
-            // Where its controls are: the registration module, unfolded.
-            self.module_registration = true;
-            self.show_setup(slot, i);
-        }
-    }
+/// What one frame of the 2D/3D section works with: the state it edits,
+/// what it shows of the study (taken before anything borrows the state),
+/// and what its buttons ask for, done once it has been drawn.
+struct R2dForm {
+    st: Reg2d3dState,
+    planar: Vec<(String, bool, Option<String>)>,
+    beams: Vec<(usize, usize, String)>,
+    room_views: Vec<(String, String)>,
+    structures: Vec<String>,
+    default_iso: Vec3,
+    crosshair: Vec3,
+    marker_names: Vec<String>,
+    n_markers: usize,
+    current: Option<crate::setup::SetupResult>,
+    job_line: Option<(String, f32)>,
+    busy: bool,
+    id: egui::Id,
+    chosen_room: Option<String>,
+    act_clip: bool,
+    act_run: bool,
+    act_preview: bool,
+    act_cancel: bool,
+    act_copy: bool,
+    act_report: bool,
+    act_dicom: bool,
+    nudge: Option<[f64; 6]>,
 }

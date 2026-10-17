@@ -219,7 +219,7 @@ the rest of the station, it is for research and QA use.
 
 ## For developers
 
-`src/mcp/` is compiled only with the `mcp` feature. `config.rs` is the
+`crates/rds-domain/src/mcp/` is compiled only with the `mcp` feature. `config.rs` is the
 operator's file; `phi.rs` the gate and the redactor; `session.rs` the open
 workspaces and handles; `tools/` the tools as plain functions
 `fn(&mut Core, Args, &Progress) -> Result<Value>` whose argument structs
@@ -228,7 +228,7 @@ derive the JSON schema the client sees; `server.rs` the `rmcp` glue
 prompt and the resources. `Core::call_public` is the one entry point the
 server and the tests use, and the only place redaction happens.
 
-The pipelines themselves live in `src/workflow/` (the 4D motion pipeline,
+The pipelines themselves live in `crates/rds-domain/src/workflow/` (the 4D motion pipeline,
 one volume onto every phase of a group, structures by name), shared with the
 viewer's tool windows, so the server and the viewer run the same code. So
 does the headless core under the session: `workflow::session` holds the

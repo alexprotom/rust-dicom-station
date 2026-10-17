@@ -5,7 +5,7 @@ motion studies (e.g. upright-vs-supine STAR target evaluation): per-phase
 registration, target propagation, centroid motion metrics, target-reference
 drift and correlation, and ITV volumes.
 
-## 4D groups (`src/fourd.rs`)
+## 4D groups (`crates/rds-domain/src/fourd.rs`)
 
 A 4DCT arrives as one image series per respiratory phase, usually with an
 average and sometimes MIP/MinIP reconstructions beside them; DICOM stores
@@ -108,7 +108,7 @@ Playing is for looking; the pipeline below is for measuring.
    once per model; the transform maps reference → phase, so landing on
    the phase samples through the inverse, as in the propagation tool.
    *As contoured* rasterizes the phase's own contour instead.
-4. **Measurement** (`src/motion.rs`) - per phase and model: centroid (mm,
+4. **Measurement** (`crates/rds-domain/src/motion.rs`) - per phase and model: centroid (mm,
    patient LPS), volume; from those: displacement from the reference
    phase, 3D magnitude, peak-to-peak amplitude (largest pairwise centroid
    distance), target-reference drift `|TV − ref|` and its peak-to-peak,

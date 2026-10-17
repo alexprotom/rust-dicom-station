@@ -136,7 +136,7 @@ Two details of the recipe exist for the server:
   the GPU wrapper, so the inference engines still find Vulkan.
 * **`open_in_viewer` starts the viewer through the launcher**
   (`$SNAP/snap/command-chain/desktop-launch`, `viewer_command` in
-  `src/mcp/tools/output.rs`). The viewer runs under the server's
+  `crates/rds-domain/src/mcp/tools/output.rs`). The viewer runs under the server's
   confinement, which is why the server's app also plugs the display
   interfaces. A `viewer_exe` set in `mcp.toml` is started as it is.
 

@@ -106,7 +106,9 @@ pub(super) struct WorkflowEditor {
     /// The file it was read from or last saved to.
     pub path: Option<PathBuf>,
     /// The workflow as last saved or opened, to tell whether it changed.
-    saved: String,
+    /// Kept as the value, not as its JSON: the title asks every frame, and
+    /// comparing two workflows costs nothing next to writing one out.
+    saved: Workflow,
     /// The node whose parameters the right-hand panel shows.
     pub inspect: Option<u32>,
     pub findings: Findings,
@@ -126,8 +128,9 @@ pub(super) struct WorkflowEditor {
     /// last), as workflow JSON.
     undo: Vec<String>,
     redo: Vec<String>,
-    /// The state the history last kept.
-    committed: String,
+    /// The state the history last kept, as the value it is compared with
+    /// every frame; it is written out only when it becomes a step.
+    committed: Workflow,
     /// Canvas to window as last drawn, and a view to set on the next frame
     /// (the minimap's, or the one kept across a rebuilt canvas).
     view: TSTransform,
@@ -227,7 +230,7 @@ impl WorkflowEditor {
             description: wf.description.clone(),
             output: wf.output.clone(),
             path,
-            saved: String::new(),
+            saved: Workflow::new(""),
             inspect: None,
             findings,
             status: None,
@@ -246,7 +249,7 @@ impl WorkflowEditor {
             frames: wf.frames.clone(),
             undo: Vec::new(),
             redo: Vec::new(),
-            committed: String::new(),
+            committed: Workflow::new(""),
             view: TSTransform::IDENTITY,
             set_view: None,
             rects: Vec::new(),
@@ -254,16 +257,16 @@ impl WorkflowEditor {
             clip: None,
             frame_drag: None,
         };
-        ed.saved = ed.to_workflow().to_json();
+        ed.saved = ed.to_workflow();
         ed.committed = ed.snapshot();
         ed
     }
 
     /// The whole state the history keeps: the workflow, its name as typed.
-    fn snapshot(&self) -> String {
+    fn snapshot(&self) -> Workflow {
         let mut wf = self.to_workflow();
         wf.name = self.name.clone();
-        wf.to_json()
+        wf
     }
 
     /// Put `wf` on the canvas in place of what is there, keeping the file,
@@ -294,7 +297,8 @@ impl WorkflowEditor {
         }
         let now = self.snapshot();
         if now != self.committed {
-            self.undo.push(std::mem::replace(&mut self.committed, now));
+            self.undo
+                .push(std::mem::replace(&mut self.committed, now).to_json());
             if self.undo.len() > HISTORY {
                 self.undo.remove(0);
             }
@@ -307,7 +311,8 @@ impl WorkflowEditor {
     fn commit_pending(&mut self) {
         let now = self.snapshot();
         if now != self.committed {
-            self.undo.push(std::mem::replace(&mut self.committed, now));
+            self.undo
+                .push(std::mem::replace(&mut self.committed, now).to_json());
             self.redo.clear();
         }
     }
@@ -317,11 +322,12 @@ impl WorkflowEditor {
         let Some(prev) = self.undo.pop() else {
             return;
         };
+        let Ok(wf) = Workflow::from_json(&prev) else {
+            return;
+        };
         self.redo
-            .push(std::mem::replace(&mut self.committed, prev.clone()));
-        if let Ok(wf) = Workflow::from_json(&prev) {
-            self.load(wf);
-        }
+            .push(std::mem::replace(&mut self.committed, wf.clone()).to_json());
+        self.load(wf);
         self.status = Some("Undone".into());
     }
 
@@ -336,11 +342,12 @@ impl WorkflowEditor {
         let Some(next) = self.redo.pop() else {
             return;
         };
+        let Ok(wf) = Workflow::from_json(&next) else {
+            return;
+        };
         self.undo
-            .push(std::mem::replace(&mut self.committed, next.clone()));
-        if let Ok(wf) = Workflow::from_json(&next) {
-            self.load(wf);
-        }
+            .push(std::mem::replace(&mut self.committed, wf.clone()).to_json());
+        self.load(wf);
         self.status = Some("Redone".into());
     }
 
@@ -459,13 +466,13 @@ impl WorkflowEditor {
 
     /// Changed since it was last saved or opened?
     pub(super) fn dirty(&self) -> bool {
-        self.to_workflow().to_json() != self.saved
+        self.to_workflow() != self.saved
     }
 
     /// It was just saved as `path`.
     pub(super) fn mark_saved(&mut self, path: PathBuf) {
         self.path = Some(path);
-        self.saved = self.to_workflow().to_json();
+        self.saved = self.to_workflow();
     }
 
     fn next_id(&self) -> u32 {
@@ -2912,8 +2919,9 @@ impl ViewerApp {
                 if let Some(e) = store::EXAMPLES.get(i) {
                     let mut ed = WorkflowEditor::from_workflow(e.workflow(), None);
                     // An example is a start, not a file of the user's: the
-                    // first save asks where.
-                    ed.saved = String::new();
+                    // first save asks where. (No canvas is ever unnamed:
+                    // an empty name reads as "Untitled workflow".)
+                    ed.saved = Workflow::new("");
                     ed.status = Some(format!("Example: {}", e.blurb));
                     self.wf_editor = Some(ed);
                 }
@@ -2998,11 +3006,10 @@ impl ViewerApp {
         let Some(mut ed) = self.wf_editor.take() else {
             return;
         };
-        let marks = self
-            .wf_run
-            .as_ref()
-            .map(|r| r.marks.clone())
-            .unwrap_or_default();
+        // Read where they are: the run's marks are a map of strings, and
+        // cloning it for every frame of the editor bought nothing.
+        let no_marks = BTreeMap::new();
+        let marks = self.wf_run.as_ref().map(|r| &r.marks).unwrap_or(&no_marks);
         let running = self.wf_run.as_ref().is_some_and(|r| r.is_running());
         let mut actions = Vec::new();
         let title = ed.title();
@@ -3014,7 +3021,7 @@ impl ViewerApp {
             &mut open,
             detach::WinOpts::size(1600.0, 920.0).no_scroll(),
             |ui| {
-                ed.ui(ui, &marks, running, &mut actions);
+                ed.ui(ui, marks, running, &mut actions);
                 if let Some(q) = &question {
                     answer = confirm_window(ui.ctx(), q);
                 }

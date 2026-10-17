@@ -18,7 +18,7 @@ touched and re-traced to be stored. On a 1 mm CT nobody notices. On a 3 or 5
 mm one the round trip replaces a drawn curve with a staircase, every time, and
 the minute somebody spent on the curve is gone.
 
-So `src/contours.rs` carries the geometry as geometry:
+So `crates/rds-domain/src/contours.rs` carries the geometry as geometry:
 
 * a **ring** (`Poly`) - one closed polygon, in the in-plane coordinates of a
   slice (fractional voxel indices, so nothing depends on the acquisition
@@ -96,7 +96,7 @@ work on the image *as it is windowed on screen*: change the window and the
 edges they follow change with it, which is the honest behaviour, because
 the edge a planner is aiming at is the one they can see.
 
-**🔗 Live wire** ([`src/livewire.rs`](architecture.md#module-map)) is
+**🔗 Live wire** ([`crates/rds-domain/src/livewire.rs`](architecture.md#module-map)) is
 Mortensen and Barrett's intelligent scissors. Every step from one pixel to a
 neighbour costs a weighted sum of three terms: zero on a Laplacian zero
 crossing and one elsewhere, the inverted gradient magnitude, and a direction
@@ -277,7 +277,10 @@ along that axis first, and writing it back cuts it into axial contours again,
 exactly as a planning system does when you change drawing plane; it is
 announced when it happens. Between the two conversions the working stack
 is cached, so a session of sagittal strokes costs one conversion in, not one
-per stroke, and the shape does not erode with each.
+per stroke, and the shape does not erode with each. While a brush, nudge
+or drag stroke goes on in such a view, the axial contours are written back
+at most a few times a second and once more when the button is let go, and
+only the box the structure occupies is converted.
 
 ## Points of interest
 
@@ -381,7 +384,7 @@ the other end.
 
 ## Verification
 
-`src/contours.rs`'s own tests cover the geometry: areas, orientation and
+`crates/rds-domain/src/contours.rs`'s own tests cover the geometry: areas, orientation and
 centroids; even-odd nesting; Douglas-Peucker keeping exactly the corners of a
 walked square; the four boolean operations against the **analytic** area of
 two overlapping discs; a subtraction that cuts a real hole; the exact fast
@@ -390,7 +393,7 @@ tidying; a mask round-tripping through contours voxel for voxel; the trip
 through patient coordinates; a sagittal stack converting to axial with its
 volume; interpolation of a sphere; components; the point cap; the transforms.
 
-`src/livewire.rs` has its own: a path between two points of a disc's rim
+`crates/rds-domain/src/livewire.rs` has its own: a path between two points of a disc's rim
 that follows the rim to within a pixel and a half instead of cutting across
 it; a path asked for outside the search box that comes back empty rather
 than wrong; training that makes the kind of edge already accepted cheaper

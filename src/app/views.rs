@@ -7,6 +7,22 @@
 
 use super::*;
 
+/// Where one viewport's image lies on screen: its plane, the slice's raster
+/// and spacing, the zoom and the rectangle the image fills.
+#[derive(Clone, Copy)]
+struct ViewFrame {
+    plane: ViewPlane,
+    rect: Rect,
+    w_px: usize,
+    h_px: usize,
+    sx: f64,
+    sy: f64,
+    vol_spacing: [f64; 3],
+    fit_zoom: f32,
+    zoom: f32,
+    img_rect: Rect,
+}
+
 impl ViewerApp {
     /// Combined hash of everything that affects dose overlays of a slot.
     pub(super) fn dose_settings_hash(&self, slot: usize) -> u64 {
@@ -24,7 +40,23 @@ impl ViewerApp {
         for l in &self.iso_levels {
             mix(l.pct.to_bits() as u64 | ((l.on as u64) << 40));
         }
-        mix(self.settings_gen);
+        // The dose itself, by identity rather than by `settings_gen`: that
+        // moves on every structure action, set lock or POI step, and each
+        // re-sampled the dose planes of every view. A dose that is replaced
+        // or removed changes its UID, its buffer or its maximum; a new image
+        // under it resets the views' keys where it is installed.
+        if let Some(d) = self.slots[slot]
+            .study
+            .as_ref()
+            .and_then(|st| st.doses.get(self.slots[slot].active_dose))
+        {
+            for b in d.sop_instance_uid.bytes() {
+                mix(b as u64);
+            }
+            mix(d.data.as_ptr() as u64);
+            mix(d.data.len() as u64);
+            mix(d.max_dose.to_bits() as u64);
+        }
         h
     }
 
@@ -639,7 +671,6 @@ impl ViewerApp {
         first: bool,
     ) {
         let ctx = ui.ctx().clone();
-        let plane = self.slots[slot].views[idx].plane;
 
         // ---- cache refresh (image, dose, contours) ----
         self.refresh_view_caches(&ctx, slot, idx);
@@ -653,21 +684,21 @@ impl ViewerApp {
             return;
         }
 
-        let slot_state = &self.slots[slot];
-        let Some(study) = &slot_state.study else {
+        let Some(frame) = self.view_frame(slot, idx, rect) else {
             return;
         };
+        self.view_overlays(ui, slot, idx, &frame, first, has_slider);
+        self.view_pointer(ui, slot, idx, &frame, has_slider);
+    }
+
+    /// Where one viewport's image lies on screen, which the drawing and the
+    /// pointer both measure by; `None` when the workspace holds no study.
+    fn view_frame(&self, slot: usize, idx: usize, rect: Rect) -> Option<ViewFrame> {
+        let slot_state = &self.slots[slot];
+        let study = slot_state.study.as_ref()?;
         let vol = &study.volume;
         let view = &slot_state.views[idx];
-
-        // The MedSAM2 box is drawn in whichever view the network's slices run
-        // along, and while it is live the left button belongs to it.
-        let medsam2_show = self.medsam2_showing_in(slot, plane);
-        let medsam2_box = self.medsam2_drawing_in(slot, plane);
-        // Interactive segmentation prompts in every view of its workspace;
-        // the brush, when one is picked, keeps the left button.
-        let nni_show = self.nni_showing_in(slot);
-        let nni_live = self.nni_drawing_in(slot) && self.seg_tool == SegTool::None;
+        let plane = view.plane;
         let [w_px, h_px] = vol.plane_dims(plane);
         let [sx, sy] = vol.plane_spacing(plane);
         let vol_spacing = vol.spacing;
@@ -678,6 +709,57 @@ impl ViewerApp {
         let zoom = if view.zoom > 0.0 { view.zoom } else { fit_zoom };
         let center = rect.center() + view.pan * zoom;
         let img_rect = Rect::from_center_size(center, Vec2::new(w_mm * zoom, h_mm * zoom));
+        Some(ViewFrame {
+            plane,
+            rect,
+            w_px,
+            h_px,
+            sx,
+            sy,
+            vol_spacing,
+            fit_zoom,
+            zoom,
+            img_rect,
+        })
+    }
+
+    /// One viewport's picture: the image (or the fusion), the dose wash and
+    /// the segmentations, then everything drawn over them - isodoses,
+    /// contours, the vector field, isocentres, the prompts of the engines,
+    /// the editor's axis, the 2D/3D clip box, the crosshair, the brush and
+    /// the previews, the annotations.
+    fn view_overlays(
+        &self,
+        ui: &mut egui::Ui,
+        slot: usize,
+        idx: usize,
+        frame: &ViewFrame,
+        first: bool,
+        has_slider: bool,
+    ) {
+        let ViewFrame {
+            plane,
+            rect,
+            sx,
+            sy,
+            zoom,
+            img_rect,
+            ..
+        } = *frame;
+        let slot_state = &self.slots[slot];
+        let Some(study) = &slot_state.study else {
+            return;
+        };
+        let vol = &study.volume;
+        let view = &slot_state.views[idx];
+        // The MedSAM2 box is drawn in whichever view the network's slices run
+        // along.
+        let medsam2_show = self.medsam2_showing_in(slot, plane);
+        // Interactive segmentation prompts in every view of its workspace.
+        let nni_show = self.nni_showing_in(slot);
+
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 0.0, Color32::BLACK);
 
         let px_to_screen = |p: [f32; 2]| -> Pos2 {
             Pos2::new(
@@ -691,9 +773,6 @@ impl ViewerApp {
                 (s.y - img_rect.top()) / (sy as f32 * zoom) - 0.5,
             ]
         };
-
-        let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0.0, Color32::BLACK);
 
         let fusion_active = self.fusion_on
             && self
@@ -760,18 +839,73 @@ impl ViewerApp {
                     .draws_contours()
                     .then(|| self.edit_target(slot).map(|(_, r)| r))
                     .flatten();
+                let stroke_of = |ri: usize| -> Option<Stroke> {
+                    let roi = ss.rois.get(ri)?;
+                    let width = if edited == Some(ri) { 3.0 } else { 1.8 };
+                    Some(Stroke::new(width, theme::rgb(roi.color)))
+                };
+                // The crossing strokes of a sagittal or coronal view, as one
+                // mesh kept for as long as nothing they are drawn from moves:
+                // exactly the triangles the painter would make of them, made
+                // by the same tessellator with the same options.
+                if view.contours.iter().any(|(_, g)| !g.segments.is_empty()) {
+                    let ppp = ui.ctx().pixels_per_point();
+                    let options = ui.ctx().tessellation_options(|o| *o);
+                    let clip = painter.clip_rect();
+                    let (kx, ky) = (sx as f32 * zoom, sy as f32 * zoom);
+                    let mut key = mix(0x5EED_C0DE, view.contour_key.unwrap_or(0));
+                    for v in [img_rect.left(), img_rect.top(), kx, ky, ppp] {
+                        key = mix(key, v.to_bits() as u64);
+                    }
+                    for v in [clip.min.x, clip.min.y, clip.max.x, clip.max.y] {
+                        key = mix(key, v.to_bits() as u64);
+                    }
+                    key = mix(key, options.feathering as u64);
+                    key = mix(key, options.feathering_size_in_pixels.to_bits() as u64);
+                    key = mix(key, options.round_line_segments_to_pixels as u64);
+                    key = mix(key, options.coarse_tessellation_culling as u64);
+                    for (ri, gfx) in &view.contours {
+                        if let (false, Some(st)) = (gfx.segments.is_empty(), stroke_of(*ri)) {
+                            key = mix(key, *ri as u64);
+                            key = mix(key, st.width.to_bits() as u64);
+                            let c = st.color.to_array();
+                            key = mix(key, u32::from_le_bytes(c) as u64);
+                        }
+                    }
+                    let mut cache = view.contour_mesh.lock().unwrap_or_else(|e| e.into_inner());
+                    let mesh = match cache.as_ref() {
+                        Some((k, m)) if *k == key => m.clone(),
+                        _ => {
+                            let mut t =
+                                egui::epaint::Tessellator::new(ppp, options, [1, 1], Vec::new());
+                            t.set_clip_rect(clip);
+                            let mut mesh = egui::epaint::Mesh::default();
+                            for (ri, gfx) in &view.contours {
+                                let Some(st) = stroke_of(*ri) else {
+                                    continue;
+                                };
+                                for (a, b) in &gfx.segments {
+                                    t.tessellate_line_segment(
+                                        [px_to_screen(*a), px_to_screen(*b)],
+                                        st,
+                                        &mut mesh,
+                                    );
+                                }
+                            }
+                            let mesh = Arc::new(mesh);
+                            *cache = Some((key, mesh.clone()));
+                            mesh
+                        }
+                    };
+                    painter.add(egui::Shape::Mesh(mesh));
+                }
                 for (ri, gfx) in &view.contours {
-                    let Some(roi) = ss.rois.get(*ri) else {
+                    let Some(stroke) = stroke_of(*ri) else {
                         continue;
                     };
-                    let color = theme::rgb(roi.color);
-                    let stroke = Stroke::new(if edited == Some(*ri) { 3.0 } else { 1.8 }, color);
                     for pl in &gfx.polylines {
                         let pts: Vec<Pos2> = pl.iter().map(|p| px_to_screen(*p)).collect();
                         painter.add(egui::Shape::closed_line(pts, stroke));
-                    }
-                    for (a, b) in &gfx.segments {
-                        painter.line_segment([px_to_screen(*a), px_to_screen(*b)], stroke);
                     }
                     for p in &gfx.points {
                         let c = px_to_screen(*p);
@@ -1297,6 +1431,48 @@ impl ViewerApp {
                 }
             }
         }
+    }
+
+    /// One viewport's controls and pointer: the corner buttons, then what a
+    /// click, a drag, the wheel or a key over the image does, worked out
+    /// while the view is borrowed and applied after.
+    fn view_pointer(
+        &mut self,
+        ui: &mut egui::Ui,
+        slot: usize,
+        idx: usize,
+        frame: &ViewFrame,
+        has_slider: bool,
+    ) {
+        let ViewFrame {
+            plane,
+            rect,
+            w_px,
+            h_px,
+            sx,
+            sy,
+            vol_spacing,
+            fit_zoom,
+            zoom,
+            img_rect,
+            ..
+        } = *frame;
+        let Some(study) = &self.slots[slot].study else {
+            return;
+        };
+        let vol = &study.volume;
+        let view = &self.slots[slot].views[idx];
+        // While the MedSAM2 box is live the left button belongs to it.
+        let medsam2_box = self.medsam2_drawing_in(slot, plane);
+        // The interactive prompts take the left button unless a brush is
+        // picked.
+        let nni_live = self.nni_drawing_in(slot) && self.seg_tool == SegTool::None;
+        let screen_to_px = |s: Pos2| -> [f32; 2] {
+            [
+                (s.x - img_rect.left()) / (sx as f32 * zoom) - 0.5,
+                (s.y - img_rect.top()) / (sy as f32 * zoom) - 0.5,
+            ]
+        };
 
         // ---- corner buttons: play, reset view & maximize / restore layout ----
         // Their rectangles are needed here (the viewport handlers below ignore
@@ -1887,6 +2063,7 @@ impl ViewerApp {
         if hand_done {
             // One finished drag is one move for the dynamic dose log.
             self.tools.move_seq += 1;
+            self.end_contour_stroke();
         }
         if let Some((vxl, start)) = axis_to {
             let t = &mut self.tools;
@@ -1962,6 +2139,7 @@ impl ViewerApp {
         }
         if nudge_done {
             self.paint_last = None;
+            self.end_contour_stroke();
         }
         if let Some((v, erase)) = cbrush_to {
             let first = !matches!(self.paint_last, Some((s, _)) if s == slot);
@@ -1985,6 +2163,7 @@ impl ViewerApp {
         }
         if cbrush_done {
             self.paint_last = None;
+            self.end_contour_stroke();
         }
     }
 
@@ -2088,7 +2267,7 @@ impl ViewerApp {
         // Pre-compute hashes that need `&self` before borrowing mutably.
         let dose_hash = self.dose_settings_hash(slot);
         let contour_hash = self.contour_settings_hash(slot);
-        let structures_gen = self.structures_gen(slot);
+        let settings_gen = self.settings_gen;
         let seg_hash = self.seg_overlay_hash(slot);
         // The tick box on the segmentation series row. `seg_series_idx` still
         // reports the active series to the editing tools; only the overlay
@@ -2110,6 +2289,7 @@ impl ViewerApp {
             active_dose,
             dose_reference,
             roi_prep,
+            roi_edits,
             ..
         } = &mut self.slots[slot];
         let study = study.as_ref().unwrap();
@@ -2221,25 +2401,33 @@ impl ViewerApp {
                     let visible: Vec<usize> = (0..ss.rois.len())
                         .filter(|&ri| roi_visible.get(ri).copied().unwrap_or(false))
                         .collect();
-                    // Map the visible ROIs not mapped yet, all at once.
-                    roi_prep.for_set(*active_structs, structures_gen, vol, ss.rois.len());
+                    // Map the visible ROIs not mapped yet, or written by a
+                    // contour edit since they were, all at once: a brush
+                    // sample maps the one structure it changed.
+                    let set = *active_structs;
+                    let stamp = |ri: usize| roi_edits.get(&(set, ri)).copied().unwrap_or(0);
+                    let prep = roi_prep.for_set(set, settings_gen, vol, ss.rois.len());
                     let missing: Vec<usize> = visible
                         .iter()
                         .copied()
-                        .filter(|&ri| roi_prep.rois[ri].is_none())
+                        .filter(|&ri| {
+                            prep.rois[ri]
+                                .as_ref()
+                                .is_none_or(|(at, _)| *at != stamp(ri))
+                        })
                         .collect();
                     let prepared: Vec<render::PreparedRoi> = missing
                         .par_iter()
                         .map(|&ri| render::PreparedRoi::new(vol, &ss.rois[ri]))
                         .collect();
                     for (ri, p) in missing.into_iter().zip(prepared) {
-                        roi_prep.rois[ri] = Some(p);
+                        prep.rois[ri] = Some((stamp(ri), p));
                     }
-                    let rois = &roi_prep.rois;
+                    let rois = &prep.rois;
                     views[idx].contours = visible
                         .par_iter()
                         .filter_map(|&ri| {
-                            let gfx = rois[ri].as_ref()?.on_plane(vol, plane, slice);
+                            let gfx = rois[ri].as_ref()?.1.on_plane(vol, plane, slice);
                             let drawn = !gfx.polylines.is_empty()
                                 || !gfx.segments.is_empty()
                                 || !gfx.points.is_empty();
@@ -2409,6 +2597,10 @@ impl ViewerApp {
         };
         // Where the other image is sampled depends on the registration, the
         // slice and the two volumes; its colour on the window and the blend.
+        // Not on `settings_gen`: every registration installed or cleared
+        // moves `reg_gen`, and a new image on this workspace resets the
+        // view's keys where it is installed, so the B-spline per pixel is
+        // no longer redone for a lock toggle or a POI step.
         let geom = mix(
             0x243F6A8885A308D3 ^ self.reg_gen.wrapping_mul(0x9E3779B97F4A7C15),
             &[
@@ -2417,7 +2609,6 @@ impl ViewerApp {
                 slice as u64,
                 Arc::as_ptr(avol) as u64,
                 Arc::as_ptr(bvol) as u64,
-                self.settings_gen,
             ],
         );
         let key = mix(

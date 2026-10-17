@@ -270,7 +270,7 @@ contrast CT against a plain one, a CT against an MR or a CBCT, two scans
 whose anatomy agrees and whose intensities never will - or when the
 alignment must follow one set of organs (the heart and the great vessels
 for a cardiac target, the spine for a setup check) and nothing else.
-`src/registration/shape.rs` is the engine; the propagation module's
+`crates/rds-domain/src/registration/shape.rs` is the engine; the propagation module's
 anchored run aligns its anchor by the same distance maps
 ([star-target-propagation.md](star-target-propagation.md)).
 

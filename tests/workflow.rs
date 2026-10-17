@@ -339,7 +339,7 @@ fn anchored_case(
             name: name.to_string(),
             color: [200, 40, 40],
             source: select::Source::Mask {
-                mask,
+                mask: rust_dicom_station::propagate::BoxedMask::pack(&mask, src_grid.dims),
                 grid: src_grid.clone(),
             },
         }

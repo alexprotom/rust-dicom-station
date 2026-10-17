@@ -16,7 +16,7 @@ use burn::tensor::module::avg_pool2d;
 use burn::tensor::Tensor;
 
 use crate::medsam2::ops;
-use crate::nn::fastconv;
+use crate::nn::fastconv::{self, Kernel};
 use crate::nn::params::Params;
 
 /// Depth of the network and the width of its first stage (`2 ** wf`) as
@@ -162,8 +162,8 @@ impl Weights {
 
 /// Conv 3 x 3 (padded) → ReLU → BatchNorm, on a device.
 struct ConvBn<B: Backend> {
-    w: Tensor<B, 4>,
-    b: Tensor<B, 1>,
+    w: Kernel<B, 4>,
+    b: Kernel<B, 1>,
     scale: Tensor<B, 4>,
     shift: Tensor<B, 4>,
 }
@@ -171,8 +171,8 @@ struct ConvBn<B: Backend> {
 impl<B: Backend> ConvBn<B> {
     fn upload(l: &ConvBnW, dev: &B::Device) -> ConvBn<B> {
         ConvBn {
-            w: ops::from_slice(&l.w, [l.cout, l.cin, l.k, l.k], dev),
-            b: ops::from_slice(&l.b, [l.cout], dev),
+            w: Kernel::new(&l.w, [l.cout, l.cin, l.k, l.k], dev),
+            b: Kernel::new(&l.b, [l.cout], dev),
             scale: ops::from_slice(&l.scale, [1, l.cout, 1, 1], dev),
             shift: ops::from_slice(&l.shift, [1, l.cout, 1, 1], dev),
         }
@@ -206,8 +206,8 @@ impl<B: Backend> Block<B> {
 
 /// An up step on a device.
 struct Up<B: Backend> {
-    w: Tensor<B, 4>,
-    b: Tensor<B, 1>,
+    w: Kernel<B, 4>,
+    b: Kernel<B, 1>,
     block: Block<B>,
 }
 
@@ -215,8 +215,8 @@ struct Up<B: Backend> {
 pub struct Unet2d<B: Backend> {
     down: Vec<Block<B>>,
     up: Vec<Up<B>>,
-    last_w: Tensor<B, 4>,
-    last_b: Tensor<B, 1>,
+    last_w: Kernel<B, 4>,
+    last_b: Kernel<B, 1>,
     classes: usize,
     device: B::Device,
 }
@@ -234,13 +234,13 @@ impl<B: Backend> Unet2d<B> {
                 .up
                 .iter()
                 .map(|u| Up {
-                    w: ops::from_slice(&u.w, [u.cout, u.cin, 1, 1], dev),
-                    b: ops::from_slice(&u.b, [u.cout], dev),
+                    w: Kernel::new(&u.w, [u.cout, u.cin, 1, 1], dev),
+                    b: Kernel::new(&u.b, [u.cout], dev),
                     block: Block::upload(&u.block, dev),
                 })
                 .collect(),
-            last_w: ops::from_slice(&w.last_w, [w.classes, w.last_cin, 1, 1], dev),
-            last_b: ops::from_slice(&w.last_b, [w.classes], dev),
+            last_w: Kernel::new(&w.last_w, [w.classes, w.last_cin, 1, 1], dev),
+            last_b: Kernel::new(&w.last_b, [w.classes], dev),
             classes: w.classes,
             device: dev.clone(),
         }

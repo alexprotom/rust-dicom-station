@@ -54,7 +54,7 @@ const PANIC_FILE: &str = "last_panic.txt";
 
 #[cfg(target_os = "ios")]
 fn main() {
-    use rust_dicom_station::{gfx, settings};
+    use rust_dicom_station::{gfx, gfx_wgpu, settings};
 
     log::set_logger(&STDERR_LOGGER)
         .map(|()| log::set_max_level(log::LevelFilter::Info))
@@ -95,7 +95,7 @@ fn main() {
 
     let mut wgpu_options = eframe::WgpuConfiguration::default();
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
-        setup.instance_descriptor.backends = backend.bits();
+        setup.instance_descriptor.backends = gfx_wgpu::bits(backend);
         // egui-wgpu's own request, lowered to what an iOS GPU has (gpu.rs).
         setup.device_descriptor =
             std::sync::Arc::new(

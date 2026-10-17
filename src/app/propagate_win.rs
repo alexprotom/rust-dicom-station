@@ -1575,9 +1575,9 @@ impl ViewerApp {
             self.settle_propagate_dialog_set(&mut d);
             self.propagate_dialog = Some(d);
         }
-        let mut run = false;
-        let mut cancel = false;
-        let mut set_all: Option<bool> = None;
+        let run = false;
+        let cancel = false;
+        let set_all: Option<bool> = None;
 
         // Everything the closure needs to read while `self` is borrowed.
         let registered = self.registration.as_ref().map(|r| {
@@ -1613,11 +1613,11 @@ impl ViewerApp {
                 (labels, active)
             });
         let field_on = self.field_on;
-        let mut warp_only = self.field_warp_only;
-        let mut show_field: Option<usize> = None;
-        let mut hide_field = false;
+        let warp_only = self.field_warp_only;
+        let show_field: Option<usize> = None;
+        let hide_field = false;
         let mut d = self.propagate_dialog.take().unwrap();
-        let mut manual = self.prop_matrix;
+        let manual = self.prop_matrix;
         let (matrix_choices, deformable) = self.propagate_matrix_choices(d.target);
         let group_choices = self.propagate_group_choices();
         // Without a registration there is nothing pairing two images, so
@@ -1763,6 +1763,34 @@ impl ViewerApp {
             PropTarget::Other => 0,
         };
 
+        let mut pf = PropForm {
+            run,
+            cancel,
+            set_all,
+            registered,
+            group_field,
+            field_on,
+            warp_only,
+            show_field,
+            hide_field,
+            d,
+            manual,
+            matrix_choices,
+            deformable,
+            group_choices,
+            series_choices,
+            all_choices_to,
+            on_the_fly,
+            to_group,
+            src_choices,
+            set_choices,
+            entries,
+            local_choices,
+            anchored,
+            other_label,
+            reuse,
+            n_phases,
+        };
         egui::CollapsingHeader::new(egui::RichText::new("Structure propagation").strong())
             .id_salt("module_propagate")
             .default_open(false)
@@ -1773,629 +1801,27 @@ impl ViewerApp {
                      inside, so the volume is kept.",
                 );
                 ui.separator();
-                // What the run is: the image, the set, the destination -
-                // three parameters, so three rows of one form.
-                form::form(ui, "prop_what", |f| {
-                    f.row_tip(
-                        "From image",
-                        "The image the structures were drawn on. It is loaded for the run \
-                         when it is not on display.",
-                        |ui| {
-                            let current = src_choices
-                                .iter()
-                                .find(|(p, _)| *p == d.src)
-                                .map(|(_, l)| l.clone())
-                                .unwrap_or_else(|| "(none)".into());
-                            egui::ComboBox::from_id_salt("prop_src")
-                                .selected_text(current)
-                                .width(230.0)
-                                .show_ui(ui, |ui| {
-                                    for (pick, label) in &src_choices {
-                                        if ui.selectable_label(d.src == *pick, label).clicked() {
-                                            d.src = *pick;
-                                            d.set = None;
-                                        }
-                                    }
-                                });
-                        },
-                    );
-                    f.row_tip(
-                        "Structures of",
-                        "The structure set or segmentation series the structures are taken \
-                         from; the one drawn on the image is preselected.",
-                        |ui| {
-                            let current = set_choices
-                                .iter()
-                                .find(|(c, _)| Some(*c) == d.set)
-                                .map(|(_, l)| l.clone())
-                                .unwrap_or_else(|| "(none)".into());
-                            egui::ComboBox::from_id_salt("prop_set")
-                                .selected_text(current)
-                                .width(230.0)
-                                .show_ui(ui, |ui| {
-                                    for (choice, label) in &set_choices {
-                                        if ui
-                                            .selectable_label(d.set == Some(*choice), label)
-                                            .clicked()
-                                        {
-                                            d.set = Some(*choice);
-                                            d.ticked.clear();
-                                            d.colors.clear();
-                                            d.anchor = None;
-                                        }
-                                    }
-                                });
-                        },
-                    );
-                    f.row_tip(
-                        "To",
-                        "Where they land: the other image of the active registration, a \
-                         whole 4D group, or one phase of one.",
-                        |ui| {
-                            let current = match d.target {
-                                PropTarget::Other => other_label
-                                    .as_ref()
-                                    .map(|(l, _)| l.clone())
-                                    // Nothing registered and no group either:
-                                    // there is no destination at all, and
-                                    // saying so is better than naming one.
-                                    .unwrap_or_else(|| "(nothing to propagate to)".into()),
-                                PropTarget::Group { .. }
-                                | PropTarget::Phase { .. }
-                                | PropTarget::Series { .. } => all_choices_to
-                                    .iter()
-                                    .find(|(t, _)| *t == d.target)
-                                    .map(|(_, l)| l.clone())
-                                    .unwrap_or_default(),
-                            };
-                            egui::ComboBox::from_id_salt("prop_target")
-                                .selected_text(current)
-                                .width(230.0)
-                                .show_ui(ui, |ui| {
-                                    if let Some((label, hint)) = &other_label {
-                                        ui.selectable_value(
-                                            &mut d.target,
-                                            PropTarget::Other,
-                                            label,
-                                        )
-                                        .on_hover_text(hint);
-                                    }
-                                    for (target, label) in &group_choices {
-                                        // Phases are listed under their group
-                                        // and indented, so a list of eleven
-                                        // lines still reads as one group and
-                                        // its phases.
-                                        match target {
-                                            PropTarget::Phase { .. } => {
-                                                ui.selectable_value(
-                                                    &mut d.target,
-                                                    *target,
-                                                    format!("      {label}"),
-                                                );
-                                            }
-                                            _ => {
-                                                ui.selectable_value(&mut d.target, *target, label);
-                                            }
-                                        }
-                                    }
-                                    // The lone series, under a rule of their
-                                    // own so they do not read as more phases.
-                                    if !series_choices.is_empty() {
-                                        ui.separator();
-                                        for (target, label) in &series_choices {
-                                            ui.selectable_value(&mut d.target, *target, label)
-                                                .on_hover_text(
-                                                    "Register the source onto this image and \
-                                                     carry the structures across. Nothing is \
-                                                     registered yet, so the run makes its own \
-                                                     transform.",
-                                                );
-                                        }
-                                    }
-                                });
-                        },
-                    );
-                });
-                ui.separator();
-                match (on_the_fly, &registered) {
-                    (true, _) if reuse => {
-                        ui.weak(format!(
-                            "This group is already registered against this image, so the \
-                             {n_phases} transforms are reused."
-                        ));
-                    }
-                    (true, _) => {
-                        ui.weak(format!(
-                            "One registration per destination ({n_phases}), each with its own \
-                             transform; method and parameters from the registration module."
-                        ));
-                    }
-                    (false, None) => {
-                        ui.colored_label(
-                            alert_color(ui.visuals()),
-                            "No active registration - run one in the registration module \
-                             first, or send these to a 4D group instead.",
-                        );
-                    }
-                    (false, Some((fixed, moving, method, region))) => {
-                        ui.weak(format!(
-                            "Using: {method}{}",
-                            match region {
-                                Some(r) => format!(" · restricted to {r}"),
-                                None => String::new(),
-                            }
-                        ));
-                        ui.weak(format!("Fixed {}, moving {}.", fixed.label, moving.label));
-                    }
-                }
-                ui.separator();
-
-                ui.horizontal(|ui| {
-                    if ui.small_button("All").clicked() {
-                        set_all = Some(true);
-                    }
-                    if ui.small_button("None").clicked() {
-                        set_all = Some(false);
-                    }
-                    let n = d.ticked.iter().filter(|v| **v).count();
-                    ui.weak(format!("{n} selected"));
-                    if d.colors.iter().any(Option::is_some)
-                        && small_tip_button(
-                            ui,
-                            "Source colours",
-                            "Drop the colours chosen here: every copy lands in the colour \
-                             its own structure has",
-                        )
-                    {
-                        d.colors.iter_mut().for_each(|c| *c = None);
-                    }
-                });
-
-                egui::ScrollArea::vertical()
-                    .max_height(260.0)
-                    .show(ui, |ui| {
-                        for (i, (name, color, cm3)) in entries.iter().enumerate() {
-                            ui.horizontal(|ui| {
-                                if let Some(on) = d.ticked.get_mut(i) {
-                                    ui.checkbox(on, "");
-                                }
-                                // The swatch is the colour the *copy* will
-                                // land in, which starts as the source's. The
-                                // original is never touched by it: this is
-                                // the one place where the two can be told
-                                // apart on the destination image.
-                                let chosen = d.colors.get(i).copied().flatten();
-                                let mut shown = chosen.unwrap_or(*color);
-                                if color_swatch(ui, &mut shown) {
-                                    if let Some(slot) = d.colors.get_mut(i) {
-                                        *slot = Some(shown);
-                                    }
-                                }
-                                ui.label(name);
-                                if let Some(v) = cm3 {
-                                    ui.weak(format!("{v:.2} cm³"));
-                                }
-                                if chosen.is_some() {
-                                    ui.weak("recoloured").on_hover_text(
-                                        "The copy lands in this colour; the structure \
-                                             it was propagated from keeps its own",
-                                    );
-                                }
-                                if d.anchor == Some(i) {
-                                    ui.weak("anchor");
-                                }
-                            });
-                        }
-                        if entries.is_empty() {
-                            ui.weak("Nothing to propagate here.");
-                        }
-                    });
-
-                ui.separator();
-                // What becomes of the results: how they travel, where they
-                // are filed, and what is done to each mask once it is there.
-                form::form(ui, "prop_landing", |f| {
-                    f.row("Carry", |ui| {
-                        ui.selectable_value(&mut d.finish.keep_shape, false, "deformed")
-                            .on_hover_text(
-                                "Each structure goes through the transform point by point: \
-                                 its shape and volume change as the deformation does where \
-                                 it lies.",
-                            );
-                        ui.selectable_value(&mut d.finish.keep_shape, true, "keep shape")
-                            .on_hover_text(
-                                "Each structure goes as a rigid body - the transform's best \
-                                 rigid fit over the structure itself: where the deformation \
-                                 takes it, turned as the tissue around it turns, with its \
-                                 own shape and volume. For a small target inside an organ \
-                                 whose outline the registration matched: inside, the \
-                                 deformation is not measured, only interpolated. An anchor \
-                                 still follows the transform - it is the run's check.",
-                            );
-                    });
-                    f.row("Land as", |ui| {
-                        ui.selectable_value(
-                            &mut d.landing,
-                            Landing::Segmentation,
-                            "segmentation series",
-                        )
-                        .on_hover_text(
-                            "A new segmentation series bound to the destination image: \
-                             editable masks, convertible to RTSTRUCT later",
-                        );
-                        ui.selectable_value(&mut d.landing, Landing::StructureSet, "structure set")
-                            .on_hover_text(
-                                "Contours appended to the destination image's own RT \
-                                 structure set (the one that references it; a new set when \
-                                 there is none).",
-                            );
-                    });
-                    f.row("Then", |ui| {
-                        let mut close = d.finish.close_mm > 0.0;
-                        if ui
-                            .checkbox(&mut close, "close gaps")
-                            .on_hover_text(
-                                "Morphological closing of each landed mask: pieces closer \
-                                 than twice the radius join into one surface. For a \
-                                 structure that arrives as a cloud of points.",
-                            )
-                            .changed()
-                        {
-                            d.finish.close_mm = if close { 2.0 } else { 0.0 };
-                        }
-                        if close {
-                            ui.add(
-                                egui::DragValue::new(&mut d.finish.close_mm)
-                                    .speed(0.5)
-                                    .range(0.5..=20.0)
-                                    .suffix(" mm"),
-                            );
-                        }
-                        ui.checkbox(&mut d.finish.fill, "fill").on_hover_text(
-                            "Fill the interior slice by slice: a surface becomes a solid.",
-                        );
-                    });
-                });
-                ui.separator();
-                if to_group {
-                    // Against a group the run may be anchored on a structure
-                    // the source and every phase carry.
-                    egui::CollapsingHeader::new("Anchor on a structure")
-                        .id_salt("prop_anchor")
-                        .default_open(d.anchor.is_some())
-                        .show(ui, |ui| {
-                            ui.label(
-                                "Aligns on a structure that the source and every phase carry \
-                                 (by name): centroids matched, a rigid fit on it, then a local \
-                                 deformable refinement. It travels along as the check: its \
-                                 overlap with each phase's own contour is reported.",
-                            );
-                            ui.horizontal(|ui| {
-                                ui.label("Anchor");
-                                let current = d
-                                    .anchor
-                                    .and_then(|i| entries.get(i))
-                                    .map(|(n, _, _)| n.clone())
-                                    .unwrap_or_else(|| "None (plain run)".into());
-                                egui::ComboBox::from_id_salt("prop_anchor_roi")
-                                    .selected_text(current)
-                                    .width(200.0)
-                                    .show_ui(ui, |ui| {
-                                        if ui
-                                            .selectable_label(
-                                                d.anchor.is_none(),
-                                                "None (plain run)",
-                                            )
-                                            .clicked()
-                                        {
-                                            d.anchor = None;
-                                            d.anchor_name.clear();
-                                            d.anchor_color = None;
-                                        }
-                                        for (i, (name, _, _)) in entries.iter().enumerate() {
-                                            if ui
-                                                .selectable_label(d.anchor == Some(i), name)
-                                                .clicked()
-                                            {
-                                                d.anchor = Some(i);
-                                                d.anchor_name.clear();
-                                                d.anchor_color = None;
-                                            }
-                                        }
-                                    });
-                            });
-                            if let Some(ai) = d.anchor {
-                                let default_name = entries
-                                    .get(ai)
-                                    .map(|(n, _, _)| anchored::landed_anchor_name(n))
-                                    .unwrap_or_default();
-                                if d.anchor_name.is_empty() {
-                                    d.anchor_name = default_name.clone();
-                                }
-                                form::form(ui, "prop_anchor_form", |f| {
-                                    f.row_tip(
-                                        "Lands as",
-                                        "The propagated anchor's name and colour on each \
-                                         phase, next to the phase's own contour it is \
-                                         compared with",
-                                        |ui| {
-                                            ui.add(
-                                                egui::TextEdit::singleline(&mut d.anchor_name)
-                                                    .desired_width(160.0)
-                                                    .hint_text(default_name),
-                                            );
-                                            // The same swatch the data tree
-                                            // gives a structure. It starts on
-                                            // the anchor's own colour, so a
-                                            // run that is not given one is
-                                            // what it always was.
-                                            let own = entries
-                                                .get(ai)
-                                                .map(|(_, c, _)| *c)
-                                                .unwrap_or([255, 255, 255]);
-                                            let mut shown = d.anchor_color.unwrap_or(own);
-                                            if color_swatch(ui, &mut shown) {
-                                                d.anchor_color = Some(shown);
-                                            }
-                                            if d.anchor_color.is_some()
-                                                && small_tip_button(
-                                                    ui,
-                                                    "↺",
-                                                    "Back to the anchor's own colour",
-                                                )
-                                            {
-                                                d.anchor_color = None;
-                                            }
-                                        },
-                                    );
-                                    f.row_tip(
-                                        "Margin",
-                                        "How far beyond the anchor the registration looks.",
-                                        |ui| {
-                                            ui.add(
-                                                egui::DragValue::new(&mut d.anchor_margin_mm)
-                                                    .speed(1.0)
-                                                    .range(0.0..=60.0)
-                                                    .suffix(" mm"),
-                                            );
-                                        },
-                                    );
-                                    f.row("Refine", |ui| {
-                                        ui.checkbox(&mut d.anchor_deformable, "deformably")
-                                            .on_hover_text(
-                                                "A local B-spline on the anchor region after \
-                                                 the rigid fit. Off keeps the alignment \
-                                                 rigid.",
-                                            );
-                                        ui.checkbox(&mut d.anchor_contours, "match the contours")
-                                            .on_hover_text(
-                                                "Compare the anchor's surfaces (signed \
-                                                 distance maps) rather than the image \
-                                                 intensities: works across contrast, kernel \
-                                                 and modality.",
-                                            );
-                                    });
-                                });
-                            }
-                        });
-                    ui.separator();
-                }
-                // A local refinement is a second pass over *the* active
-                // registration, so it applies only when that is what the run
-                // goes through. It used to be forced shut whenever the
-                // destination made its own transform - which, once a 4D group
-                // became the usual destination, was almost always, and the
-                // section read as broken rather than as inapplicable. Now it
-                // opens and says which of the two reasons is in the way.
-                let can_refine = !on_the_fly && registered.is_some();
-                egui::CollapsingHeader::new("Refine locally first")
-                    .id_salt("prop_local")
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        ui.label(
-                            "A structure inside a larger one lands where the *larger* one's \
-                         deformation puts it. Refining the registration on the enclosing \
-                         structure first is what fixes that - and it only changes the \
-                         transform inside that structure.",
-                        );
-                        if !can_refine {
-                            ui.colored_label(
-                                alert_color(ui.visuals()),
-                                if on_the_fly {
-                                    "This destination is registered on the spot - each one \
-                                     gets its own transform, so there is no standing \
-                                     registration here to refine. Send the structures through \
-                                     the active registration to use this."
-                                } else {
-                                    "No active registration to refine - run one in the \
-                                     registration module first."
-                                },
-                            );
-                        }
-                        ui.add_enabled_ui(can_refine, |ui| {
-                            form::form(ui, "prop_local_form", |f| {
-                                f.row("Region", |ui| {
-                                    let current = local_choices
-                                        .iter()
-                                        .find(|(c, _)| *c == d.local)
-                                        .map(|(_, l)| l.clone())
-                                        .unwrap_or_else(|| "No refinement".into());
-                                    egui::ComboBox::from_id_salt("prop_region")
-                                        .selected_text(current)
-                                        .width(200.0)
-                                        .show_ui(ui, |ui| {
-                                            ui.selectable_value(
-                                                &mut d.local,
-                                                RegRoi::Whole,
-                                                "No refinement",
-                                            );
-                                            for (choice, label) in &local_choices {
-                                                if *choice == RegRoi::Whole {
-                                                    continue;
-                                                }
-                                                ui.selectable_value(&mut d.local, *choice, label);
-                                            }
-                                        });
-                                });
-                                if d.local != RegRoi::Whole {
-                                    f.row("Margin", |ui| {
-                                        ui.add(
-                                            egui::DragValue::new(&mut d.local_margin_mm)
-                                                .speed(1.0)
-                                                .range(0.0..=60.0)
-                                                .suffix(" mm"),
-                                        );
-                                    });
-                                    f.wide(|ui| {
-                                        ui.weak(
-                                            "The refinement replaces the active registration, so \
-                                         the sidebar reports exactly what the propagation \
-                                         used.",
-                                        );
-                                    });
-                                }
-                            });
-                        });
-                    });
-
-                ui.separator();
-                match &self.propagate_job {
-                    Some(job) => cancel = progress_row(ui, &job.progress),
-                    None => {
-                        ui.horizontal(|ui| {
-                            // "to 10 phases", or "to 1 phase" when the target
-                            // is one member of the group. A single phase is
-                            // a run like any other - one registration rather
-                            // than ten - and used to be turned away here by a
-                            // count that only the whole-group case satisfies.
-                            let phases_word = if n_phases == 1 { "phase" } else { "phases" };
-                            let ready_group = n_phases >= 1;
-                            let one_image = matches!(d.target, PropTarget::Series { .. });
-                            let (label, hint, ready) = if one_image {
-                                (
-                                    "▶ Register and propagate".to_string(),
-                                    "One registration onto that image, then the structures; \
-                                     method and parameters from the registration module",
-                                    true,
-                                )
-                            } else if on_the_fly && reuse {
-                                (
-                                    format!("▶ Propagate to {n_phases} {phases_word}"),
-                                    "Through the transforms already made for this group",
-                                    ready_group,
-                                )
-                            } else if anchored {
-                                (
-                                    format!("▶ Anchor and propagate to {n_phases} {phases_word}"),
-                                    "Per phase: centroids matched, a rigid fit on the anchor, \
-                                     the refinement, then the structures (and the anchor, as \
-                                     the check) carried across",
-                                    ready_group,
-                                )
-                            } else if on_the_fly {
-                                (
-                                    format!("▶ Register and propagate to {n_phases} {phases_word}"),
-                                    "One registration per phase, then the structures",
-                                    ready_group,
-                                )
-                            } else {
-                                (
-                                    "▶ Propagate".to_string(),
-                                    "Through the active registration onto its other image",
-                                    registered.is_some(),
-                                )
-                            };
-                            if enabled_tip_button(ui, ready, label, hint) {
-                                run = true;
-                            }
-                        });
-                    }
-                }
-                // The transform the run will use, typed in rather than
-                // recovered. The registration still says which image the
-                // structures come from and which they land on; this says
-                // only where they land.
-                egui::CollapsingHeader::new("Transform matrix")
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        if matrix_choices.is_empty() {
-                            ui.weak(
-                                "Nothing has been registered for this destination yet, so \
-                                 there is no transform to show. Type one in and tick \
-                                 *Use this matrix* to hand it over.",
-                            );
-                        }
-                        matrix_edit::matrix_editor_multi(
-                            ui,
-                            &mut manual,
-                            &mut d.matrix_pick,
-                            &matrix_choices,
-                        );
-                        if deformable {
-                            ui.weak(
-                                "the transform is deformable: this is its rigid \
-                                 part, and using it drops the deformation",
-                            );
-                        }
-                        if manual.use_it {
-                            ui.weak(
-                                "The next run maps through these numbers instead of the \
-                                 registration's own transform.",
-                            );
-                        }
-                    });
-                if !d.summary.is_empty() {
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Last run").strong());
-                        if small_tip_button(
-                            ui,
-                            "📋 Copy",
-                            "Both tables to the clipboard, tab separated - what a \
-                             spreadsheet opens as a table",
-                        ) {
-                            ui.ctx().copy_text(d.summary.to_tsv());
-                        }
-                    });
-                    d.summary.ui(ui, "prop_run");
-                    if let Some((phases, active)) = &group_field {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label("Deformation field").on_hover_text(
-                                "The displacement the run's registration found, drawn on \
-                                 the views and in 3D. Arrows, grid, spacing and scale are \
-                                 set under Image registration ▸ Vector field.",
-                            );
-                            for (i, label) in phases.iter().enumerate() {
-                                let on = *active == Some(i) && field_on;
-                                if ui
-                                    .selectable_label(on, format!("👁 {label}"))
-                                    .on_hover_text(if on {
-                                        "On the views; click to hide it"
-                                    } else {
-                                        "Draw this phase's field on the views (the phase is \
-                                         put on display if it is not)"
-                                    })
-                                    .clicked()
-                                {
-                                    if on {
-                                        hide_field = true;
-                                    } else {
-                                        show_field = Some(i);
-                                    }
-                                }
-                            }
-                            if active.is_some() {
-                                ui.checkbox(&mut warp_only, "deformation only")
-                                    .on_hover_text(
-                                        "Leave the rigid part out: what the B-spline adds to the \
-                                     rigid alignment. The rigid part of an anchored run is the \
-                                     jump from one scanner's coordinates to the other's.",
-                                    );
-                            }
-                        });
-                    }
-                }
+                self.prop_what_rows(ui, &mut pf);
+                self.prop_route_note(ui, &mut pf);
+                self.prop_structure_list(ui, &mut pf);
+                self.prop_landing_rows(ui, &mut pf);
+                self.prop_group_rows(ui, &mut pf);
+                self.prop_refine_rows(ui, &mut pf);
+                self.prop_run_row(ui, &mut pf);
+                self.prop_matrix_rows(ui, &mut pf);
+                self.prop_last_run(ui, &mut pf);
             });
+        let PropForm {
+            run,
+            cancel,
+            set_all,
+            warp_only,
+            show_field,
+            hide_field,
+            mut d,
+            manual,
+            ..
+        } = pf;
         ui.separator();
 
         if let Some(v) = set_all {
@@ -2459,6 +1885,732 @@ fn item_row(it: &Propagated) -> run_report::RunItem {
         // Known once it has been filed as contours, if it is.
         filed: None,
     }
+}
+
+// -- The parts of the propagation section, top to bottom ---------------------
+
+impl ViewerApp {
+    /// The propagation section's first form: the image the structures come
+    /// from, the set, and the destination.
+    fn prop_what_rows(&self, ui: &mut egui::Ui, pf: &mut PropForm) {
+        let d = &mut pf.d;
+        let group_choices = &pf.group_choices;
+        let series_choices = &pf.series_choices;
+        let all_choices_to = &pf.all_choices_to;
+        let src_choices = &pf.src_choices;
+        let set_choices = &pf.set_choices;
+        let other_label = &pf.other_label;
+        // What the run is: the image, the set, the destination -
+        // three parameters, so three rows of one form.
+        form::form(ui, "prop_what", |f| {
+            f.row_tip(
+                "From image",
+                "The image the structures were drawn on. It is loaded for the run \
+                 when it is not on display.",
+                |ui| {
+                    let current = src_choices
+                        .iter()
+                        .find(|(p, _)| *p == d.src)
+                        .map(|(_, l)| l.clone())
+                        .unwrap_or_else(|| "(none)".into());
+                    egui::ComboBox::from_id_salt("prop_src")
+                        .selected_text(current)
+                        .width(230.0)
+                        .show_ui(ui, |ui| {
+                            for (pick, label) in src_choices {
+                                if ui.selectable_label(d.src == *pick, label).clicked() {
+                                    d.src = *pick;
+                                    d.set = None;
+                                }
+                            }
+                        });
+                },
+            );
+            f.row_tip(
+                "Structures of",
+                "The structure set or segmentation series the structures are taken \
+                 from; the one drawn on the image is preselected.",
+                |ui| {
+                    let current = set_choices
+                        .iter()
+                        .find(|(c, _)| Some(*c) == d.set)
+                        .map(|(_, l)| l.clone())
+                        .unwrap_or_else(|| "(none)".into());
+                    egui::ComboBox::from_id_salt("prop_set")
+                        .selected_text(current)
+                        .width(230.0)
+                        .show_ui(ui, |ui| {
+                            for (choice, label) in set_choices {
+                                if ui.selectable_label(d.set == Some(*choice), label).clicked() {
+                                    d.set = Some(*choice);
+                                    d.ticked.clear();
+                                    d.colors.clear();
+                                    d.anchor = None;
+                                }
+                            }
+                        });
+                },
+            );
+            f.row_tip(
+                "To",
+                "Where they land: the other image of the active registration, a \
+                 whole 4D group, or one phase of one.",
+                |ui| {
+                    let current = match d.target {
+                        PropTarget::Other => other_label
+                            .as_ref()
+                            .map(|(l, _)| l.clone())
+                            // Nothing registered and no group either:
+                            // there is no destination at all, and
+                            // saying so is better than naming one.
+                            .unwrap_or_else(|| "(nothing to propagate to)".into()),
+                        PropTarget::Group { .. }
+                        | PropTarget::Phase { .. }
+                        | PropTarget::Series { .. } => all_choices_to
+                            .iter()
+                            .find(|(t, _)| *t == d.target)
+                            .map(|(_, l)| l.clone())
+                            .unwrap_or_default(),
+                    };
+                    egui::ComboBox::from_id_salt("prop_target")
+                        .selected_text(current)
+                        .width(230.0)
+                        .show_ui(ui, |ui| {
+                            if let Some((label, hint)) = other_label {
+                                ui.selectable_value(&mut d.target, PropTarget::Other, label)
+                                    .on_hover_text(hint);
+                            }
+                            for (target, label) in group_choices {
+                                // Phases are listed under their group
+                                // and indented, so a list of eleven
+                                // lines still reads as one group and
+                                // its phases.
+                                match target {
+                                    PropTarget::Phase { .. } => {
+                                        ui.selectable_value(
+                                            &mut d.target,
+                                            *target,
+                                            format!("      {label}"),
+                                        );
+                                    }
+                                    _ => {
+                                        ui.selectable_value(&mut d.target, *target, label);
+                                    }
+                                }
+                            }
+                            // The lone series, under a rule of their
+                            // own so they do not read as more phases.
+                            if !series_choices.is_empty() {
+                                ui.separator();
+                                for (target, label) in series_choices {
+                                    ui.selectable_value(&mut d.target, *target, label)
+                                        .on_hover_text(
+                                            "Register the source onto this image and \
+                                             carry the structures across. Nothing is \
+                                             registered yet, so the run makes its own \
+                                             transform.",
+                                        );
+                                }
+                            }
+                        });
+                },
+            );
+        });
+    }
+
+    /// What the destination makes of the run: through the registration, or a
+    /// transform per image of its own, and whether earlier ones are reused.
+    fn prop_route_note(&self, ui: &mut egui::Ui, pf: &mut PropForm) {
+        let registered = &pf.registered;
+        let on_the_fly = pf.on_the_fly;
+        let reuse = pf.reuse;
+        let n_phases = pf.n_phases;
+        ui.separator();
+        match (on_the_fly, registered) {
+            (true, _) if reuse => {
+                ui.weak(format!(
+                    "This group is already registered against this image, so the \
+                     {n_phases} transforms are reused."
+                ));
+            }
+            (true, _) => {
+                ui.weak(format!(
+                    "One registration per destination ({n_phases}), each with its own \
+                     transform; method and parameters from the registration module."
+                ));
+            }
+            (false, None) => {
+                ui.colored_label(
+                    alert_color(ui.visuals()),
+                    "No active registration - run one in the registration module \
+                     first, or send these to a 4D group instead.",
+                );
+            }
+            (false, Some((fixed, moving, method, region))) => {
+                ui.weak(format!(
+                    "Using: {method}{}",
+                    match region {
+                        Some(r) => format!(" · restricted to {r}"),
+                        None => String::new(),
+                    }
+                ));
+                ui.weak(format!("Fixed {}, moving {}.", fixed.label, moving.label));
+            }
+        }
+    }
+
+    /// The structures of the chosen set, ticked to be taken along, with the
+    /// colour each copy lands in.
+    fn prop_structure_list(&self, ui: &mut egui::Ui, pf: &mut PropForm) {
+        let mut set_all = pf.set_all;
+        let d = &mut pf.d;
+        let entries = &pf.entries;
+        ui.separator();
+
+        ui.horizontal(|ui| {
+            if ui.small_button("All").clicked() {
+                set_all = Some(true);
+            }
+            if ui.small_button("None").clicked() {
+                set_all = Some(false);
+            }
+            let n = d.ticked.iter().filter(|v| **v).count();
+            ui.weak(format!("{n} selected"));
+            if d.colors.iter().any(Option::is_some)
+                && small_tip_button(
+                    ui,
+                    "Source colours",
+                    "Drop the colours chosen here: every copy lands in the colour \
+                     its own structure has",
+                )
+            {
+                d.colors.iter_mut().for_each(|c| *c = None);
+            }
+        });
+
+        egui::ScrollArea::vertical()
+            .max_height(260.0)
+            .show(ui, |ui| {
+                for (i, (name, color, cm3)) in entries.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        if let Some(on) = d.ticked.get_mut(i) {
+                            ui.checkbox(on, "");
+                        }
+                        // The swatch is the colour the *copy* will
+                        // land in, which starts as the source's. The
+                        // original is never touched by it: this is
+                        // the one place where the two can be told
+                        // apart on the destination image.
+                        let chosen = d.colors.get(i).copied().flatten();
+                        let mut shown = chosen.unwrap_or(*color);
+                        if color_swatch(ui, &mut shown) {
+                            if let Some(slot) = d.colors.get_mut(i) {
+                                *slot = Some(shown);
+                            }
+                        }
+                        ui.label(name);
+                        if let Some(v) = cm3 {
+                            ui.weak(format!("{v:.2} cm³"));
+                        }
+                        if chosen.is_some() {
+                            ui.weak("recoloured").on_hover_text(
+                                "The copy lands in this colour; the structure \
+                                     it was propagated from keeps its own",
+                            );
+                        }
+                        if d.anchor == Some(i) {
+                            ui.weak("anchor");
+                        }
+                    });
+                }
+                if entries.is_empty() {
+                    ui.weak("Nothing to propagate here.");
+                }
+            });
+        pf.set_all = set_all;
+    }
+
+    /// What becomes of the results: how they travel, where they are filed,
+    /// and what is done to each mask once it is there.
+    fn prop_landing_rows(&self, ui: &mut egui::Ui, pf: &mut PropForm) {
+        let d = &mut pf.d;
+        ui.separator();
+        // What becomes of the results: how they travel, where they
+        // are filed, and what is done to each mask once it is there.
+        form::form(ui, "prop_landing", |f| {
+            f.row("Carry", |ui| {
+                ui.selectable_value(&mut d.finish.keep_shape, false, "deformed")
+                    .on_hover_text(
+                        "Each structure goes through the transform point by point: \
+                         its shape and volume change as the deformation does where \
+                         it lies.",
+                    );
+                ui.selectable_value(&mut d.finish.keep_shape, true, "keep shape")
+                    .on_hover_text(
+                        "Each structure goes as a rigid body - the transform's best \
+                         rigid fit over the structure itself: where the deformation \
+                         takes it, turned as the tissue around it turns, with its \
+                         own shape and volume. For a small target inside an organ \
+                         whose outline the registration matched: inside, the \
+                         deformation is not measured, only interpolated. An anchor \
+                         still follows the transform - it is the run's check.",
+                    );
+            });
+            f.row("Land as", |ui| {
+                ui.selectable_value(&mut d.landing, Landing::Segmentation, "segmentation series")
+                    .on_hover_text(
+                        "A new segmentation series bound to the destination image: \
+                     editable masks, convertible to RTSTRUCT later",
+                    );
+                ui.selectable_value(&mut d.landing, Landing::StructureSet, "structure set")
+                    .on_hover_text(
+                        "Contours appended to the destination image's own RT \
+                         structure set (the one that references it; a new set when \
+                         there is none).",
+                    );
+            });
+            f.row("Then", |ui| {
+                let mut close = d.finish.close_mm > 0.0;
+                if ui
+                    .checkbox(&mut close, "close gaps")
+                    .on_hover_text(
+                        "Morphological closing of each landed mask: pieces closer \
+                         than twice the radius join into one surface. For a \
+                         structure that arrives as a cloud of points.",
+                    )
+                    .changed()
+                {
+                    d.finish.close_mm = if close { 2.0 } else { 0.0 };
+                }
+                if close {
+                    ui.add(
+                        egui::DragValue::new(&mut d.finish.close_mm)
+                            .speed(0.5)
+                            .range(0.5..=20.0)
+                            .suffix(" mm"),
+                    );
+                }
+                ui.checkbox(&mut d.finish.fill, "fill")
+                    .on_hover_text("Fill the interior slice by slice: a surface becomes a solid.");
+            });
+        });
+    }
+
+    /// A 4D group's own choices: the anchor structure and the phases.
+    fn prop_group_rows(&self, ui: &mut egui::Ui, pf: &mut PropForm) {
+        let d = &mut pf.d;
+        let to_group = pf.to_group;
+        let entries = &pf.entries;
+        ui.separator();
+        if to_group {
+            // Against a group the run may be anchored on a structure
+            // the source and every phase carry.
+            egui::CollapsingHeader::new("Anchor on a structure")
+                .id_salt("prop_anchor")
+                .default_open(d.anchor.is_some())
+                .show(ui, |ui| {
+                    ui.label(
+                        "Aligns on a structure that the source and every phase carry \
+                         (by name): centroids matched, a rigid fit on it, then a local \
+                         deformable refinement. It travels along as the check: its \
+                         overlap with each phase's own contour is reported.",
+                    );
+                    ui.horizontal(|ui| {
+                        ui.label("Anchor");
+                        let current = d
+                            .anchor
+                            .and_then(|i| entries.get(i))
+                            .map(|(n, _, _)| n.clone())
+                            .unwrap_or_else(|| "None (plain run)".into());
+                        egui::ComboBox::from_id_salt("prop_anchor_roi")
+                            .selected_text(current)
+                            .width(200.0)
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_label(d.anchor.is_none(), "None (plain run)")
+                                    .clicked()
+                                {
+                                    d.anchor = None;
+                                    d.anchor_name.clear();
+                                    d.anchor_color = None;
+                                }
+                                for (i, (name, _, _)) in entries.iter().enumerate() {
+                                    if ui.selectable_label(d.anchor == Some(i), name).clicked() {
+                                        d.anchor = Some(i);
+                                        d.anchor_name.clear();
+                                        d.anchor_color = None;
+                                    }
+                                }
+                            });
+                    });
+                    if let Some(ai) = d.anchor {
+                        let default_name = entries
+                            .get(ai)
+                            .map(|(n, _, _)| anchored::landed_anchor_name(n))
+                            .unwrap_or_default();
+                        if d.anchor_name.is_empty() {
+                            d.anchor_name = default_name.clone();
+                        }
+                        form::form(ui, "prop_anchor_form", |f| {
+                            f.row_tip(
+                                "Lands as",
+                                "The propagated anchor's name and colour on each \
+                                 phase, next to the phase's own contour it is \
+                                 compared with",
+                                |ui| {
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut d.anchor_name)
+                                            .desired_width(160.0)
+                                            .hint_text(default_name),
+                                    );
+                                    // The same swatch the data tree
+                                    // gives a structure. It starts on
+                                    // the anchor's own colour, so a
+                                    // run that is not given one is
+                                    // what it always was.
+                                    let own = entries
+                                        .get(ai)
+                                        .map(|(_, c, _)| *c)
+                                        .unwrap_or([255, 255, 255]);
+                                    let mut shown = d.anchor_color.unwrap_or(own);
+                                    if color_swatch(ui, &mut shown) {
+                                        d.anchor_color = Some(shown);
+                                    }
+                                    if d.anchor_color.is_some()
+                                        && small_tip_button(
+                                            ui,
+                                            "↺",
+                                            "Back to the anchor's own colour",
+                                        )
+                                    {
+                                        d.anchor_color = None;
+                                    }
+                                },
+                            );
+                            f.row_tip(
+                                "Margin",
+                                "How far beyond the anchor the registration looks.",
+                                |ui| {
+                                    ui.add(
+                                        egui::DragValue::new(&mut d.anchor_margin_mm)
+                                            .speed(1.0)
+                                            .range(0.0..=60.0)
+                                            .suffix(" mm"),
+                                    );
+                                },
+                            );
+                            f.row("Refine", |ui| {
+                                ui.checkbox(&mut d.anchor_deformable, "deformably")
+                                    .on_hover_text(
+                                        "A local B-spline on the anchor region after \
+                                         the rigid fit. Off keeps the alignment \
+                                         rigid.",
+                                    );
+                                ui.checkbox(&mut d.anchor_contours, "match the contours")
+                                    .on_hover_text(
+                                        "Compare the anchor's surfaces (signed \
+                                         distance maps) rather than the image \
+                                         intensities: works across contrast, kernel \
+                                         and modality.",
+                                    );
+                            });
+                        });
+                    }
+                });
+            ui.separator();
+        }
+    }
+
+    /// *Refine locally first*: a second pass of the active registration
+    /// around each structure, where that applies.
+    fn prop_refine_rows(&self, ui: &mut egui::Ui, pf: &mut PropForm) {
+        let registered = &pf.registered;
+        let d = &mut pf.d;
+        let on_the_fly = pf.on_the_fly;
+        let local_choices = &pf.local_choices;
+        // A local refinement is a second pass over *the* active
+        // registration, so it applies only when that is what the run
+        // goes through. It used to be forced shut whenever the
+        // destination made its own transform - which, once a 4D group
+        // became the usual destination, was almost always, and the
+        // section read as broken rather than as inapplicable. Now it
+        // opens and says which of the two reasons is in the way.
+        let can_refine = !on_the_fly && registered.is_some();
+        egui::CollapsingHeader::new("Refine locally first")
+            .id_salt("prop_local")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.label(
+                    "A structure inside a larger one lands where the *larger* one's \
+                 deformation puts it. Refining the registration on the enclosing \
+                 structure first is what fixes that - and it only changes the \
+                 transform inside that structure.",
+                );
+                if !can_refine {
+                    ui.colored_label(
+                        alert_color(ui.visuals()),
+                        if on_the_fly {
+                            "This destination is registered on the spot - each one \
+                             gets its own transform, so there is no standing \
+                             registration here to refine. Send the structures through \
+                             the active registration to use this."
+                        } else {
+                            "No active registration to refine - run one in the \
+                             registration module first."
+                        },
+                    );
+                }
+                ui.add_enabled_ui(can_refine, |ui| {
+                    form::form(ui, "prop_local_form", |f| {
+                        f.row("Region", |ui| {
+                            let current = local_choices
+                                .iter()
+                                .find(|(c, _)| *c == d.local)
+                                .map(|(_, l)| l.clone())
+                                .unwrap_or_else(|| "No refinement".into());
+                            egui::ComboBox::from_id_salt("prop_region")
+                                .selected_text(current)
+                                .width(200.0)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut d.local,
+                                        RegRoi::Whole,
+                                        "No refinement",
+                                    );
+                                    for (choice, label) in local_choices {
+                                        if *choice == RegRoi::Whole {
+                                            continue;
+                                        }
+                                        ui.selectable_value(&mut d.local, *choice, label);
+                                    }
+                                });
+                        });
+                        if d.local != RegRoi::Whole {
+                            f.row("Margin", |ui| {
+                                ui.add(
+                                    egui::DragValue::new(&mut d.local_margin_mm)
+                                        .speed(1.0)
+                                        .range(0.0..=60.0)
+                                        .suffix(" mm"),
+                                );
+                            });
+                            f.wide(|ui| {
+                                ui.weak(
+                                    "The refinement replaces the active registration, so \
+                                 the sidebar reports exactly what the propagation \
+                                 used.",
+                                );
+                            });
+                        }
+                    });
+                });
+            });
+    }
+
+    /// The run row: the button, or the progress of the run under way.
+    fn prop_run_row(&self, ui: &mut egui::Ui, pf: &mut PropForm) {
+        let mut run = pf.run;
+        let mut cancel = pf.cancel;
+        let registered = &pf.registered;
+        let d = &mut pf.d;
+        let on_the_fly = pf.on_the_fly;
+        let anchored = pf.anchored;
+        let reuse = pf.reuse;
+        let n_phases = pf.n_phases;
+        ui.separator();
+        match &self.propagate_job {
+            Some(job) => cancel = progress_row(ui, &job.progress),
+            None => {
+                ui.horizontal(|ui| {
+                    // "to 10 phases", or "to 1 phase" when the target
+                    // is one member of the group. A single phase is
+                    // a run like any other - one registration rather
+                    // than ten - and used to be turned away here by a
+                    // count that only the whole-group case satisfies.
+                    let phases_word = if n_phases == 1 { "phase" } else { "phases" };
+                    let ready_group = n_phases >= 1;
+                    let one_image = matches!(d.target, PropTarget::Series { .. });
+                    let (label, hint, ready) = if one_image {
+                        (
+                            "▶ Register and propagate".to_string(),
+                            "One registration onto that image, then the structures; \
+                             method and parameters from the registration module",
+                            true,
+                        )
+                    } else if on_the_fly && reuse {
+                        (
+                            format!("▶ Propagate to {n_phases} {phases_word}"),
+                            "Through the transforms already made for this group",
+                            ready_group,
+                        )
+                    } else if anchored {
+                        (
+                            format!("▶ Anchor and propagate to {n_phases} {phases_word}"),
+                            "Per phase: centroids matched, a rigid fit on the anchor, \
+                             the refinement, then the structures (and the anchor, as \
+                             the check) carried across",
+                            ready_group,
+                        )
+                    } else if on_the_fly {
+                        (
+                            format!("▶ Register and propagate to {n_phases} {phases_word}"),
+                            "One registration per phase, then the structures",
+                            ready_group,
+                        )
+                    } else {
+                        (
+                            "▶ Propagate".to_string(),
+                            "Through the active registration onto its other image",
+                            registered.is_some(),
+                        )
+                    };
+                    if enabled_tip_button(ui, ready, label, hint) {
+                        run = true;
+                    }
+                });
+            }
+        }
+        pf.run = run;
+        pf.cancel = cancel;
+    }
+
+    /// *Transform matrix*: the transform typed in rather than recovered.
+    fn prop_matrix_rows(&self, ui: &mut egui::Ui, pf: &mut PropForm) {
+        let d = &mut pf.d;
+        let mut manual = pf.manual;
+        let matrix_choices = &pf.matrix_choices;
+        let deformable = pf.deformable;
+        // The transform the run will use, typed in rather than
+        // recovered. The registration still says which image the
+        // structures come from and which they land on; this says
+        // only where they land.
+        egui::CollapsingHeader::new("Transform matrix")
+            .default_open(false)
+            .show(ui, |ui| {
+                if matrix_choices.is_empty() {
+                    ui.weak(
+                        "Nothing has been registered for this destination yet, so \
+                         there is no transform to show. Type one in and tick \
+                         *Use this matrix* to hand it over.",
+                    );
+                }
+                matrix_edit::matrix_editor_multi(
+                    ui,
+                    &mut manual,
+                    &mut d.matrix_pick,
+                    matrix_choices,
+                );
+                if deformable {
+                    ui.weak(
+                        "the transform is deformable: this is its rigid \
+                         part, and using it drops the deformation",
+                    );
+                }
+                if manual.use_it {
+                    ui.weak(
+                        "The next run maps through these numbers instead of the \
+                         registration's own transform.",
+                    );
+                }
+            });
+        pf.manual = manual;
+    }
+
+    /// The last run: its tables, and the group's deformation fields.
+    fn prop_last_run(&self, ui: &mut egui::Ui, pf: &mut PropForm) {
+        let group_field = &pf.group_field;
+        let field_on = pf.field_on;
+        let mut warp_only = pf.warp_only;
+        let mut show_field = pf.show_field;
+        let mut hide_field = pf.hide_field;
+        let d = &mut pf.d;
+        if !d.summary.is_empty() {
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Last run").strong());
+                if small_tip_button(
+                    ui,
+                    "📋 Copy",
+                    "Both tables to the clipboard, tab separated - what a \
+                     spreadsheet opens as a table",
+                ) {
+                    ui.ctx().copy_text(d.summary.to_tsv());
+                }
+            });
+            d.summary.ui(ui, "prop_run");
+            if let Some((phases, active)) = group_field {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Deformation field").on_hover_text(
+                        "The displacement the run's registration found, drawn on \
+                         the views and in 3D. Arrows, grid, spacing and scale are \
+                         set under Image registration ▸ Vector field.",
+                    );
+                    for (i, label) in phases.iter().enumerate() {
+                        let on = *active == Some(i) && field_on;
+                        if ui
+                            .selectable_label(on, format!("👁 {label}"))
+                            .on_hover_text(if on {
+                                "On the views; click to hide it"
+                            } else {
+                                "Draw this phase's field on the views (the phase is \
+                                 put on display if it is not)"
+                            })
+                            .clicked()
+                        {
+                            if on {
+                                hide_field = true;
+                            } else {
+                                show_field = Some(i);
+                            }
+                        }
+                    }
+                    if active.is_some() {
+                        ui.checkbox(&mut warp_only, "deformation only")
+                            .on_hover_text(
+                                "Leave the rigid part out: what the B-spline adds to the \
+                             rigid alignment. The rigid part of an anchored run is the \
+                             jump from one scanner's coordinates to the other's.",
+                            );
+                    }
+                });
+            }
+        }
+        pf.warp_only = warp_only;
+        pf.show_field = show_field;
+        pf.hide_field = hide_field;
+    }
+}
+
+/// What one frame of the propagation section works with: the choices
+/// gathered before it is drawn, the dialog it edits, and what its buttons
+/// ask for, applied once it has been drawn.
+struct PropForm {
+    run: bool,
+    cancel: bool,
+    set_all: Option<bool>,
+    registered: Option<(RegImageRef, RegImageRef, String, Option<String>)>,
+    group_field: Option<(Vec<String>, Option<usize>)>,
+    field_on: bool,
+    warp_only: bool,
+    show_field: Option<usize>,
+    hide_field: bool,
+    d: PropagateDialog,
+    manual: matrix_edit::ManualMatrix,
+    matrix_choices: Vec<matrix_edit::MatrixChoice>,
+    deformable: bool,
+    group_choices: Vec<(PropTarget, String)>,
+    series_choices: Vec<(PropTarget, String)>,
+    all_choices_to: Vec<(PropTarget, String)>,
+    on_the_fly: bool,
+    to_group: bool,
+    src_choices: Vec<(RegPick, String)>,
+    set_choices: Vec<(SetPick, String)>,
+    entries: Vec<(String, [u8; 3], Option<f64>)>,
+    local_choices: Vec<(RegRoi, String)>,
+    anchored: bool,
+    other_label: Option<(String, String)>,
+    reuse: bool,
+    n_phases: usize,
 }
 
 #[cfg(test)]

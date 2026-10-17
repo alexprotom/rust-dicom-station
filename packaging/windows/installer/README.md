@@ -299,7 +299,7 @@ See [docs/viewer.md](../../../docs/viewer.md#graphics-backend).
 | `src/update.rs` | the newest GitHub release: lookup, download, SHA-256 check, hand-over |
 | `src/uninstall.rs` | manifest-driven removal, self-deleting uninstaller |
 | `src/deps.rs` | Visual C++ runtime detection and installation |
-| `src/models.rs` | optional model downloads (the viewer's inventory and first-use code) |
+| `crates/rds-domain/src/models.rs` | optional model downloads (the viewer's inventory and first-use code) |
 | `src/ui.rs` | the egui wizard |
 | `src/console.rs` | text-mode / silent front end |
 | `src/win/` | shell links, registry, known folders, console attach |
