@@ -116,6 +116,7 @@ impl ViewerApp {
         self.data_tree(ui, slot);
         self.dose_display_section(ui, slot);
         self.planar_section(ui, slot);
+        self.reports_section(ui, slot);
         self.setups_section(ui, slot);
         self.reg_objects_section(ui, slot);
         self.records_section(ui, slot);

@@ -107,7 +107,7 @@ fn main() {
             );
     }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title("Rust DICOM Station: Viewer"),
+        viewport: egui::ViewportBuilder::default().with_title("Rust DICOM Station"),
         renderer: eframe::Renderer::Wgpu,
         wgpu_options,
         ..Default::default()

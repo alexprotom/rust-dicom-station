@@ -87,6 +87,7 @@ mod reg2d3d;
 mod reg_panel;
 mod reg_shape;
 mod rename;
+mod report_view;
 mod run_report;
 mod seg;
 mod seg_edit;
@@ -108,6 +109,7 @@ mod tree_planar;
 mod tree_plans;
 mod tree_records;
 mod tree_registrations;
+mod tree_reports;
 mod tree_segmentations;
 mod tree_structures;
 mod views;
@@ -481,6 +483,14 @@ struct PlanarView {
     /// was made from.
     cmp_tex: Option<TextureHandle>,
     cmp_key: Option<u64>,
+    /// The report the pane shows instead of a stack (the additional pane
+    /// only): index into `study.reports`.
+    report: Option<usize>,
+    /// Whether the report's page is shown rather than its tables.
+    report_page: bool,
+    /// The texture of that page, and the page it was made from.
+    page_tex: Option<TextureHandle>,
+    page_key: Option<PlanarKey>,
 }
 
 /// One image of a planar pane's stack, with the window it is shown with.
@@ -624,11 +634,6 @@ pub struct ViewerApp {
     /// The session the previous run ended with, as read from the settings
     /// file. Emptied when it turns out its data is gone.
     last_session: [Vec<PathBuf>; MAX_WORKSPACES],
-    /// Whether the archive holds anything, and when that was last looked at:
-    /// the start screen offers *Load data from PACS* only when it does, and
-    /// asking the file system every frame would be silly.
-    archive_has_data: bool,
-    archive_checked_at: f64,
     pending_load: Option<(usize, PathBuf)>,
     /// The same, for an explicit file selection (slot, files).
     pending_load_files: Option<(usize, Vec<PathBuf>, Option<Vec<PathBuf>>)>,
@@ -1261,8 +1266,6 @@ impl ViewerApp {
             session: std::array::from_fn(|_| Vec::new()),
             last_session: prefs.session.clone(),
             restore_queue: Vec::new(),
-            archive_has_data: false,
-            archive_checked_at: f64::NEG_INFINITY,
             pending_load: None,
             pending_load_files: None,
             pending_switch: None,
@@ -1695,20 +1698,6 @@ impl ViewerApp {
             &self.archive_dir,
             &self.archive_more,
         ))
-    }
-
-    /// Does the local archive hold any patient? Re-read at most twice a
-    /// second, since the start screen asks every frame.
-    pub(super) fn archive_has_data(&mut self, now: f64) -> bool {
-        if now - self.archive_checked_at < 0.5 {
-            return self.archive_has_data;
-        }
-        self.archive_checked_at = now;
-        // This station's PACS, or a paired PACS server to take a study from.
-        self.archive_has_data = self.station_pacs().has_patients()
-            || crate::pacs::servers::Servers::load(&crate::pacs::servers::default_path())
-                .is_ok_and(|s| !s.servers.is_empty());
-        self.archive_has_data
     }
 
     /// Load again what the program was showing when it was last closed.

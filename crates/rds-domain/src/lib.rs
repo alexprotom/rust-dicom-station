@@ -42,6 +42,7 @@ pub mod projection;
 pub mod propagate;
 pub mod registration;
 pub mod render;
+pub mod report;
 pub mod rooms;
 pub mod rt_surface;
 pub mod rtdose;

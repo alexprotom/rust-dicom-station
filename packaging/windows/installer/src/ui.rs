@@ -1047,7 +1047,7 @@ impl SetupApp {
                         .set_title("Choose the installation folder")
                         .pick_folder()
                     {
-                        self.opts.set_dir(d.join(APP_NAME));
+                        self.opts.set_dir(d.join(INSTALL_DIR_NAME));
                         self.dir_text = self.opts.dir.to_string_lossy().to_string();
                         self.models_dir_text = self.opts.models_dir.to_string_lossy().to_string();
                     }

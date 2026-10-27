@@ -7,6 +7,10 @@
 use std::cmp::Ordering;
 
 pub const APP_NAME: &str = "Rust DICOM Station";
+/// The folder the program is installed into under `Programs` or `Program
+/// Files`: no spaces, the same word as the data folder, so a path typed
+/// into a shell or a script needs no quotes.
+pub const INSTALL_DIR_NAME: &str = "RustDICOMStation";
 pub const APP_EXE: &str = "rust-dicom-station.exe";
 /// The MCP server, shipped beside the viewer by `rds-pack` when it was built.
 /// Optional at install time: it is only of use to somebody who drives the

@@ -51,13 +51,11 @@ fn load_logo(ctx: &egui::Context) -> egui::TextureHandle {
 
 impl ViewerApp {
     pub(super) fn empty_state(&mut self, ui: &mut egui::Ui) {
-        let now = ui.input(|i| i.time);
-        let offer_pacs = self.archive_has_data(now);
-
-        // What the last run left behind, and whether the archive holds
-        // anything: a button that cannot do its job is shown greyed rather
-        // than hidden, so the start screen keeps the same shape whether or
-        // not there is a session to come back to.
+        // What the last run left behind: a button that cannot do its job is
+        // shown greyed rather than hidden, so the start screen keeps the
+        // same shape whether or not there is a session to come back to.
+        // The PACS button is always live: an empty archive is where the
+        // storage folders and the paired servers get set up.
         let has_session = self.last_session.iter().any(|paths| !paths.is_empty());
 
         let mut open_folder = false;
@@ -201,22 +199,15 @@ impl ViewerApp {
                                 }
 
                                 if ui
-                                    .add_enabled(
-                                        offer_pacs,
-                                        egui::Button::new("🏥  Load data from PACS")
-                                            .min_size(egui::vec2(
-                                                BUTTON_WIDTH,
-                                                BUTTON_HEIGHT,
-                                            )),
+                                    .add_sized(
+                                        [BUTTON_WIDTH, BUTTON_HEIGHT],
+                                        egui::Button::new("🏥  PACS"),
                                     )
-                                    .on_hover_text(if offer_pacs {
-                                        "Take a study out of the local patient archive or \
-                                         a paired PACS server"
-                                    } else {
-                                        "The local patient archive is empty and no PACS \
-                                         server is paired: import a study, or pair with a \
-                                         server in Tools > PACS"
-                                    })
+                                    .on_hover_text(
+                                        "The local patient archive and the paired PACS \
+                                         servers: take a study out, import one, or set the \
+                                         storage folders and the pairing up",
+                                    )
                                     .clicked()
                                 {
                                     open_pacs = true;

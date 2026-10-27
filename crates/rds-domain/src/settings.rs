@@ -102,27 +102,35 @@ pub enum PaneKind {
     /// `1`, so a radiograph and the DRR it is compared with sit side by
     /// side; each picks its image for itself.
     Planar(u8),
+    /// The workspace's additional objects - secondary captures, a scanner's
+    /// protocol or dose report pages, scanned documents - in a pane like a
+    /// planar one, kept apart from the radiographs: nothing of a projection
+    /// (a DRR, a 2D/3D setup) is offered for them. Off in the standard row,
+    /// put into it by a click on one in the data tree.
+    Additional,
 }
 
 /// How many planar panes a row can carry.
 pub const PLANAR_PANES: usize = 2;
 
 /// How many panes one row may show: every kind there is, so a row can carry
-/// the three planes, the surface scene and both planar panes at once. The
-/// layout would divide by more perfectly happily; what stops it is the
-/// width each pane is left with, and six across is already narrow - which
-/// is why the planar panes are not in the standard row.
+/// the three planes, the surface scene, both planar panes and the
+/// additional one at once. The layout would divide by more perfectly
+/// happily; what stops it is the width each pane is left with, and six
+/// across is already narrow - which is why the planar panes and the
+/// additional one are not in the standard row.
 pub const MAX_PANES: usize = PaneKind::ALL.len();
 
 impl PaneKind {
     /// Every kind a row can be given, in the order the tick boxes list them.
-    pub const ALL: [PaneKind; 6] = [
+    pub const ALL: [PaneKind; 7] = [
         PaneKind::Plane(crate::volume::ViewPlane::Axial),
         PaneKind::Plane(crate::volume::ViewPlane::Sagittal),
         PaneKind::Plane(crate::volume::ViewPlane::Coronal),
         PaneKind::Scene3d,
         PaneKind::Planar(0),
         PaneKind::Planar(1),
+        PaneKind::Additional,
     ];
 
     /// What the tick box and the pane's own corner call it.
@@ -132,6 +140,7 @@ impl PaneKind {
             PaneKind::Scene3d => "3D",
             PaneKind::Planar(0) => "Planar 1",
             PaneKind::Planar(_) => "Planar 2",
+            PaneKind::Additional => "Additional",
         }
     }
 
@@ -143,6 +152,7 @@ impl PaneKind {
             PaneKind::Scene3d => "3d",
             PaneKind::Planar(0) => "planar1",
             PaneKind::Planar(_) => "planar2",
+            PaneKind::Additional => "additional",
         }
     }
 
@@ -1584,7 +1594,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            parse_view_row("axial,sagittal,coronal,3d,planar1,planar2").len(),
+            parse_view_row("axial,sagittal,coronal,3d,planar1,planar2,additional").len(),
             MAX_PANES,
             "a row that names every kind keeps every kind"
         );
@@ -1597,8 +1607,12 @@ mod tests {
         assert!(
             !default_view_row()
                 .iter()
-                .any(|k| matches!(k, PaneKind::Planar(_))),
-            "the planar panes are off until something asks for them"
+                .any(|k| matches!(k, PaneKind::Planar(_) | PaneKind::Additional)),
+            "the planar panes and the additional one are off until something asks for them"
+        );
+        assert_eq!(
+            parse_view_row("additional,axial"),
+            vec![PaneKind::Additional, axial]
         );
         assert_eq!(
             PaneKind::ALL

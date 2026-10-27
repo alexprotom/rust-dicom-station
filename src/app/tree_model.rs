@@ -107,6 +107,10 @@ fn tree_level_of(study: &LoadedStudy, slot: usize, t: &RenameTarget) -> Vec<Rena
             .into_iter()
             .map(|idx| RenameTarget::Record { slot, idx })
             .collect(),
+        RenameTarget::Report { .. } => n_of(study.reports.len())
+            .into_iter()
+            .map(|idx| RenameTarget::Report { slot, idx })
+            .collect(),
         RenameTarget::Setup { .. } => n_of(study.setups.len())
             .into_iter()
             .map(|idx| RenameTarget::Setup { slot, idx })
@@ -688,6 +692,7 @@ mod layout_tests {
             planar_images: Vec::new(),
             registrations: Vec::new(),
             treat_records: Vec::new(),
+            reports: Vec::new(),
             setups: Vec::new(),
             fourd_groups: Vec::new(),
             warnings: Vec::new(),

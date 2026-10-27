@@ -30,8 +30,54 @@
 //! that arrives with its RT images shows one at once. A workspace with no
 //! planar image draws none at all (`row_panes`), so the layout can keep them
 //! without a blank pane for every CT.
+//!
+//! The **additional pane** ([`PaneKind::Additional`]) is a third pane of
+//! the same kind over the workspace's additional objects
+//! ([`PlanarKind::Additional`]: secondary captures, protocol and dose
+//! report pages, scanned documents), kept apart from the radiographs. It
+//! is `planar[ADDITIONAL_PANE]` of the slot and goes through every function
+//! here with that index; what tells it apart is the kind of image it
+//! takes, so a protocol page never lands in a radiograph's pane and a
+//! radiograph never in its.
 
 use super::*;
+
+use crate::extras::PlanarKind;
+
+/// The additional pane's index in `StudySlot::planar`, after the two
+/// planar panes.
+pub(super) const ADDITIONAL_PANE: usize = settings::PLANAR_PANES;
+/// How many panes `StudySlot::planar` holds: the planar ones and the
+/// additional one.
+pub(super) const PANE_VIEWS: usize = settings::PLANAR_PANES + 1;
+
+/// The pane kind drawn from `StudySlot::planar[k]`.
+pub(super) fn pane_kind_of(k: usize) -> PaneKind {
+    if k == ADDITIONAL_PANE {
+        PaneKind::Additional
+    } else {
+        PaneKind::Planar(k as u8)
+    }
+}
+
+/// The index into `StudySlot::planar` a pane kind is drawn from, for the
+/// kinds that are.
+pub(super) fn pane_index(kind: PaneKind) -> Option<usize> {
+    match kind {
+        PaneKind::Planar(k) => Some((k as usize).min(settings::PLANAR_PANES - 1)),
+        PaneKind::Additional => Some(ADDITIONAL_PANE),
+        _ => None,
+    }
+}
+
+/// Which images pane `k` takes.
+pub(super) fn kind_of_pane(k: usize) -> PlanarKind {
+    if k == ADDITIONAL_PANE {
+        PlanarKind::Additional
+    } else {
+        PlanarKind::Projection
+    }
+}
 
 /// Window width bounds for a planar image, from its value range: a DRR's
 /// line integrals span a few units, a radiograph's raw values tens of
@@ -159,7 +205,7 @@ fn edge_image(g: &[u8], size: [usize; 2]) -> ColorImage {
 }
 
 impl ViewerApp {
-    /// How many planar images `slot` holds.
+    /// How many planar images `slot` holds, of both kinds.
     pub(super) fn planar_count(&self, slot: usize) -> usize {
         self.slots[slot.min(MAX_WORKSPACES - 1)]
             .study
@@ -168,59 +214,184 @@ impl ViewerApp {
             .unwrap_or(0)
     }
 
-    /// Is planar pane `k` of `slot` drawn: in the layout, with an image to
-    /// show? See the module notes for the rule.
+    /// The images of `slot` of one kind, by index into `planar_images`.
+    pub(super) fn planar_images_of(&self, slot: usize, kind: PlanarKind) -> Vec<usize> {
+        self.slots[slot.min(MAX_WORKSPACES - 1)]
+            .study
+            .as_ref()
+            .map(|st| {
+                st.planar_images
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, img)| img.kind == kind)
+                    .map(|(i, _)| i)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The kind of image `idx` of `slot`, when there is one.
+    fn planar_kind(&self, slot: usize, idx: usize) -> Option<PlanarKind> {
+        self.slots[slot.min(MAX_WORKSPACES - 1)]
+            .study
+            .as_ref()
+            .and_then(|st| st.planar_images.get(idx))
+            .map(|img| img.kind)
+    }
+
+    /// The panes that take images of `kind`: the two planar ones, or the
+    /// additional one.
+    fn panes_of_kind(kind: PlanarKind) -> std::ops::Range<usize> {
+        match kind {
+            PlanarKind::Projection => 0..settings::PLANAR_PANES,
+            PlanarKind::Additional => ADDITIONAL_PANE..PANE_VIEWS,
+        }
+    }
+
+    /// How many reports `slot` holds.
+    pub(super) fn report_count(&self, slot: usize) -> usize {
+        self.slots[slot.min(MAX_WORKSPACES - 1)]
+            .study
+            .as_ref()
+            .map(|st| st.reports.len())
+            .unwrap_or(0)
+    }
+
+    /// The report pane `k` of `slot` was given, when it still exists.
+    fn own_report(&self, slot: usize, k: usize) -> Option<usize> {
+        if k != ADDITIONAL_PANE {
+            return None;
+        }
+        self.slots[slot].planar[k]
+            .report
+            .filter(|i| *i < self.report_count(slot))
+    }
+
+    /// Is pane `k` of `slot` drawn: in the layout, with an image or a
+    /// report to show? See the module notes for the rule.
     pub(super) fn planar_drawn(&self, slot: usize, k: usize) -> bool {
         let slot = slot.min(MAX_WORKSPACES - 1);
-        let n = self.planar_count(slot);
+        if k >= PANE_VIEWS {
+            return false;
+        }
+        let kind = kind_of_pane(k);
+        let images = self.planar_images_of(slot, kind);
+        let reports = if k == ADDITIONAL_PANE {
+            self.report_count(slot)
+        } else {
+            0
+        };
         let layout = self.row_layout(slot);
-        let in_row = |k: usize| layout.contains(&PaneKind::Planar(k as u8));
-        if n == 0 || k >= settings::PLANAR_PANES || !in_row(k) {
+        let in_row = |k: usize| layout.contains(&pane_kind_of(k));
+        if (images.is_empty() && reports == 0) || !in_row(k) {
             return false;
         }
         let s = &self.slots[slot];
-        let has = |k: usize| s.planar[k].layers.iter().any(|l| l.image < n);
+        let has = |k: usize| {
+            s.planar[k].layers.iter().any(|l| images.contains(&l.image))
+                || self.own_report(slot, k).is_some()
+        };
         if has(k) {
             return true;
         }
-        // The stand-in: the first planar pane of the row, while none of them
-        // has a stack of its own.
-        let first = (0..settings::PLANAR_PANES).find(|j| in_row(*j));
-        first == Some(k) && !(0..settings::PLANAR_PANES).any(|j| in_row(j) && has(j))
+        // The stand-in: the first pane of this kind in the row, while none
+        // of them has a stack of its own.
+        let panes = Self::panes_of_kind(kind);
+        let first = panes.clone().find(|j| in_row(*j));
+        first == Some(k) && !panes.into_iter().any(|j| in_row(j) && has(j))
+    }
+
+    /// The report pane `k` of `slot` shows: its own, or as the stand-in the
+    /// workspace's first when the pane holds no image either.
+    pub(super) fn pane_report(&self, slot: usize, k: usize) -> Option<usize> {
+        if k != ADDITIONAL_PANE || !self.planar_drawn(slot, k) {
+            return None;
+        }
+        if let Some(i) = self.own_report(slot, k) {
+            return Some(i);
+        }
+        let images = self.planar_images_of(slot, kind_of_pane(k));
+        let has_image = self.slots[slot].planar[k]
+            .layers
+            .iter()
+            .any(|l| images.contains(&l.image));
+        (!has_image && self.report_count(slot) > 0).then_some(0)
+    }
+
+    /// Is report `idx` of `slot` the one on screen in the additional pane?
+    pub(super) fn report_shown(&self, slot: usize, idx: usize) -> bool {
+        self.pane_report(slot, ADDITIONAL_PANE) == Some(idx)
     }
 
     /// The images pane `k` of `slot` shows, bottom first: its stack, or the
-    /// stand-in's first image.
+    /// stand-in's first image of the pane's kind; none while it shows a
+    /// report.
     fn pane_images(&self, slot: usize, k: usize) -> Vec<usize> {
-        if !self.planar_drawn(slot, k) {
+        if !self.planar_drawn(slot, k) || self.pane_report(slot, k).is_some() {
             return Vec::new();
         }
-        let n = self.planar_count(slot);
+        let images = self.planar_images_of(slot, kind_of_pane(k));
         let own: Vec<usize> = self.slots[slot].planar[k]
             .layers
             .iter()
             .map(|l| l.image)
-            .filter(|i| *i < n)
+            .filter(|i| images.contains(i))
             .collect();
         if own.is_empty() {
-            vec![0]
+            images.into_iter().take(1).collect()
         } else {
             own
         }
     }
 
-    /// The planar panes of `slot`'s row that are on screen with image `idx`
-    /// in their stack.
+    /// Show report `idx` of `slot` in the additional pane, putting the pane
+    /// into the row when it is not there yet.
+    pub(super) fn show_report(&mut self, slot: usize, idx: usize) {
+        if idx >= self.report_count(slot) {
+            return;
+        }
+        let v = &mut self.slots[slot].planar[ADDITIONAL_PANE];
+        v.layers.clear();
+        v.blend = 0.0;
+        v.report = Some(idx);
+        v.report_page = false;
+        self.add_to_row(slot, PaneKind::Additional);
+    }
+
+    /// Report `idx` of `slot` is gone: the pane that showed it shows
+    /// nothing of its own again, and the ones after it are renumbered.
+    pub(super) fn report_removed(&mut self, slot: usize, idx: usize) {
+        let v = &mut self.slots[slot].planar[ADDITIONAL_PANE];
+        match v.report {
+            Some(i) if i == idx => {
+                v.report = None;
+                v.page_tex = None;
+                v.page_key = None;
+                if v.layers.is_empty() && self.row_layout(slot).contains(&PaneKind::Additional) {
+                    self.remove_from_row(slot, PaneKind::Additional);
+                }
+            }
+            Some(i) if i > idx => v.report = Some(i - 1),
+            _ => {}
+        }
+    }
+
+    /// The panes of `slot`'s row that are on screen with image `idx` in
+    /// their stack.
     pub(super) fn planar_panes_showing(&self, slot: usize, idx: usize) -> Vec<usize> {
-        (0..settings::PLANAR_PANES)
+        (0..PANE_VIEWS)
             .filter(|k| self.pane_images(slot, *k).contains(&idx))
             .collect()
     }
 
     /// The pane a plain click gives an image to, when none was named: one
-    /// already showing it, else a planar pane not on screen, else the one
-    /// that was given an image longest ago.
+    /// already showing it, else a pane of its kind not on screen, else the
+    /// one that was given an image longest ago. An additional object has
+    /// one pane to go to.
     fn planar_target(&self, slot: usize, idx: usize) -> usize {
+        if self.planar_kind(slot, idx) == Some(PlanarKind::Additional) {
+            return ADDITIONAL_PANE;
+        }
         self.planar_panes_showing(slot, idx)
             .first()
             .copied()
@@ -229,23 +400,35 @@ impl ViewerApp {
             .min(settings::PLANAR_PANES - 1)
     }
 
-    /// Show planar image `idx` of `slot` alone in a planar pane - `pane`, or
-    /// the one [`Self::planar_target`] picks - putting the pane into the row
+    /// The pane `pane` names for image `idx`, kept to the panes of the
+    /// image's kind.
+    fn pane_for(&self, slot: usize, idx: usize, pane: Option<usize>) -> usize {
+        match (self.planar_kind(slot, idx), pane) {
+            (Some(PlanarKind::Additional), _) => ADDITIONAL_PANE,
+            (_, Some(k)) => k.min(settings::PLANAR_PANES - 1),
+            (_, None) => self.planar_target(slot, idx),
+        }
+    }
+
+    /// Show planar image `idx` of `slot` alone in a pane - `pane`, or the
+    /// one [`Self::planar_target`] picks - putting the pane into the row
     /// when it is not there yet.
     pub(super) fn show_planar(&mut self, slot: usize, idx: usize, pane: Option<usize>) {
         if idx >= self.planar_count(slot) {
             return;
         }
-        let k = pane
-            .unwrap_or_else(|| self.planar_target(slot, idx))
-            .min(settings::PLANAR_PANES - 1);
+        let k = self.pane_for(slot, idx, pane);
         let v = &mut self.slots[slot].planar[k];
         let kept = v.layers.drain(..).find(|l| l.image == idx);
         v.layers = vec![kept.unwrap_or_else(|| PlanarLayer::new(idx))];
         v.blend = 0.0;
         v.scroll_accum = 0.0;
-        self.slots[slot].planar_last = k;
-        self.add_to_row(slot, PaneKind::Planar(k as u8));
+        // An image takes the additional pane back from a report.
+        v.report = None;
+        if k < settings::PLANAR_PANES {
+            self.slots[slot].planar_last = k;
+        }
+        self.add_to_row(slot, pane_kind_of(k));
     }
 
     /// Ctrl-click in the tree: put image `idx` on top of a pane's stack to
@@ -260,9 +443,14 @@ impl ViewerApp {
             return;
         }
         let last = self.slots[slot].planar_last.min(settings::PLANAR_PANES - 1);
-        let order: Vec<usize> = match pane {
-            Some(k) => vec![k.min(settings::PLANAR_PANES - 1)],
-            None => std::iter::once(last)
+        let additional = self.planar_kind(slot, idx) == Some(PlanarKind::Additional);
+        let order: Vec<usize> = match (additional, pane) {
+            (true, _) => [ADDITIONAL_PANE]
+                .into_iter()
+                .filter(|k| self.planar_drawn(slot, *k))
+                .collect(),
+            (false, Some(k)) => vec![k.min(settings::PLANAR_PANES - 1)],
+            (false, None) => std::iter::once(last)
                 .chain((0..settings::PLANAR_PANES).filter(|k| *k != last))
                 .filter(|k| self.planar_drawn(slot, *k))
                 .collect(),
@@ -300,7 +488,11 @@ impl ViewerApp {
         v.layers.push(PlanarLayer::new(idx));
         // The scrubber goes half way: the two are compared from the start.
         v.blend = v.layers.len() as f32 - 1.5;
-        self.slots[slot].planar_last = k;
+        // An image takes the additional pane back from a report.
+        v.report = None;
+        if k < settings::PLANAR_PANES {
+            self.slots[slot].planar_last = k;
+        }
     }
 
     /// Take position `at` out of pane `k`'s stack; a pane left with nothing
@@ -312,7 +504,7 @@ impl ViewerApp {
         }
         v.blend = v.blend.min(v.layers.len().saturating_sub(1) as f32);
         if v.layers.is_empty() {
-            self.remove_from_row(slot, PaneKind::Planar(k as u8));
+            self.remove_from_row(slot, pane_kind_of(k));
         }
     }
 
@@ -333,7 +525,7 @@ impl ViewerApp {
     /// nothing leaves the row.
     pub(super) fn planar_removed(&mut self, slot: usize, idx: usize) {
         let layout = self.row_layout(slot);
-        for k in 0..settings::PLANAR_PANES {
+        for k in 0..PANE_VIEWS {
             let v = &mut self.slots[slot].planar[k];
             let had = !v.layers.is_empty();
             v.layers.retain(|l| l.image != idx);
@@ -344,8 +536,8 @@ impl ViewerApp {
             }
             v.blend = v.blend.min(v.layers.len().saturating_sub(1) as f32);
             let emptied = had && v.layers.is_empty();
-            if emptied && layout.contains(&PaneKind::Planar(k as u8)) {
-                self.remove_from_row(slot, PaneKind::Planar(k as u8));
+            if emptied && layout.contains(&pane_kind_of(k)) {
+                self.remove_from_row(slot, pane_kind_of(k));
             }
         }
         // The setups' radiographs and the DRRs drawn for one.
@@ -369,7 +561,7 @@ impl ViewerApp {
             }
         }
         if self.planar_count(slot) == 0 {
-            if let Some((s, PaneKind::Planar(_))) = self.maximized {
+            if let Some((s, PaneKind::Planar(_) | PaneKind::Additional)) = self.maximized {
                 if s == slot {
                     self.maximized = None;
                 }
@@ -397,10 +589,11 @@ impl ViewerApp {
     /// has to show something. A planar pane forgets its stack.
     pub(super) fn remove_from_row(&mut self, slot: usize, kind: PaneKind) {
         let row = self.row_layout(slot);
-        if let PaneKind::Planar(k) = kind {
-            if let Some(v) = self.slots[slot].planar.get_mut(k as usize) {
+        if let Some(k) = pane_index(kind) {
+            if let Some(v) = self.slots[slot].planar.get_mut(k) {
                 v.layers.clear();
                 v.blend = 0.0;
+                v.report = None;
             }
         }
         if !row.contains(&kind) || row.len() == 1 {
@@ -437,11 +630,20 @@ impl ViewerApp {
             if layer.tex.is_some() && layer.tex_key == Some(tex_key) {
                 continue;
             }
-            let pixels: Vec<Color32> = windowed(img, layer.wl)
-                .into_iter()
-                .map(Color32::from_gray)
-                .collect();
-            let ci = ColorImage::new([img.cols, img.rows], pixels);
+            // A colour image is drawn as it is; its window applies to the
+            // grey it is compared by.
+            let ci = match &img.rgb {
+                Some(rgb) if rgb.len() >= img.cols * img.rows * 3 => {
+                    ColorImage::from_rgb([img.cols, img.rows], &rgb[..img.cols * img.rows * 3])
+                }
+                _ => {
+                    let pixels: Vec<Color32> = windowed(img, layer.wl)
+                        .into_iter()
+                        .map(Color32::from_gray)
+                        .collect();
+                    ColorImage::new([img.cols, img.rows], pixels)
+                }
+            };
             layer.tex_key = Some(tex_key);
             match &mut layer.tex {
                 Some(t) => t.set(ci, TextureOptions::LINEAR),
@@ -511,33 +713,42 @@ impl ViewerApp {
     /// One planar pane filling `rect`.
     pub(super) fn planar_pane(&mut self, ui: &mut egui::Ui, slot: usize, k: usize, rect: Rect) {
         let ctx = ui.ctx().clone();
-        let kind = PaneKind::Planar(k as u8);
+        let k = k.min(PANE_VIEWS - 1);
+        let kind = pane_kind_of(k);
+        // The additional pane showing a report: a table, not a stack.
+        if let Some(ri) = self.pane_report(slot, k) {
+            self.report_pane(ui, slot, ri, rect);
+            return;
+        }
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, Color32::BLACK);
-        let n = self.planar_count(slot);
-        if n == 0 {
+        let images = self.planar_images_of(slot, kind_of_pane(k));
+        if images.is_empty() {
             // Reached only through a maximized pane whose images went away
-            // this pass; the row itself never draws an empty planar pane.
+            // this pass; the row itself never draws an empty pane.
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
-                "No planar images in this workspace",
+                match kind_of_pane(k) {
+                    PlanarKind::Projection => "No planar images in this workspace",
+                    PlanarKind::Additional => "Nothing additional in this workspace",
+                },
                 FontId::proportional(13.0),
                 ui.visuals().weak_text_color(),
             );
             return;
         }
         // The stand-in becomes a stack of one, and images that no longer
-        // exist leave the stack.
+        // exist (or are not this pane's kind) leave the stack.
         let shown = self.pane_images(slot, k);
         {
             let v = &mut self.slots[slot].planar[k];
-            v.layers.retain(|l| l.image < n);
+            v.layers.retain(|l| images.contains(&l.image));
             if v.layers.is_empty() {
                 v.layers = shown.iter().map(|i| PlanarLayer::new(*i)).collect();
             }
             if v.layers.is_empty() {
-                v.layers.push(PlanarLayer::new(0));
+                v.layers.push(PlanarLayer::new(images[0]));
             }
             v.blend = v.blend.clamp(0.0, (v.layers.len() - 1) as f32);
         }
@@ -665,17 +876,23 @@ impl ViewerApp {
             }
         }
 
-        // A setup's isocentre, markers and outlines over its radiographs.
-        self.reg2d3d_overlay(&painter, slot, v.layers[near].image, rect_of(near_img));
-        // The regions and markers placed by hand on the radiograph of the
-        // stack.
-        let layer_images: Vec<usize> = v.layers.iter().map(|l| l.image).collect();
-        let marked = self
-            .reg2d3d_pane_image(slot, &layer_images)
-            .and_then(|i| study.planar_images.get(i).map(|img| (i, rect_of(img))));
-        if let Some((i, r)) = marked {
-            self.reg2d3d_marks(&painter, slot, i, r);
-        }
+        // A setup's isocentre, markers and outlines over its radiographs,
+        // and the regions and markers placed by hand on the radiograph of
+        // the stack: radiographs only, an additional object has no geometry
+        // to place them in.
+        let marked = if kind_of_pane(k) == PlanarKind::Projection {
+            self.reg2d3d_overlay(&painter, slot, v.layers[near].image, rect_of(near_img));
+            let layer_images: Vec<usize> = v.layers.iter().map(|l| l.image).collect();
+            let marked = self
+                .reg2d3d_pane_image(slot, &layer_images)
+                .and_then(|i| study.planar_images.get(i).map(|img| (i, rect_of(img))));
+            if let Some((i, r)) = marked {
+                self.reg2d3d_marks(&painter, slot, i, r);
+            }
+            marked
+        } else {
+            None
+        };
 
         let (sx, sy, _, _) = geom(near_img);
         let near_rect = rect_of(near_img);

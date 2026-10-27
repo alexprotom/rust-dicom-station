@@ -275,7 +275,11 @@ impl ViewerApp {
         if st.views.len() != n {
             st.views.truncate(n);
             for img in &study.planar_images[st.views.len()..] {
-                let placed = img.camera.is_some();
+                // An additional object (a protocol page, a scanned document)
+                // is no radiograph: it keeps its place in the list, off and
+                // typed, and takes no view of the room.
+                let radiograph = img.kind == crate::extras::PlanarKind::Projection;
+                let placed = radiograph && img.camera.is_some();
                 let unplaced = st
                     .views
                     .iter()
@@ -283,6 +287,8 @@ impl ViewerApp {
                     .count();
                 let source = if placed {
                     GeometrySource::Image
+                } else if !radiograph {
+                    GeometrySource::Typed(Geometry::default())
                 } else if let Some(view) = room_views.get(unplaced) {
                     GeometrySource::Room {
                         room: st.room.clone(),
@@ -315,7 +321,7 @@ impl ViewerApp {
         self.r2d_job.is_some()
             || self.open_slots().into_iter().any(|s| {
                 self.slots[s].study.as_ref().is_some_and(|st| {
-                    st.has_volume() && (!st.planar_images.is_empty() || !st.setups.is_empty())
+                    st.has_volume() && (st.has_radiographs() || !st.setups.is_empty())
                 })
             })
     }
@@ -326,7 +332,7 @@ impl ViewerApp {
             self.slots[s]
                 .study
                 .as_ref()
-                .is_some_and(|st| st.has_volume() && !st.planar_images.is_empty())
+                .is_some_and(|st| st.has_volume() && st.has_radiographs())
         })
     }
 
@@ -1107,15 +1113,19 @@ impl ViewerApp {
 
         // Everything the rows below show of the study, taken before the
         // closures borrow the state.
-        let planar: Vec<(String, bool, Option<String>)> = study
+        // One entry per planar image, so the index is the view's; the
+        // additional objects (no radiographs) are `None` and get no row.
+        let planar: Vec<Option<(String, bool, Option<String>)>> = study
             .planar_images
             .iter()
             .map(|p| {
-                (
-                    p.label.clone(),
-                    p.camera.is_some(),
-                    p.geometry_missing.clone(),
-                )
+                (p.kind == crate::extras::PlanarKind::Projection).then(|| {
+                    (
+                        p.label.clone(),
+                        p.camera.is_some(),
+                        p.geometry_missing.clone(),
+                    )
+                })
             })
             .collect();
         let beams: Vec<(usize, usize, String)> = study
@@ -1437,10 +1447,14 @@ impl ViewerApp {
             .id_salt((id, "images"))
             .default_open(true)
             .show(ui, |ui| {
-                if planar.is_empty() {
-                    ui.weak("No planar images in this workspace");
+                if planar.iter().all(|p| p.is_none()) {
+                    ui.weak("No radiographs in this workspace");
                 }
-                for (i, (label, placed, missing)) in planar.iter().enumerate() {
+                for (i, (label, placed, missing)) in planar
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, p)| p.as_ref().map(|p| (i, p)))
+                {
                     let Some(v) = st.views.get_mut(i) else {
                         continue;
                     };
@@ -2161,7 +2175,7 @@ impl ViewerApp {
 /// and what its buttons ask for, done once it has been drawn.
 struct R2dForm {
     st: Reg2d3dState,
-    planar: Vec<(String, bool, Option<String>)>,
+    planar: Vec<Option<(String, bool, Option<String>)>>,
     beams: Vec<(usize, usize, String)>,
     room_views: Vec<(String, String)>,
     structures: Vec<String>,

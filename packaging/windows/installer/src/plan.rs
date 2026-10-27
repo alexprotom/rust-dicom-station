@@ -429,17 +429,20 @@ impl Options {
     }
 }
 
-/// `%LOCALAPPDATA%\Programs\Rust DICOM Station` or `%ProgramFiles%\Rust DICOM
-/// Station`, with a plain-C: fallback should the shell folder lookup fail.
+/// `%LOCALAPPDATA%\Programs\RustDICOMStation` or
+/// `%ProgramFiles%\RustDICOMStation`, with a plain-C: fallback should the
+/// shell folder lookup fail. An installation made before the folder lost
+/// its spaces stays where it is: the installer reads an existing copy's
+/// folder back from its registration and updates it in place.
 pub fn default_install_dir(scope: Scope) -> PathBuf {
     match scope {
         Scope::CurrentUser => crate::win::local_app_data()
             .unwrap_or_else(|_| PathBuf::from(r"C:\Users\Public"))
             .join("Programs")
-            .join(APP_NAME),
+            .join(INSTALL_DIR_NAME),
         Scope::AllUsers => crate::win::program_files()
             .unwrap_or_else(|_| PathBuf::from(r"C:\Program Files"))
-            .join(APP_NAME),
+            .join(INSTALL_DIR_NAME),
     }
 }
 

@@ -1,18 +1,27 @@
-//! The data tree's planar images section: radiographs, RT images and DRRs,
-//! and the panes they are shown in.
+//! The data tree's planar images section (radiographs, RT images and DRRs)
+//! and its *Additional* section (secondary captures, a scanner's protocol
+//! and dose report pages, scanned documents: objects with pixels that are
+//! no image of the patient), and the panes they are shown in.
 
 use super::*;
 
+use crate::extras::PlanarKind;
+
 impl ViewerApp {
-    /// DX / CR / RTIMAGE planar images, DRRs among them, drawn like image
-    /// series: a click shows the image in a planar pane of the row, and a
-    /// `P1` / `P2` badge says which pane holds it.
+    /// Both sections: the projections, then the additional objects, each
+    /// only when the workspace holds some.
     pub(super) fn planar_section(&mut self, ui: &mut egui::Ui, slot: usize) {
-        let n = self.slots[slot]
-            .study
-            .as_ref()
-            .map(|s| s.planar_images.len())
-            .unwrap_or(0);
+        self.planar_kind_section(ui, slot, PlanarKind::Projection);
+        self.planar_kind_section(ui, slot, PlanarKind::Additional);
+    }
+
+    /// The images of one kind, drawn like image series: a click shows the
+    /// image in a pane of the row (a planar pane for a radiograph, the
+    /// additional pane for the rest), and a `P1` / `P2` / `A` badge says
+    /// which pane holds it.
+    fn planar_kind_section(&mut self, ui: &mut egui::Ui, slot: usize, kind: PlanarKind) {
+        let images = self.planar_images_of(slot, kind);
+        let n = images.len();
         if n == 0 {
             return;
         }
@@ -27,20 +36,50 @@ impl ViewerApp {
         let mut remove: Option<ObjRef> = None;
         let mut focus: Option<RenameTarget> = None;
         let current = self.tree_focus.clone();
-        let panes: Vec<Vec<usize>> = (0..n).map(|i| self.planar_panes_showing(slot, i)).collect();
+        let panes: Vec<Vec<usize>> = images
+            .iter()
+            .map(|i| self.planar_panes_showing(slot, *i))
+            .collect();
         let ctrl = ui.input(|i| i.modifiers.command);
         // Normally a side note beneath the tree; for a workspace with no image
-        // volume these *are* the images, so the section opens itself.
-        let sole_content = !self.slots[slot].has_volume();
+        // volume these *are* the images, so the section opens itself (the
+        // additional one only when there is no radiograph either).
+        let sole_content = !self.slots[slot].has_volume()
+            && (kind == PlanarKind::Projection
+                || !self.slots[slot]
+                    .study
+                    .as_ref()
+                    .is_some_and(|st| st.has_radiographs()));
+        let (title, salt) = match kind {
+            PlanarKind::Projection => (format!("Planar images ({n})"), "planar"),
+            PlanarKind::Additional => (format!("Additional ({n})"), "additional"),
+        };
+        // The panes an image of this kind can be shown in, with their
+        // badges: the two planar panes, or the additional one.
+        let pane_choices: Vec<(usize, &str, PaneKind)> = match kind {
+            PlanarKind::Projection => (0..settings::PLANAR_PANES)
+                .map(|k| {
+                    (
+                        k,
+                        if k == 0 { "P1" } else { "P2" },
+                        PaneKind::Planar(k as u8),
+                    )
+                })
+                .collect(),
+            PlanarKind::Additional => {
+                vec![(super::planar::ADDITIONAL_PANE, "A", PaneKind::Additional)]
+            }
+        };
         {
             let study = self.slots[slot].study.as_ref().unwrap();
-            egui::CollapsingHeader::new(format!("Planar images ({n})"))
-                .id_salt(("planar", slot))
+            egui::CollapsingHeader::new(title)
+                .id_salt((salt, slot))
                 .default_open(sole_content)
                 .show(ui, |ui| {
-                    for (i, img) in study.planar_images.iter().enumerate() {
+                    for (row, &i) in images.iter().enumerate() {
+                        let img = &study.planar_images[i];
                         let me = RenameTarget::Planar { slot, idx: i };
-                        let in_panes = &panes[i];
+                        let in_panes = &panes[row];
                         let resp = ui
                             .scope(|ui| {
                                 ui.spacing_mut().item_spacing.x = 3.0;
@@ -53,22 +92,20 @@ impl ViewerApp {
                                         .wrap(),
                                     );
                                     for k in in_panes {
+                                        let Some((_, badge, pane)) =
+                                            pane_choices.iter().find(|(j, _, _)| j == k)
+                                        else {
+                                            continue;
+                                        };
                                         ui.add(
                                             egui::Button::new(
-                                                egui::RichText::new(format!("P{}", k + 1))
-                                                    .small()
-                                                    .strong(),
+                                                egui::RichText::new(*badge).small().strong(),
                                             )
                                             .small()
                                             .corner_radius(2.0)
                                             .sense(egui::Sense::hover()),
                                         )
-                                        .on_hover_text(
-                                            format!(
-                                                "Shown in {}",
-                                                PaneKind::Planar(*k as u8).label()
-                                            ),
-                                        );
+                                        .on_hover_text(format!("Shown in {}", pane.label()));
                                     }
                                     Self::keyboard_badge(ui, current.as_ref() == Some(&me));
                                     resp
@@ -89,19 +126,19 @@ impl ViewerApp {
                             tip.push_str(&format!("\n{k}: {v}"));
                         }
                         resp.on_hover_text(tip).context_menu(|ui| {
-                            for k in 0..settings::PLANAR_PANES {
-                                let label = PaneKind::Planar(k as u8).label();
+                            for (k, _, pane) in &pane_choices {
+                                let label = pane.label();
                                 if ui.button(format!("👁 Show in {label}")).clicked() {
-                                    act = Some(Act::Show(i, Some(k)));
+                                    act = Some(Act::Show(i, Some(*k)));
                                     ui.close();
                                 }
                             }
                             ui.separator();
-                            for k in 0..settings::PLANAR_PANES {
-                                let label = PaneKind::Planar(k as u8).label();
-                                if in_panes.contains(&k) {
+                            for (k, _, pane) in &pane_choices {
+                                let label = pane.label();
+                                if in_panes.contains(k) {
                                     if ui.button(format!("➖ Take out of {label}")).clicked() {
-                                        act = Some(Act::Take(i, k));
+                                        act = Some(Act::Take(i, *k));
                                         ui.close();
                                     }
                                 } else if ui
@@ -109,7 +146,7 @@ impl ViewerApp {
                                     .on_hover_text("Put it on top of what the pane shows")
                                     .clicked()
                                 {
-                                    act = Some(Act::Stack(i, Some(k)));
+                                    act = Some(Act::Stack(i, Some(*k)));
                                     ui.close();
                                 }
                             }
@@ -150,10 +187,9 @@ impl ViewerApp {
             // Shown means on screen: a workspace put aside comes back, and a
             // maximized pane of another kind gives way to the row.
             self.shown[slot] = true;
-            if self
-                .maximized
-                .is_some_and(|(s, k)| s != slot || !matches!(k, PaneKind::Planar(_)))
-            {
+            if self.maximized.is_some_and(|(s, k)| {
+                s != slot || !matches!(k, PaneKind::Planar(_) | PaneKind::Additional)
+            }) {
                 self.maximized = None;
             }
         }

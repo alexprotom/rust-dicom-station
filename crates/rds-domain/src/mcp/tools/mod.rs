@@ -9,6 +9,7 @@
 //! no control characters.
 
 pub mod analysis;
+pub mod archive;
 pub mod fourd;
 pub mod output;
 pub mod register;
@@ -69,11 +70,14 @@ registry! {
     "open_dataset" => (session::OpenArgs, session::open_dataset, true,
         "Open a DICOM folder (or explicit files) under one of the configured roots as a dataset. \
          Returns the dataset handle and its contents: image series, 4D groups, structure sets, \
-         segmentations, doses, plans. A dataset that still carries identifying tags is refused \
+         segmentations, doses, plans, planar images, reports (a CT dose SR and a scanner's \
+         protocol page as tables: CTDIvol, DLP, kV, mAs per acquisition). A dataset that still \
+         carries identifying tags is refused \
          under the default policy; anonymize it first (see the anonymize tool). No patient \
          identifiers are ever returned."),
     "describe_dataset" => (session::DatasetArgs, session::describe_dataset, false,
-        "Describe an open dataset again: series, groups, structures, doses, plans."),
+        "Describe an open dataset again: series, groups, structures, doses, plans, planar \
+         images, reports with their tables."),
     "list_structures" => (session::DatasetArgs, session::list_structures, false,
         "List every structure of a dataset (RTSTRUCT ROIs and segmentation segments) with its \
          set, kind and colour. Structures are referred to by name in every other tool."),
@@ -151,7 +155,8 @@ registry! {
     // ---- patient setup from radiographs --------------------------------
     "register_2d3d" => (setup::Register2d3dArgs, setup::register_2d3d, true,
         "2D/3D registration: the rigid pose of a CT series whose DRRs match planar images of the \
-         dataset (kV radiographs, MV portal images; see planar_images in describe_dataset). Each \
+         dataset (kV radiographs, MV portal images; see planar_images in describe_dataset, kind \
+         projection; an additional object, a protocol page say, is refused). Each \
          image's geometry is its own RT Image attributes, a plan beam, a calibrated room view or \
          IEC numbers typed in. method: intensity (the images against DRRs; metric gc, ncc, gd, \
          pi, lncc, mi), markers (points of interest of type MARKER, named ones, or markers \
@@ -207,6 +212,23 @@ registry! {
     "import_to_archive" => (output::ImportArgs, output::import_to_archive, true,
         "File an exported folder into the station's local archive, where the viewer's start \
          screen offers it."),
+    // ---- the archive --------------------------------------------------
+    "list_archive" => (archive::ListArchiveArgs, archive::list_archive, true,
+        "What the station's archive (its PACS) holds: every patient as an alias (never a name \
+         or an ID), their studies by Study Instance UID with the year, the modalities, the \
+         description and the series (modality, number, description, files). patient narrows \
+         the listing to one alias. The catalog is brought up to date first."),
+    "describe_archive_study" => (archive::ArchiveStudyArgs, archive::describe_archive_study, true,
+        "One study of the archive series by series, from the headers alone (no pixels, no \
+         identifiers): what each series becomes when loaded (image volume, planar image, \
+         additional object, report, structure set, dose, plan, ...), its SOP class, image type, pixels, \
+         frames, samples per pixel and whether its files carry a position. The way to see why \
+         a series is shown as it is, a scanner's protocol page say, without opening it."),
+    "open_archive_study" => (archive::ArchiveStudyArgs, archive::open_archive_study, true,
+        "Open a study of the archive as a dataset, through the same identity gate as \
+         open_dataset: refused under the default policy when its headers still name the \
+         patient, opened with the values redacted in memory under redact. Returns the dataset \
+         handle and its contents, as open_dataset does."),
     "open_in_viewer" => (output::OpenViewerArgs, output::open_in_viewer, false,
         "Launch the Rust DICOM Station viewer on one or two folders (an exported one, or a root \
          subfolder), so a person can look at the result."),

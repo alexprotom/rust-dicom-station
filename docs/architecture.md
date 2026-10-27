@@ -49,12 +49,15 @@ rust-dicom-station
 │   │   three engines), propagation and Dose estimation sections
 │   ├── Side panel: per workspace a DICOM tree - patient ▶ study ▶ modality ▶ series, with RT
 │   │   structures, segmentations, 4D groups, dose and plans inside their study -
-│   │   plus dose display, planar images, spatial registrations, records,
-│   │   warnings with an Acknowledge button
-│   ├── Views: one row per open workspace (up to four), each of up to six
+│   │   plus dose display, planar images, reports, additional objects,
+│   │   spatial registrations, records, warnings with an Acknowledge button
+│   ├── Views: one row per open workspace (up to four), each of up to seven
 │   │   panes chosen under Settings ▸ View layout - the MPR planes, the 3D
-│   │   surface scene and two planar panes (radiographs, RT images, DRRs;
-│   │   off in the standard row, not drawn without a planar image); linked
+│   │   surface scene, two planar panes (radiographs, RT images, DRRs) and
+│   │   the Additional pane (a report as a table: a dose SR, a scanner's
+│   │   protocol page; a secondary capture as an image); those three off in
+│   │   the standard row and not drawn without something of their kind;
+│   │   linked
 │   │   viewports, crosshair,
 │   │   a workspace with no volume says so in place of the panes and holds back
 │   │   the voxel tools;
@@ -84,7 +87,13 @@ rust-dicom-station
 │   │   a structure set, a plan) loads as an ordinary workspace with an empty
 │   │   volume, and unpositioned image series open as single images
 │   │   ├── Volumes: CT, MR, PT, NM, US, OT (parallel decode, compressed syntaxes)
-│   │   └── Planar images: DX, CR, RTIMAGE, MG, XA, RF, PX
+│   │   ├── Planar images: DX, CR, RTIMAGE, MG, XA, RF, PX
+│   │   ├── Additional objects: Secondary Capture (whatever Modality it
+│   │   │   claims) and any unpositioned image of another modality; RGB
+│   │   │   pages kept in colour, overlay planes drawn in
+│   │   └── Reports: Structured Reports (the CT dose SR, TID 10011, as a
+│   │       table of acquisitions; any other as its content tree) and a
+│   │       Siemens page whose MEDCOM OOG text reads back as its table
 │   ├── RT objects: RTSTRUCT, SEG (binary / fractional, read and written), RTDOSE,
 │   │   RTPLAN / RT Ion Plan, RTIMAGE, REG (matrices and deformable grids, applied
 │   │   as the active registration, written back out), RT (Ion) Treatment Record
@@ -329,8 +338,9 @@ src/
     fourd_tree.rs     the 4D groups in the tree and what their menus do
     tree_menus.rs     the set, destination and item context menus
     tree_*.rs         one file per tree section: structures, segmentations,
-                      dose, plans, planar images, registrations, records and
-                      warnings
+                      dose, plans, planar images and additional objects (one file,
+                      a section per kind), reports, registrations, records
+                      and warnings
     reg_panel.rs      the Image registration module: method, region, parameters,
                       landmarks, the run (against another workspace or every
                       phase of a 4D group), the analytics, the vector field
@@ -352,11 +362,14 @@ src/
                       frame, the overlays and the pointer, each its own method
     d3.rs             live 3D structure window (and its types)
     planar.rs         the planar panes: a workspace's DX / CR / RTIMAGE images
-                      and DRRs in its row (Planar 1 and 2); each holds a stack
-                      compared by fade, checkerboard, difference, edges or
-                      flicker,
+                      and DRRs in its row (Planar 1 and 2) and its additional
+                      objects in the Additional pane (the third pane view, one
+                      kind of image per pane); each holds a stack compared by
+                      fade, checkerboard, difference, edges or flicker,
                       with a window per image, zoom and pan; showing an image
                       from the tree puts its pane into the row
+    report_view.rs    a report in the Additional pane: its facts, lines and
+                      tables, the page behind a toggle
     tree.rs           workspace-tree copy / move / remove with reference chains
                       (TreeSel, TreeAction and the object references)
     rename.rs         renaming every level of the data tree
@@ -510,7 +523,12 @@ src/
   rtdose.rs         RT Dose parsing + trilinear patient-space sampling           DICOM
   rtplan.rs         RT Plan / RT Ion Plan parsing                                DICOM
   extras.rs         DX / CR / RTIMAGE planar images (an RT Image's geometry
-                    read into a camera), REG, RTRECORD                           DICOM
+                    read into a camera), additional objects (PlanarKind:
+                    secondary captures), overlay planes, REG, RTRECORD          DICOM
+  report/           reports: the SR content tree (sr.rs), the CT dose SR as
+                    a table of acquisitions (dose.rs, TID 10011 by concept
+                    code), a Siemens page's MEDCOM OOG text laid out as its
+                    table (siemens.rs), and Report / Table                       DICOM
   dicom_export.rs   DICOM writer: the object builders (CT slice, RTSTRUCT with
                     its image reference chain, SEG, RTDOSE, RTPLAN, Deformable
                     and rigid Spatial Registration, RT Image with its
@@ -652,7 +670,9 @@ src/
     session.rs        open workspaces, transforms, reports, and their handles
     tools/            the tools as plain functions with schema-deriving
                       argument structs: session, segment, register, setup
-                      (2D/3D), fourd, analysis, output
+                      (2D/3D), fourd, analysis, output, archive (the
+                      station's PACS listed under aliases, a study described
+                      from its headers, opened through the gate)
     prompts.rs        the heart_target_propagation prompt, the doc resources
     audit             the call log (the shared crate::audit)
     server.rs         the rmcp glue: transport, progress, cancellation, _async jobs

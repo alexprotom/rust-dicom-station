@@ -244,12 +244,17 @@ pub struct LoadedStudy {
     pub seg_series: Vec<SegSeries>,
     pub doses: Vec<DoseGrid>,
     pub plans: Vec<PlanInfo>,
-    /// DX / CR radiographs and RTIMAGE (DRR / portal) planar images.
+    /// The 2D images: DX / CR radiographs and RTIMAGE (DRR / portal)
+    /// projections, and the additional objects (secondary captures, a
+    /// scanner's protocol pages) told apart by [`PlanarImage::kind`].
     pub planar_images: Vec<PlanarImage>,
     /// REG spatial registration objects found in the folder.
     pub registrations: Vec<SpatialReg>,
     /// RT (Ion) Beams Treatment Records.
     pub treat_records: Vec<TreatRecord>,
+    /// Structured Reports and a scanner's report pages: dose reports, the
+    /// patient protocol, read as tables ([`crate::report`]).
+    pub reports: Vec<crate::report::Report>,
     /// Patient setups found from radiographs: the 2D/3D registrations made
     /// here (not read from files).
     pub setups: Vec<crate::setup::SetupResult>,
@@ -274,6 +279,7 @@ impl Default for LoadedStudy {
             planar_images: Vec::new(),
             registrations: Vec::new(),
             treat_records: Vec::new(),
+            reports: Vec::new(),
             setups: Vec::new(),
             fourd_groups: Vec::new(),
             warnings: Vec::new(),
@@ -291,14 +297,123 @@ impl LoadedStudy {
     pub fn has_volume(&self) -> bool {
         !self.volume.is_empty()
     }
+
+    /// Whether any planar image is a projection (a radiograph, an RT
+    /// image, a DRR) rather than an additional object; the 2D/3D
+    /// registration and the setup tools ask this.
+    pub fn has_radiographs(&self) -> bool {
+        self.radiographs().next().is_some()
+    }
+
+    /// The projection images among `planar_images`, with their indices:
+    /// what the radiograph pickers offer.
+    pub fn radiographs(&self) -> impl Iterator<Item = (usize, &PlanarImage)> {
+        self.planar_images
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.kind == extras::PlanarKind::Projection)
+    }
 }
 
 pub const IMAGE_MODALITIES: &[&str] = &["CT", "MR", "PT", "NM", "US", "OT"];
 /// Modalities treated as 2D projection images (no volume reconstruction).
-const PLANAR_MODALITIES: &[&str] = &["DX", "CR", "RTIMAGE", "MG", "XA", "RF", "PX"];
-const SOP_RTIMAGE: &str = "1.2.840.10008.5.1.4.1.1.481.1";
-const SOP_DX_PRESENTATION: &str = "1.2.840.10008.5.1.4.1.1.1.1";
-const SOP_DX_PROCESSING: &str = "1.2.840.10008.5.1.4.1.1.1.1.1";
+const PLANAR_MODALITIES: &[&str] = extras::PROJECTION_MODALITIES;
+
+/// What the loader makes of one DICOM file, from its header alone: the
+/// decision [`load_files`] takes per file, also asked by the PACS tools so
+/// a listing says what each series would become.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileClass {
+    /// A slice of an image volume (CT, MR, PT, ...).
+    Volume,
+    /// A projection image: a radiograph, an RT image, a DRR.
+    Projection,
+    /// An additional object: a secondary capture, a report page, any image
+    /// without a position in a series that has none. A page whose text
+    /// can be read back becomes a report when it is loaded.
+    Additional,
+    /// A Structured Report: a dose report, a measurement report, any SR.
+    Report,
+    Structures,
+    Segmentation,
+    Dose,
+    Plan,
+    Registration,
+    Record,
+    /// Readable as DICOM, but nothing here reads it (a PDF, a presentation
+    /// state).
+    Other,
+}
+
+impl FileClass {
+    pub fn label(self) -> &'static str {
+        match self {
+            FileClass::Volume => "image volume",
+            FileClass::Projection => "planar image",
+            FileClass::Additional => "additional object",
+            FileClass::Report => "report",
+            FileClass::Structures => "structure set",
+            FileClass::Segmentation => "segmentation",
+            FileClass::Dose => "dose",
+            FileClass::Plan => "plan",
+            FileClass::Registration => "registration",
+            FileClass::Record => "treatment record",
+            FileClass::Other => "other",
+        }
+    }
+}
+
+/// Classify one file by its Modality, its SOP class, whether it carries an
+/// Image Position (Patient) and whether any file of its series does.
+pub fn classify(
+    modality: &str,
+    sop_class: &str,
+    has_geometry: bool,
+    series_positioned: bool,
+) -> FileClass {
+    if modality == "RTSTRUCT" || sop_class == SOP_RTSTRUCT {
+        FileClass::Structures
+    } else if modality == "SEG" || sop_class == dicomseg::SOP_SEG {
+        FileClass::Segmentation
+    } else if modality == "RTDOSE" || sop_class == SOP_RTDOSE {
+        FileClass::Dose
+    } else if modality == "RTPLAN"
+        || modality == "RTIONPLAN"
+        || sop_class == SOP_RTPLAN
+        || sop_class == SOP_RTIONPLAN
+    {
+        FileClass::Plan
+    } else if modality == "REG" || extras::is_reg_sop(sop_class) {
+        FileClass::Registration
+    } else if modality == "RTRECORD" || extras::is_record_sop(sop_class) {
+        FileClass::Record
+    } else if modality == "SR" || crate::report::is_sr_sop(sop_class) {
+        FileClass::Report
+    } else if extras::is_secondary_capture_sop(sop_class) {
+        // A secondary capture is never a slice, whatever its Modality says:
+        // a scanner's protocol page comes as `CT`.
+        FileClass::Additional
+    } else if extras::is_projection(modality, sop_class) && !has_geometry {
+        FileClass::Projection
+    } else if !series_positioned {
+        // An image whose series carries no position anywhere: readable on
+        // its own, but not part of any volume. A projection modality is a
+        // radiograph; anything else is an additional object.
+        if extras::is_projection(modality, sop_class) {
+            FileClass::Projection
+        } else {
+            FileClass::Additional
+        }
+    } else if has_geometry
+        && (IMAGE_MODALITIES.contains(&modality)
+            || PLANAR_MODALITIES.contains(&modality)
+            || modality.is_empty())
+    {
+        FileClass::Volume
+    } else {
+        FileClass::Other
+    }
+}
 
 /// SOP Class UID fallbacks for RT objects (when Modality is absent).
 const SOP_RTSTRUCT: &str = "1.2.840.10008.5.1.4.1.1.481.3";
@@ -454,6 +569,7 @@ fn load_files_with(
     let mut planar_files = Vec::new();
     let mut reg_files = Vec::new();
     let mut record_files = Vec::new();
+    let mut report_files = Vec::new();
     let mut meta = PatientMeta::default();
 
     // Series are looked up by UID rather than scanned linearly: with many
@@ -477,44 +593,24 @@ fn load_files_with(
         if meta.patient_id.is_empty() && !s.meta.patient_id.is_empty() {
             meta = s.meta.clone();
         }
-        let is_rt_struct = s.modality == "RTSTRUCT" || s.sop_class == SOP_RTSTRUCT;
-        let is_rt_dose = s.modality == "RTDOSE" || s.sop_class == SOP_RTDOSE;
-        let is_rt_plan = s.modality == "RTPLAN"
-            || s.modality == "RTIONPLAN"
-            || s.sop_class == SOP_RTPLAN
-            || s.sop_class == SOP_RTIONPLAN;
-        let is_seg = s.modality == "SEG" || s.sop_class == dicomseg::SOP_SEG;
-        let is_reg = s.modality == "REG" || extras::is_reg_sop(&s.sop_class);
-        let is_record = s.modality == "RTRECORD" || extras::is_record_sop(&s.sop_class);
-        let is_planar = PLANAR_MODALITIES.contains(&s.modality.as_str())
-            || s.sop_class == SOP_RTIMAGE
-            || s.sop_class == SOP_DX_PRESENTATION
-            || s.sop_class == SOP_DX_PROCESSING;
-
-        if is_rt_struct {
-            rtstruct_files.push(s.path.clone());
-        } else if is_seg {
-            seg_files.push(s.path.clone());
-        } else if is_rt_dose {
-            rtdose_files.push(s.path.clone());
-        } else if is_rt_plan {
-            rtplan_files.push(s.path.clone());
-        } else if is_reg {
-            reg_files.push(s.path.clone());
-        } else if is_record {
-            record_files.push(s.path.clone());
-        } else if is_planar && !s.has_geometry {
-            planar_files.push(s.path.clone());
-        } else if !positioned.contains(s.series_uid.as_str()) {
-            // An image whose series carries no position anywhere: readable
-            // on its own, but not part of any volume.
-            planar_files.push(s.path.clone());
-        } else if s.has_geometry
-            && (IMAGE_MODALITIES.contains(&s.modality.as_str())
-                || PLANAR_MODALITIES.contains(&s.modality.as_str())
-                || s.modality.is_empty())
-        {
-            match series_index.get(s.series_uid.as_str()) {
+        let class = classify(
+            &s.modality,
+            &s.sop_class,
+            s.has_geometry,
+            positioned.contains(s.series_uid.as_str()),
+        );
+        match class {
+            FileClass::Structures => rtstruct_files.push(s.path.clone()),
+            FileClass::Segmentation => seg_files.push(s.path.clone()),
+            FileClass::Dose => rtdose_files.push(s.path.clone()),
+            FileClass::Plan => rtplan_files.push(s.path.clone()),
+            FileClass::Registration => reg_files.push(s.path.clone()),
+            FileClass::Record => record_files.push(s.path.clone()),
+            FileClass::Report => report_files.push(s.path.clone()),
+            // Both kinds of single image: `load_planar` tells them apart.
+            FileClass::Projection | FileClass::Additional => planar_files.push(s.path.clone()),
+            FileClass::Other => {}
+            FileClass::Volume => match series_index.get(s.series_uid.as_str()) {
                 Some(&i) => image_series[i].files.push(s.path.clone()),
                 None => {
                     series_index.insert(s.series_uid.as_str(), image_series.len());
@@ -534,7 +630,7 @@ fn load_files_with(
                         files: vec![s.path.clone()],
                     });
                 }
-            }
+            },
         }
     }
 
@@ -614,14 +710,31 @@ fn load_files_with(
         &mut warnings,
         rtplan::load,
     );
-    let planar_images = parse_group(
+    // Single images, and among the secondary captures the scanner's pages
+    // whose text reads back as a report.
+    let mut planar_images = Vec::new();
+    let mut reports = Vec::new();
+    for obj in parse_group(
         &planar_files,
         "planar image",
         "Loading planar images (DX/RTIMAGE)",
         progress,
         &mut warnings,
-        extras::load_planar,
-    );
+        crate::report::load_page,
+    ) {
+        match obj {
+            crate::report::PageObject::Image(img) => planar_images.push(img),
+            crate::report::PageObject::Report(r) => reports.push(r),
+        }
+    }
+    reports.extend(parse_group(
+        &report_files,
+        "SR",
+        "Reading structured reports",
+        progress,
+        &mut warnings,
+        crate::report::load_report,
+    ));
     let registrations = parse_group(
         &reg_files,
         "REG",
@@ -695,6 +808,7 @@ fn load_files_with(
         planar_images,
         registrations,
         treat_records,
+        reports,
         setups: Vec::new(),
         fourd_groups,
         warnings,
@@ -1100,6 +1214,15 @@ pub fn merge_study(dest: &mut LoadedStudy, src: LoadedStudy) -> Vec<String> {
             dest.treat_records.push(r);
         }
     }
+    for r in src.reports {
+        if !dest
+            .reports
+            .iter()
+            .any(|e| e.label == r.label && e.date == r.date && e.file_name == r.file_name)
+        {
+            dest.reports.push(r);
+        }
+    }
     // 4D groups: carry over custom groups that don't collide with an
     // existing one, then re-detect around them for the merged series list.
     for g in src.fourd_groups {
@@ -1193,6 +1316,63 @@ mod tests {
         assert_eq!(w[1].0 + w[1].1 / 2.0, 30000.0, "100 % is the outlier");
         assert_eq!(default_window_for("CT", &data), (40.0, 400.0));
         assert_eq!(percentile_windows(&[], &[(1.0, 99.0)]), vec![(0.0, 1.0)]);
+    }
+
+    #[test]
+    fn a_file_is_classified_by_its_header_alone() {
+        const CT: &str = "1.2.840.10008.5.1.4.1.1.2";
+        // A positioned CT slice of a positioned series is a volume slice.
+        assert_eq!(classify("CT", CT, true, true), FileClass::Volume);
+        // A radiograph has no position; neither has a DRR or a portal image.
+        assert_eq!(
+            classify("DX", extras::SOP_DX_PRESENTATION, false, false),
+            FileClass::Projection
+        );
+        assert_eq!(
+            classify("RTIMAGE", extras::SOP_RTIMAGE, false, false),
+            FileClass::Projection
+        );
+        // A scanner's protocol page is a secondary capture that calls itself
+        // CT: an additional object, never a slice nor a radiograph.
+        assert_eq!(
+            classify("CT", extras::SOP_SECONDARY_CAPTURE, false, false),
+            FileClass::Additional
+        );
+        assert_eq!(
+            classify("OT", "1.2.840.10008.5.1.4.1.1.7.4", false, false),
+            FileClass::Additional
+        );
+        // An unpositioned image of a series with no position anywhere is an
+        // additional object unless its modality is a projection's.
+        assert_eq!(
+            classify("MR", "1.2.840.10008.5.1.4.1.1.4", false, false),
+            FileClass::Additional
+        );
+        assert_eq!(
+            classify("CR", "1.2.840.10008.5.1.4.1.1.1", false, false),
+            FileClass::Projection
+        );
+        // The RT objects go by Modality or SOP class.
+        assert_eq!(
+            classify("RTSTRUCT", "", false, false),
+            FileClass::Structures
+        );
+        assert_eq!(classify("", SOP_RTDOSE, false, false), FileClass::Dose);
+        assert_eq!(classify("RTIONPLAN", "", false, false), FileClass::Plan);
+        // A Structured Report, by its Modality or its SOP class.
+        assert_eq!(
+            classify("SR", "1.2.840.10008.5.1.4.1.1.88.11", false, true),
+            FileClass::Report
+        );
+        assert_eq!(
+            classify("", "1.2.840.10008.5.1.4.1.1.88.67", false, false),
+            FileClass::Report
+        );
+        // Something readable as DICOM that nothing here reads.
+        assert_eq!(
+            classify("PR", "1.2.840.10008.5.1.4.1.1.11.1", false, true),
+            FileClass::Other
+        );
     }
 
     #[test]
