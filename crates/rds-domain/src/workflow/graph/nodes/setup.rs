@@ -31,11 +31,13 @@ fn study_on(ctx: &mut Ctx, ds: usize, uid: &str, p: &Progress) -> Result<LoadedS
 /// commas, or every image that states its geometry.
 fn chosen_images(study: &LoadedStudy, text: &str) -> Result<Vec<usize>> {
     if text.trim().is_empty() {
-        let all: Vec<usize> = (0..study.planar_images.len())
-            .filter(|&i| study.planar_images[i].camera.is_some())
+        let all: Vec<usize> = study
+            .radiographs()
+            .filter(|(_, p)| p.camera.is_some())
+            .map(|(i, _)| i)
             .collect();
         if all.is_empty() {
-            bail!("the study has no planar image that states its geometry");
+            bail!("the study has no radiograph that states its geometry");
         }
         return Ok(all);
     }

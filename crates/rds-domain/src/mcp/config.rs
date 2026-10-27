@@ -73,6 +73,10 @@ pub struct Config {
     /// empty is the viewer's workflow folder. The program's examples are
     /// always offered.
     pub workflows_dir: Option<PathBuf>,
+    /// The archive the archive tools list and open: empty is the station's
+    /// own PACS, as the viewer's settings name it; otherwise its storage
+    /// folders joined by `|`.
+    pub archive: String,
 }
 
 impl Default for Config {
@@ -90,6 +94,7 @@ impl Default for Config {
             viewer_exe: None,
             volume_cache_mb: 4096,
             workflows_dir: None,
+            archive: String::new(),
         }
     }
 }

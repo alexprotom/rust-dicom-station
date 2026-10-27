@@ -36,6 +36,8 @@ pub(super) enum RenameTarget {
     Registration { slot: usize, idx: usize },
     /// Label of one treatment record.
     Record { slot: usize, idx: usize },
+    /// Label of one report (a dose report, a protocol page).
+    Report { slot: usize, idx: usize },
     /// Label of one patient setup (a 2D/3D registration).
     Setup { slot: usize, idx: usize },
     /// Name of one 4D group.
@@ -53,6 +55,7 @@ impl RenameTarget {
             | RenameTarget::Planar { slot, .. }
             | RenameTarget::Registration { slot, .. }
             | RenameTarget::Record { slot, .. }
+            | RenameTarget::Report { slot, .. }
             | RenameTarget::Setup { slot, .. }
             | RenameTarget::FourD { slot, .. } => *slot,
             RenameTarget::Set(r) => r.slot,
@@ -73,6 +76,7 @@ impl RenameTarget {
             RenameTarget::Planar { .. } => "planar image",
             RenameTarget::Registration { .. } => "spatial registration",
             RenameTarget::Record { .. } => "treatment record",
+            RenameTarget::Report { .. } => "report",
             RenameTarget::Setup { .. } => "setup",
             RenameTarget::FourD { .. } => "4D group",
         }
@@ -99,6 +103,7 @@ impl RenameTarget {
             RenameTarget::Planar { .. } => "the image label",
             RenameTarget::Registration { .. } => "the registration label",
             RenameTarget::Record { .. } => "the record label",
+            RenameTarget::Report { .. } => "the report label",
             RenameTarget::Setup { .. } => "the setup label",
             // A 4D group is an application grouping, not a DICOM object.
             RenameTarget::FourD { .. } => "the group's name (application-side only)",
@@ -152,6 +157,7 @@ impl ViewerApp {
             RenameTarget::Planar { idx, .. } => study.planar_images.get(*idx)?.label.clone(),
             RenameTarget::Registration { idx, .. } => study.registrations.get(*idx)?.label.clone(),
             RenameTarget::Record { idx, .. } => study.treat_records.get(*idx)?.label.clone(),
+            RenameTarget::Report { idx, .. } => study.reports.get(*idx)?.label.clone(),
             RenameTarget::Setup { idx, .. } => study.setups.get(*idx)?.label.clone(),
             RenameTarget::FourD { idx, .. } => study.fourd_groups.get(*idx)?.name.clone(),
         })
@@ -243,6 +249,9 @@ impl ViewerApp {
             }
             RenameTarget::Record { idx, .. } => {
                 set_opt(study.treat_records.get_mut(*idx).map(|r| &mut r.label))
+            }
+            RenameTarget::Report { idx, .. } => {
+                set_opt(study.reports.get_mut(*idx).map(|r| &mut r.label))
             }
             RenameTarget::Setup { idx, .. } => {
                 set_opt(study.setups.get_mut(*idx).map(|s| &mut s.label))
@@ -418,6 +427,7 @@ mod rename_tests {
             planar_images: Vec::new(),
             registrations: Vec::new(),
             treat_records: Vec::new(),
+            reports: Vec::new(),
             setups: Vec::new(),
             fourd_groups: Vec::new(),
             warnings: Vec::new(),

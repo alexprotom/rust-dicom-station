@@ -269,7 +269,9 @@ fn prune_empty_parents(start: &Path) {
     let mut parent = start.parent();
     while let Some(d) = parent {
         let name = d.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if name != PRODUCT_ID && name != APP_NAME {
+        // The folder of this installer, of the one before it (with spaces)
+        // and of the first ones (the product id).
+        if name != PRODUCT_ID && name != APP_NAME && name != INSTALL_DIR_NAME {
             break;
         }
         if std::fs::remove_dir(d).is_err() {

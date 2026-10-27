@@ -50,8 +50,10 @@ publisher" warning on first run.
   PACS server, see [docs/pacs-server.md](../../../docs/pacs-server.md)) when it
   was built *and* ticked on the options page (it is off by default: a default
   installation is a client), and `data-test/` when it was packed in - into
-  `%LOCALAPPDATA%\Programs\Rust DICOM Station` (per user, the default) or
-  `%ProgramFiles%\Rust DICOM Station` (all users, asks for elevation).
+  `%LOCALAPPDATA%\Programs\RustDICOMStation` (per user, the default) or
+  `%ProgramFiles%\RustDICOMStation` (all users, asks for elevation); a copy
+  installed into the older `Rust DICOM Station` folder is updated where it
+  is.
 * **Dependencies** - checks for the Microsoft Visual C++ runtime that Rust's
   MSVC target links against and installs it from Microsoft when missing.
   Rendering needs Direct3D 12 or Vulkan, which the display driver already
@@ -139,7 +141,7 @@ written, which is what lets an update tell which old files are now obsolete.
 Update from the command line, for scripts:
 
 ```
-"%LOCALAPPDATA%\Programs\Rust DICOM Station\rds-setup.exe" --update --silent
+%LOCALAPPDATA%\Programs\RustDICOMStation\rds-setup.exe --update --silent
 rds-setup --silent                      # a downloaded newer setup, same effect
 ```
 

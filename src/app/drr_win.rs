@@ -249,10 +249,9 @@ impl ViewerApp {
             used.extend(self.planar_panes_showing(run.slot, *idx).first().copied());
         }
         self.shown[run.slot] = true;
-        if self
-            .maximized
-            .is_some_and(|(s, k)| s != run.slot || !matches!(k, PaneKind::Planar(_)))
-        {
+        if self.maximized.is_some_and(|(s, k)| {
+            s != run.slot || !matches!(k, PaneKind::Planar(_) | PaneKind::Additional)
+        }) {
             self.maximized = None;
         }
         if let Some(d) = &mut self.drr {
@@ -309,9 +308,7 @@ impl ViewerApp {
             .study
             .as_ref()
             .map(|s| {
-                s.planar_images
-                    .iter()
-                    .enumerate()
+                s.radiographs()
                     .filter(|(_, p)| p.iec.is_some())
                     .map(|(i, p)| (i, p.label.clone(), p.camera.is_some()))
                     .collect()

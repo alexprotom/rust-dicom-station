@@ -77,13 +77,16 @@ sequence.
    audit_log = true                       # data folder /mcp/audit-YYYY-MM-DD.log
    volume_cache_mb = 4096                 # image volumes kept between calls
    workflows_dir = ""                     # empty: the viewer's workflow folder
+   archive = ""                           # empty: the station's own PACS
    ```
 
    `volume_cache_mb` is the memory for series other than a workspace's
    displayed one (the phases of a 4D group, say), kept between calls so a
    phase is read from disk once rather than by every tool; past it the
    least used are let go. `workflows_dir` is where `list_workflows` looks
-   for saved workflows.
+   for saved workflows. `archive` is the PACS the archive tools list and
+   open: the station's own as the viewer's settings name it, or storage
+   folders joined by `|`.
 
 3. Tell the client about it. *Settings ▶ MCP server ▶ Copy client
    configuration* puts the entry on the clipboard; for Claude Desktop it goes
@@ -110,7 +113,7 @@ segmentation series added when a name repeats. Series are numbered as
 
 | Tool | Does |
 |---|---|
-| `open_dataset`, `describe_dataset`, `list_structures`, `list_4d_groups`, `close_dataset`, `describe_session` | Open a folder (or files) under a root; see its series, 4D groups, structure sets, segmentations, doses, plans |
+| `open_dataset`, `describe_dataset`, `list_structures`, `list_4d_groups`, `close_dataset`, `describe_session` | Open a folder (or files) under a root; see its series, 4D groups, structure sets, segmentations, doses, plans, planar images and reports (a CT dose SR and a scanner's protocol page as tables: the acquisitions with kV, mA, pitch, CTDIvol and DLP, the totals as facts; an SR item that names a person reads `(name)`) |
 | `list_models` | Every automatic segmentation model: key, modality, classes, sub-models, licence, whether its weights are present or what is left to download |
 | `segment_organs` | Any of those models on one series by `model` (`total_mr`, `mrsegmentator`, `lung_vessels`, `lungmask_lobes`, `vista3d`, ...); without it, `variant` picks TotalSegmentator CT: `fast`, `high` (with `parts` such as `cardiac`) or `preview` for the v2 weights, `fast_v3`, `high_v3`, `preview_v3`, `small_v3`, `small_high_v3` for v3; `keep` narrows to named organs, `tg263` names them by AAPM TG-263 |
 | `segment_body` | The patient outline, classically or model-assisted |
@@ -128,6 +131,7 @@ segmentation series added when a name repeats. Series are numbered as
 | `motion_report` | An earlier run's report again, as JSON and CSV |
 | `export`, `export_registration` | DICOM into the output folder: SEG or RTSTRUCT, doses, plans, images; a Deformable Spatial Registration object |
 | `import_to_archive`, `open_in_viewer` | File an exported folder into the local archive; launch the viewer on it |
+| `list_archive`, `describe_archive_study`, `open_archive_study` | The station's PACS: every patient as an alias (`anon_...`, never a name or an ID) with their studies by Study Instance UID, the year, the modalities, the description and the series; one study series by series from the headers alone, with what each series becomes when loaded (image volume, planar image, additional object, structure set, ...), its SOP class, image type, pixels, frames and whether its files carry a position, which is how to see why a scanner's protocol page is no radiograph without opening it; and a study opened as a workspace through the same identity gate as `open_dataset` |
 | `anonymize` | An anonymized copy of a folder, written under the output folder |
 | `list_workflows`, `run_workflow` | The saved workflows (and the program's examples) with their steps and inputs, and a run of one: a folder under a root for each input, by its title; the reports come back as tables, the files go into a folder under the output folder, and `open_results` keeps the studies the run read open as workspaces. A *DICOM folders* input runs a batch over its subfolders |
 
@@ -179,7 +183,8 @@ which any of them holds a value the anonymizer did not write is
 There is no `off`.
 
 **The door.** No tool returns patient tags: `describe_dataset` does not read
-them. Everything else that could carry a name passes one redactor before it
+them, and a report's content is returned as its tables with every `PNAME`
+item withheld and a page's free lines left out. Everything else that could carry a name passes one redactor before it
 becomes part of a protocol frame: tool results, error messages (which quote
 file names), progress messages, the prompt, the resources, the audit log. The
 redactor knows every identifying value seen in any open workspace and replaces
@@ -192,11 +197,23 @@ assistant sees it as data rather than as instructions.
 This is tested, not asserted: `tests/mcp_phi.rs` gives the synthetic phantom
 a patient name, an ID, a birth date, a physician and an institution, runs
 every tool against it under all three policies, including the error paths,
-and fails if any of those values appears in anything the server produced. A
-second test does the same over the real executable's standard output.
+and fails if any of those values appears in anything the server produced,
+then files the phantom in a PACS and runs the archive tools over it the
+same way. A second test does the same over the real executable's standard
+output.
+
+**The archive.** The station's PACS is the one place that holds patients
+under their own names, so the archive tools name nobody: a patient is an
+alias made from the key the catalog files them under (the same in every
+call), a study is its UID and its year, the labels typed into the PACS
+window are never returned, and every name, ID and label the catalog knows
+goes to the redactor before the first answer leaves. Opening a study from
+the archive is `open_dataset` with the files taken from the catalog: the
+same gate, the same policy.
 
 **The sandbox.** Paths in tool calls are canonicalized and must lie under a
-configured root (or the output folder, so results can be re-opened). A path
+configured root (or the output folder, so results can be re-opened); the
+archive tools reach the PACS the configuration names, and nothing else. A path
 may be given the way the server reports it, under its label: `root1/4DCT`,
 `output/session/anonymized`, so what `anonymize` answers is exactly what
 `open_dataset` takes next. Output

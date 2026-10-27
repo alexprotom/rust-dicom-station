@@ -52,6 +52,7 @@ pub(super) enum ObjKind {
     Planar,
     Registration,
     Record,
+    Report,
     Setup,
 }
 
@@ -161,6 +162,13 @@ impl ViewerApp {
                 }
                 study.treat_records.remove(r.idx);
             }
+            ObjKind::Report => {
+                if r.idx >= study.reports.len() {
+                    return;
+                }
+                study.reports.remove(r.idx);
+                self.report_removed(slot, r.idx);
+            }
             ObjKind::Setup => {
                 if r.idx >= study.setups.len() {
                     return;
@@ -237,6 +245,9 @@ impl ViewerApp {
             }
             RenameTarget::Record { slot, idx } => {
                 self.obj_remove = Some(obj(slot, ObjKind::Record, idx));
+            }
+            RenameTarget::Report { slot, idx } => {
+                self.obj_remove = Some(obj(slot, ObjKind::Report, idx));
             }
             RenameTarget::Setup { slot, idx } => {
                 self.obj_remove = Some(obj(slot, ObjKind::Setup, idx));
@@ -490,6 +501,11 @@ impl ViewerApp {
             } else {
                 Vec::new()
             },
+            reports: if masks.take_extras {
+                study.reports.clone()
+            } else {
+                Vec::new()
+            },
             setups: if masks.take_extras {
                 study.setups.clone()
             } else {
@@ -671,6 +687,7 @@ impl ViewerApp {
                 st.planar_images.clear();
                 st.registrations.clear();
                 st.treat_records.clear();
+                st.reports.clear();
             }
             // "No series left" no longer means "nothing left": a workspace can
             // legitimately hold only RT images, a structure set or a plan.
@@ -682,7 +699,8 @@ impl ViewerApp {
                 && st.plans.is_empty()
                 && st.planar_images.is_empty()
                 && st.registrations.is_empty()
-                && st.treat_records.is_empty();
+                && st.treat_records.is_empty()
+                && st.reports.is_empty();
             if !empty {
                 if st.series.is_empty() {
                     // The images that were being displayed have just been
@@ -859,6 +877,7 @@ mod tree_tests {
             planar_images: Vec::new(),
             registrations: Vec::new(),
             treat_records: Vec::new(),
+            reports: Vec::new(),
             setups: Vec::new(),
             fourd_groups: Vec::new(),
             warnings: Vec::new(),

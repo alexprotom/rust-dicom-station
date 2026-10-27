@@ -62,7 +62,7 @@ fn scrub_in_memory(study: &mut LoadedStudy, values: &[String], alias: &str) {
 
 pub fn open_dataset(core: &mut Core, a: OpenArgs, p: &Progress) -> Result<Value> {
     let (real, root_label) = core.session.resolve_input(&a.path)?;
-    let mut study = if a.files.is_empty() {
+    let study = if a.files.is_empty() {
         if !real.is_dir() {
             bail!(
                 "'{}' is not a folder; pass files for single files",
@@ -84,10 +84,24 @@ pub fn open_dataset(core: &mut Core, a: OpenArgs, p: &Progress) -> Result<Value>
     if study.series.is_empty() && study.structure_sets.is_empty() && study.doses.is_empty() {
         bail!("no DICOM data found under '{}'", real.display());
     }
+    let dir = real.is_dir().then(|| real.clone());
+    admit(core, study, dir.as_deref(), real, root_label, p)
+}
 
-    // The gate.
+/// The gate: check the headers of a loaded study for identifying data,
+/// apply the policy, and file the study as a dataset. `dir` is the folder
+/// it was read from when it was a whole folder (its loose files are
+/// checked too); `origin` and `root_label` are what the dataset reports.
+pub fn admit(
+    core: &mut Core,
+    mut study: LoadedStudy,
+    dir: Option<&std::path::Path>,
+    origin: PathBuf,
+    root_label: String,
+    p: &Progress,
+) -> Result<Value> {
     p.set("Checking the headers for identifying data");
-    let sample = phi::sample_files(&study, real.is_dir().then_some(real.as_path()));
+    let sample = phi::sample_files(&study, dir);
     let verdict = phi::classify(&sample)?;
     let tags = verdict.tags.clone();
     let description = verdict.describe();
@@ -119,7 +133,7 @@ pub fn open_dataset(core: &mut Core, a: OpenArgs, p: &Progress) -> Result<Value>
         }
     }
 
-    let ds = core.session.add_dataset(study, real, root_label, tags)?;
+    let ds = core.session.add_dataset(study, origin, root_label, tags)?;
     Ok(describe(ds))
 }
 
@@ -232,6 +246,10 @@ pub fn describe(ds: &Dataset) -> Value {
             let mut v = json!({
                 "number": i + 1,
                 "label": clean_text(&im.label),
+                "kind": match im.kind {
+                    crate::extras::PlanarKind::Projection => "projection",
+                    crate::extras::PlanarKind::Additional => "additional",
+                },
                 "modality": im.modality,
                 "pixels": [im.cols, im.rows],
                 "spacing_mm": im.spacing,
@@ -253,6 +271,52 @@ pub fn describe(ds: &Dataset) -> Value {
             v
         })
         .collect();
+    // The reports as their tables: never the SR tree's person names, and
+    // never a page's free lines (a physician's name sits there).
+    let reports: Vec<Value> = st
+        .reports
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let tables: Vec<Value> = r
+                .all_tables(true)
+                .into_iter()
+                .map(|t| {
+                    let truncated = t.rows.len() > REPORT_ROWS_CAP;
+                    let mut v = json!({
+                        "title": clean_text(&t.title),
+                        "columns": t.columns.iter().map(|c| clean_text(c)).collect::<Vec<_>>(),
+                        "rows": t.rows.iter().take(REPORT_ROWS_CAP).map(|row| {
+                            row.iter().map(|c| clean_text(c)).collect::<Vec<_>>()
+                        }).collect::<Vec<_>>(),
+                    });
+                    if truncated {
+                        v["rows_total"] = json!(t.rows.len());
+                    }
+                    v
+                })
+                .collect();
+            let mut v = json!({
+                "number": i + 1,
+                "label": clean_text(&r.label),
+                "kind": match r.kind {
+                    crate::report::ReportKind::Structured => "structured_report",
+                    crate::report::ReportKind::DoseReport => "dose_report",
+                    crate::report::ReportKind::ProtocolPage => "protocol_page",
+                },
+                "modality": r.modality,
+                "facts": r.info.iter().map(|(k, v)| json!([clean_text(k), clean_text(v)])).collect::<Vec<_>>(),
+                "tables": tables,
+            });
+            if !r.date.is_empty() {
+                v["date"] = json!(r.date);
+            }
+            if r.page.is_some() {
+                v["page"] = json!(true);
+            }
+            v
+        })
+        .collect();
     json!({
         "dataset": ds.id,
         "origin": ds.origin.to_string_lossy(),
@@ -268,9 +332,14 @@ pub fn describe(ds: &Dataset) -> Value {
         "doses": doses,
         "plans": plans,
         "planar_images": planar,
+        "reports": reports,
         "warnings": st.warnings.len(),
     })
 }
+
+/// Rows of one report table a description carries at most: an SR tree
+/// can run to hundreds, and the dose table is what matters.
+const REPORT_ROWS_CAP: usize = 200;
 
 pub fn list_structures(core: &mut Core, a: DatasetArgs, _p: &Progress) -> Result<Value> {
     let ds = core.session.dataset(&a.dataset)?;

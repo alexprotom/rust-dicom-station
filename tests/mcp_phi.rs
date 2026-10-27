@@ -23,7 +23,7 @@ const NAME: &str = "DOE^JANE";
 const ID: &str = "PAT-778812";
 const BIRTH: &str = "19581117";
 /// Every string that must never appear, in any case.
-const SECRETS: [&str; 8] = [
+const SECRETS: [&str; 9] = [
     "DOE^JANE",
     "DOE JANE",
     "JANE",
@@ -32,6 +32,7 @@ const SECRETS: [&str; 8] = [
     "19581117",
     "GREGORY",
     "Plainsboro",
+    "WILSON",
 ];
 
 fn contains_secret(s: &str) -> Option<&'static str> {
@@ -352,6 +353,142 @@ fn no_tool_leaks_under_redact() {
 #[test]
 fn no_tool_leaks_under_allow() {
     exercise(PhiPolicy::Allow, "test_mcp_phi_allow");
+}
+
+/// The archive tools: a named patient filed in a PACS is listed under an
+/// alias, a study is described from its headers with its protocol page
+/// told apart from its slices, and opening it goes through the gate.
+#[test]
+fn the_archive_tools_name_nobody() {
+    use rust_dicom_station::archive::Archive;
+    let (dir, folder, out) = fixture("test_mcp_phi_archive");
+    // The page is a copy of a named slice, so it carries the names too; the
+    // dose SR names the patient in its header and a physician in its
+    // content. The PACS files the folder under the patient's name.
+    common::protocol_page_into(&folder, "Patientenprotokoll");
+    common::dose_report_into(&folder, "WILSON^JAMES");
+    let pacs = dir.join("pacs");
+    let ar = Archive::new(&pacs);
+    ar.import(&folder, &Progress::default()).expect("filed");
+    let root = folder.parent().unwrap();
+    let mut log = Vec::new();
+
+    let archive_config = |policy| Config {
+        archive: pacs.display().to_string(),
+        ..config(root, &out, policy)
+    };
+    let mut core = Core::new(archive_config(PhiPolicy::Refuse));
+    let c = &mut core;
+    let l = &mut log;
+
+    let ls = call(c, l, "list_archive", json!({})).unwrap();
+    assert_eq!(ls["patients"], 1, "{ls}");
+    let patient = ls["listing"][0]["patient"].as_str().unwrap().to_string();
+    assert!(patient.starts_with("anon_"), "an alias: {patient}");
+    let studies = ls["listing"][0]["studies"].as_array().unwrap();
+    assert_eq!(studies.len(), 1);
+    let study = studies[0]["study"].as_str().unwrap().to_string();
+    assert!(studies[0]["modalities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m == "CT"));
+    assert!(
+        studies[0].get("date").is_none(),
+        "no date, the year at most"
+    );
+    // The same alias when narrowed to the patient, and a miss is an error.
+    let one = call(c, l, "list_archive", json!({"patient": patient})).unwrap();
+    assert_eq!(one["patients"], 1);
+    let _ = call(c, l, "list_archive", json!({"patient": "anon_000000"})).unwrap_err();
+    let _ = call(c, l, "describe_archive_study", json!({"study": "../etc"})).unwrap_err();
+
+    let d = call(c, l, "describe_archive_study", json!({"study": study})).unwrap();
+    let series = d["series"].as_array().unwrap();
+    let page = series
+        .iter()
+        .find(|s| s["description"] == "Patientenprotokoll")
+        .expect("the protocol page is listed");
+    assert_eq!(page["class"], "report", "{page}");
+    assert_eq!(page["report"], "protocol page");
+    assert_eq!(page["sop_class"], "Secondary Capture Image");
+    assert_eq!(page["positioned"], false);
+    assert_eq!(page["shown_in"], "the Additional pane, as a table");
+    let sr = series
+        .iter()
+        .find(|s| s["description"] == "Dose Report")
+        .expect("the dose SR is listed");
+    assert_eq!(sr["class"], "report", "{sr}");
+    assert_eq!(sr["sop_class"], "X-Ray Radiation Dose SR");
+    assert!(
+        series
+            .iter()
+            .filter(|s| s["class"] == "image volume")
+            .count()
+            >= 3,
+        "{d}"
+    );
+    assert_eq!(
+        series
+            .iter()
+            .filter(|s| s["class"] == "planar image")
+            .count(),
+        2,
+        "{d}"
+    );
+
+    // Refused under the default policy, the tags named, never the values.
+    let err = call(c, l, "open_archive_study", json!({"study": &study})).unwrap_err();
+    assert!(err.contains("PatientName"), "{err}");
+
+    // Under redact it opens: the radiographs as planar images, the page
+    // and the dose SR as reports with their tables, the physician the SR
+    // names nowhere.
+    let mut core = Core::new(archive_config(PhiPolicy::Redact));
+    let c = &mut core;
+    let d = call(c, l, "open_archive_study", json!({"study": &study})).unwrap();
+    assert_eq!(d["dataset"], "ds1");
+    assert_eq!(d["root"], "archive");
+    assert!(d["origin"].as_str().unwrap().starts_with("archive"), "{d}");
+    let planar = d["planar_images"].as_array().unwrap();
+    assert_eq!(planar.len(), 2, "{d}");
+    assert!(planar.iter().all(|p| p["kind"] == "projection"));
+    let reports = d["reports"].as_array().unwrap();
+    assert_eq!(reports.len(), 2, "{d}");
+    let page = reports
+        .iter()
+        .find(|r| r["kind"] == "protocol_page")
+        .expect("the page");
+    assert_eq!(page["modality"], "CT");
+    assert_eq!(page["page"], true);
+    let t = &page["tables"][0];
+    assert_eq!(t["columns"][4], "CTDIvol mGy");
+    assert_eq!(t["rows"][1][0], "AbdRoutine");
+    let dose = reports
+        .iter()
+        .find(|r| r["kind"] == "dose_report")
+        .expect("the dose report");
+    let t = &dose["tables"][0];
+    assert_eq!(t["rows"][1][12], "389.33", "{t}");
+    assert!(dose["facts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f[0] == "Total DLP"));
+    let tree = &dose["tables"][1];
+    assert!(
+        tree["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r[1] == "(name)"),
+        "the physician's item is there, the name is not: {tree}"
+    );
+    // The whole log, once more, for anything that names the patient.
+    for line in l.iter() {
+        assert!(contains_secret(line).is_none(), "{line}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The real executable over stdio: every frame it writes is searched.

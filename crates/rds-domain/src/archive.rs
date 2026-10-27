@@ -869,11 +869,8 @@ impl Archive {
         out
     }
 
-    /// Does the PACS hold anything at all?
-    ///
-    /// The start screen asks this to decide whether to offer *Load data from
-    /// PACS*, so it must be cheap: the catalog when there is one, else one
-    /// directory read per folder.
+    /// Does the PACS hold anything at all? Cheap: the catalog when there is
+    /// one, else one directory read per folder.
     pub fn has_patients(&self) -> bool {
         if catalog::exists(self.root()) {
             let c = catalog::load(self.root());

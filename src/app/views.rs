@@ -155,6 +155,7 @@ impl ViewerApp {
     pub(super) fn pane_available(&self, slot: usize, kind: PaneKind) -> bool {
         match kind {
             PaneKind::Planar(k) => self.planar_drawn(slot, k as usize),
+            PaneKind::Additional => self.planar_drawn(slot, super::planar::ADDITIONAL_PANE),
             _ => true,
         }
     }
@@ -187,6 +188,9 @@ impl ViewerApp {
             PaneKind::Plane(p) => self.view_cell(ui, slot, super::plane_index(p), rect, first),
             PaneKind::Scene3d => self.scene_pane(ui, slot, rect),
             PaneKind::Planar(k) => self.planar_pane(ui, slot, k as usize, rect),
+            PaneKind::Additional => {
+                self.planar_pane(ui, slot, super::planar::ADDITIONAL_PANE, rect)
+            }
         }
     }
 
@@ -366,6 +370,15 @@ impl ViewerApp {
                              an image under Planar images in the data tree puts it here \
                              too.",
                         );
+                    } else if kind == PaneKind::Additional {
+                        resp.on_hover_text(
+                            "What the workspace holds besides images of the patient: a \
+                             report (a dose report, a scanner's protocol page) as a \
+                             table, a secondary capture or a scanned document as an \
+                             image with its own window, zoom and pan. Not drawn while \
+                             the workspace has none. Clicking one under Reports or \
+                             Additional in the data tree puts it here too.",
+                        );
                     }
                     // Where in the row it sits. A pane that is not in the row
                     // has nowhere to go, and the ends have nowhere further.
@@ -412,17 +425,14 @@ impl ViewerApp {
             // with an image of its own (its number, or the last there is)
             // rather than waiting for the tree to give it one; ticked off,
             // it forgets its stack.
-            if let PaneKind::Planar(k) = kind {
-                let n = self.slots[slot]
-                    .study
-                    .as_ref()
-                    .map(|s| s.planar_images.len())
-                    .unwrap_or(0);
-                let v = &mut self.slots[slot].planar[k as usize];
+            if let Some(k) = super::planar::pane_index(kind) {
+                let images = self.planar_images_of(slot, super::planar::kind_of_pane(k));
+                let v = &mut self.slots[slot].planar[k];
                 v.layers.clear();
                 v.blend = 0.0;
-                if on && n > 0 {
-                    v.layers.push(PlanarLayer::new((k as usize).min(n - 1)));
+                if on && !images.is_empty() {
+                    let pick = images[k.min(images.len() - 1)];
+                    v.layers.push(PlanarLayer::new(pick));
                 }
             }
             changed = true;
@@ -604,7 +614,14 @@ impl ViewerApp {
                         parts.push(format!("{n} {}", if n == 1 { one } else { many }));
                     }
                 };
-                add(st.planar_images.len(), "image", "images");
+                let radiographs = st.radiographs().count();
+                add(radiographs, "planar image", "planar images");
+                add(
+                    st.planar_images.len() - radiographs,
+                    "additional object",
+                    "additional objects",
+                );
+                add(st.reports.len(), "report", "reports");
                 add(st.structure_sets.len(), "structure set", "structure sets");
                 add(
                     st.seg_series.len(),
@@ -636,7 +653,7 @@ impl ViewerApp {
             if counts.is_empty() {
                 "Nothing in it can be reconstructed into slices.".to_string()
             } else {
-                format!("{counts} - tick a planar image on the left to show it in this row.")
+                format!("{counts} - click an image on the left to show it in this row.")
             },
             FontId::proportional(13.0),
             hint,

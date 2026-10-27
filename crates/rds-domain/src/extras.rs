@@ -6,6 +6,11 @@
 //!   position) is read into the IEC parameters and the exact camera of its
 //!   pixels ([`rt_image_geometry`]), which is what the 2D/3D registration
 //!   projects the planning CT through;
+//! * additional objects - secondary captures and other single images that
+//!   are not images of the patient: a scanner's patient protocol or dose
+//!   report page, a screenshot, a scanned document. The same
+//!   [`PlanarImage`] with [`PlanarKind::Additional`], shown in the row's
+//!   *Additional* pane and nowhere a radiograph is expected;
 //! * REG - Spatial Registration objects (rigid 4×4 frame-of-reference
 //!   transformation matrices, and Deformable Spatial Registration objects
 //!   with their displacement grids, both of which can be applied as the
@@ -24,19 +29,86 @@ use crate::loader::{f64_of, f64s_of, i32_of, items_of, str_of};
 use crate::registration::{RigidTransform, VectorField};
 
 // ---------------------------------------------------------------------------
-// Planar images (DX / CR / RTIMAGE)
+// Planar images (DX / CR / RTIMAGE) and additional objects
 // ---------------------------------------------------------------------------
+
+/// What a single image is: a projection of the patient (a radiograph, a
+/// portal image, a DRR), or something else that happens to be an image.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum PlanarKind {
+    /// A radiograph or an RT image: a camera looked through the patient,
+    /// and the image can be compared with a DRR or registered to the CT.
+    #[default]
+    Projection,
+    /// A secondary capture or another image with no projection behind it:
+    /// a patient protocol or dose report page a scanner writes, a
+    /// screenshot, a scanned document.
+    Additional,
+}
+
+impl PlanarKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            PlanarKind::Projection => "planar image",
+            PlanarKind::Additional => "additional object",
+        }
+    }
+}
+
+/// Modalities whose images are projections (no volume reconstruction).
+pub const PROJECTION_MODALITIES: &[&str] = &["DX", "CR", "RTIMAGE", "MG", "XA", "RF", "PX"];
+pub const SOP_RTIMAGE: &str = "1.2.840.10008.5.1.4.1.1.481.1";
+pub const SOP_DX_PRESENTATION: &str = "1.2.840.10008.5.1.4.1.1.1.1";
+pub const SOP_DX_PROCESSING: &str = "1.2.840.10008.5.1.4.1.1.1.1.1";
+/// Secondary Capture Image Storage and its multi-frame variants: an image
+/// made of something other than the patient (a report page, a screen).
+pub const SOP_SECONDARY_CAPTURE: &str = "1.2.840.10008.5.1.4.1.1.7";
+
+/// Is this a (multi-frame) Secondary Capture SOP class?
+pub fn is_secondary_capture_sop(sop_class: &str) -> bool {
+    sop_class == SOP_SECONDARY_CAPTURE
+        || sop_class
+            .strip_prefix(SOP_SECONDARY_CAPTURE)
+            .is_some_and(|rest| matches!(rest, ".1" | ".2" | ".3" | ".4"))
+}
+
+/// Is this file, by its header, a projection of the patient?
+pub fn is_projection(modality: &str, sop_class: &str) -> bool {
+    !is_secondary_capture_sop(sop_class)
+        && (PROJECTION_MODALITIES.contains(&modality)
+            || sop_class == SOP_RTIMAGE
+            || sop_class == SOP_DX_PRESENTATION
+            || sop_class == SOP_DX_PROCESSING)
+}
+
+/// What a single image is, by its header. Everything that is not a
+/// projection is an additional object: a secondary capture whatever its
+/// modality says (a scanner's protocol page says `CT`), and any other
+/// image that is read on its own.
+pub fn planar_kind(modality: &str, sop_class: &str) -> PlanarKind {
+    if is_projection(modality, sop_class) {
+        PlanarKind::Projection
+    } else {
+        PlanarKind::Additional
+    }
+}
 
 #[derive(Clone, Default)]
 pub struct PlanarImage {
     pub label: String,
     pub modality: String,
+    /// A projection of the patient, or an additional object.
+    pub kind: PlanarKind,
     pub rows: usize,
     pub cols: usize,
     /// Pixel spacing [x, y] in mm (imager / image plane), 1.0 if unknown.
     pub spacing: [f64; 2],
-    /// Decoded values after Modality LUT (MONOCHROME1 already inverted).
+    /// Decoded values after Modality LUT (MONOCHROME1 already inverted); of
+    /// a colour image, the luminance.
     pub data: Vec<f32>,
+    /// The colour pixels of an RGB image (a report page, a screenshot), 3
+    /// bytes per pixel, drawn as they are; `None` for a grey image.
+    pub rgb: Option<Vec<u8>>,
     pub min_value: f32,
     pub max_value: f32,
     /// Default window (center, width).
@@ -84,6 +156,14 @@ pub fn load_frame(path: &Path, frame: usize) -> Result<Vec<f32>> {
     let mut data: Vec<f32> = decoded
         .to_vec_frame_with_options(frame as u32, &opts)
         .with_context(|| format!("convert frame {} of {}", frame + 1, path.display()))?;
+    if decoded.samples_per_pixel() == 3 && data.len() >= n * 3 {
+        data = data[..n * 3]
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|px| 0.299 * px[0] + 0.587 * px[1] + 0.114 * px[2])
+            .collect();
+    }
     data.truncate(n);
     let mono1 = str_of(&obj, tags::PHOTOMETRIC_INTERPRETATION).is_some_and(|p| p == "MONOCHROME1");
     if mono1 {
@@ -195,7 +275,87 @@ pub fn rt_image_geometry(
 pub fn load_planar(path: &Path) -> Result<PlanarImage> {
     let obj = crate::dicomfile::open_full(path)
         .with_context(|| format!("open planar image {}", path.display()))?;
-    let modality = str_of(&obj, tags::MODALITY).unwrap_or_else(|| "DX".into());
+    planar_of(&obj, path)
+}
+
+/// The overlay planes of an image (groups 6000 to 601E, one bit per
+/// pixel) drawn into its values: a set bit becomes the brightest value the
+/// image has, or one step above a blank image's. A scanner's report page
+/// is nothing but its overlay (blank pixels, the text as bits), and a
+/// radiograph's overlay is the graphics burnt onto it at the console.
+/// Returns how many planes were drawn.
+pub fn draw_overlays(
+    obj: &dicom_object::InMemDicomObject,
+    rows: usize,
+    cols: usize,
+    data: &mut [f32],
+    rgb: &mut Option<Vec<u8>>,
+) -> usize {
+    let (mut min_v, mut max_v) = (f32::MAX, f32::MIN);
+    for &v in data.iter() {
+        min_v = min_v.min(v);
+        max_v = max_v.max(v);
+    }
+    if data.is_empty() {
+        return 0;
+    }
+    let on = max_v.max(min_v + 1.0);
+    let mut drawn = 0;
+    for group in (0x6000u16..=0x601E).step_by(2) {
+        let t = |e: u16| dicom_core::Tag(group, e);
+        let Some(bytes) = obj.element(t(0x3000)).ok().and_then(|e| e.to_bytes().ok()) else {
+            continue;
+        };
+        let o_rows = i32_of(obj, t(0x0010)).unwrap_or(rows as i32).max(0) as usize;
+        let o_cols = i32_of(obj, t(0x0011)).unwrap_or(cols as i32).max(0) as usize;
+        if i32_of(obj, t(0x0100)).unwrap_or(1) != 1 || o_rows == 0 || o_cols == 0 {
+            continue;
+        }
+        // The origin names the image pixel of the overlay's first bit,
+        // one-based, as [row, column].
+        let origin = obj
+            .element(t(0x0050))
+            .ok()
+            .and_then(|e| e.to_multi_int::<i32>().ok())
+            .filter(|v| v.len() >= 2)
+            .map(|v| [v[0], v[1]])
+            .unwrap_or([1, 1]);
+        if bytes.len() * 8 < o_rows * o_cols {
+            continue;
+        }
+        for r in 0..o_rows {
+            let y = r as i64 + origin[0] as i64 - 1;
+            if y < 0 || y >= rows as i64 {
+                continue;
+            }
+            for c in 0..o_cols {
+                let x = c as i64 + origin[1] as i64 - 1;
+                if x < 0 || x >= cols as i64 {
+                    continue;
+                }
+                let bit = r * o_cols + c;
+                if bytes[bit / 8] >> (bit % 8) & 1 == 0 {
+                    continue;
+                }
+                let i = y as usize * cols + x as usize;
+                data[i] = on;
+                if let Some(rgb) = rgb {
+                    if let Some(px) = rgb.get_mut(i * 3..i * 3 + 3) {
+                        px.fill(255);
+                    }
+                }
+            }
+        }
+        drawn += 1;
+    }
+    drawn
+}
+
+/// The planar image of an opened file; [`load_planar`] opens it.
+pub fn planar_of(obj: &dicom_object::DefaultDicomObject, path: &Path) -> Result<PlanarImage> {
+    let sop_class = str_of(obj, tags::SOP_CLASS_UID).unwrap_or_default();
+    let modality = str_of(obj, tags::MODALITY).unwrap_or_else(|| "DX".into());
+    let kind = planar_kind(&modality, &sop_class);
 
     let decoded = obj
         .decode_pixel_data()
@@ -205,19 +365,36 @@ pub fn load_planar(path: &Path) -> Result<PlanarImage> {
     // A cine (XA / RF) is one view over time: its first frame is the image,
     // and the rest are read when something asks for them (`load_frame`).
     let frame_count = decoded.number_of_frames().max(1) as usize;
+    let samples = decoded.samples_per_pixel().max(1) as usize;
     let opts = ConvertOptions::new().with_modality_lut(ModalityLutOption::Default);
     let mut data: Vec<f32> = decoded
         .to_vec_frame_with_options(0, &opts)
         .with_context(|| format!("convert pixels of {}", path.display()))?;
-    if data.len() < rows * cols {
+    if data.len() < rows * cols * samples {
         bail!(
             "pixel buffer smaller than Rows×Columns in {}",
             path.display()
         );
     }
+    // A colour image (a report page, a screenshot: three samples per pixel)
+    // keeps its colours for the pane and is windowed by its luminance.
+    let mut rgb = (samples == 3).then(|| {
+        data[..rows * cols * 3]
+            .iter()
+            .map(|v| v.round().clamp(0.0, 255.0) as u8)
+            .collect::<Vec<u8>>()
+    });
+    if samples == 3 {
+        data = data[..rows * cols * 3]
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|px| 0.299 * px[0] + 0.587 * px[1] + 0.114 * px[2])
+            .collect();
+    }
     data.truncate(rows * cols);
 
-    let mono1 = str_of(&obj, tags::PHOTOMETRIC_INTERPRETATION)
+    let mono1 = str_of(obj, tags::PHOTOMETRIC_INTERPRETATION)
         .map(|p| p == "MONOCHROME1")
         .unwrap_or(false);
     let (mut min_v, mut max_v) = (f32::MAX, f32::MIN);
@@ -231,24 +408,48 @@ pub fn load_planar(path: &Path) -> Result<PlanarImage> {
             *v = max_v + min_v - *v;
         }
     }
+    // The overlay planes, drawn in white on top: a report page is nothing
+    // else, and a radiograph's are the console's graphics.
+    let overlays = draw_overlays(obj, rows, cols, &mut data, &mut rgb);
+    if overlays > 0 {
+        max_v = f32::MIN;
+        min_v = f32::MAX;
+        for &v in &data {
+            min_v = min_v.min(v);
+            max_v = max_v.max(v);
+        }
+    }
 
-    let spacing = f64s_of(&obj, tags::IMAGE_PLANE_PIXEL_SPACING)
-        .or_else(|| f64s_of(&obj, tags::IMAGER_PIXEL_SPACING))
-        .or_else(|| f64s_of(&obj, tags::PIXEL_SPACING))
+    let spacing = f64s_of(obj, tags::IMAGE_PLANE_PIXEL_SPACING)
+        .or_else(|| f64s_of(obj, tags::IMAGER_PIXEL_SPACING))
+        .or_else(|| f64s_of(obj, tags::PIXEL_SPACING))
         .filter(|v| v.len() >= 2)
         .map(|v| [v[1], v[0]])
         .unwrap_or([1.0, 1.0]);
 
+    // The window the file carries, when it is a window onto these values;
+    // else the values' own range. A page (a protocol, a dose report) often
+    // carries a window that shows nothing of it, or one meant for the CT it
+    // came with, so an additional object always comes up over its range.
+    let range = ((min_v + max_v) * 0.5, (max_v - min_v).max(1.0));
     let window = match (
-        f64s_of(&obj, tags::WINDOW_CENTER).and_then(|v| v.first().copied()),
-        f64s_of(&obj, tags::WINDOW_WIDTH).and_then(|v| v.first().copied()),
+        f64s_of(obj, tags::WINDOW_CENTER).and_then(|v| v.first().copied()),
+        f64s_of(obj, tags::WINDOW_WIDTH).and_then(|v| v.first().copied()),
     ) {
-        (Some(c), Some(w)) if w > 0.0 && !mono1 => (c as f32, w as f32),
-        _ => ((min_v + max_v) * 0.5, (max_v - min_v).max(1.0)),
+        (Some(c), Some(w))
+            if w > 0.0
+                && !mono1
+                && kind == PlanarKind::Projection
+                && (c - w * 0.5) < max_v as f64
+                && (c + w * 0.5) > min_v as f64 =>
+        {
+            (c as f32, w as f32)
+        }
+        _ => range,
     };
 
-    let label = str_of(&obj, tags::RT_IMAGE_LABEL)
-        .or_else(|| str_of(&obj, tags::SERIES_DESCRIPTION))
+    let label = str_of(obj, tags::RT_IMAGE_LABEL)
+        .or_else(|| str_of(obj, tags::SERIES_DESCRIPTION))
         .or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()))
         .unwrap_or_else(|| modality.clone());
 
@@ -263,27 +464,49 @@ pub fn load_planar(path: &Path) -> Result<PlanarImage> {
     };
     add(
         "Date",
-        str_of(&obj, tags::CONTENT_DATE).or_else(|| str_of(&obj, tags::STUDY_DATE)),
+        str_of(obj, tags::CONTENT_DATE).or_else(|| str_of(obj, tags::STUDY_DATE)),
     );
     if modality == "RTIMAGE" {
-        add("Machine", str_of(&obj, tags::RADIATION_MACHINE_NAME));
+        add("Machine", str_of(obj, tags::RADIATION_MACHINE_NAME));
         add(
             "Gantry",
-            f64_of(&obj, tags::GANTRY_ANGLE).map(|g| format!("{g:.1}°")),
+            f64_of(obj, tags::GANTRY_ANGLE).map(|g| format!("{g:.1}°")),
         );
         add(
             "SAD",
-            f64_of(&obj, tags::RADIATION_MACHINE_SAD).map(|v| format!("{v:.0} mm")),
+            f64_of(obj, tags::RADIATION_MACHINE_SAD).map(|v| format!("{v:.0} mm")),
         );
         add(
             "SID",
-            f64_of(&obj, tags::RT_IMAGE_SID).map(|v| format!("{v:.0} mm")),
+            f64_of(obj, tags::RT_IMAGE_SID).map(|v| format!("{v:.0} mm")),
         );
-        add("Description", str_of(&obj, tags::RT_IMAGE_DESCRIPTION));
+        add("Description", str_of(obj, tags::RT_IMAGE_DESCRIPTION));
+    } else if kind == PlanarKind::Additional {
+        add(
+            "Kind",
+            Some(if is_secondary_capture_sop(&sop_class) {
+                "secondary capture".to_string()
+            } else {
+                format!("{modality} image without a position")
+            }),
+        );
+        add(
+            "Image type",
+            str_of(obj, tags::IMAGE_TYPE).map(|t| t.replace('\\', " / ")),
+        );
+        // What the pixels hold, so a page that comes up blank says why.
+        add(
+            "Values",
+            Some(if rgb.is_some() {
+                format!("colour, luminance {min_v:.0} to {max_v:.0}")
+            } else {
+                format!("{min_v:.0} to {max_v:.0}")
+            }),
+        );
     } else {
-        add("Body part", str_of(&obj, tags::BODY_PART_EXAMINED));
-        add("View", str_of(&obj, tags::VIEW_POSITION));
-        add("KVP", str_of(&obj, tags::KVP));
+        add("Body part", str_of(obj, tags::BODY_PART_EXAMINED));
+        add("View", str_of(obj, tags::VIEW_POSITION));
+        add("KVP", str_of(obj, tags::KVP));
     }
     info.push((
         "Size".into(),
@@ -294,25 +517,27 @@ pub fn load_planar(path: &Path) -> Result<PlanarImage> {
     }
 
     let (iec, camera, geometry_missing) = if modality == "RTIMAGE" {
-        rt_image_geometry(&obj, cols, rows, spacing)
+        rt_image_geometry(obj, cols, rows, spacing)
     } else {
         (None, None, None)
     };
-    let megavoltage = str_of(&obj, tags::PRIMARY_DOSIMETER_UNIT).is_some_and(|u| u == "MU");
+    let megavoltage = str_of(obj, tags::PRIMARY_DOSIMETER_UNIT).is_some_and(|u| u == "MU");
     Ok(PlanarImage {
         label,
         modality,
+        kind,
         rows,
         cols,
         spacing,
         data,
+        rgb,
         min_value: min_v,
         max_value: max_v,
         window,
         info,
-        sop_instance_uid: str_of(&obj, tags::SOP_INSTANCE_UID).unwrap_or_default(),
-        frame_of_reference_uid: str_of(&obj, tags::FRAME_OF_REFERENCE_UID).unwrap_or_default(),
-        referenced_beam: i32_of(&obj, tags::REFERENCED_BEAM_NUMBER),
+        sop_instance_uid: str_of(obj, tags::SOP_INSTANCE_UID).unwrap_or_default(),
+        frame_of_reference_uid: str_of(obj, tags::FRAME_OF_REFERENCE_UID).unwrap_or_default(),
+        referenced_beam: i32_of(obj, tags::REFERENCED_BEAM_NUMBER),
         iec,
         camera,
         geometry_missing,

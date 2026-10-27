@@ -109,7 +109,7 @@ fn android_main(app: AndroidApp) {
         setup.instance_descriptor.backends = gfx_wgpu::bits(backend);
     }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title("Rust DICOM Station: Viewer"),
+        viewport: egui::ViewportBuilder::default().with_title("Rust DICOM Station"),
         renderer: eframe::Renderer::Wgpu,
         wgpu_options,
         android_app: Some(app.clone()),

@@ -125,6 +125,9 @@ pub fn camera_of(
         .planar_images
         .get(idx)
         .ok_or_else(|| anyhow!("no planar image {}", idx + 1))?;
+    if img.kind != crate::extras::PlanarKind::Projection {
+        bail!("{}: an {}, not a radiograph", img.label, img.kind.label());
+    }
     let cam = match source {
         GeometrySource::Image => img.camera.ok_or_else(|| {
             anyhow!(

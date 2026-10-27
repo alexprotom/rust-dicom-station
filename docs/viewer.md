@@ -22,11 +22,13 @@ starts the work; the two below it are the shortcuts.
   `session_d` in the settings file as they are loaded, so an unclean exit
   loses nothing. If the folders it names have since moved or been deleted, it
   says so and forgets the session.
-* **Load data from PACS** opens the local patient archive.
+* **PACS** opens the local patient archive and the paired servers; an
+  empty archive is where its storage folders and the pairing get set up,
+  so the button is always live.
 
 A button that cannot do its job is greyed rather than hidden - there is no
-last session, or the archive is empty - so the screen keeps the same shape
-and the answer to "where has it gone" is on the button itself.
+last session - so the screen keeps the same shape and the answer to "where
+has it gone" is on the button itself.
 
 **Tools**
 
@@ -49,9 +51,12 @@ The scan:
 
 1. **Classification.** Every file in the tree is read header-only (no pixel
    data) in parallel and classified by SOP class / modality: image series
-   (CT/MR/PT/…), RTSTRUCT, RTDOSE, RTPLAN, planar images (DX/CR/RTIMAGE), REG
-   spatial registrations, RT treatment records. Unreadable or foreign files
-   become warnings, never errors.
+   (CT/MR/PT/…), RTSTRUCT, RTDOSE, RTPLAN, planar images (DX/CR/RTIMAGE),
+   Structured Reports (a CT dose report, any SR), additional objects
+   (secondary captures, whatever Modality they claim; a scanner's protocol
+   page among them becomes a report once its text is read), REG spatial
+   registrations, RT treatment records. Unreadable or foreign files become
+   warnings, never errors.
 2. **Series grouping.** Image files are grouped by SeriesInstanceUID into the
    workspace tree; the largest series is reconstructed first (click another to
    switch). Series of equal length - the phases of a 4DCT - follow in series
@@ -110,14 +115,17 @@ its CT second, and have the contours land on the right images.
 ## The rows and their panes
 
 The main area is **one row per open workspace** - up to four, **A** to
-**D** - and each row shows up to **six panes**, chosen under *Settings ▸
+**D** - and each row shows up to **seven panes**, chosen under *Settings ▸
 View layout*: the **axial**, **sagittal** and **coronal** planes, the
-**3D** surface scene, and the two **planar panes**, *Planar 1* and *Planar
+**3D** surface scene, the two **planar panes**, *Planar 1* and *Planar
 2*, which show the workspace's planar images (radiographs, RT images, DRRs;
-see [Planar images](#planar-images-dx--cr--rtimage) below). The planar
-panes are not in the standard row, and a planar pane in a row whose
-workspace holds no planar image is not drawn at all, so a plain CT keeps its
-three planes whatever the layout says. The rows share the height equally and are chosen
+see [Planar images](#planar-images-dx--cr--rtimage) below), and the
+**Additional** pane for what it holds besides images of the patient (a
+dose report or a scanner's protocol page as a table, a secondary capture as
+an image; see [Reports](#reports) and [Additional](#additional) below). The planar and additional panes are not in the
+standard row, and one in a row whose workspace holds no image of its kind
+is not drawn at all, so a plain CT keeps its three planes whatever the
+layout says. The rows share the height equally and are chosen
 separately, so the planning CT can sit above one plane of the repeat scan,
 or a single large axial above the same plane of another workspace. A
 workspace appears as soon as something is loaded into it and goes when it is
@@ -128,7 +136,7 @@ images rather than two and a gap, and a row of one is one image across the
 window. A row always shows something: the last tick of a row cannot be
 taken off, and a tick greys out once the row holds as many panes as it
 carries - every kind there is, so a row can hold the three planes, the
-surface scene and both planar panes at once. The **◀ ▶** buttons beside each tick move that pane
+surface scene, both planar panes and the additional pane at once. The **◀ ▶** buttons beside each tick move that pane
 one place left or right in the row, and the list is drawn in the row's own
 order, so it reads left to right the way the row does; a newly ticked pane
 joins at the right. **⟲ Reset** beside a row's heading puts that row back to
@@ -497,7 +505,7 @@ Workspace A
        │   └ Plan dose ▶ plan IMRT
        └ Plans (1)
            └ IMRT ▶ Approved
- Dose display · Planar images · Spatial registrations · Records · Warnings
+ Dose display · Planar images · Reports · Additional · Spatial registrations · Records · Warnings
 ```
 
 The modality level (CT / MR / US / PT …) is one DICOM implies but does not
@@ -506,8 +514,8 @@ Everything with a StudyInstanceUID - image series, RT structure sets,
 segmentation series, dose grids and plans - sits inside its study; an RT
 object whose StudyInstanceUID is blank or names an unloaded study goes under
 the study of the image series it references, failing that under the first
-study. Planar images, spatial registrations and treatment records have no
-study and sit below the tree, as does **Dose display** - colorwash, isodose
+study. Planar images, reports, additional objects, spatial registrations and
+treatment records have no study and sit below the tree, as does **Dose display** - colorwash, isodose
 ladder, opacity, threshold - one setting shared by both workspaces, shown once.
 
 Structure sets, segmentation series, **dose grids and plans** all use the
@@ -597,8 +605,8 @@ is a click's job and not an arrow's.
 **F2** renames the focused row and **Delete** removes it, as they do in a
 file manager. Every row the tree shows takes both: a patient, a study, a
 series, a 4D group (Delete dissolves it), a structure set or segmentation
-series, one structure or segment, a dose grid, a plan, a planar image, a
-spatial registration, a treatment record. Delete does exactly what the row's
+series, one structure or segment, a dose grid, a plan, a planar or additional
+image, a report, a spatial registration, a treatment record. Delete does exactly what the row's
 *Remove* entry does, with no confirmation and no undo - the files on disk
 are never touched, so a removal costs a reload. None of these keys fire
 while a text field has the focus, and the arrows wait while a series is
@@ -684,7 +692,7 @@ next load reports its own.
 
 Everything the tree names - patients, studies, image series, RT structure
 sets, segmentation series, structures and segments, dose grids, plans, planar
-images, spatial registrations and treatment records - can be renamed from its
+and additional objects, reports, spatial registrations and treatment records - can be renamed from its
 right-click menu. The dialog is a single text field - Enter applies, Esc
 cancels, empty names are rejected - and names the DICOM attribute it writes.
 **F2** opens the same dialog on the row last clicked.
@@ -788,12 +796,67 @@ ratio (imager / image-plane pixel spacing), MONOCHROME1 images are inverted
 on reading, the bottom edge reads the size, the pixel spacing and the
 window, and the value under the pointer is shown above it.
 
-Any image that carries no slice position lands here, whatever its modality -
-that is what makes *File > Add DICOM file(s)* on a single RT image, an
-unpositioned secondary capture or a stray slice give you something to look at.
 The section is closed by default when there is a volume beside it and open
-when there is not. Multi-frame images are the one exception: they are reported
-as a warning rather than loaded.
+when there is not. A multi-frame image is loaded with its first frame shown
+when it stands alone; as part of a volume series it is reported as a warning.
+
+### Reports
+
+A CT study carries, beside its images, what the scanner wrote about them,
+and none of it is an image of the patient: the **X-Ray Radiation Dose SR**
+(a Structured Report, TID 10011) with every acquisition's technique and dose
+indices, and on a Siemens scanner the **Patientenprotokoll**, the same table
+as a page (a Secondary Capture whose pixels are blank: the text is an
+overlay plane, and the text itself sits in a private element). Other
+Structured Reports (a measurement report, a radiology report) come the same
+way. A pane that windowed their pixels showed nothing, and what a person
+wants is the table, so they are **reports**: listed under **Reports** in
+the sidebar (kind, date and the headline facts on hover) and shown in the
+row's **Additional** pane as tables when clicked (**👁 Show in
+Additional** in the right-click menu, beside rename and remove; an **A**
+badge marks the one on screen).
+
+A dose report reads as its facts (the procedure, the scanner, the
+irradiation times, the number of events and the total DLP) and one row per
+CT acquisition: protocol, acquisition type, region, kV, mean and maximum
+mA, rotation time, pitch, collimation, scan length, exposure time, CTDIvol,
+DLP, phantom and modulation, with the units in the column headers as the
+report states them; the whole content tree of the SR follows as an
+indented two-column table, so nothing the template holds (dose check
+alerts, device identification, event UIDs) is lost. A protocol page reads
+as its lines (date, station, totals, patient position) and the table the
+scanner drew, laid out from the positions of its words; **📄 Page** in the
+pane's bar shows the page as the scanner rendered it, **📋 Table** comes
+back. An SR of a template the viewer does not interpret shows its content
+tree the same way. The MCP server returns a report's tables
+(`describe_dataset`) and never a name an SR item carries.
+
+### Additional
+
+What is left besides images of the patient and reports: screenshots of a
+console, scanned documents, any secondary capture without text to read
+back. The loader tells them apart by their SOP class (Secondary Capture,
+whatever Modality the file claims) or, for an image of a series that
+carries no position anywhere, by its modality not being a projection's.
+They are listed under **Additional** in the sidebar, with the kind, the
+Image Type and the value range on hover, and shown in the same
+**Additional** pane, which is off by default: a click on a row puts the
+pane into the row with that object, **Ctrl + click** stacks it, the
+right-click menu says **Show in Additional**, **Compare in Additional**,
+**Take out of Additional**, and an **A** badge marks the one on screen. The
+pane is a planar pane in everything else - stack, scrubber, compare modes,
+zoom and window - except that such an object comes up windowed over its
+own values, not the window its header carries (which is often the CT's, or
+none that shows it); an overlay plane the file carries is drawn into it in
+white, and a colour page is shown in colour. What it never is is a
+radiograph: the 2D/3D registration, the DRR geometry picker and the setup
+tools offer the planar images only, and a workspace of reports and
+additional objects alone has no planar pane to draw.
+
+*File > Add DICOM file(s)* on a single RT image, a secondary capture, an SR
+or a stray slice gives you something to look at the same way: a radiograph
+under the planar images, a report under the reports, anything else under
+the additional ones.
 
 ## Appearance
 

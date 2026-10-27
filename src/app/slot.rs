@@ -162,8 +162,10 @@ pub(super) struct StudySlot {
     /// What a per-ROI cache compares, so a brush sample costs the edited
     /// structure and not the set (see [`StudySlot::roi_stamp`]).
     pub(super) roi_edits: std::collections::HashMap<(usize, usize), u64>,
-    /// The row's two planar panes.
-    pub(super) planar: [PlanarView; settings::PLANAR_PANES],
+    /// The row's two planar panes, and the additional pane after them
+    /// (`planar::ADDITIONAL_PANE`), which works the same way over the
+    /// workspace's additional objects.
+    pub(super) planar: [PlanarView; settings::PLANAR_PANES + 1],
     /// The planar pane that was given an image last: Ctrl-click in the
     /// tree adds to it, and a plain click with both panes on screen goes to
     /// the other one.

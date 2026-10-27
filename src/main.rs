@@ -236,7 +236,7 @@ fn run(
     APP_STARTED.store(false, Ordering::SeqCst);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Rust DICOM Station: Viewer")
+            .with_title("Rust DICOM Station")
             .with_icon(icon::window_icon())
             .with_inner_size([1680.0, 940.0])
             .with_min_inner_size([900.0, 520.0]),
