@@ -79,7 +79,8 @@ colorwash over the grayscale).
 
 ## The 3D structure view
 
-The **3D A / 3D B** toolbar buttons open a floating window with a 3D surface
+The **3D A / 3D B** toolbar buttons put the row's 3D pane into that
+workspace's row (and take it out again): a 3D surface
 rendering of the active structure set **and** all segmentation masks. Surfaces
 are built on a background thread - scanline rasterization of contours into a
 binary volume, a surface-nets mesher, Laplacian smoothing, area-weighted
@@ -88,16 +89,17 @@ with headlight shading; EXTERNAL/body ROIs are translucent so internal anatomy
 stays visible. The colours are read from the structure set and the
 segmentation series **at draw time**, not baked into the meshes: changing a
 structure's or a segment's colour in the tree recolours the scene on the
-next frame - in the window and in a row's 3D pane alike - and re-meshes
+next frame and re-meshes
 nothing, and the meshes cached per phase of a 4D group come back in
 whatever colour the set has now.
 
 Every mask edit re-meshes that segmentation in the background
 (bounding-box-cropped surface nets, automatic striding for huge masks), so the
 3D surface follows the brush in essentially real time; meshes are cached per
-structure set, so reopening the window is instant. Drag rotates, the wheel
-zooms, middle-drag pans, and a slider sets global opacity; the same four
-buttons the 3D pane carries do it without a mouse to spare - **➕ / ➖**
+structure set for as long as the pane stays in the row, so going back to a
+set already seen is instant. Drag rotates, the wheel
+zooms, middle-drag pans, and a slider sets global opacity; the four buttons
+on the pane's bar do it without a mouse to spare - **➕ / ➖**
 zoom a step, **✋** turns a left drag into a move, and **⟲** restores the
 default camera.
 

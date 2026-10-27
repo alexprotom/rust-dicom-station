@@ -1,5 +1,6 @@
-//! The data tree's dose section: the dose grids of a study, and how the
-//! active one is displayed.
+//! The data tree's dose section: the dose grids of a study, and which one
+//! is displayed. How it is drawn is the *Dose display* module
+//! (`dose_display.rs`).
 
 use super::*;
 
@@ -21,6 +22,7 @@ impl ViewerApp {
         let mut rename: Option<RenameTarget> = None;
         let mut remove: Option<ObjRef> = None;
         let mut focus: Option<RenameTarget> = None;
+        let mut display = false;
         let current = self.tree_focus.clone();
         // The views draw one dose grid at a time, so the rows work the way
         // the structure sets' do: clicking another grid makes it the drawn
@@ -84,6 +86,17 @@ impl ViewerApp {
                             d.units.to_lowercase()
                         ))
                         .context_menu(|ui| {
+                            if ui
+                                .button("🎨 Display settings")
+                                .on_hover_text(
+                                    "Colorwash, isodose lines, opacity and levels: the Dose                                      display module",
+                                )
+                                .clicked()
+                            {
+                                display = true;
+                                ui.close();
+                            }
+                            ui.separator();
                             if ui.button("✏ Rename").clicked() {
                                 rename = Some(RenameTarget::Dose { slot, idx: i });
                                 ui.close();
@@ -144,50 +157,8 @@ impl ViewerApp {
         if focus.is_some() {
             self.tree_focus = focus;
         }
-    }
-
-    /// How dose is drawn - colorwash, isodose lines, opacity, threshold and
-    /// the isodose ladder. Shared by every workspace, so it is shown once, at
-    /// workspace level, under the first one that actually has dose.
-    pub(super) fn dose_display_section(&mut self, ui: &mut egui::Ui, slot: usize) {
-        let first = self.open_slots().into_iter().find(|&s| {
-            self.slots[s]
-                .study
-                .as_ref()
-                .is_some_and(|st| !st.doses.is_empty())
-        });
-        if first != Some(slot) {
-            return;
+        if display {
+            self.reveal_module(Module::DoseDisplay);
         }
-        let mut mode = self.dose_mode;
-        let mut opacity = self.dose_opacity;
-        let mut threshold = self.dose_threshold_pct;
-        Self::wrapped_node(ui, ("dose_display", slot), false, "Dose display", |ui| {
-            egui::ComboBox::from_id_salt(("dose_mode", slot))
-                .selected_text(mode.label())
-                .show_ui(ui, |ui| {
-                    for m in [
-                        DoseMode::Off,
-                        DoseMode::Colorwash,
-                        DoseMode::Isodose,
-                        DoseMode::Both,
-                    ] {
-                        ui.selectable_value(&mut mode, m, m.label());
-                    }
-                });
-            ui.add(egui::Slider::new(&mut opacity, 0.0..=1.0).text("Opacity"));
-            ui.add(egui::Slider::new(&mut threshold, 0.0..=100.0).text("Threshold %"));
-            ui.weak("Isodose levels (% of reference)");
-            for l in &mut self.iso_levels {
-                ui.horizontal(|ui| {
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), Sense::hover());
-                    ui.painter().rect_filled(rect, 2.0, l.color);
-                    ui.checkbox(&mut l.on, format!("{:.0}%", l.pct));
-                });
-            }
-        });
-        self.dose_mode = mode;
-        self.dose_opacity = opacity;
-        self.dose_threshold_pct = threshold;
     }
 }

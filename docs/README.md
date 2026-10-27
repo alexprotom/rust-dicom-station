@@ -13,7 +13,7 @@ Each page here covers one area.
 | [propagation.md](propagation.md) | Carrying contours and segmentations across a registration |
 | [volumes.md](volumes.md) | How every volume is calculated: voxels-based, surface-based (a closed triangle surface reconstructed from the contours), planimetry, the propagation volumes - the exact rules and formulas |
 | [star-target-propagation.md](star-target-propagation.md) | Step by step: a cardiac target from the CCT onto every 4DCT phase, anchored on the heart, in the viewer and from the MCP server |
-| [motion-4d.md](motion-4d.md) | 4D groups, the per-phase register ▸ propagate ▸ measure pipeline, motion metrics, ITV generation, the results window, structure comparison (Dice, HD95, the rigid offset), the details table and transfer |
+| [motion-4d.md](motion-4d.md) | 4D groups, the per-phase register ▸ propagate ▸ measure pipeline, motion metrics, ITV generation, the results and their charts, structure comparison (Dice, HD95, the rigid offset), the details table and transfer |
 | [drr.md](drr.md) | Digitally reconstructed radiographs (*Image generation ▶ DRR*): the two projectors, the geometry (patient positions, RT images, calibrated rooms), kV and MV attenuation, the comparison, filing into the planar images |
 | [dvh.md](dvh.md) | Dose-volume histograms: sampling, axes, metrics, protocol constraints, CSV export, the analytic phantom |
 | [contours.md](contours.md) | Drawing and editing RT structures as contours: the polygon, spline, freehand, brush, nudge and live-wire tools, the drawing modes, interpolation, tidying, points of interest, templates and the set lock |

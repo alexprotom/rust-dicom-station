@@ -68,7 +68,7 @@ The workflow:
 3. Builds the Windows installer and the winget manifests for it.
 4. Builds the Linux AppImage (`packaging/linux/appimage/build-appimage.sh`).
 5. Builds the two macOS disk images, signed and notarised when the `MACOS_*` secrets are set (see [macOS](#macos)).
-6. Builds the Android APK, signed with the release key when the `ANDROID_KEYSTORE_*` secrets are set (see [Android](#android)).
+6. Builds the Android APK, signed with the release key from the `ANDROID_KEYSTORE_*` secrets, and fails without them (see [Android](#android)).
 7. Builds the iOS `.ipa` (iPad and iPhone), signed for installation when the `IOS_*` secrets are set and uploaded to TestFlight when the `APP_STORE_CONNECT_*` secrets are set too (see [iOS](#ios)).
 8. Builds the snap, tests it on the runner and releases it to the Snap Store, when the `SNAPCRAFT_STORE_CREDENTIALS` secret is set (see [Snap Store](#snap-store)).
 9. Generates SHA256 checksums.
@@ -225,9 +225,9 @@ is still attached to the release.
 
 ## Android
 
-The APK is built by [android.yml](../.github/workflows/android.yml), called by the `android` job of the release workflow; the GitHub Release waits for it like for the Windows and Linux builds. Its `versionCode` is derived from the version (`major * 10000 + minor * 100 + patch`, so 0.9.4 is 904), which is why versions must only ever go up: Android refuses to install a package whose code is lower than the installed one.
+The APK is built by [android.yml](../.github/workflows/android.yml), called by the `android` job of the release workflow; the GitHub Release waits for it like for the Windows and Linux builds. Its `versionName` is the version; its `versionCode` is the build time in minutes since 2024-01-01 UTC, so every build - release, nightly or local - has a higher code than every one before it and installs over it: Android refuses to install a package whose code is lower than the installed one.
 
-The APK is signed with the release key when the four secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD` are set, and with a throwaway debug key otherwise. Only a package signed with the same key as the installed one can update it in place, so the key is made once and kept ([docs/android.md](android.md#releasing)). *Actions > Android > Run workflow* builds any branch the same way and attaches the APK to the run.
+The APK is signed with the release key from the four secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`; a release or nightly fails without them. Only a package signed with the same key as the installed one can update it in place, so the key is made once, kept outside the repository and used for local builds too (`packaging/android/release-key.sh`, [docs/android.md](android.md#signing)). *Actions > Android > Run workflow* builds any branch the same way and attaches the APK to the run (signed with a debug key, with a warning, when the secrets are missing).
 
 ## iOS
 

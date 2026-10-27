@@ -7,8 +7,9 @@
 //! as contoured instead, with no registration at all; the rigid model can be
 //! fitted locally, on each structure's own neighbourhood.
 //!
-//! Moved out of `app/motion_win.rs`; the viewer's
-//! dialog and the MCP server both build a [`MotionRequest`] and call [`run`].
+//! Moved out of `app/motion.rs`; the viewer's
+//! *Structure motion* section and the MCP server both build a
+//! [`MotionRequest`] and call [`run`].
 
 use crate::dicomseg::{resample_mask, SegSeries};
 use crate::loader::SeriesInfo;

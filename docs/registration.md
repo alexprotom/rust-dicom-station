@@ -197,7 +197,7 @@ run reports would mean nothing and are not shown.
 
 The same editor, in the same shape, sits in *Structure propagation*
 ([propagation.md](propagation.md)) and in *Transfer by relationship*
-([motion-4d.md](motion-4d.md#transfer-by-relationship-srcapptransfer_winrs)),
+([motion-4d.md](motion-4d.md#transfer-by-relationship-srcapptransferrs)),
 where it stands in for that tool's own transform for the one run.
 
 ## Against a 4D group
@@ -392,7 +392,7 @@ included.
 The **vector field** is the transform sampled onto a regular lattice - once,
 not per pixel on every repaint: a B-spline evaluation is 64 weighted
 lookups, a landmark warp a sum over every landmark. It is drawn in all three
-MPR views of the fixed workspace and, optionally, in the 3D window:
+MPR views of the fixed workspace and, optionally, in the 3D pane:
 
 * **Arrows** from where anatomy is to where it goes, exaggerated by an
   adjustable factor (millimetre motion is invisible at 1×) and coloured by
@@ -407,7 +407,7 @@ MPR views of the fixed workspace and, optionally, in the 3D window:
   point by the same hundreds of millimetres, and a field drawn whole shows
   that jump and hides the deformation.
 
-In the **3D window**, *Workspace B through the registration* meshes the other
+In the **3D pane**, *Workspace B through the registration* meshes the other
 workspace's structures and maps every vertex through the recovered transform,
 so both anatomies stand in one frame of reference with independent
 opacities. The field can be overlaid as 3-D arrows in the same scene.

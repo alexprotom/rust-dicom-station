@@ -123,10 +123,12 @@ TotalSegmentator CT 3 mm for a CT, `total_mr` 3 mm for an MR.
 
 **▶ Segment** runs in the background; the buttons become a progress row
 (device, bar, message, **Cancel** - effective during download, conversion
-and between inference tiles), mirrored in the sidebar. A **results dialog**
-then lists every structure found with its volume, any notes from the run
-(a crop model that found nothing, a modality mismatch), and asks what the
-checked ones become:
+and between inference tiles), mirrored in the sidebar. When the run lands,
+the module is switched on, the panel opened, and the section unfolds on its
+**Results** fold, at its end: the facts of the run and any notes from it (a
+crop model that found nothing, a modality mismatch), every structure found
+as a tick list with its volume (*All* / *None*), and what the checked ones
+become:
 
 * **Output ▸ segments** - ordinary editable segmentations in the
   segmentation series bound to the displayed image series: brush/erase/grow
@@ -143,6 +145,9 @@ checked ones become:
   `VB_T07`); the list shows both names. A structure set built from two
   models then reads as one.
 
+**Add …** files the checked structures that way and **Discard** drops the
+run; either way the fold goes, until the next run brings it back.
+
 Materialize only what you need: every mask is a full-volume voxel map
 (≈ 35 MB at 512 × 512 × 133). If the workspace is switched or modified
 during a run, the result is discarded with a message rather than applied
@@ -153,8 +158,8 @@ to the wrong volume.
 With *Run on ▸ every phase of <group>*, the run visits the phases in
 temporal order - the displayed one from memory, the others loaded from
 their files - and runs the same model on each; the progress row reads
-`Phase 30% (4/10): ...` and the bar covers the whole group. One results
-dialog then lists **every class any phase found**, with its mean volume
+`Phase 30% (4/10): ...` and the bar covers the whole group. One *Results*
+fold then lists **every class any phase found**, with its mean volume
 over the phases that have it, and the checked classes are filed **on each
 phase under the same names**:
 

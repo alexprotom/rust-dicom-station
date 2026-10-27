@@ -7,7 +7,7 @@ RDS (Rust DICOM Station) is open-source software for medical imaging and radioth
 ![overview](docs/screenshot_overview.png)
 
 *Two breathing phases of the bundled 4D-Lung patient as two rows of linked
-MPR views with their RTSTRUCT contours, and the 3D window showing the RTSTRUCT
+MPR views with their RTSTRUCT contours, and the 3D scene showing the RTSTRUCT
 surfaces together with organs auto-segmented by the built-in TotalSegmentator
 engine.*
 
@@ -115,7 +115,8 @@ See [Building from source](#building-from-source) below.
 
 * **Viewing** - parallel DICOM loading (compressed syntaxes included), true
   patient-space geometry, linked axial / sagittal / coronal views in rows you
-  lay out yourself (up to three panes each, the 3D scene among them), W/L
+  lay out yourself (up to eight panes each, the 3D scene and a chart pane
+  among them), W/L
   presets, dose colorwash and isodose lines, per-beam plan summaries, planar
   images (DX / CR / RTIMAGE), dark and light themes. Folders *or* individual
   files, and **the data does not have to be a volume**: a portal image, a
@@ -133,12 +134,12 @@ See [Building from source](#building-from-source) below.
   gantry tilt, frame of reference, kV / mAs / CTDIvol / kernel, rescale and
   units - with whatever wants a second look named and explained, and a side
   by side of what two workspaces disagree about before you register them.
-* **Playback** - ▶ on every viewport: through the slices of a view, and
+* **Image playback** - ▶ on every viewport: through the slices of a view, and
   through the phases of a 4D group. Playing a group carries the structure
   set, the segmentation series and the dose of each phase with it and walks
   the selection down the group in the tree; the phases are read into memory
   once (under a budget you set) so it runs as a cine rather than a
-  slideshow, and the 3D window breathes with it.
+  slideshow, and the 3D pane breathes with it.
 * **PACS** - *Tools ▸ PACS* shows this station's PACS as cohorts ▸
   patients ▸ studies ▸ series, listed without opening a DICOM file. Several
   rows can be selected with the mouse and the keyboard (Ctrl and Shift
@@ -173,13 +174,15 @@ See [Building from source](#building-from-source) below.
   transfer by relationship.
 * **Structure propagation** - contours and segmentations carried through a
   registration by per-voxel pull-back (no holes, any two grids), optionally
-  refined on an enclosing structure first.
+  refined on an enclosing structure first; or transferred by relationship,
+  at the same offset from a reference structure.
 * **4D / motion** - phases recognised into 4D groups; the reference phase
   registered to every other, targets propagated and their centroids tracked;
   peak-to-peak, drift, correlation with a reference structure, ITV
-  generation, a results window with run-vs-run comparison and CSV export;
-  structure comparison (Dice, HD95, surface distance) and transfer by
-  relationship.
+  generation, the results with run-vs-run comparison and CSV export, their
+  charts in a pane beside the images; structure comparison (Dice, HD95,
+  surface distance) and a details table of every structure, each a module
+  that lights the structures it is about in the views.
 * **Workflows** - the program's own steps wired into a graph in a node
   editor (*Workflows* in the menu bar): read a folder, find the image, the
   4D group and the structures, segment (by class or by name), register,
@@ -204,7 +207,8 @@ See [Building from source](#building-from-source) below.
 * **Dose-volume histograms** - cumulative and differential DVHs of any
   structures against any dose, sampled on the structure's own lattice;
   `D95%` / `D2cc` / `V20Gy` metrics, protocol constraint checking, CSV
-  export; verified against an analytic phantom.
+  export; the curves in the row's chart pane, maximizable to the whole
+  window; verified against an analytic phantom.
 * **Segmentation** - spacing-aware 2D / 3D brush and eraser, geodesic region
   growing, undo, live 3D surfaces, mask ⇄ RTSTRUCT, DICOM SEG import and
   export (binary and fractional). The Structure editor edits a segment as a
@@ -246,8 +250,9 @@ See [Building from source](#building-from-source) below.
 * **Tools** - DICOM export with an editable tag table, a model manager for
   every downloadable weight, a folder anonymizer with consistent UID
   regeneration, a synthetic RT-study generator; every tool window can be
-  moved to its own monitor, and the structure tools live in the modules
-  panel.
+  moved to its own monitor, and everything that works on the images on
+  screen - the structure tools, motion, DVH, the workflow run - lives in the
+  modules panel.
 
 ## Architecture
 

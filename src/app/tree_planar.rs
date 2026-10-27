@@ -1,26 +1,41 @@
 //! The data tree's planar images section (radiographs, RT images and DRRs)
 //! and its *Additional* section (secondary captures, a scanner's protocol
 //! and dose report pages, scanned documents: objects with pixels that are
-//! no image of the patient), and the panes they are shown in.
+//! no image of the patient), and the panes they are shown in. Both are
+//! categories of a study, like its doses and plans: each object is filed
+//! under the study its header names ([`super::tree_model::tree_layout`]).
 
 use super::*;
 
+use super::tree_model::StudyNode;
 use crate::extras::PlanarKind;
 
 impl ViewerApp {
-    /// Both sections: the projections, then the additional objects, each
-    /// only when the workspace holds some.
-    pub(super) fn planar_section(&mut self, ui: &mut egui::Ui, slot: usize) {
-        self.planar_kind_section(ui, slot, PlanarKind::Projection);
-        self.planar_kind_section(ui, slot, PlanarKind::Additional);
+    /// Both sections of one study: the projections, then the additional
+    /// objects, each only when the study holds some.
+    pub(super) fn planar_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        slot: usize,
+        at: (usize, usize),
+        node: &StudyNode,
+    ) {
+        self.planar_kind_section(ui, slot, at, PlanarKind::Projection, &node.planar);
+        self.planar_kind_section(ui, slot, at, PlanarKind::Additional, &node.additional);
     }
 
     /// The images of one kind, drawn like image series: a click shows the
     /// image in a pane of the row (a planar pane for a radiograph, the
     /// additional pane for the rest), and a `P1` / `P2` / `A` badge says
     /// which pane holds it.
-    fn planar_kind_section(&mut self, ui: &mut egui::Ui, slot: usize, kind: PlanarKind) {
-        let images = self.planar_images_of(slot, kind);
+    fn planar_kind_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        slot: usize,
+        (pi, si): (usize, usize),
+        kind: PlanarKind,
+        images: &[usize],
+    ) {
         let n = images.len();
         if n == 0 {
             return;
@@ -73,7 +88,7 @@ impl ViewerApp {
         {
             let study = self.slots[slot].study.as_ref().unwrap();
             egui::CollapsingHeader::new(title)
-                .id_salt((salt, slot))
+                .id_salt((salt, slot, pi, si))
                 .default_open(sole_content)
                 .show(ui, |ui| {
                     for (row, &i) in images.iter().enumerate() {

@@ -87,18 +87,19 @@ pub(super) fn glyph_button(ui: &mut egui::Ui, on: bool, glyph: &str, tip: &str) 
 }
 
 /// `(pick)` and a combo over `list`, choosing by index - the operand picker
-/// of the compare and transfer windows.
+/// of the comparison section and the transfer fold.
 pub(super) fn index_picker(
     ui: &mut egui::Ui,
     salt: &str,
     item: &mut Option<usize>,
     list: &[String],
+    width: f32,
 ) {
     let sel = item
         .and_then(|i| list.get(i).cloned())
         .unwrap_or_else(|| "(pick)".into());
     egui::ComboBox::from_id_salt(salt.to_string())
-        .width(260.0)
+        .width(width)
         .selected_text(sel)
         .show_ui(ui, |ui| {
             for (i, l) in list.iter().enumerate() {

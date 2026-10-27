@@ -26,9 +26,41 @@ is every tablet sold in the last few years. With a computer and `adb`:
 adb install rust-dicom-station-<version>-android-arm64.apk
 ```
 
-A newer APK signed with the same key installs over the old one and keeps
-its settings, archive and models. One signed with a different key (a
-release over a test build, say) does not: uninstall the old one first.
+### Updating
+
+A newer APK, a release or a [nightly](release-versioning.md#nightly-builds),
+installs over the installed one: open it, and Android asks *Do you want to
+update this app?* rather than to install it. The settings, the archive and
+the downloaded models stay where they were. With `adb`, `adb install -r`.
+
+That works because every APK is signed with the same release key and
+carries a higher `versionCode` than every one built before it
+([Signing](#signing)). An APK signed with another key is refused: Android
+then does nothing at all when the file is opened, or says *App not
+installed* (`adb` says `INSTALL_FAILED_UPDATE_INCOMPATIBLE`), and the only
+way past it is to uninstall first, which deletes the app's settings and
+data.
+
+**Once, when moving to the release key.** Every APK built before the
+release key existed - every release and nightly up to 0.11.8, and every
+local build - was signed with a throwaway key, so the first release-signed
+APK cannot update any of them. Uninstall the old app that one time,
+install the new APK, and from then on each new one installs over the
+last. To keep the models (gigabytes, otherwise downloaded again) and the
+archive through that uninstall, copy the data folder off the tablet first
+and back afterwards ([Where the files are](#where-the-files-are)):
+
+```text
+adb pull /storage/emulated/0/Android/data/io.github.alexprotom.rustdicomstation/files rds-data
+adb uninstall io.github.alexprotom.rustdicomstation
+adb install rust-dicom-station-<version>-android-arm64.apk
+# start the app once, so that its folder exists again, then
+adb push rds-data/. /storage/emulated/0/Android/data/io.github.alexprotom.rustdicomstation/files/
+```
+
+A file manager or a USB connection to a computer does the same without
+`adb`. The settings (`viewer_settings.txt`, in the private folder) cannot be
+copied this way; set them again once.
 
 ### All files access
 
@@ -156,9 +188,11 @@ build graph does not change. It holds:
   with all files access), `targetSdkVersion` 35, the `INTERNET` and
   `MANAGE_EXTERNAL_STORAGE` permissions, OpenGL ES 3 required and Vulkan
   preferred, `allowBackup="false"`. Versions are filled in by the build
-  script from the viewer's `Cargo.toml`: `versionName` is the crate
-  version and `versionCode` is `major * 10000 + minor * 100 + patch`, so
-  nothing in the folder is bumped on a release.
+  script: `versionName` is the crate version from the viewer's
+  `Cargo.toml` and `versionCode` the build time ([Signing](#signing)), so
+  nothing in the folder is bumped on a release. The package name,
+  `io.github.alexprotom.rustdicomstation`, never changes: to Android
+  another name is another app, installed beside this one.
 * **`res/mipmap-*/ic_launcher.png`.** The launcher icon, the project's
   `assets/rust-dicom-station.png` at the five densities Android reads.
 * **`.cargo/config.toml`.** One linker flag: 16 KB page alignment of the
@@ -211,11 +245,67 @@ Without the SDK installed, the script also accepts `aapt2`, `zipalign` and
 lists `density` among the configuration changes the activity handles
 itself, which older platforms do not know).
 
-The APK is signed with a key made on the spot unless `RDS_KEYSTORE`,
-`RDS_KEYSTORE_PASSWORD` and `RDS_KEY_ALIAS` (and `RDS_KEY_PASSWORD`, when
-it differs) name a keystore. A test build signed with the throwaway key
-installs and runs like any other; it just does not update an installation
-signed with the release key, and the release key does not update it.
+## Signing
+
+Android installs an APK over the installed app only when two things hold:
+
+* **the same signing key.** A package signed with another key is refused
+  as an update, whatever its version. So there is exactly one key, the
+  release key, and every APK that is meant to be installed is signed with
+  it: the releases, the nightlies and the builds made on a computer.
+* **a `versionCode` not lower than the installed one.** `build-apk.sh`
+  sets it to the build time in minutes since 2024-01-01 UTC (about 1.5
+  million in 2026; iOS's `CFBundleVersion` ends in the same number), so a
+  later build always installs over an earlier one, whichever branch it
+  came from: a nightly over the last release, the next release over the
+  nightly, a local build over both. `RDS_VERSION_CODE` overrides it.
+  The `versionName` Android shows is the crate version, a nightly's
+  suffix included.
+
+Make the key once, with
+[packaging/android/release-key.sh](../packaging/android/release-key.sh). It
+needs `keytool` from a JDK or, without one, `openssl`, which Git for Windows
+ships in its Git Bash (macOS and Linux have it too), and `gh` for the
+secrets; no Android SDK:
+
+```text
+bash packaging/android/release-key.sh new        # the key and its settings file
+bash packaging/android/release-key.sh secrets    # the same key into CI's four secrets (gh)
+bash packaging/android/release-key.sh show       # its certificate's SHA-256
+```
+
+`new` writes two files to `~/.config/rust-dicom-station/`, outside the
+repository - nothing about the key is ever committed:
+`android-release.keystore` (PKCS12, RSA 4096, alias `rds`, a random
+password) and `android-signing.env`, the three lines `build-apk.sh` reads
+when `RDS_KEYSTORE` is not set:
+
+```text
+RDS_KEYSTORE='/home/me/.config/rust-dicom-station/android-release.keystore'
+RDS_KEYSTORE_PASSWORD='...'
+RDS_KEY_ALIAS='rds'
+```
+
+It refuses to overwrite a keystore that exists. **Back both files up**; a
+password manager holds them well. A lost key cannot be recovered, and
+replacing it costs one more uninstall on every device. Another computer
+that builds APKs gets a copy of the two files (or points `RDS_SIGNING_ENV`
+at its copy of the second, or sets `RDS_KEYSTORE`, `RDS_KEYSTORE_PASSWORD`,
+`RDS_KEY_ALIAS` and, when it differs, `RDS_KEY_PASSWORD` itself).
+
+The key is made on a computer rather than by a workflow on purpose. A
+secret can be written but never read back, so a key made on a runner and
+stored only in the secrets would have no backup and could sign nothing
+outside CI; getting it off the runner would mean an artifact, which anyone
+can download from a public repository; and the workflow's own token may
+not write secrets at all, so it would also need a personal access token
+with that right.
+
+Without a release key the script still builds, signed with a debug key it
+makes once into `packaging/android/out/debug.keystore`, and says so in a
+warning: such an APK installs on a tablet without the app, but neither
+updates nor is updated by a release-signed one. `--release-key` makes that
+an error instead; CI passes it for every release and nightly.
 
 ## Releasing
 
@@ -227,24 +317,24 @@ with the version on every push to `main`, then attaches the APK to the
 GitHub Release beside the Windows installer and the AppImage, listed in
 `SHA256SUMS`.
 
-The release key lives in four repository secrets (*Settings > Secrets and
-variables > Actions*):
+The nightly workflow calls it the same way on every push to `nightly`,
+for the rolling pre-release.
+
+CI signs with the [release key](#signing), from four repository secrets
+(*Settings > Secrets and variables > Actions*), which
+`release-key.sh secrets` sets:
 
 | Secret | Value |
 |---|---|
-| `ANDROID_KEYSTORE_BASE64` | The keystore file, base64-encoded (`base64 -w0 release.keystore`) |
+| `ANDROID_KEYSTORE_BASE64` | The keystore file, base64-encoded |
 | `ANDROID_KEYSTORE_PASSWORD` | Its password |
-| `ANDROID_KEY_ALIAS` | The key's alias in it |
-| `ANDROID_KEY_PASSWORD` | The key's password (the same as the keystore's, usually) |
+| `ANDROID_KEY_ALIAS` | The key's alias in it (`rds`) |
+| `ANDROID_KEY_PASSWORD` | The key's password (the keystore's, for PKCS12) |
 
-Make the keystore once and keep it: an APK can only ever be updated in
-place by a package signed with the same key.
-
-```text
-keytool -genkeypair -keystore release.keystore -alias rds -keyalg RSA -keysize 4096 -validity 10000
-```
-
-Until the secrets exist the workflow signs with a debug key made on the
-runner, which differs from run to run: each such release has to be
-uninstalled before the next is installed. The workflow says which key it
-used in the *Release keystore* step.
+A release or a nightly **fails** without them, in the *Release keystore*
+step: an APK signed with a debug key made on the runner differs from run to
+run and installs over nothing, which is why every earlier build needed an
+uninstall. A manual *Run workflow* still builds without them, with a
+warning. *Inspect the APK* prints the certificate the APK was signed with
+(`apksigner verify --print-certs`); its SHA-256 is the one
+`release-key.sh show` prints.

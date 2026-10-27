@@ -536,7 +536,7 @@ impl ViewerApp {
                         idx,
                     })
                     .collect();
-                self.open_dvh_dialog(from.slot, seed);
+                self.seed_dvh(from.slot, seed);
             }
             ItemAction::Map { from, items } => self.map_items_across(from, &items),
             ItemAction::Transfer {

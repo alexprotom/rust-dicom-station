@@ -729,7 +729,6 @@ mod tests {
 
     #[test]
     fn the_tool_names_itself_like_the_others() {
-        assert_eq!(COMBINE.title(0), "∪ Combine structures - workspace A");
         assert_eq!(COMBINE.menu_entry(), "∪ Combine structures");
     }
 

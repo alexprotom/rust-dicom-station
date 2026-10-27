@@ -98,7 +98,7 @@ pub(super) fn matrix_editor_multi(
                 if ui
                     .selectable_label(*pick == i, &c.label)
                     .on_hover_text(
-                        "Show this transform in the grid. With the switch below off the                          grid follows whichever is picked; with it on, *From the result*                          copies this one in.",
+                        "Show this transform in the grid. With the switch below off the grid follows whichever is picked; with it on, *From the result* copies this one in.",
                     )
                     .clicked()
                 {

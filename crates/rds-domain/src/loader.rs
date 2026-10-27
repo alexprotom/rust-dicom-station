@@ -186,6 +186,15 @@ pub struct SeriesInfo {
 }
 
 impl LoadedStudy {
+    /// The Study Instance UID of the series on display: what an object
+    /// made from it here (a DRR) is filed under. Empty with no series.
+    pub fn displayed_study_uid(&self) -> String {
+        self.series
+            .get(self.active_series)
+            .map(|se| se.study_uid.clone())
+            .unwrap_or_default()
+    }
+
     /// Re-detect the 4D groups after the series list changed, keeping
     /// custom groups (see [`crate::fourd::refresh`]).
     pub fn refresh_fourd(&mut self) {

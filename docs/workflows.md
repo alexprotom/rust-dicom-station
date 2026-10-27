@@ -26,7 +26,7 @@ saved workflows too (`list_workflows`, `run_workflow`; see [mcp.md](mcp.md)).
 | 📂 Load | Opens a workflow file (`.rdsflow`) in the editor. The dialog starts in your workflow folder. |
 | 🕐 Last saved | The five workflow files saved last, newest first. |
 | Examples | Workflows that ship with the program, opened as unsaved copies to adapt. |
-| Show the editor / Show the run | Brings back a closed editor or run window; the workflow and the run stay in memory while their windows are closed. |
+| Show the editor / Show the run in progress / Show the last run | Brings back a closed editor window, or unfolds the *Workflows* module on the run; the workflow and the run stay in memory while the window is closed or the section folded. |
 
 Your workflows are kept in `<data folder>/user_data/workflows`
 (`%LOCALAPPDATA%\RustDICOMStation\user_data\workflows` on Windows,
@@ -139,7 +139,7 @@ bar carries a `*` while there are unsaved changes.
 | ⏩ Propagate to 4D group | structures, anchor (optional), group | structures, registrations, report | One image onto every phase, one registration per phase. With an anchor - a structure on the source image that every phase also has, the heart - the run is anchored: centroids matched, a rigid fit on the anchor plus a margin (by contours or by intensity), then a local deformable refinement, and the anchor's own landed copy (`<anchor>_prop`) is compared with each phase's contour (Dice, HD95, centroid distance, a verdict). Without one, a plain deformable run. Filed in each phase's own structure set (or a segmentation series). See [star-target-propagation.md](star-target-propagation.md). |
 | 📈 Motion and ITV | targets, reference (optional), group (optional) | structures (the ITVs), report | The 4D motion pipeline of [motion-4d.md](motion-4d.md): each target (and the reference structure) as contoured on every phase when every phase has it, rigidly (around each structure, or one global body) and deformably; centroid tracks, peak-to-peak, correlation with the reference, registration QA; the ITV per target and model with an optional margin, filed on the reference phase. |
 | 📊 DVH | structures (several) | report | Dose-volume histograms against a dose of the study (by words of its label, else the first): the metrics listed (`D95%, D2cc, V20Gy, Dmean`), and with a protocol (`Heart Dmean < 5`, one per line, or a protocol file) which constraints hold. Optionally the cumulative curves. |
-| 📐 Dose estimation | structures (several) | report | One row of dose metrics per structure against the physical or the RBE-weighted dose, as the *Dose estimation* module shows it. |
+| 📐 Dose estimation | structures (several) | report | One row of dose metrics per structure against the physical or the RBE-weighted dose, as the *Dose analysis* module shows it. |
 | 🔮 Synthetic CT | image | image (the sCT), report | A CT synthesized from the MR or CBCT ([synthetic-ct.md](synthetic-ct.md)): the app (`sct_mr`, `sct_cbct`, `sct_mr_cbct`, `sct_mr_dixon`, or a checkpoint folder's), CV_0 or every checkpoint, 0 to 2 mirrors, what sets the air outside (`network`, `classical`, `none`, or a structure on the image), optionally the members' spread. Written as a new CT series of the study into a folder of the run; the image it puts out is that series, which the next steps take like any image. |
 | ⚖ Evaluate synthetic CT | sCT, reference, registration (optional), mask (optional) | report | The sCT against a CT of the same patient, resampled onto the sCT through the registration (either way round) or on the same frame of reference: MAE, ME, RMSE per HU class, PSNR, SSIM inside the mask (the reference's body when none arrives), optionally the water-equivalent thickness and TotalSegmentator's organ Dice, and the difference as a series. |
 | ☢ DRR | image | report | Radiographs of the image at the gantry angles listed, or at the plan's beams: PNG files in the run folder, and optionally planar images of the study. |
@@ -161,8 +161,16 @@ steps downstream are handed the names as landed.
 
 ## Running
 
-**▶ Run** in the editor opens the run window on the workflow as it is on
-the canvas.
+A run is watched from the **Workflows** module of the right panel
+(*Modules ▶ Workflows*, F10), beside the workspaces it drives. **▶ Run** in
+the editor unfolds the section on the workflow as it is on the canvas. The
+section can also pick the workflow itself, without the editor: its **📂
+Workflow** menu has *Load…*, *🕐 Last saved* and *Examples*; **🔀 New**
+opens the editor on an empty canvas, and **✏ Edit** opens it on the
+workflow picked (its file, the example, or the canvas that ran it). Below
+that, everything the run needs and leaves, as follows. When a run finishes
+while the section is not on screen (the module off, or the right panel
+hidden), a notice says so.
 
 **Inputs.** One line per folder node, filled with the folder the node
 names. Change it here to run the same workflow on other data: the file is
@@ -180,12 +188,13 @@ palette), with ` (2)` added if it exists. The default root is
   workspace its folder node asks for, else an empty one, else the next one
   the run is not using. A study of yours in a workspace the run takes is
   kept aside as it was (views, cursor, the structures shown) and **Put back
-  A and B** in the finished window returns it; loading something else into
+  A and B** in the finished section returns it; loading something else into
   that workspace instead lets it go. After every step the viewer shows what the step
   did: the image it worked on is displayed, the structure set it filed into
   is the active one, the tree lists what it added, a 4D group is stepped
-  through phase by phase as it is segmented, and the motion results window
-  opens when the motion is measured. The run then waits - *Show each step
+  through phase by phase as it is segmented, and the motion is shown when
+  it is measured - the *Structure motion* module's results unfolded, the
+  charts in the row's chart pane. The run then waits - *Show each step
   for* a few seconds, or, with *Wait for me after each step*, until *Next
   step*. While the run is going, the workspaces it shows are its own: every
   step replaces the study with the run's copy.
@@ -205,7 +214,7 @@ at once. When the last run's steps can be taken over (below), they are, and
 the rows do not run at all; a run whose rows ran side by side keeps nothing
 to take over, so the next run starts from what the last plain run left.
 
-*Take over unchanged steps from the last run* (on by default): the window
+*Take over unchanged steps from the last run* (on by default): the section
 keeps what every step of its last run left, filed under a key made of the
 step's settings, its wires, the folders' contents, and the keys of the
 steps it reads from. The next run takes over each step whose key it finds
@@ -223,22 +232,23 @@ memory).
 stay in memory for the next step that reads them, the least used let go
 past the budget.
 
-While it runs, the window shows the step, its progress bar and message,
+While it runs, the section shows the step, its progress bar and message,
 every step's state and the log; **⏹ Cancel** stops it at the next check.
 The first step that fails ends the run: nothing after it runs, and what the
 earlier steps made stays (to look at, and in the run folder). When it is
-done the window lists every step with what it said, the reports with their
-tables (📋 copies one as CSV; 📈 opens a motion report in *Motion
-results*), and the run folder's path.
+done the section lists every step with what it said, the reports with their
+tables (📋 copies one as CSV; **📈 Open in Structure motion** unfolds a motion
+report in the *Structure motion* module, its charts in the chart pane), and
+the run folder's path.
 
 ### Batches
 
 A workflow whose first step is **📁 DICOM folders** runs once for every
 subfolder of the folder given that matches the pattern, always in the
-background. The run dialog says how many cases it found. Each case is a
+background. The run section says how many cases it found. Each case is a
 plain run in a folder of its own, with the folders step reading that
 subfolder and titled after it; a case that fails is listed with its reason
-and the next one runs. The finished window lists the cases, and every
+and the next one runs. The finished run lists the cases, and every
 report table comes once more with a *Case* column and a row per case:
 
 ```
@@ -394,7 +404,7 @@ crates/rds-domain/src/workflow/graph/
 src/app/
   workflow_edit.rs   the editor window: the egui-snarl canvas, palette, inspector, file
                      actions, history, clipboard, frames, the map
-  workflow_run.rs    the run window, the job, showing steps in the workspaces (and
+  workflow_run.rs    the Workflows module (its section), the job, showing steps in the workspaces (and
                      parking the user's studies), reruns, results
 crates/rds-domain/src/mcp/tools/workflows.rs   list_workflows, run_workflow
 examples/workflow_cli.rs     the headless runner

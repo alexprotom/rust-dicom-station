@@ -70,8 +70,14 @@ impl ViewerApp {
             set: self.slots[slot].active_structs,
             idx: roi,
         };
+        self.localize_item(slot, item)
+    }
+
+    /// Centre the views on any structure or segment of a workspace: a point
+    /// on itself, anything else on its centre of gravity.
+    pub(super) fn localize_item(&mut self, slot: usize, item: combine::ItemRef) -> bool {
         // A POI is its own centre, and rasterizing one would find nothing.
-        if let Some(p) = self.slots[slot].roi(item.set, roi).and_then(|r| r.point()) {
+        if let Some((_, p)) = self.poi_of_item(slot, item) {
             return self.set_cursor_patient(slot, p);
         }
         let Some((mask, grid, _, _)) = self.item_mask_grid(slot, item) else {
@@ -87,7 +93,7 @@ impl ViewerApp {
     }
 
     /// Put the crosshair on a patient point of this workspace.
-    fn set_cursor_patient(&mut self, slot: usize, p: Vec3) -> bool {
+    pub(super) fn set_cursor_patient(&mut self, slot: usize, p: Vec3) -> bool {
         let Some(study) = self.slots[slot].study.as_ref() else {
             return false;
         };

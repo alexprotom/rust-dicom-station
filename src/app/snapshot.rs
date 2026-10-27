@@ -423,6 +423,36 @@ impl ViewerApp {
         Ok(self.snap.is_some())
     }
 
+    /// Ask for a file and queue a picture of one rect of the window - a
+    /// pane's own *Save image* - as a PNG at the dialog's usual 300 DPI.
+    pub(super) fn save_rect_image(&mut self, rect: Rect, ppp: f32, name: &str) {
+        let crop = [
+            (rect.left() * ppp).round().max(0.0) as usize,
+            (rect.top() * ppp).round().max(0.0) as usize,
+            (rect.width() * ppp).round().max(1.0) as usize,
+            (rect.height() * ppp).round().max(1.0) as usize,
+        ];
+        let d = SaveImgDialog::default();
+        let (format, dpi, quality) = (d.format, d.dpi, d.quality);
+        self.ask_save(
+            "Save the image",
+            name.to_string(),
+            None,
+            None,
+            move |app, dest| {
+                app.snap = Some(PendingShot {
+                    crop,
+                    dest,
+                    format,
+                    dpi,
+                    quality,
+                    wait: 1,
+                    asked: false,
+                });
+            },
+        );
+    }
+
     /// Ask for the queued picture, and write it when it arrives.
     pub(super) fn snapshot_tick(
         &mut self,

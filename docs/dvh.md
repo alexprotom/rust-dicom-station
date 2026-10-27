@@ -5,14 +5,21 @@ objects, with the metrics table, protocol constraint checking and CSV export.
 
 ## Opening it
 
-*Tools ▶ 📊 Dose-volume histograms…*, or tick structures in the data tree,
-right-click and choose **📊 Plot … on a DVH**: the window opens with them
-already picked and the viewport's dose object already selected.
+*Modules ▶ Dose-volume histograms* (right panel, F10), or tick structures in
+the data tree, right-click and choose **📊 Plot … on a DVH**: the structures
+are added to the plot, with the viewport's dose object already selected, and
+the section unfolds.
 
-Like every tool window it goes through [the detach
-mechanism](architecture.md#tool-windows): ⧉ puts it on its own top-level
-window - for a DVH the normal way to work, curves on one screen, images on the
-other.
+The section holds the pickers, the axes, the metrics table, the constraints
+and the exports; the plot is in the row's **chart pane**
+([viewer.md](viewer.md#the-rows-and-their-panes)), in the row of the
+workspace whose dose was picked. The chart goes into the row when curves land
+after a change you made - not after every recompute, so a chart you took out
+stays out - and the **📈** on the section header brings it back. ⛶ maximizes
+it to the whole window, which on a large monitor is the way to read a plan:
+curves across the screen, the table beside them. The cumulative curve under
+the pointer lights its structure in the views, drawn thicker, so the line one
+is reading is found in the images at a glance.
 
 ## What it computes
 
@@ -45,8 +52,8 @@ irradiated by *this* dose object" - and, since a DVH silently computed over 60
 structure that extends outside the grid and by how much.
 
 **Curves older than the geometry.** A structure edited after the curves were
-computed makes every number in the window describe something that is no
-longer on the screen. The window says so, in a line above the table, and
+computed makes every number in the section describe something that is no
+longer on the screen. The section says so, in a line above the table, and
 leaves the numbers alone: recomputing behind the user's back would replace a
 comparison they were in the middle of making.
 
@@ -73,7 +80,7 @@ Both are switchable, independently:
 | **Volume** | per cent of each structure, or cm³ |
 
 The reference defaults to the prescription of the first plan that declares
-one, and the window says which plan that was; ↺ restores it after you have
+one, and the section says which plan that was; ↺ restores it after you have
 typed something else. Dose-valued table columns follow the same switch, so
 `Dmean` reads in per cent when the axis does.
 
@@ -92,9 +99,9 @@ included ([volumes.md](volumes.md#5-other-volumes)):
 | `V20`, `V20Gy` | percentage of the structure at or above that dose |
 | `V20cc` | the same as an absolute volume |
 
-## The Dose estimation module
+## The Dose analysis module
 
-The same numbers without the plot: *Modules ▶ Dose estimation* (right
+The same numbers without the plot: *Modules ▶ Dose analysis* (right
 panel, F10) is one table, one row per **ticked** structure of the active set
 of its workspace, against one dose. Volume, Dmean, Dmin and Dmax are there
 to start with, then D95 % and D2 %; the box and its `+` add any column of
@@ -123,11 +130,11 @@ The log is not only a table of numbers: each step also records where the
 structures stood when those numbers were computed, so a **Step** transport
 above the table can show any of them again. ⏮ and ⏭ walk the log, the
 scrubber jumps to a step, and **▶** plays it - the structures move in the
-views and in the 3D window as they were moved, and the step being shown is
+views and in the 3D pane as they were moved, and the step being shown is
 marked down the left of the table, so what one reads matches what one sees.
 *Now* returns to the last step, where the structures actually stand; the
 speed and what happens at the end of the log (loop, bounce, once) are in the
-[Playback](viewer.md#playing-through-slices-and-phases) module. The
+[Image playback](viewer.md#playing-through-slices-and-phases) module. The
 geometry is stored sparsely - the first step carries every structure, each
 later one only what moved - and the step counter's tooltip says how much the
 log is holding; *Clear log* gives it back.

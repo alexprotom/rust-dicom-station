@@ -92,6 +92,7 @@ impl ViewerApp {
                     if self.is_open(mslot)
                         && self.slots[mslot].study.is_some()
                         && self.pane_available(mslot, kind)
+                        && !self.is_detached(mslot, kind)
                     {
                         let full = ui.available_rect_before_wrap();
                         self.note_row_rect(mslot, full);
@@ -156,6 +157,7 @@ impl ViewerApp {
         match kind {
             PaneKind::Planar(k) => self.planar_drawn(slot, k as usize),
             PaneKind::Additional => self.planar_drawn(slot, super::planar::ADDITIONAL_PANE),
+            PaneKind::Chart => self.chart_source(slot).is_some(),
             _ => true,
         }
     }
@@ -167,7 +169,27 @@ impl ViewerApp {
     }
 
     pub(super) fn study_row(&mut self, ui: &mut egui::Ui, slot: usize, row_rect: Rect) {
-        let panes = self.row_panes(slot);
+        // A pane in a window of its own leaves the row, which closes up.
+        let panes: Vec<PaneKind> = self
+            .row_panes(slot)
+            .into_iter()
+            .filter(|k| !self.is_detached(slot, *k))
+            .collect();
+        if panes.is_empty() {
+            let painter = ui.painter_at(row_rect);
+            painter.rect_filled(row_rect, 0.0, empty_row_color(ui.visuals()));
+            painter.text(
+                row_rect.center(),
+                Align2::CENTER_CENTER,
+                format!(
+                    "Every view of workspace {} is in a window of its own",
+                    SLOT_NAMES[slot]
+                ),
+                FontId::proportional(14.0),
+                ui.visuals().text_color(),
+            );
+            return;
+        }
         // An equal share each: two panes are two large images, not two and
         // an empty third.
         let col_w = row_rect.width() / panes.len() as f32;
@@ -180,10 +202,21 @@ impl ViewerApp {
         }
     }
 
-    /// One pane of a row: a plane of the volume, or the surface scene.
-    fn pane(&mut self, ui: &mut egui::Ui, slot: usize, kind: PaneKind, rect: Rect, first: bool) {
-        // Where it landed, for a recording started later.
-        self.note_pane_rect(slot, kind, rect);
+    /// One pane of a row (or of its own window): a plane of the volume,
+    /// the surface scene, a planar image, a report, a chart.
+    pub(super) fn pane(
+        &mut self,
+        ui: &mut egui::Ui,
+        slot: usize,
+        kind: PaneKind,
+        rect: Rect,
+        first: bool,
+    ) {
+        // Where it landed, for a recording started later - which films the
+        // main window, so not a pane that is in a window of its own.
+        if !self.is_detached(slot, kind) {
+            self.note_pane_rect(slot, kind, rect);
+        }
         match kind {
             PaneKind::Plane(p) => self.view_cell(ui, slot, super::plane_index(p), rect, first),
             PaneKind::Scene3d => self.scene_pane(ui, slot, rect),
@@ -191,6 +224,7 @@ impl ViewerApp {
             PaneKind::Additional => {
                 self.planar_pane(ui, slot, super::planar::ADDITIONAL_PANE, rect)
             }
+            PaneKind::Chart => self.chart_pane(ui, slot, rect),
         }
     }
 
@@ -357,9 +391,14 @@ impl ViewerApp {
                         resp.on_hover_text("A row has to show something");
                     } else if kind == PaneKind::Scene3d {
                         resp.on_hover_text(
-                            "Draw this workspace's surfaces in the row instead of in a \
-                             window; the 3D button in the toolbar steps aside while it \
-                             is here",
+                            "This workspace's structure and segmentation surfaces, in the \
+                             row; the toolbar's 3D button puts it in and takes it out too",
+                        );
+                    } else if kind == PaneKind::Chart {
+                        resp.on_hover_text(
+                            "The chart of a module: the dose-volume histograms, the curves \
+                             of a motion run. Not drawn while no module has given it \
+                             anything; the module that computes a chart puts it here.",
                         );
                     } else if matches!(kind, PaneKind::Planar(_)) {
                         resp.on_hover_text(
@@ -851,14 +890,12 @@ impl ViewerApp {
         // cached geometry stays, it simply is not painted.
         if self.show_contours && slot_state.structs_shown {
             if let Some(ss) = slot_state.active_structures() {
-                let edited = self
-                    .seg_tool
-                    .draws_contours()
-                    .then(|| self.edit_target(slot).map(|(_, r)| r))
-                    .flatten();
+                // The structure the contour tools edit, and whatever the
+                // unfolded module sections are about, drawn thicker.
+                let focused = self.focused_rois(slot);
                 let stroke_of = |ri: usize| -> Option<Stroke> {
                     let roi = ss.rois.get(ri)?;
-                    let width = if edited == Some(ri) { 3.0 } else { 1.8 };
+                    let width = if focused.contains(&ri) { 3.0 } else { 1.8 };
                     Some(Stroke::new(width, theme::rgb(roi.color)))
                 };
                 // The crossing strokes of a sagittal or coronal view, as one
@@ -1137,7 +1174,7 @@ impl ViewerApp {
         // The Structure editor's drawn axis: a white line one slice thick,
         // in every view of its workspace. It is the same 3-D line
         // everywhere, so the other views show where it runs.
-        if self.module_structures && struct_tools::axis_live(&self.tools) {
+        if self.module_on(Module::StructureEditor) && struct_tools::axis_live(&self.tools) {
             if let Some(ax) = self.tools.axis.filter(|a| a.slot == slot) {
                 let pa = vol.voxel_to_plane_pixel(plane, ax.a);
                 let pb = vol.voxel_to_plane_pixel(plane, ax.b);
@@ -1497,7 +1534,7 @@ impl ViewerApp {
         // registered *after* the viewport interaction: the last widget at a
         // position is the topmost one, so they get the hover - and show their
         // tooltips - instead of the full-viewport rectangle underneath.
-        let is_max = self.maximized == Some((slot, PaneKind::Plane(plane)));
+        let is_max = self.pane_is_max(ui, slot, PaneKind::Plane(plane));
         let bsize = egui::vec2(24.0, 20.0);
         let by = rect.top() + 22.0; // below the slice counter
         let max_rect = Rect::from_min_size(Pos2::new(rect.right() - bsize.x - 4.0, by), bsize);
@@ -1505,7 +1542,11 @@ impl ViewerApp {
         // pane with an arrow and a maximize and nothing else over the image.
         let folded = self.pane_buttons_hidden;
         let fold_rect = Rect::from_min_size(Pos2::new(max_rect.left() - bsize.x - 4.0, by), bsize);
-        let fit_rect = Rect::from_min_size(Pos2::new(fold_rect.left() - bsize.x - 4.0, by), bsize);
+        // Out of the row into a window of its own, and back.
+        let detach_rect =
+            Rect::from_min_size(Pos2::new(fold_rect.left() - bsize.x - 4.0, by), bsize);
+        let fit_rect =
+            Rect::from_min_size(Pos2::new(detach_rect.left() - bsize.x - 4.0, by), bsize);
         // Playing through the slices of this view, and through the phases of
         // the 4D group the workspace is showing. Each button exists only where
         // there is something to play: a single-slice series has no stack to
@@ -1544,7 +1585,8 @@ impl ViewerApp {
                 max_rect.contains(p)
                     || fold_rect.contains(p)
                     || (!folded
-                        && (fit_rect.contains(p)
+                        && (detach_rect.contains(p)
+                            || fit_rect.contains(p)
                             || hand_rect.contains(p)
                             || zout_rect.contains(p)
                             || zin_rect.contains(p)
@@ -1590,7 +1632,9 @@ impl ViewerApp {
         let mut hand_resp = None;
         let mut zout_resp = None;
         let mut zin_resp = None;
+        let mut clicked_detach = false;
         if !folded {
+            clicked_detach = self.detach_button(ui, detach_rect, slot, PaneKind::Plane(plane));
             fit_resp = Some(
                 ui.put(fit_rect, egui::Button::new("⟲").small())
                     .on_hover_text(
@@ -1633,7 +1677,7 @@ impl ViewerApp {
                 .on_hover_text(if on {
                     "Stop running through the slices"
                 } else {
-                    "Play 3D: run through the slices of this view. Speed and what happens                      at the end are in the Playback module."
+                    "Play 3D: run through the slices of this view. Speed and what happens at the end are in the Image playback module."
                 });
             clicked_play3 = resp.clicked()
                 || (any_click && pointer_pos.map(|p| play3_rect.contains(p)).unwrap_or(false));
@@ -1649,7 +1693,7 @@ impl ViewerApp {
                 .on_hover_text(if on {
                     "Stop running through the phases"
                 } else {
-                    "Play 4D: run this workspace through the phases of its 4D group, with                      the structures, segmentations and dose of each phase. The first press                      reads the phases into memory."
+                    "Play 4D: run this workspace through the phases of its 4D group, with the structures, segmentations and dose of each phase. The first press reads the phases into memory."
                 });
             clicked_play4 = resp.clicked()
                 || (any_click && pointer_pos.map(|p| play4_rect.contains(p)).unwrap_or(false));
@@ -1664,6 +1708,8 @@ impl ViewerApp {
             resp.as_ref().is_some_and(|x| x.clicked())
                 || (!folded && any_click && pointer_pos.map(|p| r.contains(p)).unwrap_or(false))
         };
+        let clicked_detach = clicked_detach
+            || (!folded && any_click && pointer_pos.is_some_and(|p| detach_rect.contains(p)));
         let clicked_fit = hit(fit_rect, &fit_resp);
         let clicked_hand = hit(hand_rect, &hand_resp);
         let clicked_zout = hit(zout_rect, &zout_resp);
@@ -1747,7 +1793,7 @@ impl ViewerApp {
         // draws the axis instead.
         // The editor's hands and axis follow the module, not the panel: a
         // hidden right panel must not drop them.
-        let editor_here = self.module_structures
+        let editor_here = self.module_on(Module::StructureEditor)
             && self.tools.slot == slot
             && !seg_active
             && !medsam2_box
@@ -2010,11 +2056,10 @@ impl ViewerApp {
             self.hand_pan = !self.hand_pan;
         }
         if clicked_max {
-            self.maximized = if is_max {
-                None
-            } else {
-                Some((slot, PaneKind::Plane(plane)))
-            };
+            self.toggle_pane_max(ui, slot, PaneKind::Plane(plane));
+        }
+        if clicked_detach {
+            self.toggle_detached(slot, PaneKind::Plane(plane));
         }
         if clicked_fit {
             reset_view = true;

@@ -1425,7 +1425,7 @@ impl ViewerApp {
         }
         if let Some(i) = show {
             // Where its controls are: the registration module, unfolded.
-            self.module_registration = true;
+            self.modules.insert(Module::Registration);
             self.show_setup(slot, i);
         }
     }

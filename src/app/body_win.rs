@@ -572,7 +572,6 @@ mod tests {
 
     #[test]
     fn the_tool_names_itself_like_the_others() {
-        assert_eq!(BODY_CONTOUR.title(0), "👤 Body contour - workspace A");
         assert_eq!(BODY_CONTOUR.menu_entry(), "👤 Body contour");
     }
 

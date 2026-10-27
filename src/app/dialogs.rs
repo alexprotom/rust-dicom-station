@@ -41,15 +41,7 @@ impl ViewerApp {
         self.pacs_window(ctx);
         self.export_window(ctx);
         self.rename_window(ctx);
-        self.stats_window(ctx);
-        self.dvh_window(ctx);
-        self.motion_window(ctx);
-        self.motion_results_window(ctx);
-        self.transfer_window(ctx);
-        self.compare_window(ctx);
-        self.autoseg_result_window(ctx);
         self.workflow_editor_window(ctx);
-        self.workflow_run_window(ctx);
         self.picker_window(ctx);
         if let Some(msg) = self.notice.clone() {
             egui::Window::new("Done")
@@ -338,11 +330,23 @@ impl ViewerApp {
         if run {
             self.start_autoseg();
         }
+        // A finished run waits here for its structures to be picked. It
+        // unfolds when the run lands, and goes once they are added.
+        if self.autoseg_pending.is_some() {
+            ui.separator();
+            let reveal = std::mem::take(&mut self.auto.reveal_results);
+            egui::CollapsingHeader::new(egui::RichText::new("Results").strong())
+                .id_salt("autoseg_results")
+                .default_open(true)
+                .open(reveal.then_some(true))
+                .show(ui, |ui| self.autoseg_results_fold(ui));
+        }
     }
 
-    /// Organ-selection dialog shown when an auto-segmentation run finishes:
-    /// which of the structures it found to keep, and what they become.
-    pub(super) fn autoseg_result_window(&mut self, ctx: &egui::Context) {
+    /// The *Results* fold at the end of the automatic-segmentation section,
+    /// there while a finished run waits: which of the structures it found to
+    /// keep, and what they become. *Add* or *Discard* folds it away.
+    fn autoseg_results_fold(&mut self, ui: &mut egui::Ui) {
         let Some(slot) = self.autoseg_pending.as_ref().map(|p| p.slot) else {
             return;
         };
@@ -350,7 +354,6 @@ impl ViewerApp {
         let Some(p) = &mut self.autoseg_pending else {
             return;
         };
-        let mut open = true;
         let mut close_clicked = false;
         let mut apply_clicked = false;
         let n_phases = p.phases.len();
@@ -370,133 +373,118 @@ impl ViewerApp {
             })
             .unwrap_or((String::new(), 0.0));
         let group = p.phases.first().and_then(|(info, _)| info.group.clone());
-        detach::tool_window(
-            ctx,
-            "autoseg_results",
-            AUTOSEG.titled("results", p.slot),
-            &mut open,
-            detach::WinOpts::default(),
-            |ui| {
-                // What the run was, as a table like every other block that
-                // reports one.
-                let mut facts = vec![("Workspace", SLOT_NAMES[p.slot].to_string())];
-                if let Some(g) = &group {
-                    facts.push(("Phases", format!("{n_phases} of {g}")));
-                }
-                facts.extend([
-                    ("Structures", p.organs.len().to_string()),
-                    ("Device", device.clone()),
-                    ("t, s", format!("{elapsed:.0}")),
-                ]);
-                run_report::facts(ui, "autoseg_facts", &facts);
-                for note in p.phases.iter().flat_map(|(_, r)| r.notes.iter()) {
-                    ui.colored_label(warn_color(ui.visuals()), format!("⚠ {note}"));
-                }
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if ui.small_button("All").clicked() {
-                        p.selected.iter_mut().for_each(|s| *s = true);
-                    }
-                    if ui.small_button("None").clicked() {
-                        p.selected.iter_mut().for_each(|s| *s = false);
-                    }
-                    let n_sel = p.selected.iter().filter(|s| **s).count();
-                    ui.weak(format!(
-                        "{} selected · ≈ {} MB of masks{}",
-                        n_sel,
-                        n_sel * vol_bytes * n_phases / 1_000_000,
-                        if n_phases > 1 { " over all phases" } else { "" }
-                    ));
-                });
-                egui::ScrollArea::vertical()
-                    .max_height(320.0)
+        // What the run was, as a table like every other block that
+        // reports one.
+        let mut facts = vec![("Workspace", SLOT_NAMES[p.slot].to_string())];
+        if let Some(g) = &group {
+            facts.push(("Phases", format!("{n_phases} of {g}")));
+        }
+        facts.extend([
+            ("Structures", p.organs.len().to_string()),
+            ("Device", device.clone()),
+            ("t, s", format!("{elapsed:.0}")),
+        ]);
+        run_report::facts(ui, "autoseg_facts", &facts);
+        for note in p.phases.iter().flat_map(|(_, r)| r.notes.iter()) {
+            ui.colored_label(warn_color(ui.visuals()), format!("⚠ {note}"));
+        }
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if ui.small_button("All").clicked() {
+                p.selected.iter_mut().for_each(|s| *s = true);
+            }
+            if ui.small_button("None").clicked() {
+                p.selected.iter_mut().for_each(|s| *s = false);
+            }
+            let n_sel = p.selected.iter().filter(|s| **s).count();
+            ui.weak(format!(
+                "{} selected · ≈ {} MB of masks{}",
+                n_sel,
+                n_sel * vol_bytes * n_phases / 1_000_000,
+                if n_phases > 1 { " over all phases" } else { "" }
+            ));
+        });
+        egui::ScrollArea::vertical()
+            .max_height(320.0)
+            .show(ui, |ui| {
+                // A grid, so the volumes line up in a column and the
+                // large and the suspiciously small are found by
+                // scanning rather than by reading.
+                egui::Grid::new("autoseg_organs")
+                    .num_columns(4)
+                    .striped(true)
+                    .spacing([8.0, 2.0])
                     .show(ui, |ui| {
-                        // A grid, so the volumes line up in a column and the
-                        // large and the suspiciously small are found by
-                        // scanning rather than by reading.
-                        egui::Grid::new("autoseg_organs")
-                            .num_columns(4)
-                            .striped(true)
-                            .spacing([8.0, 2.0])
-                            .show(ui, |ui| {
-                                run_report::head(ui, "");
-                                run_report::head(ui, "");
-                                run_report::head(ui, "Structure");
-                                run_report::head(
-                                    ui,
-                                    if n_phases > 1 {
-                                        "Volume (mean)"
-                                    } else {
-                                        "Volume"
-                                    },
-                                );
-                                ui.end_row();
-                                for (organ, sel) in p.organs.iter().zip(p.selected.iter_mut()) {
-                                    ui.checkbox(sel, "");
-                                    let (rect, _) = ui.allocate_exact_size(
-                                        egui::vec2(12.0, 12.0),
-                                        Sense::hover(),
-                                    );
-                                    ui.painter().rect_filled(
-                                        rect,
-                                        2.0,
-                                        Color32::from_rgb(
-                                            organ.color[0],
-                                            organ.color[1],
-                                            organ.color[2],
-                                        ),
-                                    );
-                                    let tg = zoo::tg263_name(organ.name);
-                                    match (&tg, p.tg263) {
-                                        (Some(t), true) => {
-                                            ui.label(t).on_hover_text(organ.name);
-                                        }
-                                        _ => {
-                                            ui.label(organ.name);
-                                        }
-                                    }
-                                    ui.monospace(format!("{:.2} cm³", organ.cm3));
-                                    ui.end_row();
+                        run_report::head(ui, "");
+                        run_report::head(ui, "");
+                        run_report::head(ui, "Structure");
+                        run_report::head(
+                            ui,
+                            if n_phases > 1 {
+                                "Volume (mean)"
+                            } else {
+                                "Volume"
+                            },
+                        );
+                        ui.end_row();
+                        for (organ, sel) in p.organs.iter().zip(p.selected.iter_mut()) {
+                            ui.checkbox(sel, "");
+                            let (rect, _) =
+                                ui.allocate_exact_size(egui::vec2(12.0, 12.0), Sense::hover());
+                            ui.painter().rect_filled(
+                                rect,
+                                2.0,
+                                Color32::from_rgb(organ.color[0], organ.color[1], organ.color[2]),
+                            );
+                            let tg = zoo::tg263_name(organ.name);
+                            match (&tg, p.tg263) {
+                                (Some(t), true) => {
+                                    ui.label(t).on_hover_text(organ.name);
                                 }
-                            });
+                                _ => {
+                                    ui.label(organ.name);
+                                }
+                            }
+                            ui.monospace(format!("{:.2} cm³", organ.cm3));
+                            ui.end_row();
+                        }
                     });
-                ui.add_space(4.0);
-                ui.checkbox(&mut p.tg263, "Name structures by AAPM TG-263")
-                    .on_hover_text(
-                        "Use the TG-263 standard name (Kidney_L, Lung_RUL, VB_T07, ...) for \
-                         every class that has one, so structure sets from different models \
-                         read as one. Classes without a TG-263 name keep the model's name.",
-                    );
-                output_rows(
-                    ui,
-                    &mut p.output,
-                    &sets,
-                    group.is_some(),
-                    "Auto-segmentation",
-                );
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    let n_sel = p.selected.iter().filter(|s| **s).count();
-                    let verb = match p.output.kind {
-                        OutputKind::Segments => format!("Add {n_sel} segment(s)"),
-                        OutputKind::Structures => format!("Add {n_sel} structure(s)"),
-                        OutputKind::Both => format!("Add {n_sel} segment(s) and structure(s)"),
-                    };
-                    if ui.add_enabled(n_sel > 0, egui::Button::new(verb)).clicked() {
-                        apply_clicked = true;
-                    }
-                    if ui.button("Discard").clicked() {
-                        close_clicked = true;
-                    }
-                });
-            },
+            });
+        ui.add_space(4.0);
+        ui.checkbox(&mut p.tg263, "Name structures by AAPM TG-263")
+            .on_hover_text(
+                "Use the TG-263 standard name (Kidney_L, Lung_RUL, VB_T07, ...) for \
+                 every class that has one, so structure sets from different models \
+                 read as one. Classes without a TG-263 name keep the model's name.",
+            );
+        output_rows(
+            ui,
+            &mut p.output,
+            &sets,
+            group.is_some(),
+            "Auto-segmentation",
         );
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            let n_sel = p.selected.iter().filter(|s| **s).count();
+            let verb = match p.output.kind {
+                OutputKind::Segments => format!("Add {n_sel} segment(s)"),
+                OutputKind::Structures => format!("Add {n_sel} structure(s)"),
+                OutputKind::Both => format!("Add {n_sel} segment(s) and structure(s)"),
+            };
+            if ui.add_enabled(n_sel > 0, egui::Button::new(verb)).clicked() {
+                apply_clicked = true;
+            }
+            if ui.button("Discard").clicked() {
+                close_clicked = true;
+            }
+        });
         if let Some(p) = &self.autoseg_pending {
             self.autoseg_pending_tg263 = p.tg263;
         }
         if apply_clicked && !close_clicked {
             self.apply_autoseg_selection();
-        } else if !open || close_clicked {
+        } else if close_clicked {
             self.autoseg_pending = None;
         }
     }

@@ -1,6 +1,12 @@
-//! The 4D motion results window: tables, charts, CSV export, and the
-//! side-by-side comparison of two runs (e.g. upright vs. supine, or
-//! workspace A vs. B).
+//! The finished 4D motion runs, the second half of the *Structure motion*
+//! section: the run picker, the tables, CSV export and the side-by-side
+//! comparison of two runs (e.g. upright vs. supine, or workspace A vs. B) in
+//! the panel; the charts in the row's chart pane (`chart_pane.rs`).
+//!
+//! The results talk to the views: a target picked in the panel's list is
+//! selected, shown and centred on in its workspace (with its ITV), and a
+//! click on a phase of the chart steps the workspace's 4D group to that
+//! phase.
 //!
 //! The charts are drawn with the egui painter directly - a displacement-
 //! vs-phase line chart and grouped bar charts are simple enough that a
@@ -99,16 +105,21 @@ fn nice_ticks(lo: f64, hi: f64, target: usize, min_span: f64) -> (f64, f64, f64,
 /// (within what the visible part of the window can show), and every margin
 /// is measured from the labels that go in it, so the axis labels and the
 /// last phase are never cut off. Hovering shows the values of the phase
-/// under the pointer.
-fn line_chart(ui: &mut egui::Ui, phases: &[String], series: &[Series], y_label: &str) {
+/// under the pointer; a click on the chart returns that phase.
+fn line_chart(
+    ui: &mut egui::Ui,
+    phases: &[String],
+    series: &[Series],
+    y_label: &str,
+) -> Option<usize> {
     if series.is_empty() || phases.is_empty() {
-        return;
+        return None;
     }
     let width = ui.available_width().max(240.0);
     // Tall enough to read, never taller than most of the visible area.
     let visible = ui.clip_rect().height().max(200.0);
     let h = (width * 0.42).min(visible * 0.6).clamp(150.0, 380.0);
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, h), Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, h), Sense::click());
     let painter = ui.painter_at(rect);
     let axis_color = ui.visuals().weak_text_color();
     let text_color = ui.visuals().text_color();
@@ -252,6 +263,7 @@ fn line_chart(ui: &mut egui::Ui, phases: &[String], series: &[Series], y_label: 
         }
     }
     // The phase under the pointer: a guide line and its values.
+    let mut clicked = None;
     if let Some(pos) = resp.hover_pos() {
         let i = if phases.len() > 1 {
             (((pos.x - left) / gap).round().max(0.0) as usize).min(phases.len() - 1)
@@ -263,6 +275,9 @@ fn line_chart(ui: &mut egui::Ui, phases: &[String], series: &[Series], y_label: 
             Stroke::new(1.0, text_color.linear_multiply(0.4)),
         );
         let d = decimals.max(2);
+        if resp.clicked() {
+            clicked = Some(i);
+        }
         resp.on_hover_ui_at_pointer(|ui| {
             ui.strong(format!("Phase {} - {y_label}", phases[i]));
             for s in series {
@@ -278,6 +293,7 @@ fn line_chart(ui: &mut egui::Ui, phases: &[String], series: &[Series], y_label: 
             ui.colored_label(s.color, format!("■ {}", s.label));
         }
     });
+    clicked
 }
 
 /// Grouped horizontal bars: one row per entry, value + label.
@@ -298,16 +314,34 @@ fn bar_rows(ui: &mut egui::Ui, entries: &[(String, f64, Color32)], unit: &str) {
 }
 
 impl ViewerApp {
-    pub(super) fn motion_results_window(&mut self, ctx: &egui::Context) {
-        if !self.motion_results_open {
+    /// The workspace a run analysed, by the letter its report carries.
+    pub(super) fn motion_report_slot(&self, i: usize) -> usize {
+        self.motion_reports
+            .get(i)
+            .and_then(|r| SLOT_NAMES.iter().position(|n| *n == r.slot_name))
+            .unwrap_or(0)
+    }
+
+    /// A run has landed (or a workflow step shows one): select it, unfold
+    /// the section's results and put its charts into its workspace's row.
+    pub(super) fn show_motion_results(&mut self, i: usize) {
+        if i >= self.motion_reports.len() {
             return;
         }
+        self.motion_sel = i;
+        self.motion_target = None;
+        self.motion_reveal = true;
+        self.reveal_module(Module::Motion);
+        let slot = self.motion_report_slot(i);
+        self.show_chart(slot, super::chart_pane::ChartSource::Motion(i));
+    }
+
+    /// The results half of the section: which run, which to compare it
+    /// with, the targets, the tables and the CSV.
+    pub(super) fn motion_results_body(&mut self, ui: &mut egui::Ui) {
         if self.motion_reports.is_empty() {
-            self.motion_results_open = false;
             return;
         }
-        let mut open = true;
-        let mut export: Option<usize> = None;
         self.motion_sel = self.motion_sel.min(self.motion_reports.len() - 1);
         if let Some(c) = self.motion_cmp {
             if c >= self.motion_reports.len() || c == self.motion_sel {
@@ -316,107 +350,242 @@ impl ViewerApp {
         }
         let mut sel = self.motion_sel;
         let mut cmp = self.motion_cmp;
+        let mut target = self.motion_target.clone();
+        let mut picked: Option<String> = None;
+        let mut export: Option<(usize, Option<usize>)> = None;
         {
             let reports = &self.motion_reports;
-            // No outer scroll area: the window lays itself out to its own
-            // size - the run pickers wrap, the export buttons stay at the
-            // bottom, and only the report scrolls, vertically - so nothing
-            // is ever wider than the window and the chart always fits it.
-            detach::tool_window(
-                ctx,
-                "motion_results",
-                MOTION.titled("results", self.motion_slot.min(MAX_WORKSPACES - 1)),
-                &mut open,
-                detach::WinOpts::size(760.0, 780.0).no_scroll(),
-                |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        let combo_w = ((ui.available_width() - 190.0) / 2.0).clamp(140.0, 320.0);
-                        ui.label("Run:");
-                        egui::ComboBox::from_id_salt("motion_run")
-                            .width(combo_w)
-                            .truncate()
-                            .selected_text(reports[sel].run_name.clone())
-                            .show_ui(ui, |ui| {
-                                for (i, r) in reports.iter().enumerate() {
-                                    ui.selectable_value(&mut sel, i, &r.run_name);
-                                }
-                            });
-                        ui.label("Compare with:");
-                        let cmp_text = cmp
-                            .map(|i| reports[i].run_name.clone())
-                            .unwrap_or_else(|| "(none)".into());
-                        egui::ComboBox::from_id_salt("motion_cmp")
-                            .width(combo_w)
-                            .truncate()
-                            .selected_text(cmp_text)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut cmp, None, "(none)");
-                                for (i, r) in reports.iter().enumerate() {
-                                    if i != sel {
-                                        ui.selectable_value(&mut cmp, Some(i), &r.run_name);
-                                    }
-                                }
-                            });
-                    });
-                    ui.separator();
-                    egui::Panel::bottom(egui::Id::new("motion_results_export"))
-                        .show_separator_line(true)
-                        .show(ui, |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                if tip_button(
-                                    ui,
-                                    "💾 Export CSV",
-                                    "The selected run as a CSV: phases as columns, one \
-                                     row per method under every quantity",
-                                ) {
-                                    export = Some(sel);
-                                }
-                                if let Some(ci) = cmp {
-                                    if tip_button(
-                                        ui,
-                                        "💾 Export comparison CSV",
-                                        "Both runs, one after the other, and the matched \
-                                         peak-to-peak amplitudes and ITVs side by side",
-                                    ) {
-                                        export = Some(usize::MAX - ci);
-                                    }
-                                }
-                            });
-                        });
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            let r = &reports[sel];
-                            Self::report_body(ui, r, sel);
-                            if let Some(ci) = cmp {
-                                ui.separator();
-                                ui.strong(format!("Comparison - {}", reports[ci].run_name));
-                                Self::report_body(ui, &reports[ci], ci);
-                                ui.separator();
-                                Self::comparison_body(ui, r, &reports[ci], (sel, ci));
+            form::form(ui, "motion_runs", |f| {
+                f.row("Run", |ui| {
+                    egui::ComboBox::from_id_salt("motion_run")
+                        .width(170.0)
+                        .truncate()
+                        .selected_text(reports[sel].run_name.clone())
+                        .show_ui(ui, |ui| {
+                            for (i, r) in reports.iter().enumerate() {
+                                ui.selectable_value(&mut sel, i, &r.run_name);
                             }
                         });
-                },
-            );
+                });
+                f.row("Compare with", |ui| {
+                    let cmp_text = cmp
+                        .map(|i| reports[i].run_name.clone())
+                        .unwrap_or_else(|| "(none)".into());
+                    egui::ComboBox::from_id_salt("motion_cmp")
+                        .width(170.0)
+                        .truncate()
+                        .selected_text(cmp_text)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut cmp, None, "(none)");
+                            for (i, r) in reports.iter().enumerate() {
+                                if i != sel {
+                                    ui.selectable_value(&mut cmp, Some(i), &r.run_name);
+                                }
+                            }
+                        });
+                });
+            });
+            ui.horizontal_wrapped(|ui| {
+                if tip_button(
+                    ui,
+                    "💾 Export CSV",
+                    "The selected run as a CSV: phases as columns, one row per method \
+                     under every quantity",
+                ) {
+                    export = Some((sel, None));
+                }
+                if let Some(ci) = cmp {
+                    if tip_button(
+                        ui,
+                        "💾 Export comparison CSV",
+                        "Both runs, one after the other, and the matched peak-to-peak \
+                         amplitudes and ITVs side by side",
+                    ) {
+                        export = Some((sel, Some(ci)));
+                    }
+                }
+            });
+            ui.separator();
+            let r = &reports[sel];
+            // The targets, each with its peak-to-peak amplitude: a click
+            // shows that structure and its ITV in the run's workspace.
+            ui.strong("Targets");
+            let mut names: Vec<&str> = Vec::new();
+            for t in &r.tracks {
+                if !names.contains(&t.target.as_str()) {
+                    names.push(&t.target);
+                }
+            }
+            for name in names {
+                let pp: Vec<String> = r
+                    .tracks
+                    .iter()
+                    .filter(|t| t.target == name)
+                    .map(|t| format!("{} {:.1}", t.model.label(), t.peak_to_peak()))
+                    .collect();
+                let on = target.as_deref() == Some(name);
+                if ui
+                    .add(egui::Button::selectable(
+                        on,
+                        format!("{name}  ·  {} mm", pp.join(" · ")),
+                    ))
+                    .on_hover_text(
+                        "Select this target in its workspace, show it and its ITV, and centre \
+                         the views on it. Peak-to-peak amplitude per model.",
+                    )
+                    .clicked()
+                {
+                    if on {
+                        target = None;
+                    } else {
+                        target = Some(name.to_string());
+                        picked = Some(name.to_string());
+                    }
+                }
+            }
+            ui.add_space(4.0);
+            Self::report_tables(ui, r, sel);
+            if let Some(ci) = cmp {
+                ui.separator();
+                ui.strong(format!("Comparison - {}", reports[ci].run_name));
+                Self::report_tables(ui, &reports[ci], ci);
+                ui.separator();
+                egui::ScrollArea::horizontal()
+                    .id_salt("motion_cmp_scroll")
+                    .show(ui, |ui| {
+                        Self::comparison_body(ui, r, &reports[ci], (sel, ci))
+                    });
+            }
+        }
+        // The chart pane follows the run picked here.
+        if sel != self.motion_sel || cmp != self.motion_cmp {
+            for s in 0..MAX_WORKSPACES {
+                if matches!(
+                    self.chart[s],
+                    Some(super::chart_pane::ChartSource::Motion(_))
+                ) {
+                    self.chart[s] = Some(super::chart_pane::ChartSource::Motion(sel));
+                }
+            }
+            if sel != self.motion_sel {
+                target = None;
+            }
         }
         self.motion_sel = sel;
         self.motion_cmp = cmp;
-        if let Some(code) = export {
-            let (i, also) = if code > usize::MAX / 2 {
-                (self.motion_sel, Some(usize::MAX - code))
-            } else {
-                (code, None)
-            };
-            self.export_motion_csv(i, also);
+        self.motion_target = target.clone();
+        // The target picked is what the section is about: drawn thicker in
+        // the views while it is unfolded.
+        if let Some(name) = &target {
+            let slot = self.motion_report_slot(sel);
+            let items = self.items_named(slot, name);
+            self.focus_structures(items.into_iter().map(|i| (slot, i)));
         }
-        if !open {
-            self.motion_results_open = false;
+        if let Some(name) = picked {
+            self.show_motion_target(sel, &name);
+        }
+        if let Some((i, also)) = export {
+            self.export_motion_csv(i, also);
         }
     }
 
-    /// Tables and charts of one run. `idx` salts the widget ids, because two
-    /// runs are on screen at once in the A-vs-B comparison.
-    fn report_body(ui: &mut egui::Ui, r: &MotionReport, idx: usize) {
+    /// Every structure and segment of a workspace called `name`.
+    fn items_named(&self, slot: usize, name: &str) -> Vec<combine::ItemRef> {
+        self.combine_candidates(slot)
+            .into_iter()
+            .filter(|(item, _)| self.item_name(slot, *item).as_deref() == Some(name))
+            .map(|(item, _)| item)
+            .collect()
+    }
+
+    /// Show a run's target in its workspace: its ITVs' series on display,
+    /// the structure itself selected and centred on.
+    fn show_motion_target(&mut self, run: usize, name: &str) {
+        let slot = self.motion_report_slot(run);
+        let itvs: Vec<String> = self.motion_reports[run]
+            .itvs
+            .iter()
+            .filter(|i| i.target == name)
+            .map(|i| i.seg_name.clone())
+            .collect();
+        let itv = itvs
+            .iter()
+            .flat_map(|n| self.items_named(slot, n))
+            .find(|i| i.kind == SetKind::Segmentations);
+        if let Some(i) = itv {
+            let s = &mut self.slots[slot];
+            s.active_seg_series = i.set;
+            s.active_seg = i.idx;
+            s.segs_shown = true;
+            self.settings_gen += 1;
+        }
+        let own = self.items_named(slot, name);
+        let structure = own
+            .iter()
+            .find(|i| i.kind == SetKind::Structures && i.set == self.slots[slot].active_structs)
+            .or_else(|| own.first())
+            .copied();
+        match structure.or(itv) {
+            Some(i) if i.kind == SetKind::Structures => self.select_and_localize(slot, i),
+            Some(i) => {
+                self.localize_item(slot, i);
+            }
+            None => {
+                self.notice = Some(format!(
+                    "Workspace {} no longer holds a structure called '{name}'.",
+                    SLOT_NAMES[slot]
+                ));
+            }
+        }
+    }
+
+    /// The chart pane's body when it shows run `i`: its charts, and those of
+    /// the run it is compared with.
+    pub(super) fn motion_chart(&mut self, ui: &mut egui::Ui, slot: usize, i: usize, body: Rect) {
+        let mut step: Option<String> = None;
+        {
+            let Some(r) = self.motion_reports.get(i) else {
+                return;
+            };
+            let cmp = self.motion_cmp.and_then(|c| self.motion_reports.get(c));
+            egui::ScrollArea::vertical()
+                .id_salt(("motion_chart", slot))
+                .max_height(body.height())
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    if let Some(p) = Self::report_charts(ui, r) {
+                        step = r.phases.get(p).cloned();
+                    }
+                    if let Some(c) = cmp {
+                        ui.separator();
+                        ui.strong(format!("Comparison - {}", c.run_name));
+                        Self::report_charts(ui, c);
+                    }
+                });
+        }
+        // A phase clicked in the chart: the run's workspace steps to it.
+        if let Some(label) = step {
+            let ws = self.motion_report_slot(i);
+            let at = self
+                .fourd_phases(ws)
+                .and_then(|(_, _, labels)| labels.iter().position(|l| *l == label));
+            match at {
+                Some(p) => self.goto_phase(ws, p),
+                None => {
+                    self.notice = Some(format!(
+                        "Workspace {} is not showing the run's 4D group, so there is no phase \
+                         '{label}' to step to.",
+                        SLOT_NAMES[ws]
+                    ));
+                }
+            }
+        }
+    }
+
+    /// The charts of one run: displacement against phase, the peak-to-peak
+    /// amplitudes and the drift. Returns the phase clicked in the line
+    /// chart.
+    fn report_charts(ui: &mut egui::Ui, r: &MotionReport) -> Option<usize> {
         ui.strong(&r.run_name);
         ui.weak(format!(
             "{} · reference phase {} · {} phase(s){}",
@@ -447,7 +616,7 @@ impl ViewerApp {
                 dashed: true,
             });
         }
-        line_chart(ui, &r.phases, &series, "|d| mm");
+        let clicked = line_chart(ui, &r.phases, &series, "|d| mm");
 
         // Peak-to-peak amplitudes and drift.
         ui.add_space(6.0);
@@ -485,13 +654,29 @@ impl ViewerApp {
             }
             bar_rows(ui, &bars, "mm");
         }
+        clicked
+    }
+
+    /// The tables of one run. `idx` salts the widget ids, because two runs
+    /// are on screen at once in the A-vs-B comparison.
+    fn report_tables(ui: &mut egui::Ui, r: &MotionReport, idx: usize) {
+        ui.weak(format!(
+            "{} · reference phase {} · {} phase(s){}",
+            r.patient,
+            r.reference,
+            r.phases.len(),
+            r.reference_structure
+                .as_deref()
+                .map(|s| format!(" · reference structure: {s}"))
+                .unwrap_or_default()
+        ));
 
         // The per-phase numbers.
         egui::CollapsingHeader::new("Per-phase table")
             .id_salt(("motion_table", idx))
             .show(ui, |ui| {
                 // As wide as the tracks make it; it scrolls sideways on its
-                // own rather than widening the window's contents.
+                // own rather than widening the panel.
                 egui::ScrollArea::horizontal()
                     .id_salt(("motion_grid_scroll", idx))
                     .show(ui, |ui| {

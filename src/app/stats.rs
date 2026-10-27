@@ -1,4 +1,4 @@
-//! *Tools ▶ Structure details*: one row per structure, with the numbers a
+//! *Modules ▶ Structure details*: one row per structure, with the numbers a
 //! planner reads off a list rather than off a picture.
 //!
 //! Volume twice over - surface-based, inside the closed surface
@@ -25,24 +25,23 @@
 //! The table is computed on demand, not every frame: rasterizing a hundred
 //! structures and building their surfaces is a second or two of work, and
 //! nothing here changes unless the geometry does.
+//!
+//! The table talks to the views: a click on a row selects that structure
+//! and puts the crosshair on its centre, the row under the pointer is drawn
+//! thicker in the views, and the row of the structure selected in the tree
+//! is marked.
 
 use crate::contours::Stack;
 use crate::derived::Status;
 use crate::volume::{Grid, Volume};
 
 use super::combine::ItemRef;
-use super::seg_engines::ToolInfo;
 use super::*;
-
-/// The ninth tool. A clipboard, because this one only reads; the glyph is
-/// one egui's bundled fonts carry (see the `glyphs` guard).
-pub(super) const DETAILS: ToolInfo = ToolInfo {
-    glyph: "📋",
-    name: "Structure details",
-};
 
 /// One line of the table.
 pub(super) struct StatRow {
+    /// Which structure or segment of the workspace the row is.
+    pub item: ItemRef,
     pub name: String,
     pub color: [u8; 3],
     pub roi_type: String,
@@ -85,14 +84,14 @@ pub(super) enum DiceRef {
     },
 }
 
-pub(super) struct StatsDialog {
+pub(super) struct StatsState {
     pub slot: usize,
     pub rows: Vec<StatRow>,
     pub dice_ref: DiceRef,
-    /// The `settings_gen` the rows were computed at, so the window can say
+    /// The `settings_gen` the rows were computed at, so the section can say
     /// when it is showing something older than the geometry.
     pub gen: u64,
-    /// Set once, so an opened window fills itself without a click.
+    /// Set once, so an unfolded section fills itself without a click.
     pub stale: bool,
 }
 
@@ -199,12 +198,20 @@ fn resampled(mask: &[u8], from: &Grid, grid: &Grid) -> Vec<u8> {
     }
 }
 
+/// What a structure row is filed under until the loop that knows its index
+/// says.
+const NO_ITEM: ItemRef = ItemRef {
+    kind: SetKind::Structures,
+    set: usize::MAX,
+    idx: usize::MAX,
+};
+
 fn voxel_cm3(spacing: [f64; 3], voxels: usize) -> f64 {
     voxels as f64 * crate::volume::voxel_cm3(spacing)
 }
 
 impl ViewerApp {
-    pub(super) fn open_stats_dialog(&mut self, slot: usize) {
+    fn stats_state(&self, slot: usize) -> StatsState {
         // With another workspace loaded the natural reference is the
         // same-named structure over there; alone, there is none.
         let dice_ref = match self
@@ -214,13 +221,13 @@ impl ViewerApp {
             Some(other) => DiceRef::SameNameIn(other),
             None => DiceRef::None,
         };
-        self.stats_dialog = Some(StatsDialog {
+        StatsState {
             slot,
             rows: Vec::new(),
             dice_ref,
             gen: self.all_structures_gen(),
             stale: true,
-        });
+        }
     }
 
     /// Build the table. Every structure is measured on the lattice it is
@@ -279,6 +286,7 @@ impl ViewerApp {
                     // position is what there is to say about it.
                     if let Some(p) = roi.point() {
                         return StatRow {
+                            item: NO_ITEM,
                             name: roi.name.clone(),
                             color: roi.color,
                             roi_type: roi.roi_type.clone(),
@@ -306,6 +314,7 @@ impl ViewerApp {
                     let (voxels, grey) = measure(&mask, grid.dims, Some(vol));
                     let dice = dice_of(&mask, &roi.name, &grid, &fixed_display);
                     StatRow {
+                        item: NO_ITEM,
                         name: roi.name.clone(),
                         color: roi.color,
                         roi_type: roi.roi_type.clone(),
@@ -323,6 +332,11 @@ impl ViewerApp {
                 })
                 .collect();
             for (ri, mut r) in measured.into_iter().enumerate() {
+                r.item = ItemRef {
+                    kind: SetKind::Structures,
+                    set: si,
+                    idx: ri,
+                };
                 // The derived cache is only kept for the active set, which
                 // is the only one the recipes are refreshed against.
                 if active {
@@ -331,7 +345,7 @@ impl ViewerApp {
                 rows.push(r);
             }
         }
-        for ser in &study.seg_series {
+        for (si, ser) in study.seg_series.iter().enumerate() {
             let dims = ser.grid.dims;
             let on_display = ser.grid.matches(&grid);
             let fixed_here = if on_display {
@@ -342,11 +356,17 @@ impl ViewerApp {
             let measured: Vec<StatRow> = ser
                 .segs
                 .par_iter()
-                .map(|seg| {
+                .enumerate()
+                .map(|(ii, seg)| {
                     let (voxels, grey) =
                         measure(&seg.mask, dims, if on_display { Some(vol) } else { None });
                     let dice = dice_of(&seg.mask, &seg.name, &ser.grid, &fixed_here);
                     StatRow {
+                        item: ItemRef {
+                            kind: SetKind::Segmentations,
+                            set: si,
+                            idx: ii,
+                        },
                         name: seg.name.clone(),
                         color: seg.color,
                         roi_type: String::new(),
@@ -411,25 +431,88 @@ impl ViewerApp {
         s
     }
 
-    pub(super) fn stats_window(&mut self, ctx: &egui::Context) {
-        let Some(slot) = self.stats_dialog.as_ref().map(|d| d.slot) else {
+    /// Select a structure or segment the way a click on its name in the data
+    /// tree does, and put the crosshair on its centre.
+    pub(super) fn select_and_localize(&mut self, slot: usize, item: ItemRef) {
+        match item.kind {
+            SetKind::Structures => {
+                let s = &mut self.slots[slot];
+                let n = s
+                    .study
+                    .as_ref()
+                    .and_then(|st| st.structure_sets.get(item.set))
+                    .map(|ss| ss.rois.len());
+                let Some(n) = n else {
+                    return;
+                };
+                if s.active_structs != item.set {
+                    // Another set means another list, every structure of it
+                    // shown, exactly as a click on the set's row.
+                    s.active_structs = item.set;
+                    s.roi_visible = vec![true; n];
+                }
+                s.structs_shown = true;
+                if let Some(v) = s.roi_visible.get_mut(item.idx) {
+                    *v = true;
+                }
+                s.active_roi = item.idx;
+                self.drop_edit();
+            }
+            SetKind::Segmentations => {
+                let s = &mut self.slots[slot];
+                s.active_seg_series = item.set;
+                s.active_seg = item.idx;
+                s.segs_shown = true;
+                self.settings_gen += 1;
+            }
+        }
+        self.localize_item(slot, item);
+    }
+
+    /// The section: the workspace, the Dice reference, the table, CSV.
+    pub(super) fn stats_section(&mut self, ui: &mut egui::Ui) {
+        self.module_header(
+            ui,
+            Module::Details,
+            |app, ui| {
+                // Recomputing is a header button, so the table can be
+                // refreshed from a folded section too.
+                if app.stats.is_some() && small_tip_button(ui, "⟳", "Compute the table again") {
+                    if let Some(d) = &mut app.stats {
+                        d.stale = true;
+                    }
+                }
+            },
+            |app, ui| app.stats_body(ui),
+        );
+    }
+
+    fn stats_body(&mut self, ui: &mut egui::Ui) {
+        let has: [bool; MAX_WORKSPACES] =
+            std::array::from_fn(|s| self.is_open(s) && self.slots[s].study.is_some());
+        if !has.iter().any(|h| *h) {
+            ui.weak("Load a workspace with structures");
             return;
+        }
+        // The first unfolding sets the section up on the first workspace
+        // that holds something; a workspace emptied under it hands over.
+        let slot = match &self.stats {
+            Some(d) if has[d.slot] => d.slot,
+            _ => has.iter().position(|h| *h).unwrap_or(0),
         };
-        if self.stats_dialog.as_ref().is_some_and(|d| d.stale) {
-            let dice_ref = self
-                .stats_dialog
-                .as_ref()
-                .map_or(DiceRef::None, |d| d.dice_ref);
+        if self.stats.as_ref().is_none_or(|d| d.slot != slot) {
+            self.stats = Some(self.stats_state(slot));
+        }
+        if self.stats.as_ref().is_some_and(|d| d.stale) {
+            let dice_ref = self.stats.as_ref().map_or(DiceRef::None, |d| d.dice_ref);
             let rows = self.stats_rows(slot, dice_ref);
             let gen = self.all_structures_gen();
-            if let Some(d) = &mut self.stats_dialog {
+            if let Some(d) = &mut self.stats {
                 d.rows = rows;
                 d.gen = gen;
                 d.stale = false;
             }
         }
-        let has: [bool; MAX_WORKSPACES] =
-            std::array::from_fn(|s| self.is_open(s) && self.slots[s].study.is_some());
         // The other workspaces that hold something, for the same-name
         // reference: one entry each, so with three open the table can be
         // measured against whichever of them is the comparison.
@@ -451,36 +534,43 @@ impl ViewerApp {
                     })
             })
             .collect();
+        // The row the tree has selected: the structure the editor and the
+        // contour tools work on, or the active segment.
+        let selected: [Option<ItemRef>; 2] = {
+            let s = &self.slots[slot];
+            [
+                Some(ItemRef {
+                    kind: SetKind::Structures,
+                    set: s.active_structs,
+                    idx: s.active_roi,
+                }),
+                s.seg_series_idx().map(|i| ItemRef {
+                    kind: SetKind::Segmentations,
+                    set: i,
+                    idx: s.active_seg,
+                }),
+            ]
+        };
         let current_gen = self.all_structures_gen();
-        let mut open = true;
-        let mut close = false;
         let mut save = false;
         let mut refresh = false;
-        let mut switch: Option<usize> = None;
-        let d = self.stats_dialog.as_mut().expect("checked above");
-        detach::tool_window(
-            ctx,
-            "structure_details",
-            format!("{} {}", DETAILS.glyph, DETAILS.name),
-            &mut open,
-            detach::WinOpts::width(700.0),
-            |ui| {
-                switch = seg_engines::workspace_row(ui, d.slot, has, true);
-                ui.label(
-                    egui::RichText::new(
-                        "Volume twice over - surface-based, inside a closed surface \
-                         reconstructed from the contours, and voxels-based, the voxels \
-                         they fill. They disagree by a few per cent on a coarse series, \
-                         more on a small structure, and neither number is wrong.",
-                    )
-                    .weak(),
-                );
-                ui.horizontal(|ui| {
-                    ui.label("Dice against:");
+
+        let mut clicked: Option<ItemRef> = None;
+        let mut hovered: Option<ItemRef> = None;
+        let d = self.stats.as_mut().expect("made above");
+        let switch = seg_engines::workspace_row(ui, d.slot, has, true);
+        form::form(ui, "stats_form", |f| {
+            f.row_tip(
+                "Dice against",
+                "What every row's Dice is measured against: the structure of the same name \
+                 in another workspace (a propagation or a second observer), or one structure \
+                 for all rows (an auto-segmentation against the manual one). Contours are \
+                 rasterized onto this workspace's lattice first.",
+                |ui| {
                     let text = match d.dice_ref {
                         DiceRef::None => "(nothing)".to_string(),
                         DiceRef::SameNameIn(other) => {
-                            format!("the same name in workspace {}", SLOT_NAMES[other])
+                            format!("the same name in {}", SLOT_NAMES[other])
                         }
                         DiceRef::Item { .. } => references
                             .iter()
@@ -491,7 +581,7 @@ impl ViewerApp {
                     let before = d.dice_ref;
                     egui::ComboBox::from_id_salt("dice_ref")
                         .selected_text(text)
-                        .width(260.0)
+                        .width(170.0)
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut d.dice_ref, DiceRef::None, "(nothing)");
                             for other in &others {
@@ -504,185 +594,185 @@ impl ViewerApp {
                             for (r, label) in &references {
                                 ui.selectable_value(&mut d.dice_ref, *r, label);
                             }
-                        })
-                        .response
-                        .on_hover_text(
-                            "What every row's Dice is measured against: the structure of \
-                             the same name in another workspace (a propagation or a second \
-                             observer), or one structure for all rows (an auto-segmentation \
-                             against the manual one). Contours are rasterized onto this \
-                             workspace's lattice first.",
-                        );
+                        });
                     if d.dice_ref != before {
                         refresh = true;
                     }
-                });
-                if d.gen != current_gen {
-                    ui.label(
-                        egui::RichText::new(
-                            "⚠ A structure has changed since this table was computed.",
-                        )
-                        .color(theme::warn_color(ui.visuals())),
-                    );
+                },
+            );
+        });
+        if d.gen != current_gen {
+            ui.label(
+                egui::RichText::new("⚠ A structure has changed since this table was computed.")
+                    .color(theme::warn_color(ui.visuals())),
+            );
+        }
+        ui.horizontal(|ui| {
+            if ui.button("Refresh").clicked() {
+                refresh = true;
+            }
+            ui.add_enabled_ui(!d.rows.is_empty(), |ui| {
+                if ui.button("Save CSV").clicked() {
+                    save = true;
                 }
-                ui.separator();
-                egui::ScrollArea::both().max_height(420.0).show(ui, |ui| {
-                    egui::Grid::new("stats_grid")
-                        .striped(true)
-                        .num_columns(10)
-                        .show(ui, |ui| {
-                            // The two volumes are two different questions,
-                            // and the headings say which is which on hover
-                            // rather than leaving a reader to guess why one
-                            // structure has two numbers that disagree.
-                            for (h, tip) in [
-                                ("Structure", ""),
-                                ("Type", ""),
-                                (
-                                    "Format",
-                                    "What the geometry is kept as: contours (an RT structure), \
-                                     voxels (a segment) or a point.",
-                                ),
-                                (
-                                    "Surface-based",
-                                    "The volume enclosed by a closed triangle surface \
-                                     reconstructed from the contours: neighbouring slices joined \
-                                     by strips of triangles, the first and last capped half a \
-                                     slice beyond with a shrunken copy of the end contour, and \
-                                     any gap left where a contour splits between slices closed. \
-                                     It owes nothing to this image's lattice. The formulas are \
-                                     in docs/volumes.md. For a point of interest this is its \
-                                     position instead.",
-                                ),
-                                (
-                                    "Voxels-based",
-                                    "The volume of the mask, once the contours are drawn onto \
-                                     this image's own lattice: the number of voxels whose \
-                                     centre falls inside, times the voxel volume. This is what \
-                                     every tool that works on voxels actually carries - \
-                                     propagation, DVH, the registration regions - so it is the \
-                                     figure those agree with.\n\nIt reads larger than the \
-                                     surface for a small structure, because the voxels run a \
-                                     full half slice past the end contours where the surface \
-                                     tapers to a cap, and for one made of many small pieces; \
-                                     smaller for one thinner than a voxel, which can fall \
-                                     between the centres entirely. On a compact organ the two \
-                                     agree to a fraction of a per cent.",
-                                ),
-                                ("Slices", "How many slices carry contours."),
-                                ("Points", "Contour points in the whole structure."),
-                                ("Grey (min / mean / max)", ""),
-                                ("Dice", ""),
-                                ("Derived", ""),
-                            ] {
-                                let r = ui.label(egui::RichText::new(h).strong());
-                                if !tip.is_empty() {
-                                    r.on_hover_text(tip);
+            });
+        });
+        egui::ScrollArea::horizontal()
+            .id_salt("stats_scroll")
+            .show(ui, |ui| {
+                egui::Grid::new("stats_grid")
+                    .striped(true)
+                    .num_columns(10)
+                    .show(ui, |ui| {
+                        // The two volumes are two different questions, and
+                        // the headings say which is which on hover rather
+                        // than leaving a reader to guess why one structure
+                        // has two numbers that disagree.
+                        for (h, tip) in [
+                            (
+                                "Structure",
+                                "Click a name to select the structure, as in the data tree, \
+                                 and put the crosshair on its centre.",
+                            ),
+                            ("Type", ""),
+                            (
+                                "Format",
+                                "What the geometry is kept as: contours (an RT structure), \
+                                 voxels (a segment) or a point.",
+                            ),
+                            (
+                                "Surface-based",
+                                "The volume enclosed by a closed triangle surface \
+                                 reconstructed from the contours: neighbouring slices joined \
+                                 by strips of triangles, the first and last capped half a \
+                                 slice beyond with a shrunken copy of the end contour, and any \
+                                 gap left where a contour splits between slices closed. It \
+                                 owes nothing to this image's lattice. The formulas are in \
+                                 docs/volumes.md. For a point of interest this is its \
+                                 position instead.",
+                            ),
+                            (
+                                "Voxels-based",
+                                "The volume of the mask, once the contours are drawn onto \
+                                 this image's own lattice: the number of voxels whose centre \
+                                 falls inside, times the voxel volume. This is what every tool \
+                                 that works on voxels actually carries - propagation, DVH, the \
+                                 registration regions - so it is the figure those agree \
+                                 with.\n\nIt reads larger than the surface for a small \
+                                 structure, because the voxels run a full half slice past the \
+                                 end contours where the surface tapers to a cap, and for one \
+                                 made of many small pieces; smaller for one thinner than a \
+                                 voxel, which can fall between the centres entirely. On a \
+                                 compact organ the two agree to a fraction of a per cent.",
+                            ),
+                            ("Slices", "How many slices carry contours."),
+                            ("Points", "Contour points in the whole structure."),
+                            ("Grey (min / mean / max)", ""),
+                            ("Dice", ""),
+                            ("Derived", ""),
+                        ] {
+                            let r = ui.label(egui::RichText::new(h).strong());
+                            if !tip.is_empty() {
+                                r.on_hover_text(tip);
+                            }
+                        }
+                        ui.end_row();
+                        for r in &d.rows {
+                            let resp = ui
+                                .horizontal(|ui| {
+                                    let c = theme::rgb(r.color);
+                                    ui.label(egui::RichText::new("■").color(c));
+                                    ui.add(egui::Button::selectable(
+                                        selected.contains(&Some(r.item)),
+                                        r.name.clone(),
+                                    ))
+                                })
+                                .inner;
+                            if resp.clicked() {
+                                clicked = Some(r.item);
+                            }
+                            if resp.hovered() {
+                                hovered = Some(r.item);
+                            }
+                            ui.label(r.roi_type.clone());
+                            ui.label(r.repr);
+                            match (r.surface_cm3, r.point) {
+                                (_, Some(p)) => {
+                                    ui.label(format!("{:.1}, {:.1}, {:.1} mm", p.x, p.y, p.z));
+                                }
+                                (Some(v), None) => {
+                                    ui.label(format!("{v:.2} cm³"));
+                                }
+                                (None, None) => {
+                                    ui.label("-");
+                                }
+                            }
+                            if r.point.is_some() {
+                                ui.label("-");
+                            } else {
+                                ui.label(format!("{:.2} cm³", r.voxel_cm3));
+                            }
+                            ui.label(if r.slices > 0 {
+                                r.slices.to_string()
+                            } else {
+                                "-".into()
+                            });
+                            ui.label(if r.points > 0 {
+                                r.points.to_string()
+                            } else {
+                                "-".into()
+                            });
+                            ui.label(match r.grey {
+                                Some(g) => format!("{:.0} / {:.0} / {:.0}", g[0], g[1], g[2]),
+                                None => "-".into(),
+                            });
+                            match &r.dice {
+                                Some((dice, with)) => {
+                                    ui.label(format!("{dice:.3}"))
+                                        .on_hover_text(format!("against {with}"));
+                                }
+                                None => {
+                                    ui.label("-");
+                                }
+                            }
+                            match r.status {
+                                Some(s) => {
+                                    let c = s.color();
+                                    ui.label(
+                                        egui::RichText::new(format!("{} {}", s.glyph(), s.label()))
+                                            .color(theme::rgb(c)),
+                                    );
+                                }
+                                None => {
+                                    ui.label("-");
                                 }
                             }
                             ui.end_row();
-                            for r in &d.rows {
-                                ui.horizontal(|ui| {
-                                    let c = theme::rgb(r.color);
-                                    ui.label(egui::RichText::new("■").color(c));
-                                    ui.label(r.name.clone());
-                                });
-                                ui.label(r.roi_type.clone());
-                                ui.label(r.repr);
-                                match (r.surface_cm3, r.point) {
-                                    (_, Some(p)) => {
-                                        ui.label(format!("{:.1}, {:.1}, {:.1} mm", p.x, p.y, p.z));
-                                    }
-                                    (Some(v), None) => {
-                                        ui.label(format!("{v:.2} cm³"));
-                                    }
-                                    (None, None) => {
-                                        ui.label("-");
-                                    }
-                                }
-                                if r.point.is_some() {
-                                    ui.label("-");
-                                } else {
-                                    ui.label(format!("{:.2} cm³", r.voxel_cm3));
-                                }
-                                ui.label(if r.slices > 0 {
-                                    r.slices.to_string()
-                                } else {
-                                    "-".into()
-                                });
-                                ui.label(if r.points > 0 {
-                                    r.points.to_string()
-                                } else {
-                                    "-".into()
-                                });
-                                ui.label(match r.grey {
-                                    Some(g) => {
-                                        format!("{:.0} / {:.0} / {:.0}", g[0], g[1], g[2])
-                                    }
-                                    None => "-".into(),
-                                });
-                                match &r.dice {
-                                    Some((dice, with)) => {
-                                        ui.label(format!("{dice:.3}"))
-                                            .on_hover_text(format!("against {with}"));
-                                    }
-                                    None => {
-                                        ui.label("-");
-                                    }
-                                }
-                                match r.status {
-                                    Some(s) => {
-                                        let c = s.color();
-                                        ui.label(
-                                            egui::RichText::new(format!(
-                                                "{} {}",
-                                                s.glyph(),
-                                                s.label()
-                                            ))
-                                            .color(theme::rgb(c)),
-                                        );
-                                    }
-                                    None => {
-                                        ui.label("-");
-                                    }
-                                }
-                                ui.end_row();
-                            }
-                        });
-                });
-                if d.rows.is_empty() {
-                    ui.label("This workspace has no structures yet.");
-                }
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if ui.button("Refresh").clicked() {
-                        refresh = true;
-                    }
-                    ui.add_enabled_ui(!d.rows.is_empty(), |ui| {
-                        if ui.button("Save CSV").clicked() {
-                            save = true;
                         }
                     });
-                    if ui.button("Close").clicked() {
-                        close = true;
-                    }
-                });
-            },
-        );
+            });
+        if d.rows.is_empty() {
+            ui.label("This workspace has no structures yet.");
+        }
+        // The row under the pointer is drawn thicker in the views.
+        self.focus_structures(hovered.map(|i| (slot, i)));
+        if let Some(item) = clicked {
+            self.select_and_localize(slot, item);
+        }
         if let Some(s) = switch {
-            if let Some(d) = &mut self.stats_dialog {
+            if let Some(d) = &mut self.stats {
                 d.slot = s;
                 d.stale = true;
             }
         }
         if refresh {
-            if let Some(d) = &mut self.stats_dialog {
+            if let Some(d) = &mut self.stats {
                 d.stale = true;
             }
         }
         if save {
             let csv = self
-                .stats_dialog
+                .stats
                 .as_ref()
                 .map(|d| Self::stats_csv(&d.rows))
                 .unwrap_or_default();
@@ -697,9 +787,6 @@ impl ViewerApp {
                     }
                 },
             );
-        }
-        if close || !open {
-            self.stats_dialog = None;
         }
     }
 }

@@ -1,5 +1,7 @@
-//! *Tools ▶ Transfer by relationship*: place a structure into the other
-//! workspace by its spatial relationship to a reference structure.
+//! *Structure propagation ▶ By relationship*: place a structure into the
+//! other workspace by its spatial relationship to a reference structure - the
+//! fold of the propagation section that is the alternative to propagating
+//! through a registration.
 //!
 //! A STAR target defined on one patient's imaging cannot be propagated onto
 //! another patient (or another posture) by registration alone when the two
@@ -9,17 +11,20 @@
 //! target lands in the destination at the same offset from the destination's
 //! reference structure, keeping its shape; deformable adaptation, when
 //! wanted, is the propagation tool's job afterwards.
+//!
+//! While the fold is unfolded the target and the two reference structures
+//! are drawn thicker in the views.
 
 use crate::motion;
 
 use super::*;
 
-/// The window's state.
-pub(super) struct TransferDialog {
+/// The fold's state.
+pub(super) struct TransferState {
     /// Workspace the target comes from.
     pub src_slot: usize,
     /// Workspace it lands in. With more than two open this is a choice, and
-    /// the window makes it one.
+    /// the fold makes it one.
     pub dst_slot: usize,
     /// Candidate index of the target in the source workspace.
     pub target: Option<usize>,
@@ -29,7 +34,7 @@ pub(super) struct TransferDialog {
     pub dst_ref: Option<usize>,
     pub status: Option<String>,
     /// The offset the two reference structures give, as a matrix - what the
-    /// window shows in its transform grid before anyone edits it.
+    /// fold shows in its transform grid before anyone edits it.
     pub auto: Option<crate::registration::Mat4>,
     /// The picks `auto` was worked out for. Two structures have to be
     /// rasterized to find their centroids, which is a thing to do when the
@@ -37,10 +42,21 @@ pub(super) struct TransferDialog {
     pub auto_for: (usize, Option<usize>, Option<usize>),
 }
 
+/// The reference structure a workspace most likely has: the heart, by
+/// name.
+fn guess_reference(cands: &[(super::combine::ItemRef, String)]) -> Option<usize> {
+    cands.iter().position(|(_, l)| {
+        let l = l.to_lowercase();
+        l.contains("heart") || l.contains("herz")
+    })
+}
+
 impl ViewerApp {
-    pub(super) fn open_transfer_dialog(&mut self, src_slot: usize) {
+    /// The fold's state for a transfer out of `src_slot`, with the reference
+    /// structures pre-picked by the obvious name.
+    fn transfer_state(&self, src_slot: usize) -> TransferState {
         let dst_slot = self.other_open(src_slot).unwrap_or(src_slot);
-        let mut d = TransferDialog {
+        let mut d = TransferState {
             src_slot,
             dst_slot,
             target: None,
@@ -50,22 +66,15 @@ impl ViewerApp {
             auto: None,
             auto_for: (usize::MAX, None, None),
         };
-        // Pre-pick reference structures by the obvious name.
-        let guess = |cands: &[(super::combine::ItemRef, String)]| {
-            cands.iter().position(|(_, l)| {
-                let l = l.to_lowercase();
-                l.contains("heart") || l.contains("herz")
-            })
-        };
-        d.src_ref = guess(&self.combine_candidates(src_slot));
-        d.dst_ref = guess(&self.combine_candidates(dst_slot));
-        self.transfer_dialog = Some(d);
+        d.src_ref = guess_reference(&self.combine_candidates(src_slot));
+        d.dst_ref = guess_reference(&self.combine_candidates(dst_slot));
+        d
     }
 
     /// Carry the target across, synchronously - a placement and one
     /// nearest-neighbour resampling over the target's bounding box.
     fn transfer_now(&mut self) {
-        let Some(d) = &self.transfer_dialog else {
+        let Some(d) = &self.transfer else {
             return;
         };
         let (src, dst) = (d.src_slot, d.dst_slot);
@@ -77,7 +86,7 @@ impl ViewerApp {
         let pick = |slot: usize, sel: Option<usize>| {
             sel.and_then(|i| self.combine_candidates(slot).get(i).cloned())
         };
-        // A matrix typed into the window says where the target goes; without
+        // A matrix typed into the fold says where the target goes; without
         // one it is the relationship between the two reference structures,
         // and only then are they needed at all.
         let manual = self.transfer_matrix.transform(crate::geometry::Vec3::ZERO);
@@ -93,7 +102,7 @@ impl ViewerApp {
             Some(t) => (
                 t,
                 format!("{tname} (matrix)"),
-                "placed by the matrix typed into the window".to_string(),
+                "placed by the matrix typed into the fold".to_string(),
             ),
             None => {
                 let (Some((ir, _)), Some((id_, _))) =
@@ -161,9 +170,9 @@ impl ViewerApp {
         self.transfer_status(&msg);
     }
 
-    /// The one line the window reports its last run on.
+    /// The one line the fold reports its last run on.
     fn transfer_status(&mut self, msg: &str) {
-        if let Some(d) = &mut self.transfer_dialog {
+        if let Some(d) = &mut self.transfer {
             d.status = Some(msg.to_string());
         }
     }
@@ -192,37 +201,45 @@ impl ViewerApp {
         Some(crate::registration::Mat4::translation(c_dst - c_src))
     }
 
-    pub(super) fn transfer_window(&mut self, ctx: &egui::Context) {
-        let Some(d) = &self.transfer_dialog else {
-            return;
-        };
-        let src = d.src_slot;
-        // Where it lands. The window keeps its own answer, falling back to
-        // the next open workspace when that one is gone.
-        let others: Vec<usize> = self
-            .volume_slot_list()
-            .into_iter()
-            .filter(|s| *s != src)
-            .collect();
-        if !self.slots[src].has_volume() || others.is_empty() {
-            self.transfer_dialog = None;
+    /// The *By relationship* fold of the propagation section.
+    pub(super) fn transfer_fold(&mut self, ui: &mut egui::Ui) {
+        let volumes = self.volume_slot_list();
+        if volumes.len() < 2 {
+            ui.weak("Needs two workspaces with an image volume: the target's and the destination");
             return;
         }
+        // Where it comes from: the fold keeps its own answer, falling back to
+        // the first workspace with a volume when that one is gone.
+        let src = match &self.transfer {
+            Some(d) if volumes.contains(&d.src_slot) => d.src_slot,
+            _ => volumes[0],
+        };
+        if self.transfer.as_ref().is_none_or(|d| d.src_slot != src) {
+            self.transfer = Some(self.transfer_state(src));
+        }
+        let Some(d) = &self.transfer else {
+            return;
+        };
+        // Where it lands, likewise.
+        let others: Vec<usize> = volumes.iter().copied().filter(|s| *s != src).collect();
         let dst = if others.contains(&d.dst_slot) {
             d.dst_slot
         } else {
             others[0]
         };
-        let src_cands: Vec<String> = self
-            .combine_candidates(src)
-            .into_iter()
-            .map(|(_, l)| l)
-            .collect();
-        let dst_cands: Vec<String> = self
-            .combine_candidates(dst)
-            .into_iter()
-            .map(|(_, l)| l)
-            .collect();
+        let src_items = self.combine_candidates(src);
+        let dst_items = self.combine_candidates(dst);
+        // What the fold is about, drawn thicker while it is unfolded.
+        let picked: Vec<(usize, super::combine::ItemRef)> = [
+            (src, d.target, &src_items),
+            (src, d.src_ref, &src_items),
+            (dst, d.dst_ref, &dst_items),
+        ]
+        .into_iter()
+        .filter_map(|(slot, i, items)| Some((slot, items.get(i?)?.0)))
+        .collect();
+        let src_cands: Vec<String> = src_items.into_iter().map(|(_, l)| l).collect();
+        let dst_cands: Vec<String> = dst_items.into_iter().map(|(_, l)| l).collect();
         // What the relationship itself gives, recomputed only when the
         // reference structures change.
         let key = (src * MAX_WORKSPACES + dst, d.src_ref, d.dst_ref);
@@ -231,118 +248,91 @@ impl ViewerApp {
         } else {
             self.relationship_matrix(src, dst, key.1, key.2)
         };
+        self.focus_structures(picked);
         let mut run = false;
-        let mut close = false;
         let mut swap = false;
-        let mut open = true;
-        let d = self.transfer_dialog.as_mut().expect("checked above");
+        let d = self.transfer.as_mut().expect("checked above");
         d.dst_slot = dst;
         d.auto = computed;
         d.auto_for = key;
         let mut manual = self.transfer_matrix;
-        detach::tool_window(
-            ctx,
-            "transfer",
-            "◎ Transfer by relationship",
-            &mut open,
-            detach::WinOpts::default(),
-            |ui| {
-                ui.label(format!(
-                    "Place a structure of workspace {} into workspace {} at the same offset \
-                     from a reference structure (e.g. the heart) - the target-reference \
-                     relationship travels, not the image registration.",
-                    SLOT_NAMES[src], SLOT_NAMES[dst]
-                ));
-                // Which workspace it lands in, when there is more than one
-                // to choose from.
-                if others.len() > 1 {
-                    ui.horizontal(|ui| {
-                        ui.label("Into workspace:");
-                        for o in &others {
-                            if ui
-                                .add(egui::Button::selectable(d.dst_slot == *o, SLOT_NAMES[*o]))
-                                .clicked()
-                            {
-                                d.dst_slot = *o;
-                                d.dst_ref = None;
-                                d.status = None;
-                            }
-                        }
-                    });
-                }
-                ui.add_space(4.0);
-                form::form(ui, "transfer_picks", |f| {
-                    f.row(&format!("Target ({})", SLOT_NAMES[src]), |ui| {
-                        index_picker(ui, "tr_target", &mut d.target, &src_cands);
-                    });
-                    // With a matrix in charge the relationship is not
-                    // consulted, so the two references go quiet rather than
-                    // looking required.
-                    let live = !manual.use_it;
-                    f.row(&format!("Reference in {}", SLOT_NAMES[src]), |ui| {
-                        ui.add_enabled_ui(live, |ui| {
-                            index_picker(ui, "tr_src_ref", &mut d.src_ref, &src_cands);
-                        });
-                    });
-                    f.row(&format!("Reference in {}", SLOT_NAMES[dst]), |ui| {
-                        ui.add_enabled_ui(live, |ui| {
-                            index_picker(ui, "tr_dst_ref", &mut d.dst_ref, &dst_cands);
-                        });
-                    });
-                    f.wide(|ui| {
+        ui.label(
+            egui::RichText::new(format!(
+                "Place a structure of workspace {} into workspace {} at the same offset from \
+                 a reference structure (e.g. the heart) - the target-reference relationship \
+                 travels, not the image registration.",
+                SLOT_NAMES[src], SLOT_NAMES[dst]
+            ))
+            .weak(),
+        );
+        form::form(ui, "transfer_picks", |f| {
+            // Which workspace it lands in, when there is more than one to
+            // choose from.
+            if others.len() > 1 {
+                f.row("Into workspace", |ui| {
+                    for o in &others {
                         if ui
-                            .button(format!("Swap direction (to workspace {})", SLOT_NAMES[src]))
+                            .add(egui::Button::selectable(d.dst_slot == *o, SLOT_NAMES[*o]))
                             .clicked()
                         {
-                            swap = true;
+                            d.dst_slot = *o;
+                            d.dst_ref = None;
+                            d.status = None;
                         }
-                    });
-                });
-                ui.add_space(4.0);
-                matrix_edit::matrix_editor(ui, &mut manual, computed);
-                if manual.use_it {
-                    ui.weak(
-                        "The target is placed through these numbers instead of by its \
-                         offset from the reference structures.",
-                    );
-                }
-                ui.add_space(4.0);
-                if let Some(status) = &d.status {
-                    ui.label(status.clone());
-                }
-                ui.horizontal(|ui| {
-                    if ui.button("▶ Transfer").clicked() {
-                        run = true;
-                    }
-                    if ui.button("Close").clicked() {
-                        close = true;
                     }
                 });
-            },
-        );
+            }
+            f.row(&format!("Target ({})", SLOT_NAMES[src]), |ui| {
+                index_picker(ui, "tr_target", &mut d.target, &src_cands, 170.0);
+            });
+            // With a matrix in charge the relationship is not consulted, so
+            // the two references go quiet rather than looking required.
+            let live = !manual.use_it;
+            f.row(&format!("Reference in {}", SLOT_NAMES[src]), |ui| {
+                ui.add_enabled_ui(live, |ui| {
+                    index_picker(ui, "tr_src_ref", &mut d.src_ref, &src_cands, 170.0);
+                });
+            });
+            f.row(&format!("Reference in {}", SLOT_NAMES[dst]), |ui| {
+                ui.add_enabled_ui(live, |ui| {
+                    index_picker(ui, "tr_dst_ref", &mut d.dst_ref, &dst_cands, 170.0);
+                });
+            });
+            f.wide(|ui| {
+                if ui
+                    .button(format!("Swap direction (to workspace {})", SLOT_NAMES[src]))
+                    .clicked()
+                {
+                    swap = true;
+                }
+            });
+        });
+        ui.add_space(4.0);
+        matrix_edit::matrix_editor(ui, &mut manual, computed);
+        if manual.use_it {
+            ui.weak(
+                "The target is placed through these numbers instead of by its offset from \
+                 the reference structures.",
+            );
+        }
+        ui.add_space(4.0);
+        if let Some(status) = &d.status {
+            ui.label(status.clone());
+        }
+        if ui.button("▶ Transfer").clicked() {
+            run = true;
+        }
         self.transfer_matrix = manual;
         if swap {
-            if let Some(d) = &mut self.transfer_dialog {
+            if let Some(d) = &mut self.transfer {
                 std::mem::swap(&mut d.src_slot, &mut d.dst_slot);
                 d.target = None;
-                d.src_ref = None;
-                d.dst_ref = None;
                 d.status = None;
             }
-            if let Some((from, to)) = self
-                .transfer_dialog
-                .as_ref()
-                .map(|d| (d.src_slot, d.dst_slot))
-            {
-                let guess = |cands: Vec<(super::combine::ItemRef, String)>| {
-                    cands.iter().position(|(_, l)| {
-                        let l = l.to_lowercase();
-                        l.contains("heart") || l.contains("herz")
-                    })
-                };
-                let s = guess(self.combine_candidates(from));
-                let t = guess(self.combine_candidates(to));
-                if let Some(d) = &mut self.transfer_dialog {
+            if let Some((from, to)) = self.transfer.as_ref().map(|d| (d.src_slot, d.dst_slot)) {
+                let s = guess_reference(&self.combine_candidates(from));
+                let t = guess_reference(&self.combine_candidates(to));
+                if let Some(d) = &mut self.transfer {
                     d.src_ref = s;
                     d.dst_ref = t;
                 }
@@ -350,9 +340,6 @@ impl ViewerApp {
         }
         if run {
             self.transfer_now();
-        }
-        if close || !open {
-            self.transfer_dialog = None;
         }
     }
 }

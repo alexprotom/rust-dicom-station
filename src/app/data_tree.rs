@@ -109,14 +109,11 @@ impl ViewerApp {
             .sense(egui::Sense::click()),
         );
         // Patient ▶ study ▶ category ▶ series. Everything that carries a
-        // StudyInstanceUID lives inside a study node; the rest - planar images
-        // have no study link at all, REG objects and records belong to a frame
-        // of reference rather than a study, and the dose display settings are
-        // shared by both workspaces - stays at workspace level below it.
+        // StudyInstanceUID lives inside a study node; the rest - REG objects
+        // and records belong to a frame of reference rather than a study -
+        // stays at workspace level below it. How dose is drawn is a module
+        // of the right panel, shared by every workspace.
         self.data_tree(ui, slot);
-        self.dose_display_section(ui, slot);
-        self.planar_section(ui, slot);
-        self.reports_section(ui, slot);
         self.setups_section(ui, slot);
         self.reg_objects_section(ui, slot);
         self.records_section(ui, slot);
@@ -351,7 +348,7 @@ impl ViewerApp {
     ) {
         // A study opens showing the images being looked at and the
         // structures drawn on them. Everything else - dose, plans, planar
-        // images, registrations, records - is a click away, so a tree of a
+        // images, reports - is a click away, so a tree of a
         // real study is readable the moment it appears.
         let active = self.slots[slot]
             .study
@@ -393,6 +390,8 @@ impl ViewerApp {
         self.segmentation_section(ui, slot, pi, si, &node.segs, displayed);
         self.dose_section(ui, slot, pi, si, &node.doses);
         self.plan_section(ui, slot, pi, si, &node.plans);
+        self.planar_section(ui, slot, (pi, si), node);
+        self.reports_section(ui, slot, (pi, si), &node.reports);
     }
 
     /// Right-click on a modality node: what can be done with every series

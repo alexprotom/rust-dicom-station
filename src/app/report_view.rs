@@ -43,7 +43,7 @@ impl ViewerApp {
         };
 
         // ---- the bar: as every pane has, plus the page / table switch ----
-        let is_max = self.maximized == Some((slot, kind));
+        let is_max = self.pane_is_max(ui, slot, kind);
         let bsize = egui::vec2(24.0, 20.0);
         let by = rect.top() + 4.0;
         let cell = |right: f32, w: f32| {
@@ -51,7 +51,8 @@ impl ViewerApp {
         };
         let max_rect = cell(rect.right() - 4.0, bsize.x);
         let close_rect = cell(max_rect.left() - 4.0, bsize.x);
-        let page_rect = cell(close_rect.left() - 8.0, 70.0);
+        let detach_rect = cell(close_rect.left() - 4.0, bsize.x);
+        let page_rect = cell(detach_rect.left() - 8.0, 70.0);
         let max_resp = ui
             .put(
                 max_rect,
@@ -65,6 +66,7 @@ impl ViewerApp {
         let close_resp = ui
             .put(close_rect, egui::Button::new("✖").small())
             .on_hover_text("Take this pane out of the row");
+        let clicked_detach = self.detach_button(ui, detach_rect, slot, kind);
         let page_resp = has_page.then(|| {
             ui.put(
                 page_rect,
@@ -134,7 +136,10 @@ impl ViewerApp {
             self.hovered_slot = slot;
         }
         if max_resp.clicked() {
-            self.maximized = if is_max { None } else { Some((slot, kind)) };
+            self.toggle_pane_max(ui, slot, kind);
+        }
+        if clicked_detach {
+            self.toggle_detached(slot, kind);
         }
         if page_resp.is_some_and(|r| r.clicked()) {
             let v = &mut self.slots[slot].planar[k];

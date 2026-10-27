@@ -5,8 +5,8 @@
 //! images, registrations, records - under one node per workspace.
 //!
 //! The right panel holds the modules, each one turned on and off in the
-//! Modules menu: image registration and image simulation (both in
-//! `reg_panel.rs`) and structures propagation (`propagate_win.rs`).
+//! Modules menu, drawn in the order of [`Module::ALL`] (the list and the
+//! dispatch to each section are `modules.rs`).
 //!
 //! Both panels are built the same way, by [`ViewerApp::edge_panel`]: a thin
 //! strip along the window edge carrying the show / hide arrow, and beside it
@@ -134,19 +134,6 @@ impl ViewerApp {
     /// panel is not built at all while they are all off, so an untouched
     /// installation looks exactly as it did before there was one.
     pub(super) fn modules_panel(&mut self, ui: &mut egui::Ui) {
-        /// The id salt of every module header (its title unless it sets
-        /// one) and the settings word for it.
-        const MODULE_HEADERS: [(&str, &str); 9] = [
-            ("Image information", "information"),
-            ("Playback", "playback"),
-            ("Image registration", "registration"),
-            ("Image simulation", "simulation"),
-            ("Image generation", "generation"),
-            ("Structure editor", "editor"),
-            ("Structure auto tools", "auto"),
-            ("module_propagate", "propagation"),
-            ("Dose estimation", "dose"),
-        ];
         if !self.slots.iter().any(|s| s.study.is_some()) {
             return;
         }
@@ -158,6 +145,8 @@ impl ViewerApp {
         // on screen; the section sets this again every frame it is drawn.
         self.medsam2.open = false;
         self.nni.open = false;
+        // What the sections are about is set again by the ones on screen.
+        self.section_focus = None;
         self.right_open = Self::edge_panel(
             ui,
             EdgePanel {
@@ -173,9 +162,9 @@ impl ViewerApp {
                 // unfolds the ones that were open at the last run; from
                 // then on the list follows the headers and is written
                 // with the settings.
-                let ids: Vec<(egui::Id, &str)> = MODULE_HEADERS
+                let ids: Vec<(egui::Id, &str)> = Module::ALL
                     .iter()
-                    .map(|(salt, key)| (ui.make_persistent_id(*salt), *key))
+                    .map(|m| (ui.make_persistent_id(m.header_salt()), m.open_word()))
                     .collect();
                 if self.apply_modules_open {
                     self.apply_modules_open = false;
@@ -191,32 +180,10 @@ impl ViewerApp {
                         st.store(ui.ctx());
                     }
                 }
-                if self.module_info {
-                    self.image_info_section(ui);
-                }
-                if self.module_play {
-                    self.playback_section(ui);
-                }
-                if self.module_registration {
-                    self.registration_section(ui);
-                }
-                if self.module_simulation {
-                    self.simulation_section(ui);
-                }
-                if self.module_generation {
-                    self.image_generation_section(ui);
-                }
-                if self.module_structures {
-                    self.structures_editor_section(ui);
-                }
-                if self.module_auto {
-                    self.auto_tools_section(ui);
-                }
-                if self.module_propagation {
-                    self.propagate_section(ui);
-                }
-                if self.module_dose {
-                    self.dose_est_section(ui);
+                for m in Module::ALL {
+                    if self.module_on(m) {
+                        self.module_section(m, ui);
+                    }
                 }
                 let open: Vec<String> = ids
                     .iter()

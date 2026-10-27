@@ -790,6 +790,8 @@ impl SetupResult {
                 ("Correction".into(), self.result.correction_line()),
             ],
             frame_of_reference_uid: self.for_uid.clone(),
+            // Filed in the data tree beside the radiograph it is laid over.
+            study_uid: radiograph.map(|r| r.study_uid.clone()).unwrap_or_default(),
             camera: Some(v.camera.transformed(&self.result.transform)),
             frame_count: 1,
             ..Default::default()
@@ -1090,6 +1092,7 @@ pub fn preview(
             window: ((lo + hi) * 0.5, (hi - lo).max(1e-6)),
             info: vec![("Source".into(), "DRR at the plan's pose".into())],
             frame_of_reference_uid: study.volume.frame_of_reference_uid.clone(),
+            study_uid: img.study_uid.clone(),
             camera: Some(wcam.transformed(&pose)),
             frame_count: 1,
             ..Default::default()

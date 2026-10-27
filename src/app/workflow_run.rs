@@ -1,7 +1,10 @@
-//! Running a workflow from the viewer: the dialog that says on what and how,
-//! the run itself on a worker thread, and what it leaves behind.
+//! Running a workflow from the viewer - *Modules ▶ Workflows*: the section
+//! that picks the workflow and says on what and how, the run itself on a
+//! worker thread, and what it leaves behind. The editor (`workflow_edit.rs`)
+//! stays a window, since its canvas needs the width; the run is watched
+//! from the panel, beside the workspaces it drives.
 //!
-//! **On what.** Every folder node of the workflow is a line of the dialog,
+//! **On what.** Every folder node of the workflow is a line of the section,
 //! filled with the folder the node names and changeable here - which is how
 //! a saved workflow is applied to the next patient without being edited.
 //! The results go to a folder of their own under the root shown (the
@@ -14,8 +17,8 @@
 //! for, or the next free one), and after every step the run pauses while
 //! the viewer shows what the step did - the image it worked on displayed,
 //! the structures it filed in the tree and on the image, each phase of a 4D
-//! group in turn as it is segmented, the motion results window when the
-//! motion is measured. The pause is a few seconds, or until *Next step* when
+//! group in turn as it is segmented, the motion results when the motion is
+//! measured. The pause is a few seconds, or until *Next step* when
 //! the run is set to wait. While such a run is going the workspaces it shows
 //! are its own: each step replaces the study with the run's copy.
 //!
@@ -26,7 +29,7 @@
 //! again*: they are the user's, the run's studies only a view of files the
 //! run folder holds anyway.
 //!
-//! **Again, faster.** The window keeps what every step of the last run
+//! **Again, faster.** The section keeps what every step of the last run
 //! left ([`StepCache`]); the next run takes over every step whose settings,
 //! files and the steps it reads from are unchanged, and the canvas marks
 //! them ♻. *Forget*
@@ -35,7 +38,7 @@
 //!
 //! **Batches.** A workflow with a *DICOM folders* step runs once per
 //! subfolder, in the background (showing every step of fifty patients is
-//! not what anyone wants); the finished window lists the cases and the
+//! not what anyone wants); the finished run lists the cases and the
 //! combined tables.
 //!
 //! The run is [`exec::run`] on a [`Job`]; its events arrive on a channel
@@ -61,10 +64,27 @@ pub(super) enum RunMode {
     Viewer,
 }
 
-/// The run window: its settings, and the run once it started.
+/// Where the section's workflow came from, so *Edit* opens the same one.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum WfSource {
+    /// The editor's canvas, through its *Run*.
+    Editor,
+    File(PathBuf),
+    Example(usize),
+}
+
+/// What the section's workflow menu picked.
+enum WfPick {
+    Ask,
+    File(PathBuf),
+    Example(usize),
+    New,
+}
+
+/// The run section's workflow: its settings, and the run once it started.
 pub(super) struct WorkflowRun {
-    pub open: bool,
     pub workflow: Workflow,
+    pub source: WfSource,
     /// The workflow file's folder, where relative input folders are found.
     pub base_dir: Option<PathBuf>,
     /// (node id, title, folder) of every folder node.
@@ -122,7 +142,12 @@ struct Parked {
 impl WorkflowRun {
     /// The window for `wf`. What the previous window was set to, what its
     /// steps left and the studies it parked carry over.
-    fn new(wf: Workflow, base_dir: Option<PathBuf>, prev: Option<&mut WorkflowRun>) -> WorkflowRun {
+    fn new(
+        wf: Workflow,
+        source: WfSource,
+        base_dir: Option<PathBuf>,
+        prev: Option<&mut WorkflowRun>,
+    ) -> WorkflowRun {
         let inputs = wf
             .nodes
             .iter()
@@ -138,7 +163,7 @@ impl WorkflowRun {
             wf.output.root.clone()
         };
         let mut run = WorkflowRun {
-            open: true,
+            source,
             workflow: wf,
             base_dir,
             inputs,
@@ -257,7 +282,7 @@ impl WorkflowRun {
     }
 }
 
-/// What the run window asks the application to do after drawing.
+/// What the run section asks the application to do after drawing.
 enum RunAction {
     Start,
     Cancel,
@@ -273,14 +298,12 @@ enum RunAction {
 }
 
 impl ViewerApp {
-    /// Open the run window on the editor's workflow (or bring back the one
-    /// running).
+    /// The editor's *Run*: the Workflows section, unfolded on the editor's
+    /// workflow (or on the run going on, which is not replaced).
     pub(super) fn open_workflow_run(&mut self) {
-        if let Some(r) = &mut self.wf_run {
-            if r.is_running() {
-                r.open = true;
-                return;
-            }
+        self.reveal_module(Module::Workflows);
+        if self.wf_run.as_ref().is_some_and(|r| r.is_running()) {
+            return;
         }
         let Some(ed) = &self.wf_editor else {
             return;
@@ -290,8 +313,62 @@ impl ViewerApp {
             .path
             .as_ref()
             .and_then(|p| p.parent().map(Path::to_path_buf));
+        let source = match &ed.path {
+            Some(p) if !ed.dirty() => WfSource::File(p.clone()),
+            _ => WfSource::Editor,
+        };
+        self.wf_pick(wf, source, base);
+    }
+
+    /// Make `wf` the workflow the section runs, keeping the settings and
+    /// the step cache of the one before. Never under a run in flight.
+    fn wf_pick(&mut self, wf: Workflow, source: WfSource, base: Option<PathBuf>) {
+        if self.wf_run.as_ref().is_some_and(|r| r.is_running()) {
+            self.notice = Some("A workflow is running; pick the next one when it is done.".into());
+            return;
+        }
         let mut prev = self.wf_run.take();
-        self.wf_run = Some(WorkflowRun::new(wf, base, prev.as_mut()));
+        self.wf_run = Some(WorkflowRun::new(wf, source, base, prev.as_mut()));
+    }
+
+    /// *Edit*: the editor on the section's workflow - the file it came
+    /// from, the example, or the canvas that ran it. Replacing the canvas
+    /// asks first when it has unsaved changes, as everywhere.
+    fn wf_edit_picked(&mut self) {
+        let source = self.wf_run.as_ref().map(|r| r.source.clone());
+        match source {
+            Some(WfSource::File(p))
+                if self.wf_editor.as_ref().and_then(|e| e.path.as_ref()) != Some(&p) =>
+            {
+                self.wf_replace(super::workflow_edit::WfPending::File(p));
+            }
+            Some(WfSource::Example(i)) => {
+                self.wf_replace(super::workflow_edit::WfPending::Example(i));
+            }
+            _ => {}
+        }
+        if let Some(e) = &mut self.wf_editor {
+            e.open = true;
+        }
+    }
+
+    /// Pick a workflow file for the section.
+    fn wf_pick_file(&mut self, path: &Path) {
+        match store::load(path) {
+            Ok(wf) => self.wf_pick(
+                wf,
+                WfSource::File(path.to_path_buf()),
+                path.parent().map(Path::to_path_buf),
+            ),
+            Err(e) => {
+                // A recent file that is gone leaves the list.
+                if !path.exists() {
+                    self.recent_workflows.retain(|p| p != path);
+                    self.persist_settings();
+                }
+                self.error = Some(format!("{e:#}"));
+            }
+        }
     }
 
     fn start_workflow_run(&mut self) {
@@ -353,6 +430,8 @@ impl ViewerApp {
     /// outcome when it ends. Called every frame.
     pub(super) fn poll_workflow_run(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
+        // Whether the section is where someone can see the run end.
+        let watched = self.module_on(Module::Workflows) && self.right_open;
         let Some(run) = &mut self.wf_run else {
             return;
         };
@@ -447,7 +526,7 @@ impl ViewerApp {
                 None => format!("✔ Finished in {:.0} s", out.secs),
                 Some(e) => format!("✖ {e}"),
             });
-            if !run.open {
+            if !watched {
                 self.notice = Some(match &out.error {
                     None => format!(
                         "The workflow '{}' finished. Its results are in {}",
@@ -563,8 +642,7 @@ impl ViewerApp {
         if let Some(r) = s.report {
             if let Some(m) = r.motion {
                 self.motion_reports.push(m);
-                self.motion_sel = self.motion_reports.len() - 1;
-                self.motion_results_open = true;
+                self.show_motion_results(self.motion_reports.len() - 1);
             }
         }
     }
@@ -668,30 +746,126 @@ impl ViewerApp {
         }
         if !motion.is_empty() {
             self.motion_reports.extend(motion);
-            self.motion_sel = self.motion_reports.len() - 1;
-            self.motion_results_open = true;
+            self.show_motion_results(self.motion_reports.len() - 1);
         }
     }
 
     /// Draw the run window and do what it asked for.
-    pub(super) fn workflow_run_window(&mut self, ctx: &egui::Context) {
+    /// The section.
+    pub(super) fn workflows_section(&mut self, ui: &mut egui::Ui) {
+        self.module_header(
+            ui,
+            Module::Workflows,
+            |app, ui| {
+                // A run in flight says so on the header, folded or not.
+                if app.wf_run.as_ref().is_some_and(|r| r.is_running()) {
+                    ui.spinner();
+                }
+            },
+            |app, ui| app.workflows_body(ui),
+        );
+    }
+
+    /// Which workflow, then the run's settings, its progress or what it
+    /// left - and whatever was clicked, done.
+    fn workflows_body(&mut self, ui: &mut egui::Ui) {
+        let running = self.wf_run.as_ref().is_some_and(|r| r.is_running());
+        let mut pick: Option<WfPick> = None;
+        let mut edit = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.add_enabled_ui(!running, |ui| {
+                ui.menu_button("📂 Workflow", |ui| {
+                    if tip_button(ui, "Load…", "Run a workflow file (.rdsflow)") {
+                        pick = Some(WfPick::Ask);
+                        ui.close();
+                    }
+                    let recent = self.recent_workflows.clone();
+                    ui.add_enabled_ui(!recent.is_empty(), |ui| {
+                        ui.menu_button("🕐 Last saved", |ui| {
+                            for p in &recent {
+                                let name = p
+                                    .file_stem()
+                                    .map(|s| s.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| p.display().to_string());
+                                if ui
+                                    .button(name)
+                                    .on_hover_text(p.display().to_string())
+                                    .clicked()
+                                {
+                                    pick = Some(WfPick::File(p.clone()));
+                                    ui.close();
+                                }
+                            }
+                        });
+                    });
+                    ui.menu_button("Examples", |ui| {
+                        for (i, e) in store::EXAMPLES.iter().enumerate() {
+                            if ui.button(e.name).on_hover_text(e.blurb).clicked() {
+                                pick = Some(WfPick::Example(i));
+                                ui.close();
+                            }
+                        }
+                    });
+                })
+                .response
+                .on_hover_text("Pick the workflow to run: a file, a last saved one or an example");
+            });
+            if tip_button(
+                ui,
+                "🔀 New",
+                "Open the workflow editor on an empty canvas: add steps from the palette, \
+                 wire what one makes into the next",
+            ) {
+                pick = Some(WfPick::New);
+            }
+            if enabled_tip_button(
+                ui,
+                self.wf_run.is_some() || self.wf_editor.is_some(),
+                "✏ Edit",
+                "Open the workflow in the editor, to change it",
+            ) {
+                edit = true;
+            }
+        });
+        match pick {
+            Some(WfPick::Ask) => {
+                let dir = Some(store::user_dir());
+                self.ask_file(
+                    "Run a workflow",
+                    dir,
+                    Some(super::workflow_edit::WORKFLOW_FILES),
+                    |app, path| app.wf_pick_file(&path),
+                );
+            }
+            Some(WfPick::File(p)) => self.wf_pick_file(&p),
+            Some(WfPick::Example(i)) => {
+                if let Some(e) = store::EXAMPLES.get(i) {
+                    self.wf_pick(e.workflow(), WfSource::Example(i), None);
+                }
+            }
+            Some(WfPick::New) => {
+                self.wf_replace(super::workflow_edit::WfPending::New);
+                if let Some(e) = &mut self.wf_editor {
+                    e.open = true;
+                }
+            }
+            None => {}
+        }
+        if edit {
+            self.wf_edit_picked();
+        }
         let Some(mut run) = self.wf_run.take() else {
+            ui.weak(
+                "Pick a workflow to run, or make one in the editor. Every folder node gets \
+                 a line here for the folders it reads.",
+            );
             return;
         };
-        let now = ctx.input(|i| i.time);
+        ui.separator();
+        let now = ui.ctx().input(|i| i.time);
         let progress = run.job.as_ref().map(|j| j.progress.clone());
         let mut actions = Vec::new();
-        let mut open = run.open;
-        let title = format!("▶ Run: {}", run.workflow.name);
-        detach::tool_window(
-            ctx,
-            "workflow_run",
-            title,
-            &mut open,
-            detach::WinOpts::size(600.0, 680.0),
-            |ui| run_ui(ui, &mut run, progress.as_deref(), now, &mut actions),
-        );
-        run.open = open;
+        run_ui(ui, &mut run, progress.as_deref(), now, &mut actions);
         self.wf_run = Some(run);
         for a in actions {
             match a {
@@ -730,8 +904,7 @@ impl ViewerApp {
                         .and_then(|r| r.motion.clone());
                     if let Some(m) = m {
                         self.motion_reports.push(m);
-                        self.motion_sel = self.motion_reports.len() - 1;
-                        self.motion_results_open = true;
+                        self.show_motion_results(self.motion_reports.len() - 1);
                     }
                 }
                 RunAction::Again => {
@@ -751,7 +924,7 @@ impl ViewerApp {
     }
 }
 
-/// The run window's contents.
+/// The run section's contents, under the workflow picker.
 fn run_ui(
     ui: &mut egui::Ui,
     run: &mut WorkflowRun,
@@ -1185,7 +1358,7 @@ fn finished_ui(ui: &mut egui::Ui, run: &mut WorkflowRun, actions: &mut Vec<RunAc
                     }
                     if r.motion.is_some()
                         && ui
-                            .button("📈 Open in Motion results")
+                            .button("📈 Open in Structure motion")
                             .on_hover_text("The charts, tables and comparison of this motion run")
                             .clicked()
                     {

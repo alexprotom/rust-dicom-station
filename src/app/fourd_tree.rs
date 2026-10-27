@@ -218,6 +218,7 @@ impl ViewerApp {
         match act {
             FourDAction::Analyse { slot, group } => {
                 self.open_motion_dialog(slot, Some(group));
+                self.reveal_module(Module::Motion);
                 return;
             }
             FourDAction::Redetect { slot } => {

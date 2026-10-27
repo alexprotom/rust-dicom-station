@@ -1,5 +1,5 @@
 //! The data tree's reports section: the dose reports, protocol pages and
-//! other structured reports of a workspace, shown as tables in the row's
+//! other structured reports of a study, shown as tables in the row's
 //! additional pane.
 
 use super::*;
@@ -7,8 +7,14 @@ use super::*;
 impl ViewerApp {
     /// The reports, drawn like image series: a click shows one in the
     /// additional pane, an `A` badge says it is there.
-    pub(super) fn reports_section(&mut self, ui: &mut egui::Ui, slot: usize) {
-        let n = self.report_count(slot);
+    pub(super) fn reports_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        slot: usize,
+        (pi, si): (usize, usize),
+        which: &[usize],
+    ) {
+        let n = which.len();
         if n == 0 {
             return;
         }
@@ -17,7 +23,7 @@ impl ViewerApp {
         let mut remove: Option<ObjRef> = None;
         let mut focus: Option<RenameTarget> = None;
         let current = self.tree_focus.clone();
-        let shown: Vec<bool> = (0..n).map(|i| self.report_shown(slot, i)).collect();
+        let shown: Vec<bool> = which.iter().map(|&i| self.report_shown(slot, i)).collect();
         // For a workspace with no image volume and no radiograph these are
         // what there is to read, so the section opens itself.
         let sole_content = !self.slots[slot].has_volume()
@@ -28,19 +34,23 @@ impl ViewerApp {
         {
             let study = self.slots[slot].study.as_ref().unwrap();
             egui::CollapsingHeader::new(format!("Reports ({n})"))
-                .id_salt(("reports", slot))
+                .id_salt(("reports", slot, pi, si))
                 .default_open(sole_content)
                 .show(ui, |ui| {
-                    for (i, r) in study.reports.iter().enumerate() {
+                    for (row, &i) in which.iter().enumerate() {
+                        let Some(r) = study.reports.get(i) else {
+                            continue;
+                        };
                         let me = RenameTarget::Report { slot, idx: i };
                         let resp = ui
                             .scope(|ui| {
                                 ui.spacing_mut().item_spacing.x = 3.0;
                                 ui.horizontal(|ui| {
                                     let resp = ui.add(
-                                        egui::Button::selectable(shown[i], r.label.as_str()).wrap(),
+                                        egui::Button::selectable(shown[row], r.label.as_str())
+                                            .wrap(),
                                     );
-                                    if shown[i] {
+                                    if shown[row] {
                                         ui.add(
                                             egui::Button::new(
                                                 egui::RichText::new("A").small().strong(),

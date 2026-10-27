@@ -1,4 +1,4 @@
-//! *Modules ▶ Dose estimation*: one table of dose metrics for every ticked
+//! *Modules ▶ Dose analysis*: one table of dose metrics for every ticked
 //! structure of the active set against one dose, recomputed by itself
 //! whenever the structures, the tick boxes, the dose or the columns change.
 //!
@@ -665,7 +665,7 @@ impl ViewerApp {
                 true,
                 egui::Button::new(if playing { "⏸" } else { "▶" }).small(),
                 "Play the log: the structures move as they were moved, and the table \
-                 follows. Speed and what happens at the end are in the Playback module.",
+                 follows. Speed and what happens at the end are in the Image playback module.",
             ) {
                 toggle = true;
             }
@@ -736,11 +736,18 @@ impl ViewerApp {
     }
 
     pub(super) fn dose_est_section(&mut self, ui: &mut egui::Ui) {
-        let id = ui.make_persistent_id("Dose estimation");
-        let state =
-            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
-        let header = state.show_header(ui, |ui| {
-            ui.label(egui::RichText::new("Dose estimation").strong());
+        self.module_header(
+            ui,
+            Module::DoseAnalysis,
+            |app, ui| app.dose_est_header(ui),
+            |app, ui| app.dose_est_body(ui),
+        );
+    }
+
+    /// What the header carries after the title: the *Dynamic* log's switch
+    /// and, while it holds something, *Clear log*.
+    fn dose_est_header(&mut self, ui: &mut egui::Ui) {
+        {
             let was = self.dose_est.dynamic;
             ui.toggle_value(&mut self.dose_est.dynamic, "Dynamic")
                 .on_hover_text(
@@ -770,9 +777,7 @@ impl ViewerApp {
                     self.log_dose_state();
                 }
             }
-        });
-        header.body(|ui| self.dose_est_body(ui));
-        ui.separator();
+        }
     }
 
     fn dose_est_body(&mut self, ui: &mut egui::Ui) {
@@ -1060,7 +1065,7 @@ impl ViewerApp {
                 rows_csv(&metrics, &d.units, &d.rows)
             };
             self.ask_save(
-                "Save the dose estimation table",
+                "Save the dose analysis table",
                 "dose_estimation.csv",
                 None,
                 None,

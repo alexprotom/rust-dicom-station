@@ -1,5 +1,12 @@
-//! The live 3D structure window: mesh cache, camera, and the painter-order
+//! The live 3D structure scene: mesh cache, camera, and the painter-order
 //! software renderer that draws RTSTRUCT and segmentation surfaces.
+//!
+//! The scene is a pane of a workspace's row ([`PaneKind::Scene3d`]), put in
+//! and taken out by the toolbar's *3D* button or *Settings ▸ View layout*.
+//! It used to have a window of its own as well; the pane did everything the
+//! window did, with its own bar, so the window went. The state is still
+//! called [`D3Window`], one per workspace, made when the pane is first drawn
+//! and dropped when it leaves the row.
 
 use super::*;
 
@@ -7,14 +14,12 @@ use super::*;
 /// each under the [`ViewerApp::d3_key_of`] the window will look it up by.
 pub(super) type PhaseMeshes = Vec<(u64, Vec<RoiMesh>)>;
 
-/// A floating 3D structure-rendering window (one per study slot).
 /// A segmentation meshing result: the meshes, the generation each was built
 /// from, and the geometry they were built on (see `D3Window::seg_mesh_gens`).
 pub(super) type SegMeshes = (Vec<RoiMesh>, Vec<u64>, u64);
 
 pub(super) struct D3Window {
     pub(super) slot: usize,
-    pub(super) open: bool,
     pub(super) yaw: f32,
     pub(super) pitch: f32,
     /// Zoom multiplier on the auto-fit scale.
@@ -237,6 +242,8 @@ struct D3PaneActions {
     maximize: bool,
     /// The fold was clicked; the app flips the switch every pane shares.
     fold: bool,
+    /// Out of the row into a window of its own, or back.
+    detach: bool,
 }
 
 /// Where a 3D pane's furniture sits.
@@ -253,6 +260,8 @@ struct D3PaneBar {
     fold: egui::Rect,
     /// Is it folded right now?
     folded: bool,
+    /// Out of the row into a window, and back; only while unfolded.
+    detach: egui::Rect,
     /// The *Structures* panel over the right-hand edge, or
     /// [`egui::Rect::NOTHING`] while it is off.
     list: egui::Rect,
@@ -349,9 +358,8 @@ fn cache_meshes(
 const RESET_TIP: &str =
     "Reset the camera: default angle, centred on the structures, fit zoom and no offset";
 
-/// What a scene reads from the workspaces besides its own window state,
-/// gathered once per frame by [`ViewerApp::d3_inputs`] - the same way for
-/// a window and for a pane of a row, so the two cannot drift apart.
+/// What a scene reads from the workspaces besides its own state, gathered
+/// once per frame by [`ViewerApp::d3_inputs`].
 struct D3Inputs<'a> {
     /// The ROI ticks of the scene's own workspace.
     visible: Vec<bool>,
@@ -359,12 +367,9 @@ struct D3Inputs<'a> {
     names: Vec<(String, [u8; 3])>,
     /// Visibility and live colour of every segment.
     seg_disp: Vec<(bool, [u8; 3])>,
-    /// The workspace whose structures can be shown through the
-    /// registration ([`ViewerApp::d3_partner`]).
-    other: Option<usize>,
-    /// Its ROI ticks, and whether it has structures at all.
+    /// The ROI ticks of the workspace whose structures can be shown
+    /// through the registration ([`ViewerApp::d3_partner`]).
     other_visible: Vec<bool>,
-    has_other: bool,
     /// The registration's field when the scene shows its fixed image.
     reg_here: Option<(Arc<crate::registration::dvf::VectorField>, &'static str)>,
     /// The dose the surfaces can be painted with, and its reference.
@@ -396,10 +401,7 @@ fn percent_parser(text: &str) -> Option<f64> {
 /// The *Structures* panel: one opacity slider per structure, multiplying
 /// the scene's own.
 ///
-/// The window gives it a side panel and a pane lays it over the scene's
-/// right-hand edge, but it is the same list either way - a structure faded
-/// in one is faded in the other, because both are drawing the same window's
-/// state.
+/// The pane lays it over the scene's right-hand edge.
 fn structure_list(
     w: &mut D3Window,
     ui: &mut egui::Ui,
@@ -478,13 +480,9 @@ impl ViewerApp {
                 .map(|ss| ss.rois.iter().map(|r| (r.name.clone(), r.color)).collect())
                 .unwrap_or_default(),
             seg_disp: s.segs().iter().map(|g| (g.visible, g.color)).collect(),
-            other,
             other_visible: other
                 .map(|o| self.slots[o].roi_visible.clone())
                 .unwrap_or_default(),
-            has_other: other
-                .and_then(|o| self.slots[o].study.as_ref())
-                .is_some_and(|st| !st.structure_sets.is_empty()),
             reg_here: self
                 .registration
                 .as_ref()
@@ -768,14 +766,13 @@ impl ViewerApp {
         w.rebuilding = if partial { Some(changed) } else { None };
     }
 
-    pub(super) fn open_d3_window(&mut self, slot: usize) {
-        let key = self.d3_key(slot);
-        if let Some(w) = self.d3_windows.iter_mut().find(|w| w.slot == slot) {
-            if w.key == key {
-                w.open = true;
-                return;
-            }
+    /// Make sure a slot has a scene's worth of state - the camera, the
+    /// meshes and the jobs that build them - for its pane to draw.
+    fn ensure_d3_window(&mut self, slot: usize) {
+        if self.d3_windows.iter().any(|w| w.slot == slot) {
+            return;
         }
+        let key = self.d3_key(slot);
         let ss = self.slots[slot].active_structures().cloned();
         if ss.is_none() && self.slots[slot].segs().is_empty() {
             return;
@@ -800,7 +797,6 @@ impl ViewerApp {
         let no_structs = job.is_none();
         self.d3_windows.push(D3Window {
             slot,
-            open: true,
             yaw: 0.7,
             pitch: -0.5,
             zoom: 1.0,
@@ -846,14 +842,13 @@ impl ViewerApp {
         });
     }
 
-    // -- 3D structure windows (render) --------------------------------------
+    // -- 3D scenes (upkeep) --------------------------------------------------
     pub(super) fn d3_windows_ui(&mut self, ctx: &egui::Context) {
         let mut windows = std::mem::take(&mut self.d3_windows);
         for w in &mut windows {
-            // A scene drawn as a pane of a row has no window, but it still
-            // needs its meshes built and its jobs polled.
-            let in_row = self.row_shows_scene(w.slot);
-            if !w.open && !in_row {
+            // The scene is drawn by its pane; this is the upkeep behind it:
+            // its meshes built and its jobs polled.
+            if !self.row_shows_scene(w.slot) {
                 continue;
             }
             // Poll the phase pre-meshing, then the ordinary rebuild: the
@@ -1159,242 +1154,17 @@ impl ViewerApp {
                     }
                 }
             }
-
-            // Everything above is the upkeep both a window and a pane need;
-            // what follows draws the window, which a pane does not have.
-            if !w.open {
-                continue;
-            }
-            // What the scene reads from the workspaces, gathered as a pane
-            // gathers it.
-            let D3Inputs {
-                visible,
-                names,
-                seg_disp,
-                other,
-                other_visible,
-                has_other,
-                reg_here,
-                dose_here,
-            } = self.d3_inputs(w.slot);
-            let visible = visible.as_slice();
-            let registered = self.registration.is_some();
-            let other_name = other.map(|o| SLOT_NAMES[o]).unwrap_or("-");
-            // The 4D transport of this window. It starts the same run the
-            // viewports' ▶4D does - there is one phase per workspace, and this
-            // window follows it - so the two buttons are the same button in
-            // two places.
-            let phases_here = self.fourd_phases(w.slot).is_some();
-            let phase_target = play::PlayTarget::Phases { slot: w.slot };
-            let phase_playing = self.is_playing(phase_target);
-            let (meshed, n_phases) = self.phase_meshes_ready(w);
-            let prepping = w.prep_job.as_ref().map(|j| j.progress.get());
-            let mut want_play = false;
-            let mut want_prep = false;
-            let title = format!("3D structures - workspace {}", SLOT_NAMES[w.slot]);
-            let mut open = w.open;
-            detach::tool_window(
-                ctx,
-                &format!("d3_{}", w.slot),
-                title,
-                &mut open,
-                detach::WinOpts::size(640.0, 700.0).no_scroll(),
-                |ui| {
-                    // Until the first meshes: only the progress. A rebuild
-                    // after an edit keeps the scene on screen meanwhile.
-                    if let (Some(job), None) = (&w.job, &w.meshes) {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label(job.progress.get());
-                        });
-                        return;
-                    }
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::Slider::new(&mut w.opacity, 0.2..=1.0)
-                                .text("Opacity")
-                                .custom_formatter(|v, _| format!("{:.0} %", v * 100.0))
-                                .custom_parser(percent_parser),
-                        );
-                        ui.toggle_value(&mut w.show_list, "Structures")
-                            .on_hover_text("A panel with the opacity of every structure");
-                        // Always the same footprint, so the scene below does
-                        // not move while a rebuild runs.
-                        ui.add_visible(w.job.is_some(), egui::Spinner::new())
-                            .on_hover_text("Meshing the structures that changed");
-                        // The camera, as buttons, in the window's top-right
-                        // corner - where a pane keeps them. Laid out from
-                        // the right, so they read the same way round.
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
-                            if ui.small_button("⟲").on_hover_text(RESET_TIP).clicked() {
-                                // Centred again on what is there now.
-                                reset_camera(w, (w.center, w.radius));
-                            }
-                            if ui
-                                .add(
-                                    egui::Button::selectable(w.pan_mode, "✋")
-                                        .frame_when_inactive(true)
-                                        .small(),
-                                )
-                                .on_hover_text(
-                                    "Move the scene: while this is on, dragging with the \
-                                         left button slides the scene instead of turning it. \
-                                         Off, a left drag turns it and a middle drag moves it.",
-                                )
-                                .clicked()
-                            {
-                                w.pan_mode = !w.pan_mode;
-                            }
-                            if ui.small_button("➖").on_hover_text("Zoom out").clicked() {
-                                w.zoom = (w.zoom / 1.25).clamp(0.1, 40.0);
-                            }
-                            if ui.small_button("➕").on_hover_text("Zoom in").clicked() {
-                                w.zoom = (w.zoom * 1.25).clamp(0.1, 40.0);
-                            }
-                        });
-                    });
-                    if phases_here {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
-                            if ui
-                                .small_button(if phase_playing { "⏸4D" } else { "▶4D" })
-                                .on_hover_text(if phase_playing {
-                                    "Stop running through the phases"
-                                } else {
-                                    "Play 4D: run the workspace through the phases of its 4D                                      group. The structures and the isodose shells follow,                                      because each phase brings its own."
-                                })
-                                .clicked()
-                            {
-                                want_play = true;
-                            }
-                            match &prepping {
-                                Some(msg) => {
-                                    ui.spinner();
-                                    ui.weak(msg.clone());
-                                }
-                                None => {
-                                    if ui
-                                        .add_enabled(
-                                            meshed < n_phases,
-                                            egui::Button::new("Prepare phases").small(),
-                                        )
-                                        .on_hover_text(
-                                            "Mesh the structures of every phase now, so that                                              playing them is smooth. Without this the first                                              pass through the group waits for the mesher at                                              every phase.",
-                                        )
-                                        .clicked()
-                                    {
-                                        want_prep = true;
-                                    }
-                                    ui.weak(format!("{meshed} / {n_phases} phases meshed"));
-                                }
-                            }
-                        });
-                    }
-                    if dose_here.is_some() {
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut w.show_dose, "Dose on the surface")
-                                .on_hover_text(
-                                    "Colour every surface by the dose that lands on it, \
-                                     on the same scale as the isodose lines. The \
-                                     structure's own colour comes back when this is off.",
-                                );
-                            ui.checkbox(&mut w.show_iso, "Isodose surfaces")
-                                .on_hover_text(
-                                    "The active dose as translucent shells at the isodose \
-                                     lines that are switched on in the Dose display, in their \
-                                     colours and relative to the same reference dose",
-                                );
-                            if w.show_iso {
-                                ui.add(
-                                    egui::Slider::new(&mut w.iso_opacity, 0.05..=1.0)
-                                        .text("shells"),
-                                );
-                                ui.add_visible(w.iso_job.is_some(), egui::Spinner::new());
-                            }
-                        });
-                    }
-                    if registered {
-                        ui.horizontal(|ui| {
-                            ui.add_enabled(
-                                has_other,
-                                egui::Checkbox::new(
-                                    &mut w.show_other,
-                                    format!("Workspace {other_name} through the registration"),
-                                ),
-                            )
-                            .on_hover_text(
-                                "Mesh the other workspace's structures and map every vertex \
-                                 through the recovered transform, so both anatomies stand \
-                                 in one frame of reference - the only way to see what a \
-                                 deformable registration actually did to a surface",
-                            );
-                            if w.show_other {
-                                ui.add(
-                                    egui::Slider::new(&mut w.other_opacity, 0.1..=1.0)
-                                        .text(other_name),
-                                );
-                            }
-                        });
-                        if reg_here.is_some() {
-                            ui.checkbox(&mut w.show_field, "Deformation field")
-                                .on_hover_text(
-                                    "Arrows from where the anatomy is to where the \
-                                     registration sends it, coloured by magnitude",
-                                );
-                        }
-                        if w.other_job.is_some() {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.weak("Mapping the other workspace");
-                            });
-                        }
-                    }
-
-                    if w.show_list {
-                        egui::Panel::right(egui::Id::new(("d3_structures", w.slot)))
-                            .resizable(false)
-                            .default_size(220.0)
-                            .show(ui, |ui| structure_list(w, ui, &names, visible));
-                    }
-                    let avail = ui.available_size();
-                    let size = Vec2::new(avail.x.max(240.0), avail.y.max(240.0));
-                    let (_, scene_rect) = ui.allocate_space(size);
-                    self.d3_scene(
-                        w,
-                        ui,
-                        scene_rect,
-                        visible,
-                        &names,
-                        &seg_disp,
-                        &other_visible,
-                        &reg_here,
-                        &dose_here,
-                        false,
-                    );
-                },
-            );
-            w.open = open;
-            if want_prep {
-                self.start_phase_meshes(w);
-            }
-            if want_play {
-                let now = ctx.input(|i| i.time);
-                self.toggle_play(phase_target, now);
-            }
         }
-        // A scene that a row carries is kept even with no window open.
-        windows.retain(|w| w.open || self.row_shows_scene(w.slot));
+        // A scene leaves with its pane: put back into the row, it starts
+        // over from the structures as they then are.
+        windows.retain(|w| self.row_shows_scene(w.slot));
         self.d3_windows = windows;
     }
 
     /// The surface scene as a pane of a row.
     ///
-    /// The same scene the *3D* button opens in a window, drawn in the row
-    /// instead, with the handful of controls that belong next to it on one
-    /// strip along the top. The window's own state is reused, so a scene
-    /// that was open in a window and then put in a row keeps its camera and
-    /// its meshes.
+    /// The scene with the handful of controls that belong next to it on one
+    /// strip along the top.
     pub(super) fn scene_pane(&mut self, ui: &mut egui::Ui, slot: usize, rect: egui::Rect) {
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, Color32::BLACK);
@@ -1415,8 +1185,7 @@ impl ViewerApp {
             self.d3_windows = windows;
             return;
         };
-        // Gathered as the window gathers them; the pane has no use for the
-        // pairing itself, only for the other workspace's ticks.
+        // What the scene reads from the workspaces this frame.
         let D3Inputs {
             visible,
             names,
@@ -1465,11 +1234,10 @@ impl ViewerApp {
             self.persist_settings();
         }
         if acts.maximize {
-            self.maximized = if self.maximized == Some((slot, PaneKind::Scene3d)) {
-                None
-            } else {
-                Some((slot, PaneKind::Scene3d))
-            };
+            self.toggle_pane_max(ui, slot, PaneKind::Scene3d);
+        }
+        if acts.detach {
+            self.toggle_detached(slot, PaneKind::Scene3d);
         }
     }
 
@@ -1491,7 +1259,8 @@ impl ViewerApp {
         };
         let maximize = cell(rect.right() - 4.0, bsize);
         let fold = cell(maximize.left() - 4.0, bsize);
-        let reset = cell(fold.left() - 4.0, bsize);
+        let detach = cell(fold.left() - 4.0, bsize);
+        let reset = cell(detach.left() - 4.0, bsize);
         let hand = cell(reset.left() - 4.0, bsize);
         let zoom_out = cell(hand.left() - 4.0, bsize);
         let zoom_in = cell(zoom_out.left() - 4.0, bsize);
@@ -1541,7 +1310,8 @@ impl ViewerApp {
                 maximize.contains(p)
                     || fold.contains(p)
                     || (!folded
-                        && (reset.contains(p)
+                        && (detach.contains(p)
+                            || reset.contains(p)
                             || hand.contains(p)
                             || zoom_out.contains(p)
                             || zoom_in.contains(p)
@@ -1554,6 +1324,7 @@ impl ViewerApp {
             maximize,
             fold,
             folded,
+            detach,
             list,
             reset,
             hand,
@@ -1721,6 +1492,8 @@ impl ViewerApp {
             if hit(bar.reset, &resp) {
                 reset_camera(w, (w.center, w.radius));
             }
+            acts.detach = self.detach_button(ui, bar.detach, slot, PaneKind::Scene3d)
+                || (any_click && pointer_pos.is_some_and(|p| bar.detach.contains(p)));
         }
         let resp = ui
             .put(
@@ -1737,7 +1510,7 @@ impl ViewerApp {
         if hit(bar.fold, &resp) {
             acts.fold = true;
         }
-        let is_max = self.maximized == Some((slot, PaneKind::Scene3d));
+        let is_max = self.pane_is_max(ui, slot, PaneKind::Scene3d);
         let resp = ui
             .put(
                 bar.maximize,
@@ -1788,30 +1561,16 @@ impl ViewerApp {
             || !self.slots[slot].segs().is_empty()
     }
 
-    /// Make sure a slot has a 3D window's worth of state, without putting a
-    /// window on screen: a pane draws from the same state.
-    fn ensure_d3_window(&mut self, slot: usize) {
-        if self.d3_windows.iter().any(|w| w.slot == slot) {
-            return;
-        }
-        self.open_d3_window(slot);
-        // It exists to be drawn in the row, not to float over it.
-        if let Some(w) = self.d3_windows.iter_mut().find(|w| w.slot == slot) {
-            w.open = false;
-        }
-    }
-
     /// Draw one 3D scene into `rect`, and let the pointer turn it.
     ///
-    /// Split out of the window so a row can carry the same scene in a pane:
-    /// everything here is relative to the rect it is handed, and the only
-    /// state it needs beyond the window itself is what the caller has
-    /// already taken out of `self`.
+    /// Everything here is relative to the rect it is handed, and the only
+    /// state it needs beyond the scene's own is what the caller has already
+    /// taken out of `self`.
     ///
     /// `names` is the active structure set's (name, colour) per ROI: the
     /// colour a structure is drawn in comes from here, live, not from the
-    /// mesh - which is what makes a recolour show at once in the row and in
-    /// the window alike, with no rebuild in between.
+    /// mesh - which is what makes a recolour show at once, with no rebuild
+    /// in between.
     #[allow(clippy::too_many_arguments)]
     fn d3_scene(
         &self,
@@ -1829,9 +1588,8 @@ impl ViewerApp {
         dose_here: &Option<(&crate::rtdose::DoseGrid, f32)>,
         over_buttons: bool,
     ) {
-        // The scene fills whatever rect it is given: its own window, or a
-        // pane of a row. Everything below is relative to that rect, so the
-        // two are the same drawing.
+        // The scene fills whatever rect it is given; everything below is
+        // relative to that rect.
         let resp = ui.interact(
             rect,
             egui::Id::new(("d3_scene", w.slot)),
@@ -2141,7 +1899,7 @@ impl ViewerApp {
 
         // The Structure editor's drawn axis, the same white line
         // as in the views, one slice thick.
-        if self.module_structures && struct_tools::axis_live(&self.tools) {
+        if self.module_on(Module::StructureEditor) && struct_tools::axis_live(&self.tools) {
             if let Some((ax, vol)) = self
                 .tools
                 .axis

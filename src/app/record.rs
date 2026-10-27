@@ -210,7 +210,12 @@ impl ViewerApp {
             _ => self
                 .row_panes(slot)
                 .into_iter()
-                .find(|k| !matches!(k, PaneKind::Planar(_) | PaneKind::Additional))
+                .find(|k| {
+                    !matches!(
+                        k,
+                        PaneKind::Planar(_) | PaneKind::Additional | PaneKind::Chart
+                    )
+                })
                 .map(|k| (slot, k)),
         }
     }

@@ -320,8 +320,9 @@ jobs:
   # Android
   # ==========================================================================
   # android.yml builds the arm64-v8a APK and returns it as the `android-apk`
-  # artifact, signed with the release key when the ANDROID_KEYSTORE_*
-  # secrets are set and with a debug key otherwise (docs/android.md). The
+  # artifact, signed with the release key from the ANDROID_KEYSTORE_*
+  # secrets; it fails without them, a debug-signed APK being one that does
+  # not install over the last release (docs/android.md#signing). The
   # GitHub Release waits for it, like for Windows and Linux.
   android:
     name: Android

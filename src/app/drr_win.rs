@@ -213,8 +213,11 @@ impl ViewerApp {
             return;
         };
         let mut filed = Vec::new();
+        let study_uid = study.displayed_study_uid();
         for mut img in made {
             img.frame_of_reference_uid = run.for_uid.clone();
+            // Under the study of the CT it was rendered from.
+            img.study_uid = study_uid.clone();
             // Rendering the same geometry twice is exactly what one does
             // while tuning it, so the labels are made unique on the way in.
             let base = img.label.clone();
