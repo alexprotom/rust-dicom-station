@@ -158,7 +158,9 @@ pub fn load_frame(path: &Path, frame: usize) -> Result<Vec<f32>> {
         .with_context(|| format!("convert frame {} of {}", frame + 1, path.display()))?;
     if decoded.samples_per_pixel() == 3 && data.len() >= n * 3 {
         data = data[..n * 3]
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|px| 0.299 * px[0] + 0.587 * px[1] + 0.114 * px[2])
             .collect();
     }
@@ -384,7 +386,9 @@ pub fn planar_of(obj: &dicom_object::DefaultDicomObject, path: &Path) -> Result<
     });
     if samples == 3 {
         data = data[..rows * cols * 3]
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|px| 0.299 * px[0] + 0.587 * px[1] + 0.114 * px[2])
             .collect();
     }
