@@ -119,6 +119,10 @@ pub struct PlanarImage {
     pub sop_instance_uid: String,
     /// Frame of Reference the image's geometry is in.
     pub frame_of_reference_uid: String,
+    /// Study Instance UID: the study the data tree files it under. Empty
+    /// for an image made here (a DRR), which goes under the study of the
+    /// series it was made from.
+    pub study_uid: String,
     /// Referenced Beam Number of an RT Image.
     pub referenced_beam: Option<i32>,
     /// The IEC parameters the image states - an RT Image's gantry, couch,
@@ -537,6 +541,7 @@ pub fn planar_of(obj: &dicom_object::DefaultDicomObject, path: &Path) -> Result<
         info,
         sop_instance_uid: str_of(obj, tags::SOP_INSTANCE_UID).unwrap_or_default(),
         frame_of_reference_uid: str_of(obj, tags::FRAME_OF_REFERENCE_UID).unwrap_or_default(),
+        study_uid: str_of(obj, tags::STUDY_INSTANCE_UID).unwrap_or_default(),
         referenced_beam: i32_of(obj, tags::REFERENCED_BEAM_NUMBER),
         iec,
         camera,

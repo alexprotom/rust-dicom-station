@@ -12,7 +12,9 @@
 //! (`body_win.rs`, `dialogs.rs`, `prompt_seg.rs`, `box_seg.rs`), so the
 //! panel and the runs behave exactly as before; only the window is gone.
 //! *Interactive segmentation* (nnInteractive, `interactive_seg.rs`) joined
-//! them as a section from the start.
+//! them as a section from the start. What an automatic run found waits in
+//! the *Results* fold at the end of its section, which unfolds when the run
+//! lands (it was a window of its own).
 //!
 //! The module works on one workspace; every section's state is re-targeted
 //! when that changes, unless a run on the old workspace is still in flight.
@@ -33,6 +35,9 @@ pub(super) enum AutoSection {
 #[derive(Default)]
 pub(super) struct AutoTools {
     pub slot: usize,
+    /// An automatic segmentation has just landed: unfold the module, its
+    /// section and the section's *Results* fold once.
+    pub reveal_results: bool,
 }
 
 impl ViewerApp {
@@ -55,8 +60,10 @@ impl ViewerApp {
         // would otherwise be re-targeted under it.
         let busy = (0..MAX_WORKSPACES).any(|s| self.running_tool(s).is_some());
         let mut new_slot = None;
+        let reveal = self.auto.reveal_results.then_some(true);
         egui::CollapsingHeader::new(title)
             .default_open(false)
+            .open(reveal)
             .show(ui, |ui| {
                 new_slot =
                     seg_engines::workspace_row(ui, self.auto.slot, self.volume_slots(), !busy);
@@ -69,6 +76,7 @@ impl ViewerApp {
                 ] {
                     egui::CollapsingHeader::new(info.menu_entry())
                         .default_open(false)
+                        .open(reveal.filter(|_| section == AutoSection::Autoseg))
                         .show(ui, |ui| match section {
                             AutoSection::Body => self.body_section(ui),
                             AutoSection::Autoseg => self.autoseg_section(ui),

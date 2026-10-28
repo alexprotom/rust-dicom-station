@@ -1378,7 +1378,13 @@ pub(super) fn drr(
     }
     p.set_outer(0.0, 1.0);
     if !planar.is_empty() {
-        ctx.ds_mut(ds)?.study.planar_images.extend(planar);
+        let study = &mut ctx.ds_mut(ds)?.study;
+        // Under the study of the CT it was rendered from.
+        let study_uid = study.displayed_study_uid();
+        for mut pl in planar {
+            pl.study_uid = study_uid.clone();
+            study.planar_images.push(pl);
+        }
     }
     let report = ctx.add_report(Report {
         node: node.id,

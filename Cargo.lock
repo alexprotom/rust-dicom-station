@@ -6549,7 +6549,7 @@ dependencies = [
 
 [[package]]
 name = "rds-domain"
-version = "0.11.8"
+version = "0.11.9"
 dependencies = [
  "anyhow",
  "axum",
@@ -6857,7 +6857,7 @@ dependencies = [
 
 [[package]]
 name = "rust-dicom-station"
-version = "0.11.8"
+version = "0.11.9"
 dependencies = [
  "anyhow",
  "burn",

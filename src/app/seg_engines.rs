@@ -378,21 +378,7 @@ pub(super) const MOTION: ToolInfo = ToolInfo {
 };
 
 impl ToolInfo {
-    /// `🔬 Auto-segmentation - workspace A`, the window title.
-    pub fn title(&self, slot: usize) -> String {
-        format!(
-            "{} {} - workspace {}",
-            self.glyph, self.name, SLOT_NAMES[slot]
-        )
-    }
-    /// `🔬 Auto-segmentation results - workspace A`, a companion window.
-    pub fn titled(&self, what: &str, slot: usize) -> String {
-        format!(
-            "{} {} {what} - workspace {}",
-            self.glyph, self.name, SLOT_NAMES[slot]
-        )
-    }
-    /// `🔬 Auto-segmentation`, the menu entry.
+    /// `🔬 Auto-segmentation`, the menu entry and the section header.
     ///
     /// The menu names the tool once. Which workspace it works on is a setting
     /// of the tool, chosen in its window by [`workspace_row`], because a menu
@@ -1148,11 +1134,7 @@ mod tests {
 
     #[test]
     fn titles_menu_entries_and_buttons_follow_one_pattern() {
-        assert_eq!(AUTOSEG.title(0), "🔬 Auto-segmentation - workspace A");
-        assert_eq!(
-            AUTOSEG.titled("results", 1),
-            "🔬 Auto-segmentation results - workspace B"
-        );
+        assert_eq!(AUTOSEG.menu_entry(), "🔬 Auto-segmentation");
         assert_eq!(PROMPT_SEG.menu_entry(), "💬 Prompt segmentation");
         assert_eq!(SLICE_PROP.menu_entry(), "⏩ Slice propagation");
         assert_eq!(BODY_CONTOUR.menu_entry(), "👤 Body contour");

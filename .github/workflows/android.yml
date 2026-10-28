@@ -21,10 +21,18 @@ name: Android
 #
 # Signing: with the four secrets ANDROID_KEYSTORE_BASE64 (the keystore file,
 # base64), ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and
-# ANDROID_KEY_PASSWORD the APK is signed with the release key. Without them
-# it is signed with a debug key made on the runner, which installs fine but
-# does not update an installation signed with another key: the previous
-# version has to be uninstalled first. A release wants the secrets.
+# ANDROID_KEY_PASSWORD the APK is signed with the release key - the one key
+# every build is signed with, CI's and local ones (packaging/android/
+# release-key.sh makes it and sets the secrets; docs/android.md#signing).
+# A release or a nightly (a version passed in) fails without them: a debug
+# key made on the runner differs from run to run, and Android refuses to
+# install a package over one signed with another key, so each such build
+# had to be uninstalled - settings and data with it - before the next one.
+# A manual run (*Run workflow*) still falls back to that debug key, with a
+# warning.
+#
+# versionCode: the build time in minutes since 2024 (build-apk.sh), so a
+# later build always installs over an earlier one.
 
 on:
   # Pull requests only, for the same reason as ci.yml: the merge ref is what
@@ -152,9 +160,9 @@ jobs:
 
       # A nightly: the caller computed the version (e.g.
       # 0.11.1-nightly.20261004T0930.g890dfc8), and build-apk.sh takes it
-      # from Cargo.toml - versionName as is, versionCode from the numeric
-      # part before the first `-`. After the cache step: the cache key
-      # hashes Cargo.toml, and this edit is not meant to change it.
+      # from Cargo.toml as the versionName (the versionCode is the build
+      # time). After the cache step: the cache key hashes Cargo.toml, and
+      # this edit is not meant to change it.
       - name: Write the version into Cargo.toml
         if: inputs.write_version
         shell: bash
@@ -170,14 +178,18 @@ jobs:
         shell: bash
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
             echo "RDS_KEYSTORE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
             echo "signing with the release key"
+          elif [ -n "$VERSION" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 is not set. A release or nightly APK must be signed with the release key, or it cannot be installed over the previous one; run packaging/android/release-key.sh (docs/android.md#signing)."
+            exit 1
           else
-            echo "ANDROID_KEYSTORE_BASE64 is not set - the APK will be signed with a debug key."
+            echo "::warning::ANDROID_KEYSTORE_BASE64 is not set - this APK is signed with a debug key and will not install over a release or nightly."
           fi
 
       - name: Build the APK
@@ -186,11 +198,17 @@ jobs:
           RDS_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           RDS_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           RDS_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          VERSION: ${{ inputs.version }}
         run: |
           export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
           # Through bash, so a checkout that lost the executable bit (a
-          # commit made on Windows) still works.
-          bash packaging/android/build-apk.sh
+          # commit made on Windows) still works. `--release-key` for a
+          # release or nightly: never a debug-signed one.
+          if [ -n "$VERSION" ]; then
+            bash packaging/android/build-apk.sh --release-key
+          else
+            bash packaging/android/build-apk.sh
+          fi
 
       # The package is inspected rather than run: there is no Android
       # emulator worth the minutes on a hosted runner, and what can go wrong

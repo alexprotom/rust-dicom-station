@@ -1005,14 +1005,15 @@ impl ViewerApp {
         }
 
         // ---- the bar: a plane's buttons in a plane's places, then the mode ----
-        let is_max = self.maximized == Some((slot, kind));
+        let is_max = self.pane_is_max(ui, slot, kind);
         let bsize = egui::vec2(24.0, 20.0);
         let by = rect.top() + 22.0 + if nl >= 2 { 16.0 } else { 0.0 };
         let cell = |right: f32| Rect::from_min_size(Pos2::new(right - bsize.x, by), bsize);
         let max_rect = cell(rect.right() - 4.0);
         let folded = self.pane_buttons_hidden;
         let fold_rect = cell(max_rect.left() - 4.0);
-        let fit_rect = cell(fold_rect.left() - 4.0);
+        let detach_rect = cell(fold_rect.left() - 4.0);
+        let fit_rect = cell(detach_rect.left() - 4.0);
         let hand_rect = cell(fit_rect.left() - 4.0);
         let zout_rect = cell(hand_rect.left() - 4.0);
         let zin_rect = cell(zout_rect.left() - 4.0);
@@ -1033,7 +1034,8 @@ impl ViewerApp {
                 max_rect.contains(p)
                     || fold_rect.contains(p)
                     || (!folded
-                        && (fit_rect.contains(p)
+                        && (detach_rect.contains(p)
+                            || fit_rect.contains(p)
                             || hand_rect.contains(p)
                             || zout_rect.contains(p)
                             || zin_rect.contains(p)
@@ -1082,7 +1084,9 @@ impl ViewerApp {
         let mut zin_resp = None;
         let mut mode_resp = None;
         let mut close_resp = None;
+        let mut clicked_detach = false;
         if !folded {
+            clicked_detach = self.detach_button(ui, detach_rect, slot, kind);
             fit_resp = Some(
                 ui.put(fit_rect, egui::Button::new("⟲").small())
                     .on_hover_text("Fit zoom, clear pan, each image's own window"),
@@ -1240,7 +1244,12 @@ impl ViewerApp {
             self.hand_pan = !self.hand_pan;
         }
         if clicked_max {
-            self.maximized = if is_max { None } else { Some((slot, kind)) };
+            self.toggle_pane_max(ui, slot, kind);
+        }
+        if clicked_detach
+            || (!folded && any_click && pointer_pos.is_some_and(|p| detach_rect.contains(p)))
+        {
+            self.toggle_detached(slot, kind);
         }
         if clicked_close {
             self.remove_from_row(slot, kind);

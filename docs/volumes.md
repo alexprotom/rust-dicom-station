@@ -10,7 +10,7 @@ Every volume the station reports comes from one of three calculations:
 
 This page gives the exact rules and formulas. Code: `crates/rds-domain/src/segmentation.rs` (`rasterize_roi`,
 `mask_to_roi`), `crates/rds-domain/src/contours.rs` (`Stack`, `Region::area`), `crates/rds-domain/src/rt_surface.rs`,
-`crates/rds-domain/src/propagate.rs`, `src/app/stats_win.rs`, `src/app/run_report.rs`.
+`crates/rds-domain/src/propagate.rs`, `src/app/stats.rs`, `src/app/run_report.rs`.
 
 ---
 

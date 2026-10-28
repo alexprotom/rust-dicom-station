@@ -56,7 +56,7 @@ modality node so each series has one place.
 ### Watching a group move
 
 Any viewport showing a series of a group carries a **▶4D** button, and the
-*Playback* module carries the same transport with a phase scrubber; both are
+*Image playback* module carries the same transport with a phase scrubber; both are
 described in [viewer.md](viewer.md#playing-through-slices-and-phases). The
 short version: the first press reads every phase into memory (a group whose
 phases would exceed the module's budget is refused rather than read), and
@@ -64,18 +64,19 @@ then the workspace runs through the phases with the structure set,
 segmentation series and dose of each one, the tree selection walking down
 the group as it goes. Stepping between the phases of the group on display
 keeps the crosshair, the zoom, the pan and the registration where they are,
-which is what makes two phases comparable by eye. The 3D window plays the
+which is what makes two phases comparable by eye. The 3D pane plays the
 same run and can mesh every phase up front so the surfaces keep up.
 
 Playing is for looking; the pipeline below is for measuring.
 
-## The pipeline (`src/app/motion_win.rs`)
+## The pipeline (`src/app/motion.rs`)
 
-*Tools ▸ 📈 Structure motion* (the workspace is chosen on the window's
-**Workspace A / B** row), or right-click a 4D group ▸
-*Motion / ITV analysis…*. One run:
+*Modules ▶ Structure motion* (right panel, F10), whose *Run* fold is the
+run form (the workspace is chosen on its **Workspace A / B** row), or
+right-click a 4D group ▸ *📈 Motion / ITV analysis*, which aims the form at
+that group and unfolds the section. One run:
 
-1. **Reference phase** - chosen in the dialog (default: the 0 % phase).
+1. **Reference phase** - chosen in the form (default: the 0 % phase).
    Targets are defined on it: contours rasterized onto its lattice,
    segmentations from another lattice resampled onto it.
 
@@ -88,7 +89,7 @@ Playing is for looking; the pipeline below is for measuring.
 2. **Per-phase registration** - the reference volume is registered to
    every other phase with the elastix engine. Settings (levels,
    iterations, samples, grid spacing, sampling threshold) come from the
-   Registration panel, adjustable in the dialog. The models:
+   Registration panel, adjustable in the form. The models:
    - **rigid** is, by default, a *local* rigid fit per structure: the
      region registered is the structure dilated by the *local margin* (15
      mm by default), so the fit follows that structure and not the whole
@@ -144,33 +145,45 @@ applied to a workspace that was replaced while it ran.
 
 ### Recipes - several studies, one workflow
 
-Starting a run remembers the dialog as a *recipe*: target and
+Starting a run remembers the form as a *recipe*: target and
 reference-structure names, models, ITV options and registration settings.
 *Apply last recipe* re-ticks the same structures **by name** in whatever
-workspace the dialog is open on - load the next patient (or the paired
-upright/supine study into workspace B), open the tool, apply, run. Recipes
+workspace the form is set to - load the next patient (or the paired
+upright/supine study into workspace B), pick its workspace, apply, run. Recipes
 are name-based on purpose: indices and UIDs do not travel between patients.
 
 ## Results (`src/app/motion_results.rs`)
 
-The results window opens when a run finishes (later: *Tools ▸ 📈 Motion
-results*). Per run: the displacement-magnitude-vs-phase chart (one line
-per target and model, reference structure dashed red), peak-to-peak
-amplitude and drift bars (one per target and model), the per-phase table
-(|d| and volume per track), correlation lines (r, p, significance stars,
-synchrony wording), registration-QA lines and ITV volumes. A target that
-was ticked once is one line and one amplitude; ticking the same name on
-every phase separately would have made ten targets of it, which is what
-the grouped *Targets* list prevents.
+The finished runs are the section's second half, the *Results (n)* fold
+under *Run*. A run that lands unfolds it and puts its charts into the row -
+as does a workflow step that measured motion, and the run section's own
+action to open the motion results. The fold carries the **Run** picker,
+**Compare with**, the two CSV exports, and a **Targets** list, one row per
+target with its peak-to-peak amplitude per model; then the tables: the
+per-phase table (|d| and volume per track), correlation lines (r, p,
+significance stars, synchrony wording), registration-QA lines and ITV
+volumes, and the A-vs-B comparison tables. A target picked in the
+*Targets* list is selected in its workspace, its ITV segmentation series is
+put on display, the views centre on it, and it is drawn thicker there while
+the section is unfolded.
 
-The window lays itself out to its own size: the run pickers wrap onto a
-second line when the window is narrow, the export buttons stay at the
-bottom, and only the report scrolls, vertically. The chart takes the full
+The charts are in the row's **chart pane**
+([viewer.md](viewer.md#the-rows-and-their-panes)) of the run's workspace,
+where they have the room a panel lacks: the displacement-magnitude-vs-phase
+chart (one line per target and model, reference structure dashed red),
+peak-to-peak amplitude and drift bars (one per target and model), and under
+them those of the comparison run. **A click on a phase** in the line chart
+steps the workspace's 4D group to that phase, when the workspace is showing
+that group. A target that was ticked once is one line and one amplitude;
+ticking the same name on every phase separately would have made ten targets
+of it, which is what the grouped *Targets* list prevents.
+
+The pane scrolls its charts vertically. The line chart takes the full
 width and scales its height with it (never more than about 60 % of the
 visible height), and its margins are measured from the labels that go in
 them - the widest value label on the left, half the last phase label on
 the right - so the axis labels and the last phase are always on screen. A
-per-phase table wider than the window scrolls sideways on its own.
+per-phase table wider than the panel scrolls sideways on its own.
 
 The value axis uses a step of 1, 2 or 5 × 10ⁿ - the one whose interval
 count is nearest to what the chart's height has room for (about one tick
@@ -211,7 +224,7 @@ unit column names the metric, `MSD` or `MI`), iterations, time, the
 its own contour, `Dice <structure> vs contoured`.
 
 Everything in the file is readable in any program: the typographic
-symbols the window uses are written in plain ASCII (`·` as `-`, `▶` as
+symbols the section uses are written in plain ASCII (`·` as `-`, `▶` as
 `->`, `cm³` as `cm3`), and a file that still holds a letter outside
 ASCII (a structure named in another alphabet, say) starts with a UTF-8
 byte-order mark, which is what makes Excel read it as UTF-8 rather than
@@ -221,17 +234,21 @@ section: one row per structure and method, with the two peak-to-peak
 amplitudes and their difference, and the two ITV volumes and their change
 in percent. The MCP `motion_report` tool returns the same CSV text.
 
-## Transfer by relationship (`src/app/transfer_win.rs`)
+## Transfer by relationship (`src/app/transfer.rs`)
 
-*Tools ▸ ◎ Transfer by relationship…* places a structure of one workspace
+The *By relationship* fold at the end of the *Structure propagation* module
+(next to the propagation it is the alternative to; it needs two workspaces
+with a volume) places a structure of one workspace
 into the other at the same **offset from a reference structure's
 centroid** - the STAR workflow's target-heart relationship: a target is
 projected into a workspace registration cannot reach (another patient,
 another posture) via anatomy both workspaces can segment. The target keeps
 its shape; the tool reports the offset (RL / AP / SI) it applied.
-Reference structures whose name contains "heart" are pre-picked.
+Reference structures whose name contains "heart" are pre-picked, and while
+the fold is open the target and both reference structures are drawn thicker
+in the views.
 
-The window carries the same **Transform matrix** as the registration module
+The fold carries the same **Transform matrix** as the registration module
 ([registration.md](registration.md#the-matrix-typed-in-by-hand)), and it
 shows the relationship's own answer: pick the two reference structures and
 the grid fills with the shift between their centroids, which is exactly what
@@ -244,18 +261,22 @@ structures go quiet while it is on, because nothing then asks them anything:
 only the target is needed, and the result is named `<target> (matrix)`
 rather than after a reference it was not placed against.
 
-## Structure comparison (`src/app/compare_win.rs`)
+## Structure comparison (`src/app/compare.rs`)
 
-*Tools ▸ ◑ Structure comparison* computes, for any two structures (either
-workspace, contours or segmentations, different lattices): volumes, centroid
+*Modules ▶ Structure comparison* computes, for any two structures (either
+workspace, contours or segmentations, different lattices), each picked as a
+workspace letter and a structure: volumes, centroid
 offset (vector and magnitude), Dice, 95th-percentile symmetric Hausdorff
 distance and the surface distance as mean, SD and maximum. The second mask
 is resampled onto the first's lattice through patient coordinates; across
-two frames of reference the window notes the comparison assumes
+two frames of reference the section notes the comparison assumes
 corresponding coordinates. *Save CSV* writes the lot as a two-column table.
+While the section is unfolded the two picked structures are drawn thicker in
+the views, and the centroid and point rows of the table carry a **⌖** that
+puts the crosshair on that point.
 
 **The rigid offset** is the one genuinely new computation and has its own
-tick, because it costs a second on a large structure. The two surfaces carry
+tick, *Least-squares fit*, because it costs a second on a large structure. The two surfaces carry
 no point correspondence, so one is invented and then improved: every point
 of A is paired with the nearest point of B, the rigid body that best
 explains those pairs is fitted (orthogonal Procrustes, the same
@@ -267,17 +288,17 @@ Euler angles, and the surface distance left over afterwards next to what it
 was before - which is how one sees whether a rigid body explains the
 difference at all.
 
-**Two points of interest** are compared as points: the window reports their
+**Two points of interest** are compared as points: the section reports their
 separation instead of a Dice score, which is the target registration error
 when the two are meant to be the same landmark.
 
-Everything the window measures is shown as a two-column table - quantity and
+Everything the section measures is shown as a two-column table - quantity and
 value, the same rows *Save CSV* writes - with only the warnings and the "why
 there is nothing to compare" messages left as sentences.
 
-## Structure details (`src/app/stats_win.rs`)
+## Structure details (`src/app/stats.rs`)
 
-*Tools ▸ 📋 Structure details* is the other half: one row per structure of
+*Modules ▶ Structure details* is the other half: one row per structure of
 one workspace rather than two structures against each other. The columns
 are the structure's **Format** (contours, voxels or a point) and its volume
 twice over - **Surface-based**, inside a closed triangle surface
@@ -301,8 +322,16 @@ all rows (an auto-segmentation against the manual one). Contours are
 rasterized onto the row's own lattice, a reference on another lattice is
 resampled onto it, and a row with no counterpart shows `-`; the tooltip
 names what it was measured against, and the CSV carries both. The table is
-computed on demand rather than every frame, and says so when the geometry
-has changed under it. *Save CSV* writes it out.
+computed on demand rather than every frame (*Refresh*, or the **⟳** on the
+section header), and says so when the geometry has changed under it. *Save
+CSV* writes it out.
+
+The table talks to the views. A click on a structure's name selects it as a
+click in the data tree would - switching the active structure set if it
+belongs to another, making it visible - and centres the crosshair on its
+centre of gravity; the row under the pointer is drawn thicker in the views;
+and the row of the structure selected in the tree (the active structure or
+segment) is marked.
 
 ## Numerics worth knowing
 

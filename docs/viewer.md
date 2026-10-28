@@ -101,7 +101,7 @@ Such a workspace appears in the tree under its patient and study exactly like
 any other, and everything it holds is usable: planar images open in their
 viewers (the *Planar images* section opens itself, since for these workspaces it
 is the content rather than a footnote), structure sets render in the 3D
-window, plans and dose objects show their tables, and any of it can be
+pane, plans and dose objects show their tables, and any of it can be
 renamed, copied to another workspace or exported. What is held back is only
 what needs voxels: the MPR views say so in place of three black panes, and the
 segmentation tools, the four engines, registration, propagation, combination,
@@ -115,17 +115,25 @@ its CT second, and have the contours land on the right images.
 ## The rows and their panes
 
 The main area is **one row per open workspace** - up to four, **A** to
-**D** - and each row shows up to **seven panes**, chosen under *Settings ▸
+**D** - and each row shows up to **eight panes**, chosen under *Settings ▸
 View layout*: the **axial**, **sagittal** and **coronal** planes, the
 **3D** surface scene, the two **planar panes**, *Planar 1* and *Planar
 2*, which show the workspace's planar images (radiographs, RT images, DRRs;
-see [Planar images](#planar-images-dx--cr--rtimage) below), and the
+see [Planar images](#planar-images-dx--cr--rtimage) below), the
 **Additional** pane for what it holds besides images of the patient (a
 dose report or a scanner's protocol page as a table, a secondary capture as
-an image; see [Reports](#reports) and [Additional](#additional) below). The planar and additional panes are not in the
-standard row, and one in a row whose workspace holds no image of its kind
-is not drawn at all, so a plain CT keeps its three planes whatever the
-layout says. The rows share the height equally and are chosen
+an image; see [Reports](#reports) and [Additional](#additional) below), and
+the **Chart** pane, where a module that draws a chart puts it - the
+dose-volume histograms, the curves of a motion run - at a size a plan can be
+read from. The planar, additional and chart panes are not in the
+standard row, and one in a row whose workspace has nothing of its kind to
+show is not drawn at all, so a plain CT keeps its three planes whatever the
+layout says. The chart pane is put into the row by the module that computed
+something, and carries a bar of its own, right to left: **⛶ / ⊞** as every
+pane has, **✖** takes it out of the row again (the module's **📈** button on
+its section header brings it back), **⤴** puts it in a window of its own
+(see below), and **💾** saves this pane alone as a
+picture, through the same path and at the same 300 DPI as *Save image*. The rows share the height equally and are chosen
 separately, so the planning CT can sit above one plane of the repeat scan,
 or a single large axial above the same plane of another workspace. A
 workspace appears as soon as something is loaded into it and goes when it is
@@ -136,7 +144,7 @@ images rather than two and a gap, and a row of one is one image across the
 window. A row always shows something: the last tick of a row cannot be
 taken off, and a tick greys out once the row holds as many panes as it
 carries - every kind there is, so a row can hold the three planes, the
-surface scene, both planar panes and the additional pane at once. The **◀ ▶** buttons beside each tick move that pane
+surface scene, both planar panes, the additional pane and the chart at once. The **◀ ▶** buttons beside each tick move that pane
 one place left or right in the row, and the list is drawn in the row's own
 order, so it reads left to right the way the row does; a newly ticked pane
 joins at the right. **⟲ Reset** beside a row's heading puts that row back to
@@ -162,7 +170,8 @@ The corner buttons (named on hover), right to left: **⛶ / ⊞** maximizes the
 pane and restores the layout, **◀ / ▶** folds the rest of the bar away and
 brings it back - one switch for every pane, remembered between runs, and
 folded on a fresh installation so a viewport opens with nothing over the
-anatomy - then **⟲** resets the pane's zoom and pan and re-centers the
+anatomy - then **⤴** takes the pane out of its row into a window of its own
+(below), **⟲** resets the pane's zoom and pan and re-centers the
 crosshair in the volume, **✋** hands the left button the
 image - drag it and the image moves instead of the crosshair, as a middle
 drag always does - and **➕ / ➖** zoom a step about the middle of the pane.
@@ -173,8 +182,25 @@ left-click navigation is off and slices change only by scrolling), the
 **Sync** toggle beside it (shown whenever two or more workspaces are loaded - see
 below), the **3D A / 3D B** buttons and the segmentation tools.
 
-**The 3D scene** can live in a row or in a window. Ticking **3D** for a row
-draws it there, and the pane is furnished like any other: **3D** (with the
+**A pane in a window of its own.** **⤴** on a pane's bar (among the buttons
+the fold shows on an image or a 3D pane; beside **✖** on a chart or a
+report) takes that pane out of its row and into a window of the operating
+system, to drag onto another monitor or size as you like; the rest of the
+row closes up around the gap, and a row whose every pane is out says so. It
+is the same pane, not a copy: its slice, zoom, window, crosshair, planar
+stack or 3D camera go with it and come back with it. In the window **⛶ /
+⊞** maximizes the window itself, and **⤵** in the same place - or closing
+the window - puts the pane back into its row where it was. A pane that has
+nothing left to show (its workspace emptied, its chart closed, taken out of
+the layout) goes back by itself. Which panes are out is not remembered
+between runs. A chart in a window is saved as a picture from its row
+(**💾** waits until it is back), since the picture is cut from the main
+window.
+
+**The 3D scene** is a pane of the row. Ticking **3D** for a row draws it
+there, and the toolbar's **3D A / 3D B** button does the same in one click:
+it puts the scene into that workspace's row, and a second click takes it out
+again. The pane is furnished like any other: **3D** (with the
 workspace's letter while more than one is open) in the top-left corner, and the same
 corner buttons in the same places - **⛶ / ⊞**, **◀ / ▶** (the same fold,
 the same switch), **⟲** (the camera back to its default angle, centred on
@@ -184,14 +210,12 @@ scene instead of turning it), **➕ / ➖**, and the **▶4D** transport with
 has sits under them, wrapping onto another line where a pane is narrow:
 **Opacity** with its percentage, **Structures**, and **Dose** / **Isodose**
 where the workspace carries a dose. **Structures** lays the per-structure
-opacity panel down the pane's right-hand edge, the same panel and the same
-sliders the window shows. While a row carries the scene, that workspace's
-**3D** button leaves the toolbar - there is no window to open - and it
-comes back when the tick does.
+opacity panel down the pane's right-hand edge, one slider per structure.
 
-A pane keeps its scene between frames the way a window does, and so its
-camera too - until the workspace shows a different image. Then the camera
-starts over, exactly as a freshly opened window would: default angle, no
+A pane keeps its scene between frames, and so its camera too, for as long as
+it stays in the row (taken out, the scene is dropped; put back, it is made
+afresh) - until the workspace shows a different image. Then the camera
+starts over, exactly as a freshly added pane would: default angle, no
 zoom or offset, centred on the new structures and scaled to them. A view
 kept across images would orbit a point of the last patient's anatomy, at
 the last image's scale, and a structure of the new one would swing round
@@ -199,11 +223,10 @@ the edge of the pane when turned. Stepping through the phases of a 4D group
 is not a new image in this sense - the phases are one patient a moment
 apart - and the view holds still while they play.
 
-**The 3D window** (3D A / 3D B) meshes the active structure set and keeps
+**The scene** meshes the active structure set and keeps
 up with it: a structure moved or redrawn in the Structure editor is
 re-meshed in the background while the scene stays on screen, and the
-editor's drawn axis is shown in it. Its camera buttons - **➕ / ➖**, **✋**
-and **⟲** - sit in the window's top-right corner, where a pane keeps them.
+editor's drawn axis is shown in it.
 The *Opacity* slider is the whole scene's; the **Structures** toggle opens
 a panel with one slider per structure on top of that, so the target can
 fade while a chamber volume stays solid (*All 100 %* clears them). With a
@@ -241,9 +264,11 @@ read with one window and a change to it moves both, while a CT beside an MR
 keeps a window of its own for each. A series that comes up in a workspace
 takes the window of another workspace showing its modality, if one does.
 
-**Every tool has its own window.** The PACS, the model manager, the 3D
-scenes, the segmentation, motion and DVH tools, the export and
-anonymizer dialogs - none of them float inside the main window. Each opens as
+**Every tool that is not a module has its own window.** The workflow editor,
+the PACS, the model manager, the export and save-image dialogs, the
+anonymizer and the test-data dialogs - none of them float inside the main
+window (the structure, motion, DVH and workflow-run tools are sections of the
+right panel, below, whose charts go to the row's chart pane). Each opens as
 a window of the operating system in its own right, with its own title bar and
 task-bar entry, to be dragged onto a second or third monitor, resized or
 maximized there, and left open beside the images while the main window keeps
@@ -281,29 +306,49 @@ shortcut (**F9**, **F10**) and from the arrow on its edge of the window;
 dragging a panel's inner edge past the minimum does the same, and the arrow
 brings it back.
 
-The *Modules* menu chooses the right panel's sections, in the order they
-appear: **Image information** (what the displayed series is - see below),
-**Playback** (the ▶ buttons on the viewports - see below), **Image
+The *Modules* menu chooses the right panel's sections, fifteen of them in
+the order they appear, its lines grouped under four headings. **Images**:
+**Image information** (what the displayed series is - see below),
+**Image playback** (the ▶ buttons on the viewports - see below), **Image
 registration**, **Image simulation**, **Image generation** (two sections
 under one workspace row: *Image synthesis*, a synthetic CT from an MR or a
 CBCT - [synthetic-ct.md](synthetic-ct.md) - and *Digitally reconstructed
 radiograph*, radiographs of a CT filed under the planar images -
-[drr.md](drr.md)), the **Structure editor**
+[drr.md](drr.md)). **Structures/Segmentations**: the **Structure editor**
 (insert, edit and combine structures - [contours.md](contours.md)), the
 **Structure auto tools** (the body contour and the three segmentation
-engines - [segmentation.md](segmentation.md)), **Structure propagation** and **Dose
-estimation** (the dose metrics table - [dvh.md](dvh.md)). A fresh
-installation starts with all nine off - the program opens on the images
+engines, with the *Results* fold an automatic run leaves to pick from -
+[segmentation.md](segmentation.md)), **Structure propagation** (with the
+*By relationship* fold, the transfer at the same offset from a reference
+structure - [motion-4d.md](motion-4d.md)), **Structure comparison** (any two
+structures measured against each other), **Structure details** (one row
+per structure, with a Dice column against a reference of your choice) and
+**Structure motion** (the 4D motion analysis and its finished runs -
+[motion-4d.md](motion-4d.md)). **Doses**: **Dose display** (how the
+displayed dose grid is drawn - colorwash, isodose lines or both, opacity,
+threshold and the isodose ladder; one setting for every workspace, which a
+dose grid's **🎨 Display settings** in the tree also opens), **Dose
+analysis** (the dose metrics table) and **Dose-volume histograms** (both in
+[dvh.md](dvh.md)).
+**Workflows**: the run of a saved workflow ([workflows.md](workflows.md)).
+A section that is about particular structures says so in the views while it
+is unfolded: the structures it measures, the row of its table under the
+pointer, the curve under the pointer in its chart are drawn thicker, the
+way the Structure editor draws the structure it edits. The two that draw
+charts (the histograms and the motion runs) put them in the row's chart
+pane, and a **📈** on the section header brings the pane back once it was
+closed. A fresh
+installation starts with all fifteen off - the program opens on the images
 with nothing over them, and the panel is built up from the menu as the work
-needs it. Every choice is remembered between runs, and with all nine off
+needs it. Every choice is remembered between runs, and with all of them off
 there is no right panel at all. Every section starts folded; which ones were
 unfolded is remembered too, and *Restore the last session* unfolds them
 again. The drawing tools are not in the panel: the toolbar's **✏
 Draw structure** button unfolds them on the toolbar. The *Tools* menu keeps
-the windows: **◑ Structure comparison**, **📋 Structure details** (one row
-per structure, with a Dice column against a reference of your choice) and
-**📈 Structure motion**, then transfer, DVH, the archive, the models and
-the anonymizer.
+what is about files and folders rather than the images on screen, each a
+window: **🏥 PACS**, **📦 Downloaded models**, **🔏 Anonymize DICOM folder**,
+**📐 Generate test data** and **📥 Download test data** (*Export DICOM* and
+*Save image* are in the *File* menu).
 
 ## Image information
 
@@ -366,10 +411,10 @@ play:
   with it.
 
 Either button turns into **⏸** while it runs, and one run is in flight at a
-time. The 3D scene has a **▶4D** of its own, in its window and on its pane's
+time. The 3D scene has a **▶4D** of its own, on its pane's
 bar, that starts the same run, so the surfaces and the isodose shells
-breathe with the views, and the Dose estimation module's *Dynamic* log has
-a third ([dvh.md](dvh.md#the-dose-estimation-module)) that walks the
+breathe with the views, and the Dose analysis module's *Dynamic* log has
+a third ([dvh.md](dvh.md#the-dose-analysis-module)) that walks the
 structures back through the moves they were given.
 
 **With Sync on, every open workspace plays.** **▶3D** takes the other panes
@@ -378,12 +423,12 @@ position in patient coordinates, through the registration where there is
 one - so the rows stay on the same anatomy rather than on the same slice
 number. **▶4D** walks every other workspace's group beside this one's, which
 is why the first press reads *all* of those groups into memory and the budget
-in the Playback module has to cover them. Two groups of the same length step phase for
+in the Image playback module has to cover them. Two groups of the same length step phase for
 phase; groups of different lengths are walked proportionally, so a tenth of
 one breathing cycle meets a tenth of the other. A workspace that is not
 showing a 4D group is simply left where it is.
 
-### Playback
+### Image playback
 
 The module is where the settings live.
 
@@ -392,7 +437,7 @@ The module is where the settings live.
 * **Phases** - the group being played, the same transport, and a scrubber
   showing the phase label and its place in the group.
 * **Speed** - separately for slices, phases and the steps of the Dose
-  estimation module's *Dynamic* log: a stack of 200 slices wants to move
+  analysis module's *Dynamic* log: a stack of 200 slices wants to move
   faster than a ten-phase breathing cycle, and a log step slower still,
   because every step brings its own dose numbers to read.
 * **At the end** - *Loop* starts again from the beginning, *Bounce* turns
@@ -442,7 +487,7 @@ apart and a view that jumps back to the middle slice hides the motion one is
 looking for. Picking any other series is an ordinary switch and still starts
 the workspace afresh.
 
-In the **3D structures** window, each phase brings its own structure set and
+In the **3D** pane, each phase brings its own structure set and
 so its own surfaces. **Prepare phases** meshes them all up front, which is
 what makes the cine smooth; without it the first pass through the group
 waits for the mesher at every phase, and the second pass is smooth because
@@ -503,20 +548,26 @@ Workspace A
        │   └ TotalSeg (8/8) ▶ CT chest
        ├ Dose (1)
        │   └ Plan dose ▶ plan IMRT
-       └ Plans (1)
-           └ IMRT ▶ Approved
- Dose display · Planar images · Reports · Additional · Spatial registrations · Records · Warnings
+       ├ Plans (1)
+       │   └ IMRT ▶ Approved
+       ├ Planar images (2)           radiographs, RT images, DRRs
+       ├ Additional (1)              secondary captures, pages
+       └ Reports (1)                 dose reports, structured reports
+ Spatial registrations · Records · Warnings
 ```
 
 The modality level (CT / MR / US / PT …) is one DICOM implies but does not
 store as a node; it is grouped from the series' Modality in first-seen order.
 Everything with a StudyInstanceUID - image series, RT structure sets,
-segmentation series, dose grids and plans - sits inside its study; an RT
-object whose StudyInstanceUID is blank or names an unloaded study goes under
-the study of the image series it references, failing that under the first
-study. Planar images, reports, additional objects, spatial registrations and
-treatment records have no study and sit below the tree, as does **Dose display** - colorwash, isodose
-ladder, opacity, threshold - one setting shared by both workspaces, shown once.
+segmentation series, dose grids, plans, planar images, additional objects
+and reports - sits inside its study; an object whose StudyInstanceUID is
+blank or names an unloaded study goes under the study of the image series it
+references, failing that under the first study. A DRR is filed under the
+study of the image it was made from (the displayed CT, or the radiograph it
+is laid over). Spatial registrations and treatment records belong to a
+frame of reference rather than a study and sit below the tree. How dose is
+drawn - colorwash, isodose ladder, opacity, threshold - is the **Dose
+display** module, one setting shared by every workspace.
 
 Structure sets, segmentation series, **dose grids and plans** all use the
 same row - a name, and nothing in front of it. The views draw one of each
@@ -750,7 +801,8 @@ show the respiratory differences.
 Digital radiographs and RT images (portal / setup images) in the study
 folder - plus every DRR rendered by *Modules ▶ Image generation ▶
 Digitally reconstructed radiograph* (see [drr.md](drr.md)) - are listed
-under **Planar images** in the sidebar and shown in the row's two **planar
+under **Planar images** in their study's node of the sidebar and shown in the
+row's two **planar
 panes**, *Planar 1* and *Planar 2*, rather than in windows of their own.
 
 The rows read like image series: the image's name, highlighted while it is
@@ -811,7 +863,7 @@ overlay plane, and the text itself sits in a private element). Other
 Structured Reports (a measurement report, a radiology report) come the same
 way. A pane that windowed their pixels showed nothing, and what a person
 wants is the table, so they are **reports**: listed under **Reports** in
-the sidebar (kind, date and the headline facts on hover) and shown in the
+their study's node of the sidebar (kind, date and the headline facts on hover) and shown in the
 row's **Additional** pane as tables when clicked (**👁 Show in
 Additional** in the right-click menu, beside rename and remove; an **A**
 badge marks the one on screen).
@@ -838,7 +890,8 @@ console, scanned documents, any secondary capture without text to read
 back. The loader tells them apart by their SOP class (Secondary Capture,
 whatever Modality the file claims) or, for an image of a series that
 carries no position anywhere, by its modality not being a projection's.
-They are listed under **Additional** in the sidebar, with the kind, the
+They are listed under **Additional** in their study's node of the sidebar,
+with the kind, the
 Image Type and the value range on hover, and shown in the same
 **Additional** pane, which is off by default: a click on a row puts the
 pane into the row with that object, **Ctrl + click** stacks it, the

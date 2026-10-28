@@ -266,7 +266,7 @@ impl ViewerApp {
     /// A running job owns the dialog (its results have to land somewhere), so
     /// this never replaces one that is in flight; it only aims it.
     pub(super) fn open_propagate_module(&mut self, src_slot: usize) {
-        self.module_propagation = true;
+        self.modules.insert(Module::Propagation);
         self.right_open = true;
         self.settings_gen += 1;
         let src = self.displayed_pick(src_slot).unwrap_or(RegPick {
@@ -1292,7 +1292,7 @@ impl ViewerApp {
             self.install_registration(*refined);
             // The refinement is now the active registration - show the
             // section that reports and clears it.
-            self.module_registration = true;
+            self.modules.insert(Module::Registration);
         }
         let Some(study) = &self.slots[dst_slot].study else {
             return run_report::RunReport::default();
@@ -1810,6 +1810,11 @@ impl ViewerApp {
                 self.prop_run_row(ui, &mut pf);
                 self.prop_matrix_rows(ui, &mut pf);
                 self.prop_last_run(ui, &mut pf);
+                // The alternative to a registration: the target's offset
+                // from a reference structure travels instead.
+                egui::CollapsingHeader::new("By relationship")
+                    .default_open(false)
+                    .show(ui, |ui| self.transfer_fold(ui));
             });
         let PropForm {
             run,

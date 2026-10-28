@@ -84,6 +84,8 @@ pub struct Report {
     /// The page as the scanner rendered it, for a page.
     pub page: Option<PlanarImage>,
     pub file_name: String,
+    /// Study Instance UID: the study the data tree files it under.
+    pub study_uid: String,
 }
 
 impl Report {
@@ -147,6 +149,7 @@ pub fn load_report(path: &Path) -> Result<Report> {
         .unwrap_or_default();
     let mut r = Report {
         modality: str_of(&obj, tags::MODALITY).unwrap_or_else(|| "SR".into()),
+        study_uid: str_of(&obj, tags::STUDY_INSTANCE_UID).unwrap_or_default(),
         date,
         file_name: path
             .file_name()
@@ -185,6 +188,9 @@ pub fn load_report(path: &Path) -> Result<Report> {
 
 /// What a single-image file turns out to be: an image, or a page whose
 /// text makes it a report.
+// One per file read, handed straight on: the size of the larger variant
+// costs nothing worth a box.
+#[allow(clippy::large_enum_variant)]
 pub enum PageObject {
     Image(PlanarImage),
     Report(Report),
@@ -221,6 +227,7 @@ pub fn load_page(path: &Path) -> Result<PageObject> {
             .file_name()
             .map(|f| f.to_string_lossy().into_owned())
             .unwrap_or_default(),
+        study_uid: image.study_uid.clone(),
         page: Some(image),
     }))
 }

@@ -11,7 +11,7 @@
 //! So the phases are read once into [`PhaseCache`] and played from memory.
 //! That costs real RAM - ten phases of a 512 x 512 x 150 CT are about
 //! 800 MB - so the cache is filled by a background job with a progress bar,
-//! it is refused when the estimate exceeds the budget the *Playback* module
+//! it is refused when the estimate exceeds the budget the *Image playback* module
 //! carries, and it is dropped the moment the study it belongs to changes.
 //!
 //! Stepping a phase deliberately does *not* go through
@@ -35,7 +35,7 @@ pub(super) enum PlayTarget {
     Slices { slot: usize, view: usize },
     /// The phases of the 4D group a workspace is showing (*Play 4D*).
     Phases { slot: usize },
-    /// The steps of the Dose estimation module's *Dynamic* log: the
+    /// The steps of the Dose analysis module's *Dynamic* log: the
     /// structure walks back through the moves it was given, and the table
     /// follows it.
     DoseLog { slot: usize },
@@ -129,7 +129,7 @@ impl PhaseCache {
     }
 }
 
-/// Settings and state of playback. Everything here is what the *Playback*
+/// Settings and state of playback. Everything here is what the *Image playback*
 /// module edits; the buttons on the viewports only start and stop.
 pub(super) struct PlayState {
     /// The workspace the module's own controls act on.
@@ -657,7 +657,7 @@ impl ViewerApp {
             if est > budget {
                 self.error = Some(format!(
                     "Reading the {} phases of {group} would take about {}, over the {} the \
-                     Playback module allows. Raise the budget there, or play the slices \
+                     Image playback module allows. Raise the budget there, or play the slices \
                      instead.",
                     idxs.len(),
                     human_bytes(est),
@@ -802,24 +802,25 @@ fn read_phases(
 }
 
 // ---------------------------------------------------------------------------
-// The Playback module
+// The Image playback module
 // ---------------------------------------------------------------------------
 
 impl ViewerApp {
     pub(super) fn playback_section(&mut self, ui: &mut egui::Ui) {
-        let id = ui.make_persistent_id("Playback");
-        let state =
-            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
-        let header = state.show_header(ui, |ui| {
-            ui.label(egui::RichText::new("Playback").strong());
-            // The one run in flight is stoppable from the header, so a cine
-            // started on a viewport can be stopped without hunting for it.
-            if self.play.running.is_some() && small_tip_button(ui, "⏸", "Stop what is playing") {
-                self.stop_play();
-            }
-        });
-        header.body(|ui| self.playback_body(ui));
-        ui.separator();
+        self.module_header(
+            ui,
+            Module::Playback,
+            |app, ui| {
+                // The one run in flight is stoppable from the header, so a
+                // cine started on a viewport can be stopped without hunting
+                // for it.
+                if app.play.running.is_some() && small_tip_button(ui, "⏸", "Stop what is playing")
+                {
+                    app.stop_play();
+                }
+            },
+            |app, ui| app.playback_body(ui),
+        );
     }
 
     fn playback_body(&mut self, ui: &mut egui::Ui) {
@@ -873,7 +874,7 @@ impl ViewerApp {
                     .suffix(" steps/s"),
             )
             .on_hover_text(
-                "How fast the Dose estimation module's Dynamic log plays. Slower than \
+                "How fast the Dose analysis module's Dynamic log plays. Slower than \
                  the others by default: every step is a different arrangement of the \
                  anatomy with its own dose numbers, and the numbers are there to be read.",
             );

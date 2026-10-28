@@ -16,8 +16,13 @@ rustup target add aarch64-linux-android
 cargo install cargo-ndk
 export ANDROID_HOME=~/Android/Sdk
 export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/<version>
+bash release-key.sh new # once, ever: the release key (another machine copies its two files)
 ./build-apk.sh          # -> out/rust-dicom-station-<version>-android-arm64.apk
 ```
+
+Every build that is to be installed is signed with the one release key
+that CI signs with too, so that each new APK installs over the last one
+and keeps its settings ([docs/android.md](../../docs/android.md#signing)).
 
 `cargo ndk -t arm64-v8a -P 30 check` in this folder is the
 cross-compilation check that CI runs on pull requests.

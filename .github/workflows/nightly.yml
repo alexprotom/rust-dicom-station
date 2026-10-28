@@ -31,10 +31,11 @@ name: Nightly
 # That number sits strictly between the last release and the next one for
 # every consumer that compares versions: rds-setup installs a nightly over
 # the last release and the next release over a nightly (a pre-release
-# suffix sorts below the plain version), Android's versionCode is the
-# numeric part only (0.11.1 -> 1101: higher than the 0.11.0 release, equal
-# to the 0.11.1 release, which Android accepts), and a later nightly's
-# suffix compares higher than an earlier one's. The version is written
+# suffix sorts below the plain version), and a later nightly's suffix
+# compares higher than an earlier one's. Android's versionCode is not taken
+# from it: it is the build time in minutes since 2024 (build-apk.sh), which
+# rises the same way - a nightly over the last release, the next release
+# over the nightly, a later nightly over an earlier one. The version is written
 # into Cargo.toml on the runner only - nothing is committed.
 #
 # Testing is deliberately lighter than the release's: fmt, clippy and the
@@ -314,7 +315,8 @@ jobs:
   # android.yml with `write_version`: it writes the nightly version into
   # Cargo.toml instead of checking that the tree already carries it, and
   # returns the APK as the `android-apk` artifact, signed with the release
-  # key when the ANDROID_KEYSTORE_* secrets are set.
+  # key from the ANDROID_KEYSTORE_* secrets - and fails without them, since
+  # an APK signed with another key does not install over the last one.
   android:
     name: Android
     needs: version

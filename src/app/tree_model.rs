@@ -95,7 +95,15 @@ fn tree_level_of(study: &LoadedStudy, slot: usize, t: &RenameTarget) -> Vec<Rena
             .into_iter()
             .map(|idx| RenameTarget::Plan { slot, idx })
             .collect(),
-        RenameTarget::Planar { .. } => n_of(study.planar_images.len())
+        // Planar images and reports sit under their study, the projections
+        // and the additional objects in a list each: the level is the list
+        // the row is in.
+        RenameTarget::Planar { idx, .. } => tree_layout(study)
+            .into_iter()
+            .flat_map(|p| p.studies)
+            .flat_map(|st| [st.planar, st.additional])
+            .find(|list| list.contains(idx))
+            .unwrap_or_default()
             .into_iter()
             .map(|idx| RenameTarget::Planar { slot, idx })
             .collect(),
@@ -107,7 +115,12 @@ fn tree_level_of(study: &LoadedStudy, slot: usize, t: &RenameTarget) -> Vec<Rena
             .into_iter()
             .map(|idx| RenameTarget::Record { slot, idx })
             .collect(),
-        RenameTarget::Report { .. } => n_of(study.reports.len())
+        RenameTarget::Report { idx, .. } => tree_layout(study)
+            .into_iter()
+            .flat_map(|p| p.studies)
+            .map(|st| st.reports)
+            .find(|list| list.contains(idx))
+            .unwrap_or_default()
             .into_iter()
             .map(|idx| RenameTarget::Report { slot, idx })
             .collect(),
@@ -221,6 +234,7 @@ impl ViewerApp {
 
 /// One study node of the data tree: which of the workspace's objects belong
 /// under it, as indices into the parallel arrays of [`LoadedStudy`].
+#[derive(Default)]
 pub(super) struct StudyNode {
     pub(super) uid: String,
     pub(super) title: String,
@@ -233,6 +247,13 @@ pub(super) struct StudyNode {
     pub(super) plans: Vec<usize>,
     /// 4D groups of this study - indices into `LoadedStudy::fourd_groups`.
     pub(super) fourd: Vec<usize>,
+    /// Planar images of the study: the projections (radiographs, RT
+    /// images, DRRs) and the additional objects (secondary captures,
+    /// pages), each a list of indices into `LoadedStudy::planar_images`.
+    pub(super) planar: Vec<usize>,
+    pub(super) additional: Vec<usize>,
+    /// Its reports - indices into `LoadedStudy::reports`.
+    pub(super) reports: Vec<usize>,
 }
 
 /// One patient node: the studies filed under them.
@@ -307,6 +328,8 @@ fn tree_key(study: &LoadedStudy, settings_gen: u64) -> u64 {
         study.doses.len(),
         study.plans.len(),
         study.fourd_groups.len(),
+        study.planar_images.len(),
+        study.reports.len(),
     ] {
         h = mix(h, n as u64);
     }
@@ -388,12 +411,7 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
                 p.studies.push(StudyNode {
                     uid: se.study_uid.clone(),
                     title,
-                    modalities: Vec::new(),
-                    structs: Vec::new(),
-                    segs: Vec::new(),
-                    doses: Vec::new(),
-                    plans: Vec::new(),
-                    fourd: Vec::new(),
+                    ..Default::default()
                 });
                 p.studies.last_mut().expect("just pushed")
             }
@@ -474,6 +492,12 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
         for pl in &study.plans {
             want(&pl.study_uid);
         }
+        for img in &study.planar_images {
+            want(&img.study_uid);
+        }
+        for r in &study.reports {
+            want(&r.study_uid);
+        }
         // …unless there is no first study either. Then one study node has to
         // exist for those objects to be reachable at all.
         if missing.is_empty() && patients.is_empty() && orphans {
@@ -512,12 +536,7 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
                 patients[pi].studies.push(StudyNode {
                     uid,
                     title,
-                    modalities: Vec::new(),
-                    structs: Vec::new(),
-                    segs: Vec::new(),
-                    doses: Vec::new(),
-                    plans: Vec::new(),
-                    fourd: Vec::new(),
+                    ..Default::default()
                 });
             }
         }
@@ -572,6 +591,22 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
     for (i, p) in study.plans.iter().enumerate() {
         if let Some((pi, si)) = place(&p.study_uid, "") {
             patients[pi].studies[si].plans.push(i);
+        }
+    }
+    // Planar images and reports carry their study too; a DRR is given the
+    // study of the image it was made from when it is made.
+    for (i, img) in study.planar_images.iter().enumerate() {
+        if let Some((pi, si)) = place(&img.study_uid, "") {
+            let node = &mut patients[pi].studies[si];
+            match img.kind {
+                crate::extras::PlanarKind::Projection => node.planar.push(i),
+                crate::extras::PlanarKind::Additional => node.additional.push(i),
+            }
+        }
+    }
+    for (i, r) in study.reports.iter().enumerate() {
+        if let Some((pi, si)) = place(&r.study_uid, "") {
+            patients[pi].studies[si].reports.push(i);
         }
     }
     patients
@@ -827,6 +862,53 @@ mod layout_tests {
             .map(|s| s.structs.len())
             .sum();
         assert_eq!(total, 3, "every structure set is reachable exactly once");
+    }
+
+    /// A report or an additional object belongs to a study, not to the
+    /// workspace: it is filed under the study its header names, and one
+    /// that names none under the first study, as an RT object would be.
+    #[test]
+    fn planar_images_and_reports_sit_under_their_study() {
+        use crate::extras::{PlanarImage, PlanarKind};
+        use crate::report::Report;
+        let mut st = study();
+        let img = |study_uid: &str, kind| PlanarImage {
+            study_uid: study_uid.into(),
+            kind,
+            ..Default::default()
+        };
+        st.planar_images = vec![
+            img("st1", PlanarKind::Projection),
+            img("st3", PlanarKind::Additional),
+            img("", PlanarKind::Projection),
+        ];
+        st.reports = vec![
+            Report {
+                study_uid: "st3".into(),
+                ..Default::default()
+            },
+            Report {
+                study_uid: "st1".into(),
+                ..Default::default()
+            },
+        ];
+        let layout = tree_layout(&st);
+        let (st1, st2, st3) = (
+            &layout[0].studies[0],
+            &layout[0].studies[1],
+            &layout[1].studies[0],
+        );
+        assert_eq!((&st1.planar, &st1.additional), (&vec![0, 2], &vec![]));
+        assert!(st2.planar.is_empty() && st2.reports.is_empty());
+        assert_eq!(
+            st3.additional,
+            vec![1],
+            "a page under the other patient's study"
+        );
+        assert_eq!((&st1.reports, &st3.reports), (&vec![1], &vec![0]));
+        // The arrows step through the list a row is in, not the workspace.
+        let level = tree_level_of(&st, 0, &RenameTarget::Report { slot: 0, idx: 0 });
+        assert_eq!(level, vec![RenameTarget::Report { slot: 0, idx: 0 }]);
     }
 
     /// A workspace can hold no image series at all - a folder of RT images, a

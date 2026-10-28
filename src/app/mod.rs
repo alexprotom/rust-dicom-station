@@ -45,18 +45,20 @@ use pick::{CSV_FILES, PROTOCOL_FILES};
 mod auto_tools;
 mod body_win;
 mod box_seg;
+mod chart_pane;
 mod chrome;
 mod combine;
-mod compare_win;
+mod compare;
 mod contour_edit;
 mod d3;
 mod data_tree;
 mod derived_app;
 mod detach;
 mod dialogs;
+mod dose_display;
 mod dose_est;
 mod drr_win;
-mod dvh_win;
+mod dvh;
 mod export_win;
 mod form;
 mod fourd_tree;
@@ -69,12 +71,14 @@ mod jobs;
 mod livewire_app;
 mod matrix_edit;
 mod models_win;
+mod modules;
+mod motion;
 mod motion_results;
-mod motion_win;
 mod pacs_remote;
 mod pacs_server_win;
 mod pacs_tree;
 mod pacs_win;
+mod pane_windows;
 mod panels;
 mod pick;
 mod planar;
@@ -95,12 +99,12 @@ mod seg_engines;
 mod sets;
 mod slot;
 mod snapshot;
-mod stats_win;
+mod stats;
 mod struct_tools;
 mod synth_win;
 mod testdata_win;
 mod theme;
-mod transfer_win;
+mod transfer;
 mod tree;
 mod tree_dose;
 mod tree_menus;
@@ -121,6 +125,7 @@ mod workspace_pick;
 use d3::D3Window;
 use drr_win::{DrrRun, DrrState};
 use jobs::{cancel_if, poll_job, poll_tool_job, Job, LoadResult};
+use modules::{Module, ModuleUi};
 use pacs_win::{PacsOutcome, PacsWindow};
 use propagate_win::{GroupRegistration, PropOutcome, PropagateDialog};
 use reg_panel::{ActiveRegistration, FusionSide};
@@ -819,6 +824,9 @@ pub struct ViewerApp {
     tick_anchor: Option<(SetRef, usize)>,
     /// When set, this single (slot, view) fills the whole central area.
     maximized: Option<(usize, PaneKind)>,
+    /// Panes taken out of their rows into windows of their own
+    /// (`pane_windows.rs`), in the order they were taken out.
+    detached_panes: Vec<(usize, PaneKind)>,
     /// Invert REG matrices before applying them as the active registration.
     reg_apply_invert: bool,
 
@@ -900,8 +908,9 @@ pub struct ViewerApp {
     /// outside the per-slice wire state, so the choice survives a change of
     /// slice and can be made before the first click.
     wire_learn: bool,
-    /// The structure-details table.
-    stats_dialog: Option<stats_win::StatsDialog>,
+    /// *Modules ▶ Structure details*: the table and what it was made for,
+    /// set up the first time the section is unfolded.
+    stats: Option<stats::StatsState>,
 
     /// Root folder of the downloaded network weights, shared by the three
     /// engines (persisted in the settings file; blank = the default).
@@ -974,10 +983,12 @@ pub struct ViewerApp {
     /// The tool window, when open; it stays open across runs.
     body_dialog: Option<body_win::BodyDialog>,
 
-    // Dose-volume histograms (see `dvh`), in a window of their own.
-    dvh_open: bool,
-    dvh_dialog: Option<dvh_win::DvhDialog>,
-    dvh_job: Option<Job<anyhow::Result<dvh_win::DvhDone>>>,
+    // Modules ▶ Dose-volume histograms (see `dvh`): the module's state,
+    // made the first time it is asked for, and its run.
+    dvh: Option<dvh::DvhModule>,
+    dvh_job: Option<Job<anyhow::Result<dvh::DvhDone>>>,
+    /// What each workspace's chart pane shows (`chart_pane.rs`).
+    chart: [Option<chart_pane::ChartSource>; MAX_WORKSPACES],
 
     // Structure algebra (see `structops`): combining contours and segments.
     combine_job: Option<SegJob<combine::CombineResult>>,
@@ -992,23 +1003,26 @@ pub struct ViewerApp {
     combine_dialog: Option<combine::CombineDialog>,
 
     // 4D motion / ITV analysis (see `motion` and `fourd`).
-    motion_job: Option<SegJob<motion_win::MotionOutcome>>,
+    motion_job: Option<SegJob<motion::MotionOutcome>>,
     motion_slot: usize,
-    motion_dialog: Option<motion_win::MotionDialog>,
+    motion_dialog: Option<motion::MotionDialog>,
     /// The last run's settings, re-applicable to another workspace / study.
-    motion_recipe: Option<motion_win::MotionRecipe>,
+    motion_recipe: Option<motion::MotionRecipe>,
     /// Every finished run of this session, newest last.
     motion_reports: Vec<crate::motion::MotionReport>,
-    /// The results window: visibility, selected run, comparison run.
-    motion_results_open: bool,
+    /// The section's results: the selected run, the run it is compared
+    /// with, the target picked in its list, and whether the results fold
+    /// is to be unfolded at the next pass (a run just landed).
     motion_sel: usize,
     motion_cmp: Option<usize>,
+    motion_target: Option<String>,
+    motion_reveal: bool,
 
-    // Tools ▶ Transfer by relationship.
-    transfer_dialog: Option<transfer_win::TransferDialog>,
+    // Structure propagation ▶ By relationship.
+    transfer: Option<transfer::TransferState>,
 
-    // Tools ▶ Structure comparison.
-    compare_dialog: Option<compare_win::CompareDialog>,
+    // Modules ▶ Structure comparison.
+    compare: Option<compare::CompareState>,
 
     /// Deferred 4D-group edit from the data tree's context menus.
     fourd_action: Option<FourDAction>,
@@ -1059,33 +1073,14 @@ pub struct ViewerApp {
     /// Dropped as soon as the window no longer matches it.
     wl_preset: Option<usize>,
 
-    /// *Modules ▶ Image registration*: the registration section is part of
-    /// the modules panel. Persisted between runs.
-    module_registration: bool,
-    /// *Modules ▶ Image simulation*: the simulation section is part of the
-    /// modules panel. Persisted between runs.
-    module_simulation: bool,
-    /// *Modules ▶ Image generation*: the synthetic CT and the DRR, two
-    /// sections of one module. Persisted.
-    module_generation: bool,
-    /// *Modules ▶ Structure propagation*: the propagation section is part
-    /// of the modules panel. Persisted between runs.
-    module_propagation: bool,
-    /// *Modules ▶ Structure editor*: inserting, editing and combining
-    /// structures is a section of the modules panel. Persisted between
-    /// runs; on by default.
-    module_structures: bool,
-    /// *Modules ▶ Structure auto tools*: body contour and the three engines
-    /// are a section of the modules panel. Persisted; on by default.
-    module_auto: bool,
-    /// *Modules ▶ Dose estimation*: the dose metrics table.
-    module_dose: bool,
-    /// *Modules ▶ Image information*: voxel spacing, slice thickness and
-    /// the rest of what the displayed series is, read from its headers.
-    module_info: bool,
-    /// *Modules ▶ Playback*: the speed, the loop mode and what a phase
-    /// change carries with it, plus the transport controls themselves.
-    module_play: bool,
+    /// The modules switched on in the *Modules* menu, one section of the
+    /// right panel each (see `modules.rs`). Persisted between runs.
+    modules: std::collections::BTreeSet<Module>,
+    /// What the unfolded sections are about, for the views to draw: set
+    /// again by the sections on every pass of the panel.
+    section_focus: Option<modules::Focus>,
+    /// A section a tool asked to have unfolded at the next pass.
+    reveal_section: Option<Module>,
     /// Which module sections are unfolded (settings key `modules_open`),
     /// and whether the next panel draw has to apply that list - set by
     /// *Restore the last session*.
@@ -1097,7 +1092,7 @@ pub struct ViewerApp {
     modules_tracked: bool,
     dose_est: dose_est::DoseEst,
     /// Playing through slices and through 4D phases: the settings the
-    /// *Playback* module carries, and the run in flight.
+    /// *Image playback* module carries, and the run in flight.
     play: play::PlayState,
     /// State of the *Image information* module.
     info: img_info::InfoState,
@@ -1169,19 +1164,6 @@ impl ViewerApp {
         } else {
             self.first_volume_slot()
         }
-    }
-
-    /// Is any section of the modules panel switched on?
-    pub(super) fn any_module(&self) -> bool {
-        self.module_registration
-            || self.module_simulation
-            || self.module_generation
-            || self.module_propagation
-            || self.module_structures
-            || self.module_auto
-            || self.module_dose
-            || self.module_info
-            || self.module_play
     }
 
     /// Both workspaces show an image volume.
@@ -1356,6 +1338,7 @@ impl ViewerApp {
             tree_picks: Vec::new(),
             tick_anchor: None,
             maximized: None,
+            detached_panes: Vec::new(),
             reg_apply_invert: false,
             window_center: [40.0; MAX_WORKSPACES],
             window_width: [400.0; MAX_WORKSPACES],
@@ -1396,9 +1379,9 @@ impl ViewerApp {
             body_slot: 0,
             body_dialog: None,
 
-            dvh_open: false,
-            dvh_dialog: None,
+            dvh: None,
             dvh_job: None,
+            chart: [None; MAX_WORKSPACES],
 
             combine_job: None,
             derived_job: None,
@@ -1412,11 +1395,12 @@ impl ViewerApp {
             motion_dialog: None,
             motion_recipe: None,
             motion_reports: Vec::new(),
-            motion_results_open: false,
+            motion_target: None,
+            motion_reveal: false,
             motion_sel: 0,
             motion_cmp: None,
-            transfer_dialog: None,
-            compare_dialog: None,
+            transfer: None,
+            compare: None,
             fourd_action: None,
 
             segvol_job: None,
@@ -1454,7 +1438,7 @@ impl ViewerApp {
             tools: struct_tools::StructTools::default(),
             wire: None,
             wire_learn: true,
-            stats_dialog: None,
+            stats: None,
             dose_mode: DoseMode::Off,
             dose_opacity: 0.45,
             dose_threshold_pct: 15.0,
@@ -1464,15 +1448,9 @@ impl ViewerApp {
             struct_gen: [0; MAX_WORKSPACES],
             edit_summary_cache: None,
             wl_preset: None,
-            module_registration: prefs.module_registration,
-            module_simulation: prefs.module_simulation,
-            module_generation: prefs.module_generation,
-            module_propagation: prefs.module_propagation,
-            module_structures: prefs.module_structures,
-            module_auto: prefs.module_auto,
-            module_dose: prefs.module_dose,
-            module_info: prefs.module_info,
-            module_play: prefs.module_play,
+            modules: prefs.modules.clone(),
+            section_focus: None,
+            reveal_section: None,
             pane_buttons_hidden: prefs.pane_buttons_hidden,
             reg_matrix: matrix_edit::ManualMatrix::default(),
             reg_matrix_pick: 0,
@@ -1540,15 +1518,7 @@ impl ViewerApp {
             models_dir,
             archive_dir,
             archive_more: self.archive_more.clone(),
-            module_registration: self.module_registration,
-            module_simulation: self.module_simulation,
-            module_generation: self.module_generation,
-            module_propagation: self.module_propagation,
-            module_structures: self.module_structures,
-            module_auto: self.module_auto,
-            module_dose: self.module_dose,
-            module_info: self.module_info,
-            module_play: self.module_play,
+            modules: self.modules.clone(),
             pane_buttons_hidden: self.pane_buttons_hidden,
             modules_open: self.modules_open.clone(),
             session: self.session.clone(),
@@ -1924,6 +1894,7 @@ impl eframe::App for ViewerApp {
         self.modules_panel(ui);
         self.status_bar(ui);
         self.central_views(ui);
+        self.pane_windows(&ctx);
         self.d3_windows_ui(&ctx);
         if let Some(action) = self.tree_action.take() {
             self.apply_tree_action(action);

@@ -30,7 +30,7 @@ worker thread and reports through one progress handle
 up: the progress handle, the model folder, the checkpoint download /
 conversion / cache path, the device choice, the shape-checked parameter view
 and the dense CPU kernels are written once (`progress.rs`, `models.rs`,
-`nn/`); the engines and the tool windows hold only what is theirs.
+`nn/`); the engines, the modules and the tool windows hold only what is theirs.
 
 ## Functional overview
 
@@ -42,32 +42,38 @@ rust-dicom-station
 │
 ├── Application (GUI, egui over wgpu)
 │   ├── Window chrome: menu bar, toolbar (W/L, presets, 3D, crosshair, reset, the draw row), status bar
-│   ├── Modules panel: the Image information, Playback, registration, simulation,
+│   ├── Modules panel, fifteen sections from one list (app/modules.rs):
+│   │   Image information, Image playback, registration, simulation,
 │   │   Image generation (image synthesis: synthetic CT and its evaluation;
 │   │   DRR, filed under the planar images), Structure editor
-│   │   (insert, edit, combine), Structure auto tools (body contour and the
-│   │   three engines), propagation and Dose estimation sections
+│   │   (insert, edit, combine), Structure auto tools (body contour, the
+│   │   engines, the auto-segmentation results), propagation (with transfer
+│   │   by relationship), Structure comparison, Structure details, Structure
+│   │   motion (the run and its results), Dose display, Dose analysis,
+│   │   Dose-volume histograms and Workflows (the run); the structures a section is
+│   │   about drawn thicker in the views while it is unfolded
 │   ├── Side panel: per workspace a DICOM tree - patient ▶ study ▶ modality ▶ series, with RT
-│   │   structures, segmentations, 4D groups, dose and plans inside their study -
-│   │   plus dose display, planar images, reports, additional objects,
-│   │   spatial registrations, records, warnings with an Acknowledge button
-│   ├── Views: one row per open workspace (up to four), each of up to seven
+│   │   structures, segmentations, 4D groups, dose, plans, planar images,
+│   │   additional objects and reports inside their study - plus spatial
+│   │   registrations, records, warnings with an Acknowledge button
+│   ├── Views: one row per open workspace (up to four), each of up to eight
 │   │   panes chosen under Settings ▸ View layout - the MPR planes, the 3D
-│   │   surface scene, two planar panes (radiographs, RT images, DRRs) and
-│   │   the Additional pane (a report as a table: a dose SR, a scanner's
-│   │   protocol page; a secondary capture as an image); those three off in
-│   │   the standard row and not drawn without something of their kind;
+│   │   surface scene (put in and taken out by the toolbar's 3D button), two
+│   │   planar panes (radiographs, RT images, DRRs), the Additional pane (a
+│   │   report as a table: a dose SR, a scanner's protocol page; a secondary
+│   │   capture as an image) and the Chart pane (the DVH plot, a motion
+│   │   run's charts); those four off in the standard row and not drawn
+│   │   without something of their kind; any pane can be taken out of its
+│   │   row into a window of its own (⤴ on its bar);
 │   │   linked
 │   │   viewports, crosshair,
 │   │   a workspace with no volume says so in place of the panes and holds back
 │   │   the voxel tools;
 │   │   zoom / pan / W-L interaction, maximize, per-view caches
-│   ├── Tool windows (one shared skeleton; each can be docked over the views or
-│   │   detached into its own window of the operating system):
-│   │   3D structures, structure motion and its results,
-│   │   structure comparison, structure details, transfer by relationship,
-│   │   DVH, PACS, model manager, export, anonymizer, generator,
-│   │   the auto-segmentation results
+│   ├── Tool windows (one shared skeleton; each its own window of the
+│   │   operating system), for what is about files and folders rather than
+│   │   the images on screen: the workflow editor, PACS, model manager,
+│   │   export, save image, anonymizer, generator, test-data download
 │   ├── Data tree operations: rename every level; Shift-click ranges; copy / move /
 │   │   remove / export the ticked items; create / connect / copy / move / remove
 │   │   structure sets and segmentation series; move single structures / segments
@@ -135,7 +141,8 @@ rust-dicom-station
 │   │   targets ▸ centroid, volume, peak-to-peak, drift, correlation with a
 │   │   reference structure (Pearson r, p), registration QA
 │   ├── ITV: union over phases with a margin, landed as a segmentation
-│   ├── Results window: charts, tables, CSV, run-vs-run (A/B) comparison
+│   ├── Results: tables and CSV in the module, charts in the chart pane,
+│   │   run-vs-run (A/B) comparison
 │   ├── Structure comparison: volumes, centroid offset, Dice, HD95, mean surface distance
 │   └── Transfer by relationship: a structure placed in a chosen workspace at its
 │       offset from a reference structure
@@ -317,6 +324,10 @@ src/
                       structure pickers
     detach.rs         every tool window as a window of the operating system
                       (immediate viewport), titled and placed alike
+    pane_windows.rs   a pane of a row in a window of its own: the bar's
+                      ⤴ / ⤵ (detached_panes), ⛶ maximizing that window, the
+                      windows drawn after the central area through
+                      tool_window and the same pane function as the row
     pick.rs           the one door to a file dialog: the system dialog on the
                       desktop, an egui folder browser on Android and iOS, and
                       the answer handed to a continuation either way
@@ -331,6 +342,12 @@ src/
     panels.rs         both edge panels: the shared show / hide machinery, the
                       shared row widgets, and the right panel's list of
                       switched-on modules
+    modules.rs        the modules as one list: what the viewer draws for each
+                      settings::Module (ModuleUi: title, header salt, the
+                      modules_open word, menu group and tooltip), the one
+                      dispatch to its section (module_section), and Focus,
+                      the structures the unfolded sections are about, drawn
+                      thicker in the views
     data_tree.rs      the left panel's Data tree per workspace: patients,
                       studies, modality nodes, series rows, transfer menu
     tree_model.rs     the tree as data (PatientNode / StudyNode, the layout,
@@ -340,7 +357,11 @@ src/
     tree_*.rs         one file per tree section: structures, segmentations,
                       dose, plans, planar images and additional objects (one file,
                       a section per kind), reports, registrations, records
-                      and warnings
+                      and warnings; planar images, additional objects and
+                      reports, like dose and plans, are categories of a study
+    dose_display.rs   the Dose display module: how the displayed dose is
+                      drawn (colorwash / isodose, opacity, threshold, the
+                      isodose ladder), one setting for every workspace
     reg_panel.rs      the Image registration module: method, region, parameters,
                       landmarks, the run (against another workspace or every
                       phase of a 4D group), the analytics, the vector field
@@ -360,7 +381,9 @@ src/
                       transfer by relationship
     views.rs          central MPR viewports: cache refresh (one_view), the
                       frame, the overlays and the pointer, each its own method
-    d3.rs             live 3D structure window (and its types)
+    d3.rs             the live 3D structure scene, the row's Scene3d pane (its
+                      state still D3Window, made when the pane is first
+                      drawn and dropped when it leaves the row)
     planar.rs         the planar panes: a workspace's DX / CR / RTIMAGE images
                       and DRRs in its row (Planar 1 and 2) and its additional
                       objects in the Additional pane (the third pane view, one
@@ -370,6 +393,10 @@ src/
                       from the tree puts its pane into the row
     report_view.rs    a report in the Additional pane: its facts, lines and
                       tables, the page behind a toggle
+    chart_pane.rs     the Chart pane, modelled on report_view.rs: the chart of
+                      whichever module shows one (ChartSource: the DVH, a
+                      motion run), kept per workspace, with its own bar
+                      (save this pane, maximize, close)
     tree.rs           workspace-tree copy / move / remove with reference chains
                       (TreeSel, TreeAction and the object references)
     rename.rs         renaming every level of the data tree
@@ -380,8 +407,8 @@ src/
                       poll_all_jobs, called once a frame) and the loading,
                       simulation, export, generator, anonymizer and
                       auto-segmentation job starts
-    dialogs.rs        auto-segmentation window + results, generator, anonymizer,
-                      error dialog
+    dialogs.rs        the auto-segmentation section and its Results fold,
+                      generator, anonymizer, error dialog
     export_win.rs     the export window: the selection tree over every workspace,
                       the name and UID editors, the RTSTRUCT / SEG radios
     seg.rs            interactive segmentation state machine, mask ▶ RTSTRUCT,
@@ -409,7 +436,9 @@ src/
     poi.rs            points of interest: create at the crosshair or at a
                       structure's centre, localize, move, the localization
                       point
-    stats_win.rs      the structure-details table and its CSV
+    stats.rs          the Structure details module: the table, its Dice
+                      reference and its CSV; a row selects and centres on
+                      its structure
     seg_engines.rs    what the engine sections share: names and glyphs, the
                       workspace A / B row, device / model-folder / licence /
                       progress rows, result landing, the "still the same
@@ -436,19 +465,22 @@ src/
     propagate_win.rs  the Structure propagation module: onto another workspace,
                       or onto every phase of a 4D group through workflow::group
                       or workflow::anchored (transforms kept for the next run)
-    motion_win.rs     the Structure motion (4D / ITV) window; the pipeline itself is
-                      workflow::motion
-    motion_results.rs the motion results window: charts, tables, correlations,
-                      QA, CSV, run-vs-run comparison
-    compare_win.rs    compare structures: volumes, centroid offset, Dice, HD95, MSD
-    transfer_win.rs   transfer by relationship
-    dvh_win.rs        the DVH window: pickers, the plot, the metrics table,
-                      constraints, export
-    play.rs           playback: the ▶3D / ▶4D buttons on the viewports and in
-                      the 3D window, the Dynamic dose log's transport, the frame
+    transfer.rs       its By relationship fold: transfer by relationship
+    motion.rs         the Structure motion (4D / ITV) module and its Run fold;
+                      the pipeline itself is workflow::motion
+    motion_results.rs its Results fold: the run picker, the targets, tables,
+                      correlations, QA, CSV, run-vs-run comparison; the
+                      charts it draws into the chart pane
+    compare.rs        the Structure comparison module: volumes, centroid
+                      offset, Dice, HD95, MSD, the least-squares fit
+    dvh.rs            the Dose-volume histograms module (DvhModule): pickers,
+                      the metrics table, constraints, export; the plot it
+                      draws into the chart pane
+    play.rs           playback: the ▶3D / ▶4D buttons on the viewports and on
+                      the 3D pane, the Dynamic dose log's transport, the frame
                       clock, the 4D phase volume cache and its budget, the light
-                      phase switch that keeps the view, and the Playback module
-                      that carries the settings
+                      phase switch that keeps the view, and the Image playback
+                      module that carries the settings
     snapshot.rs       File > Save image: one row of the central area or both,
                       cut out of egui's screenshot, resampled to the chosen
                       DPI and written as a PNG (with pHYs) or a JPEG (with
@@ -462,7 +494,7 @@ src/
     img_info.rs       the Image information module: the geometry, sampling and
                       acquisition of the displayed series (imginfo), what wants
                       a second look, and what two workspaces disagree about
-    dose_est.rs       the Dose estimation module: the dose metrics table of
+    dose_est.rs       the Dose analysis module: the dose metrics table of
                       the ticked structures against one dose (physical /
                       effective), recomputed whenever they change
     image_gen.rs      the Image generation module: one workspace row over the
@@ -491,7 +523,9 @@ src/
                       menu's actions; undo / redo (JSON snapshots), the
                       clipboard (workflow fragments), frames, the map,
                       keyboard nudging
-    workflow_run.rs   the run window: inputs, results folder, background or
+    workflow_run.rs   the Workflows module: the workflow picked (load, last
+                      saved, examples; New / Edit open the editor), inputs,
+                      results folder, background or
                       step by step, reruns, parallel rows, memory, batches;
                       the run as a Job, its events polled each frame, each
                       shown step put in a workspace (the user's study there
@@ -624,7 +658,7 @@ src/
                     PSNR, SSIM, WET through an HU-to-RSP table, organ Dice)     Sim
 
   workflow/         the pipelines without a window around them, shared by the
-                    viewer's tool windows and the MCP server                     4D
+                    viewer's module sections and the MCP server                  4D
     session.rs        the headless core under the MCP session and the
                       workflow runner: Volumes (a budgeted LRU cache of image
                       volumes, shared by every pipeline of a run or session),
@@ -636,7 +670,7 @@ src/
     select.rs         structures by name over RTSTRUCT ROIs and segmentation
                       series; contour or mask onto any lattice
     motion.rs         the per-phase 4D pipeline (register ▸ propagate ▸
-                      measure ▸ ITV), moved out of motion_win.rs
+                      measure ▸ ITV), moved out of the app's motion module
     group.rs          one volume onto every phase of a group, one registration
                       per phase, transforms reusable; moved out of propagate_win.rs
     anchored.rs       the same anchored on a structure contoured on both sides
@@ -901,6 +935,66 @@ workflow copies the PNG into the AppImage as the Linux desktop icon.
 
 ### The tool windows and the modules
 
+What works on the images on screen is a **module**, a section of the right
+panel; what is about files and folders is a **tool window**. The windows
+that remain are the workflow editor (its canvas needs the width), the PACS
+(with its server page), the downloaded models, *Export DICOM*, *Save image*,
+the anonymizer and the two test-data dialogs (generate, download); the
+structure comparison, structure details, transfer by relationship,
+auto-segmentation results, DVH, structure motion with its results, and the
+workflow run were windows once and are sections now, and the 3D window is
+gone, the scene being a pane of the row (`PaneKind::Scene3d`) that the
+toolbar's *3D* button puts in and takes out.
+
+**The modules are one list.** `settings::Module` (in the domain crate, with
+`ALL` and `key()`, the `module_*` word of `viewer_settings.txt`; the nine
+older keys unchanged, so an old file still reads; Dose analysis keeps the
+key it had as Dose estimation) names the fifteen in
+panel order; `app/modules.rs` holds what the viewer draws for each through
+the `ModuleUi` trait (a trait because the enum is not the app's): the
+title, the header's id salt, the word `modules_open` remembers an unfolded
+section by, the group of the *Modules* menu (Images,
+Structures/Segmentations, Doses, Workflows) and the menu's tooltip, plus `ViewerApp::module_section`, the
+one dispatch from a module to the function that draws it.
+`ViewerApp.modules` and `Settings.modules` are a `BTreeSet<Module>`. Adding
+a module is one variant of the enum, one arm of each table in `modules.rs`
+and its section function.
+
+**Sections act on the views through one facility.** `section_focus`
+(`modules::Focus::Structures(Vec<(slot, ItemRef)>)`) is cleared at the top
+of every pass of the modules panel and set by whatever is unfolded: the two
+structures a comparison measures, the row of the details table under the
+pointer, the target and references of a transfer, the DVH curve under the
+pointer in the chart, a motion target picked. `focused_rois` hands the
+views the RT-structure contours to draw thicker (3 px), the same way, and
+through the same call, as the structure the contour tools edit; segments
+are not highlighted. Nothing stays lit once its section is folded or the
+panel hidden.
+
+**Charts go into a pane.** The two modules that draw charts keep their
+pickers and tables in the panel and put the chart in the row's
+`PaneKind::Chart` (`app/chart_pane.rs`, modelled on `report_view.rs`: the
+panel's background, title and subtitle, a bar of its own - save this pane
+as a PNG through the snapshot path, maximize, close - and the content in a
+child `Ui`). What it shows is a `ChartSource { Dvh, Motion(run) }` per
+workspace (`ViewerApp.chart`), set by `show_chart`, which also puts the
+pane into the row with `add_to_row`; with nothing to show the pane is not
+drawn, as the Additional pane with nothing in it. A module whose pane was
+closed gets a 📈 on its section header to bring it back. With it the row
+has eight pane kinds (`MAX_PANES` 8): the three planes, the 3D scene, two
+planar panes, the Additional pane and the chart.
+
+**Any pane can leave its row.** `ViewerApp.detached_panes` lists the
+`(slot, PaneKind)`s taken out with the ⤴ on their bars (`app/pane_windows.rs`).
+`study_row` leaves them out of the row, and `pane_windows`, called once a
+frame after the central area, draws each in a `tool_window` through the same
+`pane` function the row uses, so the pane keeps all its state. In such a
+window ⛶ sends `ViewportCommand::Maximized` to that window instead of
+setting `maximized`; the pane's rectangle is not noted for a recording, and
+a chart there is not saved as a picture, both being cut from the main
+window's screenshot. A pane that has nothing left to show, or left the
+layout, goes back on its own; the list is not persisted.
+
 Every secondary window is drawn through `app/detach.rs::tool_window`, which
 puts its contents in an *immediate viewport* - a real top-level window of the
 operating system, on whichever monitor the user drags it to. Nothing floats
@@ -942,8 +1036,11 @@ shown; and results land the same way, a run that finishes after its
 workspace was replaced being discarded with the same message. Since
 2026-09-07 they are not windows but the four sections of the **Structure
 auto tools** module (`app/auto_tools.rs`), under one workspace row; the
-auto-segmentation *results* list, which appears once per run, is still a
-window.
+auto-segmentation *results* list, which appears once per run, is the
+*Results* fold at the end of the auto-segmentation section (`dialogs.rs`):
+a run that lands switches the module on, opens the panel and unfolds the
+module, the section and the fold once, and the fold goes after *Add* or
+*Discard*.
 
 Where a result lands and how far a run reaches are the same two questions
 for body contour, auto-segmentation and prompt segmentation, so they are

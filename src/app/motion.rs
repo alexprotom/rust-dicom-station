@@ -1,5 +1,5 @@
-//! *Tools ▶ Structure motion* (the 4D motion / ITV analysis): the automated
-//! per-phase pipeline.
+//! *Modules ▶ Structure motion* (the 4D motion / ITV analysis): the
+//! automated per-phase pipeline, and its results.
 //!
 //! One run reproduces the whole 4DCT motion workflow on a recognised 4D
 //! group: the reference phase is registered to every other phase (rigidly,
@@ -10,10 +10,15 @@
 //! correlation, per-phase registration quality, and motion-encompassing
 //! ITVs stored as segmentations on the reference phase.
 //!
-//! The dialog's settings survive as a *recipe*: the same targets (matched
+//! The form's settings survive as a *recipe*: the same targets (matched
 //! by name), models and options can be re-applied to the other workspace or
 //! to the next study with two clicks, which is what makes the workflow
 //! practical over a cohort rather than a single case.
+//!
+//! The section has two halves: the run form (this file) and the finished
+//! runs (`motion_results.rs`), whose tables stay in the panel and whose
+//! charts go into the row's chart pane. A run that lands unfolds the
+//! second half and puts its charts into the row.
 
 use crate::motion::MotionModel;
 use crate::registration::RegParams;
@@ -24,7 +29,7 @@ use crate::workflow::{self};
 use super::combine::ItemRef;
 use super::*;
 
-/// The tool window's state; it stays open across runs.
+/// The run form's state; it stays set up across runs.
 pub(super) struct MotionDialog {
     pub slot: usize,
     /// Index into the study's `fourd_groups`.
@@ -85,7 +90,7 @@ pub(super) struct MotionGroup {
     pub per_phase: Vec<Option<ItemRef>>,
 }
 
-/// The dialog's transferable part: what to analyse and how, with targets
+/// The form's transferable part: what to analyse and how, with targets
 /// remembered by *name* so the same recipe applies to another workspace.
 #[derive(Clone)]
 pub(super) struct MotionRecipe {
@@ -107,7 +112,7 @@ pub(super) struct MotionRecipe {
 }
 
 impl ViewerApp {
-    /// Open the tool for `slot`, optionally pre-selecting a 4D group.
+    /// Aim the form at `slot`, optionally pre-selecting a 4D group.
     pub(super) fn open_motion_dialog(&mut self, slot: usize, group: Option<usize>) {
         let n_cand = self.combine_candidates(slot).len();
         let (levels, iterations, samples, grid_mm, threshold) = (
@@ -547,8 +552,7 @@ impl ViewerApp {
         if !still_there {
             lines.push("The workspace changed while it ran - segmentations were discarded.".into());
             self.motion_reports.push(outcome.report);
-            self.motion_sel = self.motion_reports.len() - 1;
-            self.motion_results_open = true;
+            self.show_motion_results(self.motion_reports.len() - 1);
             if let Some(d) = &mut self.motion_dialog {
                 d.status = Some(lines.join(" "));
             }
@@ -575,24 +579,72 @@ impl ViewerApp {
         }
         self.rebind_seg_series(slot);
         self.motion_reports.push(outcome.report);
-        self.motion_sel = self.motion_reports.len() - 1;
-        self.motion_results_open = true;
+        self.show_motion_results(self.motion_reports.len() - 1);
         if let Some(d) = &mut self.motion_dialog {
             d.status = Some(lines.join(" "));
         }
     }
 
-    // ---- the window --------------------------------------------------------
+    // ---- the section -------------------------------------------------------
 
-    pub(super) fn motion_window(&mut self, ctx: &egui::Context) {
+    /// The section: the run form, then the finished runs.
+    pub(super) fn motion_section(&mut self, ui: &mut egui::Ui) {
+        self.module_header(
+            ui,
+            Module::Motion,
+            |app, ui| {
+                // The charts' own place is the row; the header brings them
+                // back when they were closed.
+                let sel = app.motion_sel;
+                if sel < app.motion_reports.len()
+                    && !app.chart_shown(super::chart_pane::ChartSource::Motion(sel))
+                    && small_tip_button(ui, "📈", "Show the run's charts in the row's chart pane")
+                {
+                    let slot = app.motion_report_slot(sel);
+                    app.show_chart(slot, super::chart_pane::ChartSource::Motion(sel));
+                }
+            },
+            |app, ui| {
+                egui::CollapsingHeader::new(egui::RichText::new("Run").strong())
+                    .id_salt("motion_run_fold")
+                    .default_open(true)
+                    .show(ui, |ui| app.motion_run_body(ui));
+                if !app.motion_reports.is_empty() {
+                    let reveal = std::mem::take(&mut app.motion_reveal).then_some(true);
+                    egui::CollapsingHeader::new(
+                        egui::RichText::new(format!("Results ({})", app.motion_reports.len()))
+                            .strong(),
+                    )
+                    .id_salt("motion_results_fold")
+                    .default_open(true)
+                    .open(reveal)
+                    .show(ui, |ui| app.motion_results_body(ui));
+                }
+            },
+        );
+    }
+
+    /// The run form.
+    fn motion_run_body(&mut self, ui: &mut egui::Ui) {
+        if !self.any_volume() {
+            ui.weak("Load a workspace with a 4D group");
+            return;
+        }
+        // The form works on one workspace; set up on the first one with a
+        // volume the first time it is unfolded, and handed over when its
+        // workspace loses its volume.
+        let aimed = self
+            .motion_dialog
+            .as_ref()
+            .is_some_and(|d| self.slots[d.slot].has_volume());
+        if !aimed {
+            let slot = self.first_volume_slot();
+            self.open_motion_dialog(slot, None);
+        }
         let Some(d) = &self.motion_dialog else {
             return;
         };
         let slot = d.slot;
-        if !self.slots[slot].has_volume() {
-            self.motion_dialog = None;
-            return;
-        }
         let cands = self.combine_candidates(slot);
         // (group index, group name, [(member position, phase label)]).
         type GroupRow = (usize, String, Vec<(usize, String)>);
@@ -631,329 +683,303 @@ impl ViewerApp {
 
         let mut run = false;
         let mut cancel = false;
-        let mut close = false;
         let mut apply_recipe = false;
         let has = self.volume_slots();
-        let mut switch: Option<usize> = None;
-        let mut open = true;
-
-        let d = self.motion_dialog.as_mut().expect("checked above");
-        detach::tool_window(
-            ctx,
-            "motion",
-            MOTION.title(slot),
-            &mut open,
-            detach::WinOpts::default(),
-            |ui| {
-                switch = workspace_row(ui, slot, has, running.is_none());
-                ui.label(
-                    "Register the reference phase to every phase of a 4D group, carry the \
-                     targets across, and measure their motion - trajectories, amplitudes, \
-                     drift against a reference structure, and the ITV.",
-                );
-                ui.add_space(4.0);
-                if groups.is_empty() {
-                    ui.colored_label(
-                        warn_color(ui.visuals()),
-                        "No 4D group in this workspace. Phases are recognised from the series \
-                         descriptions (e.g. \"… 30%\"); series can also be grouped by hand \
-                         from the data tree (right-click a series > 4D group).",
-                    );
-                    return;
-                }
-                d.group = d.group.min(groups.len() - 1);
-                let (_, gname, _) = &groups[d.group];
-                let phases = &groups[d.group].2;
-                let phases_for_ref = phases.clone();
-                if !phases_for_ref.iter().any(|(mi, _)| *mi == d.reference) {
-                    d.reference = phases_for_ref.first().map(|(mi, _)| *mi).unwrap_or(0);
-                }
-                form::form(ui, "motion_group_form", |f| {
-                    f.row("4D group", |ui| {
-                        egui::ComboBox::from_id_salt("motion_group")
-                            .width(280.0)
-                            .selected_text(gname.clone())
-                            .show_ui(ui, |ui| {
-                                for (gi, name, _) in &groups {
-                                    ui.selectable_value(&mut d.group, *gi, name);
-                                }
-                            });
-                    });
-                    f.row_tip(
-                        "Reference phase",
-                        "Targets are defined on this phase and carried to the others",
-                        |ui| {
-                            let sel = phases_for_ref
-                                .iter()
-                                .find(|(mi, _)| *mi == d.reference)
-                                .map(|(_, l)| l.clone())
-                                .unwrap_or_default();
-                            egui::ComboBox::from_id_salt("motion_ref")
-                                .selected_text(sel)
-                                .show_ui(ui, |ui| {
-                                    for (mi, label) in &phases_for_ref {
-                                        ui.selectable_value(&mut d.reference, *mi, label);
-                                    }
-                                });
-                        },
-                    );
-                });
-                ui.separator();
-
-                d.targets.resize(cands.len(), false);
-                d.group_targets.resize(groups_here.len(), false);
-                d.phases_on.resize(phases.len(), true);
-                // The lists shrink when sets are removed while the window
-                // is open; a stale pick must not survive it.
-                match d.ref_struct {
-                    Some(RefPick::Item(i)) if i >= cands.len() => d.ref_struct = None,
-                    Some(RefPick::Group(i)) if i >= groups_here.len() => d.ref_struct = None,
-                    _ => {}
-                }
-                // Candidates that belong to a grouped name are listed once,
-                // under the group; the rest are single structures.
-                let grouped_names: Vec<&str> = groups_here
-                    .iter()
-                    .filter(|g| g.per_phase.iter().all(|x| x.is_some()))
-                    .map(|g| g.name.as_str())
-                    .collect();
-                let single: Vec<(usize, &String)> = cands
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| {
-                        !cand_names
-                            .get(*i)
-                            .is_some_and(|n| grouped_names.contains(&n.as_str()))
-                    })
-                    .map(|(i, (_, l))| (i, l))
-                    .collect();
-                ui.label("Targets:");
-                ui.columns(2, |cols| {
-                    cols[0].label(egui::RichText::new("On every phase").strong());
-                    egui::ScrollArea::vertical()
-                        .id_salt("motion_targets_all")
-                        .max_height(120.0)
-                        .show(&mut cols[0], |ui| {
-                            let mut any = false;
-                            for (i, g) in groups_here.iter().enumerate() {
-                                if !grouped_names.contains(&g.name.as_str()) {
-                                    continue;
-                                }
-                                any = true;
-                                ui.checkbox(&mut d.group_targets[i], &g.name).on_hover_text(
-                                    "Contoured on every phase of the group: the reference \
-                                     phase's instance is carried by the registration models, \
-                                     and the per-phase instances are read as contoured",
-                                );
-                            }
-                            if !any {
-                                ui.weak("none");
-                            }
-                        });
-                    cols[1].label(egui::RichText::new("On some phases").strong());
-                    egui::ScrollArea::vertical()
-                        .id_salt("motion_targets_some")
-                        .max_height(120.0)
-                        .show(&mut cols[1], |ui| {
-                            for (i, label) in &single {
-                                ui.checkbox(&mut d.targets[*i], *label).on_hover_text(
-                                    "Defined on (or resampled to) the reference phase and \
-                                     carried to the others by the registration models",
-                                );
-                            }
-                            if single.is_empty() {
-                                ui.weak("none");
-                            }
-                        });
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Reference structure:");
-                    let sel = match d.ref_struct {
-                        Some(RefPick::Item(i)) => cands.get(i).map(|(_, l)| l.clone()),
-                        Some(RefPick::Group(i)) => groups_here.get(i).map(|g| g.name.clone()),
-                        None => None,
-                    }
-                    .unwrap_or_else(|| "(none)".into());
-                    egui::ComboBox::from_id_salt("motion_refstruct")
-                        .width(260.0)
-                        .selected_text(sel)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut d.ref_struct, None, "(none)");
-                            for (i, g) in groups_here.iter().enumerate() {
-                                if grouped_names.contains(&g.name.as_str()) {
-                                    ui.selectable_value(
-                                        &mut d.ref_struct,
-                                        Some(RefPick::Group(i)),
-                                        format!("{} (every phase)", g.name),
-                                    );
-                                }
-                            }
-                            for (i, label) in &single {
-                                ui.selectable_value(
-                                    &mut d.ref_struct,
-                                    Some(RefPick::Item(*i)),
-                                    *label,
-                                );
-                            }
-                        });
-                })
-                .response
-                .on_hover_text(
-                    "Carried along for target-reference drift and direction-wise \
-                     correlation - typically the heart for cardiac targets",
-                );
-                ui.separator();
-
-                ui.horizontal(|ui| {
-                    ui.label("Models:");
-                    ui.checkbox(&mut d.rigid, "rigid");
-                    ui.add_enabled_ui(d.rigid, |ui| {
-                        ui.checkbox(&mut d.local_rigid, "local").on_hover_text(
-                            "One rigid body per structure, fitted on the structure \
-                                 dilated by the margin. A whole breathing patient is not a \
-                                 rigid body: the global fit finds the couch and reports no \
-                                 motion.",
-                        );
-                        ui.add_enabled(
-                            d.local_rigid,
-                            egui::DragValue::new(&mut d.local_rigid_margin_mm)
-                                .speed(1.0)
-                                .range(3.0..=60.0)
-                                .suffix(" mm"),
-                        );
-                    });
-                    ui.checkbox(&mut d.deformable, "deformable")
-                        .on_hover_text("B-spline refinement on top of the global rigid result");
-                    let any_group = d.group_targets.iter().any(|&on| on);
-                    ui.add_enabled(
-                        any_group,
-                        egui::Checkbox::new(&mut d.contoured, "as contoured"),
-                    )
-                    .on_hover_text(
-                        "No registration: the target as it is contoured on each phase \
-                             (targets from the left column only)",
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut d.build_itv, "Build ITV").on_hover_text(
-                        "Union of the target over the selected phases, on the reference \
-                         phase; one per target and model",
-                    );
-                    ui.add_enabled(
-                        d.build_itv,
-                        egui::DragValue::new(&mut d.itv_margin_mm)
-                            .speed(0.5)
-                            .range(0.0..=30.0)
-                            .prefix("+ ")
-                            .suffix(" mm"),
-                    )
-                    .on_hover_text("Uniform margin added to the union");
-                    ui.separator();
-                    ui.label("Phases:");
-                    if ui.small_button("All").clicked() {
-                        d.phases_on.iter_mut().for_each(|v| *v = true);
-                    }
-                    if ui.small_button("None").clicked() {
-                        d.phases_on.iter_mut().for_each(|v| *v = false);
-                    }
-                    let n_on = d
-                        .phases_on
-                        .iter()
-                        .enumerate()
-                        .filter(|(i, &v)| {
-                            v || phases.get(*i).is_some_and(|(mi, _)| *mi == d.reference)
-                        })
-                        .count();
-                    ui.weak(format!("{n_on} of {}", phases.len()));
-                });
-                egui::CollapsingHeader::new("Select phases")
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            for (i, (mi, label)) in phases.iter().enumerate() {
-                                let is_ref = *mi == d.reference;
-                                if is_ref {
-                                    let mut on = true;
-                                    ui.add_enabled(false, egui::Checkbox::new(&mut on, label))
-                                        .on_hover_text("The reference phase is always in");
-                                } else {
-                                    ui.checkbox(&mut d.phases_on[i], label);
-                                }
-                            }
-                        });
-                    });
-                ui.checkbox(&mut d.keep_phase_segs, "Keep per-phase segmentations")
-                    .on_hover_text(
-                        "Store every propagated mask as a segmentation series on its phase \
-                         - one series per phase",
-                    );
-                egui::CollapsingHeader::new("Registration settings")
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        egui::Grid::new("motion_reg").num_columns(2).show(ui, |ui| {
-                            ui.label("Resolution levels:");
-                            ui.add(egui::DragValue::new(&mut d.levels).range(1..=5));
-                            ui.end_row();
-                            ui.label("Iterations / level:");
-                            ui.add(egui::DragValue::new(&mut d.iterations).range(50..=2000));
-                            ui.end_row();
-                            ui.label("Samples / iteration:");
-                            ui.add(egui::DragValue::new(&mut d.samples).range(500..=20000));
-                            ui.end_row();
-                            ui.label("B-spline grid (mm):");
-                            ui.add(
-                                egui::DragValue::new(&mut d.grid_mm)
-                                    .speed(1.0)
-                                    .range(8.0..=100.0),
-                            );
-                            ui.end_row();
-                            ui.label("Sampling threshold (HU):");
-                            ui.add(egui::DragValue::new(&mut d.threshold).speed(10.0));
-                            ui.end_row();
-                        });
-                        ui.weak(
-                            "Elastix rigid, then B-spline refinement - the same engines \
-                                 as the Registration panel.",
-                        );
-                    });
-                ui.add_space(4.0);
-                if let Some(status) = &d.status {
-                    ui.label(status.clone());
-                }
-                match &progress {
-                    Some(p) => {
-                        if seg_engines::progress_row(ui, p) {
-                            cancel = true;
-                        }
-                    }
-                    None => {
-                        ui.horizontal(|ui| {
-                            if ui.button("▶ Analyse").clicked() {
-                                run = true;
-                            }
-                            if enabled_tip_button(
-                                ui,
-                                has_recipe,
-                                "Apply last recipe",
-                                "Tick the same targets (matched by name) and re-use the \
-                                 options of the previous run - for the other workspace or \
-                                 the next study",
-                            ) {
-                                apply_recipe = true;
-                            }
-                            if ui.button("Close").clicked() {
-                                close = true;
-                            }
-                        });
-                    }
-                }
-            },
-        );
-        cancel_if(cancel, &self.motion_job);
-        if let Some(s) = switch {
+        // Another workspace: the form starts over there, since what it
+        // carries - the group, the targets - belongs to this one.
+        if let Some(s) = workspace_row(ui, slot, has, running.is_none()) {
             self.open_motion_dialog(s, None);
             return;
         }
+
+        let d = self.motion_dialog.as_mut().expect("checked above");
+        if groups.is_empty() {
+            ui.colored_label(
+                warn_color(ui.visuals()),
+                "No 4D group in this workspace. Phases are recognised from the series \
+                 descriptions (e.g. \"… 30%\"); series can also be grouped by hand \
+                 from the data tree (right-click a series > 4D group).",
+            );
+            return;
+        }
+        d.group = d.group.min(groups.len() - 1);
+        let (_, gname, _) = &groups[d.group];
+        let phases = &groups[d.group].2;
+        let phases_for_ref = phases.clone();
+        if !phases_for_ref.iter().any(|(mi, _)| *mi == d.reference) {
+            d.reference = phases_for_ref.first().map(|(mi, _)| *mi).unwrap_or(0);
+        }
+        form::form(ui, "motion_group_form", |f| {
+            f.row("4D group", |ui| {
+                egui::ComboBox::from_id_salt("motion_group")
+                    .width(170.0)
+                    .selected_text(gname.clone())
+                    .show_ui(ui, |ui| {
+                        for (gi, name, _) in &groups {
+                            ui.selectable_value(&mut d.group, *gi, name);
+                        }
+                    });
+            });
+            f.row_tip(
+                "Reference phase",
+                "Targets are defined on this phase and carried to the others",
+                |ui| {
+                    let sel = phases_for_ref
+                        .iter()
+                        .find(|(mi, _)| *mi == d.reference)
+                        .map(|(_, l)| l.clone())
+                        .unwrap_or_default();
+                    egui::ComboBox::from_id_salt("motion_ref")
+                        .selected_text(sel)
+                        .show_ui(ui, |ui| {
+                            for (mi, label) in &phases_for_ref {
+                                ui.selectable_value(&mut d.reference, *mi, label);
+                            }
+                        });
+                },
+            );
+        });
+        ui.separator();
+
+        d.targets.resize(cands.len(), false);
+        d.group_targets.resize(groups_here.len(), false);
+        d.phases_on.resize(phases.len(), true);
+        // The lists shrink when sets are removed while the window
+        // is open; a stale pick must not survive it.
+        match d.ref_struct {
+            Some(RefPick::Item(i)) if i >= cands.len() => d.ref_struct = None,
+            Some(RefPick::Group(i)) if i >= groups_here.len() => d.ref_struct = None,
+            _ => {}
+        }
+        // Candidates that belong to a grouped name are listed once,
+        // under the group; the rest are single structures.
+        let grouped_names: Vec<&str> = groups_here
+            .iter()
+            .filter(|g| g.per_phase.iter().all(|x| x.is_some()))
+            .map(|g| g.name.as_str())
+            .collect();
+        let single: Vec<(usize, &String)> = cands
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| {
+                !cand_names
+                    .get(*i)
+                    .is_some_and(|n| grouped_names.contains(&n.as_str()))
+            })
+            .map(|(i, (_, l))| (i, l))
+            .collect();
+        ui.label("Targets:");
+        ui.columns(2, |cols| {
+            cols[0].label(egui::RichText::new("On every phase").strong());
+            egui::ScrollArea::vertical()
+                .id_salt("motion_targets_all")
+                .max_height(120.0)
+                .show(&mut cols[0], |ui| {
+                    let mut any = false;
+                    for (i, g) in groups_here.iter().enumerate() {
+                        if !grouped_names.contains(&g.name.as_str()) {
+                            continue;
+                        }
+                        any = true;
+                        ui.checkbox(&mut d.group_targets[i], &g.name).on_hover_text(
+                            "Contoured on every phase of the group: the reference \
+                             phase's instance is carried by the registration models, \
+                             and the per-phase instances are read as contoured",
+                        );
+                    }
+                    if !any {
+                        ui.weak("none");
+                    }
+                });
+            cols[1].label(egui::RichText::new("On some phases").strong());
+            egui::ScrollArea::vertical()
+                .id_salt("motion_targets_some")
+                .max_height(120.0)
+                .show(&mut cols[1], |ui| {
+                    for (i, label) in &single {
+                        ui.checkbox(&mut d.targets[*i], *label).on_hover_text(
+                            "Defined on (or resampled to) the reference phase and \
+                             carried to the others by the registration models",
+                        );
+                    }
+                    if single.is_empty() {
+                        ui.weak("none");
+                    }
+                });
+        });
+        ui.horizontal(|ui| {
+            ui.label("Reference structure:");
+            let sel = match d.ref_struct {
+                Some(RefPick::Item(i)) => cands.get(i).map(|(_, l)| l.clone()),
+                Some(RefPick::Group(i)) => groups_here.get(i).map(|g| g.name.clone()),
+                None => None,
+            }
+            .unwrap_or_else(|| "(none)".into());
+            egui::ComboBox::from_id_salt("motion_refstruct")
+                .width(170.0)
+                .selected_text(sel)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut d.ref_struct, None, "(none)");
+                    for (i, g) in groups_here.iter().enumerate() {
+                        if grouped_names.contains(&g.name.as_str()) {
+                            ui.selectable_value(
+                                &mut d.ref_struct,
+                                Some(RefPick::Group(i)),
+                                format!("{} (every phase)", g.name),
+                            );
+                        }
+                    }
+                    for (i, label) in &single {
+                        ui.selectable_value(&mut d.ref_struct, Some(RefPick::Item(*i)), *label);
+                    }
+                });
+        })
+        .response
+        .on_hover_text(
+            "Carried along for target-reference drift and direction-wise \
+             correlation - typically the heart for cardiac targets",
+        );
+        ui.separator();
+
+        ui.horizontal(|ui| {
+            ui.label("Models:");
+            ui.checkbox(&mut d.rigid, "rigid");
+            ui.add_enabled_ui(d.rigid, |ui| {
+                ui.checkbox(&mut d.local_rigid, "local").on_hover_text(
+                    "One rigid body per structure, fitted on the structure \
+                     dilated by the margin. A whole breathing patient is not a \
+                     rigid body: the global fit finds the couch and reports no \
+                     motion.",
+                );
+                ui.add_enabled(
+                    d.local_rigid,
+                    egui::DragValue::new(&mut d.local_rigid_margin_mm)
+                        .speed(1.0)
+                        .range(3.0..=60.0)
+                        .suffix(" mm"),
+                );
+            });
+            ui.checkbox(&mut d.deformable, "deformable")
+                .on_hover_text("B-spline refinement on top of the global rigid result");
+            let any_group = d.group_targets.iter().any(|&on| on);
+            ui.add_enabled(
+                any_group,
+                egui::Checkbox::new(&mut d.contoured, "as contoured"),
+            )
+            .on_hover_text(
+                "No registration: the target as it is contoured on each phase \
+                 (targets from the left column only)",
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut d.build_itv, "Build ITV").on_hover_text(
+                "Union of the target over the selected phases, on the reference \
+                 phase; one per target and model",
+            );
+            ui.add_enabled(
+                d.build_itv,
+                egui::DragValue::new(&mut d.itv_margin_mm)
+                    .speed(0.5)
+                    .range(0.0..=30.0)
+                    .prefix("+ ")
+                    .suffix(" mm"),
+            )
+            .on_hover_text("Uniform margin added to the union");
+            ui.separator();
+            ui.label("Phases:");
+            if ui.small_button("All").clicked() {
+                d.phases_on.iter_mut().for_each(|v| *v = true);
+            }
+            if ui.small_button("None").clicked() {
+                d.phases_on.iter_mut().for_each(|v| *v = false);
+            }
+            let n_on = d
+                .phases_on
+                .iter()
+                .enumerate()
+                .filter(|(i, &v)| v || phases.get(*i).is_some_and(|(mi, _)| *mi == d.reference))
+                .count();
+            ui.weak(format!("{n_on} of {}", phases.len()));
+        });
+        egui::CollapsingHeader::new("Select phases")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for (i, (mi, label)) in phases.iter().enumerate() {
+                        let is_ref = *mi == d.reference;
+                        if is_ref {
+                            let mut on = true;
+                            ui.add_enabled(false, egui::Checkbox::new(&mut on, label))
+                                .on_hover_text("The reference phase is always in");
+                        } else {
+                            ui.checkbox(&mut d.phases_on[i], label);
+                        }
+                    }
+                });
+            });
+        ui.checkbox(&mut d.keep_phase_segs, "Keep per-phase segmentations")
+            .on_hover_text(
+                "Store every propagated mask as a segmentation series on its phase \
+                 - one series per phase",
+            );
+        egui::CollapsingHeader::new("Registration settings")
+            .default_open(false)
+            .show(ui, |ui| {
+                egui::Grid::new("motion_reg").num_columns(2).show(ui, |ui| {
+                    ui.label("Resolution levels:");
+                    ui.add(egui::DragValue::new(&mut d.levels).range(1..=5));
+                    ui.end_row();
+                    ui.label("Iterations / level:");
+                    ui.add(egui::DragValue::new(&mut d.iterations).range(50..=2000));
+                    ui.end_row();
+                    ui.label("Samples / iteration:");
+                    ui.add(egui::DragValue::new(&mut d.samples).range(500..=20000));
+                    ui.end_row();
+                    ui.label("B-spline grid (mm):");
+                    ui.add(
+                        egui::DragValue::new(&mut d.grid_mm)
+                            .speed(1.0)
+                            .range(8.0..=100.0),
+                    );
+                    ui.end_row();
+                    ui.label("Sampling threshold (HU):");
+                    ui.add(egui::DragValue::new(&mut d.threshold).speed(10.0));
+                    ui.end_row();
+                });
+                ui.weak(
+                    "Elastix rigid, then B-spline refinement - the same engines \
+                     as the Registration panel.",
+                );
+            });
+        ui.add_space(4.0);
+        if let Some(status) = &d.status {
+            ui.label(status.clone());
+        }
+        match &progress {
+            Some(p) => {
+                if seg_engines::progress_row(ui, p) {
+                    cancel = true;
+                }
+            }
+            None => {
+                ui.horizontal(|ui| {
+                    if ui.button("▶ Analyse").clicked() {
+                        run = true;
+                    }
+                    if enabled_tip_button(
+                        ui,
+                        has_recipe,
+                        "Apply last recipe",
+                        "Tick the same targets (matched by name) and re-use the \
+                         options of the previous run - for the other workspace or \
+                         the next study",
+                    ) {
+                        apply_recipe = true;
+                    }
+                });
+            }
+        }
+        cancel_if(cancel, &self.motion_job);
         if apply_recipe {
             if let (Some(mut d), Some(r)) = (self.motion_dialog.take(), self.motion_recipe.clone())
             {
@@ -963,9 +989,6 @@ impl ViewerApp {
         }
         if run {
             self.start_motion_run();
-        }
-        if close || !open {
-            self.motion_dialog = None;
         }
     }
 }

@@ -202,7 +202,7 @@ pub(super) struct StructTools {
     /// coordinates so it applies to any workspace.
     pub last_axis: Option<[Vec3; 2]>,
     /// Every move since a structure's origin, per structure - what the
-    /// Dose estimation's *Dynamic* log describes each row with.
+    /// Dose analysis's *Dynamic* log describes each row with.
     pub moves: Vec<MoveEvent>,
     /// Bumped once per finished move (a button, a whole drag): the dynamic
     /// log takes one entry per value.
@@ -520,7 +520,7 @@ impl ViewerApp {
     /// Switch the editor on, expand the panel and open one section - what
     /// the context menus and a derived structure's *Edit recipe* do.
     pub(super) fn reveal_editor(&mut self, slot: usize, section: Section) {
-        self.module_structures = true;
+        self.modules.insert(Module::StructureEditor);
         self.right_open = true;
         self.tools.slot = slot;
         self.tools.reveal = Some(section);

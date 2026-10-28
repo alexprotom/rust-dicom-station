@@ -1,11 +1,17 @@
-//! *Tools ▶ 📊 Dose-volume histograms*: the plot, the table and the
-//! constraint check, in a window that can be put on its own monitor.
+//! *Modules ▶ Dose-volume histograms*: the pickers, the table and the
+//! constraint check in a section of the right panel, the plot in the row's
+//! chart pane (`chart_pane.rs`), which can be maximized to the whole window.
 //!
-//! The window is deliberately a *review* tool rather than a dialog. It stays
-//! open, recomputes when the picks change, and shows three things at once
+//! The module is deliberately a *review* tool rather than a dialog. It stays
+//! set up, recomputes when the picks change, and shows three things at once
 //! because that is how a plan is actually read: the curves for shape, the
 //! table for the numbers a report quotes, and - when a protocol is loaded -
 //! the pass/fail column that says whether the plan is acceptable.
+//!
+//! It talks to the views: the curve under the pointer in the chart lights
+//! its structure up in the views, and *Dose-volume histograms* on ticked
+//! structures in the data tree adds them to the plot and unfolds the
+//! section.
 //!
 //! Two design points worth stating, because both are easy to get wrong in a
 //! way nobody notices:
@@ -19,7 +25,7 @@
 //! * **A structure sticking out of the dose grid is called out.** Those
 //!   voxels are counted at zero dose, which drags the curve down and is the
 //!   honest reading - but silently, it looks like a cold structure rather
-//!   than a truncated calculation, so the window says so in the table and
+//!   than a truncated calculation, so the section says so in the table and
 //!   in a warning line.
 //!
 //! The plot is drawn with the painter rather than a plotting crate: axes,
@@ -47,8 +53,8 @@ pub(super) struct StructRef {
     pub item: ItemRef,
 }
 
-/// The window's state; it stays open across runs.
-pub(super) struct DvhDialog {
+/// The module's state; it stays set up across runs.
+pub(super) struct DvhModule {
     pub structures: Vec<StructRef>,
     pub doses: Vec<DoseRef>,
     /// Cumulative, or the differential histogram.
@@ -67,17 +73,30 @@ pub(super) struct DvhDialog {
     pub show_constraints: bool,
     /// The last computed curves, in the order the structures were picked.
     pub curves: Vec<Dvh>,
+    /// Which picked structure each curve is of, in the same order.
+    pub curve_refs: Vec<StructRef>,
+    /// The structures of the run in flight, in the order it was asked for.
+    pub asked: Vec<StructRef>,
+    /// The structure whose curve is under the pointer in the chart, for the
+    /// views to draw thicker.
+    pub hover: Option<StructRef>,
+    /// The workspace whose row the chart pane goes into.
+    pub row: usize,
+    /// Put the chart pane into the row when the next run lands: set by a
+    /// change the user made, so a pane they closed is not pushed back by a
+    /// recompute they did not ask for.
+    pub show_chart: bool,
     /// The `settings_gen` the curves were computed at. A structure edited
-    /// afterwards makes every number in this window older than the geometry
+    /// afterwards makes every number in this module older than the geometry
     /// it claims to describe, which is worth saying out loud rather than
     /// recomputing behind the user's back.
     pub gen: u64,
     pub status: Option<String>,
 }
 
-impl DvhDialog {
-    fn new() -> DvhDialog {
-        DvhDialog {
+impl DvhModule {
+    fn new() -> DvhModule {
+        DvhModule {
             structures: Vec::new(),
             doses: Vec::new(),
             cumulative: true,
@@ -90,6 +109,11 @@ impl DvhDialog {
             protocol_name: String::new(),
             show_constraints: false,
             curves: Vec::new(),
+            curve_refs: Vec::new(),
+            asked: Vec::new(),
+            hover: None,
+            row: 0,
+            show_chart: true,
             gen: 0,
             status: None,
         }
@@ -106,6 +130,8 @@ struct DvhRequest {
 /// What a finished run hands back.
 pub struct DvhDone {
     pub curves: Vec<Dvh>,
+    /// The index into the request's structures each curve is of.
+    pub sources: Vec<usize>,
     pub elapsed_secs: f64,
 }
 
@@ -180,18 +206,43 @@ impl ViewerApp {
         None
     }
 
-    /// Tools ▶ DVH: open the window, seeded with everything already ticked
-    /// in the tree and the dose that is on display.
-    pub(super) fn open_dvh_dialog(&mut self, slot: usize, seed: Vec<ItemRef>) {
-        if self.dvh_dialog.is_none() {
-            let mut d = DvhDialog::new();
-            if let Some((dose, _)) = self.prescription() {
-                d.reference_dose = dose;
-            }
-            self.dvh_dialog = Some(d);
+    /// The module's state, made the first time it is asked for: the dose
+    /// axis against the first prescription the plans declare, the chart in
+    /// the row of the first workspace that holds a dose.
+    fn ensure_dvh(&mut self) {
+        if self.dvh.is_some() {
+            return;
         }
+        let mut d = DvhModule::new();
+        if let Some((dose, _)) = self.prescription() {
+            d.reference_dose = dose;
+        }
+        d.row = self
+            .open_slots()
+            .into_iter()
+            .find(|s| {
+                self.slots[*s]
+                    .study
+                    .as_ref()
+                    .is_some_and(|st| !st.doses.is_empty())
+            })
+            .unwrap_or_else(|| self.first_volume_slot());
+        self.dvh = Some(d);
+    }
+
+    /// The data tree's *Dose-volume histograms* on ticked structures: add
+    /// them to the plot, with the dose on display when none is picked yet,
+    /// and unfold the section.
+    pub(super) fn seed_dvh(&mut self, slot: usize, seed: Vec<ItemRef>) {
+        self.ensure_dvh();
+        self.dvh_add(slot, seed);
+        self.reveal_module(Module::Dvh);
+    }
+
+    /// Add structures of `slot` to the plot and recompute.
+    fn dvh_add(&mut self, slot: usize, seed: Vec<ItemRef>) {
         let doses = self.dvh_dose_candidates();
-        let Some(d) = &mut self.dvh_dialog else {
+        let Some(d) = &mut self.dvh else {
             return;
         };
         for item in seed {
@@ -213,7 +264,8 @@ impl ViewerApp {
                 d.doses.push(*r);
             }
         }
-        self.dvh_open = true;
+        d.row = slot;
+        d.show_chart = true;
         self.start_dvh();
     }
 
@@ -222,12 +274,14 @@ impl ViewerApp {
         if self.dvh_job.is_some() {
             return;
         }
-        let Some(d) = &self.dvh_dialog else {
+        let Some(d) = &self.dvh else {
             return;
         };
         if d.structures.is_empty() || d.doses.is_empty() {
-            if let Some(d) = &mut self.dvh_dialog {
+            if let Some(d) = &mut self.dvh {
                 d.curves.clear();
+                d.curve_refs.clear();
+                d.hover = None;
             }
             return;
         }
@@ -260,6 +314,12 @@ impl ViewerApp {
             return;
         }
         let req = DvhRequest { items, doses };
+        // Which structure each curve will be of, by the index the worker
+        // hands back.
+        let asked = d.structures.clone();
+        if let Some(d) = &mut self.dvh {
+            d.asked = asked;
+        }
         let progress = Arc::new(Progress::default());
         progress.set("Sampling dose");
         self.dvh_job = Some(Job::spawn(progress, move |p| {
@@ -272,19 +332,26 @@ impl ViewerApp {
             // walk, so a curve is the same number it always was, and the
             // list keeps the order the pairs were asked for in.
             type Item = (Vec<u8>, crate::volume::Grid, String, [u8; 3]);
-            let pairs: Vec<(&crate::rtdose::DoseGrid, &Item)> = req
+            let pairs: Vec<(&crate::rtdose::DoseGrid, usize, &Item)> = req
                 .doses
                 .iter()
-                .flat_map(|dose| req.items.iter().map(move |item| (dose, item)))
+                .flat_map(|dose| {
+                    req.items
+                        .iter()
+                        .enumerate()
+                        .map(move |(i, item)| (dose, i, item))
+                })
                 .collect();
             let done = AtomicUsize::new(0);
             let curves: Vec<_> = pairs
                 .par_iter()
-                .filter_map(|(dose, (mask, grid, name, color))| {
+                .filter_map(|(dose, si, (mask, grid, name, color))| {
                     if p.cancelled() {
                         return None;
                     }
-                    let c = dvh::compute(name, *color, mask, grid, dose, DvhParams::default()).ok();
+                    let c = dvh::compute(name, *color, mask, grid, dose, DvhParams::default())
+                        .ok()
+                        .map(|c| (*si, c));
                     let n = done.fetch_add(1, Ordering::Relaxed) + 1;
                     p.report(
                         n as f32 / total as f32,
@@ -294,8 +361,10 @@ impl ViewerApp {
                 })
                 .collect();
             p.report(1.0, "Done");
+            let (sources, curves) = curves.into_iter().unzip();
             Ok(DvhDone {
                 curves,
+                sources,
                 elapsed_secs: t0.elapsed().as_secs_f64(),
             })
         }));
@@ -303,7 +372,7 @@ impl ViewerApp {
 
     pub(super) fn on_dvh_done(&mut self, done: DvhDone) {
         let gen = self.all_structures_gen();
-        let Some(d) = &mut self.dvh_dialog else {
+        let Some(d) = &mut self.dvh else {
             return;
         };
         let truncated = done
@@ -320,299 +389,346 @@ impl ViewerApp {
                 n => format!(" - {n} extend outside the dose grid"),
             }
         ));
+        d.curve_refs = done
+            .sources
+            .iter()
+            .filter_map(|i| d.asked.get(*i).copied())
+            .collect();
         d.curves = done.curves;
         d.gen = gen;
+        d.hover = None;
+        if std::mem::take(&mut d.show_chart) && !d.curves.is_empty() {
+            let row = d.row;
+            self.show_chart(row, super::chart_pane::ChartSource::Dvh);
+        }
     }
 
-    /// The window.
-    pub(super) fn dvh_window(&mut self, ctx: &egui::Context) {
-        if !self.dvh_open || self.dvh_dialog.is_none() {
+    /// The chart pane's body when it shows the histograms: the plot, or the
+    /// run's progress while one is in flight.
+    pub(super) fn dvh_chart(&mut self, ui: &mut egui::Ui, body: Rect) {
+        let progress = self.dvh_job.as_ref().map(|j| j.progress.clone());
+        let Some(d) = &mut self.dvh else {
+            return;
+        };
+        let mut cancel = false;
+        match &progress {
+            Some(p) => {
+                cancel = progress_row(ui, p);
+            }
+            None => {
+                let hover = plot(ui, d, body.height()).and_then(|i| d.curve_refs.get(i).copied());
+                if hover != d.hover {
+                    d.hover = hover;
+                    // The section turns this into the structure the views
+                    // draw thicker, on the pass this asks for.
+                    ui.ctx().request_repaint();
+                }
+            }
+        }
+        cancel_if(cancel, &self.dvh_job);
+    }
+
+    /// The section.
+    pub(super) fn dvh_section(&mut self, ui: &mut egui::Ui) {
+        self.module_header(
+            ui,
+            Module::Dvh,
+            |app, ui| {
+                // The chart's own place is the row; the header brings it
+                // back when it was closed.
+                if app.dvh.as_ref().is_some_and(|d| !d.curves.is_empty())
+                    && !app.chart_shown(super::chart_pane::ChartSource::Dvh)
+                    && small_tip_button(ui, "📈", "Show the plot in the row's chart pane")
+                {
+                    let row = app.dvh.as_ref().map_or(0, |d| d.row);
+                    app.show_chart(row, super::chart_pane::ChartSource::Dvh);
+                }
+            },
+            |app, ui| app.dvh_body(ui),
+        );
+    }
+
+    fn dvh_body(&mut self, ui: &mut egui::Ui) {
+        if !self.slots.iter().any(|s| s.study.is_some()) {
+            ui.weak("Load a workspace with a dose and structures");
             return;
         }
+        self.ensure_dvh();
         // Everything that reads the whole of `self` is settled first.
         let dose_list = self.dvh_dose_candidates();
         let struct_list = self.dvh_struct_candidates();
         let running = self.dvh_job.is_some();
         let progress = self.dvh_job.as_ref().map(|j| j.progress.clone());
         let prescription = self.prescription();
+        // The curve under the pointer in the chart, drawn thicker in the
+        // views while the section is unfolded.
+        if let Some(h) = self.dvh.as_ref().and_then(|d| d.hover) {
+            self.focus_structures([(h.slot, h.item)]);
+        }
 
         let current_gen = self.all_structures_gen();
-        let mut open = self.dvh_open;
         let mut recompute = false;
         let mut cancel = false;
         let mut export: Option<bool> = None; // Some(true) = curves, false = metrics
         let mut load_protocol = false;
         let mut save_protocol = false;
-        let d = self.dvh_dialog.as_mut().expect("checked above");
+        let d = self.dvh.as_mut().expect("made above");
 
-        detach::tool_window(
-            ctx,
-            "dvh",
-            "📊 Dose-volume histograms",
-            &mut open,
-            detach::WinOpts::size(880.0, 620.0),
-            |ui| {
-                // ---- pickers ------------------------------------------
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Dose:");
-                    for (r, label) in &dose_list {
-                        let on = d.doses.contains(r);
-                        if ui.selectable_label(on, label).clicked() {
-                            if on {
-                                d.doses.retain(|x| x != r);
-                            } else {
-                                d.doses.push(*r);
-                            }
+        // ---- pickers ----------------------------------------------------
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Dose:");
+            for (r, label) in &dose_list {
+                let on = d.doses.contains(r);
+                if ui.selectable_label(on, label).clicked() {
+                    if on {
+                        d.doses.retain(|x| x != r);
+                    } else {
+                        d.doses.push(*r);
+                        d.row = r.slot;
+                    }
+                    recompute = true;
+                }
+            }
+            if dose_list.is_empty() {
+                ui.label(egui::RichText::new("no RTDOSE loaded").color(warn_color(ui.visuals())));
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Structures:");
+            egui::ComboBox::from_id_salt("dvh_add_struct")
+                .selected_text("add")
+                .width(170.0)
+                .show_ui(ui, |ui| {
+                    for (r, label) in &struct_list {
+                        if d.structures.contains(r) {
+                            continue;
+                        }
+                        if ui.selectable_label(false, label).clicked() {
+                            d.structures.push(*r);
                             recompute = true;
                         }
                     }
-                    if dose_list.is_empty() {
-                        ui.label(
-                            egui::RichText::new("no RTDOSE loaded").color(warn_color(ui.visuals())),
-                        );
-                    }
                 });
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Structures:");
-                    egui::ComboBox::from_id_salt("dvh_add_struct")
-                        .selected_text("add")
-                        .width(200.0)
-                        .show_ui(ui, |ui| {
-                            for (r, label) in &struct_list {
-                                if d.structures.contains(r) {
-                                    continue;
-                                }
-                                if ui.selectable_label(false, label).clicked() {
-                                    d.structures.push(*r);
-                                    recompute = true;
-                                }
-                            }
-                        });
-                    let mut drop = None;
-                    for (i, s) in d.structures.iter().enumerate() {
-                        let label = struct_list
-                            .iter()
-                            .find(|(r, _)| r == s)
-                            .map(|(_, l)| l.clone())
-                            .unwrap_or_else(|| "(gone)".into());
-                        if ui
-                            .selectable_label(true, format!("{label} ✖"))
-                            .on_hover_text("Remove from the plot")
-                            .clicked()
-                        {
-                            drop = Some(i);
-                        }
-                    }
-                    if let Some(i) = drop {
-                        d.structures.remove(i);
-                        recompute = true;
-                    }
-                    if !d.structures.is_empty() && ui.small_button("Clear").clicked() {
-                        d.structures.clear();
-                        recompute = true;
-                    }
-                });
-
-                // ---- axes ---------------------------------------------
-                ui.horizontal_wrapped(|ui| {
-                    ui.selectable_value(&mut d.cumulative, true, "Cumulative")
-                        .on_hover_text("Volume receiving at least each dose - the usual view");
-                    ui.selectable_value(&mut d.cumulative, false, "Differential")
-                        .on_hover_text("Volume in each dose bin - where the cold spots are");
-                    ui.separator();
-                    ui.label("Dose:");
-                    ui.selectable_value(&mut d.dose_relative, false, "Gy");
-                    let has_ref = d.reference_dose > 0.0;
-                    let rel = ui
-                        .add_enabled_ui(has_ref, |ui| ui.selectable_label(d.dose_relative, "% of"))
-                        .inner;
-                    rel.clone().on_hover_text(if has_ref {
-                        "Per cent of the reference dose"
-                    } else {
-                        "No plan in this study declares a prescription - type one"
-                    });
-                    if rel.clicked() {
-                        d.dose_relative = true;
-                    }
-                    ui.add(
-                        egui::DragValue::new(&mut d.reference_dose)
-                            .range(0.0..=1000.0)
-                            .speed(0.1)
-                            .suffix(" Gy"),
-                    );
-                    if let Some((dose, from)) = &prescription {
-                        if (d.reference_dose - *dose).abs() > 1e-6
-                            && ui
-                                .small_button("↺")
-                                .on_hover_text(format!("Back to the prescription of '{from}'"))
-                                .clicked()
-                        {
-                            d.reference_dose = *dose;
-                        }
-                    }
-                    ui.separator();
-                    ui.label("Volume:");
-                    ui.selectable_value(&mut d.volume_relative, true, "%");
-                    ui.selectable_value(&mut d.volume_relative, false, "cm³");
-                });
-                ui.separator();
-
-                // ---- the plot -----------------------------------------
-                match &progress {
-                    Some(p) => {
-                        cancel = progress_row(ui, p);
-                    }
-                    None => {
-                        let height = (ui.available_height() * 0.55).clamp(200.0, 520.0);
-                        plot(ui, d, height);
-                    }
-                }
-
-                // ---- the table ----------------------------------------
-                ui.separator();
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Columns:");
-                    let mut drop = None;
-                    for (i, m) in d.metrics.iter().enumerate() {
-                        if ui
-                            .selectable_label(true, format!("{} ✖", m.label()))
-                            .clicked()
-                        {
-                            drop = Some(i);
-                        }
-                    }
-                    if let Some(i) = drop {
-                        d.metrics.remove(i);
-                    }
-                    let resp = ui.add(
-                        egui::TextEdit::singleline(&mut d.new_metric)
-                            .hint_text("D98%, V20Gy, D2cc")
-                            .desired_width(110.0),
-                    );
-                    // Nothing typed, nothing to add: the button stays dead
-                    // rather than answering a click with an error.
-                    let named = !d.new_metric.trim().is_empty();
-                    let add = ui
-                        .add_enabled(named, egui::Button::new("➕").small())
-                        .on_disabled_hover_text("Type a metric first, for example D95%")
-                        .clicked()
-                        || (named
-                            && resp.lost_focus()
-                            && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                    if add {
-                        match Metric::parse(&d.new_metric) {
-                            Some(m) => {
-                                if !d.metrics.contains(&m) {
-                                    d.metrics.push(m);
-                                }
-                                d.new_metric.clear();
-                            }
-                            None if !d.new_metric.trim().is_empty() => {
-                                d.status = Some(format!(
-                                    "'{}' is not a metric - try D95%, D2cc, V20Gy or Dmean.",
-                                    d.new_metric.trim()
-                                ));
-                            }
-                            None => {}
-                        }
-                    }
-                });
-                metrics_table(ui, d);
-
-                // ---- constraints --------------------------------------
-                ui.separator();
-                let header = if d.constraints.is_empty() {
-                    "Constraints".to_string()
-                } else {
-                    let v = dvh::check(&d.constraints, &d.curves);
-                    let failed = v.iter().filter(|x| !x.pass).count();
-                    format!("Constraints - {} of {} met", v.len() - failed, v.len())
-                };
-                egui::CollapsingHeader::new(header)
-                    .default_open(d.show_constraints)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            if ui.button("Load protocol").clicked() {
-                                load_protocol = true;
-                            }
-                            if ui
-                                .add_enabled(
-                                    !d.constraints.is_empty(),
-                                    egui::Button::new("Save protocol"),
-                                )
-                                .clicked()
-                            {
-                                save_protocol = true;
-                            }
-                            if !d.protocol_name.is_empty() {
-                                ui.weak(&d.protocol_name);
-                            }
-                        });
-                        if d.constraints.is_empty() {
-                            ui.weak(
-                                "A protocol is a text file, one constraint per line:  \
-                                 Cord Dmax <= 45   ·   PTV* D95% >= 57   ·   \
-                                 \"Parotid L\" Dmean <= 26",
-                            );
-                        } else {
-                            constraint_table(ui, d);
-                        }
-                    });
-
-                // ---- footer -------------------------------------------
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(!d.curves.is_empty(), egui::Button::new("Export curves"))
-                        .clicked()
-                    {
-                        export = Some(true);
-                    }
-                    if ui
-                        .add_enabled(!d.curves.is_empty(), egui::Button::new("Export table"))
-                        .clicked()
-                    {
-                        export = Some(false);
-                    }
-                    if ui.button("Recompute").clicked() {
-                        recompute = true;
-                    }
-                    if let Some(s) = &d.status {
-                        ui.weak(s);
-                    }
-                });
-                if !d.curves.is_empty() && d.gen != current_gen {
-                    ui.label(
-                        egui::RichText::new(
-                            "⚠ A structure has changed since these curves were computed - \
-                             the numbers below describe the geometry as it was. Recompute.",
-                        )
-                        .color(theme::warn_color(ui.visuals())),
-                    );
-                }
-                let truncated: Vec<&Dvh> = d
-                    .curves
+            let mut drop = None;
+            for (i, s) in d.structures.iter().enumerate() {
+                let label = struct_list
                     .iter()
-                    .filter(|c| c.outside_fraction() > 0.001)
-                    .collect();
-                if !truncated.is_empty() {
-                    let names: Vec<String> = truncated
-                        .iter()
-                        .map(|c| format!("{} ({:.0} %)", c.name, c.outside_fraction() * 100.0))
-                        .collect();
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "⚠ Outside the dose grid, counted at zero dose: {}",
-                            names.join(", ")
-                        ))
-                        .small()
-                        .color(warn_color(ui.visuals())),
-                    );
+                    .find(|(r, _)| r == s)
+                    .map(|(_, l)| l.clone())
+                    .unwrap_or_else(|| "(gone)".into());
+                if ui
+                    .selectable_label(true, format!("{label} ✖"))
+                    .on_hover_text("Remove from the plot")
+                    .clicked()
+                {
+                    drop = Some(i);
                 }
-            },
-        );
+            }
+            if let Some(i) = drop {
+                d.structures.remove(i);
+                recompute = true;
+            }
+            if !d.structures.is_empty() && ui.small_button("Clear").clicked() {
+                d.structures.clear();
+                recompute = true;
+            }
+        });
 
-        self.dvh_open = open;
+        // ---- axes ---------------------------------------------------------
+        ui.horizontal_wrapped(|ui| {
+            ui.selectable_value(&mut d.cumulative, true, "Cumulative")
+                .on_hover_text("Volume receiving at least each dose - the usual view");
+            ui.selectable_value(&mut d.cumulative, false, "Differential")
+                .on_hover_text("Volume in each dose bin - where the cold spots are");
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Dose:");
+            ui.selectable_value(&mut d.dose_relative, false, "Gy");
+            let has_ref = d.reference_dose > 0.0;
+            let rel = ui
+                .add_enabled_ui(has_ref, |ui| ui.selectable_label(d.dose_relative, "% of"))
+                .inner;
+            rel.clone().on_hover_text(if has_ref {
+                "Per cent of the reference dose"
+            } else {
+                "No plan in this study declares a prescription - type one"
+            });
+            if rel.clicked() {
+                d.dose_relative = true;
+            }
+            ui.add(
+                egui::DragValue::new(&mut d.reference_dose)
+                    .range(0.0..=1000.0)
+                    .speed(0.1)
+                    .suffix(" Gy"),
+            );
+            if let Some((dose, from)) = &prescription {
+                if (d.reference_dose - *dose).abs() > 1e-6
+                    && ui
+                        .small_button("↺")
+                        .on_hover_text(format!("Back to the prescription of '{from}'"))
+                        .clicked()
+                {
+                    d.reference_dose = *dose;
+                }
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Volume:");
+            ui.selectable_value(&mut d.volume_relative, true, "%");
+            ui.selectable_value(&mut d.volume_relative, false, "cm³");
+        });
+        if let Some(p) = &progress {
+            cancel = progress_row(ui, p);
+        }
+
+        // ---- the table ----------------------------------------------------
+        ui.separator();
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Columns:");
+            let mut drop = None;
+            for (i, m) in d.metrics.iter().enumerate() {
+                if ui
+                    .selectable_label(true, format!("{} ✖", m.label()))
+                    .clicked()
+                {
+                    drop = Some(i);
+                }
+            }
+            if let Some(i) = drop {
+                d.metrics.remove(i);
+            }
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut d.new_metric)
+                    .hint_text("D98%, V20Gy, D2cc")
+                    .desired_width(110.0),
+            );
+            // Nothing typed, nothing to add: the button stays dead rather
+            // than answering a click with an error.
+            let named = !d.new_metric.trim().is_empty();
+            let add = ui
+                .add_enabled(named, egui::Button::new("➕").small())
+                .on_disabled_hover_text("Type a metric first, for example D95%")
+                .clicked()
+                || (named && resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+            if add {
+                match Metric::parse(&d.new_metric) {
+                    Some(m) => {
+                        if !d.metrics.contains(&m) {
+                            d.metrics.push(m);
+                        }
+                        d.new_metric.clear();
+                    }
+                    None if !d.new_metric.trim().is_empty() => {
+                        d.status = Some(format!(
+                            "'{}' is not a metric - try D95%, D2cc, V20Gy or Dmean.",
+                            d.new_metric.trim()
+                        ));
+                    }
+                    None => {}
+                }
+            }
+        });
+        metrics_table(ui, d);
+
+        // ---- constraints --------------------------------------------------
+        ui.separator();
+        let header = if d.constraints.is_empty() {
+            "Constraints".to_string()
+        } else {
+            let v = dvh::check(&d.constraints, &d.curves);
+            let failed = v.iter().filter(|x| !x.pass).count();
+            format!("Constraints - {} of {} met", v.len() - failed, v.len())
+        };
+        egui::CollapsingHeader::new(header)
+            .id_salt("dvh_constraints_fold")
+            .default_open(d.show_constraints)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("Load protocol").clicked() {
+                        load_protocol = true;
+                    }
+                    if ui
+                        .add_enabled(
+                            !d.constraints.is_empty(),
+                            egui::Button::new("Save protocol"),
+                        )
+                        .clicked()
+                    {
+                        save_protocol = true;
+                    }
+                    if !d.protocol_name.is_empty() {
+                        ui.weak(&d.protocol_name);
+                    }
+                });
+                if d.constraints.is_empty() {
+                    ui.weak(
+                        "A protocol is a text file, one constraint per line:  Cord Dmax <= 45   \
+                         ·   PTV* D95% >= 57   ·   \"Parotid L\" Dmean <= 26",
+                    );
+                } else {
+                    egui::ScrollArea::horizontal()
+                        .id_salt("dvh_constraints_scroll")
+                        .show(ui, |ui| constraint_table(ui, d));
+                }
+            });
+
+        // ---- footer -------------------------------------------------------
+        ui.separator();
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(!d.curves.is_empty(), egui::Button::new("Export curves"))
+                .clicked()
+            {
+                export = Some(true);
+            }
+            if ui
+                .add_enabled(!d.curves.is_empty(), egui::Button::new("Export table"))
+                .clicked()
+            {
+                export = Some(false);
+            }
+            if ui.button("Recompute").clicked() {
+                recompute = true;
+            }
+        });
+        if let Some(s) = &d.status {
+            ui.weak(s);
+        }
+        if !d.curves.is_empty() && d.gen != current_gen {
+            ui.label(
+                egui::RichText::new(
+                    "⚠ A structure has changed since these curves were computed - the numbers \
+                     describe the geometry as it was. Recompute.",
+                )
+                .color(theme::warn_color(ui.visuals())),
+            );
+        }
+        let truncated: Vec<&Dvh> = d
+            .curves
+            .iter()
+            .filter(|c| c.outside_fraction() > 0.001)
+            .collect();
+        if !truncated.is_empty() {
+            let names: Vec<String> = truncated
+                .iter()
+                .map(|c| format!("{} ({:.0} %)", c.name, c.outside_fraction() * 100.0))
+                .collect();
+            ui.label(
+                egui::RichText::new(format!(
+                    "⚠ Outside the dose grid, counted at zero dose: {}",
+                    names.join(", ")
+                ))
+                .small()
+                .color(warn_color(ui.visuals())),
+            );
+        }
+        if recompute {
+            // A change the user made: the chart goes into the row when the
+            // curves land.
+            d.show_chart = true;
+        }
+
         cancel_if(cancel, &self.dvh_job);
         if load_protocol {
             self.ask_file(
@@ -622,7 +738,7 @@ impl ViewerApp {
                 |app, path| match std::fs::read_to_string(&path) {
                     Ok(text) => {
                         let cs = dvh::parse_protocol(&text);
-                        if let Some(d) = &mut app.dvh_dialog {
+                        if let Some(d) = &mut app.dvh {
                             if cs.is_empty() {
                                 app.error = Some(
                                     "No constraints were recognised in that file. Each line \
@@ -646,7 +762,7 @@ impl ViewerApp {
         }
         if save_protocol {
             let text = self
-                .dvh_dialog
+                .dvh
                 .as_ref()
                 .map(|d| dvh::write_protocol(&d.constraints))
                 .unwrap_or_default();
@@ -663,7 +779,7 @@ impl ViewerApp {
             );
         }
         if let Some(curves) = export {
-            let text = self.dvh_dialog.as_ref().map(|d| {
+            let text = self.dvh.as_ref().map(|d| {
                 if curves {
                     dvh::curves_csv(&d.curves, d.volume_relative)
                 } else {
@@ -694,7 +810,7 @@ impl ViewerApp {
 }
 
 /// The metrics table: one row per curve.
-fn metrics_table(ui: &mut egui::Ui, d: &DvhDialog) {
+fn metrics_table(ui: &mut egui::Ui, d: &DvhModule) {
     if d.curves.is_empty() {
         ui.weak("Pick a dose object and one or more structures.");
         return;
@@ -750,7 +866,7 @@ fn metrics_table(ui: &mut egui::Ui, d: &DvhDialog) {
         });
 }
 
-fn display_unit(m: &Metric, units: &str, d: &DvhDialog) -> String {
+fn display_unit(m: &Metric, units: &str, d: &DvhModule) -> String {
     if m.is_dose() && d.dose_relative && d.reference_dose > 0.0 {
         "%".into()
     } else {
@@ -759,7 +875,7 @@ fn display_unit(m: &Metric, units: &str, d: &DvhDialog) -> String {
 }
 
 /// The constraint table, with the pass/fail column.
-fn constraint_table(ui: &mut egui::Ui, d: &DvhDialog) {
+fn constraint_table(ui: &mut egui::Ui, d: &DvhModule) {
     let verdicts = dvh::check(&d.constraints, &d.curves);
     egui::Grid::new("dvh_constraints")
         .striped(true)
@@ -837,7 +953,8 @@ fn tick_step(span: f64, target: usize) -> f64 {
 }
 
 /// The plot itself: axes, gridlines, curves, legend and a hover readout.
-fn plot(ui: &mut egui::Ui, d: &DvhDialog, height: f32) {
+/// Returns the curve under the pointer, by its index in `d.curves`.
+fn plot(ui: &mut egui::Ui, d: &DvhModule, height: f32) -> Option<usize> {
     let width = ui.available_width();
     let (outer, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
     let painter = ui.painter_at(outer);
@@ -851,7 +968,7 @@ fn plot(ui: &mut egui::Ui, d: &DvhDialog, height: f32) {
             egui::FontId::proportional(13.0),
             vis.weak_text_color(),
         );
-        return;
+        return None;
     }
 
     let scale = if d.dose_relative && d.reference_dose > 0.0 {
@@ -1057,6 +1174,7 @@ fn plot(ui: &mut egui::Ui, d: &DvhDialog, height: f32) {
     }
 
     // ---- hover readout ----
+    let mut nearest: Option<(usize, f32)> = None;
     if let Some(pos) = response.hover_pos() {
         if rect.contains(pos) {
             let dose = ax.dose_at(pos.x);
@@ -1069,6 +1187,22 @@ fn plot(ui: &mut egui::Ui, d: &DvhDialog, height: f32) {
             );
             let real = dose / scale;
             let mut lines = vec![format!("{dose:.1} {units}")];
+            // The curve under the pointer: the one nearest it at this dose,
+            // within a few points. Cumulative curves only - a differential
+            // one has no single height to be near.
+            if d.cumulative {
+                for (i, c) in d.curves.iter().enumerate() {
+                    let y = if d.volume_relative {
+                        c.volume_fraction_at_dose(real) * 100.0
+                    } else {
+                        c.volume_at_dose(real)
+                    };
+                    let dist = (ax.at(dose, y).y - pos.y).abs();
+                    if dist < 8.0 && nearest.is_none_or(|(_, best)| dist < best) {
+                        nearest = Some((i, dist));
+                    }
+                }
+            }
             for c in &d.curves {
                 let v = if d.volume_relative {
                     format!("{:.1} %", c.volume_fraction_at_dose(real) * 100.0)
@@ -1080,6 +1214,7 @@ fn plot(ui: &mut egui::Ui, d: &DvhDialog, height: f32) {
             response.clone().on_hover_text(lines.join("\n"));
         }
     }
+    nearest.map(|(i, _)| i)
 }
 
 #[cfg(test)]

@@ -506,7 +506,7 @@ impl Kind {
                 glyph: "📐",
                 category: Category::Measure,
                 blurb: "One table of dose metrics per structure against the physical or the \
-                        RBE-weighted dose - what the Dose estimation module shows.",
+                        RBE-weighted dose - what the Dose analysis module shows.",
                 ends_a_branch: false,
                 writes: false,
             },

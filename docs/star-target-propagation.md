@@ -79,8 +79,8 @@ registration: the transforms are kept, and the button reads
 
 ### Then: the motion of the landed target
 
-With the target in every phase's structure set, *Tools ▶ 📈 Structure motion*
-on the 4DCT workspace lists it once, in the *On every phase* column of the
+With the target in every phase's structure set, the *Run* fold of
+*Modules ▶ Structure motion*, set to the 4DCT workspace, lists it once, in the *On every phase* column of the
 Targets list. Tick it there (one tick, not one per phase), keep the
 reference structure at `heart_total`, and choose the models:
 
@@ -94,8 +94,9 @@ reference structure at `heart_total`, and choose the models:
 * **deformable** is the whole-image B-spline, for comparison.
 
 *Build ITV* with *Phases: All* makes one ITV per model, the union of the
-target over the phases. The results window then shows one line on the
-chart and one peak-to-peak amplitude per target and model.
+target over the phases. The section's *Results* fold then lists one
+peak-to-peak amplitude per target and model, and the row's chart pane shows
+one line on the chart for each.
 
 A structure that should sit at the same place on every phase (a fixed
 margin, a couch structure, the ITV itself) is copied there with no

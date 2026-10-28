@@ -724,6 +724,11 @@ impl ViewerApp {
             output,
             tg263,
         });
+        // The structures are picked in the section's *Results* fold, which
+        // is unfolded on the run's workspace.
+        self.auto.slot = slot;
+        self.auto.reveal_results = true;
+        self.show_module(Module::AutoTools);
     }
 
     // -- Tools ▶ Anonymize DICOM folder ------------------------------------
@@ -954,7 +959,7 @@ impl ViewerApp {
         if let Some(rows) = poll_job(
             &mut self.dose_est_job,
             ctx,
-            "Dose estimation",
+            "Dose analysis",
             &mut self.error,
         ) {
             self.on_dose_est_done(rows);

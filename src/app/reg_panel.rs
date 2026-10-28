@@ -740,7 +740,7 @@ impl ViewerApp {
         };
         // A transform installed from elsewhere (a REG object in the tree, a
         // propagation) needs the section that shows and clears it.
-        self.module_registration = true;
+        self.modules.insert(Module::Registration);
         let vol = fstudy.volume.clone();
         let mut analysis = analysis::analyse(&vol, &transform, None);
         analysis.overlap = analysis::overlap(&vol, &mstudy.volume, &transform, None);

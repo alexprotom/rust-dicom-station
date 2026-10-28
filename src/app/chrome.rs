@@ -205,7 +205,7 @@ impl ViewerApp {
                         }
                     });
                 // This menu is a set of switches, not a list of actions:
-                // it stays open until the pointer leaves it, so both
+                // it stays open until the pointer leaves it, so several
                 // modules can be turned on in one visit.
                 egui::containers::menu::MenuButton::new("Modules")
                     .config(
@@ -221,178 +221,35 @@ impl ViewerApp {
                         // its section, so the menu only decides whether it is
                         // there.
                         ui.weak("Sections of the right panel (F10):");
-                        modules_changed |= ui
-                            .checkbox(&mut self.module_info, "Image information")
-                            .on_hover_text(
-                                "What the displayed series is: voxel spacing, slice \
-                                 thickness and the gap between slices, the number of \
-                                 slices, the frame of reference and the acquisition \
-                                 settings, with whatever wants a second look named.",
-                            )
-                            .changed();
-                        modules_changed |= ui
-                            .checkbox(&mut self.module_play, "Playback")
-                            .on_hover_text(
-                                "The ▶ buttons on the viewports: how fast they run, what \
-                                 they do at the end of the range, and what a phase change \
-                                 carries with it. Holds the transport controls and the \
-                                 phase scrubber too.",
-                            )
-                            .changed();
-                        modules_changed |= ui
-                            .checkbox(&mut self.module_registration, "Image registration")
-                            .on_hover_text(
-                                "Align two workspaces: direction, method, region, parameters, \
-                             landmarks, analysis, fusion and the deformation vector field. \
-                             Needs two loaded workspaces to run.",
-                            )
-                            .changed();
-                        modules_changed |= ui
-                            .checkbox(&mut self.module_simulation, "Image simulation")
-                            .on_hover_text(
-                                "Registration QA: apply a known rigid motion and Gaussian \
-                             deformation to one workspace and generate the result into the \
-                             other - the ground truth a registration can be measured against.",
-                            )
-                            .changed();
-                        modules_changed |= ui
-                            .checkbox(&mut self.module_generation, "Image generation")
-                            .on_hover_text(
-                                "Images made from images. Image synthesis: a synthetic CT \
-                                 from an MR or a CBCT (TotalSynth), added to the study as a \
-                                 CT series, and its evaluation against a CT of the same \
-                                 patient. DRR: digitally reconstructed radiographs of a CT, \
-                                 with an exact and an interpolating projector, filed under \
-                                 Planar images and shown in the row's planar panes.",
-                            )
-                            .changed();
-                        modules_changed |= ui
-                            .checkbox(&mut self.module_structures, "Structure editor")
-                            .on_hover_text(
-                                "Insert, edit and combine structures: empty structures and \
-                                 points, the generators, everything that acts on the \
-                                 selected structure (interpolation, tidying, moving, the \
-                                 type, the derived recipe), and the structure algebra.",
-                            )
-                            .changed();
-                        modules_changed |= ui
-                            .checkbox(&mut self.module_auto, "Structure auto tools")
-                            .on_hover_text(
-                                "The tools that find a structure by themselves: the body \
-                                 contour, automatic multi-organ segmentation \
-                                 (TotalSegmentator), prompt segmentation (SegVol) and slice \
-                                 propagation (MedSAM2). Every network runs locally, in Rust.",
-                            )
-                            .changed();
-                        modules_changed |= ui
-                            .checkbox(&mut self.module_propagation, "Structure propagation")
-                            .on_hover_text(
-                                "Carry contours and segmentations from one workspace to the \
-                             other through the active registration - globally, or refined \
-                             on an enclosing structure first. Sits next to the \
-                             registration that drives it.",
-                            )
-                            .changed();
-                        modules_changed |= ui
-                            .checkbox(&mut self.module_dose, "Dose estimation")
-                            .on_hover_text(
-                                "Dmean, Dmin, Dmax, D_X% and V_X of every ticked structure \
-                                 against one dose, in a table that follows every edit of \
-                                 the structures.",
-                            )
-                            .changed();
+                        // Fifteen lines in one column is a wall; they are
+                        // grouped by what they work on.
+                        for group in modules::Group::ALL {
+                            ui.separator();
+                            ui.label(egui::RichText::new(group.title()).small().strong());
+                            for m in Module::ALL.into_iter().filter(|m| m.group() == group) {
+                                let mut on = self.module_on(m);
+                                if ui
+                                    .checkbox(&mut on, m.title())
+                                    .on_hover_text(m.menu_tip())
+                                    .changed()
+                                {
+                                    if on {
+                                        self.modules.insert(m);
+                                    } else {
+                                        self.modules.remove(&m);
+                                    }
+                                    modules_changed = true;
+                                }
+                            }
+                        }
                         if self.any_module() {
                             self.right_open = true;
                         }
                     });
                 ui.menu_button("Tools", |ui| {
-                    // The three structure tools that keep a window of their
-                    // own, then the rest. The engines are sections of the
-                    // Structure auto tools module.
-                    let any = self.any_volume();
-                    if enabled_tip_button(
-                        ui,
-                        any,
-                        "◑ Structure comparison",
-                        "Volumes, centroid offset, Dice, HD95, surface distances and \
-                         the least-squares rigid offset of any two structures - \
-                         within a workspace or across the two",
-                    ) {
-                        self.open_compare_dialog(0);
-                        ui.close();
-                    }
-                    if enabled_tip_button(
-                        ui,
-                        any,
-                        super::stats_win::DETAILS.menu_entry(),
-                        "One row per structure: volume surface-based and voxels-based, \
-                         the Dice against a reference, the grey levels inside it, what \
-                         the geometry costs in slices and points, and whether a derived \
-                         structure still matches its recipe. With CSV export.",
-                    ) {
-                        let slot = self.first_volume_slot();
-                        self.open_stats_dialog(slot);
-                        ui.close();
-                    }
-                    if enabled_tip_button(
-                        ui,
-                        any,
-                        MOTION.menu_entry(),
-                        "Register the reference phase of a 4D group to every other phase, \
-                         carry the targets across, and measure their motion - trajectories, \
-                         drift, correlations and the ITV.",
-                    ) {
-                        let slot = self.first_volume_slot();
-                        self.open_motion_dialog(slot, None);
-                        ui.close();
-                    }
-                    ui.separator();
-                    let both = self.both_volumes();
-                    if enabled_tip_button(
-                        ui,
-                        both,
-                        "◎ Transfer by relationship",
-                        "Place a structure into the other workspace at the same offset \
-                         from a reference structure (e.g. the heart) - the \
-                         target-reference relationship travels, not a registration",
-                    ) {
-                        self.open_transfer_dialog(0);
-                        ui.close();
-                    }
-                    let has_dose = self
-                        .slots
-                        .iter()
-                        .any(|s| s.study.as_ref().is_some_and(|st| !st.doses.is_empty()));
-                    if enabled_tip_button(
-                        ui,
-                        has_dose,
-                        "📊 Dose-volume histograms",
-                        "Cumulative and differential DVHs of any structures against \
-                         any loaded dose objects, with the metrics table, protocol \
-                         constraint checking and CSV export - in a window that can \
-                         go on its own monitor",
-                    ) {
-                        let slot = usize::from(
-                            self.slots[0].study.is_none()
-                                || self.slots[0]
-                                    .study
-                                    .as_ref()
-                                    .is_some_and(|s| s.doses.is_empty()),
-                        );
-                        self.open_dvh_dialog(slot.min(MAX_WORKSPACES - 1), Vec::new());
-                        ui.close();
-                    }
-                    if ui
-                        .add_enabled(
-                            !self.motion_reports.is_empty(),
-                            egui::Button::new("📈 Motion results"),
-                        )
-                        .on_hover_text("The finished 4D motion runs of this session")
-                        .clicked()
-                    {
-                        self.motion_results_open = true;
-                        ui.close();
-                    }
+                    // The tools that are about files and folders rather than
+                    // about the images on screen. Everything that reads the
+                    // displayed study is a module of the right panel.
                     if tip_button(
                         ui,
                         "🏥 PACS",
@@ -686,9 +543,7 @@ impl ViewerApp {
             }
         }
         if wf_show_run {
-            if let Some(r) = &mut self.wf_run {
-                r.open = true;
-            }
+            self.reveal_module(Module::Workflows);
         }
         if let Some(theme) = new_theme {
             self.set_theme(ctx, theme);
@@ -832,33 +687,37 @@ impl ViewerApp {
                     }
 
                     ui.separator();
-                    // 3D structure rendering windows.
+                    // The surface scene of each workspace: a pane of its row,
+                    // put in and taken out again by one button.
                     for slot in self.open_slots() {
                         let slot_name = SLOT_NAMES[slot];
-                        let has_3d = self.slots[slot]
-                            .study
-                            .as_ref()
-                            .map(|s| !s.structure_sets.is_empty())
-                            .unwrap_or(false)
-                            || !self.slots[slot].segs().is_empty();
                         if slot > 0 && self.slots[slot].study.is_none() {
                             continue;
                         }
-                        // The scene is in the row: there is no window to
-                        // open, so the button has nothing to do.
-                        if self.row_shows_scene(slot) {
-                            continue;
-                        }
-                        if enabled_tip_button(
-                            ui,
-                            has_3d,
-                            format!("3D {slot_name}"),
-                            format!(
-                                "Open a 3D surface rendering of workspace {slot_name}'s structures \
-                                 and segmentations"
-                            ),
-                        ) {
-                            self.open_d3_window(slot);
+                        let shown = self.row_shows_scene(slot);
+                        let has_3d = self.slot_has_surfaces(slot);
+                        if ui
+                            .add_enabled(
+                                has_3d || shown,
+                                egui::Button::selectable(shown, format!("3D {slot_name}")),
+                            )
+                            .on_hover_text(if shown {
+                                format!(
+                                    "Take the 3D surface scene out of workspace {slot_name}'s row"
+                                )
+                            } else {
+                                format!(
+                                    "Put a 3D surface rendering of workspace {slot_name}'s \
+                                     structures and segmentations into its row, beside the views"
+                                )
+                            })
+                            .clicked()
+                        {
+                            if shown {
+                                self.remove_from_row(slot, PaneKind::Scene3d);
+                            } else {
+                                self.add_to_row(slot, PaneKind::Scene3d);
+                            }
                         }
                     }
 

@@ -30,20 +30,10 @@ pub const ARCHIVE_MORE_KEY: &str = "archive_more";
 /// page it asks on, and the View menu changes it afterwards.
 pub const GRAPHICS_BACKEND_KEY: &str = "graphics_backend";
 
-/// Settings keys of the two optional side-panel modules.
-const MODULE_REG_KEY: &str = "module_image_registration";
-const MODULE_SIM_KEY: &str = "module_image_simulation";
-const MODULE_GEN_KEY: &str = "module_image_generation";
 /// What the Image generation module was called while it held only the
 /// synthetic CT: read, so a station that had it on keeps it on, and never
 /// written again.
 const MODULE_SYNTH_KEY: &str = "module_image_synthesis";
-const MODULE_PROP_KEY: &str = "module_structures_propagation";
-const MODULE_TOOLS_KEY: &str = "module_structure_editor";
-const MODULE_AUTO_KEY: &str = "module_structure_auto_tools";
-const MODULE_DOSE_KEY: &str = "module_dose_estimation";
-const MODULE_INFO_KEY: &str = "module_image_information";
-const MODULE_PLAY_KEY: &str = "module_playback";
 /// Which module sections were unfolded, remembered for *Restore the last
 /// session*.
 const MODULES_OPEN_KEY: &str = "modules_open";
@@ -108,14 +98,20 @@ pub enum PaneKind {
     /// (a DRR, a 2D/3D setup) is offered for them. Off in the standard row,
     /// put into it by a click on one in the data tree.
     Additional,
+    /// The chart of whichever module is showing one: the dose-volume
+    /// histograms, the curves of a motion run. A chart at the width of the
+    /// side panel is not one to read a plan from, so the modules draw theirs
+    /// here, where there is room. Off in the standard row, put into it by
+    /// the module that computed something to show.
+    Chart,
 }
 
 /// How many planar panes a row can carry.
 pub const PLANAR_PANES: usize = 2;
 
 /// How many panes one row may show: every kind there is, so a row can carry
-/// the three planes, the surface scene, both planar panes and the
-/// additional one at once. The layout would divide by more perfectly
+/// the three planes, the surface scene, both planar panes, the additional
+/// one and the chart at once. The layout would divide by more perfectly
 /// happily; what stops it is the width each pane is left with, and six
 /// across is already narrow - which is why the planar panes and the
 /// additional one are not in the standard row.
@@ -123,7 +119,7 @@ pub const MAX_PANES: usize = PaneKind::ALL.len();
 
 impl PaneKind {
     /// Every kind a row can be given, in the order the tick boxes list them.
-    pub const ALL: [PaneKind; 7] = [
+    pub const ALL: [PaneKind; 8] = [
         PaneKind::Plane(crate::volume::ViewPlane::Axial),
         PaneKind::Plane(crate::volume::ViewPlane::Sagittal),
         PaneKind::Plane(crate::volume::ViewPlane::Coronal),
@@ -131,6 +127,7 @@ impl PaneKind {
         PaneKind::Planar(0),
         PaneKind::Planar(1),
         PaneKind::Additional,
+        PaneKind::Chart,
     ];
 
     /// What the tick box and the pane's own corner call it.
@@ -141,6 +138,7 @@ impl PaneKind {
             PaneKind::Planar(0) => "Planar 1",
             PaneKind::Planar(_) => "Planar 2",
             PaneKind::Additional => "Additional",
+            PaneKind::Chart => "Chart",
         }
     }
 
@@ -153,6 +151,7 @@ impl PaneKind {
             PaneKind::Planar(0) => "planar1",
             PaneKind::Planar(_) => "planar2",
             PaneKind::Additional => "additional",
+            PaneKind::Chart => "chart",
         }
     }
 
@@ -195,6 +194,88 @@ fn parse_view_row(value: &str) -> Vec<PaneKind> {
 
 fn render_view_row(row: &[PaneKind]) -> String {
     row.iter().map(|k| k.key()).collect::<Vec<_>>().join(",")
+}
+
+/// One module of the right panel: a section that works on the viewer
+/// itself - its views, its panes, its tree - and opens no window of its own.
+///
+/// The settings file has one `module_* = on | off` line per module (the key
+/// is [`Module::key`]); what the viewer draws for each - its title, its
+/// header, its group in the *Modules* menu, its section - is the viewer's
+/// own business (`app/modules.rs`). The order of [`Module::ALL`] is the
+/// order of the panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Module {
+    ImageInfo,
+    Playback,
+    Registration,
+    Simulation,
+    Generation,
+    StructureEditor,
+    AutoTools,
+    Propagation,
+    Comparison,
+    Details,
+    Motion,
+    DoseDisplay,
+    DoseAnalysis,
+    Dvh,
+    Workflows,
+}
+
+impl Module {
+    /// Every module, in the order the panel draws them.
+    pub const ALL: [Module; 15] = [
+        Module::ImageInfo,
+        Module::Playback,
+        Module::Registration,
+        Module::Simulation,
+        Module::Generation,
+        Module::StructureEditor,
+        Module::AutoTools,
+        Module::Propagation,
+        Module::Comparison,
+        Module::Details,
+        Module::Motion,
+        Module::DoseDisplay,
+        Module::DoseAnalysis,
+        Module::Dvh,
+        Module::Workflows,
+    ];
+
+    /// The settings key that switches it on. The nine modules older than
+    /// the list keep the keys they always had, so an old settings file
+    /// still reads.
+    pub fn key(self) -> &'static str {
+        match self {
+            Module::ImageInfo => "module_image_information",
+            Module::Playback => "module_playback",
+            Module::Registration => "module_image_registration",
+            Module::Simulation => "module_image_simulation",
+            Module::Generation => "module_image_generation",
+            Module::StructureEditor => "module_structure_editor",
+            Module::AutoTools => "module_structure_auto_tools",
+            Module::Propagation => "module_structures_propagation",
+            Module::Comparison => "module_structure_comparison",
+            Module::Details => "module_structure_details",
+            Module::Motion => "module_structure_motion",
+            Module::DoseDisplay => "module_dose_display",
+            // Kept from when the module was called Dose estimation.
+            Module::DoseAnalysis => "module_dose_estimation",
+            Module::Dvh => "module_dose_volume_histograms",
+            Module::Workflows => "module_workflows",
+        }
+    }
+
+    /// The module a settings key switches, old names included.
+    fn from_key(key: &str) -> Option<Module> {
+        if key.eq_ignore_ascii_case(MODULE_SYNTH_KEY) {
+            return Some(Module::Generation);
+        }
+        Module::ALL
+            .into_iter()
+            .find(|m| key.eq_ignore_ascii_case(m.key()))
+    }
 }
 
 /// What the 2D/3D registration section remembers between runs.
@@ -244,42 +325,9 @@ pub struct Settings {
     /// The PACS's other storage folders, read and listed like the main one.
     pub archive_more: Vec<PathBuf>,
 
-    /// *Modules ▶ Image registration*: the registration section is shown in
-    /// the modules panel.
-    pub module_registration: bool,
-
-    /// *Modules ▶ Image simulation*: the simulation section is shown in the
-    /// modules panel.
-    pub module_simulation: bool,
-
-    /// *Modules ▶ Image generation*: the synthetic CT and the DRR, as two
-    /// sections of one module in the modules panel.
-    pub module_generation: bool,
-
-    /// *Modules ▶ Structure propagation*: the propagation section is shown
-    /// in the modules panel.
-    pub module_propagation: bool,
-
-    /// *Modules ▶ Structure editor*: inserting, editing and combining
-    /// structures is shown in the modules panel.
-    pub module_structures: bool,
-
-    /// *Modules ▶ Structure auto tools*: body contour and the three
-    /// segmentation engines are shown in the modules panel.
-    pub module_auto: bool,
-
-    /// *Modules ▶ Dose estimation*: the dose metrics table of the ticked
-    /// structures is shown in the modules panel.
-    pub module_dose: bool,
-
-    /// *Modules ▶ Image information*: the geometry, sampling and
-    /// acquisition of the displayed series. It reads nothing until its
-    /// section is unfolded.
-    pub module_info: bool,
-
-    /// *Modules ▶ Playback*: the transport controls and the settings of
-    /// the Play buttons on the viewports.
-    pub module_play: bool,
+    /// The modules switched on in the *Modules* menu, each a section of the
+    /// right panel.
+    pub modules: std::collections::BTreeSet<Module>,
 
     /// The buttons on each pane - play, zoom, the hand, reset - are folded
     /// away behind the ◀ on its bar, leaving only that and the maximize.
@@ -342,15 +390,7 @@ impl Default for Settings {
             // not there at all until one is asked for, so a first run opens
             // on the images and nothing else. The Modules menu says what
             // there is, and what is switched on is remembered.
-            module_registration: false,
-            module_simulation: false,
-            module_generation: false,
-            module_propagation: false,
-            module_structures: false,
-            module_auto: false,
-            module_dose: false,
-            module_info: false,
-            module_play: false,
+            modules: std::collections::BTreeSet::new(),
             pane_buttons_hidden: true,
             modules_open: Vec::new(),
             session: std::array::from_fn(|_| Vec::new()),
@@ -1032,9 +1072,13 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
             if !v.is_empty() {
                 s.archive_dir = Some(PathBuf::from(v));
             }
-        } else if key.eq_ignore_ascii_case(MODULE_REG_KEY) {
+        } else if let Some(m) = Module::from_key(key) {
             if let Some(b) = bool_from_str(value) {
-                s.module_registration = b;
+                if b {
+                    s.modules.insert(m);
+                } else {
+                    s.modules.remove(&m);
+                }
             }
         } else if let Some(row) = VIEW_ROW_KEYS
             .iter()
@@ -1076,40 +1120,6 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from)
                 .collect();
-        } else if key.eq_ignore_ascii_case(MODULE_SIM_KEY) {
-            if let Some(b) = bool_from_str(value) {
-                s.module_simulation = b;
-            }
-        } else if key.eq_ignore_ascii_case(MODULE_GEN_KEY)
-            || key.eq_ignore_ascii_case(MODULE_SYNTH_KEY)
-        {
-            if let Some(b) = bool_from_str(value) {
-                s.module_generation = b;
-            }
-        } else if key.eq_ignore_ascii_case(MODULE_PROP_KEY) {
-            if let Some(b) = bool_from_str(value) {
-                s.module_propagation = b;
-            }
-        } else if key.eq_ignore_ascii_case(MODULE_TOOLS_KEY) {
-            if let Some(b) = bool_from_str(value) {
-                s.module_structures = b;
-            }
-        } else if key.eq_ignore_ascii_case(MODULE_AUTO_KEY) {
-            if let Some(b) = bool_from_str(value) {
-                s.module_auto = b;
-            }
-        } else if key.eq_ignore_ascii_case(MODULE_DOSE_KEY) {
-            if let Some(b) = bool_from_str(value) {
-                s.module_dose = b;
-            }
-        } else if key.eq_ignore_ascii_case(MODULE_INFO_KEY) {
-            if let Some(b) = bool_from_str(value) {
-                s.module_info = b;
-            }
-        } else if key.eq_ignore_ascii_case(MODULE_PLAY_KEY) {
-            if let Some(b) = bool_from_str(value) {
-                s.module_play = b;
-            }
         } else if key.eq_ignore_ascii_case(PANE_BUTTONS_KEY) {
             // The file says what is *shown*, which reads better by hand than
             // a double negative; the field holds the other way round.
@@ -1172,39 +1182,28 @@ fn render(s: &Settings) -> String {
     for dir in &s.archive_more {
         out.push_str(&format!("{ARCHIVE_MORE_KEY} = {}\n", dir.display()));
     }
+    out.push_str("# optional modules-panel sections (Modules menu) = on | off\n");
+    for m in Module::ALL {
+        out.push_str(&format!(
+            "{} = {}\n",
+            m.key(),
+            bool_to_str(s.modules.contains(&m))
+        ));
+    }
     out.push_str(&format!(
-        "# optional modules-panel sections (Modules menu) = on | off\n\
-         {MODULE_REG_KEY} = {}\n\
-         {MODULE_SIM_KEY} = {}\n\
-         {MODULE_GEN_KEY} = {}\n\
-         {MODULE_PROP_KEY} = {}\n\
-         {MODULE_TOOLS_KEY} = {}\n\
-         {MODULE_AUTO_KEY} = {}\n\
-         {MODULE_DOSE_KEY} = {}\n\
-         {MODULE_INFO_KEY} = {}\n\
-         {MODULE_PLAY_KEY} = {}\n\
-         # the buttons on each pane (play, zoom, hand, reset) = on | off\n\
+        "# the buttons on each pane (play, zoom, hand, reset) = on | off\n\
          {PANE_BUTTONS_KEY} = {}\n\
          # module sections unfolded at the last run, for Restore the last session\n\
          {MODULES_OPEN_KEY} = {}\n\
          # graphics backend = auto | vulkan | dx12 | metal | opengl\n\
          # (the WGPU_BACKEND environment variable overrides this)\n\
          {GRAPHICS_BACKEND_KEY} = {}\n",
-        bool_to_str(s.module_registration),
-        bool_to_str(s.module_simulation),
-        bool_to_str(s.module_generation),
-        bool_to_str(s.module_propagation),
-        bool_to_str(s.module_structures),
-        bool_to_str(s.module_auto),
-        bool_to_str(s.module_dose),
-        bool_to_str(s.module_info),
-        bool_to_str(s.module_play),
         bool_to_str(!s.pane_buttons_hidden),
         s.modules_open.join(","),
         s.graphics_backend.key()
     ));
     out.push_str("# what each row of the central area shows, left to right:\n");
-    out.push_str("# any of axial, sagittal, coronal, 3d, planar1, planar2\n");
+    out.push_str("# any of axial, sagittal, coronal, 3d, planar1, planar2, additional, chart\n");
     for (key, row) in VIEW_ROW_KEYS.iter().zip(&s.view_rows) {
         out.push_str(&format!("{key} = {}\n", render_view_row(row)));
     }
@@ -1594,7 +1593,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            parse_view_row("axial,sagittal,coronal,3d,planar1,planar2,additional").len(),
+            parse_view_row("axial,sagittal,coronal,3d,planar1,planar2,additional,chart").len(),
             MAX_PANES,
             "a row that names every kind keeps every kind"
         );
@@ -1605,10 +1604,12 @@ mod tests {
             vec![PaneKind::Planar(1), axial, PaneKind::Planar(0)]
         );
         assert!(
-            !default_view_row()
-                .iter()
-                .any(|k| matches!(k, PaneKind::Planar(_) | PaneKind::Additional)),
-            "the planar panes and the additional one are off until something asks for them"
+            !default_view_row().iter().any(|k| matches!(
+                k,
+                PaneKind::Planar(_) | PaneKind::Additional | PaneKind::Chart
+            )),
+            "the planar panes, the additional one and the chart are off until something asks \
+             for them"
         );
         assert_eq!(
             parse_view_row("additional,axial"),
@@ -1671,7 +1672,7 @@ mod tests {
                 vec![PaneKind::Plane(ViewPlane::Axial), PaneKind::Scene3d],
                 vec![PaneKind::Plane(ViewPlane::Coronal)],
                 vec![PaneKind::Plane(ViewPlane::Sagittal), PaneKind::Planar(1)],
-                default_view_row(),
+                vec![PaneKind::Plane(ViewPlane::Axial), PaneKind::Chart],
             ],
             ..Settings::default()
         };
@@ -1684,6 +1685,10 @@ mod tests {
             render(&s)
         );
         assert!(render(&s).contains("view_row_b = coronal"));
+        assert!(
+            render(&s).contains("view_row_d = axial,chart"),
+            "the chart pane has a word of its own"
+        );
         assert!(
             render(&s).contains("view_row_d = "),
             "every workspace has a row of its own in the file, D included"
@@ -1727,39 +1732,66 @@ mod tests {
 
     #[test]
     fn round_trips_the_module_flags() {
-        for bits in 0..128u8 {
+        // Every subset of the fifteen would be 32768 files; every single
+        // module, every pair and a few larger sets cover what a set can get
+        // wrong.
+        let n = Module::ALL.len();
+        let mut sets: Vec<std::collections::BTreeSet<Module>> = Vec::new();
+        for i in 0..n {
+            sets.push([Module::ALL[i]].into());
+            for j in i + 1..n {
+                sets.push([Module::ALL[i], Module::ALL[j]].into());
+            }
+        }
+        sets.push(Module::ALL.into());
+        sets.push(Module::ALL.into_iter().step_by(2).collect());
+        sets.push(Module::ALL.into_iter().skip(1).step_by(3).collect());
+        for (k, modules) in sets.into_iter().enumerate() {
             let s = Settings {
-                module_registration: bits & 1 != 0,
-                module_simulation: bits & 2 != 0,
-                module_propagation: bits & 4 != 0,
-                module_structures: bits & 8 != 0,
-                module_auto: bits & 16 != 0,
-                module_dose: bits & 32 != 0,
-                module_generation: bits & 64 != 0,
-                modules_open: if bits & 1 != 0 {
-                    vec!["editor".into(), "dose".into()]
+                modules,
+                modules_open: if k % 2 == 0 {
+                    vec!["editor".into(), "dose".into(), "dvh".into()]
                 } else {
                     Vec::new()
                 },
                 ..Settings::default()
             };
-            assert_eq!(parse(&render(&s)), s, "round trip of {bits:07b}");
+            assert_eq!(parse(&render(&s)), s, "round trip of set {k}");
+        }
+        // The nine modules older than the list keep their keys, so a file
+        // an older build wrote reads as it did.
+        for (key, m) in [
+            ("module_image_registration", Module::Registration),
+            ("module_image_simulation", Module::Simulation),
+            ("module_image_generation", Module::Generation),
+            ("module_structures_propagation", Module::Propagation),
+            ("module_structure_editor", Module::StructureEditor),
+            ("module_structure_auto_tools", Module::AutoTools),
+            ("module_dose_estimation", Module::DoseAnalysis),
+            ("module_image_information", Module::ImageInfo),
+            ("module_playback", Module::Playback),
+        ] {
+            assert_eq!(m.key(), key);
+            assert!(parse(&format!("{key} = on")).modules.contains(&m), "{key}");
         }
         assert!(
-            parse(&format!("{MODULE_REG_KEY} = TRUE")).module_registration,
+            parse("module_image_registration = TRUE")
+                .modules
+                .contains(&Module::Registration),
             "case-insensitive alias"
         );
-        assert!(
-            parse(&format!("{MODULE_PROP_KEY} = on")).module_propagation,
-            "the propagation module is remembered too"
-        );
+        let keys: std::collections::BTreeSet<&str> = Module::ALL.iter().map(|m| m.key()).collect();
+        assert_eq!(keys.len(), n, "no two modules share a key");
         // Image synthesis became a section of Image generation: a file that
         // had the old module on opens with the new one on, and is written
         // back under the new name only.
         let old = parse(&format!("{MODULE_SYNTH_KEY} = on"));
-        assert!(old.module_generation, "the old key still switches it on");
+        assert!(
+            old.modules.contains(&Module::Generation),
+            "the old key still switches it on"
+        );
         let written = render(&old);
-        assert!(written.contains(&format!("{MODULE_GEN_KEY} = on")));
+        assert!(written.contains(&format!("{} = on", Module::Generation.key())));
         assert!(
             !written.contains(MODULE_SYNTH_KEY),
             "and is not written again"
@@ -1770,24 +1802,13 @@ mod tests {
         // the answer is remembered.
         let fresh = parse("");
         assert!(
-            !fresh.module_structures
-                && !fresh.module_auto
-                && !fresh.module_info
-                && !fresh.module_play
-                && !fresh.module_dose
-                && !fresh.module_registration
-                && !fresh.module_simulation
-                && !fresh.module_generation
-                && !fresh.module_propagation,
+            fresh.modules.is_empty(),
             "a fresh installation starts with every module switched off"
         );
-        assert!(
-            parse(&format!("{MODULE_TOOLS_KEY} = on")).module_structures
-                && parse(&format!("{MODULE_AUTO_KEY} = on")).module_auto
-                && parse(&format!("{MODULE_INFO_KEY} = on")).module_info
-                && parse(&format!("{MODULE_PLAY_KEY} = on")).module_play,
-            "and each of them can be switched on again"
-        );
+        // A later line wins, as for every other key: on, then off, is off.
+        assert!(parse("module_workflows = on\nmodule_workflows = off\n")
+            .modules
+            .is_empty());
         // The pane buttons are the other way round in the file from the
         // field, and folded is what a fresh installation gets.
         assert!(
@@ -1807,14 +1828,5 @@ mod tests {
             .pane_buttons_hidden,
             "and it survives a write and a read"
         );
-        // Whatever was set survives a write and a read.
-        let s = Settings {
-            module_info: false,
-            module_dose: false,
-            module_play: false,
-            ..Settings::default()
-        };
-        let back = parse(&render(&s));
-        assert!(!back.module_info && !back.module_dose && !back.module_play);
     }
 }
