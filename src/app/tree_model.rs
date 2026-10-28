@@ -667,6 +667,7 @@ mod layout_tests {
             series_number: None,
             temporal_id: None,
             suv_bw: None,
+            frame_of_reference_uid: String::new(),
             files: vec![std::path::PathBuf::from(format!("{uid}.dcm"))],
         }
     }

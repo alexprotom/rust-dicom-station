@@ -27,6 +27,7 @@ use dicom_pixeldata::{ConvertOptions, ModalityLutOption, PixelDecoder};
 use crate::geometry::Vec3;
 use crate::loader::{f64_of, f64s_of, i32_of, items_of, str_of};
 use crate::registration::{RigidTransform, VectorField};
+use crate::sop::{SOP_DEFORMABLE_REG, SOP_RT_ION_BEAMS_RECORD};
 
 // ---------------------------------------------------------------------------
 // Planar images (DX / CR / RTIMAGE) and additional objects
@@ -57,19 +58,19 @@ impl PlanarKind {
 
 /// Modalities whose images are projections (no volume reconstruction).
 pub const PROJECTION_MODALITIES: &[&str] = &["DX", "CR", "RTIMAGE", "MG", "XA", "RF", "PX"];
-pub const SOP_RTIMAGE: &str = "1.2.840.10008.5.1.4.1.1.481.1";
-pub const SOP_DX_PRESENTATION: &str = "1.2.840.10008.5.1.4.1.1.1.1";
-pub const SOP_DX_PROCESSING: &str = "1.2.840.10008.5.1.4.1.1.1.1.1";
-/// Secondary Capture Image Storage and its multi-frame variants: an image
-/// made of something other than the patient (a report page, a screen).
-pub const SOP_SECONDARY_CAPTURE: &str = "1.2.840.10008.5.1.4.1.1.7";
+pub use crate::sop::{SOP_DX_PRESENTATION, SOP_DX_PROCESSING, SOP_RTIMAGE, SOP_SECONDARY_CAPTURE};
 
-/// Is this a (multi-frame) Secondary Capture SOP class?
+/// Is this a (multi-frame) Secondary Capture SOP class? An image made of
+/// something other than the patient (a report page, a screen).
 pub fn is_secondary_capture_sop(sop_class: &str) -> bool {
-    sop_class == SOP_SECONDARY_CAPTURE
-        || sop_class
-            .strip_prefix(SOP_SECONDARY_CAPTURE)
-            .is_some_and(|rest| matches!(rest, ".1" | ".2" | ".3" | ".4"))
+    crate::sop::is_secondary_capture(sop_class)
+}
+
+/// Does this SOP class carry no image at all ([`crate::sop::is_non_image`]):
+/// a PDF, a presentation state, a key object selection, raw data, a
+/// waveform. The loader leaves such files out rather than decode them.
+pub fn is_non_image_sop(sop_class: &str) -> bool {
+    crate::sop::is_non_image(sop_class)
 }
 
 /// Is this file, by its header, a projection of the patient?
@@ -584,11 +585,8 @@ pub struct SpatialReg {
     pub grid_source_for_uid: String,
 }
 
-const SOP_SPATIAL_REG: &str = "1.2.840.10008.5.1.4.1.1.66.1";
-const SOP_DEFORMABLE_REG: &str = "1.2.840.10008.5.1.4.1.1.66.3";
-
 pub fn is_reg_sop(sop: &str) -> bool {
-    sop == SOP_SPATIAL_REG || sop == SOP_DEFORMABLE_REG
+    crate::sop::is_registration(sop)
 }
 
 pub fn load_reg(path: &Path) -> Result<SpatialReg> {
@@ -821,11 +819,8 @@ pub struct TreatRecord {
     pub beams: Vec<RecordBeam>,
 }
 
-const SOP_RT_BEAMS_RECORD: &str = "1.2.840.10008.5.1.4.1.1.481.4";
-const SOP_RT_ION_BEAMS_RECORD: &str = "1.2.840.10008.5.1.4.1.1.481.9";
-
 pub fn is_record_sop(sop: &str) -> bool {
-    sop == SOP_RT_BEAMS_RECORD || sop == SOP_RT_ION_BEAMS_RECORD
+    crate::sop::is_beams_record(sop)
 }
 
 pub fn load_record(path: &Path) -> Result<TreatRecord> {

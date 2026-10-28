@@ -154,18 +154,35 @@ impl Config {
             .context("no output_dir is configured in mcp.toml; nothing can be written")
     }
 
-    /// The folders a client may name: the roots, then the output folder
-    /// (results are re-openable), each with its label.
-    pub fn readable(&self) -> Vec<(&Path, String)> {
-        let mut out: Vec<(&Path, String)> = self
+    /// The storage folders of the archive the archive tools read
+    /// ([`Config::archive`]; the station's own when that is empty).
+    pub fn archive_roots(&self) -> Vec<PathBuf> {
+        crate::archive::Archive::from_setting(&self.archive)
+            .roots()
+            .to_vec()
+    }
+
+    /// The folders a client may name, each with its label: the roots, the
+    /// output folder (results are re-openable), and the archive's folders
+    /// (`archive`). The archive tools read those folders anyway, and what
+    /// is opened from them passes the same PHI gate as anything else, so
+    /// naming them by path exposes nothing new.
+    pub fn readable(&self) -> Vec<(PathBuf, String)> {
+        let mut out: Vec<(PathBuf, String)> = self
             .roots
             .iter()
             .enumerate()
-            .map(|(i, r)| (r.as_path(), format!("root{}", i + 1)))
+            .map(|(i, r)| (r.clone(), format!("root{}", i + 1)))
             .collect();
         if let Some(o) = &self.output_dir {
-            out.push((o.as_path(), "output".to_string()));
+            out.push((o.clone(), "output".to_string()));
         }
+        out.extend(
+            self.archive_roots()
+                .into_iter()
+                .filter(|r| !r.as_os_str().is_empty())
+                .map(|r| (r, "archive".to_string())),
+        );
         out
     }
 
@@ -190,8 +207,11 @@ impl Config {
                 return Ok((real, label));
             }
         }
+        if self.roots.is_empty() && self.output_dir.is_none() {
+            bail!("no roots are configured in mcp.toml; nothing outside the archive can be opened");
+        }
         bail!(
-            "'{}' is outside the configured roots ({} configured)",
+            "'{}' is outside the configured roots ({} configured) and the archive",
             given.display(),
             self.roots.len()
         );
@@ -259,5 +279,23 @@ allow_model_download = true
         );
         assert!(c.resolve_input(&dir.join("in/sub/../../out")).is_err());
         assert!(Config::default().resolve_input(&dir.join("in")).is_err());
+    }
+
+    #[test]
+    fn the_archive_is_readable_under_its_own_label() {
+        let dir = std::env::temp_dir().join("rds_mcp_cfg_archive");
+        let _ = std::fs::create_dir_all(dir.join("in"));
+        let _ = std::fs::create_dir_all(dir.join("pacs/patient/study"));
+        let c = Config {
+            roots: vec![dir.join("in")],
+            archive: dir.join("pacs").display().to_string(),
+            ..Config::default()
+        };
+        assert_eq!(
+            c.resolve_input(&dir.join("pacs/patient/study")).unwrap().1,
+            "archive"
+        );
+        // Canonicalized first: a `..` out of the archive is still outside.
+        assert!(c.resolve_input(&dir.join("pacs/patient/../..")).is_err());
     }
 }

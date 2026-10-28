@@ -15,11 +15,14 @@
 //! ([`sr`]) is read whole; a template this knows ([`dose`]) becomes its
 //! own table, any other is laid out as an indented two-column table, so no
 //! SR is lost. A page's text ([`siemens`]) is laid out from the positions
-//! of its words. The viewer shows a report in the row's *Additional* pane
-//! as a table, the MCP server returns its tables (and never a name an SR
-//! item carries), and `describe_archive_study` says which files are
-//! reports before anything opens them.
+//! of its words. An encapsulated PDF ([`document`]) is a report whose
+//! content is its pages, drawn when first shown. The viewer shows a report
+//! in the row's *Additional* pane as a table (a document as its pages),
+//! the MCP server returns its tables (and never a name an SR item carries,
+//! nor a document's title or bytes), and `describe_archive_study` says
+//! which files are reports before anything opens them.
 
+pub mod document;
 pub mod dose;
 pub mod siemens;
 pub mod sr;
@@ -52,6 +55,8 @@ pub enum ReportKind {
     DoseReport,
     /// A scanner's page: a Secondary Capture whose text is read back.
     ProtocolPage,
+    /// An encapsulated document (a PDF): shown as its pages.
+    Document,
 }
 
 impl ReportKind {
@@ -60,6 +65,7 @@ impl ReportKind {
             ReportKind::Structured => "structured report",
             ReportKind::DoseReport => "dose report",
             ReportKind::ProtocolPage => "protocol page",
+            ReportKind::Document => "document",
         }
     }
 }
@@ -83,6 +89,8 @@ pub struct Report {
     pub tree: Vec<sr::Node>,
     /// The page as the scanner rendered it, for a page.
     pub page: Option<PlanarImage>,
+    /// The document, for an encapsulated one.
+    pub document: Option<document::Document>,
     pub file_name: String,
     /// Study Instance UID: the study the data tree files it under.
     pub study_uid: String,
@@ -132,15 +140,21 @@ impl Report {
 }
 
 /// Is this SOP class a Structured Report's? The SR storage classes share
-/// the `1.2.840.10008.5.1.4.1.1.88.` prefix.
+/// the `1.2.840.10008.5.1.4.1.1.88.` prefix; the Key Object Selection,
+/// encoded the same way, holds references and no content, and is not one
+/// ([`crate::sop::is_structured_report`]).
 pub fn is_sr_sop(sop_class: &str) -> bool {
-    sop_class.starts_with("1.2.840.10008.5.1.4.1.1.88.")
+    crate::sop::is_structured_report(sop_class)
 }
 
-/// Read a Structured Report file into a report.
+/// Read a Structured Report file, or an encapsulated document, into a
+/// report.
 pub fn load_report(path: &Path) -> Result<Report> {
     let obj = crate::dicomfile::open_full(path)
         .with_context(|| format!("open report {}", path.display()))?;
+    if str_of(&obj, tags::SOP_CLASS_UID).as_deref() == Some(crate::sop::SOP_ENCAPSULATED_PDF) {
+        return load_document(&obj, path);
+    }
     let root = sr::read(&obj);
     let series = str_of(&obj, tags::SERIES_DESCRIPTION);
     let date = str_of(&obj, tags::CONTENT_DATE)
@@ -186,6 +200,61 @@ pub fn load_report(path: &Path) -> Result<Report> {
     Ok(r)
 }
 
+/// An encapsulated document as a report: named after its series (the
+/// title can carry identifiers, see [`document`]), its facts what the
+/// header says about it, its content the document itself.
+fn load_document(obj: &dicom_object::InMemDicomObject, path: &Path) -> Result<Report> {
+    let Some(doc) = document::read(obj) else {
+        anyhow::bail!("the encapsulated document of {} is empty", path.display());
+    };
+    let date = str_of(obj, tags::CONTENT_DATE)
+        .or_else(|| str_of(obj, tags::STUDY_DATE))
+        .map(|d| sr::show_date(&d))
+        .unwrap_or_default();
+    let mut info = vec![
+        (
+            "Type".to_string(),
+            if doc.mime.is_empty() {
+                "PDF".to_string()
+            } else {
+                doc.mime.clone()
+            },
+        ),
+        ("Size".to_string(), show_size(doc.bytes.len())),
+    ];
+    for (k, tag) in [
+        ("Completion", tags::COMPLETION_FLAG),
+        ("Verification", tags::VERIFICATION_FLAG),
+    ] {
+        if let Some(v) = str_of(obj, tag) {
+            info.push((k.into(), v));
+        }
+    }
+    Ok(Report {
+        label: str_of(obj, tags::SERIES_DESCRIPTION).unwrap_or_else(|| "PDF document".into()),
+        kind: ReportKind::Document,
+        modality: str_of(obj, tags::MODALITY).unwrap_or_else(|| "DOC".into()),
+        date,
+        info,
+        study_uid: str_of(obj, tags::STUDY_INSTANCE_UID).unwrap_or_default(),
+        file_name: path
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        document: Some(doc),
+        ..Default::default()
+    })
+}
+
+/// A byte count as a person reads it: `812 B`, `34.1 kB`, `2.4 MB`.
+fn show_size(n: usize) -> String {
+    match n {
+        0..1000 => format!("{n} B"),
+        1000..1_000_000 => format!("{:.1} kB", n as f64 / 1e3),
+        _ => format!("{:.1} MB", n as f64 / 1e6),
+    }
+}
+
 /// What a single-image file turns out to be: an image, or a page whose
 /// text makes it a report.
 // One per file read, handed straight on: the size of the larger variant
@@ -229,6 +298,7 @@ pub fn load_page(path: &Path) -> Result<PageObject> {
             .unwrap_or_default(),
         study_uid: image.study_uid.clone(),
         page: Some(image),
+        document: None,
     }))
 }
 

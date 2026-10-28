@@ -367,6 +367,8 @@ fn the_archive_tools_name_nobody() {
     // content. The PACS files the folder under the patient's name.
     common::protocol_page_into(&folder, "Patientenprotokoll");
     common::dose_report_into(&folder, "WILSON^JAMES");
+    // A findings PDF whose title names the patient's ID and a physician.
+    common::document_into(&folder, "Dr. WILSON");
     let pacs = dir.join("pacs");
     let ar = Archive::new(&pacs);
     ar.import(&folder, &Progress::default()).expect("filed");
@@ -420,6 +422,14 @@ fn the_archive_tools_name_nobody() {
         .expect("the dose SR is listed");
     assert_eq!(sr["class"], "report", "{sr}");
     assert_eq!(sr["sop_class"], "X-Ray Radiation Dose SR");
+    let befund = series
+        .iter()
+        .find(|s| s["description"] == "Befund")
+        .expect("the findings PDF is listed");
+    assert_eq!(befund["class"], "report", "{befund}");
+    assert_eq!(befund["report"], "document");
+    assert_eq!(befund["sop_class"], "Encapsulated PDF");
+    assert_eq!(befund["shown_in"], "the Additional pane, as its pages");
     assert!(
         series
             .iter()
@@ -454,7 +464,19 @@ fn the_archive_tools_name_nobody() {
     assert_eq!(planar.len(), 2, "{d}");
     assert!(planar.iter().all(|p| p["kind"] == "projection"));
     let reports = d["reports"].as_array().unwrap();
-    assert_eq!(reports.len(), 2, "{d}");
+    assert_eq!(reports.len(), 3, "{d}");
+    // The PDF as a document: its facts, never its title.
+    let doc = reports
+        .iter()
+        .find(|r| r["kind"] == "document")
+        .expect("the document");
+    assert_eq!(doc["label"], "Befund");
+    assert_eq!(doc["modality"], "OT");
+    assert!(doc["facts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f[0] == "Type" && f[1] == "application/pdf"));
     let page = reports
         .iter()
         .find(|r| r["kind"] == "protocol_page")

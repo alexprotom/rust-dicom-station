@@ -122,6 +122,13 @@ impl Session {
         if let Some(out) = &config.output_dir {
             redactor.add_root(out, "output");
         }
+        // The archive's folders are readable too (`Config::readable`), so a
+        // path under them is reported as `archive/...` from the start.
+        for root in config.archive_roots() {
+            if !root.as_os_str().is_empty() {
+                redactor.add_root(&root, "archive");
+            }
+        }
         let volumes = Volumes::with_budget_mb(config.volume_cache_mb);
         Session {
             config,
@@ -393,39 +400,60 @@ impl Session {
     /// reports folders under.
     ///
     /// Every path that leaves the server has its root replaced by a label:
-    /// `root1/...`, `output/...`, `output/session/...`. A client only ever
-    /// sees those, so it must be able to send them back - the folder
-    /// `anonymize` reports is exactly what `open_dataset` is given next.
-    /// A label prefix is mapped to its folder here, then the result goes
-    /// through the configured-roots check like any literal path.
+    /// `root1/...`, `output/...`, `output/session/...`, `archive/...`. A
+    /// client only ever sees those, so it must be able to send them back -
+    /// the folder `anonymize` reports is exactly what `open_dataset` is
+    /// given next, and a series `describe_archive_study` names can be
+    /// opened by its path. A label prefix is mapped to its folder here, then
+    /// the result goes through the configured-roots check like any literal
+    /// path, so a `..` cannot climb out of it.
     pub fn resolve_input(&self, given: &std::path::Path) -> Result<(PathBuf, String)> {
         let text = given.to_string_lossy().replace('\\', "/");
         let text = text.trim_start_matches("./");
-        let mut candidates: Vec<(String, &std::path::Path)> = Vec::new();
+        let mut candidates: Vec<(String, PathBuf)> = Vec::new();
         if let Some(d) = &self.out_dir {
-            candidates.push(("output/session".to_string(), d.as_path()));
+            candidates.push(("output/session".to_string(), d.clone()));
         }
         if let Some(o) = &self.config.output_dir {
-            candidates.push(("output".to_string(), o.as_path()));
+            candidates.push(("output".to_string(), o.clone()));
         }
         for (i, r) in self.config.roots.iter().enumerate() {
-            candidates.push((format!("root{}", i + 1), r.as_path()));
+            candidates.push((format!("root{}", i + 1), r.clone()));
         }
-        // Longest label first, so `output/session` wins over `output`.
-        candidates.sort_by_key(|c| std::cmp::Reverse(c.0.len()));
-        for (label, folder) in candidates {
-            let rest = match text.strip_prefix(&label) {
+        // The archive's storage folders all report as `archive`.
+        for r in self.config.archive_roots() {
+            candidates.push(("archive".to_string(), r));
+        }
+        // The path behind the label, if `text` starts with it.
+        let behind = |label: &str, folder: &std::path::Path| -> Option<PathBuf> {
+            let rest = match text.strip_prefix(label) {
                 Some("") => "",
                 Some(r) if r.starts_with('/') => r.trim_start_matches('/'),
-                _ => continue,
+                _ => return None,
             };
             let mut p = folder.to_path_buf();
             if !rest.is_empty() {
                 p.push(rest);
             }
-            return self.config.resolve_input(&p);
+            Some(p)
+        };
+        // The longest label that matches, so `output/session` wins over
+        // `output`; of several folders under it (the archive's), the first
+        // that holds the path, else the first.
+        let longest = candidates
+            .iter()
+            .filter(|(l, f)| behind(l, f).is_some())
+            .map(|(l, _)| l.len())
+            .max();
+        let mapped: Vec<PathBuf> = candidates
+            .iter()
+            .filter(|(l, _)| Some(l.len()) == longest)
+            .filter_map(|(l, f)| behind(l, f))
+            .collect();
+        match mapped.iter().find(|p| p.exists()).or(mapped.first()) {
+            Some(p) => self.config.resolve_input(p),
+            None => self.config.resolve_input(given),
         }
-        self.config.resolve_input(given)
     }
 
     // ---- output -----------------------------------------------------------

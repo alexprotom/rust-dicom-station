@@ -5,6 +5,10 @@
 //! background with the interface's text, scrolling both ways, and keeps
 //! only the bar every pane has: maximize, fold, close. A page's rendering
 //! (the overlay the scanner drew) is one button away, fitted to the pane.
+//! A document (an encapsulated PDF) is its facts and then its pages, each
+//! as wide as the pane, scrolled as one column; the pages are drawn off
+//! the frame the first time the document is shown
+//! ([`crate::report::document::Document::pages`]) and made textures once.
 
 use super::*;
 
@@ -108,7 +112,9 @@ impl ViewerApp {
             Pos2::new(rect.left() + 6.0, rect.top() + title_h),
             Pos2::new(rect.right() - 6.0, rect.bottom() - 6.0),
         );
-        if show_page {
+        if report.document.is_some() {
+            self.report_document(ui, slot, ri, body);
+        } else if show_page {
             self.report_page_image(ui, slot, ri, body);
         } else {
             let report = report.clone();
@@ -209,24 +215,112 @@ impl ViewerApp {
             Color32::WHITE,
         );
     }
+
+    /// The document of report `ri` in `body`: its title and facts, then its
+    /// pages as wide as the pane, top down; a spinner while they are drawn.
+    fn report_document(&mut self, ui: &mut egui::Ui, slot: usize, ri: usize, body: Rect) {
+        let k = super::planar::ADDITIONAL_PANE;
+        let ctx = ui.ctx().clone();
+        let Some(report) = self.slots[slot]
+            .study
+            .as_ref()
+            .and_then(|st| st.reports.get(ri))
+        else {
+            return;
+        };
+        let Some(doc) = report.document.clone() else {
+            return;
+        };
+        let mut info = report.info.clone();
+        if !doc.title.is_empty() {
+            info.insert(0, ("Title".to_string(), doc.title.clone()));
+        }
+        let key = std::sync::Arc::as_ptr(&doc.bytes) as usize;
+        let state = doc.pages();
+        if let Some(Ok(r)) = state {
+            let v = &mut self.slots[slot].planar[k];
+            if v.doc_key != Some(key) {
+                v.doc_tex = r
+                    .pages
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| {
+                        ctx.load_texture(
+                            format!("report_doc_{slot}_{ri}_{i}"),
+                            ColorImage::from_rgba_premultiplied([p.width, p.height], &p.rgba),
+                            TextureOptions::LINEAR,
+                        )
+                    })
+                    .collect();
+                v.doc_key = Some(key);
+            }
+        }
+        let tex = self.slots[slot].planar[k].doc_tex.clone();
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(body)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        child.set_clip_rect(body.intersect(ui.clip_rect()));
+        egui::ScrollArea::vertical()
+            .id_salt(("report_doc", slot))
+            .auto_shrink([false, false])
+            .show(&mut child, |ui| {
+                ui.add_space(2.0);
+                report_facts(ui, &info, slot, ri);
+                match state {
+                    None => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.weak("Drawing the pages…");
+                        });
+                        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                    }
+                    Some(Err(e)) => {
+                        ui.weak(format!("The document cannot be shown: {e}"));
+                    }
+                    Some(Ok(r)) => {
+                        let w = (ui.available_width() - 4.0).max(40.0);
+                        for (p, t) in r.pages.iter().zip(&tex) {
+                            let h = w * p.height as f32 / p.width.max(1) as f32;
+                            ui.add(egui::Image::new((t.id(), Vec2::new(w, h))));
+                            ui.add_space(6.0);
+                        }
+                        if r.total > r.pages.len() {
+                            ui.weak(format!(
+                                "{} more page(s) not drawn: the first {} are shown",
+                                r.total - r.pages.len(),
+                                r.pages.len()
+                            ));
+                        }
+                    }
+                }
+            });
+    }
+}
+
+/// The facts of a report, as a two-column grid.
+fn report_facts(ui: &mut egui::Ui, info: &[(String, String)], slot: usize, ri: usize) {
+    if info.is_empty() {
+        return;
+    }
+    egui::Grid::new(("report_facts", slot, ri))
+        .num_columns(2)
+        .spacing([12.0, 2.0])
+        .show(ui, |ui| {
+            for (k, v) in info {
+                ui.weak(k);
+                ui.label(v);
+                ui.end_row();
+            }
+        });
+    ui.add_space(6.0);
 }
 
 /// The facts, the lines and the tables of a report, top down.
 fn report_body(ui: &mut egui::Ui, report: &crate::report::Report, slot: usize, ri: usize) {
     ui.add_space(2.0);
-    if !report.info.is_empty() {
-        egui::Grid::new(("report_facts", slot, ri))
-            .num_columns(2)
-            .spacing([12.0, 2.0])
-            .show(ui, |ui| {
-                for (k, v) in &report.info {
-                    ui.weak(k);
-                    ui.label(v);
-                    ui.end_row();
-                }
-            });
-        ui.add_space(6.0);
-    }
+    report_facts(ui, &report.info, slot, ri);
     for line in &report.notes {
         ui.label(line);
     }

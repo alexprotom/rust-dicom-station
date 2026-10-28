@@ -24,6 +24,10 @@ dicom-pixeldata = { version = "0.10", features = ["native", "rayon"] }
 dicom-transfer-syntax-registry = "0.10"  # read data sets that carry no file meta group (see dicomfile.rs)
 # The DRR workflow step writes its renderings as PNG.
 image = { version = "0.25", default-features = false, features = ["png"] }
+# Encapsulated PDF documents (a radiologist's findings filed with the study)
+# are rendered page by page for the additional pane: pure Rust, on the CPU,
+# so every build - the mobile ones too - draws them the same way.
+hayro = "0.8"
 # Only for two plain types: `Color32` (render, segmentation colours) and the
 # theme preference the settings keep. Not the window library.
 egui = "0.36"

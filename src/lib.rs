@@ -16,7 +16,7 @@ pub use rds_domain::{
     dvh, export, extras, fourd, gen_test_data, generate, gfx, iec, imginfo, livewire, loader,
     mesh3d, models, morphology, motion, pacs, par, portal, projection, propagate, registration,
     render, report, rooms, rt_surface, rtdose, rtplan, rtstruct, sct, segmentation, settings,
-    setup, simulate, structops, templates, testdata, workflow,
+    setup, simulate, sop, structops, templates, testdata, workflow,
 };
 pub use rds_domain::{
     autoseg, medsam2, nn, nninteractive, segresnet, segvol, synth, unet2d, vista3d, zoo,

@@ -32,10 +32,9 @@ use crate::loader::{f64s_of, i32_of, items_of, str_of};
 use crate::segmentation::{Segmentation, SEG_PALETTE};
 use crate::volume::{Grid, Volume};
 
-/// Segmentation Storage.
-pub const SOP_SEG: &str = "1.2.840.10008.5.1.4.1.1.66.4";
-/// CT Image Storage - what the referenced instances of an export are.
-const SOP_CT: &str = "1.2.840.10008.5.1.4.1.1.2";
+/// Segmentation Storage, and CT Image Storage: what the referenced
+/// instances of an export are.
+pub use crate::sop::{SOP_CT, SOP_SEG};
 
 // ---------------------------------------------------------------------------
 // The segmentation series

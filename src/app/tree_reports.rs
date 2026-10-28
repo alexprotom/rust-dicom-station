@@ -1,6 +1,7 @@
-//! The data tree's reports section: the dose reports, protocol pages and
-//! other structured reports of a study, shown as tables in the row's
-//! additional pane.
+//! The data tree's reports section: the dose reports, protocol pages,
+//! other structured reports and documents (encapsulated PDFs) of a study,
+//! shown in the row's additional pane - as tables, a document as its
+//! pages.
 
 use super::*;
 
@@ -78,17 +79,21 @@ impl ViewerApp {
                         for (k, v) in r.info.iter().take(6) {
                             tip.push_str(&format!("\n{k}: {v}"));
                         }
-                        let tables: usize = r.tables.len() + usize::from(!r.tree.is_empty());
-                        tip.push_str(&format!(
-                            "\n{} table{}{}",
-                            tables,
-                            if tables == 1 { "" } else { "s" },
-                            if r.page.is_some() {
-                                " · with the page"
-                            } else {
-                                ""
-                            }
-                        ));
+                        if r.document.is_some() {
+                            tip.push_str("\nShown as its pages");
+                        } else {
+                            let tables: usize = r.tables.len() + usize::from(!r.tree.is_empty());
+                            tip.push_str(&format!(
+                                "\n{} table{}{}",
+                                tables,
+                                if tables == 1 { "" } else { "s" },
+                                if r.page.is_some() {
+                                    " · with the page"
+                                } else {
+                                    ""
+                                }
+                            ));
+                        }
                         resp.on_hover_text(tip).context_menu(|ui| {
                             if ui.button("👁 Show in Additional").clicked() {
                                 show = Some(i);

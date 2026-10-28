@@ -456,6 +456,40 @@ fn structures_register_the_target_without_the_images() {
 }
 
 #[test]
+fn the_archive_opens_by_path_and_by_its_label() {
+    let dir = common::target_dir("test_mcp_tools_archive_paths");
+    let folder = common::fourd_folder(&dir, [0.0, 6.0, 3.0]);
+    let elsewhere = dir.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    // The archive is `dir`; the one root is not.
+    let mut core = Core::new(Config {
+        roots: vec![elsewhere],
+        archive: dir.display().to_string(),
+        phi_policy: PhiPolicy::Redact,
+        device: "cpu".into(),
+        audit_log: false,
+        ..Config::default()
+    });
+    let c = &mut core;
+    // Under the archive, by the path itself ...
+    let d = call(c, "open_dataset", json!({"path": folder}));
+    assert_eq!(d["dataset"], "ds1");
+    call(c, "close_dataset", json!({"dataset": "ds1"}));
+    // ... and by the label the redactor reports it under.
+    let d = call(c, "open_dataset", json!({"path": "archive/4dct"}));
+    assert_eq!(d["dataset"], "ds2");
+    let shown = serde_json::to_string(&d).unwrap();
+    assert!(
+        !shown.contains(&dir.display().to_string()),
+        "the archive's folder is never shown: {shown}"
+    );
+    // A `..` does not climb out of it.
+    let e = fail(c, "open_dataset", json!({"path": "archive/4dct/../.."}));
+    assert!(e.contains("outside"), "{e}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn paths_may_be_given_the_way_the_server_reports_them() {
     let dir = common::target_dir("test_mcp_tools_labels");
     let folder = common::fourd_folder(&dir, [0.0, 6.0, 3.0]);
