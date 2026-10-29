@@ -157,6 +157,10 @@ impl Public {
 }
 
 /// One needle: the value as found and, for person names, its components.
+///
+/// Values of two characters are kept: a two-letter family name is a name.
+/// What keeps such a needle from tearing words and UIDs apart is how it is
+/// matched ([`SHORT_NEEDLE`]), not a higher floor.
 fn needles_of(value: &str) -> Vec<String> {
     let mut out = Vec::new();
     let v = value.trim();
@@ -179,8 +183,9 @@ fn needles_of(value: &str) -> Vec<String> {
 /// Every string that leaves the process passes through here.
 #[derive(Default, Clone)]
 pub struct Redactor {
-    /// Identifying values seen in any open dataset, longest first so a
-    /// full name is replaced before its components.
+    /// Identifying values seen in any open dataset, longest first. Where a
+    /// full name and its components both match, the longest match at a
+    /// position wins, so the full name is replaced whole.
     needles: Vec<String>,
     /// Root folders as `(prefix, label)`: a path under a root is reported
     /// relative to it, so a folder named after the patient never appears.
@@ -211,13 +216,21 @@ impl Redactor {
 
     /// Register a root folder under `label` (for example `root1`). Both the
     /// path as configured and its canonical form are recognised, with either
-    /// kind of separator, and without Windows' `\\?\` prefix.
+    /// kind of separator, with and without Windows' `\\?\` prefix (a
+    /// canonical path on Windows carries it, and the label must take its
+    /// place too, not follow it).
     pub fn add_root(&mut self, path: &Path, label: &str) {
         let mut forms: Vec<String> = Vec::new();
         let mut push = |p: &Path| {
             let s = p.to_string_lossy().to_string();
             let s = s.strip_prefix(r"\\?\").unwrap_or(&s).to_string();
-            for f in [s.clone(), s.replace('\\', "/"), s.replace('/', "\\")] {
+            let verbatim = format!(r"\\?\{}", s.replace('/', "\\"));
+            for f in [
+                s.clone(),
+                s.replace('\\', "/"),
+                s.replace('/', "\\"),
+                verbatim,
+            ] {
                 let f = f.trim_end_matches(['/', '\\']).to_string();
                 if !f.is_empty() && !forms.contains(&f) {
                     forms.push(f);
@@ -241,16 +254,17 @@ impl Redactor {
         self.text(&p.to_string_lossy())
     }
 
-    /// Scrub one string.
+    /// Scrub one string: root folders become their labels and identifying
+    /// values the alias, in one pass ([`replace_all`]).
     pub fn text(&self, s: &str) -> Public {
-        let mut out = s.to_string();
-        for (prefix, label) in &self.roots {
-            out = replace_ci(&out, prefix, label);
-        }
-        for n in &self.needles {
-            out = replace_ci(&out, n, ALIAS);
-        }
-        Public(out)
+        let mut pats: Vec<Pattern> = Vec::with_capacity(self.roots.len() + self.needles.len());
+        pats.extend(
+            self.roots
+                .iter()
+                .map(|(prefix, label)| Pattern::root(prefix, label)),
+        );
+        pats.extend(self.needles.iter().map(|n| Pattern::value(n, ALIAS)));
+        Public(replace_all(s, &pats))
     }
 
     /// Scrub every string inside a JSON value, keys included.
@@ -267,10 +281,13 @@ impl Redactor {
         }
     }
 
-    /// One replacement, case-insensitive, for callers scrubbing a study in
-    /// memory before anything reads it.
-    pub fn scrub_with(hay: &str, needle: &str, with: &str) -> String {
-        replace_ci(hay, needle, with)
+    /// Replace every one of `values` in `hay` by `with`, matched as
+    /// [`Redactor::text`] matches its values, for callers scrubbing a study
+    /// in memory before anything reads it.
+    pub fn scrub_with(hay: &str, values: &[String], with: &str) -> String {
+        let needles: Vec<String> = values.iter().flat_map(|v| needles_of(v)).collect();
+        let pats: Vec<Pattern> = needles.iter().map(|n| Pattern::value(n, with)).collect();
+        replace_all(hay, &pats)
     }
 
     /// How many identifying values are known (for `describe_session`).
@@ -279,24 +296,116 @@ impl Redactor {
     }
 }
 
-/// Case-insensitive (ASCII) replacement of every occurrence.
-fn replace_ci(hay: &str, needle: &str, with: &str) -> String {
-    if needle.is_empty() {
+/// Below this many characters a value matches only as a whole token: with
+/// no ASCII letter or digit right before or after it. A short value is
+/// mostly a fragment of ordinary words ("in" in "Supine", "IA" in
+/// "AXIAL"); a long one is a name, and is still found glued into a folder
+/// name (`Doe-Jane_2024`).
+pub const SHORT_NEEDLE: usize = 5;
+
+/// One thing [`replace_all`] looks for.
+struct Pattern<'a> {
+    /// ASCII lower case, compared with the lower-cased text.
+    lower: String,
+    with: &'a str,
+    /// An identifying value, held to the token and number rules; a root
+    /// folder is replaced wherever it is.
+    value: bool,
+    /// Under [`SHORT_NEEDLE`] characters.
+    short: bool,
+}
+
+impl<'a> Pattern<'a> {
+    fn root(prefix: &str, label: &'a str) -> Pattern<'a> {
+        Pattern {
+            lower: prefix.to_ascii_lowercase(),
+            with: label,
+            value: false,
+            short: false,
+        }
+    }
+
+    fn value(needle: &str, with: &'a str) -> Pattern<'a> {
+        Pattern {
+            lower: needle.to_ascii_lowercase(),
+            with,
+            value: true,
+            short: needle.chars().count() < SHORT_NEEDLE,
+        }
+    }
+
+    /// Whether this pattern, found at bytes `start..end` of `h`, counts.
+    fn counts(&self, h: &[u8], start: usize, end: usize) -> bool {
+        if !self.value {
+            return true;
+        }
+        let before = start.checked_sub(1).map(|i| h[i]);
+        let after = h.get(end).copied();
+        if self.short
+            && (before.is_some_and(|b| b.is_ascii_alphanumeric())
+                || after.is_some_and(|b| b.is_ascii_alphanumeric()))
+        {
+            return false;
+        }
+        // Never strictly inside a number or a UID: a value that starts
+        // (ends) with a digit or a dot does not count where the text goes
+        // on with one, so a date or an ID is not found inside
+        // `1.2.752.243.1.1.20261018145021580.3000`, while a whole one
+        // still is (`id 123456,`, `CT_19650312.dcm`).
+        let numeric = |b: u8| b.is_ascii_digit() || b == b'.';
+        let first = self.lower.as_bytes()[0];
+        let last = self.lower.as_bytes()[self.lower.len() - 1];
+        let left_number = match before {
+            Some(b) if b.is_ascii_digit() => true,
+            Some(b'.') => start >= 2 && h[start - 2].is_ascii_digit(),
+            _ => false,
+        };
+        let right_number = match after {
+            Some(b) if b.is_ascii_digit() => true,
+            Some(b'.') => h.get(end + 1).is_some_and(|b| b.is_ascii_digit()),
+            _ => false,
+        };
+        !((numeric(first) && left_number) || (numeric(last) && right_number))
+    }
+}
+
+/// Replace every pattern in `hay` in one pass, case-insensitively (ASCII):
+/// at each position the longest pattern that matches there and
+/// [counts](Pattern::counts) is replaced, and the scan goes on after it.
+/// The replacement is never scanned again, so an alias is never cut into
+/// by a value that happens to be part of it (`[re[redacted]cted]`), and
+/// one value is never found inside another that has been replaced already.
+fn replace_all(hay: &str, pats: &[Pattern]) -> String {
+    let pats: Vec<&Pattern> = pats.iter().filter(|p| !p.lower.is_empty()).collect();
+    if pats.is_empty() {
         return hay.to_string();
     }
-    let lower_hay = hay.to_ascii_lowercase();
-    let lower_needle = needle.to_ascii_lowercase();
+    // Lower-casing ASCII changes no byte offsets, so positions in `lower`
+    // are positions in `hay`; every needle is valid UTF-8, so a match
+    // starts and ends on a character boundary.
+    let lower = hay.to_ascii_lowercase();
+    let h = lower.as_bytes();
     let mut out = String::with_capacity(hay.len());
-    let mut i = 0;
-    while let Some(pos) = lower_hay[i..].find(&lower_needle) {
-        let start = i + pos;
-        // Both strings lower-case byte for byte (ASCII only changes), so
-        // the byte offsets of `lower_hay` are the offsets of `hay`.
-        out.push_str(&hay[i..start]);
-        out.push_str(with);
-        i = start + needle.len();
+    let (mut i, mut copied) = (0, 0);
+    while i < h.len() {
+        let best = pats
+            .iter()
+            .filter(|p| h[i..].starts_with(p.lower.as_bytes()) && p.counts(h, i, i + p.lower.len()))
+            .max_by_key(|p| p.lower.len());
+        match best {
+            Some(p) => {
+                out.push_str(&hay[copied..i]);
+                out.push_str(p.with);
+                i += p.lower.len();
+                copied = i;
+            }
+            None => {
+                // On to the next character, not the next byte.
+                i += hay[i..].chars().next().map_or(1, char::len_utf8);
+            }
+        }
     }
-    out.push_str(&hay[i..]);
+    out.push_str(&hay[copied..]);
     out
 }
 
@@ -341,6 +450,81 @@ mod tests {
     }
 
     #[test]
+    fn short_values_match_whole_tokens_only() {
+        let mut r = Redactor::new();
+        r.add_values(vec!["in".into(), "da".into(), "50".into(), "IA".into()]);
+        for s in [
+            "Supine",
+            "modality",
+            "[redacted]",
+            "ORIGINAL / PRIMARY / AXIAL",
+            "1.2.752.243.1.1.20261018145021580.3000.24234",
+            "NoDate_Supine-CT",
+        ] {
+            assert_eq!(r.text(s).as_str(), s, "{s} is left alone");
+        }
+        // Standing alone, a two-letter value is still a value.
+        assert_eq!(
+            r.text("Patient DA here").as_str(),
+            "Patient [redacted] here"
+        );
+        assert_eq!(r.text("da").as_str(), "[redacted]");
+        assert_eq!(r.text("dose 50 Gy").as_str(), "dose [redacted] Gy");
+    }
+
+    #[test]
+    fn long_values_are_found_inside_words_but_not_inside_numbers() {
+        let mut r = Redactor::new();
+        r.add_values(vec![
+            "DOE^JANE".into(),
+            "in".into(),
+            "da".into(),
+            "20240517".into(),
+        ]);
+        assert_eq!(
+            r.text("Doe^Jane and DOE JANE").as_str(),
+            "[redacted] and [redacted]"
+        );
+        assert_eq!(
+            r.text("Doe-Jane_2024").as_str(),
+            "[redacted]-[redacted]_2024"
+        );
+        // A date is a value on its own or in a file name, never as the
+        // middle of a UID.
+        assert_eq!(r.text("born 20240517").as_str(), "born [redacted]");
+        assert_eq!(r.text("CT_20240517.dcm").as_str(), "CT_[redacted].dcm");
+        let uid = "1.2.3.20240517.4";
+        assert_eq!(r.text(uid).as_str(), uid);
+        assert_eq!(r.text("1.2.320240517991").as_str(), "1.2.320240517991");
+        // The alias is never scanned again, whatever it contains.
+        assert_eq!(
+            r.text("Jane in Doe^Jane").as_str(),
+            "[redacted] [redacted] [redacted]"
+        );
+    }
+
+    #[test]
+    fn roots_and_values_are_replaced_in_one_pass() {
+        let mut r = Redactor::new();
+        r.add_root(Path::new(r"D:\PACS"), "archive");
+        r.add_values(vec!["ch".into(), "Doe^Jane".into()]);
+        assert_eq!(
+            r.text(r"D:\PACS\Doe-Jane_CT\x.dcm").as_str(),
+            r"archive\[redacted]-[redacted]_CT\x.dcm",
+            "the label is not cut into by a value it contains"
+        );
+    }
+
+    #[test]
+    fn scrubbing_in_memory_follows_the_same_rules() {
+        let values = vec!["DOE^JANE".to_string(), "in".to_string()];
+        assert_eq!(
+            Redactor::scrub_with("Supine Doe Jane in", &values, "anon_1"),
+            "Supine anon_1 anon_1"
+        );
+    }
+
+    #[test]
     fn roots_become_labels_with_either_separator() {
         let mut r = Redactor::new();
         r.add_root(Path::new(r"D:\studies\Rambam_patient_2"), "root1");
@@ -352,6 +536,11 @@ mod tests {
         assert_eq!(
             r.text("read D:/studies/Rambam_patient_2/4DCT").as_str(),
             "read root1/4DCT"
+        );
+        // A canonical path on Windows: the label takes the prefix's place.
+        assert_eq!(
+            r.text(r"\\?\D:\studies\Rambam_patient_2\4DCT").as_str(),
+            r"root1\4DCT"
         );
     }
 

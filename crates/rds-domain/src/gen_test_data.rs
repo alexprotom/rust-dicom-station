@@ -33,16 +33,10 @@ use crate::settings;
 // SOP Class UIDs
 // ---------------------------------------------------------------------------
 
-const SOP_CT: &str = "1.2.840.10008.5.1.4.1.1.2";
-const SOP_RTSTRUCT: &str = "1.2.840.10008.5.1.4.1.1.481.3";
-const SOP_RTDOSE: &str = "1.2.840.10008.5.1.4.1.1.481.2";
-const SOP_RTIONPLAN: &str = "1.2.840.10008.5.1.4.1.1.481.8";
-const SOP_RTIMAGE: &str = "1.2.840.10008.5.1.4.1.1.481.1";
-const SOP_DX: &str = "1.2.840.10008.5.1.4.1.1.1.1";
-const SOP_SPATIAL_REG: &str = "1.2.840.10008.5.1.4.1.1.66.1";
-const SOP_RT_ION_BEAMS_RECORD: &str = "1.2.840.10008.5.1.4.1.1.481.9";
-/// Detached Study Management (referenced from RTSTRUCT).
-const SOP_DETACHED_STUDY: &str = "1.2.840.10008.3.1.2.3.1";
+use crate::sop::{
+    SOP_CT, SOP_DETACHED_STUDY, SOP_DX_PRESENTATION as SOP_DX, SOP_RTDOSE, SOP_RTIMAGE,
+    SOP_RTIONPLAN, SOP_RTSTRUCT, SOP_RT_ION_BEAMS_RECORD, SOP_SPATIAL_REG,
+};
 
 // ---------------------------------------------------------------------------
 // Phantom geometry (fixed - the integration tests depend on these values)

@@ -21,6 +21,8 @@ use crate::progress::Progress;
 use crate::rtdose::{self, DoseGrid};
 use crate::rtplan::{self, PlanInfo};
 use crate::rtstruct::{self, StructureSet};
+// SOP Class UID fallbacks for RT objects (when Modality is absent).
+use crate::sop::{SOP_RTDOSE, SOP_RTIONPLAN, SOP_RTPLAN, SOP_RTSTRUCT};
 use crate::volume::Volume;
 
 // ---------------------------------------------------------------------------
@@ -182,6 +184,11 @@ pub struct SeriesInfo {
     /// body-weight SUV. `None` unless the header carries everything it
     /// takes ([`suv_bw_factor`]).
     pub suv_bw: Option<f64>,
+    /// Frame of Reference UID (0020,0052) of the first slice: what the RT
+    /// objects drawn on this series must share. Every series has its own,
+    /// so it is asked of the series a structure set references, never of
+    /// the volume on display ([`for_warnings`]).
+    pub frame_of_reference_uid: String,
     pub files: Vec<PathBuf>,
 }
 
@@ -349,8 +356,9 @@ pub enum FileClass {
     Plan,
     Registration,
     Record,
-    /// Readable as DICOM, but nothing here reads it (a PDF, a presentation
-    /// state).
+    /// Readable as DICOM, but nothing here reads it: an object without an
+    /// image ([`crate::sop::is_non_image`]: a PDF, a presentation state, a
+    /// key object selection), or an image that fits nowhere.
     Other,
 }
 
@@ -396,6 +404,18 @@ pub fn classify(
         FileClass::Registration
     } else if modality == "RTRECORD" || extras::is_record_sop(sop_class) {
         FileClass::Record
+    } else if sop_class == crate::sop::SOP_ENCAPSULATED_PDF {
+        // A PDF filed with the study (a findings report): read as a report,
+        // shown as its pages. Asked before the single-image checks below,
+        // which would take it (`OT`, unpositioned) for an additional object
+        // and look for pixels it does not have.
+        FileClass::Report
+    } else if extras::is_non_image_sop(sop_class) {
+        // Another document, a presentation state, a selection of keys: no
+        // pixels to decode, whatever the Modality and however alone in its
+        // series it is. Asked before the SR check, since a key object
+        // selection is encoded as an SR.
+        FileClass::Other
     } else if modality == "SR" || crate::report::is_sr_sop(sop_class) {
         FileClass::Report
     } else if extras::is_secondary_capture_sop(sop_class) {
@@ -423,12 +443,6 @@ pub fn classify(
         FileClass::Other
     }
 }
-
-/// SOP Class UID fallbacks for RT objects (when Modality is absent).
-const SOP_RTSTRUCT: &str = "1.2.840.10008.5.1.4.1.1.481.3";
-const SOP_RTDOSE: &str = "1.2.840.10008.5.1.4.1.1.481.2";
-const SOP_RTPLAN: &str = "1.2.840.10008.5.1.4.1.1.481.5";
-const SOP_RTIONPLAN: &str = "1.2.840.10008.5.1.4.1.1.481.8";
 
 pub fn load_directory(dir: &Path, progress: &Progress) -> Result<LoadedStudy> {
     load_directory_with(dir, progress, true)
@@ -517,6 +531,7 @@ fn load_files_with(
         series_number: Option<i64>,
         temporal_id: Option<i64>,
         suv_bw: Option<f64>,
+        for_uid: String,
         has_geometry: bool,
         meta: PatientMeta,
     }
@@ -533,6 +548,7 @@ fn load_files_with(
             let series_number = i32_of(&obj, tags::SERIES_NUMBER).map(i64::from);
             let temporal_id = i32_of(&obj, tags::TEMPORAL_POSITION_IDENTIFIER).map(i64::from);
             let suv_bw = (modality == "PT").then(|| suv_factor_of(&obj)).flatten();
+            let for_uid = str_of(&obj, tags::FRAME_OF_REFERENCE_UID).unwrap_or_default();
             let has_geometry = obj.element(tags::IMAGE_POSITION_PATIENT).is_ok()
                 && obj.element(tags::ROWS).is_ok();
             let meta = PatientMeta {
@@ -552,6 +568,7 @@ fn load_files_with(
                 series_number,
                 temporal_id,
                 suv_bw,
+                for_uid,
                 has_geometry,
                 meta,
             })
@@ -579,6 +596,9 @@ fn load_files_with(
     let mut reg_files = Vec::new();
     let mut record_files = Vec::new();
     let mut report_files = Vec::new();
+    // What is left out, by the name of its SOP class: said once, in one
+    // line, rather than once a file.
+    let mut not_shown: std::collections::BTreeMap<String, usize> = Default::default();
     let mut meta = PatientMeta::default();
 
     // Series are looked up by UID rather than scanned linearly: with many
@@ -618,7 +638,11 @@ fn load_files_with(
             FileClass::Report => report_files.push(s.path.clone()),
             // Both kinds of single image: `load_planar` tells them apart.
             FileClass::Projection | FileClass::Additional => planar_files.push(s.path.clone()),
-            FileClass::Other => {}
+            FileClass::Other => {
+                *not_shown
+                    .entry(crate::sop::name_or_uid(&s.sop_class))
+                    .or_default() += 1;
+            }
             FileClass::Volume => match series_index.get(s.series_uid.as_str()) {
                 Some(&i) => image_series[i].files.push(s.path.clone()),
                 None => {
@@ -636,11 +660,35 @@ fn load_files_with(
                         series_number: s.series_number,
                         temporal_id: s.temporal_id,
                         suv_bw: s.suv_bw,
+                        frame_of_reference_uid: s.for_uid.clone(),
                         files: vec![s.path.clone()],
                     });
                 }
             },
         }
+    }
+
+    if !not_shown.is_empty() {
+        let total: usize = not_shown.values().sum();
+        let kinds: Vec<String> = not_shown
+            .iter()
+            .map(|(name, n)| {
+                let name = if name.is_empty() {
+                    "unknown SOP class"
+                } else {
+                    name
+                };
+                if *n > 1 {
+                    format!("{name} ({n})")
+                } else {
+                    name.to_string()
+                }
+            })
+            .collect();
+        warnings.push(format!(
+            "{total} object(s) not displayed: {}",
+            kinds.join(", ")
+        ));
     }
 
     // Default to the series with the most slices (typically the planning CT).
@@ -687,14 +735,33 @@ fn load_files_with(
     // RT objects - every structure set is loaded (e.g. one per 4DCT phase);
     // the application chooses which one is active. Each group is parsed in
     // parallel; the files are independent.
-    let structure_sets = parse_group(
+    let read_sets = parse_group(
         &rtstruct_files,
         "RTSTRUCT",
         "Parsing RT Structure Sets",
         progress,
         &mut warnings,
-        rtstruct::load,
+        rtstruct::load_noted,
     );
+    // What a set lacked and was given here, one line per file; a frame of
+    // reference written in the wrong tag is taken only when it is that of
+    // the series the set references.
+    let mut structure_sets = Vec::with_capacity(read_sets.len());
+    for mut read in read_sets {
+        let series_for = image_series
+            .iter()
+            .find(|se| se.uid == read.set.referenced_series_uid)
+            .map(|se| se.frame_of_reference_uid.as_str());
+        read.settle(series_for);
+        if !read.notes.is_empty() {
+            warnings.push(format!(
+                "RTSTRUCT {} {}",
+                read.set.file_name,
+                read.notes.join("; ")
+            ));
+        }
+        structure_sets.push(read.set);
+    }
     let seg_series = parse_group(
         &seg_files,
         "SEG",
@@ -738,8 +805,8 @@ fn load_files_with(
     }
     reports.extend(parse_group(
         &report_files,
-        "SR",
-        "Reading structured reports",
+        "report",
+        "Reading reports and documents",
         progress,
         &mut warnings,
         crate::report::load_report,
@@ -767,41 +834,16 @@ fn load_files_with(
         extras::load_record,
     );
 
-    // Frame-of-reference sanity checks.
-    for ss in &structure_sets {
-        if !ss.frame_of_reference_uid.is_empty()
-            && !volume.frame_of_reference_uid.is_empty()
-            && ss.frame_of_reference_uid != volume.frame_of_reference_uid
-        {
-            warnings.push(format!(
-                "RTSTRUCT {} frame of reference differs from the image volume - contours may be misaligned",
-                ss.file_name
-            ));
-        }
-    }
-    for sr in &seg_series {
-        if !sr.grid.frame_of_reference_uid.is_empty()
-            && !volume.frame_of_reference_uid.is_empty()
-            && sr.grid.frame_of_reference_uid != volume.frame_of_reference_uid
-        {
-            warnings.push(format!(
-                "SEG {} frame of reference differs from the image volume - \
-                 the segments may be misaligned",
-                sr.file_name
-            ));
-        }
-    }
-    for d in &doses {
-        if !d.frame_of_reference_uid.is_empty()
-            && !volume.frame_of_reference_uid.is_empty()
-            && d.frame_of_reference_uid != volume.frame_of_reference_uid
-        {
-            warnings.push(
-                "RTDOSE frame of reference differs from the image volume - overlay may be misaligned"
-                    .into(),
-            );
-        }
-    }
+    // Frame-of-reference sanity checks, each object against the series it
+    // belongs to. A load to be merged into a workspace may reference a
+    // series already there, so it only reports what contradicts itself.
+    warnings.extend(for_warnings(
+        &image_series,
+        &structure_sets,
+        &seg_series,
+        &doses,
+        with_volume,
+    ));
 
     let fourd_groups = crate::fourd::detect(&image_series);
 
@@ -823,6 +865,126 @@ fn load_files_with(
         warnings,
         default_window,
     })
+}
+
+/// The frame-of-reference warnings of a load, one line per kind of object
+/// and kind of trouble, naming the first few files.
+///
+/// Every series has a frame of reference of its own (the phases of a 4DCT
+/// may each have one, on identical grids), so an object is held to the
+/// series it says it was drawn on, never to the volume on display:
+///
+/// * a structure set or a SEG whose referenced series is loaded is wrong
+///   only when its frame of reference differs from that series' - the
+///   files contradict each other;
+/// * one whose series is not loaded, and a dose (which names no series),
+///   is reported only when no loaded series shares its frame of reference
+///   at all. `standalone` false (a load to be merged into a workspace,
+///   whose series it may reference) skips that question, and so does a
+///   load with no image series: nothing is misaligned with nothing.
+///
+/// None of this changes what a transfer between frames of reference needs
+/// (a registration, see [`crate::propagate`]); it only decides what to say.
+fn for_warnings(
+    series: &[SeriesInfo],
+    sets: &[StructureSet],
+    segs: &[SegSeries],
+    doses: &[DoseGrid],
+    standalone: bool,
+) -> Vec<String> {
+    #[derive(PartialEq)]
+    enum Trouble {
+        Mismatched,
+        Unbound,
+    }
+    let shared = |f: &str| series.iter().any(|se| se.frame_of_reference_uid == f);
+    let check_unbound = standalone && !series.is_empty();
+    // An object's own frame of reference and the series it references.
+    let judge = |own: &str, referenced: &str| -> Option<Trouble> {
+        if own.is_empty() {
+            return None;
+        }
+        let series_of = series
+            .iter()
+            .find(|se| !referenced.is_empty() && se.uid == referenced);
+        match series_of {
+            Some(se) => (!se.frame_of_reference_uid.is_empty() && se.frame_of_reference_uid != own)
+                .then_some(Trouble::Mismatched),
+            None => (check_unbound && !shared(own)).then_some(Trouble::Unbound),
+        }
+    };
+    let mut out = Vec::new();
+    let mut report = |kind: &str, names: &[&str], what: &str| {
+        const SHOWN: usize = 3;
+        if names.is_empty() {
+            return;
+        }
+        let mut list = names[..names.len().min(SHOWN)].join(", ");
+        if names.len() > SHOWN {
+            list.push_str(&format!(" and {} more", names.len() - SHOWN));
+        }
+        out.push(format!("{kind} {list}: {what}"));
+    };
+    fn of<'a>(judged: &[(Option<Trouble>, &'a str)], t: Trouble) -> Vec<&'a str> {
+        judged
+            .iter()
+            .filter(|(j, _)| j.as_ref() == Some(&t))
+            .map(|(_, n)| *n)
+            .collect()
+    }
+
+    let judged: Vec<(Option<Trouble>, &str)> = sets
+        .iter()
+        .map(|ss| {
+            let j = judge(&ss.frame_of_reference_uid, &ss.referenced_series_uid);
+            (j, ss.file_name.as_str())
+        })
+        .collect();
+    report(
+        "RTSTRUCT",
+        &of(&judged, Trouble::Mismatched),
+        "frame of reference differs from that of the image series referenced - \
+         contours may be misaligned",
+    );
+    report(
+        "RTSTRUCT",
+        &of(&judged, Trouble::Unbound),
+        "references a series which is not loaded, and no loaded series shares its \
+         frame of reference - contours may be misaligned",
+    );
+
+    let judged: Vec<(Option<Trouble>, &str)> = segs
+        .iter()
+        .map(|sr| {
+            let j = judge(&sr.grid.frame_of_reference_uid, &sr.referenced_series_uid);
+            (j, sr.file_name.as_str())
+        })
+        .collect();
+    report(
+        "SEG",
+        &of(&judged, Trouble::Mismatched),
+        "frame of reference differs from that of the image series referenced - \
+         the segments may be misaligned",
+    );
+    report(
+        "SEG",
+        &of(&judged, Trouble::Unbound),
+        "references a series which is not loaded, and no loaded series shares its \
+         frame of reference - the segments may be misaligned",
+    );
+
+    let unbound: Vec<&str> = doses
+        .iter()
+        .filter(|d| check_unbound && !d.frame_of_reference_uid.is_empty())
+        .filter(|d| !shared(&d.frame_of_reference_uid))
+        .map(|d| d.label.as_str())
+        .collect();
+    report(
+        "RTDOSE",
+        &unbound,
+        "no loaded image series shares its frame of reference - the overlay may be misaligned",
+    );
+    out
 }
 
 /// Fully load one image series into a `Volume` (parallel decode).
@@ -1380,6 +1542,25 @@ mod tests {
         // Something readable as DICOM that nothing here reads.
         assert_eq!(
             classify("PR", "1.2.840.10008.5.1.4.1.1.11.1", false, true),
+            FileClass::Other
+        );
+        // An encapsulated PDF, alone and unpositioned in its series, is no
+        // additional object whatever its Modality: it has no pixels, and is
+        // read as a report. Another encapsulated document is left out.
+        const PDF: &str = crate::sop::SOP_ENCAPSULATED_PDF;
+        assert_eq!(classify("OT", PDF, false, false), FileClass::Report);
+        assert_eq!(classify("DOC", PDF, false, false), FileClass::Report);
+        assert_eq!(
+            classify("DOC", "1.2.840.10008.5.1.4.1.1.104.2", false, false),
+            FileClass::Other
+        );
+        assert_eq!(
+            classify("PR", "1.2.840.10008.5.1.4.1.1.11.1", false, false),
+            FileClass::Other
+        );
+        // A key object selection is encoded as an SR but is not a report.
+        assert_eq!(
+            classify("KO", crate::sop::SOP_KEY_OBJECT_SELECTION, false, false),
             FileClass::Other
         );
     }

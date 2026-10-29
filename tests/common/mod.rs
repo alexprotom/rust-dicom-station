@@ -317,6 +317,63 @@ pub fn step_page() -> String {
 /// folder, for the study the folder holds: two acquisitions, the totals,
 /// the scanner, and a physician's name as a `PNAME` item, which the MCP
 /// server must never return.
+/// Write a findings report into the folder as a hospital PACS files one: an
+/// Encapsulated PDF that calls itself `OT`, in a series of its own named
+/// `Befund`, with the patient's header and a title that names the patient's
+/// ID and `physician` (as real titles do). The loader must file it as a
+/// report whose pages draw; the MCP server must return neither name.
+pub fn document_into(folder: &Path, physician: &str) {
+    use dicom_core::{DataElement, PrimitiveValue};
+    use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
+    use rust_dicom_station::dicom_export::new_uid;
+    use rust_dicom_station::sop::SOP_ENCAPSULATED_PDF;
+    let study = loader::load_directory(folder, &Progress::default()).expect("the CT loads");
+    let series = &study.series[study.active_series];
+    let mut o = InMemDicomObject::new_empty();
+    let mut put = |tag: Tag, vr: VR, v: &str| {
+        o.put(DataElement::new(tag, vr, PrimitiveValue::from(v)));
+    };
+    let sop_uid = new_uid();
+    put(tags::SOP_CLASS_UID, VR::UI, SOP_ENCAPSULATED_PDF);
+    put(tags::SOP_INSTANCE_UID, VR::UI, &sop_uid);
+    put(tags::STUDY_INSTANCE_UID, VR::UI, &series.study_uid);
+    put(tags::SERIES_INSTANCE_UID, VR::UI, &new_uid());
+    put(tags::SERIES_NUMBER, VR::IS, "7500");
+    put(tags::MODALITY, VR::CS, "OT");
+    put(tags::SERIES_DESCRIPTION, VR::LO, "Befund");
+    put(tags::PATIENT_NAME, VR::PN, &series.patient_name);
+    put(tags::PATIENT_ID, VR::LO, &series.patient_id);
+    put(tags::VERIFICATION_FLAG, VR::CS, "VERIFIED");
+    put(
+        tags::DOCUMENT_TITLE,
+        VR::ST,
+        &format!("Befund (PID {}) {physician}", series.patient_id),
+    );
+    put(
+        tags::MIME_TYPE_OF_ENCAPSULATED_DOCUMENT,
+        VR::LO,
+        "application/pdf",
+    );
+    let mut pdf = rust_dicom_station::report::document::sample_pdf();
+    if pdf.len() % 2 == 1 {
+        pdf.push(b'\n');
+    }
+    o.put(DataElement::new(
+        tags::ENCAPSULATED_DOCUMENT,
+        VR::OB,
+        PrimitiveValue::from(pdf),
+    ));
+    o.with_meta(
+        FileMetaTableBuilder::new()
+            .transfer_syntax("1.2.840.10008.1.2.1")
+            .media_storage_sop_class_uid(SOP_ENCAPSULATED_PDF)
+            .media_storage_sop_instance_uid(sop_uid),
+    )
+    .expect("file meta")
+    .write_to_file(folder.join("befund.dcm"))
+    .expect("document written");
+}
+
 pub fn dose_report_into(folder: &Path, physician: &str) {
     use dicom_core::value::Value;
     use dicom_core::{DataElement, Length, PrimitiveValue};

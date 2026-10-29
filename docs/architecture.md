@@ -547,7 +547,10 @@ src/
                     ellipsoidal margins, components, hole filling, the
                     extruded-equipment test, box-blur smoothing; the mask
                     helpers everything shares (count, extent, surface walk)     Core
-  rtstruct.rs       RT Structure Set parsing                                     DICOM
+  sop.rs            the SOP Class UIDs read, written or recognised, their
+                    families (non-image objects, SR, SC) and listing names       DICOM
+  rtstruct.rs       RT Structure Set parsing, with the fallbacks for sets that
+                    lack the ROI sequence or misplace the frame of reference     DICOM
   rt_surface.rs     the surface-based volume of an RT structure: a closed
                     triangle surface from planar contours (keyholes, strips
                     between slices, smooth end caps, seams closed) and the
@@ -562,7 +565,9 @@ src/
   report/           reports: the SR content tree (sr.rs), the CT dose SR as
                     a table of acquisitions (dose.rs, TID 10011 by concept
                     code), a Siemens page's MEDCOM OOG text laid out as its
-                    table (siemens.rs), and Report / Table                       DICOM
+                    table (siemens.rs), encapsulated PDFs
+                    drawn page by page with hayro (document.rs), and
+                    Report / Table                                              DICOM
   dicom_export.rs   DICOM writer: the object builders (CT slice, RTSTRUCT with
                     its image reference chain, SEG, RTDOSE, RTPLAN, Deformable
                     and rigid Spatial Registration, RT Image with its

@@ -40,11 +40,7 @@ pub struct DatasetArgs {
 /// an export field, a series description) still carries it.
 fn scrub_in_memory(study: &mut LoadedStudy, values: &[String], alias: &str) {
     let scrub = |s: &mut String| {
-        for v in values {
-            if v.len() >= 2 && s.to_ascii_lowercase().contains(&v.to_ascii_lowercase()) {
-                *s = phi::Redactor::scrub_with(s, v, alias);
-            }
-        }
+        *s = phi::Redactor::scrub_with(s, values, alias);
     };
     study.meta.patient_name = alias.to_string();
     study.meta.patient_id = alias.to_string();
@@ -303,6 +299,7 @@ pub fn describe(ds: &Dataset) -> Value {
                     crate::report::ReportKind::Structured => "structured_report",
                     crate::report::ReportKind::DoseReport => "dose_report",
                     crate::report::ReportKind::ProtocolPage => "protocol_page",
+                    crate::report::ReportKind::Document => "document",
                 },
                 "modality": r.modality,
                 "facts": r.info.iter().map(|(k, v)| json!([clean_text(k), clean_text(v)])).collect::<Vec<_>>(),

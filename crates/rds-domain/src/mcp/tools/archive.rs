@@ -178,45 +178,6 @@ fn find_study(patients: &[PatientEntry], uid: &str) -> Result<(PatientEntry, Stu
         .ok_or_else(|| anyhow::anyhow!("the archive holds no study {uid}"))
 }
 
-/// A short name for the SOP classes a listing meets most; the UID itself
-/// for the rest.
-fn sop_name(uid: &str) -> String {
-    let name = match uid {
-        "1.2.840.10008.5.1.4.1.1.2" => "CT Image",
-        "1.2.840.10008.5.1.4.1.1.2.1" => "Enhanced CT Image",
-        "1.2.840.10008.5.1.4.1.1.4" => "MR Image",
-        "1.2.840.10008.5.1.4.1.1.4.1" => "Enhanced MR Image",
-        "1.2.840.10008.5.1.4.1.1.128" => "PET Image",
-        "1.2.840.10008.5.1.4.1.1.20" => "NM Image",
-        "1.2.840.10008.5.1.4.1.1.6.1" => "Ultrasound Image",
-        "1.2.840.10008.5.1.4.1.1.7" => "Secondary Capture Image",
-        "1.2.840.10008.5.1.4.1.1.7.1" => "Multi-frame Single Bit SC Image",
-        "1.2.840.10008.5.1.4.1.1.7.2" => "Multi-frame Grayscale Byte SC Image",
-        "1.2.840.10008.5.1.4.1.1.7.3" => "Multi-frame Grayscale Word SC Image",
-        "1.2.840.10008.5.1.4.1.1.7.4" => "Multi-frame True Color SC Image",
-        "1.2.840.10008.5.1.4.1.1.1" => "CR Image",
-        "1.2.840.10008.5.1.4.1.1.1.1" => "DX Image (presentation)",
-        "1.2.840.10008.5.1.4.1.1.1.1.1" => "DX Image (processing)",
-        "1.2.840.10008.5.1.4.1.1.481.1" => "RT Image",
-        "1.2.840.10008.5.1.4.1.1.481.2" => "RT Dose",
-        "1.2.840.10008.5.1.4.1.1.481.3" => "RT Structure Set",
-        "1.2.840.10008.5.1.4.1.1.481.5" => "RT Plan",
-        "1.2.840.10008.5.1.4.1.1.481.8" => "RT Ion Plan",
-        "1.2.840.10008.5.1.4.1.1.66" => "Raw Data",
-        "1.2.840.10008.5.1.4.1.1.66.1" => "Spatial Registration",
-        "1.2.840.10008.5.1.4.1.1.66.3" => "Deformable Spatial Registration",
-        "1.2.840.10008.5.1.4.1.1.66.4" => "Segmentation",
-        "1.2.840.10008.5.1.4.1.1.88.11" => "Basic Text SR",
-        "1.2.840.10008.5.1.4.1.1.88.22" => "Enhanced SR",
-        "1.2.840.10008.5.1.4.1.1.88.33" => "Comprehensive SR",
-        "1.2.840.10008.5.1.4.1.1.88.67" => "X-Ray Radiation Dose SR",
-        "1.2.840.10008.5.1.4.1.1.104.1" => "Encapsulated PDF",
-        "1.2.840.10008.5.1.4.1.1.11.1" => "Grayscale Softcopy Presentation State",
-        _ => return uid.to_string(),
-    };
-    name.to_string()
-}
-
 /// What the header of one file says, for the series listing.
 struct HeadFacts {
     modality: String,
@@ -299,8 +260,12 @@ pub fn describe_archive_study(core: &mut Core, a: ArchiveStudyArgs, p: &Progress
                 class = FileClass::Report;
                 v["report"] = json!("protocol page");
             }
+            let pdf = h.sop_class == crate::sop::SOP_ENCAPSULATED_PDF;
+            if pdf {
+                v["report"] = json!("document");
+            }
             v["class"] = json!(class.label());
-            v["sop_class"] = json!(sop_name(&h.sop_class));
+            v["sop_class"] = json!(crate::sop::name_or_uid(&h.sop_class));
             v["positioned"] = json!(positioned);
             if let Some(t) = h.image_type {
                 v["image_type"] = json!(clean_text(&t));
@@ -319,11 +284,16 @@ pub fn describe_archive_study(core: &mut Core, a: ArchiveStudyArgs, p: &Progress
             }
             if matches!(
                 class,
-                FileClass::Projection | FileClass::Additional | FileClass::Report
+                FileClass::Projection
+                    | FileClass::Additional
+                    | FileClass::Report
+                    | FileClass::Other
             ) {
                 v["shown_in"] = json!(match class {
                     FileClass::Projection => "a planar pane",
+                    FileClass::Report if pdf => "the Additional pane, as its pages",
                     FileClass::Report => "the Additional pane, as a table",
+                    FileClass::Other => "nowhere: it is left out when the study is loaded",
                     _ => "the Additional pane",
                 });
             }

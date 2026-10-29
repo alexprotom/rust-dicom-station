@@ -24,13 +24,10 @@ use crate::geometry::Vec3;
 use crate::loader::LoadedStudy;
 use crate::progress::Progress;
 
-pub(crate) const SOP_CT: &str = "1.2.840.10008.5.1.4.1.1.2";
-pub(crate) const SOP_RTSTRUCT: &str = "1.2.840.10008.5.1.4.1.1.481.3";
-pub(crate) const SOP_RTDOSE: &str = "1.2.840.10008.5.1.4.1.1.481.2";
-const SOP_RTPLAN: &str = "1.2.840.10008.5.1.4.1.1.481.5";
-const SOP_RTIONPLAN: &str = "1.2.840.10008.5.1.4.1.1.481.8";
-/// Detached Study Management, the SOP class RTSTRUCT names a study with.
-const SOP_DETACHED_STUDY: &str = "1.2.840.10008.3.1.2.3.1";
+pub use crate::sop::{
+    SOP_CT, SOP_DEFORMABLE_REG, SOP_DETACHED_STUDY, SOP_RTDOSE, SOP_RTIMAGE, SOP_RTIONPLAN,
+    SOP_RTPLAN, SOP_RTSTRUCT, SOP_SPATIAL_REG,
+};
 const EXPLICIT_VR_LE: &str = "1.2.840.10008.1.2.1";
 
 static UID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -1151,9 +1148,6 @@ fn truncate(s: &str, max: usize) -> String {
 // Deformable Spatial Registration
 // ---------------------------------------------------------------------------
 
-/// SOP Class UID of the Deformable Spatial Registration IOD.
-pub const SOP_DEFORMABLE_REG: &str = "1.2.840.10008.5.1.4.1.1.66.3";
-
 // The IOD's own tags. Written by number rather than by dictionary name so
 // the file does not depend on which release of the data dictionary is
 // linked - these five have not moved since Supplement 73.
@@ -1750,11 +1744,6 @@ pub fn write_derived_image_series(
 // ---------------------------------------------------------------------------
 // Rigid Spatial Registration and RT Image
 // ---------------------------------------------------------------------------
-
-/// Spatial Registration Storage.
-pub const SOP_SPATIAL_REG: &str = "1.2.840.10008.5.1.4.1.1.66.1";
-/// RT Image Storage.
-pub const SOP_RTIMAGE: &str = "1.2.840.10008.5.1.4.1.1.481.1";
 
 /// The identity of the patient and study an object is written into.
 #[derive(Clone, Debug, Default)]

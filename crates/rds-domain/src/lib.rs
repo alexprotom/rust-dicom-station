@@ -53,6 +53,7 @@ pub mod segmentation;
 pub mod settings;
 pub mod setup;
 pub mod simulate;
+pub mod sop;
 pub mod structops;
 pub mod templates;
 pub mod testdata;

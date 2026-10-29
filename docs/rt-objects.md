@@ -34,6 +34,32 @@ active image series (RTReferencedSeriesSequence) is chosen automatically and
 follows series switches. Structure sets also feed the 3D surface view - see
 [segmentation.md](segmentation.md).
 
+**Sets that are not quite conforming** still open with what they mean. Some
+planning system exports (RayStation's "RS: Unapproved" among them) leave out
+the Structure Set ROI Sequence, Type 1 as it is, keep the ROI names only as
+the *ROI Observation Label* of the RT ROI Observations, and write the Frame
+of Reference UID as a *Referenced SOP Instance UID* inside the Referenced
+Frame of Reference Sequence. The names are then taken from the observation
+labels before "ROI n", and the frame of reference from the first of: the
+Referenced Frame of Reference Sequence, where the standard puts it; the
+Structure Set ROI Sequence; a top-level Frame of Reference UID; and last the
+misplaced UID, but only when it is the frame of reference of the series the
+set references, never on its own. What had to be made good is one load
+warning per file. The set is written back conforming: an export carries the
+Structure Set ROI Sequence with the names and the frame of reference.
+
+**Frame of reference checks** hold each set to the series it references, not
+to the volume on display: every series may have a frame of reference of its
+own (the phases of a 4DCT often do), so a set is reported only when its
+frame of reference differs from that of its referenced series, or, when that
+series is not loaded, when no loaded series shares it. SEG objects follow
+the same rule and a dose (which names no series) the second half of it.
+Repeats are one line per kind, naming the first files. A folder merged into
+a workspace reports only what contradicts itself, since the series it
+references may already be there. None of this weakens the transfer between
+frames of reference, which still needs a registration - see
+[motion-4d.md](motion-4d.md#transfer-by-relationship-srcapptransferrs).
+
 ## SEG - DICOM Segmentation objects
 
 A Segmentation instance is a multi-frame image of binary masks, one frame per

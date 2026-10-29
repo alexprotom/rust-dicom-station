@@ -189,7 +189,14 @@ becomes part of a protocol frame: tool results, error messages (which quote
 file names), progress messages, the prompt, the resources, the audit log. The
 redactor knows every identifying value seen in any open workspace and replaces
 it, and it reports paths relative to the root they are under (`root1/4DCT`),
-so a folder named after the patient never appears either. Free text from
+so a folder named after the patient never appears either. It works in one
+pass, the longest value at each position first, and never scans its own
+replacement again. A value of under five characters (a two-letter family
+name, initials) counts only as a whole token, with no letter or digit beside
+it, so it does not tear `Supine` or `AXIAL` apart; a longer one is found
+anywhere, a name glued into a folder name (`Doe-Jane_2024`) included; and no
+value is found strictly inside a number or a UID, so an ID or a date does not
+cut a Study Instance UID in two. Free text from
 DICOM files (descriptions, structure names) is capped at 64 characters,
 stripped of control characters, and delivered in its own JSON field, so the
 assistant sees it as data rather than as instructions.
@@ -212,11 +219,13 @@ the archive is `open_dataset` with the files taken from the catalog: the
 same gate, the same policy.
 
 **The sandbox.** Paths in tool calls are canonicalized and must lie under a
-configured root (or the output folder, so results can be re-opened); the
-archive tools reach the PACS the configuration names, and nothing else. A path
-may be given the way the server reports it, under its label: `root1/4DCT`,
-`output/session/anonymized`, so what `anonymize` answers is exactly what
-`open_dataset` takes next. Output
+configured root, the output folder (so results can be re-opened) or a
+storage folder of the archive the configuration names (which the archive
+tools read anyway; what is opened from it passes the same gate). Nothing
+else is read. A path may be given the way the server reports it, under its
+label: `root1/4DCT`, `output/session/anonymized`, `archive/...`, so what
+one tool answers is exactly what the next takes; a `..` behind a label is
+canonicalized like any other and cannot climb out. Output
 goes into a per-session folder under `output_dir`; existing files are never
 overwritten and no tool deletes. Model weights are not downloaded unless
 `allow_model_download` is on; a missing model is an error that names the

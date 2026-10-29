@@ -496,6 +496,10 @@ struct PlanarView {
     /// The texture of that page, and the page it was made from.
     page_tex: Option<TextureHandle>,
     page_key: Option<PlanarKey>,
+    /// The textures of a document's pages, and the document they were made
+    /// from (the address of its bytes).
+    doc_tex: Vec<TextureHandle>,
+    doc_key: Option<usize>,
 }
 
 /// One image of a planar pane's stack, with the window it is shown with.

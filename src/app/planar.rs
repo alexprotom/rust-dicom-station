@@ -367,6 +367,8 @@ impl ViewerApp {
                 v.report = None;
                 v.page_tex = None;
                 v.page_key = None;
+                v.doc_tex.clear();
+                v.doc_key = None;
                 if v.layers.is_empty() && self.row_layout(slot).contains(&PaneKind::Additional) {
                     self.remove_from_row(slot, PaneKind::Additional);
                 }

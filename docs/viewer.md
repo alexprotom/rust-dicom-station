@@ -56,7 +56,14 @@ The scan:
    (secondary captures, whatever Modality they claim; a scanner's protocol
    page among them becomes a report once its text is read), REG spatial
    registrations, RT treatment records. Unreadable or foreign files become
-   warnings, never errors.
+   warnings, never errors. An encapsulated PDF (a findings report filed
+   with the study, often as Modality `OT`) is a report, shown as its pages
+   (see [Reports](#reports)). Other objects without an image - an
+   encapsulated CDA or mesh, a presentation state, a key object selection,
+   raw data, a waveform - are recognised by their SOP class, whatever
+   Modality and however alone in their series they are, and left out with
+   one line for all of them ("2 object(s) not displayed: Encapsulated CDA
+   (2)") rather than decoded and reported as failed.
 2. **Series grouping.** Image files are grouped by SeriesInstanceUID into the
    workspace tree; the largest series is reconstructed first (click another to
    switch). Series of equal length - the phases of a 4DCT - follow in series
@@ -880,8 +887,18 @@ as its lines (date, station, totals, patient position) and the table the
 scanner drew, laid out from the positions of its words; **📄 Page** in the
 pane's bar shows the page as the scanner rendered it, **📋 Table** comes
 back. An SR of a template the viewer does not interpret shows its content
-tree the same way. The MCP server returns a report's tables
-(`describe_dataset`) and never a name an SR item carries.
+tree the same way.
+
+A **document** - an encapsulated PDF, such as the radiologist's findings
+(*Befund*) a hospital PACS files as a series of its own - is listed under
+**Reports** too, by its series description. In the Additional pane it
+reads as its title, type, size and verification state, then its pages,
+each as wide as the pane, scrolled as one column. The pages are drawn in
+the viewer itself (by the pure-Rust `hayro` rasterizer, on a thread of its
+own the first time the document is shown, a spinner meanwhile), up to 40
+of them; a PDF that cannot be read says why in the pane and fails nothing
+else. The MCP server returns a report's tables (`describe_dataset`) and
+never a name an SR item carries, nor a document's title or content.
 
 ### Additional
 
