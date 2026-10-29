@@ -25,7 +25,7 @@ use dicom_dictionary_std::tags;
 use dicom_pixeldata::{ConvertOptions, ModalityLutOption, PixelDecoder};
 
 use crate::geometry::Vec3;
-use crate::loader::{f64_of, f64s_of, i32_of, items_of, str_of};
+use crate::loader::{f64_of, f64s_of, first_datetime, i32_of, items_of, str_of};
 use crate::registration::{RigidTransform, VectorField};
 use crate::sop::{SOP_DEFORMABLE_REG, SOP_RT_ION_BEAMS_RECORD};
 
@@ -143,6 +143,22 @@ pub struct PlanarImage {
     pub frame_count: usize,
     /// The file the image was read from.
     pub source_path: Option<std::path::PathBuf>,
+    // What ties a radiograph into its treatment session ([`crate::sessions`]):
+    // an RT Image of a setup system often carries nothing else.
+    /// SeriesNumber and InstanceNumber: the two images of an orthogonal pair
+    /// share both.
+    pub series_number: Option<i64>,
+    pub instance_number: Option<i64>,
+    /// When it was taken, `YYYYMMDDHHMMSS`: AcquisitionDate/Time, else
+    /// ContentDate/Time, else SeriesDate/Time; empty for an image made here.
+    pub acquired: String,
+    /// When it was approved (ReviewDate/Time), empty if it never was.
+    pub reviewed: String,
+    /// The plan it was taken for (ReferencedRTPlanSequence), when the
+    /// vendor says so.
+    pub plan_uid: String,
+    /// Referenced Fraction Group Number, when stated.
+    pub fraction_group: Option<i32>,
 }
 
 /// Frame `frame` of a multi-frame planar image, with the same Modality LUT
@@ -550,14 +566,37 @@ pub fn planar_of(obj: &dicom_object::DefaultDicomObject, path: &Path) -> Result<
         megavoltage,
         frame_count,
         source_path: Some(path.to_path_buf()),
+        series_number: i32_of(obj, tags::SERIES_NUMBER).map(i64::from),
+        instance_number: i32_of(obj, tags::INSTANCE_NUMBER).map(i64::from),
+        acquired: first_datetime(
+            obj,
+            &[
+                (tags::ACQUISITION_DATE, tags::ACQUISITION_TIME),
+                (tags::CONTENT_DATE, tags::CONTENT_TIME),
+                (tags::SERIES_DATE, tags::SERIES_TIME),
+            ],
+        ),
+        reviewed: first_datetime(obj, &[(tags::REVIEW_DATE, tags::REVIEW_TIME)]),
+        plan_uid: referenced_plan(obj),
+        fraction_group: i32_of(obj, tags::REFERENCED_FRACTION_GROUP_NUMBER),
     })
+}
+
+/// The SOP Instance UID of the plan an object names in its Referenced RT
+/// Plan Sequence, empty when it names none.
+fn referenced_plan(obj: &dicom_object::InMemDicomObject) -> String {
+    items_of(obj, tags::REFERENCED_RT_PLAN_SEQUENCE)
+        .into_iter()
+        .flatten()
+        .find_map(|it| str_of(it, tags::REFERENCED_SOP_INSTANCE_UID))
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
 // REG - Spatial Registration
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct RegMatrixItem {
     /// Frame of Reference the matrix applies to (the "source" frame).
     pub for_uid: String,
@@ -568,7 +607,7 @@ pub struct RegMatrixItem {
     pub is_identity: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct SpatialReg {
     pub label: String,
     /// True for Deformable Spatial Registration Storage.
@@ -583,6 +622,23 @@ pub struct SpatialReg {
     pub grid: Option<VectorField>,
     /// Frame of Reference the grid's own lattice lives in.
     pub grid_source_for_uid: String,
+    // Where it sits in the study and the course ([`crate::sessions`]).
+    pub study_uid: String,
+    pub series_uid: String,
+    pub sop_instance_uid: String,
+    pub series_number: Option<i64>,
+    /// When it was made, `YYYYMMDDHHMMSS`: ContentDate/Time, else
+    /// SeriesDate/Time, else InstanceCreationDate/Time.
+    pub datetime: String,
+    /// The first Frame of Reference Transformation Comment: what the
+    /// registration is for, in the vendor's words.
+    pub comment: String,
+    /// Every UID the object references - Referenced SOP Instance UIDs and
+    /// Series Instance UIDs under the Registration, Referenced Series and
+    /// Studies Containing Other Referenced Instances sequences, in file
+    /// order, each once. Some setup systems put a Series UID where a SOP
+    /// Instance UID belongs, so these are matched against both.
+    pub references: Vec<String>,
 }
 
 pub fn is_reg_sop(sop: &str) -> bool {
@@ -594,10 +650,29 @@ pub fn load_reg(path: &Path) -> Result<SpatialReg> {
         .with_context(|| format!("open REG {}", path.display()))?;
     let sop = str_of(&obj, tags::SOP_CLASS_UID).unwrap_or_default();
     let deformable = sop == SOP_DEFORMABLE_REG;
+    let comment = first_of(
+        &obj,
+        tags::REGISTRATION_SEQUENCE,
+        tags::FRAME_OF_REFERENCE_TRANSFORMATION_COMMENT,
+    )
+    .unwrap_or_default();
+    // The comment says what the registration is for ("treatment position
+    // coordinate system"), which a file stem never does.
     let label = str_of(&obj, tags::CONTENT_DESCRIPTION)
+        .or_else(|| (!comment.is_empty()).then(|| comment.clone()))
         .or_else(|| str_of(&obj, tags::SERIES_DESCRIPTION))
         .or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()))
         .unwrap_or_else(|| "Registration".into());
+    let mut references: Vec<String> = Vec::new();
+    for seq in [
+        tags::REGISTRATION_SEQUENCE,
+        tags::REFERENCED_SERIES_SEQUENCE,
+        tags::STUDIES_CONTAINING_OTHER_REFERENCED_INSTANCES_SEQUENCE,
+    ] {
+        for it in items_of(&obj, seq).into_iter().flatten() {
+            collect_references(it, &mut references);
+        }
+    }
     let frame_of_reference_uid = str_of(&obj, tags::FRAME_OF_REFERENCE_UID).unwrap_or_default();
 
     let mut items = Vec::new();
@@ -651,7 +726,53 @@ pub fn load_reg(path: &Path) -> Result<SpatialReg> {
         items,
         grid,
         grid_source_for_uid,
+        study_uid: str_of(&obj, tags::STUDY_INSTANCE_UID).unwrap_or_default(),
+        series_uid: str_of(&obj, tags::SERIES_INSTANCE_UID).unwrap_or_default(),
+        sop_instance_uid: str_of(&obj, tags::SOP_INSTANCE_UID).unwrap_or_default(),
+        series_number: i32_of(&obj, tags::SERIES_NUMBER).map(i64::from),
+        datetime: first_datetime(
+            &obj,
+            &[
+                (tags::CONTENT_DATE, tags::CONTENT_TIME),
+                (tags::SERIES_DATE, tags::SERIES_TIME),
+                (tags::INSTANCE_CREATION_DATE, tags::INSTANCE_CREATION_TIME),
+            ],
+        ),
+        comment,
+        references,
     })
+}
+
+/// The Referenced SOP Instance UIDs and Series Instance UIDs of an item and
+/// of every item nested in it, appended to `out` once each.
+fn collect_references(item: &dicom_object::InMemDicomObject, out: &mut Vec<String>) {
+    for tag in [tags::REFERENCED_SOP_INSTANCE_UID, tags::SERIES_INSTANCE_UID] {
+        if let Some(uid) = str_of(item, tag) {
+            if !out.contains(&uid) {
+                out.push(uid);
+            }
+        }
+    }
+    for e in item.iter() {
+        for it in e.items().into_iter().flatten() {
+            collect_references(it, out);
+        }
+    }
+}
+
+/// The first value of `tag` in the items of `seq`, searched depth first.
+fn first_of(
+    obj: &dicom_object::InMemDicomObject,
+    seq: dicom_core::Tag,
+    tag: dicom_core::Tag,
+) -> Option<String> {
+    fn walk(it: &dicom_object::InMemDicomObject, tag: dicom_core::Tag) -> Option<String> {
+        str_of(it, tag).or_else(|| {
+            it.iter()
+                .find_map(|e| e.items().into_iter().flatten().find_map(|i| walk(i, tag)))
+        })
+    }
+    items_of(obj, seq)?.iter().find_map(|it| walk(it, tag))
 }
 
 // The Deformable Spatial Registration IOD's own tags, by number so the
@@ -799,7 +920,7 @@ pub fn matrix_to_rigid(m: &[f64; 16], invert: bool) -> Option<RigidTransform> {
 // RTRECORD - RT (Ion) Beams Treatment Record
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct RecordBeam {
     pub number: i32,
     pub name: String,
@@ -809,7 +930,7 @@ pub struct RecordBeam {
     pub verification_status: String,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct TreatRecord {
     pub label: String,
     pub date: String,
@@ -817,6 +938,17 @@ pub struct TreatRecord {
     pub fraction: Option<i32>,
     pub ion: bool,
     pub beams: Vec<RecordBeam>,
+    // Where it sits in the study and the course ([`crate::sessions`]).
+    pub study_uid: String,
+    pub series_uid: String,
+    pub sop_instance_uid: String,
+    pub series_number: Option<i64>,
+    /// When the beam was delivered, `YYYYMMDDHHMMSS`: TreatmentDate/Time,
+    /// else that of its first beam, else SeriesDate/Time. Never the control
+    /// points' times, which some machines keep on another clock.
+    pub datetime: String,
+    /// The plan it delivered (ReferencedRTPlanSequence), empty if unnamed.
+    pub plan_uid: String,
 }
 
 pub fn is_record_sop(sop: &str) -> bool {
@@ -840,6 +972,7 @@ pub fn load_record(path: &Path) -> Result<TreatRecord> {
     let mut beams = Vec::new();
     let mut fraction = None;
     let mut date = str_of(&obj, tags::TREATMENT_DATE).unwrap_or_default();
+    let mut datetime = first_datetime(&obj, &[(tags::TREATMENT_DATE, tags::TREATMENT_TIME)]);
 
     if let Some(items) = beam_items {
         for b in items {
@@ -848,6 +981,9 @@ pub fn load_record(path: &Path) -> Result<TreatRecord> {
             }
             if date.is_empty() {
                 date = str_of(b, tags::TREATMENT_DATE).unwrap_or_default();
+            }
+            if datetime.is_empty() {
+                datetime = first_datetime(b, &[(tags::TREATMENT_DATE, tags::TREATMENT_TIME)]);
             }
             let number = i32_of(b, tags::REFERENCED_BEAM_NUMBER).unwrap_or(-1);
             beams.push(RecordBeam {
@@ -877,6 +1013,16 @@ pub fn load_record(path: &Path) -> Result<TreatRecord> {
         fraction,
         ion,
         beams,
+        study_uid: str_of(&obj, tags::STUDY_INSTANCE_UID).unwrap_or_default(),
+        series_uid: str_of(&obj, tags::SERIES_INSTANCE_UID).unwrap_or_default(),
+        sop_instance_uid: str_of(&obj, tags::SOP_INSTANCE_UID).unwrap_or_default(),
+        series_number: i32_of(&obj, tags::SERIES_NUMBER).map(i64::from),
+        datetime: if datetime.is_empty() {
+            first_datetime(&obj, &[(tags::SERIES_DATE, tags::SERIES_TIME)])
+        } else {
+            datetime
+        },
+        plan_uid: referenced_plan(&obj),
     })
 }
 

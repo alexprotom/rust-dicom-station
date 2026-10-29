@@ -584,6 +584,7 @@ mod tests {
             temporal_id: None,
             suv_bw: None,
             frame_of_reference_uid: String::new(),
+            series_datetime: String::new(),
             files: Vec::new(),
         }
     }

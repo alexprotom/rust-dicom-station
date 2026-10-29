@@ -9,6 +9,7 @@ use super::*;
 /// be checked on a study alone.
 fn tree_level_of(study: &LoadedStudy, slot: usize, t: &RenameTarget) -> Vec<RenameTarget> {
     let n_of = |n: usize| (0..n).collect::<Vec<_>>();
+    let in_study = |pick: fn(&StudyNode) -> &Vec<usize>, idx: usize| study_list(study, pick, idx);
     match t {
         RenameTarget::Patient { .. } => tree_layout(study)
             .into_iter()
@@ -40,6 +41,16 @@ fn tree_level_of(study: &LoadedStudy, slot: usize, t: &RenameTarget) -> Vec<Rena
                             return series(&members);
                         }
                     }
+                    // The daily images of the sessions: one level across
+                    // the course, day after day.
+                    let daily: Vec<usize> = st
+                        .sessions
+                        .iter()
+                        .flat_map(|s| s.series.iter().copied())
+                        .collect();
+                    if daily.contains(idx) {
+                        return series(&daily);
+                    }
                     for (_, list) in &st.modalities {
                         if list.contains(idx) {
                             return series(list);
@@ -49,17 +60,19 @@ fn tree_level_of(study: &LoadedStudy, slot: usize, t: &RenameTarget) -> Vec<Rena
             }
             Vec::new()
         }
-        RenameTarget::FourD { .. } => n_of(study.fourd_groups.len())
+        // The 4D groups, structure sets, segmentation series, doses and
+        // plans of the study node the row is drawn under: another study's
+        // are another node, and a dissolved group is not drawn at all.
+        RenameTarget::FourD { idx, .. } => in_study(|st| &st.fourd, *idx)
             .into_iter()
             .map(|idx| RenameTarget::FourD { slot, idx })
             .collect(),
         RenameTarget::Set(r) => {
-            let n = match r.kind {
-                SetKind::Structures => study.structure_sets.len(),
-                SetKind::Segmentations => study.seg_series.len(),
+            let list = match r.kind {
+                SetKind::Structures => in_study(|st| &st.structs, r.idx),
+                SetKind::Segmentations => in_study(|st| &st.segs, r.idx),
             };
-            n_of(n)
-                .into_iter()
+            list.into_iter()
                 .map(|idx| {
                     RenameTarget::Set(SetRef {
                         slot,
@@ -87,38 +100,100 @@ fn tree_level_of(study: &LoadedStudy, slot: usize, t: &RenameTarget) -> Vec<Rena
                 .map(|idx| RenameTarget::Item { set: *set, idx })
                 .collect()
         }
-        RenameTarget::Dose { .. } => n_of(study.doses.len())
+        RenameTarget::Dose { idx, .. } => in_study(|st| &st.doses, *idx)
             .into_iter()
             .map(|idx| RenameTarget::Dose { slot, idx })
             .collect(),
-        RenameTarget::Plan { .. } => n_of(study.plans.len())
+        RenameTarget::Plan { idx, .. } => in_study(|st| &st.plans, *idx)
             .into_iter()
             .map(|idx| RenameTarget::Plan { slot, idx })
             .collect(),
+        // A pair: the pairs of its beam, setup then verification, or the
+        // pairs of its session no beam took.
+        RenameTarget::Pair { images, .. } => tree_layout(study)
+            .into_iter()
+            .flat_map(|p| p.studies)
+            .flat_map(|st| st.sessions)
+            .flat_map(|s| {
+                let mut lists: Vec<Vec<Vec<usize>>> = s
+                    .steps
+                    .iter()
+                    .map(|k| {
+                        k.setup
+                            .iter()
+                            .chain(&k.verification)
+                            .map(|p| p.images.clone())
+                            .collect()
+                    })
+                    .collect();
+                lists.push(s.loose_pairs.iter().map(|p| p.images.clone()).collect());
+                lists
+            })
+            .find(|list| list.contains(images))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|images| RenameTarget::Pair { slot, images })
+            .collect(),
         // Planar images and reports sit under their study, the projections
-        // and the additional objects in a list each: the level is the list
-        // the row is in.
+        // and the additional objects in a list each, the radiographs of the
+        // treatment sessions in one across the course: the level is the
+        // list the row is in.
         RenameTarget::Planar { idx, .. } => tree_layout(study)
             .into_iter()
             .flat_map(|p| p.studies)
-            .flat_map(|st| [st.planar, st.additional])
+            .flat_map(|st| {
+                let sessions: Vec<usize> = st.sessions.iter().flat_map(|s| s.images()).collect();
+                [sessions, st.planar, st.additional]
+            })
             .find(|list| list.contains(idx))
             .unwrap_or_default()
             .into_iter()
             .map(|idx| RenameTarget::Planar { slot, idx })
             .collect(),
-        RenameTarget::Registration { .. } => n_of(study.registrations.len())
+        // A registration in a session: the corrections of the course, beam
+        // after beam, or the day's registrations of its images; else the
+        // study's own list. Records likewise.
+        RenameTarget::Registration { idx, .. } => tree_layout(study)
+            .into_iter()
+            .flat_map(|p| p.studies)
+            .flat_map(|st| {
+                let mut lists: Vec<Vec<usize>> = vec![st
+                    .sessions
+                    .iter()
+                    .flat_map(|s| s.steps.iter().filter_map(|k| k.treatment_reg))
+                    .collect()];
+                lists.extend(
+                    st.sessions
+                        .iter()
+                        .map(|s| s.image_regs.iter().chain(&s.ct_regs).copied().collect()),
+                );
+                lists.push(st.regs);
+                lists
+            })
+            .find(|list| list.contains(idx))
+            .unwrap_or_default()
             .into_iter()
             .map(|idx| RenameTarget::Registration { slot, idx })
             .collect(),
-        RenameTarget::Record { .. } => n_of(study.treat_records.len())
+        RenameTarget::Record { idx, .. } => tree_layout(study)
+            .into_iter()
+            .flat_map(|p| p.studies)
+            .flat_map(|st| {
+                let sessions: Vec<usize> = st.sessions.iter().flat_map(|s| s.records()).collect();
+                [sessions, st.records]
+            })
+            .find(|list| list.contains(idx))
+            .unwrap_or_default()
             .into_iter()
             .map(|idx| RenameTarget::Record { slot, idx })
             .collect(),
         RenameTarget::Report { idx, .. } => tree_layout(study)
             .into_iter()
             .flat_map(|p| p.studies)
-            .map(|st| st.reports)
+            .flat_map(|st| {
+                let sessions: Vec<usize> = st.sessions.iter().flat_map(|s| s.reports()).collect();
+                [sessions, st.reports]
+            })
             .find(|list| list.contains(idx))
             .unwrap_or_default()
             .into_iter()
@@ -129,6 +204,18 @@ fn tree_level_of(study: &LoadedStudy, slot: usize, t: &RenameTarget) -> Vec<Rena
             .map(|idx| RenameTarget::Setup { slot, idx })
             .collect(),
     }
+}
+
+/// The list of one kind (`pick`) of the study node that holds `idx`; empty
+/// when no node does.
+fn study_list(study: &LoadedStudy, pick: fn(&StudyNode) -> &Vec<usize>, idx: usize) -> Vec<usize> {
+    tree_layout(study)
+        .iter()
+        .flat_map(|p| &p.studies)
+        .map(pick)
+        .find(|list| list.contains(&idx))
+        .cloned()
+        .unwrap_or_default()
 }
 
 impl ViewerApp {
@@ -183,11 +270,11 @@ impl ViewerApp {
 
     /// Display what a row points at, the way clicking it would.
     ///
-    /// Only the rows that *have* something to display: stepping onto a
-    /// patient or a study is a move through the tree, a planar image opens
-    /// in its own pane rather than being selected, and stepping onto one
-    /// structure of a set would otherwise toggle its visibility, which is
-    /// what clicking it does and is not what an arrow key should do.
+    /// Only the rows that *have* something to display, and only the way to
+    /// show it - never the second click's taking it away: stepping onto a
+    /// patient, a study or a 4D group is a move through the tree, and
+    /// stepping onto one structure of a set would otherwise make it the
+    /// edited one, which is not what an arrow key should do.
     fn tree_show_focused(&mut self, t: &RenameTarget) {
         match t {
             RenameTarget::Series { slot, idx } => {
@@ -219,13 +306,30 @@ impl ViewerApp {
                 }
                 self.settings_gen += 1;
             }
-            RenameTarget::Dose { slot, idx } => {
-                self.slots[*slot].active_dose = *idx;
-                self.settings_gen += 1;
-            }
+            RenameTarget::Dose { slot, idx } => self.show_dose(*slot, Some(*idx)),
             RenameTarget::Plan { slot, idx } => {
                 self.slots[*slot].active_plan = *idx;
+                self.slots[*slot].plans_shown = true;
                 self.settings_gen += 1;
+            }
+            // Images where a click puts them: a planar image in its pane, a
+            // pair side by side in the two planar panes.
+            RenameTarget::Planar { slot, idx } => {
+                self.show_planar(*slot, *idx, None);
+                self.planar_on_screen(*slot);
+            }
+            RenameTarget::Pair { slot, images } => self.show_pair(*slot, images, false),
+            // What the additional pane shows: stepping through a course's
+            // corrections reads them one after another there.
+            RenameTarget::Registration { slot, idx } => {
+                self.show_object(*slot, super::object_view::PaneObject::Registration(*idx))
+            }
+            RenameTarget::Record { slot, idx } => {
+                self.show_object(*slot, super::object_view::PaneObject::Record(*idx))
+            }
+            RenameTarget::Report { slot, idx } => {
+                self.show_report(*slot, *idx);
+                self.additional_on_screen(*slot);
             }
             _ => {}
         }
@@ -254,6 +358,14 @@ pub(super) struct StudyNode {
     pub(super) additional: Vec<usize>,
     /// Its reports - indices into `LoadedStudy::reports`.
     pub(super) reports: Vec<usize>,
+    /// Its treatment sessions ([`crate::sessions`]): what a session holds
+    /// (daily images, registrations, records, radiograph pairs) is drawn
+    /// there and taken out of the lists above and below.
+    pub(super) sessions: Vec<crate::sessions::Session>,
+    /// The spatial registrations and treatment records no session took -
+    /// indices into `LoadedStudy::registrations` / `treat_records`.
+    pub(super) regs: Vec<usize>,
+    pub(super) records: Vec<usize>,
 }
 
 /// One patient node: the studies filed under them.
@@ -330,6 +442,8 @@ fn tree_key(study: &LoadedStudy, settings_gen: u64) -> u64 {
         study.fourd_groups.len(),
         study.planar_images.len(),
         study.reports.len(),
+        study.registrations.len(),
+        study.treat_records.len(),
     ] {
         h = mix(h, n as u64);
     }
@@ -498,6 +612,12 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
         for r in &study.reports {
             want(&r.study_uid);
         }
+        // Registrations and records go under the study of what they
+        // reference, failing that under the first study (below), and never
+        // make a node of their own - unless there is no study at all.
+        if !study.registrations.is_empty() || !study.treat_records.is_empty() {
+            orphans = true;
+        }
         // …unless there is no first study either. Then one study node has to
         // exist for those objects to be reachable at all.
         if missing.is_empty() && patients.is_empty() && orphans {
@@ -609,6 +729,84 @@ pub(super) fn tree_layout(study: &LoadedStudy) -> Vec<PatientNode> {
             patients[pi].studies[si].reports.push(i);
         }
     }
+    // Registrations under their own study, else the study of the first
+    // image series they reference; records under theirs, else the study
+    // of the plan they delivered.
+    for (i, r) in study.registrations.iter().enumerate() {
+        let referenced = r
+            .references
+            .iter()
+            .find(|u| series_study(u).is_some())
+            .map(String::as_str)
+            .unwrap_or("");
+        if let Some((pi, si)) = place(&r.study_uid, referenced) {
+            patients[pi].studies[si].regs.push(i);
+        }
+    }
+    for (i, r) in study.treat_records.iter().enumerate() {
+        let plan_study = study
+            .plans
+            .iter()
+            .find(|p| !r.plan_uid.is_empty() && p.sop_instance_uid == r.plan_uid)
+            .map(|p| p.study_uid.as_str())
+            .unwrap_or("");
+        let own = if r.study_uid.is_empty() {
+            plan_study
+        } else {
+            &r.study_uid
+        };
+        if let Some((pi, si)) = place(own, "").or_else(|| place(plan_study, "")) {
+            patients[pi].studies[si].records.push(i);
+        }
+    }
+
+    // The treatment sessions of each study, out of what was filed there: a
+    // series, radiograph, registration, record or report a session takes is drawn
+    // in it and nowhere else, as a 4D group's phases are.
+    for node in patients.iter_mut().flat_map(|p| p.studies.iter_mut()) {
+        if node.regs.is_empty() && node.records.is_empty() {
+            continue;
+        }
+        let part = crate::sessions::Part {
+            series: node
+                .modalities
+                .iter()
+                .flat_map(|(_, v)| v.iter().copied())
+                .collect(),
+            images: node.planar.clone(),
+            regs: node.regs.clone(),
+            records: node.records.clone(),
+            reports: node.reports.clone(),
+        };
+        node.sessions = crate::sessions::sessions_in(study, &part);
+        if node.sessions.is_empty() {
+            continue;
+        }
+        let taken = |list: &mut Vec<usize>, used: &std::collections::HashSet<usize>| {
+            list.retain(|i| !used.contains(i));
+        };
+        let series: std::collections::HashSet<usize> = node
+            .sessions
+            .iter()
+            .flat_map(|s| s.series.iter().copied())
+            .collect();
+        let images: std::collections::HashSet<usize> =
+            node.sessions.iter().flat_map(|s| s.images()).collect();
+        let regs: std::collections::HashSet<usize> =
+            node.sessions.iter().flat_map(|s| s.regs()).collect();
+        let records: std::collections::HashSet<usize> =
+            node.sessions.iter().flat_map(|s| s.records()).collect();
+        let reports: std::collections::HashSet<usize> =
+            node.sessions.iter().flat_map(|s| s.reports()).collect();
+        for (_, list) in &mut node.modalities {
+            taken(list, &series);
+        }
+        node.modalities.retain(|(_, list)| !list.is_empty());
+        taken(&mut node.planar, &images);
+        taken(&mut node.regs, &regs);
+        taken(&mut node.records, &records);
+        taken(&mut node.reports, &reports);
+    }
     patients
 }
 
@@ -668,6 +866,7 @@ mod layout_tests {
             temporal_id: None,
             suv_bw: None,
             frame_of_reference_uid: String::new(),
+            series_datetime: String::new(),
             files: vec![std::path::PathBuf::from(format!("{uid}.dcm"))],
         }
     }
@@ -787,13 +986,24 @@ mod layout_tests {
         });
         assert_eq!(patients.len(), 2);
 
-        // Structure sets: the workspace's sets, in order.
-        let sets = level(&RenameTarget::Set(SetRef {
+        // Structure sets: the sets of the study node the row is under - ss1
+        // and the orphan ss3 under st1, ss2 alone under st2.
+        let set = |idx: usize| {
+            RenameTarget::Set(SetRef {
+                slot: 0,
+                kind: SetKind::Structures,
+                idx,
+            })
+        };
+        assert_eq!(level(&set(0)), vec![set(0), set(2)]);
+        assert_eq!(level(&set(1)), vec![set(1)]);
+        // A segmentation series likewise, under its own study.
+        let seg = RenameTarget::Set(SetRef {
             slot: 0,
-            kind: SetKind::Structures,
+            kind: SetKind::Segmentations,
             idx: 0,
-        }));
-        assert_eq!(sets.len(), st.structure_sets.len());
+        });
+        assert_eq!(level(&seg), vec![seg.clone()]);
 
         // A row whose level has nothing else in it does not move, and a
         // level that is empty is not a panic.
@@ -835,6 +1045,69 @@ mod layout_tests {
         );
         // The MR is untouched by the grouping.
         assert_eq!(tree_level_of(&st, 0, &series(2)), vec![series(2)]);
+    }
+
+    /// Doses, plans and 4D groups step through the ones of their own study
+    /// node, as the series do; a dissolved group is not drawn and is no
+    /// stop.
+    #[test]
+    fn doses_plans_and_groups_walk_their_own_studys_list() {
+        use crate::fourd::{FourDGroup, Member, Role};
+        let mut st = study();
+        let plan = |study: &str| crate::rtplan::PlanInfo {
+            study_uid: study.into(),
+            ..Default::default()
+        };
+        st.plans = vec![plan("st1"), plan("st2"), plan("st1")];
+        let dose = |study: &str| crate::rtdose::DoseGrid {
+            sop_instance_uid: String::new(),
+            series_instance_uid: String::new(),
+            data: vec![0.0],
+            dims: [1, 1, 1],
+            spacing: [1.0, 1.0],
+            origin: Vec3::new(0.0, 0.0, 0.0),
+            row_dir: Vec3::new(1.0, 0.0, 0.0),
+            col_dir: Vec3::new(0.0, 1.0, 0.0),
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            offsets: vec![0.0],
+            units: "GY".into(),
+            summation_type: "PLAN".into(),
+            dose_type: String::new(),
+            max_dose: 1.0,
+            frame_of_reference_uid: String::new(),
+            study_uid: study.into(),
+            referenced_plan_uid: String::new(),
+            label: String::new(),
+        };
+        st.doses = vec![dose("st2"), dose("st1"), dose("st2")];
+        let group = |name: &str, study: &str, uid: &str, dissolved: bool| FourDGroup {
+            name: name.into(),
+            study_uid: study.into(),
+            members: vec![Member {
+                series_uid: uid.into(),
+                label: "0%".into(),
+                role: Role::Phase,
+                percent: Some(0.0),
+            }],
+            custom: true,
+            dissolved,
+        };
+        st.fourd_groups = vec![
+            group("a", "st1", "ct1", false),
+            group("gone", "st1", "ct2", true),
+            group("b", "st1", "mr1", false),
+            group("c", "st2", "ct3", false),
+        ];
+        let level = |t: RenameTarget| tree_level_of(&st, 0, &t);
+        let plan = |idx| RenameTarget::Plan { slot: 0, idx };
+        let dose = |idx| RenameTarget::Dose { slot: 0, idx };
+        let group = |idx| RenameTarget::FourD { slot: 0, idx };
+        assert_eq!(level(plan(2)), vec![plan(0), plan(2)]);
+        assert_eq!(level(plan(1)), vec![plan(1)]);
+        assert_eq!(level(dose(0)), vec![dose(0), dose(2)]);
+        assert_eq!(level(dose(1)), vec![dose(1)]);
+        assert_eq!(level(group(0)), vec![group(0), group(2)]);
+        assert_eq!(level(group(3)), vec![group(3)]);
     }
 
     /// An RT object with an incomplete StudyInstanceUID must still land
@@ -976,5 +1249,132 @@ mod layout_tests {
         assert_eq!(layout[0].studies.len(), 1);
         assert_eq!(layout[0].studies[0].uid, "", "the catch-all study");
         assert_eq!(layout[0].studies[0].structs, vec![0]);
+    }
+
+    /// A treatment day inside its study: the daily CT, its registrations,
+    /// the pair and the record go into the session and leave the study's
+    /// lists; what no session takes stays in them, under the study.
+    #[test]
+    fn a_treatment_session_takes_its_objects_out_of_the_study_lists() {
+        use crate::extras::{PlanarImage, PlanarKind, RecordBeam, SpatialReg, TreatRecord};
+        let mut st = study();
+        st.series[1].series_datetime = "20240917103701".into();
+        st.plans.push(crate::rtplan::PlanInfo {
+            sop_instance_uid: "plan1".into(),
+            study_uid: "st1".into(),
+            ..Default::default()
+        });
+        let reg = |when: &str, refs: &[&str]| SpatialReg {
+            study_uid: "st1".into(),
+            datetime: when.into(),
+            references: refs.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        };
+        st.registrations = vec![
+            reg("20240903120217", &[]),
+            reg("20240917104038", &["ct2"]),
+            reg("20240917105403", &["plan1"]),
+        ];
+        // No study of its own: it follows the plan it delivered.
+        st.treat_records = vec![TreatRecord {
+            datetime: "20240917105418".into(),
+            plan_uid: "plan1".into(),
+            beams: vec![RecordBeam {
+                name: "LPO".into(),
+                termination_status: "NORMAL".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+        for at in ["20240917105145", "20240917105146"] {
+            st.planar_images.push(PlanarImage {
+                study_uid: "st1".into(),
+                kind: PlanarKind::Projection,
+                series_number: Some(212),
+                instance_number: Some(3),
+                acquired: at.into(),
+                reviewed: "20240917105402".into(),
+                ..Default::default()
+            });
+        }
+        // The pair's dose report, and one of the planning day.
+        let report = |when: &str| crate::report::Report {
+            study_uid: "st1".into(),
+            datetime: when.into(),
+            ..Default::default()
+        };
+        st.reports = vec![report("20240917105146"), report("20240903120000")];
+        let layout = tree_layout(&st);
+        let st1 = &layout[0].studies[0];
+        assert_eq!(st1.sessions.len(), 1);
+        let s = &st1.sessions[0];
+        assert_eq!(s.series, vec![1]);
+        assert_eq!(s.image_regs, vec![1]);
+        assert_eq!(s.steps[0].treatment_reg, Some(2));
+        assert_eq!(s.steps[0].records, vec![0]);
+        assert_eq!(s.steps[0].setup[0].images, vec![0, 1]);
+        assert_eq!(s.steps[0].setup[0].reports, vec![0]);
+        // Out of the lists: the daily CT, the pair, the day's registrations,
+        // the record and the dose report. What the planning day made stays.
+        assert_eq!(st1.modalities[0].1, vec![0]);
+        assert!(st1.planar.is_empty() && st1.records.is_empty());
+        assert_eq!(st1.regs, vec![0]);
+        assert_eq!(st1.reports, vec![1]);
+        let other: usize = layout
+            .iter()
+            .flat_map(|p| p.studies.iter())
+            .skip(1)
+            .map(|s| s.regs.len() + s.records.len() + s.sessions.len())
+            .sum();
+        assert_eq!(other, 0, "nothing of the course in another study");
+        // The arrows: the corrections of the course are one level, the
+        // study's own registrations another.
+        let level = |t: RenameTarget| tree_level_of(&st, 0, &t);
+        assert_eq!(
+            level(RenameTarget::Registration { slot: 0, idx: 2 }),
+            vec![RenameTarget::Registration { slot: 0, idx: 2 }]
+        );
+        assert_eq!(
+            level(RenameTarget::Registration { slot: 0, idx: 0 }),
+            vec![RenameTarget::Registration { slot: 0, idx: 0 }]
+        );
+        assert_eq!(
+            level(RenameTarget::Series { slot: 0, idx: 1 }),
+            vec![RenameTarget::Series { slot: 0, idx: 1 }]
+        );
+        assert_eq!(
+            level(RenameTarget::Planar { slot: 0, idx: 1 }).len(),
+            2,
+            "the session's images"
+        );
+        assert_eq!(
+            level(RenameTarget::Report { slot: 0, idx: 0 }),
+            vec![RenameTarget::Report { slot: 0, idx: 0 }]
+        );
+        // The pair is its beam's one pair.
+        let pair = RenameTarget::Pair {
+            slot: 0,
+            images: vec![0, 1],
+        };
+        assert_eq!(level(pair.clone()), vec![pair]);
+    }
+
+    /// Without a treatment registration the records stay a list of the
+    /// study: a plain study draws as it did, with its records inside it.
+    #[test]
+    fn records_alone_are_the_studys_list_not_a_session() {
+        let mut st = study();
+        st.treat_records = vec![crate::extras::TreatRecord {
+            study_uid: "st2".into(),
+            datetime: "20240917105418".into(),
+            ..Default::default()
+        }];
+        let layout = tree_layout(&st);
+        let st2 = &layout[0].studies[1];
+        assert_eq!(st2.records, vec![0]);
+        assert!(layout
+            .iter()
+            .flat_map(|p| p.studies.iter())
+            .all(|s| s.sessions.is_empty()));
     }
 }

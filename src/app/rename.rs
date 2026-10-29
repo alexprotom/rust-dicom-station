@@ -42,6 +42,12 @@ pub(super) enum RenameTarget {
     Setup { slot: usize, idx: usize },
     /// Name of one 4D group.
     FourD { slot: usize, idx: usize },
+    /// A radiograph pair of a treatment session, by its images (indices
+    /// into `planar_images`). It has no name of its own - F2 does nothing
+    /// there, its images are renamed one by one - but it takes the
+    /// keyboard like any row: the arrows walk the pairs of its beam, Delete
+    /// removes both images.
+    Pair { slot: usize, images: Vec<usize> },
 }
 
 impl RenameTarget {
@@ -57,7 +63,8 @@ impl RenameTarget {
             | RenameTarget::Record { slot, .. }
             | RenameTarget::Report { slot, .. }
             | RenameTarget::Setup { slot, .. }
-            | RenameTarget::FourD { slot, .. } => *slot,
+            | RenameTarget::FourD { slot, .. }
+            | RenameTarget::Pair { slot, .. } => *slot,
             RenameTarget::Set(r) => r.slot,
             RenameTarget::Item { set, .. } => set.slot,
         }
@@ -79,6 +86,7 @@ impl RenameTarget {
             RenameTarget::Report { .. } => "report",
             RenameTarget::Setup { .. } => "setup",
             RenameTarget::FourD { .. } => "4D group",
+            RenameTarget::Pair { .. } => "radiograph pair",
         }
     }
 
@@ -107,6 +115,7 @@ impl RenameTarget {
             RenameTarget::Setup { .. } => "the setup label",
             // A 4D group is an application grouping, not a DICOM object.
             RenameTarget::FourD { .. } => "the group's name (application-side only)",
+            RenameTarget::Pair { .. } => "nothing: rename its images",
         }
     }
 }
@@ -160,6 +169,7 @@ impl ViewerApp {
             RenameTarget::Report { idx, .. } => study.reports.get(*idx)?.label.clone(),
             RenameTarget::Setup { idx, .. } => study.setups.get(*idx)?.label.clone(),
             RenameTarget::FourD { idx, .. } => study.fourd_groups.get(*idx)?.name.clone(),
+            RenameTarget::Pair { .. } => return None,
         })
     }
 
@@ -267,6 +277,7 @@ impl ViewerApp {
                     None => false,
                 }
             }
+            RenameTarget::Pair { .. } => false,
         }
     }
 
@@ -369,6 +380,7 @@ mod rename_tests {
             temporal_id: None,
             suv_bw: None,
             frame_of_reference_uid: String::new(),
+            series_datetime: String::new(),
             files: Vec::new(),
         }
     }

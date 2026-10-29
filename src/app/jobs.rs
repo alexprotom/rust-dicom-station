@@ -357,6 +357,7 @@ impl ViewerApp {
         if !study.doses.is_empty() && self.dose_mode == DoseMode::Off {
             self.dose_mode = DoseMode::Both;
         }
+        self.slots[slot].dose_shown = true;
         let s = &mut self.slots[slot];
         // Default to the structure set drawn on the active image series
         // (matters for e.g. 4DCT patients with one RTSTRUCT per phase).
@@ -430,6 +431,7 @@ impl ViewerApp {
         }
         self.clear_registration();
         self.settings_gen += 1;
+        self.reapply_preset(slot);
     }
 
     pub(super) fn apply_new_volume(
@@ -498,6 +500,8 @@ impl ViewerApp {
             self.clear_registration();
             self.settings_gen += 1;
         }
+        // A preset picked before goes on this series too.
+        self.reapply_preset(slot);
     }
 
     /// Generate a transformed copy of the source study into the other slot

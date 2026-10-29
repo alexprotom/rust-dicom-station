@@ -340,6 +340,50 @@ impl ViewerApp {
         );
     }
 
+    /// The *Rename* entry of a data-tree menu, with the key that does the
+    /// same on the focused row written beside it. The keys are said here,
+    /// where the action is, and not in the rows' tooltips, which say what
+    /// the object is.
+    pub(super) fn rename_entry(ui: &mut egui::Ui) -> bool {
+        ui.add(egui::Button::new("✏ Rename").shortcut_text("F2"))
+            .clicked()
+    }
+
+    /// The *Remove* entry of a data-tree menu (`label` says what goes, as
+    /// "🗑 Remove all 3 CT series" does), with its key.
+    pub(super) fn remove_entry(ui: &mut egui::Ui, label: impl Into<String>) -> bool {
+        ui.add(egui::Button::new(label.into()).shortcut_text("Delete"))
+            .clicked()
+    }
+
+    /// The first entry of an object row's menu: what a click on the row
+    /// does, *Show* while it is not shown and *Hide* while it is.
+    pub(super) fn show_entry(ui: &mut egui::Ui, shown: bool) -> bool {
+        ui.button(if shown { "➖ Hide" } else { "👁 Show" })
+            .clicked()
+    }
+
+    /// An image series in a tooltip: its UID, then the folder its files
+    /// are in - the two things the row has no room for.
+    pub(super) fn series_tip(s: &loader::SeriesInfo) -> String {
+        let place = match s.files.first().and_then(|f| f.parent()) {
+            Some(dir) => dir.display().to_string(),
+            None => "in memory: made here, not written to a file".to_string(),
+        };
+        format!("Series UID {}\n{place}", s.uid)
+    }
+
+    /// Any other object in a tooltip, in the series' shape: its UID (when it
+    /// has one), then where it comes from or what it is.
+    pub(super) fn object_tip(uid: &str, second: impl Into<String>) -> String {
+        let second = second.into();
+        match (uid.is_empty(), second.is_empty()) {
+            (true, _) => second,
+            (false, true) => format!("UID {uid}"),
+            (false, false) => format!("UID {uid}\n{second}"),
+        }
+    }
+
     /// Note a click on a data-tree row - either button - as the row the
     /// keyboard acts on (F2 renames it, Delete removes it), and outline the
     /// row that has that focus.

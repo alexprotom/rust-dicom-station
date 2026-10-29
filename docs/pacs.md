@@ -94,6 +94,17 @@ several), new cohorts are made for any grouping, and a cohort made here is
 deleted again. All of it lives in the catalog. Moving the files themselves
 is a separate act.
 
+**Treatment days.** A study that holds treatment records is a course, and
+its series are grouped under a row per day a record was made on
+(`2024-09-17 · 4 of 16`, its tooltip counting the day's series by modality),
+in the order they were made: the daily CT, the radiographs, the
+registrations, the records, the dose reports. The series of any other day
+(the planning CT, the plan) stay directly under the study. A day's row is
+selected, loaded, pulled or removed as its series are. It is the series'
+date alone - the catalog keeps no references; the viewer's data tree puts a
+day together by beam once it is loaded. A server of an earlier version
+sends no series dates, and its studies are listed as before.
+
 ## Names
 
 *Rename* gives a cohort, a patient, a study or a series a name of your
@@ -137,6 +148,10 @@ the person decided: the cohorts, who is in which, the names given.
   it once per study.
 * **JSON**, one line per patient, study and series, so that any tool reads it
   and a person can open it.
+* A series keeps when it was made (`datetime`: its SeriesDate/Time, else the
+  acquisition's, else the content's, the earliest of its files). Catalog
+  version 2 added it; a catalog of version 1 has every header read again,
+  once, by the next scan, and keeps its names, cohorts and memberships.
 * The DICOM files are the truth: delete the catalog and the next scan builds
   it again, from the files alone. Only the names, the cohorts and who is in
   which are lost then, being the catalog's alone.

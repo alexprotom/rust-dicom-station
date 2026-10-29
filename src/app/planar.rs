@@ -93,6 +93,48 @@ fn default_window(img: &crate::extras::PlanarImage) -> (f32, f32) {
     (img.window.0, img.window.1.clamp(lo, hi))
 }
 
+/// The window an image comes up with while planar preset `preset` (of
+/// [`RELATIVE_PRESETS`]) is picked: that preset worked out on its own
+/// values - the first is the image's own window - and with none picked,
+/// its own window.
+fn preset_window(img: &crate::extras::PlanarImage, preset: Option<usize>) -> (f32, f32) {
+    let Some(&(_, lo, hi)) = preset
+        .filter(|i| *i > 0)
+        .and_then(|i| RELATIVE_PRESETS.get(i))
+    else {
+        return default_window(img);
+    };
+    let (c, w) = percentile_windows_f32(&img.data, &[(lo, hi)])[0];
+    let (wlo, whi) = width_bounds(img);
+    (c, w.clamp(wlo, whi))
+}
+
+/// The windows (centre, width) between the low and high percentiles of
+/// each pair, over a planar image's values: on an even sample of at most a
+/// million of them, sorted, so the same image always gives the same
+/// windows. A NaN is left out.
+fn percentile_windows_f32(data: &[f32], pairs: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    let step = data.len().div_ceil(1_000_000).max(1);
+    let mut s: Vec<f32> = data
+        .iter()
+        .step_by(step)
+        .copied()
+        .filter(|x| !x.is_nan())
+        .collect();
+    if s.is_empty() {
+        return vec![(0.0, 1.0); pairs.len()];
+    }
+    s.sort_by(f32::total_cmp);
+    let at = |p: f32| s[(((p / 100.0) * (s.len() - 1) as f32).round() as usize).min(s.len() - 1)];
+    pairs
+        .iter()
+        .map(|&(lo, hi)| {
+            let (a, b) = (at(lo), at(hi));
+            ((a + b) * 0.5, (b - a).max(1e-6))
+        })
+        .collect()
+}
+
 fn planar_key(img: &crate::extras::PlanarImage) -> PlanarKey {
     (img.data.as_ptr() as usize, img.cols, img.rows)
 }
@@ -267,8 +309,22 @@ impl ViewerApp {
             .filter(|i| *i < self.report_count(slot))
     }
 
-    /// Is pane `k` of `slot` drawn: in the layout, with an image or a
-    /// report to show? See the module notes for the rule.
+    /// The registration or record pane `k` of `slot` shows, when it still
+    /// exists. It is the pane's own, never a stand-in.
+    pub(super) fn pane_object(&self, slot: usize, k: usize) -> Option<object_view::PaneObject> {
+        use object_view::PaneObject;
+        if k != ADDITIONAL_PANE {
+            return None;
+        }
+        let study = self.slots[slot].study.as_ref()?;
+        self.slots[slot].planar[k].object.filter(|o| match *o {
+            PaneObject::Registration(i) => i < study.registrations.len(),
+            PaneObject::Record(i) => i < study.treat_records.len(),
+        })
+    }
+
+    /// Is pane `k` of `slot` drawn: in the layout, with an image, a report
+    /// or an object to show? See the module notes for the rule.
     pub(super) fn planar_drawn(&self, slot: usize, k: usize) -> bool {
         let slot = slot.min(MAX_WORKSPACES - 1);
         if k >= PANE_VIEWS {
@@ -283,13 +339,20 @@ impl ViewerApp {
         };
         let layout = self.row_layout(slot);
         let in_row = |k: usize| layout.contains(&pane_kind_of(k));
-        if (images.is_empty() && reports == 0) || !in_row(k) {
+        if !in_row(k) {
+            return false;
+        }
+        if self.pane_object(slot, k).is_some() {
+            return true;
+        }
+        if images.is_empty() && reports == 0 {
             return false;
         }
         let s = &self.slots[slot];
         let has = |k: usize| {
             s.planar[k].layers.iter().any(|l| images.contains(&l.image))
                 || self.own_report(slot, k).is_some()
+                || self.pane_object(slot, k).is_some()
         };
         if has(k) {
             return true;
@@ -304,7 +367,10 @@ impl ViewerApp {
     /// The report pane `k` of `slot` shows: its own, or as the stand-in the
     /// workspace's first when the pane holds no image either.
     pub(super) fn pane_report(&self, slot: usize, k: usize) -> Option<usize> {
-        if k != ADDITIONAL_PANE || !self.planar_drawn(slot, k) {
+        if k != ADDITIONAL_PANE
+            || !self.planar_drawn(slot, k)
+            || self.pane_object(slot, k).is_some()
+        {
             return None;
         }
         if let Some(i) = self.own_report(slot, k) {
@@ -318,6 +384,119 @@ impl ViewerApp {
         (!has_image && self.report_count(slot) > 0).then_some(0)
     }
 
+    /// The image the toolbar's planar window acts on: in the planar or
+    /// additional pane last pointed at, else in the first one on screen
+    /// that shows an image - (slot, pane, layer of its stack at the
+    /// scrubber, the one the pane's readout names). `None` while no such
+    /// pane shows one, and the toolbar then has no planar window.
+    pub(super) fn planar_wl_target(&self) -> Option<(usize, usize, usize)> {
+        let usable = |(slot, k): (usize, usize)| {
+            slot < MAX_WORKSPACES
+                && k < PANE_VIEWS
+                && self.is_open(slot)
+                && (self.row_panes(slot).contains(&pane_kind_of(k))
+                    || self.is_detached(slot, pane_kind_of(k)))
+                && !self.pane_images(slot, k).is_empty()
+        };
+        let (slot, k) = self.wl_pane.filter(|p| usable(*p)).or_else(|| {
+            self.open_slots()
+                .into_iter()
+                .flat_map(|s| (0..PANE_VIEWS).map(move |k| (s, k)))
+                .find(|p| usable(*p))
+        })?;
+        let v = &self.slots[slot].planar[k];
+        let nl = v.layers.len();
+        if nl == 0 {
+            return None;
+        }
+        let (lo, hi, frac) = pair_at(v.blend, nl);
+        let near = if nl < 2 {
+            0
+        } else if frac >= 0.5 {
+            hi
+        } else {
+            lo
+        };
+        Some((slot, k, near))
+    }
+
+    /// The image of a [`Self::planar_wl_target`] and the window it is drawn
+    /// with.
+    pub(super) fn planar_wl(
+        &self,
+        (slot, k, li): (usize, usize, usize),
+    ) -> Option<(&crate::extras::PlanarImage, (f32, f32))> {
+        let layer = self.slots[slot].planar[k].layers.get(li)?;
+        let img = self.slots[slot]
+            .study
+            .as_ref()?
+            .planar_images
+            .get(layer.image)?;
+        let wl = if layer.wl_for == Some(planar_key(img)) {
+            layer.wl
+        } else {
+            default_window(img)
+        };
+        Some((img, wl))
+    }
+
+    /// Set the window of a [`Self::planar_wl_target`], kept to what the
+    /// image's values allow.
+    pub(super) fn set_planar_wl(&mut self, (slot, k, li): (usize, usize, usize), wl: (f32, f32)) {
+        let Some(img) = self.planar_wl((slot, k, li)).map(|(img, _)| img) else {
+            return;
+        };
+        let (lo, hi) = width_bounds(img);
+        let key = planar_key(img);
+        if let Some(layer) = self.slots[slot].planar[k].layers.get_mut(li) {
+            layer.wl = (wl.0, wl.1.clamp(lo, hi));
+            layer.wl_for = Some(key);
+        }
+    }
+
+    /// Pick planar preset `i` (of [`RELATIVE_PRESETS`]) for every planar
+    /// image: each one on screen takes it now, worked out on its own values,
+    /// and each one shown later takes it as it comes up
+    /// ([`preset_window`]).
+    pub(super) fn pick_planar_preset(&mut self, i: usize) {
+        self.wl_planar_preset = Some(i);
+        for s in &mut self.slots {
+            for v in &mut s.planar {
+                for l in &mut v.layers {
+                    l.wl_for = None;
+                }
+            }
+        }
+    }
+
+    /// The window presets of a planar image, as an MR's are: its own window
+    /// first, then the percentile pairs of [`RELATIVE_PRESETS`] read off
+    /// its values - a radiograph's or a DRR's values have no fixed scale, so
+    /// Hounsfield windows mean nothing there. Worked out once per image.
+    pub(super) fn planar_relative_windows(&mut self, t: (usize, usize, usize)) -> Vec<(f32, f32)> {
+        let Some((img, _)) = self.planar_wl(t) else {
+            return Vec::new();
+        };
+        let key = planar_key(img);
+        let own = default_window(img);
+        let mut out = match &self.wl_planar_relative {
+            Some((k, v)) if *k == key => v.clone(),
+            _ => {
+                let pairs: Vec<(f32, f32)> = RELATIVE_PRESETS
+                    .iter()
+                    .map(|(_, lo, hi)| (*lo, *hi))
+                    .collect();
+                let v = percentile_windows_f32(&img.data, &pairs);
+                self.wl_planar_relative = Some((key, v.clone()));
+                v
+            }
+        };
+        if let Some(first) = out.first_mut() {
+            *first = own;
+        }
+        out
+    }
+
     /// Is report `idx` of `slot` the one on screen in the additional pane?
     pub(super) fn report_shown(&self, slot: usize, idx: usize) -> bool {
         self.pane_report(slot, ADDITIONAL_PANE) == Some(idx)
@@ -327,7 +506,10 @@ impl ViewerApp {
     /// stand-in's first image of the pane's kind; none while it shows a
     /// report.
     fn pane_images(&self, slot: usize, k: usize) -> Vec<usize> {
-        if !self.planar_drawn(slot, k) || self.pane_report(slot, k).is_some() {
+        if !self.planar_drawn(slot, k)
+            || self.pane_report(slot, k).is_some()
+            || self.pane_object(slot, k).is_some()
+        {
             return Vec::new();
         }
         let images = self.planar_images_of(slot, kind_of_pane(k));
@@ -355,6 +537,7 @@ impl ViewerApp {
         v.blend = 0.0;
         v.report = Some(idx);
         v.report_page = false;
+        v.object = None;
         self.add_to_row(slot, PaneKind::Additional);
     }
 
@@ -427,6 +610,7 @@ impl ViewerApp {
         v.scroll_accum = 0.0;
         // An image takes the additional pane back from a report.
         v.report = None;
+        v.object = None;
         if k < settings::PLANAR_PANES {
             self.slots[slot].planar_last = k;
         }
@@ -492,6 +676,7 @@ impl ViewerApp {
         v.blend = v.layers.len() as f32 - 1.5;
         // An image takes the additional pane back from a report.
         v.report = None;
+        v.object = None;
         if k < settings::PLANAR_PANES {
             self.slots[slot].planar_last = k;
         }
@@ -596,6 +781,7 @@ impl ViewerApp {
                 v.layers.clear();
                 v.blend = 0.0;
                 v.report = None;
+                v.object = None;
             }
         }
         if !row.contains(&kind) || row.len() == 1 {
@@ -615,6 +801,7 @@ impl ViewerApp {
     /// Rebuild the textures of pane `k`'s stack, and of the pair it
     /// compares, when an image or a window changed.
     fn refresh_planar_tex(&mut self, ctx: &egui::Context, slot: usize, k: usize) {
+        let preset = self.wl_planar_preset;
         let Some(study) = &self.slots[slot].study else {
             return;
         };
@@ -625,7 +812,7 @@ impl ViewerApp {
             };
             let key = planar_key(img);
             if layer.wl_for != Some(key) {
-                layer.wl = default_window(img);
+                layer.wl = preset_window(img, preset);
                 layer.wl_for = Some(key);
             }
             let tex_key = (key, layer.wl.0.to_bits(), layer.wl.1.to_bits());
@@ -717,7 +904,12 @@ impl ViewerApp {
         let ctx = ui.ctx().clone();
         let k = k.min(PANE_VIEWS - 1);
         let kind = pane_kind_of(k);
-        // The additional pane showing a report: a table, not a stack.
+        // The additional pane showing a registration or a record, or a
+        // report: a table, not a stack.
+        if let Some(obj) = self.pane_object(slot, k) {
+            self.object_pane(ui, slot, obj, rect);
+            return;
+        }
         if let Some(ri) = self.pane_report(slot, k) {
             self.report_pane(ui, slot, ri, rect);
             return;
@@ -1008,23 +1200,17 @@ impl ViewerApp {
 
         // ---- the bar: a plane's buttons in a plane's places, then the mode ----
         let is_max = self.pane_is_max(ui, slot, kind);
-        let bsize = egui::vec2(24.0, 20.0);
         let by = rect.top() + 22.0 + if nl >= 2 { 16.0 } else { 0.0 };
-        let cell = |right: f32| Rect::from_min_size(Pos2::new(right - bsize.x, by), bsize);
-        let max_rect = cell(rect.right() - 4.0);
         let folded = self.pane_buttons_hidden;
-        let fold_rect = cell(max_rect.left() - 4.0);
-        let detach_rect = cell(fold_rect.left() - 4.0);
-        let fit_rect = cell(detach_rect.left() - 4.0);
-        let hand_rect = cell(fit_rect.left() - 4.0);
-        let zout_rect = cell(hand_rect.left() - 4.0);
-        let zin_rect = cell(zout_rect.left() - 4.0);
-        let mode_rect = cell(zin_rect.left() - 4.0);
-        let close_rect = if nl >= 2 {
-            cell(mode_rect.left() - 4.0)
-        } else {
-            mode_rect
-        };
+        // Right to left, as a plane's bar: maximize, close, the fold, out of
+        // the row, reset, the hand, zoom out and in, then the compare mode of
+        // a stack; in lines of equal length when the pane is narrow.
+        let cells =
+            super::pane_windows::bar_cells(rect, by, &[24.0; 9][..if nl >= 2 { 9 } else { 8 }]);
+        let (max_rect, close_rect, fold_rect, detach_rect) =
+            (cells[0], cells[1], cells[2], cells[3]);
+        let (fit_rect, hand_rect, zout_rect, zin_rect) = (cells[4], cells[5], cells[6], cells[7]);
+        let mode_rect = if nl >= 2 { cells[8] } else { Rect::NOTHING };
         let slider_rect = Rect::from_min_max(
             Pos2::new(rect.left() + 10.0, rect.bottom() - 18.0),
             Pos2::new(rect.right() - 10.0, rect.bottom() - 5.0),
@@ -1034,6 +1220,7 @@ impl ViewerApp {
         let over_buttons = pointer_pos
             .map(|p| {
                 max_rect.contains(p)
+                    || close_rect.contains(p)
                     || fold_rect.contains(p)
                     || (!folded
                         && (detach_rect.contains(p)
@@ -1041,7 +1228,6 @@ impl ViewerApp {
                             || hand_rect.contains(p)
                             || zout_rect.contains(p)
                             || zin_rect.contains(p)
-                            || close_rect.contains(p)
                             || (nl >= 2 && mode_rect.contains(p))))
                     || (has_slider && slider_rect.expand2(egui::vec2(0.0, 5.0)).contains(p))
             })
@@ -1085,7 +1271,6 @@ impl ViewerApp {
         let mut zout_resp = None;
         let mut zin_resp = None;
         let mut mode_resp = None;
-        let mut close_resp = None;
         let mut clicked_detach = false;
         if !folded {
             clicked_detach = self.detach_button(ui, detach_rect, slot, kind);
@@ -1123,11 +1308,8 @@ impl ViewerApp {
                         )),
                 );
             }
-            close_resp = Some(
-                ui.put(close_rect, egui::Button::new("✖").small())
-                    .on_hover_text("Take this pane off the row"),
-            );
         }
+        let close_resp = Self::close_button(ui, close_rect);
         let mut new_blend = None;
         if has_slider {
             ui.painter().rect_filled(
@@ -1164,7 +1346,8 @@ impl ViewerApp {
         let clicked_zout = hit(zout_rect, &zout_resp);
         let clicked_zin = hit(zin_rect, &zin_resp);
         let clicked_mode = nl >= 2 && hit(mode_rect, &mode_resp);
-        let clicked_close = hit(close_rect, &close_resp);
+        let clicked_close = close_resp.clicked()
+            || (any_click && pointer_pos.is_some_and(|p| close_rect.contains(p)));
 
         let mut new_zoom = (clicked_zin || clicked_zout).then(|| {
             let step = if clicked_zin { 1.25 } else { 1.0 / 1.25 };
@@ -1235,6 +1418,7 @@ impl ViewerApp {
         }
         if resp.hovered() {
             self.hovered_slot = slot;
+            self.wl_pane = Some((slot, k));
         }
 
         // ---- apply ----
@@ -1259,6 +1443,10 @@ impl ViewerApp {
         }
         if let Some(e) = pane_edit {
             self.reg2d3d_pane_apply(e);
+        }
+        if new_wl.is_some() {
+            // A window set by hand: the planar preset no longer holds.
+            self.wl_planar_preset = None;
         }
         let v = &mut self.slots[slot].planar[k];
         if clicked_mode {

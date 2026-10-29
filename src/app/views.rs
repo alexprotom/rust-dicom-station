@@ -34,6 +34,7 @@ impl ViewerApp {
         mix(slot as u64 + 1);
         mix(self.slots[slot].active_dose as u64);
         mix(self.dose_mode as u64);
+        mix(self.slots[slot].dose_shown as u64);
         mix(self.dose_opacity.to_bits() as u64);
         mix(self.dose_threshold_pct.to_bits() as u64);
         mix(self.slots[slot].dose_reference.to_bits() as u64);
@@ -853,7 +854,7 @@ impl ViewerApp {
                 Color32::WHITE,
             );
         }
-        if self.dose_mode.wash() {
+        if self.dose_mode.wash() && self.slots[slot].dose_shown {
             if let Some(tex) = &view.dose_tex {
                 painter.image(
                     tex.id(),
@@ -875,7 +876,7 @@ impl ViewerApp {
         }
 
         // Isodose lines.
-        if self.dose_mode.iso() {
+        if self.dose_mode.iso() && self.slots[slot].dose_shown {
             for (li, seg) in &view.iso_segs {
                 if let Some(level) = self.iso_levels.get(*li) {
                     painter.line_segment(
@@ -1535,41 +1536,38 @@ impl ViewerApp {
         // position is the topmost one, so they get the hover - and show their
         // tooltips - instead of the full-viewport rectangle underneath.
         let is_max = self.pane_is_max(ui, slot, PaneKind::Plane(plane));
-        let bsize = egui::vec2(24.0, 20.0);
         let by = rect.top() + 22.0; // below the slice counter
-        let max_rect = Rect::from_min_size(Pos2::new(rect.right() - bsize.x - 4.0, by), bsize);
-        // The fold: everything to its left goes away with it, leaving the
-        // pane with an arrow and a maximize and nothing else over the image.
+                                    // The fold: everything to the left of it goes away with it, leaving
+                                    // the pane with a maximize, a close and an arrow over the image.
         let folded = self.pane_buttons_hidden;
-        let fold_rect = Rect::from_min_size(Pos2::new(max_rect.left() - bsize.x - 4.0, by), bsize);
-        // Out of the row into a window of its own, and back.
-        let detach_rect =
-            Rect::from_min_size(Pos2::new(fold_rect.left() - bsize.x - 4.0, by), bsize);
-        let fit_rect =
-            Rect::from_min_size(Pos2::new(detach_rect.left() - bsize.x - 4.0, by), bsize);
         // Playing through the slices of this view, and through the phases of
         // the 4D group the workspace is showing. Each button exists only where
         // there is something to play: a single-slice series has no stack to
         // run, and a series that belongs to no 4D group has no phases.
         let slices_here = has_slider;
         let phases_here = self.fourd_phases(slot).is_some();
-        // Wider than the glyph buttons beside them: these carry `3D` / `4D`
-        // as well, and that is what tells the two apart.
-        let psize = egui::vec2(38.0, 20.0);
-        // The camera's own three, between the play buttons and the reset -
-        // the same three, in the same place, as a 3D pane's bar.
-        let hand_rect = Rect::from_min_size(Pos2::new(fit_rect.left() - bsize.x - 4.0, by), bsize);
-        let zout_rect = Rect::from_min_size(Pos2::new(hand_rect.left() - bsize.x - 4.0, by), bsize);
-        let zin_rect = Rect::from_min_size(Pos2::new(zout_rect.left() - bsize.x - 4.0, by), bsize);
-        let play3_rect = if slices_here {
-            Rect::from_min_size(Pos2::new(zin_rect.left() - psize.x - 4.0, by), psize)
-        } else {
-            zin_rect
-        };
+        // Right to left: maximize, close, the fold, out of the row into a
+        // window of its own, reset, then the camera's own three (the same
+        // three, in the same place, as a 3D pane's bar) and the play
+        // buttons - wider than the glyph buttons beside them: these carry
+        // `3D` / `4D` as well, and that is what tells the two apart. A pane
+        // too narrow for one line has them in lines of equal length.
+        let mut widths = vec![24.0; 8];
+        if slices_here {
+            widths.push(38.0);
+        }
+        if phases_here {
+            widths.push(38.0);
+        }
+        let cells = super::pane_windows::bar_cells(rect, by, &widths);
+        let (max_rect, close_rect, fold_rect, detach_rect, fit_rect) =
+            (cells[0], cells[1], cells[2], cells[3], cells[4]);
+        let (hand_rect, zout_rect, zin_rect) = (cells[5], cells[6], cells[7]);
+        let play3_rect = if slices_here { cells[8] } else { Rect::NOTHING };
         let play4_rect = if phases_here {
-            Rect::from_min_size(Pos2::new(play3_rect.left() - psize.x - 4.0, by), psize)
+            cells[if slices_here { 9 } else { 8 }]
         } else {
-            play3_rect
+            Rect::NOTHING
         };
         let (pointer_pos, any_click) =
             ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_click()));
@@ -1583,6 +1581,7 @@ impl ViewerApp {
         let over_buttons = pointer_pos
             .map(|p| {
                 max_rect.contains(p)
+                    || close_rect.contains(p)
                     || fold_rect.contains(p)
                     || (!folded
                         && (detach_rect.contains(p)
@@ -1613,6 +1612,7 @@ impl ViewerApp {
             } else {
                 "Maximize this view to the whole window"
             });
+        let close_resp = Self::close_button(ui, close_rect);
         let fold_resp = ui
             .put(
                 fold_rect,
@@ -1702,6 +1702,8 @@ impl ViewerApp {
             || (any_click && pointer_pos.map(|p| max_rect.contains(p)).unwrap_or(false));
         let clicked_fold = fold_resp.clicked()
             || (any_click && pointer_pos.map(|p| fold_rect.contains(p)).unwrap_or(false));
+        let clicked_close = close_resp.clicked()
+            || (any_click && pointer_pos.map(|p| close_rect.contains(p)).unwrap_or(false));
         // A folded bar has no buttons under the pointer, so a click in the
         // space where one used to be belongs to the image.
         let hit = |r: Rect, resp: &Option<egui::Response>| {
@@ -2061,6 +2063,9 @@ impl ViewerApp {
         if clicked_detach {
             self.toggle_detached(slot, PaneKind::Plane(plane));
         }
+        if clicked_close {
+            self.remove_from_row(slot, PaneKind::Plane(plane));
+        }
         if clicked_fit {
             reset_view = true;
         }
@@ -2105,6 +2110,7 @@ impl ViewerApp {
             let (c, w) = self.window_of(slot);
             let w = (w * (1.0 + dx * 0.005)).clamp(1.0, 30000.0);
             self.set_window(slot, c + dy * w * 0.002, w);
+            self.forget_preset(slot);
         }
         if let Some(c) = new_cursor {
             self.set_cursor(slot, c, idx);
@@ -2331,6 +2337,13 @@ impl ViewerApp {
         let contour_hash = self.contour_settings_hash(slot);
         let settings_gen = self.settings_gen;
         let seg_hash = self.seg_overlay_hash(slot);
+        // Segments the unfolded sections are about, drawn at twice the
+        // opacity; part of the overlay's key, since the focus moves with the
+        // pointer and not with any generation counter.
+        let focused_segs = self.focused_segs(slot);
+        let seg_hash = focused_segs
+            .iter()
+            .fold(seg_hash, |h, &i| mix(h, 0xF0C5 + i as u64));
         // The tick box on the segmentation series row. `seg_series_idx` still
         // reports the active series to the editing tools; only the overlay
         // below is held back.
@@ -2339,8 +2352,11 @@ impl ViewerApp {
             .then(|| self.slots[slot].seg_series_idx())
             .flatten();
         let grow_here = self.grow.as_ref().is_some_and(|g| g.slot == slot);
+        // The classes ticked in a waiting auto-segmentation run.
+        let preview = self.autoseg_preview(slot);
+        let seg_hash = preview.as_ref().map_or(seg_hash, |p| mix(seg_hash, p.key));
         let (wc, ww) = self.window_of(slot);
-        let dose_on = self.dose_mode != DoseMode::Off;
+        let dose_on = self.dose_mode != DoseMode::Off && self.slots[slot].dose_shown;
         let contours_on = self.show_contours && self.slots[slot].structs_shown;
 
         let StudySlot {
@@ -2504,14 +2520,23 @@ impl ViewerApp {
         // Segmentation overlay: all visible masks plus the live
         // region-growing preview, blended into one RGBA texture. NEAREST
         // filtering keeps the voxel raster crisp while editing.
-        if !segs.is_empty() || grow_here {
+        if !segs.is_empty() || grow_here || preview.is_some() {
             let skey = seg_hash.wrapping_add((slice as u64).wrapping_mul(0x2545F4914F6CDD1D));
             if views[idx].seg_key != Some(skey) {
                 let mut rgba = vec![Color32::TRANSPARENT; w * h];
-                for seg in segs.iter().filter(|s| s.visible) {
+                for (si, seg) in segs.iter().enumerate().filter(|(_, s)| s.visible) {
+                    let alpha = if focused_segs.contains(&si) { 180 } else { 90 };
                     segmentation::overlay_slice_within(
-                        &seg.mask, vol.dims, seg.bbox, plane, slice, seg.color, 90, &mut rgba,
+                        &seg.mask, vol.dims, seg.bbox, plane, slice, seg.color, alpha, &mut rgba,
                     );
+                }
+                // Over the segments: it is what the run would add.
+                if let (Some(pv), Some(pending)) = (&preview, &self.autoseg_pending) {
+                    if let Some((_, r)) = pending.phases.get(pv.phase) {
+                        segmentation::overlay_labels_slice(
+                            &r.labels, r.dims, plane, slice, &pv.colors, &mut rgba,
+                        );
+                    }
                 }
                 let n = vol.dims[0] * vol.dims[1] * vol.dims[2];
                 if grow_here && self.grow_preview.len() == n {

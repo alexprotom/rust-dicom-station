@@ -50,6 +50,7 @@ pub mod rtplan;
 pub mod rtstruct;
 pub mod sct;
 pub mod segmentation;
+pub mod sessions;
 pub mod settings;
 pub mod setup;
 pub mod simulate;

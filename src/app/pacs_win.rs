@@ -218,28 +218,33 @@ fn local_nodes(tree: &Tree) -> Vec<TNode> {
                                 s.dir.display()
                             ),
                             files: s.files,
-                            children: s
-                                .series
-                                .iter()
-                                .map(|se| TNode {
-                                    key: se.series_uid.clone(),
-                                    icon: "🎞",
-                                    text: se.title(),
-                                    right: count(se.files, "file", "files"),
-                                    hover: format!(
-                                        "{}Series UID {}\n{}",
-                                        if se.label.is_empty() {
-                                            String::new()
-                                        } else {
-                                            format!("{}\n", se.dicom_title())
+                            children: pacs_tree::study_rows(
+                                s.series
+                                    .iter()
+                                    .map(|se| pacs_tree::SeriesRow {
+                                        modality: se.modality.clone(),
+                                        datetime: se.datetime.clone(),
+                                        node: TNode {
+                                            key: se.series_uid.clone(),
+                                            icon: "🎞",
+                                            text: se.title(),
+                                            right: count(se.files, "file", "files"),
+                                            hover: format!(
+                                                "{}Series UID {}\n{}",
+                                                if se.label.is_empty() {
+                                                    String::new()
+                                                } else {
+                                                    format!("{}\n", se.dicom_title())
+                                                },
+                                                se.series_uid,
+                                                se.dir.display()
+                                            ),
+                                            files: se.files,
+                                            children: Vec::new(),
                                         },
-                                        se.series_uid,
-                                        se.dir.display()
-                                    ),
-                                    files: se.files,
-                                    children: Vec::new(),
-                                })
-                                .collect(),
+                                    })
+                                    .collect(),
+                            ),
                         })
                         .collect(),
                 })
@@ -601,7 +606,10 @@ impl ViewerApp {
             Act::Send(slot) => self.start_pacs_upload(slot),
             Act::Load(slot) => {
                 let picks: Vec<Pick> = match &self.pacs {
-                    Some(w) => w.view.tops().iter().filter_map(pick_of).collect(),
+                    Some(w) => pacs_tree::series_ids(&w.nodes, &w.view.tops())
+                        .iter()
+                        .filter_map(pick_of)
+                        .collect(),
                     None => return,
                 };
                 let files: Vec<PathBuf> = archive
@@ -632,7 +640,11 @@ impl ViewerApp {
                 let Some(w) = self.pacs.as_mut() else {
                     return;
                 };
-                let Some(target) = pick_of(&id) else {
+                let Some(target) = pacs_tree::series_ids(&w.nodes, std::slice::from_ref(&id))
+                    .first()
+                    .filter(|_| !id.last().is_some_and(|k| pacs_tree::is_day(k)))
+                    .and_then(pick_of)
+                else {
                     return;
                 };
                 let title = pacs_tree::node_at(&w.nodes, &id)
@@ -1155,7 +1167,10 @@ fn local_body(
         }
     }
     if ev.delete {
-        let picks: Vec<Pick> = view.tops().iter().filter_map(pick_of).collect();
+        let picks: Vec<Pick> = pacs_tree::series_ids(nodes_ref, &view.tops())
+            .iter()
+            .filter_map(pick_of)
+            .collect();
         acts.push(Act::AskRemove(picks));
     }
 
@@ -1207,7 +1222,10 @@ fn local_menu(
     } else {
         vec![id.clone()]
     };
-    let picks: Vec<Pick> = targets.iter().filter_map(pick_of).collect();
+    let picks: Vec<Pick> = pacs_tree::series_ids(nodes, &targets)
+        .iter()
+        .filter_map(pick_of)
+        .collect();
     let what = if targets.len() == 1 {
         pacs_tree::node_at(nodes, &targets[0])
             .map(|n| format!("'{}'", n.text))

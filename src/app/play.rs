@@ -573,7 +573,6 @@ impl ViewerApp {
             self.play.follow_segs,
             self.play.follow_dose,
         );
-        let other_loaded = (0..MAX_WORKSPACES).any(|s| s != slot && self.slots[s].study.is_some());
         let s = &mut self.slots[slot];
         let Some(study) = &mut s.study else {
             return;
@@ -630,13 +629,11 @@ impl ViewerApp {
             v.slice = v.slice.min(n.saturating_sub(1));
             v.invalidate();
         }
-        // The window follows the phase only when nothing else could have
-        // set it, the same rule a series switch uses.
-        if !other_loaded {
-            self.window_center[slot] = window.0;
-            self.window_width[slot] = window.1;
-            self.series_window[slot] = window;
-        }
+        // The window stays: the phases are one acquisition of one modality,
+        // and a preset or a window set on one phase is meant for the group
+        // (a series switch within a modality keeps it too). Only the phase's
+        // own window - the *Series default* preset - is its own.
+        self.series_window[slot] = window;
         self.rebind_seg_series(slot);
     }
 

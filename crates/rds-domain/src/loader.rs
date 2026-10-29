@@ -51,6 +51,53 @@ pub fn i32_of(obj: &InMemDicomObject, tag: dicom_core::Tag) -> Option<i32> {
     obj.element(tag).ok().and_then(|e| e.to_int::<i32>().ok())
 }
 
+/// A date and a time as one sortable `YYYYMMDDHHMMSS` stamp, the
+/// fractions of the second left out. `None` without a usable date; a
+/// missing or malformed time reads as midnight. The sessions of a course
+/// ([`crate::sessions`]) are put together from these.
+pub fn datetime_of(
+    obj: &InMemDicomObject,
+    date: dicom_core::Tag,
+    time: dicom_core::Tag,
+) -> Option<String> {
+    let d: String = str_of(obj, date)?
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .collect();
+    if d.len() != 8 {
+        return None;
+    }
+    let t: String = str_of(obj, time)
+        .unwrap_or_default()
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .collect();
+    // A TM may stop at the hour or the minute; what is not there is zero.
+    let t = if t.len() >= 6 {
+        t[..6].to_string()
+    } else if t.len().is_multiple_of(2) {
+        format!("{t:0<6}")
+    } else {
+        "000000".to_string()
+    };
+    Some(d + &t)
+}
+
+/// The first of several (date, time) pairs that gives a stamp
+/// ([`datetime_of`]); empty when none does.
+pub fn first_datetime(
+    obj: &InMemDicomObject,
+    pairs: &[(dicom_core::Tag, dicom_core::Tag)],
+) -> String {
+    pairs
+        .iter()
+        .find_map(|&(d, t)| datetime_of(obj, d, t))
+        .unwrap_or_default()
+}
+
 /// Short file name for warning messages.
 fn fname(p: &Path) -> std::borrow::Cow<'_, str> {
     p.file_name().unwrap_or_default().to_string_lossy()
@@ -189,6 +236,11 @@ pub struct SeriesInfo {
     /// so it is asked of the series a structure set references, never of
     /// the volume on display ([`for_warnings`]).
     pub frame_of_reference_uid: String,
+    /// When the series was made, as `YYYYMMDDHHMMSS` ([`datetime_of`]):
+    /// SeriesDate/Time, else the AcquisitionDate/Time of its first file.
+    /// Empty when the header says neither. A daily CT is filed in its
+    /// treatment session by it ([`crate::sessions`]).
+    pub series_datetime: String,
     pub files: Vec<PathBuf>,
 }
 
@@ -532,6 +584,7 @@ fn load_files_with(
         temporal_id: Option<i64>,
         suv_bw: Option<f64>,
         for_uid: String,
+        datetime: String,
         has_geometry: bool,
         meta: PatientMeta,
     }
@@ -549,6 +602,13 @@ fn load_files_with(
             let temporal_id = i32_of(&obj, tags::TEMPORAL_POSITION_IDENTIFIER).map(i64::from);
             let suv_bw = (modality == "PT").then(|| suv_factor_of(&obj)).flatten();
             let for_uid = str_of(&obj, tags::FRAME_OF_REFERENCE_UID).unwrap_or_default();
+            let datetime = first_datetime(
+                &obj,
+                &[
+                    (tags::SERIES_DATE, tags::SERIES_TIME),
+                    (tags::ACQUISITION_DATE, tags::ACQUISITION_TIME),
+                ],
+            );
             let has_geometry = obj.element(tags::IMAGE_POSITION_PATIENT).is_ok()
                 && obj.element(tags::ROWS).is_ok();
             let meta = PatientMeta {
@@ -569,6 +629,7 @@ fn load_files_with(
                 temporal_id,
                 suv_bw,
                 for_uid,
+                datetime,
                 has_geometry,
                 meta,
             })
@@ -661,6 +722,7 @@ fn load_files_with(
                         temporal_id: s.temporal_id,
                         suv_bw: s.suv_bw,
                         frame_of_reference_uid: s.for_uid.clone(),
+                        series_datetime: s.datetime.clone(),
                         files: vec![s.path.clone()],
                     });
                 }

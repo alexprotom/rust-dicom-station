@@ -79,7 +79,9 @@ impl ViewerApp {
             Self::wrapped_node_extra(
                 ui,
                 ("structs", slot, pat, stu),
-                true,
+                // Open under the study on screen, folded under the others
+                // - unless there is nothing on screen to prefer.
+                displayed || !me.slots[slot].has_volume(),
                 title,
                 |ui| {
                     if tip_widget(
@@ -134,18 +136,25 @@ impl ViewerApp {
                             current.as_ref() == Some(&RenameTarget::Set(here)),
                         );
                         Self::focus_row(ui, &resp, RenameTarget::Set(here), current, &mut focus);
-                        if resp.clicked() {
-                            // Clicking the shown set hides it; clicking any
-                            // other makes it the shown one.
-                            if selected {
-                                new_shown = Some(!structs_shown);
-                            } else {
-                                new_active = Some(i);
-                                new_shown = Some(true);
-                            }
-                        }
+                        // Clicking the shown set hides it; clicking any
+                        // other makes it the shown one.
+                        let mut toggle = resp.clicked();
                         let locked = set.locked;
+                        let tip = Self::object_tip(
+                            &set.sop_instance_uid,
+                            if set.file_name.is_empty() {
+                                "made here, not written to a file"
+                            } else {
+                                &set.file_name
+                            },
+                        );
+                        let resp = resp.on_hover_text(tip);
                         resp.context_menu(|ui| {
+                            if Self::show_entry(ui, selected && structs_shown) {
+                                toggle = true;
+                                ui.close();
+                            }
+                            ui.separator();
                             ui.menu_button("🏷 Template", |ui| {
                                 if tip_button(
                                     ui,
@@ -194,17 +203,14 @@ impl ViewerApp {
                             ui.separator();
                             me.set_context_menu(ui, here, &mut set_act)
                         });
-                        resp.on_hover_text(format!(
-                            "{}\nreferences series …{}\nclick: show or hide\nright-click: \
-                             connect to another image series, copy / move to the other \
-                             workspace, remove",
-                            if set.file_name.is_empty() {
-                                "created here"
+                        if toggle {
+                            if selected {
+                                new_shown = Some(!structs_shown);
                             } else {
-                                &set.file_name
-                            },
-                            tail(&set.referenced_series_uid)
-                        ));
+                                new_active = Some(i);
+                                new_shown = Some(true);
+                            }
+                        }
 
                         // The structures of a set, and what acts on them, sit
                         // under *that* set - not at the end of the list, where
@@ -277,9 +283,11 @@ impl ViewerApp {
                                             st.label()
                                         ));
                                 }
+                                // The name stays live under any study: renaming,
+                                // removing and copying need no image volume. What
+                                // draws - editing it, the crosshair - waits for one.
                                 let resp = ui
-                                    .add_enabled(
-                                        has_volume,
+                                    .add(
                                         egui::Button::selectable(
                                             edit_roi == Some(i),
                                             format!(
@@ -295,12 +303,15 @@ impl ViewerApp {
                                         .wrap(),
                                     )
                                     .on_hover_text(format!(
-                                        "ROI {} · {} contour(s)\nClick to make this the \
-                                         structure the editor and the contour tools work on\n\
-                                         F2: rename, Delete: remove",
+                                        "ROI {} · {} contour(s)",
                                         roi.number,
                                         roi.contours.len()
                                     ));
+                                Self::keyboard_badge(
+                                    ui,
+                                    current.as_ref()
+                                        == Some(&RenameTarget::Item { set: here, idx: i }),
+                                );
                                 Self::focus_row(
                                     ui,
                                     &resp,
@@ -308,20 +319,22 @@ impl ViewerApp {
                                     current,
                                     &mut focus,
                                 );
-                                if resp.clicked() {
+                                if resp.clicked() && has_volume {
                                     new_edit = Some(i);
                                 }
                                 resp.context_menu(|ui| {
-                                    if tip_button(
+                                    if enabled_tip_button(
                                         ui,
+                                        has_volume,
                                         "📝 Edit in the Structure editor",
                                         "Select it and open the editor on it",
                                     ) {
                                         open_editor = Some(i);
                                         ui.close();
                                     }
-                                    if tip_button(
+                                    if enabled_tip_button(
                                         ui,
+                                        has_volume,
                                         "⌖ Localize",
                                         "Put the crosshair on it: on the point, or on \
                                          the centre of gravity of the structure",
@@ -330,8 +343,9 @@ impl ViewerApp {
                                         ui.close();
                                     }
                                     if roi.is_poi() {
-                                        if tip_button(
+                                        if enabled_tip_button(
                                             ui,
+                                            has_volume,
                                             "Move to the crosshair",
                                             "Put the point where the three views cross",
                                         ) {
@@ -351,8 +365,9 @@ impl ViewerApp {
                                             poi_act = Some((PoiAct::Localization, i));
                                             ui.close();
                                         }
-                                    } else if tip_button(
+                                    } else if enabled_tip_button(
                                         ui,
+                                        has_volume,
                                         "+ POI at its centre",
                                         "A new point of interest at this structure's \
                                          centre of gravity",

@@ -557,6 +557,88 @@ impl ViewerApp {
     }
 
     // -- Toolbar ----------------------------------------------------------
+    /// The toolbar's window over a planar image: the C / W of the image at
+    /// the pane's scrubber, and its presets - its own window, then windows
+    /// read off its values, as an MR's are.
+    fn planar_wl_controls(&mut self, ui: &mut egui::Ui, t: (usize, usize, usize)) {
+        let (slot, k, _) = t;
+        let Some((modality, (mut c, mut w))) = self
+            .planar_wl(t)
+            .map(|(img, wl)| (img.modality.clone(), wl))
+        else {
+            return;
+        };
+        let pane = super::planar::pane_kind_of(k).label();
+        ui.label(if self.open_slots().len() > 1 {
+            format!("W/L {pane} {}:", SLOT_NAMES[slot])
+        } else {
+            format!("W/L {pane}:")
+        })
+        .on_hover_text(
+            "The window of the image at this pane's scrubber - the planar or additional pane \
+             last pointed at. A preset picked here goes on every planar image of the \
+             workspaces, and on each one shown later. Right-drag in the pane changes the \
+             window too.",
+        );
+        let speed = (w * 0.005).max(1e-3) as f64;
+        let mut changed = ui
+            .add(egui::DragValue::new(&mut c).speed(speed).prefix("C "))
+            .changed();
+        changed |= ui
+            .add(egui::DragValue::new(&mut w).speed(speed).prefix("W "))
+            .changed();
+        if changed {
+            self.set_planar_wl(t, (c, w));
+            self.wl_planar_preset = None;
+        }
+        let windows = self.planar_relative_windows(t);
+        let presets: Vec<(String, f32, f32)> = RELATIVE_PRESETS
+            .iter()
+            .zip(windows)
+            .map(|((n, ..), (c, w))| (n.to_string(), c, w))
+            .collect();
+        let current = self.wl_planar_preset.filter(|i| *i < presets.len());
+        let mut pick: Option<usize> = None;
+        let mut full_range = false;
+        egui::ComboBox::from_id_salt("wl_preset_planar")
+            .selected_text(match current {
+                Some(i) => presets[i].0.clone(),
+                None => format!("{modality} presets"),
+            })
+            .width(170.0)
+            .show_ui(ui, |ui| {
+                ui.weak(format!(
+                    "{modality} values have no fixed scale: these windows are read off this \
+                     image"
+                ));
+                for (i, (name, c, w)) in presets.iter().enumerate() {
+                    if ui
+                        .selectable_label(
+                            current == Some(i),
+                            format!("{name}  (C {c:.4} / W {w:.4})"),
+                        )
+                        .clicked()
+                    {
+                        pick = Some(i);
+                    }
+                }
+                ui.separator();
+                if ui.button("Full range").clicked() {
+                    full_range = true;
+                }
+            });
+        if let Some(i) = pick {
+            self.pick_planar_preset(i);
+        }
+        if full_range {
+            if let Some((img, _)) = self.planar_wl(t) {
+                let (lo, hi) = (img.min_value, img.max_value);
+                self.set_planar_wl(t, ((lo + hi) * 0.5, (hi - lo).max(1e-6)));
+            }
+            self.wl_planar_preset = None;
+        }
+    }
+
     pub(super) fn top_bar(&mut self, ui: &mut egui::Ui) {
         // Only the primary reading controls live here (window/level);
         // file actions, display toggles and appearance are in the menus.
@@ -566,7 +648,9 @@ impl ViewerApp {
         }
         egui::Panel::top(egui::Id::new("top_bar")).show(ui, |ui| {
             ui.horizontal(|ui| {
-                {
+                // The volume's window, then - while a planar or additional
+                // pane shows an image - that image's beside it.
+                if self.any_volume() {
                     // The window of the workspace last pointed at; the
                     // others showing the same modality follow it.
                     let slot = self.wl_slot();
@@ -597,6 +681,7 @@ impl ViewerApp {
                         .changed();
                     if changed {
                         self.set_window(slot, c, w);
+                        self.forget_preset(slot);
                     }
                     // The presets of the modality shown: Hounsfield windows
                     // for a CT; for an MR or a PET, whose values have no
@@ -619,25 +704,24 @@ impl ViewerApp {
                     // values to the left already show them - but kept in the
                     // list, where they are what tells the presets apart.
                     // Any other window (a drag, a right-drag in a view, the
-                    // full range) is nameless again.
-                    let (cur_c, cur_w) = self.window_of(slot);
-                    self.wl_preset = self.wl_preset.filter(|i| {
-                        presets.get(*i).is_some_and(|(_, c, w)| {
-                            (*c - cur_c).abs() < 0.01 && (*w - cur_w).abs() < 0.01
-                        })
-                    });
+                    // full range) is nameless again. The preset stays picked
+                    // across series: the next CT comes up in it, the next MR
+                    // in its own values' version of it.
                     let title = if is_ct {
                         "CT presets".to_string()
                     } else {
                         format!("{modality} presets")
                     };
-                    let selected = self
-                        .wl_preset
+                    let current = if is_ct {
+                        self.wl_ct_preset
+                    } else {
+                        self.wl_rel_preset
+                    };
+                    let selected = current
                         .and_then(|i| presets.get(i))
                         .map_or(title.clone(), |(name, ..)| name.clone());
                     let mut pick: Option<usize> = None;
                     let mut full_range = false;
-                    let current = self.wl_preset;
                     egui::ComboBox::from_id_salt("wl_preset")
                         .selected_text(selected)
                         .width(170.0)
@@ -667,7 +751,11 @@ impl ViewerApp {
                     if let Some(i) = pick {
                         let (_, c, w) = presets[i];
                         self.set_window(slot, c, w);
-                        self.wl_preset = Some(i);
+                        if is_ct {
+                            self.wl_ct_preset = Some(i);
+                        } else {
+                            self.wl_rel_preset = Some(i);
+                        }
                     }
                     if full_range {
                         // Read the range off the workspace itself; an empty
@@ -678,14 +766,21 @@ impl ViewerApp {
                             .as_ref()
                             .filter(|_| self.slots[slot].has_volume())
                         {
-                            self.wl_preset = None;
                             let v = &study.volume;
                             let c = (v.min_value as f32 + v.max_value as f32) * 0.5;
                             let w = (v.max_value as f32 - v.min_value as f32).max(1.0);
                             self.set_window(slot, c, w);
+                            self.forget_preset(slot);
                         }
                     }
-
+                }
+                if let Some(t) = self.planar_wl_target() {
+                    if self.any_volume() {
+                        ui.separator();
+                    }
+                    self.planar_wl_controls(ui, t);
+                }
+                {
                     ui.separator();
                     // The surface scene of each workspace: a pane of its row,
                     // put in and taken out again by one button.

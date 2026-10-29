@@ -330,8 +330,82 @@ pub fn describe(ds: &Dataset) -> Value {
         "plans": plans,
         "planar_images": planar,
         "reports": reports,
+        "sessions": sessions_summary(st),
         "warnings": st.warnings.len(),
     })
+}
+
+/// The treatment sessions of a dataset ([`crate::sessions`]), as counts and
+/// outcomes. No date and no time of day: a session is its number in the
+/// course and its day counted from the first session's (`day` 0), stricter
+/// than a report's `date` and in step with the archive listing, which says
+/// no more of a date than its year. Beam names come from the plan and the
+/// records and pass the redactor like every label.
+pub fn sessions_summary(st: &LoadedStudy) -> Vec<Value> {
+    use crate::sessions;
+    let list = sessions::sessions(st);
+    let first = list
+        .first()
+        .and_then(|s| sessions::seconds(&format!("{}000000", s.date)));
+    let status = |r: usize| -> String {
+        st.treat_records
+            .get(r)
+            .map(|rec| clean_text(sessions::record_status(rec)))
+            .unwrap_or_default()
+    };
+    let n_reports =
+        |pairs: &[sessions::Pair]| -> usize { pairs.iter().map(|p| p.reports.len()).sum() };
+    list.iter()
+        .map(|s| {
+            let day = first
+                .zip(sessions::seconds(&format!("{}000000", s.date)))
+                .map(|(a, b)| (b - a) / 86_400);
+            let images: Vec<String> = s
+                .series
+                .iter()
+                .filter_map(|&i| st.series.get(i))
+                .map(|se| se.modality.clone())
+                .collect();
+            let steps: Vec<Value> = s
+                .steps
+                .iter()
+                .map(|step| {
+                    let mut v = json!({
+                        "beam": clean_text(&step.name),
+                        "setup_pairs": step.setup.len(),
+                        "records": step.records.iter().map(|&r| status(r)).collect::<Vec<_>>(),
+                        "all_normal": step.all_normal,
+                        "verification_pairs": step.verification.len(),
+                        "dose_reports": n_reports(&step.setup) + n_reports(&step.verification),
+                    });
+                    if let Some(c) = step
+                        .treatment_reg
+                        .and_then(|r| st.registrations.get(r))
+                        .and_then(sessions::correction)
+                    {
+                        let r = |x: f64, d: f64| (x * d).round() / d;
+                        v["correction"] = json!({
+                            "translation_mm": [r(c[0], 10.0), r(c[1], 10.0), r(c[2], 10.0)],
+                            "rotation_deg": [r(c[3], 100.0), r(c[4], 100.0), r(c[5], 100.0)],
+                        });
+                    }
+                    v
+                })
+                .collect();
+            json!({
+                "session": s.number,
+                "of": s.of,
+                "day": day,
+                "images": images,
+                "imaging_registrations": s.image_regs.len(),
+                "ct_to_ct_registrations": s.ct_regs.len(),
+                "steps": steps,
+                "records_without_step": s.loose_records.iter().map(|&r| status(r)).collect::<Vec<_>>(),
+                "pairs_without_step": s.loose_pairs.len(),
+                "reports": s.reports().count(),
+            })
+        })
+        .collect()
 }
 
 /// Rows of one report table a description carries at most: an SR tree
@@ -425,4 +499,92 @@ pub fn round3(x: f64) -> f64 {
 
 pub fn vec3(v: crate::geometry::Vec3) -> Value {
     json!([round2(v.x), round2(v.y), round2(v.z)])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::extras::{
+        PlanarImage, PlanarKind, RecordBeam, RegMatrixItem, SpatialReg, TreatRecord,
+    };
+    use crate::rtplan::{BeamInfo, PlanInfo};
+
+    /// Two treatment days a week apart, each one beam with a setup pair,
+    /// a correction and a record.
+    fn course() -> LoadedStudy {
+        let mut st = LoadedStudy {
+            plans: vec![PlanInfo {
+                sop_instance_uid: "9.9.1".into(),
+                beams: vec![BeamInfo {
+                    number: 2,
+                    name: "LPO".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        #[rustfmt::skip]
+        let shifted = [
+            1.0, 0.0, 0.0, -0.8,
+            0.0, 1.0, 0.0, 4.9,
+            0.0, 0.0, 1.0, -4.4,
+            0.0, 0.0, 0.0, 1.0,
+        ];
+        for day in ["20240917", "20240924"] {
+            st.registrations.push(SpatialReg {
+                datetime: format!("{day}105403"),
+                references: vec!["9.9.1".into()],
+                items: vec![RegMatrixItem {
+                    matrix: shifted,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+            st.treat_records.push(TreatRecord {
+                datetime: format!("{day}105418"),
+                beams: vec![RecordBeam {
+                    name: "LPO".into(),
+                    termination_status: "NORMAL".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+            for _ in 0..2 {
+                st.planar_images.push(PlanarImage {
+                    kind: PlanarKind::Projection,
+                    series_number: Some(212),
+                    instance_number: Some(3),
+                    acquired: format!("{day}105145"),
+                    reviewed: format!("{day}105402"),
+                    ..Default::default()
+                });
+            }
+        }
+        st
+    }
+
+    #[test]
+    fn the_sessions_summary_counts_days_and_says_no_date_or_time() {
+        let v = json!(sessions_summary(&course()));
+        let s = v.as_array().unwrap();
+        assert_eq!(s.len(), 2);
+        assert_eq!(
+            (s[0]["day"].as_i64(), s[1]["day"].as_i64()),
+            (Some(0), Some(7))
+        );
+        assert_eq!(s[1]["session"], 2);
+        let step = &s[0]["steps"][0];
+        assert_eq!(step["beam"], "LPO");
+        assert_eq!(step["setup_pairs"], 1);
+        assert_eq!(step["records"], json!(["NORMAL"]));
+        assert_eq!(
+            step["correction"]["translation_mm"],
+            json!([-0.8, 4.9, -4.4])
+        );
+        let text = v.to_string();
+        for leak in ["2024", "0917", "0924", "1054", "10:54"] {
+            assert!(!text.contains(leak), "the summary carries '{leak}': {text}");
+        }
+    }
 }

@@ -191,7 +191,7 @@ impl Wants {
 /// What rows of a server's tree stand for.
 fn wants_of(listing: &[RemotePatient], nodes: &[TNode], ids: &[NodeId]) -> Wants {
     let mut w = Wants::default();
-    for id in ids {
+    for id in &pacs_tree::series_ids(nodes, ids) {
         match id.len() {
             1 => {
                 if let Some(c) = pacs_tree::node_at(nodes, id) {
@@ -318,23 +318,28 @@ pub(super) fn remote_nodes(
                                         }
                                     ),
                                     files: st.files,
-                                    children: st
-                                        .series
-                                        .iter()
-                                        .map(|se| TNode {
-                                            key: se.series_uid.clone(),
-                                            icon: "🎞",
-                                            text: format!(
-                                                "{}{}",
-                                                held_mark(held_series, &se.series_uid),
-                                                se.title()
-                                            ),
-                                            right: n(se.files, "file", "files"),
-                                            hover: format!("Series UID {}", se.series_uid),
-                                            files: se.files,
-                                            children: Vec::new(),
-                                        })
-                                        .collect(),
+                                    children: pacs_tree::study_rows(
+                                        st.series
+                                            .iter()
+                                            .map(|se| pacs_tree::SeriesRow {
+                                                modality: se.modality.clone(),
+                                                datetime: se.datetime.clone(),
+                                                node: TNode {
+                                                    key: se.series_uid.clone(),
+                                                    icon: "🎞",
+                                                    text: format!(
+                                                        "{}{}",
+                                                        held_mark(held_series, &se.series_uid),
+                                                        se.title()
+                                                    ),
+                                                    right: n(se.files, "file", "files"),
+                                                    hover: format!("Series UID {}", se.series_uid),
+                                                    files: se.files,
+                                                    children: Vec::new(),
+                                                },
+                                            })
+                                            .collect(),
+                                    ),
                                 })
                                 .collect(),
                         }

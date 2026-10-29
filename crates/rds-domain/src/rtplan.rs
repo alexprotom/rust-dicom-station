@@ -10,7 +10,7 @@ use dicom_dictionary_std::tags;
 use crate::geometry::Vec3;
 use crate::loader::{f64_of, f64s_of, i32_of, items_of, str_of};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BeamInfo {
     pub number: i32,
     pub name: String,

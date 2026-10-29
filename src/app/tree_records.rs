@@ -1,128 +1,123 @@
-//! The data tree's records and warnings sections: treatment records, and
-//! what loading the study had to say.
+//! The data tree's records and warnings sections: treatment records - in
+//! the study's own list, or as the rows of its treatment sessions
+//! ([`super::tree_sessions`]), each shown in full in the additional pane -
+//! and what loading the study had to say.
 
+use super::object_view::PaneObject;
 use super::*;
+use crate::extras::TreatRecord;
 
 impl ViewerApp {
-    /// RT (Ion) Beams Treatment Records: per-beam delivered metersets.
-    pub(super) fn records_section(&mut self, ui: &mut egui::Ui, slot: usize) {
+    /// The study's own RT (Ion) Beams Treatment Records, those no treatment
+    /// session took: per-beam delivered metersets.
+    pub(super) fn records_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        slot: usize,
+        (pi, si): (usize, usize),
+        records: &[usize],
+    ) {
+        if records.is_empty() {
+            return;
+        }
+        egui::CollapsingHeader::new(format!("Treatment records ({})", records.len()))
+            .id_salt(("records", slot, pi, si))
+            .default_open(false)
+            .show(ui, |ui| self.record_rows(ui, slot, records, false));
+    }
+
+    /// The rows of the records `records`, by name, fraction and date - or
+    /// `compact`, for a session: by the time, the beams and how they ended.
+    /// A click shows the record's beams and metersets in the additional
+    /// pane ([`super::object_view`]).
+    pub(super) fn record_rows(
+        &mut self,
+        ui: &mut egui::Ui,
+        slot: usize,
+        records: &[usize],
+        compact: bool,
+    ) {
+        let mut show: Option<usize> = None;
+        let mut hide = false;
         let mut rename: Option<RenameTarget> = None;
         let mut remove: Option<ObjRef> = None;
         let mut focus: Option<RenameTarget> = None;
         let current = self.tree_focus.clone();
+        let shown: Vec<bool> = records
+            .iter()
+            .map(|&ri| self.object_shown(slot, PaneObject::Record(ri)))
+            .collect();
         {
             let Some(study) = &self.slots[slot].study else {
                 return;
             };
-            if study.treat_records.is_empty() {
-                return;
-            }
-            egui::CollapsingHeader::new(format!(
-                "Treatment records ({})",
-                study.treat_records.len()
-            ))
-            .id_salt(("records", slot))
-            .default_open(false)
-            .show(ui, |ui| {
-                for (ri, rec) in study.treat_records.iter().enumerate() {
-                    let resp = ui
-                        .label(
-                            egui::RichText::new(format!(
-                                "{}{}{}{}",
-                                rec.label,
-                                if rec.ion { "  [ion]" } else { "" },
-                                rec.fraction
-                                    .map(|f| format!("  fx {f}"))
-                                    .unwrap_or_default(),
-                                if rec.date.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!("  {}", rec.date)
-                                }
-                            ))
-                            .strong(),
-                        )
-                        .on_hover_text(
-                            "right-click: rename or remove this record\nF2: rename, Delete: \
-                             remove",
-                        );
-                    Self::focus_row(
-                        ui,
-                        &resp,
-                        RenameTarget::Record { slot, idx: ri },
-                        &current,
-                        &mut focus,
-                    );
-                    resp.context_menu(|ui| {
-                        if ui.button("✏ Rename").clicked() {
-                            rename = Some(RenameTarget::Record { slot, idx: ri });
-                            ui.close();
+            for (row, &ri) in records.iter().enumerate() {
+                let Some(rec) = study.treat_records.get(ri) else {
+                    continue;
+                };
+                let me = RenameTarget::Record { slot, idx: ri };
+                let text = if compact {
+                    compact_title(rec)
+                } else {
+                    format!(
+                        "{}{}{}{}",
+                        rec.label,
+                        if rec.ion { "  [ion]" } else { "" },
+                        rec.fraction
+                            .map(|f| format!("  fx {f}"))
+                            .unwrap_or_default(),
+                        if rec.date.is_empty() {
+                            String::new()
+                        } else {
+                            format!("  {}", rec.date)
                         }
-                        ui.separator();
-                        if ui.button("🗑 Remove").clicked() {
-                            remove = Some(ObjRef {
-                                slot,
-                                kind: ObjKind::Record,
-                                idx: ri,
-                            });
-                            ui.close();
-                        }
-                    });
-                    if !rec.machine.is_empty() {
-                        ui.weak(format!("Machine: {}", rec.machine));
+                    )
+                };
+                let resp =
+                    Self::additional_row(ui, shown[row], text, current.as_ref() == Some(&me));
+                Self::focus_row(ui, &resp, me.clone(), &current, &mut focus);
+                // A click shows it; a click on it while it is shown takes
+                // it out of the pane again.
+                if resp.clicked() {
+                    if shown[row] {
+                        hide = true;
+                    } else {
+                        show = Some(ri);
                     }
-                    egui::Grid::new(("rec_grid", slot, ri))
-                        .striped(true)
-                        .min_col_width(10.0)
-                        .show(ui, |ui| {
-                            ui.strong("Beam");
-                            ui.strong("MU spec");
-                            ui.strong("MU del");
-                            ui.strong("Δ%");
-                            ui.strong("Status");
-                            ui.end_row();
-                            for b in &rec.beams {
-                                ui.label(&b.name).on_hover_text(format!(
-                                    "Beam {} · verification: {}",
-                                    b.number,
-                                    if b.verification_status.is_empty() {
-                                        "n/a"
-                                    } else {
-                                        &b.verification_status
-                                    }
-                                ));
-                                ui.label(
-                                    b.specified_meterset
-                                        .map(|m| format!("{m:.1}"))
-                                        .unwrap_or_else(|| "-".into()),
-                                );
-                                ui.label(
-                                    b.delivered_meterset
-                                        .map(|m| format!("{m:.1}"))
-                                        .unwrap_or_else(|| "-".into()),
-                                );
-                                ui.label(match (b.specified_meterset, b.delivered_meterset) {
-                                    (Some(s), Some(d)) if s > 1e-9 => {
-                                        format!("{:+.1}", 100.0 * (d - s) / s)
-                                    }
-                                    _ => "-".into(),
-                                });
-                                let status = if b.termination_status.is_empty() {
-                                    "-"
-                                } else {
-                                    &b.termination_status
-                                };
-                                if status == "NORMAL" || status == "-" {
-                                    ui.label(status);
-                                } else {
-                                    let c = alert_color(ui.visuals());
-                                    ui.label(egui::RichText::new(status).color(c));
-                                }
-                                ui.end_row();
-                            }
-                        });
                 }
-            });
+                let tip = Self::object_tip(
+                    &rec.sop_instance_uid,
+                    if rec.machine.is_empty() {
+                        rec.label.clone()
+                    } else {
+                        format!("{} · {}", rec.label, rec.machine)
+                    },
+                );
+                resp.on_hover_text(tip).context_menu(|ui| {
+                    if Self::show_entry(ui, shown[row]) {
+                        if shown[row] {
+                            hide = true;
+                        } else {
+                            show = Some(ri);
+                        }
+                        ui.close();
+                    }
+                    ui.separator();
+                    if Self::rename_entry(ui) {
+                        rename = Some(me.clone());
+                        ui.close();
+                    }
+                    ui.separator();
+                    if Self::remove_entry(ui, "🗑 Remove") {
+                        remove = Some(ObjRef {
+                            slot,
+                            kind: ObjKind::Record,
+                            idx: ri,
+                        });
+                        ui.close();
+                    }
+                });
+            }
         }
         if rename.is_some() {
             self.rename_request = rename;
@@ -132,6 +127,12 @@ impl ViewerApp {
         }
         if focus.is_some() {
             self.tree_focus = focus;
+        }
+        if hide {
+            self.hide_additional(slot);
+        }
+        if let Some(ri) = show {
+            self.show_object(slot, PaneObject::Record(ri));
         }
     }
 
@@ -184,4 +185,28 @@ impl ViewerApp {
             }
         }
     }
+}
+
+/// A record in one line, for a session: how its beams ended (`✔` for
+/// `NORMAL`, `⚠` for anything else), its time, its beams and the status.
+fn compact_title(rec: &TreatRecord) -> String {
+    let status = crate::sessions::record_status(rec);
+    let mark = match status {
+        "NORMAL" => "✔ ",
+        "" => "",
+        _ => "⚠ ",
+    };
+    let mut t = format!("{mark}Record");
+    let clock = crate::sessions::clock(&rec.datetime);
+    if !clock.is_empty() {
+        t.push_str(&format!(" · {clock}"));
+    }
+    let beams: Vec<&str> = rec.beams.iter().map(|b| b.name.as_str()).collect();
+    if !beams.is_empty() {
+        t.push_str(&format!(" · {}", beams.join(" + ")));
+    }
+    if !status.is_empty() {
+        t.push_str(&format!(" · {status}"));
+    }
+    t
 }

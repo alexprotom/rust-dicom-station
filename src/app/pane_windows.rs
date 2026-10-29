@@ -59,6 +59,17 @@ impl ViewerApp {
             .clicked()
     }
 
+    /// The bar's ✖ at `rect`: take this pane out of its row (a window of
+    /// its own closes with it). The last pane of a row stays; *Settings ▸
+    /// View layout* puts a pane back, the toolbar's *3D* the 3D scene.
+    pub(super) fn close_button(ui: &mut egui::Ui, rect: Rect) -> egui::Response {
+        ui.put(rect, egui::Button::new("✖").small()).on_hover_text(
+            "Take this view out of the row. Settings ▸ View layout puts it back (the 3D \
+             scene: the toolbar's 3D button; a planar or additional pane: a click in the \
+             data tree).",
+        )
+    }
+
     /// Is the pane maximized: in the row, over the whole central area; in a
     /// window of its own, the window over the screen.
     pub(super) fn pane_is_max(&self, ui: &egui::Ui, slot: usize, kind: PaneKind) -> bool {
@@ -122,5 +133,59 @@ impl ViewerApp {
                 self.detached_panes.retain(|p| *p != (slot, kind));
             }
         }
+    }
+}
+
+/// Where the buttons of a pane's bar go, `widths` from the right edge
+/// leftwards: in a line from the pane's top-right corner at `top`, or - when
+/// the pane is too narrow for one line - in as many lines below each other
+/// as it takes, every line holding the same number of buttons (the last
+/// fewer) and keeping its buttons at their own size. A button is always in
+/// the same place in its line, whatever the pane's width.
+pub(super) fn bar_cells(rect: Rect, top: f32, widths: &[f32]) -> Vec<Rect> {
+    const GAP: f32 = 4.0;
+    const H: f32 = 20.0;
+    let room = (rect.width() - 2.0 * GAP).max(0.0);
+    let line =
+        |chunk: &[f32]| chunk.iter().sum::<f32>() + GAP * chunk.len().saturating_sub(1) as f32;
+    // The most buttons a line can hold so that every line fits.
+    let per_line = (1..=widths.len().max(1))
+        .rev()
+        .find(|&k| widths.chunks(k).all(|c| line(c) <= room))
+        .unwrap_or(1);
+    let mut out = Vec::with_capacity(widths.len());
+    for (row, chunk) in widths.chunks(per_line).enumerate() {
+        let y = top + row as f32 * (H + GAP);
+        let mut right = rect.right() - GAP;
+        for &w in chunk {
+            out.push(Rect::from_min_size(
+                Pos2::new(right - w, y),
+                egui::vec2(w, H),
+            ));
+            right -= w + GAP;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_bar_wraps_into_lines_of_one_length_and_keeps_each_buttons_size() {
+        let widths = [24.0, 24.0, 24.0, 24.0, 38.0];
+        let wide = Rect::from_min_size(Pos2::ZERO, egui::vec2(400.0, 300.0));
+        let one = bar_cells(wide, 22.0, &widths);
+        assert!(one.iter().all(|r| r.top() == 22.0), "one line when it fits");
+        assert_eq!(one[0].right(), 396.0);
+        assert_eq!(one[4].width(), 38.0);
+        // 60 px of room: two buttons a line, in three lines.
+        let narrow = Rect::from_min_size(Pos2::ZERO, egui::vec2(68.0, 300.0));
+        let three = bar_cells(narrow, 22.0, &widths);
+        let tops: Vec<f32> = three.iter().map(|r| r.top()).collect();
+        assert_eq!(tops, [22.0, 22.0, 46.0, 46.0, 70.0]);
+        assert!(three.iter().all(|r| r.width() == 24.0 || r.width() == 38.0));
+        assert_eq!(three[0].right(), three[2].right(), "the lines line up");
     }
 }

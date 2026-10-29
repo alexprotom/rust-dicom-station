@@ -40,7 +40,9 @@ pub const CATALOG_FILE: &str = "rds-pacs-catalog.json";
 /// Held while the catalog is rewritten.
 const LOCK_FILE: &str = ".rds-pacs-catalog.lock";
 const FORMAT: &str = "rds-pacs-catalog";
-const VERSION: u32 = 1;
+/// 2: a series carries its date and time ([`SeriesRec::datetime`]); a catalog
+/// of version 1 has every header read again once, by the next scan.
+const VERSION: u32 = 2;
 /// The id of the cohort that holds the patients outside any cohort folder.
 pub const UNSORTED: &str = "unsorted";
 
@@ -84,6 +86,10 @@ pub struct SeriesRec {
     pub number: String,
     pub description: String,
     pub label: String,
+    /// When it was made, `YYYYMMDDHHMMSS` (SeriesDate/Time, else the
+    /// acquisition's, else the content's; the earliest of its files): what
+    /// groups a course's series by treatment day. Empty when no file says.
+    pub datetime: String,
     pub files: Vec<FileRec>,
 }
 
@@ -141,6 +147,8 @@ pub struct Head {
     pub study_description: String,
     pub series_number: String,
     pub series_description: String,
+    /// See [`SeriesRec::datetime`].
+    pub series_datetime: String,
 }
 
 impl Head {
@@ -192,6 +200,14 @@ pub fn read_head(path: &Path) -> Option<Head> {
         study_description: s(tags::STUDY_DESCRIPTION),
         series_number: s(tags::SERIES_NUMBER),
         series_description: s(tags::SERIES_DESCRIPTION),
+        series_datetime: crate::loader::first_datetime(
+            &obj,
+            &[
+                (tags::SERIES_DATE, tags::SERIES_TIME),
+                (tags::ACQUISITION_DATE, tags::ACQUISITION_TIME),
+                (tags::CONTENT_DATE, tags::CONTENT_TIME),
+            ],
+        ),
     })
 }
 
@@ -535,8 +551,12 @@ pub fn add_file(c: &mut Catalog, h: &Head, file: FileRec) {
             number: h.series_number.clone(),
             description: h.series_description.clone(),
             label: String::new(),
+            datetime: String::new(),
             files: Vec::new(),
         });
+    if !h.series_datetime.is_empty() && (s.datetime.is_empty() || h.series_datetime < s.datetime) {
+        s.datetime = h.series_datetime.clone();
+    }
     s.files.push(file);
 }
 
@@ -572,7 +592,11 @@ pub fn refresh(roots: &[PathBuf], progress: &Progress) -> Result<Arc<Catalog>> {
         })
         .collect();
     let mut known: HashMap<(u32, String), (u64, i64, String, String)> = HashMap::new();
-    for (suid, s) in &old.series {
+    // A catalog of an earlier version lacks what this one reads from a
+    // header (the series' date): every file is read again, once. The
+    // person's names and cohorts are carried over all the same.
+    let current = old.version >= VERSION;
+    for (suid, s) in old.series.iter().filter(|_| current) {
         for f in &s.files {
             if let Some(Some(r)) = remap.get(f.0 as usize) {
                 known.insert((*r, f.1.clone()), (f.2, f.3, f.4.clone(), suid.clone()));

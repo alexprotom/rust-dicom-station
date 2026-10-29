@@ -387,6 +387,7 @@ async fn patients(
                                     description: se.description.clone(),
                                     label: se.label.clone(),
                                     files: se.files,
+                                    datetime: se.datetime.clone(),
                                 })
                                 .collect(),
                         })

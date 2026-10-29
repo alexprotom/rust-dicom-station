@@ -29,8 +29,124 @@ pub(super) struct TNode {
 }
 
 /// A row, by the keys from the top down: `[cohort]`, `[cohort, patient]`,
-/// `[cohort, patient, study]`, `[cohort, patient, study, series]`.
+/// `[cohort, patient, study]`, `[cohort, patient, study, series]`; a series
+/// of a treatment day has the day's row between the study and it
+/// (`[..., study, day, series]`, see [`study_rows`]), which
+/// [`series_ids`] takes out again before a selection is acted on.
 pub(super) type NodeId = Vec<String>;
+
+/// The key of a treatment day's row: `day:20240917`. Never a UID, which is
+/// digits and dots.
+const DAY_KEY: &str = "day:";
+
+/// One series of a study for [`study_rows`]: its row, its modality and when
+/// it was made (`YYYYMMDDHHMMSS`, empty when unknown).
+pub(super) struct SeriesRow {
+    pub node: TNode,
+    pub modality: String,
+    pub datetime: String,
+}
+
+/// The rows under a study. A study that is a treatment course - it holds
+/// treatment records - has a row per day a record was made on
+/// (`2024-09-17 · 4 of 16`), holding that day's series in time order: the
+/// daily CT, the radiographs, the registrations, the records, the dose
+/// reports. Its other series (the planning CT, the plan) stay directly
+/// under the study. The viewer's data tree puts a day together by beam
+/// ([`crate::sessions`]); the catalog knows no references, so here it is
+/// the series' date alone. Any other study lists its series as they come.
+pub(super) fn study_rows(series: Vec<SeriesRow>) -> Vec<TNode> {
+    let day = |s: &SeriesRow| s.datetime.get(..8).map(str::to_string);
+    let days: std::collections::BTreeSet<String> = series
+        .iter()
+        .filter(|s| s.modality == "RTRECORD")
+        .filter_map(day)
+        .collect();
+    if days.is_empty() {
+        return series.into_iter().map(|s| s.node).collect();
+    }
+    let of = days.len();
+    let mut out: Vec<TNode> = Vec::new();
+    let mut by_day: std::collections::BTreeMap<String, Vec<SeriesRow>> = Default::default();
+    for s in series {
+        match day(&s).filter(|d| days.contains(d)) {
+            Some(d) => by_day.entry(d).or_default().push(s),
+            None => out.push(s.node),
+        }
+    }
+    for (n, (date, mut rows)) in by_day.into_iter().enumerate() {
+        rows.sort_by(|a, b| a.datetime.cmp(&b.datetime));
+        let files: usize = rows.iter().map(|r| r.node.files).sum();
+        let mut kinds: Vec<(String, usize)> = Vec::new();
+        for r in &rows {
+            match kinds.iter_mut().find(|(m, _)| *m == r.modality) {
+                Some((_, k)) => *k += 1,
+                None => kinds.push((r.modality.clone(), 1)),
+            }
+        }
+        out.push(TNode {
+            key: format!("{DAY_KEY}{date}"),
+            icon: "🕐",
+            text: format!("{} · {} of {of}", crate::archive::show_date(&date), n + 1),
+            right: format!(
+                "{} series · {files} file{}",
+                rows.len(),
+                if files == 1 { "" } else { "s" }
+            ),
+            hover: format!(
+                "A treatment day: the series made that day, by the time they were made\n{}",
+                kinds
+                    .iter()
+                    .map(|(m, k)| format!("{m} {k}"))
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            ),
+            files,
+            children: rows.into_iter().map(|r| r.node).collect(),
+        });
+    }
+    out
+}
+
+/// The rows a selection means, with the treatment days taken out: a day's
+/// row is each of its series, a series under a day the series of its
+/// study - so every id is `[cohort]`, `[cohort, patient]`, `[cohort,
+/// patient, study]` or `[cohort, patient, study, series]`, as the callers
+/// read them.
+/// Is this key a treatment day's row (which names no object of its own)?
+pub(super) fn is_day(key: &str) -> bool {
+    key.starts_with(DAY_KEY)
+}
+
+pub(super) fn series_ids(nodes: &[TNode], ids: &[NodeId]) -> Vec<NodeId> {
+    let mut out: Vec<NodeId> = Vec::new();
+    let mut push = |id: NodeId| {
+        if !out.contains(&id) {
+            out.push(id);
+        }
+    };
+    for id in ids {
+        match id.iter().position(|k| k.starts_with(DAY_KEY)) {
+            None => push(id.clone()),
+            Some(at) if at + 1 == id.len() => {
+                for child in node_at(nodes, id)
+                    .map(|n| n.children.as_slice())
+                    .unwrap_or(&[])
+                {
+                    let mut s = id[..at].to_vec();
+                    s.push(child.key.clone());
+                    push(s);
+                }
+            }
+            Some(at) => {
+                let mut s = id.clone();
+                s.remove(at);
+                push(s);
+            }
+        }
+    }
+    out
+}
 
 /// Which rows are unfolded and selected, and where the keyboard is.
 #[derive(Clone, Debug, Default)]
@@ -521,5 +637,50 @@ mod tests {
         assert_eq!(selected_files(&m, &v), m[0].files + 1);
         v.retain_known(&m[..1]);
         assert_eq!(v.selected.len(), 2, "rows gone from the model are dropped");
+    }
+
+    #[test]
+    fn a_course_groups_its_series_by_the_days_a_record_was_made_on() {
+        let row = |key: &str, modality: &str, when: &str| SeriesRow {
+            node: n(key, key, vec![]),
+            modality: modality.into(),
+            datetime: when.into(),
+        };
+        let rows = study_rows(vec![
+            row("ct-plan", "CT", "20240903115855"),
+            row("rec2", "RTRECORD", "20240917105946"),
+            row("ct-day", "CT", "20240917103701"),
+            row("rec1", "RTRECORD", "20240916105418"),
+            row("undated", "RTPLAN", ""),
+        ]);
+        let keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(keys, ["ct-plan", "undated", "day:20240916", "day:20240917"]);
+        assert_eq!(rows[3].text, "2024-09-17 · 2 of 2");
+        let day: Vec<&str> = rows[3].children.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(day, ["ct-day", "rec2"], "in the order they were made");
+        // A study with no record is listed as it comes.
+        let plain = study_rows(vec![row("ct", "CT", "20240903115855")]);
+        assert_eq!(plain[0].key, "ct");
+
+        // A selection of a day is its series; a series under a day is the
+        // study's series.
+        let model = vec![n(
+            "c",
+            "Trial",
+            vec![n("p", "P", vec![n("s", "Course", rows)])],
+        )];
+        let id = |k: &[&str]| k.iter().map(|s| s.to_string()).collect::<NodeId>();
+        assert_eq!(
+            series_ids(&model, &[id(&["c", "p", "s", "day:20240917"])]),
+            vec![id(&["c", "p", "s", "ct-day"]), id(&["c", "p", "s", "rec2"])]
+        );
+        assert_eq!(
+            series_ids(&model, &[id(&["c", "p", "s", "day:20240916", "rec1"])]),
+            vec![id(&["c", "p", "s", "rec1"])]
+        );
+        assert_eq!(
+            series_ids(&model, &[id(&["c", "p"])]),
+            vec![id(&["c", "p"])]
+        );
     }
 }

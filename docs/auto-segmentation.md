@@ -128,7 +128,11 @@ the module is switched on, the panel opened, and the section unfolds on its
 **Results** fold, at its end: the facts of the run and any notes from it (a
 crop model that found nothing, a modality mismatch), every structure found
 as a tick list with its volume (*All* / *None*), and what the checked ones
-become:
+become. While the fold waits, the ticked classes are drawn over the views of
+the workspace the run was on, in their colours (for a run over a 4D group,
+the phase on screen), so what *Add* will keep is seen before it is kept;
+ticking and unticking redraws them at once, and nothing is in the study
+until *Add*:
 
 * **Output ▸ segments** - ordinary editable segmentations in the
   segmentation series bound to the displayed image series: brush/erase/grow

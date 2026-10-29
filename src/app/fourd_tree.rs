@@ -1,6 +1,7 @@
 //! A 4D group's node in the data tree, and what its menu does to the
 //! group (add, remove, shift, re-detect, dissolve, analyse).
 
+use super::data_tree::{SeriesMenu, SeriesOut};
 use super::*;
 
 impl ViewerApp {
@@ -15,6 +16,10 @@ impl ViewerApp {
         gi: usize,
     ) {
         let badges = self.series_badges(slot);
+        let picked = self.picked_series(slot);
+        let targets = self.copy_targets(slot);
+        let open = self.open_slots();
+        let (ctrl, shift) = ui.input(|i| (i.modifiers.command, i.modifiers.shift));
         let Some(study) = self.slots[slot].study.as_ref() else {
             return;
         };
@@ -35,19 +40,28 @@ impl ViewerApp {
                     let se = &study.series[sidx];
                     let tag = m.role.tag();
                     let ord = Self::name_ordinal(study, sidx);
+                    let tick = if picked.contains(&sidx) { "✔ " } else { "" };
                     let label = if tag.is_empty() {
                         format!(
-                            "{} - {}{ord} ({} sl.)",
+                            "{tick}{} - {}{ord} ({} sl.)",
                             m.label,
                             se.description,
                             se.files.len()
                         )
                     } else {
-                        format!("{tag} - {}{ord} ({} sl.)", se.description, se.files.len())
+                        format!(
+                            "{tick}{tag} - {}{ord} ({} sl.)",
+                            se.description,
+                            se.files.len()
+                        )
                     };
                     (mi, sidx, label, se.uid.clone())
                 })
             })
+            .collect();
+        let tips: Vec<String> = rows
+            .iter()
+            .map(|(_, sidx, _, _)| Self::series_tip(&study.series[*sidx]))
             .collect();
         let n_members = group.members.len();
         let active = study.active_series;
@@ -57,111 +71,143 @@ impl ViewerApp {
         let mut rename = None;
         let mut focus = None;
         let mut act: Option<TreeAction> = None;
+        let mut out = SeriesOut::default();
         let current = self.tree_focus.clone();
         let members: Vec<usize> = rows.iter().map(|(_, sidx, _, _)| *sidx).collect();
         let showing = rows.iter().any(|(_, sidx, _, _)| *sidx == active);
-        let resp = Self::wrapped_node(ui, ("fourd", slot, pi, si, gi), showing, title, |ui| {
-            for (mi, sidx, label, uid) in &rows {
-                let me = RenameTarget::Series { slot, idx: *sidx };
-                let resp = Self::badged_series_row(
-                    ui,
-                    *sidx == active,
-                    label.clone(),
-                    uid,
-                    &badges,
-                    current.as_ref() == Some(&me),
-                );
-                Self::focus_row(
-                    ui,
-                    &resp,
-                    RenameTarget::Series { slot, idx: *sidx },
-                    &current,
-                    &mut focus,
-                );
-                if resp.clicked() && *sidx != active {
-                    switch_to = Some(*sidx);
-                }
-                resp.context_menu(|ui| {
-                    if ui.button("⬆ Move up").clicked() {
-                        fourd = Some(FourDAction::Shift {
-                            slot,
-                            group: gi,
-                            member: *mi,
-                            delta: -1,
-                        });
-                        ui.close();
+        let me_group = RenameTarget::FourD { slot, idx: gi };
+        let group_focused = current.as_ref() == Some(&me_group);
+        let resp = Self::wrapped_node_extra(
+            ui,
+            ("fourd", slot, pi, si, gi),
+            showing,
+            title,
+            |ui| Self::keyboard_badge(ui, group_focused),
+            |ui| {
+                for ((mi, sidx, label, uid), tip) in rows.iter().zip(&tips) {
+                    let me = RenameTarget::Series { slot, idx: *sidx };
+                    let resp = Self::badged_series_row(
+                        ui,
+                        *sidx == active,
+                        label.clone(),
+                        uid,
+                        &badges,
+                        current.as_ref() == Some(&me),
+                    );
+                    Self::focus_row(ui, &resp, me, &current, &mut focus);
+                    // As on any series row: Shift ticks a range, Ctrl one
+                    // phase, a plain click displays it.
+                    if resp.clicked() {
+                        if shift {
+                            out.range = Some(*sidx);
+                        } else if ctrl {
+                            out.pick = Some(uid.clone());
+                        } else if *sidx != active {
+                            switch_to = Some(*sidx);
+                        }
                     }
-                    if ui.button("⬇ Move down").clicked() {
-                        fourd = Some(FourDAction::Shift {
-                            slot,
-                            group: gi,
-                            member: *mi,
-                            delta: 1,
-                        });
-                        ui.close();
-                    }
-                    ui.menu_button("Role", |ui| {
-                        for (role, label) in [
-                            (fourd::Role::Phase, "Phase"),
-                            (fourd::Role::Average, "Average (AVG)"),
-                            (fourd::Role::Mip, "MIP"),
-                            (fourd::Role::MinIp, "MinIP"),
-                        ] {
-                            if ui.button(label).clicked() {
-                                fourd = Some(FourDAction::SetRole {
-                                    slot,
-                                    group: gi,
-                                    member: *mi,
-                                    role,
-                                });
+                    let menu = SeriesMenu::new(slot, *sidx, &picked);
+                    resp.on_hover_text(tip.as_str()).context_menu(|ui| {
+                        if *sidx != active {
+                            if ui.button("👁 Display").clicked() {
+                                switch_to = Some(*sidx);
                                 ui.close();
                             }
+                            ui.separator();
                         }
-                    });
-                    ui.separator();
-                    if ui.button("Remove from group").clicked() {
-                        fourd = Some(FourDAction::RemoveMember {
-                            slot,
-                            group: gi,
-                            member: *mi,
+                        if ui.button("⬆ Move up").clicked() {
+                            fourd = Some(FourDAction::Shift {
+                                slot,
+                                group: gi,
+                                member: *mi,
+                                delta: -1,
+                            });
+                            ui.close();
+                        }
+                        if ui.button("⬇ Move down").clicked() {
+                            fourd = Some(FourDAction::Shift {
+                                slot,
+                                group: gi,
+                                member: *mi,
+                                delta: 1,
+                            });
+                            ui.close();
+                        }
+                        ui.menu_button("Role", |ui| {
+                            for (role, label) in [
+                                (fourd::Role::Phase, "Phase"),
+                                (fourd::Role::Average, "Average (AVG)"),
+                                (fourd::Role::Mip, "MIP"),
+                                (fourd::Role::MinIp, "MinIP"),
+                            ] {
+                                if ui.button(label).clicked() {
+                                    fourd = Some(FourDAction::SetRole {
+                                        slot,
+                                        group: gi,
+                                        member: *mi,
+                                        role,
+                                    });
+                                    ui.close();
+                                }
+                            }
                         });
-                        ui.close();
-                    }
-                });
-            }
-            if rows.len() < n_members {
-                ui.weak(format!(
-                    "{} member(s) whose series is gone",
-                    n_members - rows.len()
-                ));
-            }
-        });
-        Self::focus_row(
-            ui,
-            &resp,
-            RenameTarget::FourD { slot, idx: gi },
-            &current,
-            &mut focus,
+                        if ui.button("Take out of the group").clicked() {
+                            fourd = Some(FourDAction::RemoveMember {
+                                slot,
+                                group: gi,
+                                member: *mi,
+                            });
+                            ui.close();
+                        }
+                        ui.separator();
+                        menu.common_entries(ui, &targets, &open, &mut out);
+                    });
+                }
+                if rows.len() < n_members {
+                    ui.weak(format!(
+                        "{} member(s) whose series is gone",
+                        n_members - rows.len()
+                    ));
+                }
+            },
         );
+        Self::focus_row(ui, &resp, me_group.clone(), &current, &mut focus);
         resp.context_menu(|ui| {
-            if ui.button("✏ Rename").clicked() {
-                rename = Some(RenameTarget::FourD { slot, idx: gi });
-                ui.close();
-            }
             if ui.button("📈 Motion / ITV analysis").clicked() {
                 fourd = Some(FourDAction::Analyse { slot, group: gi });
                 ui.close();
             }
-            ui.separator();
             if ui.button("Re-detect 4D groups").clicked() {
                 fourd = Some(FourDAction::Redetect { slot });
                 ui.close();
             }
-            if tip_button(
+            ui.separator();
+            if Self::rename_entry(ui) {
+                rename = Some(me_group.clone());
+                ui.close();
+            }
+            Self::transfer_menu(
                 ui,
-                "Dissolve group",
-                "Take the group apart; its series stay in the study",
-            ) {
+                &format!("the group's {} series", members.len()),
+                &targets,
+                &open,
+                |to, op| {
+                    act = Some(TreeAction {
+                        from: slot,
+                        to,
+                        sel: TreeSel::Many(members.clone()),
+                        op,
+                    });
+                },
+            );
+            ui.separator();
+            // The key takes the group apart and keeps its series: of the
+            // two removals, the one that cannot lose images.
+            if ui
+                .add(egui::Button::new("Dissolve group").shortcut_text("Delete"))
+                .on_hover_text("Take the group apart; its series stay in the study")
+                .clicked()
+            {
                 fourd = Some(FourDAction::Dissolve { slot, group: gi });
                 ui.close();
             }
@@ -180,11 +226,10 @@ impl ViewerApp {
                 ui.close();
             }
         });
-        resp.on_hover_text(
-            "A 4D sub-study: the phases in temporal order, then the reconstructions.\n\
-             Click a phase to display it; right-click for analysis and edits.\n\
-             F2: rename, Delete: dissolve",
-        );
+        resp.on_hover_text(format!(
+            "4D group · {} series: the phases in temporal order, then the reconstructions",
+            members.len()
+        ));
         if fourd.is_some() {
             self.fourd_action = fourd;
         }
@@ -193,9 +238,6 @@ impl ViewerApp {
         }
         if rename.is_some() {
             self.rename_request = rename;
-        }
-        if focus.is_some() {
-            self.tree_focus = focus;
         }
         if let Some(i) = switch_to {
             // Stepping between the phases of the group already on display
@@ -211,6 +253,7 @@ impl ViewerApp {
                 None => self.start_series_switch(slot, i),
             }
         }
+        self.apply_series_out(slot, &members, out, focus);
     }
 
     /// Apply a deferred 4D-group edit from the tree's context menus.

@@ -1380,30 +1380,33 @@ impl ViewerApp {
             .default_open(true)
             .show(ui, |ui| {
                 for (i, (label, line)) in rows.iter().enumerate() {
-                    let text = egui::RichText::new(format!("{} {label}", REG2D3D_TOOL.glyph));
-                    let resp = ui.selectable_label(current == Some(i), text);
+                    let me = RenameTarget::Setup { slot, idx: i };
+                    // The row of an object like any other; a second click
+                    // keeps it, since the section always works on one.
+                    let resp = Self::series_row(
+                        ui,
+                        current == Some(i),
+                        true,
+                        format!("{} {label}", REG2D3D_TOOL.glyph),
+                        focused.as_ref() == Some(&me),
+                    );
                     ui.weak(line.as_str());
                     if resp.clicked() {
                         show = Some(i);
                     }
-                    Self::focus_row(
-                        ui,
-                        &resp,
-                        RenameTarget::Setup { slot, idx: i },
-                        &focused,
-                        &mut focus,
-                    );
+                    Self::focus_row(ui, &resp, me.clone(), &focused, &mut focus);
                     resp.context_menu(|ui| {
-                        if ui.button("👁 Show").clicked() {
+                        if current != Some(i) && Self::show_entry(ui, false) {
                             show = Some(i);
                             ui.close();
                         }
-                        if ui.button("✏ Rename").clicked() {
-                            rename = Some(RenameTarget::Setup { slot, idx: i });
+                        ui.separator();
+                        if Self::rename_entry(ui) {
+                            rename = Some(me.clone());
                             ui.close();
                         }
                         ui.separator();
-                        if ui.button("🗑 Remove").clicked() {
+                        if Self::remove_entry(ui, "🗑 Remove") {
                             remove = Some(ObjRef {
                                 slot,
                                 kind: ObjKind::Setup,
